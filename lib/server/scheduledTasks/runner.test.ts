@@ -11,6 +11,9 @@ import type { ScheduledTaskSend } from "./admission";
 import type { ScheduledTaskRunCatalog } from "./catalog";
 import { createScheduledTaskRunner } from "./runner";
 import {
+  SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD,
+  SCHEDULED_TASK_LATENESS_MS,
+  SCHEDULED_TASK_RETRY_WINDOW_MS,
   SCHEDULED_TASK_RUN_DEADLINE_MS,
   completedRunCheck,
   expiredPendingOutcome,
@@ -46,14 +49,16 @@ type Occurrence = {
   chatId: string | null; createdAt: number; finishedAt: Date | null; id: string; leaseExpiresAt: Date | null; notifiedAt: Date | null;
   reasonCode: string | null; runId: string | null; scheduledFor: Date; startedAt: Date | null; state: string; taskGeneration: number | null;
   taskId: string; taskRevision: number | null; trigger: ScheduledTaskRunTrigger; unavailableSources: unknown; unseenAt: Date | null;
-  userId: string; userMessageId: string | null; verdict: MonitoringVerdict | null;
+  userId: string; userMessageId: string | null; verdict: MonitoringVerdict | null; workspaceWaitStartedAt?: Date | null;
 };
 /** `createdAt` is the run's admission, which its deadline counts from. */
 type Run = {
   assistantMessageId: string; createdAt: Date; errorPayload: unknown; scheduledOutcome?: string; status: string; userId: string;
+  /** Accepted with a Workspace binding: it holds a scheduled Workspace slot until terminal. */
+  workspace?: boolean;
 };
 
-function harness() {
+function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => number; workspaceMaxConcurrent?: number }> = {}) {
   let clock = new Date("2026-10-05T06:00:05.000Z");
   let ids = 0;
   const tasks = new Map<string, Task>();
@@ -174,20 +179,41 @@ function harness() {
     },
     async loadDispatch(now) {
       const executing = new Map<string, number>();
+      let workspaceExecuting = 0;
       const count = (userId: string) => executing.set(userId, (executing.get(userId) ?? 0) + 1);
-      for (const run of runs.values()) if (!["complete", "cancelled", "error"].includes(run.status)) count(run.userId);
-      for (const row of occurrences.filter((candidate) => tasks.has(candidate.taskId) && leased(candidate))) count(row.userId);
+      for (const run of runs.values()) {
+        if (["complete", "cancelled", "error"].includes(run.status)) continue;
+        count(run.userId);
+        if (run.workspace) workspaceExecuting += 1;
+      }
+      for (const row of occurrences.filter((candidate) => tasks.has(candidate.taskId) && leased(candidate))) {
+        count(row.userId);
+        if (tasks.get(row.taskId)!.workspaceEnabled) workspaceExecuting += 1;
+      }
       const pending = occurrences.filter((row) => row.state === "PENDING" && tasks.has(row.taskId) &&
         (!row.leaseExpiresAt || row.leaseExpiresAt <= now))
         .sort((left, right) => left.scheduledFor.getTime() - right.scheduledFor.getTime() || left.createdAt - right.createdAt)
-        .map((row) => ({ id: row.id, userId: row.userId }));
-      return { executing, pending };
+        .map((row) => {
+          const task = tasks.get(row.taskId)!;
+          return { id: row.id, recurring: task.schedule.kind !== "once", scheduledFor: row.scheduledFor, taskId: row.taskId,
+            trigger: row.trigger, userId: row.userId, waiting: row.reasonCode === "waiting_for_workspace",
+            workspace: task.workspaceEnabled };
+        });
+      return { executing, pending, workspaceExecuting };
     },
     async acquireLease(id, now, until) {
       const row = find(id);
       if (!row || row.state !== "PENDING" || row.runId || (row.leaseExpiresAt && row.leaseExpiresAt > now)) return false;
-      Object.assign(row, { leaseExpiresAt: until, startedAt: row.startedAt ?? now });
+      Object.assign(row, { leaseExpiresAt: until, startedAt: row.startedAt ?? now },
+        row.reasonCode === "waiting_for_workspace" ? { reasonCode: null } : {});
       return true;
+    },
+    async waitForWorkspace(id, now) {
+      const row = find(id);
+      if (row?.state === "PENDING" && !row.runId) {
+        Object.assign(row, { leaseExpiresAt: null, reasonCode: "waiting_for_workspace",
+          workspaceWaitStartedAt: row.workspaceWaitStartedAt ?? now });
+      }
     },
     async loadExecution(id) {
       const row = find(id);
@@ -296,7 +322,8 @@ function harness() {
     const assistantMessageId = nextId("assistant-message");
     answers.set(assistantMessageId, decision.answer ?? `Answer ${assistantMessageId}`);
     runs.set(runId, { assistantMessageId, createdAt: clock, errorPayload: decision.errorCode ? { code: decision.errorCode } : null,
-      status: decision.runStatus, userId: occurrence.userId });
+      status: decision.runStatus, userId: occurrence.userId, workspace: body.workspace !== undefined &&
+        (body.workspace as { enabled?: unknown }).enabled === true });
     const title = chats.get(chatId)?.title ?? origin.newChat?.title;
     chats.set(chatId, { ...chats.get(chatId), activeLeafMessageId: assistantMessageId, ...(title ? { title } : {}), usable: true,
       userId: occurrence.userId });
@@ -324,6 +351,8 @@ function harness() {
   const availableSkills = new Set<string>();
   const runner = createScheduledTaskRunner({
     appBaseUrl: "https://aiqsa.example.test",
+    // Without the spread unless a test asks for it: most tests start at the instant.
+    dispatchOffsetMs: options.dispatchOffsetMs ?? (() => 0),
     // The rotation's capture of the old chat's project: a ready seed is the one the link transfers.
     carryWorkspace: async ({ sourceChatId }) => {
       carried.push(sourceChatId);
@@ -351,7 +380,8 @@ function harness() {
       Object.assign(run, { errorPayload: { code, message: "stopped" }, status: "cancelled" });
       return "stopped";
     },
-    store
+    store,
+    ...(options.workspaceMaxConcurrent !== undefined ? { workspaceMaxConcurrent: options.workspaceMaxConcurrent } : {})
   });
 
   function addTask(overrides: Partial<Task> = {}): Task {
@@ -385,6 +415,7 @@ function harness() {
     addOccurrence, addTask, answers, availableSkills, carried, chats, emails, inactiveUsers, kick, occurrences, pushes, runs, seeds,
     sent, settled, stops, store, sweeps, tasks, tick,
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
+    now: () => clock,
     setCarry(next: typeof carry) { carry = next; },
     setCatalog(load: typeof catalogFor) { catalogFor = load; },
     setReply(next: typeof reply) { reply = next; },
@@ -620,6 +651,7 @@ describe("scheduled task runner", () => {
         nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
       modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
       searchStrategies: [] }),
+      dispatchOffsetMs: () => 0,
       now: () => new Date("2026-10-05T06:00:05.000Z"),
       renameChat: async () => undefined,
       stopRun: async () => "not_found",
@@ -781,7 +813,7 @@ describe("scheduled task runner", () => {
     const send = vi.fn<ScheduledTaskSend>(async () => Response.json({ error: "active_run_in_progress" }, { status: 409 }));
     let catalogFails = true;
     const runner = createScheduledTaskRunner({
-      appBaseUrl: "https://aiqsa.example.test", kick, loadPinnedSkills: async () => [],
+      appBaseUrl: "https://aiqsa.example.test", dispatchOffsetMs: () => 0, kick, loadPinnedSkills: async () => [],
       loadCatalog: async () => {
         if (catalogFails) throw new Error("catalog_unavailable");
         return { models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
@@ -935,7 +967,8 @@ describe("scheduled task runner with the owner's tools", () => {
   });
 
   it("pauses before any send when tools or Workspace need tool calling the model lost", async () => {
-    const h = harness();
+    // Room for both Workspace tasks at once: this test is about the pause, not the scheduled Workspace cap.
+    const h = harness({ workspaceMaxConcurrent: 2 });
     const noTools = (userId: string) => ({ models: [{ capabilities: { background: false, documentInputMode: "none" as const,
       imageInput: false, nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true as const,
       toolCalling: userId === "owner-3" }, modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
@@ -1555,5 +1588,143 @@ describe("scheduled task chat rotation", () => {
     h.advance(11 * MINUTE);
     await h.tick();
     expect(h.sweeps).toHaveLength(2);
+  });
+});
+
+describe("scheduled Workspace capacity", () => {
+  it("lets a second scheduled Workspace task wait for the one slot, shown as waiting, then run; neither fails", async () => {
+    const h = harness();
+    const first = h.addTask({ workspaceEnabled: true, toolsEnabled: true });
+    const second = h.addTask({ userId: "owner-2", workspaceEnabled: true, toolsEnabled: true });
+    // A task without Workspace is not held by the Workspace cap.
+    const plain = h.addTask({ userId: "owner-3" });
+    h.setReply((occurrence) => ({ runStatus: occurrence.taskId === first.id ? "streaming" : "complete" }));
+    await h.tick();
+    expect(h.forTask(first)).toMatchObject([{ state: "RUNNING" }]);
+    expect(h.forTask(plain)).toMatchObject([{ state: "COMPLETED" }]);
+    const waiting = h.forTask(second)[0]!;
+    expect(waiting).toMatchObject({ leaseExpiresAt: null, reasonCode: "waiting_for_workspace", runId: null, startedAt: null,
+      state: "PENDING" });
+    expect(waiting.workspaceWaitStartedAt).toEqual(new Date("2026-10-05T06:00:05.000Z"));
+    expect(h.sent.map((send) => send.occurrence.taskId)).toEqual([first.id, plain.id]);
+
+    // Still busy: it keeps waiting, its first wait unchanged.
+    h.advance(MINUTE);
+    await h.tick();
+    expect(h.forTask(second)).toMatchObject([{ reasonCode: "waiting_for_workspace", state: "PENDING" }]);
+    expect(h.forTask(second)[0]!.workspaceWaitStartedAt).toEqual(new Date("2026-10-05T06:00:05.000Z"));
+
+    // The first run ends: the slot frees and the waiting occurrence runs.
+    h.runs.get(h.forTask(first)[0]!.runId!)!.status = "complete";
+    h.advance(MINUTE);
+    await h.tick();
+    expect(h.forTask(first)).toMatchObject([{ reasonCode: null, state: "COMPLETED" }]);
+    expect(h.forTask(second)).toMatchObject([{ reasonCode: null, state: "COMPLETED" }]);
+    expect(first).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
+    expect(second).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
+  });
+
+  it("takes as many scheduled Workspace runs at once as the configured cap", async () => {
+    const h = harness({ workspaceMaxConcurrent: 2 });
+    const tasks = ["owner-1", "owner-2", "owner-3"].map((userId) => h.addTask({ userId, workspaceEnabled: true, toolsEnabled: true }));
+    h.setReply(() => ({ runStatus: "streaming" }));
+    await h.tick();
+    expect(tasks.map((task) => h.forTask(task)[0]!.state)).toEqual(["RUNNING", "RUNNING", "PENDING"]);
+    expect(h.forTask(tasks[2]!)[0]!.reasonCode).toBe("waiting_for_workspace");
+  });
+
+  it("skips an occurrence still waiting when its window ends, without counting it toward the failure pause", async () => {
+    const h = harness();
+    // Other scheduled Workspace runs keep the only slot busy the whole time, each within its deadline.
+    let holders = 0;
+    const hold = () => {
+      for (const run of h.runs.values()) if (run.workspace && run.status === "streaming") run.status = "complete";
+      holders += 1;
+      h.runs.set(`holder-${holders}`, { assistantMessageId: `holder-answer-${holders}`, createdAt: h.now(), errorPayload: null,
+        status: "streaming", userId: "owner-busy", workspace: true });
+    };
+    const task = h.addTask({ consecutiveFailures: SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD - 1, emailNotify: true,
+      toolsEnabled: true, workspaceEnabled: true });
+    hold();
+    await h.tick();
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: "waiting_for_workspace", state: "PENDING" }]);
+    // Never attempted, it waits through the lateness window rather than the retry window.
+    h.advance(SCHEDULED_TASK_RETRY_WINDOW_MS + MINUTE);
+    hold();
+    await h.tick();
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: "waiting_for_workspace", state: "PENDING" }]);
+    for (let waited = SCHEDULED_TASK_RETRY_WINDOW_MS + MINUTE; waited <= SCHEDULED_TASK_LATENESS_MS; waited += 20 * MINUTE) {
+      h.advance(20 * MINUTE);
+      hold();
+      await h.tick();
+    }
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: "workspace_capacity", runId: null, state: "SKIPPED", unseenAt: null }]);
+    expect(task).toMatchObject({ consecutiveFailures: SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD - 1, pauseReason: null, status: "ACTIVE" });
+    expect(h.sent).toHaveLength(0);
+    expect(h.emails).toHaveLength(0);
+  });
+
+  it("skips a waiting hourly occurrence as a capacity skip when the next instant supersedes it", async () => {
+    const h = harness();
+    const task = h.addTask({ schedule: { days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], everyHours: 1, kind: "hourly",
+      time: "09:00", until: null }, toolsEnabled: true, workspaceEnabled: true });
+    h.runs.set("holder", { assistantMessageId: "holder-answer", createdAt: h.now(), errorPayload: null, status: "streaming",
+      userId: "owner-busy", workspace: true });
+    await h.tick();
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: "waiting_for_workspace", state: "PENDING" }]);
+    h.advance(HOUR);
+    // A fresh holder, inside its deadline.
+    h.runs.get("holder")!.createdAt = h.now();
+    await h.tick();
+    expect(h.forTask(task)[0]).toMatchObject({ reasonCode: "workspace_capacity", state: "SKIPPED" });
+    expect(h.forTask(task)[1]).toMatchObject({ reasonCode: "waiting_for_workspace", state: "PENDING" });
+    expect(task).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
+  });
+});
+
+describe("scheduled dispatch spread", () => {
+  it("starts a recurring occurrence after its task's offset, keeping the scheduled instant", async () => {
+    const h = harness({ dispatchOffsetMs: () => 2 * MINUTE });
+    const task = h.addTask();
+    await h.tick();
+    expect(h.forTask(task)).toMatchObject([{ leaseExpiresAt: null, reasonCode: null, startedAt: null, state: "PENDING" }]);
+    expect(h.sent).toHaveLength(0);
+    h.advance(MINUTE);
+    await h.tick();
+    expect(h.sent).toHaveLength(0);
+    h.advance(MINUTE);
+    await h.tick();
+    expect(h.sent).toHaveLength(1);
+    expect(h.forTask(task)).toMatchObject([{ scheduledFor: new Date("2026-10-05T06:00:00.000Z"), state: "COMPLETED" }]);
+    expect(task.nextRunAt).toEqual(new Date("2026-10-06T06:00:00.000Z"));
+  });
+
+  it("starts Run now and a once task's chosen moment without the offset", async () => {
+    const h = harness({ dispatchOffsetMs: () => 2 * MINUTE });
+    const manual = h.addTask({ nextRunAt: null, status: "PAUSED" });
+    h.addOccurrence(manual);
+    const once = h.addTask({ schedule: { date: "2026-10-05", kind: "once", time: "09:00" }, userId: "owner-2" });
+    await h.tick();
+    expect(h.forTask(manual)).toMatchObject([{ state: "COMPLETED", trigger: "manual" }]);
+    expect(h.forTask(once)).toMatchObject([{ state: "COMPLETED", trigger: "schedule" }]);
+  });
+
+  it("decides the chat's month by the scheduled instant, not the later dispatch", async () => {
+    const h = harness({ dispatchOffsetMs: () => 2 * MINUTE });
+    const october = "chat-october";
+    h.chats.set(october, { activeLeafMessageId: null, usable: true, userId: "owner-1" });
+    // 23:59 Moscow on 31 October; dispatched at 00:01 on 1 November.
+    const task = h.addTask({ chatEpoch: 1, chatId: october, chatPeriod: "2026-10", nextRunAt: new Date("2026-10-31T20:59:00.000Z"),
+      schedule: { kind: "daily", time: "23:59" } });
+    h.advance(Date.parse("2026-10-31T20:59:05.000Z") - h.now().getTime());
+    await h.tick();
+    expect(h.sent).toHaveLength(0);
+    h.advance(2 * MINUTE);
+    await h.tick();
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]!.chatId).toBe(october);
+    expect(h.sent[0]!.occurrence).toMatchObject({ chatPeriod: "2026-10", taskChatEpoch: 1 });
+    expect(h.sent[0]!.occurrence).not.toHaveProperty("rotation");
+    expect(task).toMatchObject({ chatId: october, chatPeriod: "2026-10" });
   });
 });

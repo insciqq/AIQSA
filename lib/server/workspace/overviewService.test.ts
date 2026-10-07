@@ -38,6 +38,21 @@ describe("administrator Workspace overview", () => {
     expect(listSessions).toHaveBeenCalledTimes(1);
   });
 
+  it("adds the disk and scheduled capacity counts, and leaves them unknown when only they fail", async () => {
+    const counts = { retainedDisks: 4, scheduledDisks: 1, scheduledSkips: 2, scheduledWaits: 5 };
+    const footprint = vi.fn().mockResolvedValueOnce(counts).mockRejectedValueOnce(new Error("database_unavailable"));
+    let clock = +timestamp;
+    const service = createWorkspaceOverviewService({ cacheTtlMs: 1, now: () => clock,
+      repository: { footprint, read: vi.fn().mockResolvedValue([record("idle")]) },
+      runtime: { listSessions: vi.fn().mockResolvedValue({ entries: [observed("idle")], nextCursor: null }) } });
+    const first = await service.read(options);
+    expect(first).toMatchObject({ activeCount: 1, footprint: counts, state: "fresh" });
+    expect(footprint).toHaveBeenCalledWith(timestamp);
+    expect(decodeWorkspaceOverviewResponse({ overview: first })).toEqual(first);
+    clock += 10;
+    expect(await service.read(options)).toMatchObject({ activeCount: 1, footprint: null, state: "fresh" });
+  });
+
   it("filters the full inventory before pagination and keeps a full count independent of page size", async () => {
     const records = Array.from({ length: 47 }, (_, index) => record(String(index)));
     const entries = records.map((_, index) => observed(String(index), index < 5 ? "stopped" : "running"));

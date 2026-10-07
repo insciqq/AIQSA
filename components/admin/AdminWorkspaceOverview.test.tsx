@@ -9,7 +9,8 @@ vi.mock("./adminWorkspaceApi", async (importOriginal) => ({
 }));
 
 const overview: WorkspaceOverviewWire = {
-  activeCount: 21, filter: "active", observedAt: "2026-09-09T12:00:00.000Z", page: 1, pageSize: 20,
+  activeCount: 21, filter: "active", footprint: { retainedDisks: 7, scheduledDisks: 2, scheduledSkips: 1, scheduledWaits: 4 },
+  observedAt: "2026-09-09T12:00:00.000Z", page: 1, pageSize: 20,
   rows: [{ context: "personal", id: "ws-1234567890abcdef", lastActiveAt: "2026-09-09T11:30:00.000Z", state: "ready", user: "Fixture user" }],
   state: "fresh", stoppedCount: 2, totalCount: 21, transitioningCount: 1, unknownCount: 1,
   updatedAt: "2026-09-09T12:00:00.000Z"
@@ -26,6 +27,9 @@ describe("administrator Workspace environment list", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading Workspace activity");
     expect(await screen.findByText("21 active environments")).toBeVisible();
     expect(screen.getByText("1 changing · 1 unknown · 2 stopped")).toBeVisible();
+    // Content-free disk and scheduled capacity counts.
+    expect(screen.getByTestId("workspace-footprint")).toHaveTextContent(
+      "7 disks kept · 2 kept for scheduled tasksScheduled runs in the last 24 hours: 4 waited for a free Workspace slot · 1 skipped because none became free");
     const rows = screen.getByRole("list", { name: "Workspace environments" });
     expect(within(rows).getByText("Fixture user")).toBeVisible();
     expect(within(rows).getByText("ws-1234567890abcdef")).toBeVisible();
@@ -50,10 +54,11 @@ describe("administrator Workspace environment list", () => {
   });
 
   it("distinguishes an unknown first observation from a confirmed empty observation", async () => {
-    api.read.mockResolvedValue({ data: { ...overview, activeCount: null, observedAt: null,
+    api.read.mockResolvedValue({ data: { ...overview, activeCount: null, footprint: null, observedAt: null,
       rows: [], state: "unavailable", stoppedCount: null, totalCount: 0 }, ok: true });
     render(<AdminWorkspaceOverview />);
     expect(await screen.findByText("Live environment count is unknown.")).toBeVisible();
+    expect(screen.getByText("Disk and scheduled run counts are unavailable.")).toBeVisible();
     expect(screen.queryByText("No active environments.")).not.toBeInTheDocument();
     api.read.mockResolvedValue({ data: { ...overview, activeCount: 0, rows: [], totalCount: 0 }, ok: true });
     fireEvent.click(screen.getByRole("button", { name: "Refresh activity" }));
