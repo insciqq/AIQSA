@@ -206,7 +206,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         return Response.json({ error: "json_required" }, { status: 415 });
       }
       const auth = await requireAdmin(request, input.resolveAuth);
-      if (auth.error) return auth.error;
+      if (auth.error || !auth.session) return auth.error!;
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
@@ -225,7 +225,8 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         await input.service.verifyRole({
           role: value.role as SystemModelVerificationRole,
           providerModelId: value.providerModelId,
-          signal: request.signal
+          signal: request.signal,
+          userId: auth.session.userId
         });
         return Response.json({ systemModelPolicy: await input.service.list() });
       } catch (error) {

@@ -410,7 +410,8 @@ describe("administrator system model policy service", () => {
       refreshActive
     }).verifyRole({
       role: "memory",
-      providerModelId: "model-1"
+      providerModelId: "model-1",
+      userId: "admin-1"
     })).resolves.toBeUndefined();
     expect(refreshActive).toHaveBeenCalledWith({
       capabilityRole: "memory",
@@ -418,7 +419,8 @@ describe("administrator system model policy service", () => {
       connectionId: "connection-1",
       credentialId: "credential-1",
       providerModelId: "model-1",
-      signal: undefined
+      signal: undefined,
+      userId: "admin-1"
     });
   });
 
