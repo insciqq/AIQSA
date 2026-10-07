@@ -84,6 +84,7 @@ for (const viewport of [
       await expectNoPageOverflow(page);
 
       await runAccountMenuAction(page, "Settings");
+      await page.getByTestId("settings-v2").getByRole("button", { name: "Account", exact: true }).click();
       const block = page.getByTestId("settings-usage-limits");
       await block.scrollIntoViewIfNeeded();
       await expect(block).toBeVisible();
