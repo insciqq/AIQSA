@@ -14,9 +14,9 @@ const NO_LIMITS: UsageLimitStatus = {
 };
 // Message windows are full: dictation must not consult them.
 const MESSAGES_EXHAUSTED: UsageLimitStatus = { ...NO_LIMITS,
-  effective: { ...NO_LIMITS.effective, messagesPerHour: { source: "installation", value: 1 } }, lastHour: { count: 5, freesAt: null } };
+  effective: { ...NO_LIMITS.effective, messagesPerHour: { source: { kind: "installation" }, value: 1 } }, lastHour: { count: 5, freesAt: null } };
 const BUDGET_EXHAUSTED: UsageLimitStatus = { ...NO_LIMITS,
-  effective: { ...NO_LIMITS.effective, monthlyBudgetMicros: { source: "user", value: 1_000_000 } }, userSpentMicros: 1_000_000 };
+  effective: { ...NO_LIMITS.effective, monthlyBudgetMicros: { source: { kind: "user" }, value: 1_000_000 } }, userSpentMicros: 1_000_000 };
 
 const binding = { connection: { allowPrivateNetwork: false, apiRoot: "https://openrouter.ai/api/v1", authenticationMode: "bearer", responseTimeoutMs: 30_000 },
   connectionDisplayName: "OpenRouter", connectionId: "c1", credentialId: "k", credentialVersionId: "kv", family: "openrouter",
