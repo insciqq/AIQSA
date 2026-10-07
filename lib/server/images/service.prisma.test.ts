@@ -365,9 +365,26 @@ describe("durable conversational images", () => {
     await expect(service.execute(call, context)).rejects.toThrow("image_output_missing");
     const where = { imageToolCallId: context.persistedToolCallId! };
     expect(await f.db.usageEvent.findMany({ where })).toEqual([expect.objectContaining({ imageGeneration: true, modelRunId: f.runId,
-      purpose: "image_generation", inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: 40_000 })]);
+      purpose: "image_generation", inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: 40_000,
+      usageCompleteness: "COMPLETE" })]);
     await expect(service.execute(call, context)).rejects.toThrow("image_dispatch_claimed");
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(await f.db.attachment.count({ where })).toBe(0);
+  }));
+
+  it("keeps the completeness an image's reported tokens prove", async () => fixture(async (f) => {
+    const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: "blue" } }).png().toBuffer();
+    for (const [usage, usageCompleteness] of [
+      [{ input_tokens: 3, output_tokens: 11, total_tokens: 14 }, "COMPLETE"],
+      [{ input_tokens: 3, output_tokens: 11 }, "PARTIAL"],
+      [{ cost: 0.04 }, "UNAVAILABLE"]
+    ] as const) {
+      const { call, context } = await f.call();
+      const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () =>
+        Response.json({ data: [{ b64_json: png.toString("base64") }], usage }));
+      await createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn }).execute(call, context);
+      expect(await f.db.usageEvent.findUniqueOrThrow({ where: { imageToolCallId: context.persistedToolCallId! } }))
+        .toMatchObject({ purpose: "image_generation", usageCompleteness });
+    }
   }));
 });

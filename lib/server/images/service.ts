@@ -11,7 +11,7 @@ import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from ".
 import type { StorageAdapter } from "../uploads/storage";
 import type { ProviderRunRequest, ProviderAttachment } from "../providers/types";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
-import { loadProviderModelCostBasis, providerModelUsageCostMicros } from "../usage";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
 
 const MAX_IMAGE_CALLS_PER_RUN = 4;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -174,15 +174,19 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       // publication failure, access loss or a stale claim cannot lose it.
       // Nothing is estimated from pixels: the reported cost, else the model's
       // token prices on the reported tokens. The tool call's unique link keeps
-      // it to one row, also proving the paid dispatch to any retry.
-      const recordUsage = (usage: ImageGenerationUsage) => prisma.usageEvent.create({ data: {
-        imageGeneration: true, imageToolCallId: toolCallId, purpose: "image_generation",
-        modelRunId: runId, userId, chatId: request.chatId,
-        projectId: access.project?.projectId, provider: snapshot.providerFamily,
-        providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
-        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens,
-        estimatedCostMicros: providerModelUsageCostMicros({ basis: costBasis, reportedCostUsd: usage.costUsd ?? null,
-          usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens } }) } });
+      // it to one row, also proving the paid dispatch to any retry. The row
+      // keeps the completeness its reported tokens prove.
+      const recordUsage = (usage: ImageGenerationUsage) => {
+        const tokens = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens };
+        return prisma.usageEvent.create({ data: {
+          imageGeneration: true, imageToolCallId: toolCallId, purpose: "image_generation",
+          modelRunId: runId, userId, chatId: request.chatId,
+          projectId: access.project?.projectId, provider: snapshot.providerFamily,
+          providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
+          ...storedTokenUsage(tokens),
+          estimatedCostMicros: providerModelUsageCostMicros({ basis: costBasis, reportedCostUsd: usage.costUsd ?? null,
+            usage: tokens }) } });
+      };
       let generated: Awaited<ReturnType<typeof adapter.generate>>;
       try {
         generated = await adapter.generate({ prompt: args.prompt, images, parameters, signal });
