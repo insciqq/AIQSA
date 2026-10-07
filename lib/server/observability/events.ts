@@ -2,7 +2,7 @@ export type ObservabilityContext = Readonly<{
   trace_id: string; run_id?: string; job_id?: string; tool_call_id?: string; execution_index?: number;
 }>;
 export type ProcessRole = "app" | "memory_coordinator" | "memory_search" | "knowledge_search" | "workspace_runner" | "maintenance" | "bootstrap" | "storage_relay";
-export type Subsystem = "attachments" | "pdf" | "knowledge" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "knowledge_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry";
+export type Subsystem = "attachments" | "pdf" | "knowledge" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "knowledge_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry" | "dictation";
 export type SubsystemState = "disabled" | "starting" | "unknown" | "ready" | "failed";
 export type LifecycleStage = "startup" | "discover" | "reconcile" | "claim" | "drain" | "preflight" | "prepare" | "process" | "parse" | "chunk" | "embed" | "validate" | "publish" | "progress" | "retry" | "complete" | "fail" | "release" | "settle" | "refresh" | "probe" | "evict" | "initialize" | "quiesce" | "export" | "restore" | "recovery" | "continuation" | "cleanup" | "projection" | "integrity" | "rebuild" | "dispatch" | "shutdown" | "read" | "write" | "delete" | "multipart_start" | "multipart_complete" | "multipart_abort" | "multipart_sign" | "health" | "heartbeat";
 export type LifecycleOutcome = "started" | "completed" | "failed" | "degraded" | "cancelled" | "stale" | "waiting" | "skipped" | "lost_lease" | "blocked";

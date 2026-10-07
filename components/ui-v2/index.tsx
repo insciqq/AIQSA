@@ -56,6 +56,7 @@ export type UiV2IconName =
   | "logout"
   | "menu"
   | "memory"
+  | "mic"
   | "monitor"
   | "moon"
   | "more"
@@ -245,6 +246,10 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-memory" viewBox="0 0 24 24">
           <rect x="6" y="6" width="12" height="12" rx="2" />
           <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M18 9h4M2 15h4M18 15h4M10 10h4v4h-4z" />
+        </symbol>
+        <symbol id="v2-icon-mic" viewBox="0 0 24 24">
+          <rect x="9" y="3" width="6" height="11" rx="3" />
+          <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
         </symbol>
         <symbol id="v2-icon-monitor" viewBox="0 0 24 24">
           <rect x="3" y="4" width="18" height="13" rx="2" />
