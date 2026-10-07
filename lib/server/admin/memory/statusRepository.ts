@@ -58,11 +58,40 @@ type ActivityRow = Readonly<{
   lastSuccessfulJobAt: Date | null;
   activeStages: AdminMemoryStatus["worker"]["activeStages"];
 }>;
-type QueueRow = Readonly<{
+export type AdminMemoryQueueRow = Readonly<{
   inProgress: bigint;
   oldestQueuedAt: Date | null;
   waiting: bigint;
 }>;
+
+/**
+ * The Memory queue as the Memory card counts it, shared with the Health
+ * background queues. One statement keeps counts and waiting age on the same
+ * snapshot while workers claim/settle jobs. Private job identities never leave
+ * the DB.
+ */
+export function adminMemoryQueueSql(now: Date): Prisma.Sql {
+  return Prisma.sql`
+    WITH ${currentMemoryJobsSql(now)}
+    SELECT
+      COUNT(*) FILTER (WHERE work."inProgress") AS "inProgress",
+      COUNT(*) FILTER (WHERE NOT work."inProgress") AS "waiting",
+      MIN(work."createdAt") FILTER (WHERE NOT work."inProgress") AS "oldestQueuedAt"
+    FROM (
+      SELECT "state" = 'CLAIMED'::"MemoryJobState" AS "inProgress", "createdAt"
+      FROM current_jobs
+      WHERE "state" IN (${Prisma.join(ACTIVE_JOB_STATES.map((state) => Prisma.sql`${state}::"MemoryJobState"`))})
+      UNION ALL
+      SELECT "state" = 'RUNNING'::"MemoryDeletionState" AS "inProgress",
+        CASE WHEN "state" IN ('PENDING', 'RETRY_WAIT')
+          THEN GREATEST("createdAt", "nextAttemptAt") ELSE "createdAt" END AS "createdAt"
+      FROM "MemoryDeletionOutbox"
+      WHERE "state" IN (${Prisma.join(ACTIVE_DELETION_STATES.map((state) => Prisma.sql`${state}::"MemoryDeletionState"`))})
+        AND ("state" NOT IN ('PENDING', 'RETRY_WAIT') OR "nextAttemptAt" IS NULL
+          OR "nextAttemptAt" <= ${now})
+    ) AS work
+  `;
+}
 
 function boundedLabel(value: string): string {
   const trimmed = value.trim();
@@ -297,28 +326,7 @@ export function createPrismaAdminMemoryStatusRepository(
                   ), TO_TIMESTAMP(0))
               ) AS stale_history
             `),
-        // One statement keeps counts and waiting age on the same snapshot while
-        // workers claim/settle jobs. Private job identities never leave the DB.
-        client.$queryRaw<QueueRow[]>(Prisma.sql`
-          WITH ${currentMemoryJobsSql(now)}
-          SELECT
-            COUNT(*) FILTER (WHERE work."inProgress") AS "inProgress",
-            COUNT(*) FILTER (WHERE NOT work."inProgress") AS "waiting",
-            MIN(work."createdAt") FILTER (WHERE NOT work."inProgress") AS "oldestQueuedAt"
-          FROM (
-            SELECT "state" = 'CLAIMED'::"MemoryJobState" AS "inProgress", "createdAt"
-            FROM current_jobs
-            WHERE "state" IN (${Prisma.join(ACTIVE_JOB_STATES.map((state) => Prisma.sql`${state}::"MemoryJobState"`))})
-            UNION ALL
-            SELECT "state" = 'RUNNING'::"MemoryDeletionState" AS "inProgress",
-              CASE WHEN "state" IN ('PENDING', 'RETRY_WAIT')
-                THEN GREATEST("createdAt", "nextAttemptAt") ELSE "createdAt" END AS "createdAt"
-            FROM "MemoryDeletionOutbox"
-            WHERE "state" IN (${Prisma.join(ACTIVE_DELETION_STATES.map((state) => Prisma.sql`${state}::"MemoryDeletionState"`))})
-              AND ("state" NOT IN ('PENDING', 'RETRY_WAIT') OR "nextAttemptAt" IS NULL
-                OR "nextAttemptAt" <= ${now})
-          ) AS work
-        `).then((rows) => {
+        client.$queryRaw<AdminMemoryQueueRow[]>(adminMemoryQueueSql(now)).then((rows) => {
           if (!rows[0]) throw new Error("memory_admin_status_queue_invalid");
           return rows[0];
         }),
