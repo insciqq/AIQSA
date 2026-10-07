@@ -12,15 +12,13 @@ import { resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor"
 import { filterMcpCatalog } from "../mcp/toolAccessProjection";
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
 import type { McpCapabilityCatalog, McpCapabilityCatalogTool, McpRunPlanResult } from "../mcp/runPlan";
-import { resolveProjectAccess } from "../projects/access";
 import { isWorkspaceCodeInvocationId, WORKSPACE_CODE_INVOCATION_HEADER } from "./codeMcp";
 import {
   createPrismaWorkspaceCodeGatewayStore,
   WorkspaceCodeAccessError,
   type WorkspaceCodeClaim,
   type WorkspaceCodeGatewayGrant,
-  type WorkspaceCodeGatewayStore,
-  type WorkspaceCodeProjectAuthority
+  type WorkspaceCodeGatewayStore
 } from "./codeMcpStore";
 
 /** Marks gateway refusals in a tool result, distinct from a tool's own error result. */
@@ -33,14 +31,7 @@ export type WorkspaceCodeMcpDependencies = Readonly<{
   callRuntimeTool: McpToolRuntimeCall;
   filterTools: McpToolAccessFilter;
   inspect(userId: string, tools: SelectedTools): Promise<McpRunPlanResult>;
-  inspectProject(userId: string, tools: SelectedTools): Promise<McpRunPlanResult>;
   materialize(userId: string, tools: SelectedTools, signal?: AbortSignal): Promise<McpRunPlanResult>;
-  materializeProject(userId: string, tools: SelectedTools, signal?: AbortSignal): Promise<McpRunPlanResult>;
-  /**
-   * Whether the Project run initiator still holds the run's accepted Project
-   * authority: rechecked with the bearer, before each step and every lease tick.
-   */
-  projectAccess(input: WorkspaceCodeProjectAuthority & Readonly<{ userId: string }>): Promise<boolean>;
   store: WorkspaceCodeGatewayStore;
 }>;
 
@@ -49,19 +40,7 @@ export function defaultWorkspaceCodeMcpDependencies(): WorkspaceCodeMcpDependenc
     callRuntimeTool: (request) => getDefaultMcpRuntimeCoordinator().callTool(request),
     filterTools: defaultMcpRunPlan.filterTools,
     inspect: (userId, tools) => defaultMcpRunPlan.inspect(userId, tools),
-    inspectProject: (userId, tools) => defaultMcpRunPlan.inspectProject(userId, tools),
     materialize: (userId, tools, signal) => defaultMcpRunPlan.materialize(userId, tools, signal),
-    materializeProject: (userId, tools, signal) => defaultMcpRunPlan.materializeProject(userId, tools, signal),
-    // The model path's rule (the run repository's `isProjectRunAccessCurrent`):
-    // a current contributor, at exactly the run's accepted Project revisions.
-    async projectAccess({ userId, ...accepted }) {
-      const access = await resolveProjectAccess(prisma, { minimumRole: "CONTRIBUTOR", projectId: accepted.projectId,
-        requireActive: true, userId });
-      return access?.accessRevision === accepted.accessRevision &&
-        access.instructionsRevision === accepted.instructionsRevision &&
-        access.memoryRevision === accepted.memoryRevision &&
-        access.policyRevision === accepted.policyRevision;
-    },
     store: createPrismaWorkspaceCodeGatewayStore(prisma)
   };
 }
@@ -187,13 +166,8 @@ export async function handleWorkspaceCodeMcpRequest(
   const invocationId = request.headers.get(WORKSPACE_CODE_INVOCATION_HEADER);
   if (!isWorkspaceCodeInvocationId(invocationId)) return invocationRefused();
   // The lease runs this before serving and every second while a request is
-  // open, so lost run, invocation or Project authority also ends a call in flight.
-  const assertActive = async () => {
-    await dependencies.store.assertActive(grant, invocationId);
-    if (grant.project && !(await dependencies.projectAccess({ ...grant.project, userId: grant.userId }))) {
-      throw new WorkspaceCodeAccessError("authority");
-    }
-  };
+  // open, so lost run or invocation authority also ends a call in flight.
+  const assertActive = () => dependencies.store.assertActive(grant, invocationId);
   try {
     return await runWithContext({ run_id: grant.runId }, () => withAgentLease(request, assertActive,
       (signal) => serve(request, signal, grant, invocationId, assertActive, dependencies)));
@@ -227,16 +201,13 @@ async function serve(
       signal.throwIfAborted();
       await assertGrantActive();
     } };
-    const project = grant.project !== null;
     const catalog = grant.authority.kind === "catalog" ? grant.authority.catalog : catalogFromSnapshot(grant.authority.snapshot);
     const service = createMcpToolService<Authority>({
       catalog: async () => catalog,
       filterTools: dependencies.filterTools,
       callRuntimeTool: dependencies.callRuntimeTool,
-      inspect: (userId, tools) => project ? dependencies.inspectProject(userId, tools) : dependencies.inspect(userId, tools),
-      materialize: (userId, tools, materializeSignal) => project
-        ? dependencies.materializeProject(userId, tools, materializeSignal)
-        : dependencies.materialize(userId, tools, materializeSignal),
+      inspect: (userId, tools) => dependencies.inspect(userId, tools),
+      materialize: (userId, tools, materializeSignal) => dependencies.materialize(userId, tools, materializeSignal),
       // The receipt exists already; it settles once, below, with size and duration.
       recordDispatch: async () => ({ async settle() {} })
     });
@@ -295,8 +266,7 @@ async function serve(
           if (lost instanceof WorkspaceCodeAccessError) code = lostAuthority(lost);
           else {
             const selection = [{ namespacedName: tool.namespacedName, revisionId: tool.revisionId, serverId: tool.serverId }];
-            const current = await (project ? dependencies.inspectProject(grant.userId, selection)
-              : dependencies.inspect(grant.userId, selection)).catch(() => null);
+            const current = await dependencies.inspect(grant.userId, selection).catch(() => null);
             if (current && signInRequired(current)) code = "authorization_required";
           }
         }

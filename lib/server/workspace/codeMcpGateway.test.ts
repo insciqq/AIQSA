@@ -34,10 +34,9 @@ const catalog: McpCapabilityCatalog = { version: 1, servers: [{ description: "",
   ] }] };
 
 const budgets = { version: 1, maxCalls: 3, maxConcurrent: 4, maxPerSecond: 10 } as const;
-const acceptedProject = { accessRevision: 3, instructionsRevision: 2, memoryRevision: 0, policyRevision: 7, projectId: "project-1" };
 
 function grantOf(overrides: Partial<WorkspaceCodeGatewayGrant> = {}): WorkspaceCodeGatewayGrant {
-  return { authority: { kind: "plan", snapshot: plan }, budgets, project: null, runId: "run-1", sessionId: "session-1",
+  return { authority: { kind: "plan", snapshot: plan }, budgets, runId: "run-1", sessionId: "session-1",
     tokenHash, userId: "user-1", ...overrides };
 }
 
@@ -94,10 +93,7 @@ function dependencies(store: WorkspaceCodeGatewayStore, current: McpRunPlanSnaps
     callRuntimeTool,
     filterTools: vi.fn(async (_userId: string, tools: readonly unknown[]) => [...tools]) as unknown as McpToolAccessFilter,
     inspect: vi.fn(resolve),
-    inspectProject: vi.fn(resolve),
     materialize: vi.fn(resolve),
-    materializeProject: vi.fn(resolve),
-    projectAccess: vi.fn(async () => true),
     store,
     ...overrides
   } satisfies WorkspaceCodeMcpDependencies;
@@ -148,7 +144,7 @@ describe("Workspace code MCP gateway", () => {
       errorCode: null, id: "receipt-0", invocationId, resultBytes: expect.any(Number), sequence: 0, serverId: "server-gitlab",
       state: "complete", toolName: commits }]);
     expect(JSON.stringify(memory.receipts)).not.toMatch(/c-secret-(argument|result)/u);
-    expect(deps.materializeProject).not.toHaveBeenCalled();
+    expect(deps.filterTools).toHaveBeenCalledWith("user-1", expect.any(Array));
   });
 
   it("refuses names outside the run's authority before any receipt or dispatch", async () => {
@@ -232,40 +228,24 @@ describe("Workspace code MCP gateway", () => {
     expect(invalid.result.structuredContent).toMatchObject({ code: "invalid_arguments", dispatched: false, input_schema: inputSchema });
   });
 
-  it("serves a Project run from linked shared authority only and rechecks the initiator's access", async () => {
-    const memory = memoryStore(grantOf({ project: acceptedProject, userId: "initiator-1" }));
-    const deps = dependencies(memory.store);
-    await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
-    expect(deps.materializeProject).toHaveBeenCalled();
-    expect(deps.inspectProject).toHaveBeenCalled();
-    expect(deps.materialize).not.toHaveBeenCalled();
-    expect(deps.inspect).not.toHaveBeenCalled();
-    expect(deps.filterTools).toHaveBeenCalledWith("initiator-1", expect.any(Array));
-    expect(deps.projectAccess).toHaveBeenCalledWith({ ...acceptedProject, userId: "initiator-1" });
-    // A personal server is not in a Project plan, so it is never callable.
-    const personal = await rpcBody(await handleWorkspaceCodeMcpRequest(call("mcp_personal_notes_2222222222", {}), tokenHash, deps));
-    expect(personal.error).toMatchObject({ code: -32602 });
-    expect(deps.callRuntimeTool).toHaveBeenCalledOnce();
-    vi.mocked(deps.projectAccess).mockResolvedValueOnce(false);
-    expect((await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps)).status).toBe(401);
-  });
-
-  it("ends a Project run's code calls once its accepted Project authority changes, as lost authority, not an outage", async () => {
-    // An administrator unlinks the server (a new Project policy revision) while the call is being prepared.
-    let current = true;
-    const memory = memoryStore(grantOf({ project: acceptedProject, userId: "initiator-1" }));
-    const callRuntimeTool = vi.fn(async (input: Parameters<WorkspaceCodeMcpDependencies["callRuntimeTool"]>[0]) => {
-      current = false;
-      await input.beforeDispatch();
-      return { isError: false, structuredContent: { commits: [] }, text: ["sent"], unsupportedContentTypes: [] };
-    });
-    const deps = dependencies(memory.store, plan, { callRuntimeTool, projectAccess: vi.fn(async () => current) });
-    const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
-    expect(body.result.structuredContent).toMatchObject({ code: "code_token_revoked", dispatched: false });
-    // Scheduled source health counts only a source's own outage or sign-in, never this.
-    expect(memory.receipts[0]).toMatchObject({ errorCode: "code_token_revoked", state: "error" });
-    expect((await handleWorkspaceCodeMcpRequest(call(commits, { project: "b" }), tokenHash, deps)).status).toBe(401);
-    expect(memory.receipts).toHaveLength(1);
+  it("reports authority the run lost while a call was prepared as the run's, never as a source outage", async () => {
+    for (const [lose, code] of [
+      [(memory: ReturnType<typeof memoryStore>) => { memory.state.revoked = true; }, "code_token_revoked"],
+      [(memory: ReturnType<typeof memoryStore>) => { memory.invocations.set(invocationId, "closed"); }, "code_invocation_closed"]
+    ] as const) {
+      // The run is stopped, or the command returns, just before the call would be sent.
+      const memory = memoryStore(grantOf());
+      const callRuntimeTool = vi.fn(async (input: Parameters<WorkspaceCodeMcpDependencies["callRuntimeTool"]>[0]) => {
+        lose(memory);
+        await input.beforeDispatch();
+        return { isError: false, structuredContent: { commits: [] }, text: ["sent"], unsupportedContentTypes: [] };
+      });
+      const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash,
+        dependencies(memory.store, plan, { callRuntimeTool })));
+      expect(body.result.structuredContent).toMatchObject({ code, dispatched: false });
+      // Scheduled source health counts only a source's own outage or sign-in, never this.
+      expect(memory.receipts[0]).toMatchObject({ errorCode: code, state: "error" });
+    }
   });
 
   it("calls an Auto catalog tool with its current definition, as find_tools would load it", async () => {

@@ -208,37 +208,5 @@ export const defaultMcpRunPlan = {
   },
   async prepareProject(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>) {
     return prepareExactProjectMcpRunPlan(userId, serverIds, options?.allowedToolNames);
-  },
-  /** `materialize` for a Project run: linked shared runtimes only, the initiator's tool restrictions applied. */
-  async materializeProject(
-    userId: string,
-    tools: readonly Readonly<{ namespacedName: string; revisionId: string; serverId: string }>[],
-    signal?: AbortSignal
-  ) {
-    signal?.throwIfAborted();
-    const plan = await prepareExactProjectMcpRunPlan(userId, [...new Set(tools.map((tool) => tool.serverId))],
-      tools.map((tool) => tool.namespacedName));
-    signal?.throwIfAborted();
-    if (!plan.ok) return plan;
-    const revisions = new Map(plan.snapshot.servers.map((server) => [server.serverId, server.revisionId]));
-    if (tools.some((tool) => revisions.get(tool.serverId) !== tool.revisionId)) {
-      return {
-        code: "mcp_not_ready" as const,
-        issues: [{ errorCode: "mcp_revision_changed", name: "Selected MCP tool", readiness: "unavailable" as const }],
-        ok: false as const
-      };
-    }
-    return plan;
-  },
-  /** `inspect` for a Project run: reads the shared definition and authority without starting a runtime. */
-  inspectProject(userId: string, tools: readonly Readonly<{ namespacedName: string; revisionId: string; serverId: string }>[]) {
-    const serverIds = [...new Set(tools.map((tool) => tool.serverId))];
-    return prepareMcpRunPlan({
-      allowedServerIds: serverIds,
-      allowedToolNames: tools.map((tool) => tool.namespacedName),
-      isGenerationLive: (generationId) => (globalThis as McpRuntimeGlobal)
-        .__aiqsaMcpRuntimeCoordinator?.hasLiveGeneration(generationId) ?? false,
-      load: () => loadProjectRunPlan(userId, serverIds)
-    });
   }
 };
