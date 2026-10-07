@@ -24,6 +24,7 @@ export type AdminAttentionCode =
   | "memory_processing_blocked"
   | "memory_worker_not_running"
   | "memory_worker_stalled"
+  | "new_error"
   | "operation_timeouts_rising"
   | "process_restarting"
   | "provider_key_check_failed"
@@ -132,6 +133,7 @@ export type AdminAttentionSummaryResponse = {
 export const adminHealthAttentionCodes = [
   "background_failures",
   "logs_dropped",
+  "new_error",
   "operation_timeouts_rising",
   "process_restarting",
   "provider_runtime_failing",

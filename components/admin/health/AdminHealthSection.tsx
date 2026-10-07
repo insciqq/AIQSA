@@ -7,6 +7,7 @@ import {
   emptyIncidentFilters,
   type AdminHealthIncidentFilterState
 } from "@/components/admin/health/AdminHealthIncidents";
+import { AdminHealthErrorGroups } from "@/components/admin/health/AdminHealthErrorGroups";
 import { AdminHealthProviders } from "@/components/admin/health/AdminHealthProviders";
 import { AdminHealthQueues } from "@/components/admin/health/AdminHealthQueues";
 import type { AdminHealthIncidentsResult, AdminHealthResult } from "@/components/admin/health/adminHealthApi";
@@ -181,6 +182,13 @@ export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requ
                   Errors {health.interval === "hour" ? "per hour" : "per day (UTC)"}
                 </h2>
                 <AdminHealthChart interval={health.interval} series={health.series} />
+              </section>
+              <section aria-labelledby="admin-health-error-groups-heading" className="min-w-0">
+                <div className="mb-2 flex min-w-0 flex-col gap-0.5">
+                  <h2 className={headingClass} id="admin-health-error-groups-heading">Failures by location</h2>
+                  <p className="text-xs text-ink-muted">The error class and where in AIQSA it was thrown; messages are never recorded.</p>
+                </div>
+                <AdminHealthErrorGroups groups={health.errorGroups} truncated={health.errorGroupsTruncated} />
               </section>
               <section aria-labelledby="admin-health-providers-heading" className="min-w-0">
                 <div className="mb-2 flex min-w-0 flex-col gap-0.5">
