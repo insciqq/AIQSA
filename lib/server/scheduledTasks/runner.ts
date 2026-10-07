@@ -281,10 +281,13 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       // The month's first run carries the previous shown result as a frozen
       // copy (never the old chat's ids) and, with Workspace on, the old chat's
       // project files, captured now: nothing runs in the new chat without them.
+      // An old chat without a shown result of its own (checks without news,
+      // failed runs) passes on the copy still carried into it, as reauthorized
+      // when loaded, so the comparison basis survives a second rotation.
       const baseline = task.baseline?.generation === task.generation ? task.baseline : null;
-      previousResultCopy = baseline ? await deps.store.loadRotationCopy({
-        baseline, chatId: rotation.fromChatId, userId: occurrence.userId
-      }) ?? undefined : undefined;
+      previousResultCopy = baseline
+        ? await deps.store.loadRotationCopy({ baseline, chatId: rotation.fromChatId, userId: occurrence.userId }) ?? undefined
+        : execution.carriedResult ?? undefined;
       if (task.workspaceEnabled) {
         const carried = deps.carryWorkspace
           ? await deps.carryWorkspace({ sourceChatId: rotation.fromChatId, taskId: occurrence.taskId, userId: occurrence.userId })

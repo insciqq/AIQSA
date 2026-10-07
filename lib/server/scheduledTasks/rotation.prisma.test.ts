@@ -186,6 +186,36 @@ describe("persisted scheduled task chat rotation", () => {
       .rejects.toBeInstanceOf(ScheduledOccurrenceConflictError);
   });
 
+  it("moves a still-carried copy on to the next month when the chat it leaves never showed a result", async () => {
+    const userId = await owner();
+    const { chatId: octoberChat, copy, run, taskId } = await october(userId);
+    const november = await rotate(userId, taskId, octoberChat, copy);
+    // November never shows a result of its own (its run fails; monitoring checks without news do the same).
+    await prisma.modelRun.update({ data: { errorPayload: { code: "provider_error", message: "x" }, status: "error" },
+      where: { id: november.run.runId } });
+    await runner.settleLinked(november.occurrenceId, new Date());
+    const pending = await occurrence(userId, taskId);
+    expect(await runner.loadExecution(pending.id)).toMatchObject({ carriedResult: copy, task: { baseline: null, chatEpoch: 2 } });
+    const december = { chatPeriod: "2026-12", newChat: { title: "Synthetic brief · December 2026" },
+      rotation: { fromChatId: november.chatId, seedId: null } };
+
+    // A copy of anything but the stored one is refused, and nothing is created.
+    const refused = randomUUID();
+    await expect(runs.createRun(await runInput(userId, refused, await origin(pending.id, taskId, { ...december,
+      previousResultCopy: { ...copy, sourceAssistantMessageId: run.userMessageId } }), true)))
+      .rejects.toBeInstanceOf(ScheduledOccurrenceConflictError);
+    expect(await prisma.chat.count({ where: { id: refused } })).toBe(0);
+    // The stored copy itself moves on to December's epoch, its text as frozen.
+    const decemberChat = randomUUID();
+    await runs.createRun(await runInput(userId, decemberChat, await origin(pending.id, taskId, { ...december,
+      previousResultCopy: { ...copy, answer: "Rewritten digest" } }), true));
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: taskId } }))
+      .toMatchObject({ baselineRunId: null, chatEpoch: 3, chatId: decemberChat, chatPeriod: "2026-12" });
+    expect(await prisma.scheduledTaskCarryover.findUniqueOrThrow({ where: { taskId } })).toMatchObject({
+      answerText: "October digest", chatEpoch: 3, sourceAssistantMessageId: run.assistantMessageId, sourceChatId: octoberChat
+    });
+  });
+
   it("drops a carried copy of another question once the owner changes the prompt", async () => {
     const userId = await owner();
     const { chatId: octoberChat, copy, taskId } = await october(userId);
