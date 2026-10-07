@@ -186,10 +186,20 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   markGuestUsed(binding: WorkspaceExecutionBinding): Promise<boolean>;
   /** Release an unused run's authority without changing the guest or its activity window. */
   retireUnusedRun(binding: WorkspaceExecutionBinding): Promise<boolean>;
-  claimContinuationSeed?(input: Readonly<{ chatId: string; operation: WorkspaceOperation; sessionId: string }>): Promise<Readonly<{
-    id: string; storageKey: string; checksum: string; byteSize: number; token: string;
+  /**
+   * `required`: a scheduled task's rotation carried this seed and the run
+   * restoring it is that task's scheduled run, which never goes on with an
+   * empty project instead (`workspace_carryover_unavailable`).
+   */
+  claimContinuationSeed?(input: Readonly<{ chatId: string; operation: WorkspaceOperation; runId?: string; sessionId: string }>): Promise<Readonly<{
+    id: string; storageKey: string; checksum: string; byteSize: number; token: string; required?: boolean;
   }> | null>;
-  settleContinuationSeed?(input: Readonly<{ id: string; token: string; status: "RESTORED" | "FAILED"; failureCode?: string }>): Promise<boolean>;
+  /** `TRANSFERRED` releases a required seed's claim, keeping its archive for a later run. */
+  settleContinuationSeed?(input: Readonly<{
+    id: string; token: string; status: "RESTORED" | "FAILED" | "TRANSFERRED"; failureCode?: string;
+  }>): Promise<boolean>;
+  /** The run is a scheduled task's run whose chat still awaits the files that task's rotation carried. */
+  pendingCarryover?(input: Readonly<{ chatId: string; runId: string }>): Promise<boolean>;
   claimExport(input: Readonly<{
     handoff?: boolean;
     leaseMs: number;
@@ -473,7 +483,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         return true;
       });
     },
-    async claimContinuationSeed({ chatId, operation, sessionId }) {
+    async claimContinuationSeed({ chatId, operation, runId, sessionId }) {
       return prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, sessionId);
         if (!session || session.chatId !== chatId || session.version !== operation.generation || session.operationOwner !== operation.owner) {
@@ -481,10 +491,15 @@ export function createPrismaWorkspaceCoordinatorRepository(
         }
         const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { newChatId: chatId } });
         if (!seed || !["TRANSFERRED", "RESTORING"].includes(seed.status)) return null;
-        if (!seed.storageKey || !seed.checksum || !seed.byteSize) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+        // A scheduled run of the task whose rotation carried the seed needs its files.
+        const required = seed.scheduledTaskId !== null && runId !== undefined &&
+          await tx.modelRun.count({ where: { id: runId, scheduledTaskId: seed.scheduledTaskId } }) === 1;
+        if (!seed.storageKey || !seed.checksum || !seed.byteSize) {
+          throw new WorkspaceRuntimeError(required ? "workspace_carryover_unavailable" : "workspace_archive_invalid");
+        }
         const now = new Date();
         if (seed.status === "RESTORING" && seed.leaseExpiresAt && seed.leaseExpiresAt > now) {
-          throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
+          throw new WorkspaceRuntimeError(required ? "workspace_carryover_unavailable" : "workspace_archive_restore_failed");
         }
         const token = randomUUID();
         const claimed = await tx.chatContinuationWorkspaceSeed.updateMany({
@@ -495,9 +510,24 @@ export function createPrismaWorkspaceCoordinatorRepository(
           data: { status: "RESTORING", leaseToken: token, leaseExpiresAt: new Date(now.getTime() + WORKSPACE_OPERATION_LEASE_MS),
             restoreStartedAt: now, attemptCount: { increment: 1 } }
         });
-        if (claimed.count !== 1) return null;
-        return { id: seed.id, storageKey: seed.storageKey, checksum: seed.checksum, byteSize: seed.byteSize, token };
+        if (claimed.count !== 1) {
+          if (required) throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
+          return null;
+        }
+        return { id: seed.id, storageKey: seed.storageKey, checksum: seed.checksum, byteSize: seed.byteSize, token,
+          ...(required ? { required: true } : {}) };
       });
+    },
+    async pendingCarryover({ chatId, runId }) {
+      const [row] = await prisma.$queryRaw<Array<{ pending: boolean }>>(Prisma.sql`
+        SELECT EXISTS (
+          SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
+          JOIN "ModelRun" AS run ON run."id" = ${runId} AND run."scheduledTaskId" = seed."scheduledTaskId"
+          WHERE seed."newChatId" = ${chatId}
+            AND seed."status" IN ('TRANSFERRED'::"ChatContinuationWorkspaceSeedStatus", 'RESTORING'::"ChatContinuationWorkspaceSeedStatus")
+        ) AS "pending"
+      `);
+      return row?.pending === true;
     },
     async settleContinuationSeed({ id, token, status, failureCode }) {
       return prisma.$transaction(async (tx) => {
@@ -1085,6 +1115,20 @@ export type WorkspaceCoordinator = Readonly<{
     workspace: NormalizedRunWorkspace;
   }>): Promise<"interrupted" | void>;
   accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
+  /**
+   * Before a scheduled run's first model request: starts the Workspace and
+   * restores the files its task's monthly rotation carried into the chat,
+   * so no tool or command of the run meets an empty carried project. A
+   * restore that cannot complete throws `workspace_carryover_unavailable`.
+   * Does nothing for any other run.
+   */
+  prepareCarryover?(input: Readonly<{
+    onActivity?: WorkspaceActivityListener;
+    runId: string;
+    signal?: AbortSignal;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<void>;
   execute(input: Readonly<{
     call: ModelToolCall;
     modelRunToolCallId: string;
@@ -1585,10 +1629,18 @@ export function createWorkspaceCoordinator(input: Readonly<{
           signal
         });
         const continuationSeed = await input.repository.claimContinuationSeed?.({
-          chatId: binding.chatId, operation: ownedOperation(binding), sessionId: binding.sessionId
+          chatId: binding.chatId, operation: ownedOperation(binding), runId: binding.runId, sessionId: binding.sessionId
         });
         if (continuationSeed) {
+          // A scheduled task's carried files never give way to an empty project:
+          // the claim is released with its archive kept for a later run.
+          const releaseRequired = async () => {
+            if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
+              status: "TRANSFERRED" })) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+            throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
+          };
           if (!input.runtime.restoreProjectArchive) {
+            if (continuationSeed.required) await releaseRequired();
             await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
               status: "FAILED", failureCode: "workspace_archive_restore_failed" });
             throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
@@ -1612,6 +1664,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
             // unproven cleanup keeps the claim, so lease expiry retries it;
             // otherwise the original bytes are never retried automatically.
             if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
+            if (continuationSeed.required) await releaseRequired();
             if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
               status: "FAILED", failureCode: error instanceof WorkspaceRuntimeError ? error.code : "workspace_archive_restore_failed" })) {
               throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
@@ -2624,6 +2677,19 @@ export function createWorkspaceCoordinator(input: Readonly<{
         return { attempted, completed };
       })().finally(() => { recoveryWork = null; });
       return recoveryWork;
+    },
+    async prepareCarryover({ onActivity, runId, signal, userId, workspace }) {
+      const initial = await input.repository.binding({ runId, userId });
+      if (!initial || !exactBinding(initial, workspace) || !input.repository.pendingCarryover ||
+        !await input.repository.pendingCarryover({ chatId: initial.chatId, runId })) return;
+      try {
+        await initializeWithLostSessionRecovery(await requireBinding(runId, userId, workspace), workspace, signal, onActivity);
+      } catch (error) {
+        // A cancellation stays one; any other start failure leaves the carried files unrestored.
+        if (signal?.aborted || (error instanceof WorkspaceRuntimeError &&
+          (error.code === "workspace_tool_cancelled" || error.code === "workspace_carryover_unavailable"))) throw error;
+        throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
+      }
     },
     async tools({ runId, userId, workspace }) {
       // Reading the immutable catalog must also work after a capture handed

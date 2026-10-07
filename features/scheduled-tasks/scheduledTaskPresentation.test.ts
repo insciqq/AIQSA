@@ -18,8 +18,10 @@ import {
 } from "./scheduledTaskDraft";
 import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
 import {
+  formatScheduledDay,
   formatScheduledInstant,
   scheduledTaskFailureMessage,
+  scheduledTaskHistoryLine,
   scheduledTaskLastRunLine,
   scheduledTaskResultNotice,
   scheduledTaskRunRow,
@@ -413,5 +415,46 @@ describe("scheduled task Memory in drafts", () => {
     for (const status of ["ON", "PREPARING", "UNAVAILABLE"] as const) {
       expect(scheduledTaskMemoryAvailability({ status })).toBe("available");
     }
+  });
+});
+
+describe("scheduled task history", () => {
+  it("starts new tasks with 90 days of old chats and sends a changed choice, forever included", () => {
+    const blank = blankScheduledTaskDraft(catalog, "Europe/London", now);
+    expect(blank.historyRetentionDays).toBe(90);
+    expect(scheduledTaskCreateRequest({ ...blank, title: "Brief", prompt: "Summarize." })).toMatchObject({ historyRetentionDays: 90 });
+    // A task saved before the choice keeps everything; only a change is sent.
+    const legacy = scheduledTaskFixture({ historyRetentionDays: null, revision: 3 });
+    const edit = scheduledTaskDraftFromTask(legacy, now);
+    expect(edit.historyRetentionDays).toBeNull();
+    expect(scheduledTaskUpdateRequest(edit, legacy)).toEqual({ expectedRevision: 3 });
+    expect(sameScheduledTaskDraft(edit, { ...edit, historyRetentionDays: 30 })).toBe(false);
+    expect(scheduledTaskUpdateRequest({ ...edit, historyRetentionDays: 30 }, legacy))
+      .toEqual({ expectedRevision: 3, historyRetentionDays: 30 });
+    const kept = scheduledTaskFixture({ historyRetentionDays: 365 });
+    expect(scheduledTaskUpdateRequest({ ...scheduledTaskDraftFromTask(kept, now), historyRetentionDays: null }, kept))
+      .toEqual({ expectedRevision: 1, historyRetentionDays: null });
+  });
+
+  it("states how long old chats are kept, when the next one goes and how many went, as counts only", () => {
+    const task = scheduledTaskFixture({ historyDeletedChats: 3, historyNextDeletionAt: "2026-11-12T09:00:00.000Z", historyRetentionDays: 90 });
+    expect(scheduledTaskHistoryLine(task, now)).toBe("History: 90 days · next cleanup Thu 12 Nov · 3 old chats deleted");
+    expect(scheduledTaskHistoryLine({ ...task, historyDeletedChats: 1, historyNextDeletionAt: null, historyRetentionDays: 30 }, now))
+      .toBe("History: 30 days · 1 old chat deleted");
+    expect(scheduledTaskHistoryLine({ ...task, historyDeletedChats: 0, historyNextDeletionAt: null, historyRetentionDays: 365 }, now))
+      .toBe("History: 1 year");
+    // Due already: the sweep takes it within minutes.
+    expect(scheduledTaskHistoryLine({ ...task, historyNextDeletionAt: "2026-10-04T09:00:00.000Z" }, now))
+      .toBe("History: 90 days · next cleanup soon · 3 old chats deleted");
+    // Forever deletes nothing more; what went before stays counted.
+    expect(scheduledTaskHistoryLine({ ...task, historyRetentionDays: null }, now)).toBe("History: kept forever · 3 old chats deleted");
+    expect(formatScheduledDay("2027-01-05T09:00:00.000Z", "UTC", now)).toBe("Tue 5 Jan 2027");
+  });
+
+  it("explains a Workspace carry-over failure with what to do", () => {
+    expect(scheduledTaskRunRow({ chatId: null, finishedAt: "2026-11-01T06:31:00.000Z", id: "run-1", reasonCode: "workspace_carryover_unavailable",
+      scheduledFor: "2026-11-01T06:00:00.000Z", skills: [], startedAt: "2026-11-01T06:00:00.000Z", state: "failed",
+      trigger: "schedule", unavailableSources: [], unseen: false }, "UTC", now))
+      .toMatchObject({ outcome: expect.stringContaining("open the task's chat"), tone: "attention" });
   });
 });

@@ -1,6 +1,10 @@
 import { Prisma, type PrismaClient, type ScheduledTaskKind as TaskKindColumn } from "@prisma/client";
 import type { ScheduledTaskChatMode, ScheduledTaskKind, ScheduledTaskRunTrigger } from "../../contracts/scheduledTasks";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { SMTP_CONTROL_ID } from "../email/repository";
+import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
+import { applyMemorySourceMutations, type LockedMemorySourceChat } from "../memory/sourceState";
+import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
 import type { ScheduledTaskNotification } from "./notifications";
 import {
   SCHEDULED_TASK_LATENESS_MS,
@@ -53,6 +57,13 @@ export type ScheduledTaskSettlement = Readonly<{
 }>;
 
 export type ScheduledTaskExecution = Readonly<{
+  /**
+   * The previous shown result carried into the task's current chat by its
+   * monthly rotation, reauthorized: the copy of the current chat epoch and
+   * generation (the owner's, by its keys) whose source answer is still there
+   * in a chat that is not being deleted; null otherwise.
+   */
+  carriedResult: ScheduledResultCopy | null;
   /** The task's chat while it can take the next turn: owned, personal, not archived or deleting, not bound to an Assistant. */
   chat: Readonly<{ activeLeafMessageId: string | null; id: string }> | null;
   occurrence: Readonly<{ id: string; scheduledFor: Date; taskId: string; trigger: ScheduledTaskRunTrigger; userId: string }>;
@@ -67,7 +78,11 @@ export type ScheduledTaskExecution = Readonly<{
   task: Readonly<{
     /** The newest shown completed result, as stored; admission checks it against the chat path. */
     baseline: ScheduledTaskBaseline | null;
+    /** Read with `revision`: the link refuses another (see `ScheduledTask.chatEpoch`). */
+    chatEpoch: number;
     chatMode: ScheduledTaskChatMode;
+    /** The month the current chat takes; null when none was recorded. */
+    chatPeriod: string | null;
     generation: number;
     kind: ScheduledTaskKind;
     memoryEnabled: boolean; modelId: string; prompt: string; provider: string; revision: number; searchEnabled: boolean;
@@ -106,9 +121,24 @@ export interface ScheduledTaskRunnerStore {
   acquireLease(occurrenceId: string, now: Date, until: Date): Promise<boolean>;
   /** A pending, unlinked occurrence with its current task, owner and chat. */
   loadExecution(occurrenceId: string): Promise<ScheduledTaskExecution | null>;
+  /**
+   * The previous shown result a monthly rotation carries from `chatId`: the
+   * baseline answer's text, bounded, with the personal MCP servers it relied
+   * on; null when that answer is gone or has no text.
+   */
+  loadRotationCopy(input: Readonly<{ baseline: ScheduledTaskBaseline; chatId: string; userId: string }>):
+    Promise<ScheduledResultCopy | null>;
+  /**
+   * Archives the chat a rotation moved the task off, unless the owner pinned
+   * it, put it in a folder or shared it, or it is in use; true when archived.
+   */
+  archiveRotatedChat(input: Readonly<{ chatId: string; taskId: string; userId: string }>): Promise<boolean>;
   readOccurrence(occurrenceId: string): Promise<Readonly<{ runId: string | null; state: string }> | null>;
-  /** Releases a still pending occurrence for a later attempt; a busy chat is remembered for the window's end. */
-  retryLater(occurrenceId: string, reasonCode: "chat_busy" | null): Promise<void>;
+  /**
+   * Releases a still pending occurrence for a later attempt; a busy chat and
+   * Workspace files that could not be carried yet are remembered for the window's end.
+   */
+  retryLater(occurrenceId: string, reasonCode: "chat_busy" | "workspace_carryover_unavailable" | null): Promise<void>;
   /** Settles a pending occurrence that has no run; pauses are decided against `observedRevision`. */
   settlePending(occurrenceId: string, outcome: ScheduledTaskOutcome, now: Date, observedRevision?: number):
     Promise<ScheduledTaskSettlement | null>;
@@ -125,21 +155,34 @@ export interface ScheduledTaskRunnerStore {
 }
 
 type LockedTask = {
-  baselineGeneration: number | null; consecutiveFailures: number; consecutiveIncompleteRuns: number;
-  consecutiveMissingVerdicts: number; generation: number; kind: TaskKindColumn; revision: number;
-  status: ScheduledTaskStatusColumn;
+  baselineGeneration: number | null; carriedGeneration: number | null; chatEpoch: number; consecutiveFailures: number;
+  consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; generation: number; kind: TaskKindColumn;
+  revision: number; status: ScheduledTaskStatusColumn;
 };
 type LockedOccurrence = {
-  id: string; leaseExpiresAt: Date | null; reasonCode: string | null; runId: string | null; scheduledFor: Date;
-  startedAt: Date | null; state: string; taskGeneration: number | null; taskId: string; taskRevision: number | null;
-  trigger: string; unavailableSources: Prisma.JsonValue | null; userId: string; userMessageId: string | null;
-  verdict: string | null;
+  chatEpoch: number | null; id: string; leaseExpiresAt: Date | null; reasonCode: string | null; runId: string | null;
+  scheduledFor: Date; startedAt: Date | null; state: string; taskGeneration: number | null; taskId: string;
+  taskRevision: number | null; trigger: string; unavailableSources: Prisma.JsonValue | null; userId: string;
+  userMessageId: string | null; verdict: string | null;
 };
 type Locked = Readonly<{ occurrence: LockedOccurrence; task: LockedTask }>;
 type ClaimRow = ScheduledTaskScheduleColumns & { id: string; nextRunAt: Date; timeZone: string; userId: string };
 
 function trigger(value: string): ScheduledTaskRunTrigger {
   return value === "manual" ? "manual" : "schedule";
+}
+
+/** Code points a carried copy keeps of the previous answer, its database bound. */
+export const SCHEDULED_CARRYOVER_ANSWER_MAX_LENGTH = 100_000;
+
+/** An answer's text as a carried copy keeps it: its text blocks, trimmed and bounded. */
+export function scheduledCopyText(content: Prisma.JsonValue): string {
+  const blocks = content !== null && typeof content === "object" && !Array.isArray(content) && Array.isArray(content.blocks)
+    ? content.blocks : [];
+  const text = textFromContentBlocks({ blocks }).trim();
+  const characters = Array.from(text);
+  return characters.length > SCHEDULED_CARRYOVER_ANSWER_MAX_LENGTH
+    ? `${characters.slice(0, SCHEDULED_CARRYOVER_ANSWER_MAX_LENGTH - 1).join("").trimEnd()}…` : text;
 }
 
 /** Task row before occurrence row: the order of the task's cascade delete and of run admission's link. */
@@ -149,15 +192,19 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
   `);
   if (!reference) return null;
   const [task] = await tx.$queryRaw<LockedTask[]>(Prisma.sql`
-    SELECT "status"::text AS "status", "kind"::text AS "kind", "consecutiveFailures", "consecutiveIncompleteRuns",
-      "consecutiveMissingVerdicts", "revision", "generation", "baselineGeneration"
-    FROM "ScheduledTask" WHERE "id" = ${reference.taskId}
-    FOR NO KEY UPDATE
+    SELECT task."status"::text AS "status", task."kind"::text AS "kind", task."consecutiveFailures",
+      task."consecutiveIncompleteRuns", task."consecutiveMissingVerdicts", task."revision", task."generation",
+      task."baselineGeneration", task."chatEpoch",
+      (SELECT carried."taskGeneration" FROM "ScheduledTaskCarryover" AS carried
+        WHERE carried."taskId" = task."id" AND carried."chatEpoch" = task."chatEpoch") AS "carriedGeneration"
+    FROM "ScheduledTask" AS task WHERE task."id" = ${reference.taskId}
+    FOR NO KEY UPDATE OF task
   `);
   if (!task) return null;
   const [occurrence] = await tx.$queryRaw<LockedOccurrence[]>(Prisma.sql`
     SELECT "id", "taskId", "userId", "trigger", "state"::text AS "state", "runId", "scheduledFor", "startedAt",
-      "reasonCode", "leaseExpiresAt", "userMessageId", "taskGeneration", "taskRevision", "verdict", "unavailableSources"
+      "reasonCode", "leaseExpiresAt", "userMessageId", "taskGeneration", "taskRevision", "chatEpoch", "verdict",
+      "unavailableSources"
     FROM "ScheduledTaskOccurrence" WHERE "id" = ${occurrenceId} AND "taskId" = ${reference.taskId}
     FOR UPDATE
   `);
@@ -183,9 +230,10 @@ function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSe
  * `planOccurrenceSettlement`: the counters and the incomplete-run streak, an
  * automatic pause, a monitoring goal's completion (decided under the task lock
  * against the revision the run was accepted under), the unread result and the
- * baseline the next same-chat run sees. A monitoring check's outcome is also
- * kept on its run, where the transcript reads it after the occurrence history
- * is pruned.
+ * baseline the next same-chat run sees, only under the chat epoch its run was
+ * admitted under, which retires a result carried into a rotated chat. A
+ * monitoring check's outcome is also kept on its run, where the transcript
+ * reads it after the occurrence history is pruned.
  */
 async function applySettlement(
   tx: Prisma.TransactionClient,
@@ -230,6 +278,8 @@ async function applySettlement(
     },
     where: { id: occurrence.taskId }
   });
+  // The rotated chat has its own shown result now: the carried copy has served.
+  if (baseline) await tx.scheduledTaskCarryover.deleteMany({ where: { taskId: occurrence.taskId } });
   if (check && occurrence.runId) {
     await tx.$executeRaw(Prisma.sql`
       UPDATE "ModelRun" SET "scheduledOutcome" = ${check.outcome}
@@ -467,15 +517,19 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
           task: {
             select: {
               baselineAssistantMessageId: true, baselineGeneration: true, baselineRunId: true, baselineUserMessageId: true,
-              chatMode: true, generation: true, kind: true, memoryEnabled: true, modelId: true, prompt: true,
-              pinnedSkillIds: true, promptUrlDigests: true, provider: true, revision: true, searchEnabled: true, status: true,
-              timeZone: true,
-
-              title: true, toolsEnabled: true, workspaceEnabled: true,
+              chatEpoch: true, chatMode: true, chatPeriod: true, generation: true, kind: true, memoryEnabled: true,
+              modelId: true, prompt: true, pinnedSkillIds: true, promptUrlDigests: true, provider: true, revision: true,
+              searchEnabled: true, status: true, timeZone: true, title: true, toolsEnabled: true, workspaceEnabled: true,
               user: { select: { status: true } },
               chat: {
                 select: {
                   activeLeafMessageId: true, archived: true, assistantId: true, id: true, permanentDeletionAt: true, projectId: true
+                }
+              },
+              carryover: {
+                select: {
+                  answerText: true, chatEpoch: true, reliedServerIds: true, sourceAssistantMessageId: true, sourceChatId: true,
+                  taskGeneration: true, sourceChat: { select: { permanentDeletionAt: true } }
                 }
               }
             }
@@ -485,7 +539,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       });
       if (!row || row.state !== "PENDING" || row.runId !== null) return null;
       const {
-        baselineAssistantMessageId, baselineGeneration, baselineRunId, baselineUserMessageId, chat, chatMode, kind, user, ...task
+        baselineAssistantMessageId, baselineGeneration, baselineRunId, baselineUserMessageId, carryover, chat, chatMode, kind, user,
+        ...task
       } = row.task;
       const usable = chat && !chat.archived && chat.permanentDeletionAt === null && chat.projectId === null &&
         chat.assistantId === null;
@@ -493,17 +548,72 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         ? { assistantMessageId: baselineAssistantMessageId, generation: baselineGeneration, runId: baselineRunId,
           userMessageId: baselineUserMessageId }
         : null;
+      // Reauthorized at every admission: this chat's copy of this question, its source answer
+      // still there (its keys keep it the owner's and delete it with that answer or chat).
+      const carriedResult = carryover && carryover.chatEpoch === task.chatEpoch && carryover.taskGeneration === task.generation &&
+        carryover.sourceChat.permanentDeletionAt === null
+        ? { answer: carryover.answerText, reliedServerIds: [...carryover.reliedServerIds],
+          sourceAssistantMessageId: carryover.sourceAssistantMessageId, sourceChatId: carryover.sourceChatId }
+        : null;
       return {
+        carriedResult,
         chat: usable ? { activeLeafMessageId: chat.activeLeafMessageId, id: chat.id } : null,
         occurrence: {
           id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: trigger(row.trigger), userId: row.userId
         },
         ownerActive: user.status === "active",
-        relevantMcpServerIds: task.toolsEnabled && baseline?.generation === task.generation
-          ? await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId: row.userId })
-          : null,
+        relevantMcpServerIds: !task.toolsEnabled ? null
+          : baseline?.generation === task.generation
+            ? await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId: row.userId })
+            : carriedResult ? carriedResult.reliedServerIds : null,
         task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode), kind: scheduledTaskKindFromColumn(kind) }
       };
+    },
+
+    async loadRotationCopy({ baseline, chatId, userId }) {
+      const answer = await prisma.message.findFirst({
+        select: { content: true },
+        where: { chat: { permanentDeletionAt: null, userId }, chatId, id: baseline.assistantMessageId, role: "assistant" }
+      });
+      const text = answer ? scheduledCopyText(answer.content) : "";
+      if (!text) return null;
+      return {
+        answer: text, reliedServerIds: (await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId })) ?? [],
+        sourceAssistantMessageId: baseline.assistantMessageId, sourceChatId: chatId
+      };
+    },
+
+    async archiveRotatedChat({ chatId, taskId, userId }) {
+      return prisma.$transaction(async (tx) => {
+        const [chat] = await tx.$queryRaw<Array<LockedMemorySourceChat & {
+          pinned: boolean; permanentDeletionAt: Date | null; projectId: string | null;
+        }>>(Prisma.sql`
+          SELECT "id", "userId", "activeLeafMessageId", "archived", "folderId", "memoryMode", "memoryBranchGeneration",
+            "memorySourceRevision", "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline", "pinned",
+            "permanentDeletionAt", "projectId"
+          FROM "Chat" WHERE "id" = ${chatId} AND "userId" = ${userId}
+          FOR UPDATE
+        `);
+        // The owner keeps what they pinned, filed or shared in view; a chat in use or already gone is left alone.
+        if (!chat || chat.archived || chat.pinned || chat.folderId !== null || chat.projectId !== null ||
+          chat.permanentDeletionAt !== null || chat.memoryMode === "TEMPORARY") return false;
+        const [busy] = await tx.$queryRaw<Array<{ busy: boolean }>>(Prisma.sql`
+          SELECT EXISTS (
+            SELECT 1 FROM "SharedChatSnapshot" AS share
+            WHERE share."chatId" = ${chatId} AND share."revokedAt" IS NULL AND (share."expiresAt" IS NULL OR share."expiresAt" > now())
+          ) OR EXISTS (
+            SELECT 1 FROM "ModelRun" AS run WHERE run."chatId" = ${chatId} AND run."status" IN ('preparing'::"ModelRunStatus",
+              'queued'::"ModelRunStatus", 'streaming'::"ModelRunStatus", 'in_progress'::"ModelRunStatus")
+          ) OR EXISTS (
+            SELECT 1 FROM "ScheduledTask" AS task WHERE task."id" = ${taskId} AND task."chatId" = ${chatId}
+          ) AS "busy"
+        `);
+        if (busy?.busy !== false) return false;
+        await applyMemorySourceMutations(tx, {
+          chat, hooks: defaultMemorySourceMutationHooks, mutations: ["CHAT_ARCHIVE_OR_RESTORE"], patch: { archived: true }
+        });
+        return true;
+      });
     },
 
     async readOccurrence(occurrenceId) {

@@ -3,7 +3,10 @@ import { CHAT_TITLE_MAX_LENGTH } from "./chats";
 import {
   SCHEDULED_TASK_CARDS_LIMIT,
   SCHEDULED_TASK_CHECK_OUTCOMES,
+  SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
   SCHEDULED_TASK_ERROR_CODES,
+  SCHEDULED_TASK_HISTORY_RETENTION_DAYS,
+  isScheduledTaskHistoryRetentionDays,
   SCHEDULED_TASK_MANAGED_PER_ANSWER,
   decodeScheduledTaskCard,
   foldScheduledTaskCards,
@@ -36,7 +39,8 @@ const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
   modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
-  memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
+  memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 2,
+  historyNextDeletionAt: "2026-11-01T06:00:00.000Z", status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z",
   lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z",
     unseen: true },
@@ -77,10 +81,25 @@ describe("scheduled task wire contract", () => {
       { ...task, toolsEnabled: "auto" }, { ...task, workspaceEnabled: undefined },
       { ...task, memoryEnabled: undefined }, { ...task, memoryEnabled: "on" },
       { ...task, kind: "watch" }, { ...task, kind: undefined }, { ...task, kind: "monitoring" },
-      { ...task, completionReason: "goal_reached" }, { ...reached, completionReason: "Goal reached" }
+      { ...task, completionReason: "goal_reached" }, { ...reached, completionReason: "Goal reached" },
+      { ...task, historyRetentionDays: 60 }, { ...task, historyRetentionDays: 0 }, { ...task, historyRetentionDays: undefined },
+      { ...task, historyDeletedChats: -1 }, { ...task, historyDeletedChats: 1.5 }, { ...task, historyNextDeletionAt: "soon" }
     ]) {
       expect(decodeScheduledTask(candidate)).toBeNull();
     }
+  });
+
+  it("decodes the history retention choices, null keeping old chats forever", () => {
+    expect(SCHEDULED_TASK_HISTORY_RETENTION_DAYS).toEqual([30, 90, 365]);
+    expect(SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS).toBe(90);
+    for (const days of [30, 90, 365, null]) {
+      expect(isScheduledTaskHistoryRetentionDays(days)).toBe(true);
+      expect(decodeScheduledTask({ ...task, historyRetentionDays: days })).toMatchObject({ historyRetentionDays: days });
+    }
+    // Forever has no next deletion; a task's counts are content-free.
+    expect(decodeScheduledTask({ ...task, historyRetentionDays: null, historyNextDeletionAt: null, historyDeletedChats: 0 }))
+      .toMatchObject({ historyDeletedChats: 0, historyNextDeletionAt: null });
+    for (const days of [0, 7, "90", undefined]) expect(isScheduledTaskHistoryRetentionDays(days)).toBe(false);
   });
 
   it("decodes up to four pinned Skills, only with tools, and the owner's view of them", () => {

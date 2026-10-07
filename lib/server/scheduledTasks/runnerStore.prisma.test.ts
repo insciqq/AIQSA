@@ -44,10 +44,10 @@ async function personalChat(userId: string, memoryMode: "EXCLUDED" | "NORMAL" = 
 }
 
 /** The scheduled origin the runner passes for an occurrence of `created`, as read before preparation. */
-function origin(occurrenceId: string, created: Readonly<{ generation: number; id: string; revision: number }>,
+function origin(occurrenceId: string, created: Readonly<{ chatEpoch?: number; generation: number; id: string; revision: number }>,
   overrides: Partial<ScheduledOccurrenceAdmission> = {}): ScheduledOccurrenceAdmission {
-  return { occurrenceId, previousResult: null, relevantMcpServerIds: null, taskGeneration: created.generation, taskId: created.id,
-    taskRevision: created.revision, ...overrides };
+  return { occurrenceId, previousResult: null, relevantMcpServerIds: null, taskChatEpoch: created.chatEpoch ?? 0,
+    taskGeneration: created.generation, taskId: created.id, taskRevision: created.revision, ...overrides };
 }
 
 /** A send into an existing chat, as the send handler hands it to run creation. */
@@ -386,10 +386,10 @@ describe("persisted scheduled task runner", () => {
     const detail = await owners.detail(userId, created.id);
     expect(detail?.recentRuns[0]?.unavailableSources).toEqual([{ name: "Synthetic Mail", reason: "mcp_reauthorization_required" }]);
     // An owner edit (here resuming) ends the streak.
-    const { chatMode, emailNotify, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, revision, schedule, searchEnabled,
+    const { chatMode, emailNotify, historyRetentionDays, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, revision, schedule, searchEnabled,
       timeZone, title, toolsEnabled, workspaceEnabled } = detail!.task;
     await owners.update(userId, created.id, {
-      draft: { chatMode, emailNotify, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, schedule, searchEnabled, timeZone,
+      draft: { chatMode, emailNotify, historyRetentionDays, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, schedule, searchEnabled, timeZone,
         title, toolsEnabled, workspaceEnabled },
       expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active"
     });

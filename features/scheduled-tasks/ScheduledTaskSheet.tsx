@@ -40,6 +40,8 @@ import {
 } from "./scheduledTaskDraft";
 import {
   SCHEDULED_TASK_CHAT_MODE_LABELS,
+  SCHEDULED_TASK_HISTORY_KEPT_TEXT,
+  SCHEDULED_TASK_HISTORY_OPTIONS,
   WEEKDAY_LONG_LABELS,
   WEEKDAY_SHORT_LABELS,
   scheduledTaskRunRow,
@@ -130,8 +132,9 @@ export function ScheduledTaskSheet({
     days: useId(), dayOfMonth: useId(), date: useId(), timeZone: useId(), model: useId(), search: useId(),
     searchHelp: useId(), email: useId(), emailHelp: useId(), form: useId(), monthHint: useId(),
     scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
-    chatMode: useId(), chatModeHint: useId(), kind: useId(), kindHint: useId(), tools: useId(), toolsHelp: useId(),
-    workspace: useId(), workspaceHelp: useId(), memory: useId(), memoryHelp: useId()
+    chatMode: useId(), chatModeHint: useId(), chatMonthHint: useId(), kind: useId(), kindHint: useId(), tools: useId(),
+    toolsHelp: useId(), workspace: useId(), workspaceHelp: useId(), memory: useId(), memoryHelp: useId(), history: useId(),
+    historyHint: useId()
   };
   const titleInput = useRef<HTMLInputElement>(null);
   /** The navigation waiting for a discard answer: closing, or leaving for a run's chat. */
@@ -168,7 +171,7 @@ export function ScheduledTaskSheet({
   const toolsReason = blockers.tools ?? "Lets each run use your MCP tools and Skills in Auto mode, as in a chat.";
   const workspaceReason = blockers.workspace ?? (workspace === "runtime_unavailable"
     ? "Workspace is unavailable right now. Runs that need it try again later."
-    : chatMode === "same" ? "Runs share this task's Workspace, so its files stay from run to run."
+    : chatMode === "same" ? "Runs share this task's Workspace, so its files stay from run to run and move to each new month's chat."
       : "Each run starts with an empty Workspace in its new chat.");
   // The owner's own Memory state decides what any task may read; the switch stays the task's.
   const memoryReason = memory === "paused" ? "Memory is paused, so runs read nothing. Turn it on in Studio › Memory."
@@ -446,7 +449,8 @@ export function ScheduledTaskSheet({
               {errors.model ? <FieldError id={`${ids.model}-error`}>{errors.model}</FieldError> : null}
             </div>
             <fieldset className="v2-scheduled-choice" id={ids.chatMode}
-              aria-describedby={describedBy(forcedChat && ids.chatModeHint, errors.chatMode && `${ids.chatMode}-error`)}>
+              aria-describedby={describedBy(forcedChat && ids.chatModeHint, chatMode === "same" && ids.chatMonthHint,
+                errors.chatMode && `${ids.chatMode}-error`)}>
               <legend className="v2-scheduled-label">Chat</legend>
               <div className="v2-scheduled-options">
                 {CHAT_MODES.map((mode) => (
@@ -463,8 +467,37 @@ export function ScheduledTaskSheet({
                 ))}
               </div>
               {forcedChat ? <p className="v2-scheduled-hint" id={ids.chatModeHint}>{forcedChat}</p> : null}
+              {chatMode === "same" ? (
+                <p className="v2-scheduled-hint" id={ids.chatMonthHint}>
+                  Each month starts a new chat with the last result{draft.workspaceEnabled ? " and the Workspace files" : ""}.
+                  The previous one is archived unless you pinned it, put it in a folder or shared it.
+                </p>
+              ) : null}
               {errors.chatMode ? <FieldError id={`${ids.chatMode}-error`}>{errors.chatMode}</FieldError> : null}
             </fieldset>
+            <div className="v2-scheduled-control">
+              <label htmlFor={ids.history}>Keep old chats</label>
+              <select
+                id={ids.history}
+                className={field}
+                data-testid="scheduled-task-history"
+                value={draft.historyRetentionDays === null ? "forever" : String(draft.historyRetentionDays)}
+                aria-describedby={ids.historyHint}
+                onChange={(event) => {
+                  const option = SCHEDULED_TASK_HISTORY_OPTIONS.find((entry) => String(entry.value ?? "forever") === event.target.value);
+                  if (option) onChange({ historyRetentionDays: option.value });
+                }}
+              >
+                {SCHEDULED_TASK_HISTORY_OPTIONS.map((option) => (
+                  <option key={option.label} value={option.value === null ? "forever" : String(option.value)}>{option.label}</option>
+                ))}
+              </select>
+              <p className="v2-scheduled-hint" id={ids.historyHint}>
+                {draft.historyRetentionDays === null
+                  ? "This task's old chats stay until you delete them."
+                  : "Older chats of this task are deleted this long after their last run."} {SCHEDULED_TASK_HISTORY_KEPT_TEXT}
+              </p>
+            </div>
             <div className="v2-scheduled-toggle">
               <span className="v2-scheduled-toggle-copy">
                 <span id={ids.search} className="v2-scheduled-label">Web search</span>

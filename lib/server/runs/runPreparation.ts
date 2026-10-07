@@ -275,19 +275,33 @@ async function carriedContextSummary(input: Readonly<{
 /**
  * The earlier turns a scheduled run's model sees: only the task's previous
  * shown result (its user message and final answer) while both still lie, in
- * order, on the path the run appends to; otherwise none, as for a first run.
- * Turns the user wrote between runs, follow-ups and older results stay out,
- * so the context is flat however long the task's chat grows.
+ * order, on the path the run appends to; otherwise, after a monthly rotation,
+ * the frozen copy carried from the previous chat (the task's prompt, the same
+ * for its generation, and the copied answer, under synthetic ids that name no
+ * message); otherwise none, as for a first run. Turns the user wrote between
+ * runs, follow-ups and older results stay out, so the context is flat however
+ * long the task's chat grows.
  */
-function scheduledRunContext(
+export function scheduledRunContext(
   path: readonly ProviderConversationMessage[],
-  previousResult: ScheduledOccurrenceAdmission["previousResult"]
-): ProviderConversationMessage[] {
-  if (!previousResult) return [];
-  const selected = path.filter((message) =>
-    message.id === previousResult.userMessageId || message.id === previousResult.assistantMessageId);
-  return selected.length === 2 && selected[0]!.id === previousResult.userMessageId && selected[0]!.role === "user" &&
-    selected[1]!.role === "assistant" ? selected : [];
+  occurrence: Pick<ScheduledOccurrenceAdmission, "previousResult" | "previousResultCopy" | "taskChatEpoch" | "taskId">,
+  prompt: ProviderConversationMessage["content"]
+): Readonly<{ messages: ProviderConversationMessage[]; source: "carried" | "none" | "path" }> {
+  const previousResult = occurrence.previousResult;
+  const selected = previousResult ? path.filter((message) =>
+    message.id === previousResult.userMessageId || message.id === previousResult.assistantMessageId) : [];
+  if (previousResult && selected.length === 2 && selected[0]!.id === previousResult.userMessageId &&
+    selected[0]!.role === "user" && selected[1]!.role === "assistant") return { messages: selected, source: "path" };
+  const copy = occurrence.previousResultCopy;
+  if (!copy) return { messages: [], source: "none" };
+  const key = `scheduled-carryover:${occurrence.taskId}:${occurrence.taskChatEpoch ?? 0}`;
+  return {
+    messages: [
+      { content: prompt, id: `${key}:prompt`, role: "user" },
+      { content: textMessageContent(copy.answer), id: `${key}:answer`, role: "assistant" }
+    ],
+    source: "carried"
+  };
 }
 
 /** A scheduled run's frozen tool history follows its context: only the previous result's turn. */
@@ -1851,9 +1865,10 @@ async function prepareRunWith(
     return failure("active_leaf_changed", 409);
   }
   // The new turn still appends to the active leaf; only the model's view is selected.
-  const sendContext = branchContext && scheduledOccurrence
-    ? scheduledRunContext(branchContext, scheduledOccurrence.previousResult)
-    : branchContext;
+  const scheduledContext = branchContext && scheduledOccurrence
+    ? scheduledRunContext(branchContext, scheduledOccurrence, content)
+    : null;
+  const sendContext = scheduledContext ? scheduledContext.messages : branchContext;
   const conversationMessages: ProviderConversationMessage[] =
     input.source.kind === "send"
       ? [
@@ -2331,8 +2346,9 @@ async function prepareRunWith(
   // A failed or slow history read never refuses the message: the run then
   // freezes that the history could not be loaded (content-free log), and
   // every request of it says so instead of implying no earlier calls. A
-  // scheduled run reads it only for its previous result's turn.
-  const historyRead = !scheduledOccurrence || (sendContext?.length ?? 0) > 0
+  // scheduled run reads it only for its previous result's turn in this chat
+  // (a copy carried from another chat brings no tool history).
+  const historyRead = !scheduledOccurrence || scheduledContext?.source === "path"
     ? deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId })
     : undefined;
   const branchToolHistory: ToolHistorySnapshot = await historyRead?.catch((error: unknown) => {

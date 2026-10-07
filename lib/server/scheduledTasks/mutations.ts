@@ -73,7 +73,9 @@ export function planScheduledTaskUpdate(
     memoryEnabled: patch.memoryEnabled ?? current.memoryEnabled,
     pinnedSkillIds: patch.pinnedSkillIds ?? current.pinnedSkillIds,
     chatMode: patch.chatMode ?? current.chatMode,
-    kind: patch.kind ?? current.kind
+    kind: patch.kind ?? current.kind,
+    // Null is a choice here (forever), not an omission.
+    historyRetentionDays: patch.historyRetentionDays !== undefined ? patch.historyRetentionDays : current.historyRetentionDays
   };
   if (!scheduledTaskChatModeAllowed(draft, draft.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
   if (draft.pinnedSkillIds.length > 0 && !draft.toolsEnabled) return { ok: false, code: "scheduled_task_skills_need_tools" };

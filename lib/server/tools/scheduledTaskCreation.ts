@@ -1,12 +1,15 @@
 import {
+  SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
   SCHEDULED_TASK_EVERY_HOURS,
+  SCHEDULED_TASK_HISTORY_RETENTION_DAYS,
   SCHEDULED_TASK_KINDS,
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_TITLE_MAX_LENGTH,
   SCHEDULED_TASK_WEEKDAYS,
   scheduledTaskCard,
   scheduledTaskErrorMessage,
-  type ScheduledTask
+  type ScheduledTask,
+  type ScheduledTaskHistoryRetentionDays
 } from "../../contracts/scheduledTasks";
 import { describeScheduledTaskSchedule } from "../../domain/scheduledTaskSchedule";
 import { logEvent } from "../observability";
@@ -42,7 +45,24 @@ type ScheduledTaskToolRequest = Readonly<{
 export type ScheduledTaskCallCreator = NonNullable<RunRepository["createScheduledTaskForCall"]>;
 
 const SETTINGS_KEYS = ["modelId", "provider", "searchEnabled", "toolsEnabled", "workspaceEnabled", "memoryEnabled"];
-const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule", "skills"];
+const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule", "skills", "historyRetentionDays"];
+/** The tools' spelling of "keep old chats forever" (the owner contract's null). */
+export const SCHEDULED_TASK_TOOL_HISTORY_FOREVER = 0;
+
+/**
+ * A tool's history retention as the owner contract's value: 30, 90 or 365
+ * days, `SCHEDULED_TASK_TOOL_HISTORY_FOREVER` for forever; null when invalid.
+ */
+export function scheduledTaskToolHistoryRetention(value: unknown): Readonly<{ days: ScheduledTaskHistoryRetentionDays }> | null {
+  if (value === SCHEDULED_TASK_TOOL_HISTORY_FOREVER) return { days: null };
+  return (SCHEDULED_TASK_HISTORY_RETENTION_DAYS as readonly unknown[]).includes(value)
+    ? { days: value as ScheduledTaskHistoryRetentionDays } : null;
+}
+
+/** How long a task keeps its old chats, as a tool result tells the model. */
+export function scheduledTaskToolHistoryText(days: ScheduledTaskHistoryRetentionDays): string {
+  return days === null ? "forever" : `${days} days`;
+}
 const SCHEDULE_FIELDS = {
   once: ["date"], daily: [], weekly: ["days"], monthly: ["dayOfMonth"], hourly: ["everyHours", "until", "days"]
 } as const satisfies Record<string, readonly string[]>;
@@ -120,7 +140,13 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
           required: ["kind", "time", ...OPTIONAL_SCHEDULE_FIELDS],
           type: "object"
         },
-        skills: SCHEDULED_TASK_SKILLS_SCHEMA
+        skills: SCHEDULED_TASK_SKILLS_SCHEMA,
+        historyRetentionDays: {
+          description: `Days old chats are kept, ${SCHEDULED_TASK_TOOL_HISTORY_FOREVER} forever; null unless the user asks ` +
+            `(${SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS}).`,
+          enum: [...SCHEDULED_TASK_HISTORY_RETENTION_DAYS, SCHEDULED_TASK_TOOL_HISTORY_FOREVER, null],
+          type: ["integer", "null"]
+        }
       },
       required: ARGUMENT_KEYS,
       type: "object"
@@ -141,7 +167,8 @@ export function isScheduledTaskCreateCall(request: Readonly<{ scheduledTaskTool?
 }
 
 type ToolArguments = Readonly<{
-  chatMode: unknown; kind: unknown; prompt: unknown; schedule: Record<string, unknown>; skills: unknown; title: unknown;
+  chatMode: unknown; historyRetentionDays: ScheduledTaskHistoryRetentionDays; kind: unknown; prompt: unknown;
+  schedule: Record<string, unknown>; skills: unknown; title: unknown;
 }>;
 
 /**
@@ -173,8 +200,15 @@ function decodeArguments(value: Record<string, unknown>): ToolArguments | string
   }
   const schedule = contractSchedule(value.schedule);
   if (typeof schedule === "string") return schedule;
-  return { chatMode: value.chatMode ?? null, kind: value.kind, prompt: value.prompt, schedule, skills: value.skills ?? [],
-    title: value.title };
+  // Left open (or by a run accepted before the field), a new task keeps the default.
+  const history = value.historyRetentionDays === undefined || value.historyRetentionDays === null
+    ? { days: SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS } : scheduledTaskToolHistoryRetention(value.historyRetentionDays);
+  if (!history) {
+    return `historyRetentionDays must be ${SCHEDULED_TASK_HISTORY_RETENTION_DAYS.join(", ")}, ` +
+      `${SCHEDULED_TASK_TOOL_HISTORY_FOREVER} (forever) or null.`;
+  }
+  return { chatMode: value.chatMode ?? null, historyRetentionDays: history.days, kind: value.kind, prompt: value.prompt, schedule,
+    skills: value.skills ?? [], title: value.title };
 }
 
 /** Where runs answer when the model leaves it open: one chat when the task requires it, else the editor's default. */
@@ -206,7 +240,8 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       schedule: describeScheduledTaskSchedule(task.schedule),
       timeZone: task.timeZone,
       nextRun: localInstant(task.nextRunAt, task.timeZone),
-      chat: task.chatMode === "same" ? "every run continues in one chat" : "every run starts a new chat",
+      chat: task.chatMode === "same" ? "every run continues in one chat, a new one each month" : "every run starts a new chat",
+      oldChatsKept: scheduledTaskToolHistoryText(task.historyRetentionDays),
       webSearch: task.searchEnabled,
       tools: task.toolsEnabled,
       workspace: task.workspaceEnabled,
@@ -282,8 +317,8 @@ export async function executeCreateScheduledTask(
         modelId: settings.modelId, provider: settings.provider, searchEnabled: settings.searchEnabled, emailNotify: false,
         toolsEnabled: settings.toolsEnabled, workspaceEnabled: settings.workspaceEnabled,
         memoryEnabled: settings.memoryEnabled === true, pinnedSkillIds: skills.skillIds,
-        chatMode: decoded.chatMode ?? defaultChatMode(decoded), kind: decoded.kind
-
+        chatMode: decoded.chatMode ?? defaultChatMode(decoded), kind: decoded.kind,
+        historyRetentionDays: decoded.historyRetentionDays
       },
       callId: context.persistedToolCallId,
       result: (task) => scheduledTaskCreatedResult(call, task, zone.fallback),

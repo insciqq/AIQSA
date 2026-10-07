@@ -40,7 +40,8 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
     modelId: "deployment-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", status: "active", pauseReason: null,
+    workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90,
+    historyDeletedChats: 0, historyNextDeletionAt: null, status: "active", pauseReason: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false,
     revision: 1,
     createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z", ...overrides
@@ -56,9 +57,10 @@ describe("create_scheduled_task tool", () => {
   it("is a strict server-owned write offered only with the frozen marker, naming the run's zone", () => {
     const tool = createScheduledTaskTool("Europe/Moscow");
     expect(tool).toMatchObject({ capability: "session", name: "create_scheduled_task", strict: true, inputSchema: {
-      additionalProperties: false, required: ["title", "prompt", "kind", "chatMode", "schedule", "skills"],
+      additionalProperties: false, required: ["title", "prompt", "kind", "chatMode", "schedule", "skills", "historyRetentionDays"],
       properties: { schedule: { additionalProperties: false,
-        required: ["kind", "time", "date", "days", "dayOfMonth", "everyHours", "until"] } }
+        required: ["kind", "time", "date", "days", "dayOfMonth", "everyHours", "until"] },
+      historyRetentionDays: { enum: [30, 90, 365, 0, null], type: ["integer", "null"] } }
     } });
     for (const phrase of ["time zone Europe/Moscow", "\"monitoring\" when", "\"standard\" for reminders",
       "at most once per answer", "do not ask for confirmation", "without this conversation"]) {
@@ -138,9 +140,11 @@ describe("create_scheduled_task tool", () => {
     } });
     // Only the fields of the schedule's kind reach the owner contract.
     expect(Object.keys(create.mock.calls[0]![0].body as Record<string, Record<string, unknown>>).sort()).toEqual([
-      "chatMode", "emailNotify", "kind", "memoryEnabled", "modelId", "pinnedSkillIds", "prompt", "provider", "schedule",
-      "searchEnabled", "timeZone", "title", "toolsEnabled", "workspaceEnabled"
+      "chatMode", "emailNotify", "historyRetentionDays", "kind", "memoryEnabled", "modelId", "pinnedSkillIds", "prompt", "provider",
+      "schedule", "searchEnabled", "timeZone", "title", "toolsEnabled", "workspaceEnabled"
     ]);
+    // Left open, a new task keeps the default 90 days of old chats.
+    expect(create.mock.calls[0]![0].body).toMatchObject({ historyRetentionDays: 90 });
     expect(Object.keys((create.mock.calls[0]![0].body as { schedule: object }).schedule)).toEqual(["kind", "time", "days"]);
     // A run without the page reader authorized no links for the prompt it writes.
     expect(create.mock.calls[0]![0].userUrlDigests).toEqual([]);
@@ -197,6 +201,23 @@ describe("create_scheduled_task tool", () => {
       request: { ...request(), fetchUrl: { version: 2, userUrlDigests } }
     }), create);
     expect(create.mock.calls[1]![0].userUrlDigests).toEqual([]);
+  });
+
+  it("keeps a task's old chats as the user asks, 0 meaning forever, and tells the model what it chose", async () => {
+    for (const [requested, stored, text] of [[30, 30, "30 days"], [365, 365, "365 days"], [0, null, "forever"],
+      [null, 90, "90 days"]] as const) {
+      const create = creator(task({ historyRetentionDays: stored }));
+      const result = await executeCreateScheduledTask(call({ ...reminder, historyRetentionDays: requested }), context(), create);
+      expect(create.mock.calls[0]![0].body).toMatchObject({ historyRetentionDays: stored });
+      expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ oldChatsKept: text }) }]);
+    }
+    const refusing = creator();
+    for (const historyRetentionDays of [60, -1, "90"]) {
+      const refused = await executeCreateScheduledTask(call({ ...reminder, historyRetentionDays }), context(), refusing);
+      expect(refused).toMatchObject({ status: "error", content: [{ value: { error: "scheduled_task_arguments_invalid",
+        message: expect.stringContaining("historyRetentionDays") } }] });
+    }
+    expect(refusing).not.toHaveBeenCalled();
   });
 
   it("refuses misplaced, unknown or unreadable arguments before anything is created", async () => {
