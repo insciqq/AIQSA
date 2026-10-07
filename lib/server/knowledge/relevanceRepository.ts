@@ -23,15 +23,17 @@ export function createKnowledgeRelevanceRepository(db: PrismaClient): KnowledgeR
       return db.$transaction(async tx => {
         // Serialize against lease settlement/recovery. A stale tool cannot
         // create another outbound obligation or borrow another run's claim.
-        const reservations = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT r."id" FROM "KnowledgeBudgetReservation" r
+        const reservations = await tx.$queryRaw<Array<{ id: string; chatId: string; projectId: string | null }>>(Prisma.sql`
+          SELECT r."id", m."chatId", c."projectId" FROM "KnowledgeBudgetReservation" r
           JOIN "ModelRun" m ON m."id" = r."modelRunId"
+          JOIN "Chat" c ON c."id" = m."chatId"
           WHERE r."id" = ${input.reservationId} AND r."modelRunId" = ${input.runId}
             AND m."userId" = ${input.userId} AND m."status" IN ('in_progress', 'streaming')
             AND r."state" = 'dispatched' AND r."leaseToken" = ${input.leaseToken}
             AND r."leaseExpiresAt" > NOW() AND r."purgedAt" IS NULL
           FOR UPDATE OF r`);
-        if (reservations.length !== 1) return null;
+        const reservation = reservations[0];
+        if (reservations.length !== 1 || !reservation) return null;
         const existing = await tx.knowledgeRelevanceAttempt.findUnique({
           where: { reservationId_ordinal: { reservationId: input.reservationId, ordinal: input.ordinal } }, select: { id: true }
         });
@@ -40,6 +42,15 @@ export function createKnowledgeRelevanceRepository(db: PrismaClient): KnowledgeR
           reservationId: input.reservationId, ordinal: input.ordinal, inputHash: input.inputHash,
           executionSnapshot: JSON.parse(JSON.stringify(input.executionSnapshot)) as Prisma.InputJsonObject
         }, select: { id: true } });
+        // Claimed with the attempt, before dispatch: a crash after this commit
+        // leaves unknown usage instead of none. Settlement fills it once.
+        const snapshot = input.executionSnapshot;
+        await tx.usageEvent.create({ data: {
+          knowledgeRelevance: true, knowledgeRelevanceAttemptId: attempt.id, purpose: "knowledge_retrieval",
+          userId: input.userId, modelRunId: input.runId, chatId: reservation.chatId, projectId: reservation.projectId,
+          provider: snapshot.providerFamily, providerModelId: snapshot.providerModelId, modelId: snapshot.model.upstreamModelId,
+          usageCompleteness: "UNAVAILABLE", operationCount: 1
+        } });
         return attempt.id;
       });
     },
@@ -56,7 +67,11 @@ export function createKnowledgeRelevanceRepository(db: PrismaClient): KnowledgeR
         data: { state: result.receipt || !result.dispatched ? "settled" : "ambiguous", usefulness: result.usefulness,
           failureCode: result.failureCode, settledAt: new Date() } });
         if (changed.count !== 1) return;
-        if (!result.dispatched) return;
+        if (!result.dispatched) {
+          // Nothing left the process: the claimed unknown row is withdrawn.
+          await tx.usageEvent.deleteMany({ where: { knowledgeRelevanceAttemptId: id, usageCompleteness: "UNAVAILABLE" } });
+          return;
+        }
         const receipt = result.receipt;
         const usage = { inputTokens: receipt?.usage.inputTokens ?? null, outputTokens: receipt?.usage.outputTokens ?? null,
           totalTokens: receipt ? receipt.usage.inputTokens + receipt.usage.outputTokens : null,
