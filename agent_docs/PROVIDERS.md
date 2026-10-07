@@ -51,6 +51,8 @@ A reranker receives a sanitized query and bounded opaque-handle documents, retur
 
 Forward migrations never replace an administrator's token price: they update `catalog` rows, or unknown prices no administrator could have set, matched by `providerModelCatalogKey` (a tariff of the row's own model class: template key, else codex-lb or Quick Setup upstream); never synchronize at startup.
 
+Answer usage is priced from token prices. Every other paid call takes the provider-reported cost (OpenRouter BYOK adds the upstream cost), else its model's class prices, else stays unknown; reported search counts add a per-search price only when one is set. Every paid call that returned usage is recorded once with its purpose, failed and administrator check calls included.
+
 ## Upstream References
 
 Reverify primary documentation when changing provider behavior. Adapter tests own exact wire support.
