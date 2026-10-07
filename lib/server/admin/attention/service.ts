@@ -13,6 +13,7 @@ import type { AdminSearchCatalog } from "../../../contracts/adminSearch";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import type { AdminEmailState } from "../../../contracts/email";
 import { adminMcpAttention, type AdminMcpServer } from "../../../contracts/mcp";
+import { healthAttentionItems, type HealthFinding } from "./healthRules";
 
 export type AdminAttentionDashboardInput = Pick<AdminDashboard, "users">;
 
@@ -32,6 +33,8 @@ export type AdminAttentionSources = Readonly<{
   systemRoles(): Promise<AdminSystemModelPolicyCatalog>;
   skills?(actingAdminUserId: string): Promise<number>;
   assistants?(actingAdminUserId: string): Promise<number>;
+  /** Health telemetry rules evaluated at read time. */
+  health?(): Promise<readonly HealthFinding[]>;
 }>;
 
 export type AdminAttentionInputs = Readonly<{
@@ -46,6 +49,7 @@ export type AdminAttentionInputs = Readonly<{
   systemRoles: AdminSystemModelPolicyCatalog | null;
   skills?: number | null;
   assistants?: number | null;
+  health?: readonly HealthFinding[] | null;
 }>;
 
 export type AdminAttentionService = Readonly<{
@@ -459,6 +463,7 @@ export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAt
   return [
     ...(inputs.dashboard ? dashboardItems(inputs.dashboard, inputs.actingAdminUserId) : []),
     ...(inputs.providers ? providerItems(inputs.providers) : []),
+    ...(inputs.health ? healthAttentionItems(inputs.health, inputs.providers) : []),
     ...(inputs.search ? searchItems(inputs.search, inputs.providers) : []),
     ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles).filter((item) =>
       item.target.resource !== "memory" || !inputs.memory?.processing.issues.some((issue) =>
@@ -496,7 +501,7 @@ export function createAdminAttentionService(input: Readonly<{
           return null;
         }
       }
-      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills, assistants] = await Promise.all([
+      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills, assistants, health] = await Promise.all([
         load("dashboard", () => sources.dashboard(actingAdminUserId)),
         load("providers", () => sources.providers()),
         load("search", () => sources.search(actingAdminUserId)),
@@ -506,7 +511,8 @@ export function createAdminAttentionService(input: Readonly<{
         load("mcp", () => sources.mcp(actingAdminUserId)),
         load("email", () => sources.email()),
         sources.skills ? load("skills", () => sources.skills!(actingAdminUserId)) : Promise.resolve(0),
-        sources.assistants ? load("assistants", () => sources.assistants!(actingAdminUserId)) : Promise.resolve(0)
+        sources.assistants ? load("assistants", () => sources.assistants!(actingAdminUserId)) : Promise.resolve(0),
+        sources.health ? load("health", () => sources.health!()) : Promise.resolve(null)
       ]);
       return {
         checkedAt: now().toISOString(),
@@ -521,7 +527,8 @@ export function createAdminAttentionService(input: Readonly<{
           search,
           systemRoles,
           skills,
-          assistants
+          assistants,
+          health
         }),
         unavailable
       };

@@ -4,26 +4,35 @@ import type { ErrorResponse } from "./http";
  * Control Center "Needs attention" list: the server aggregates every item that
  * needs an administrator decision or action from data it already serves
  * (dashboard, providers, Search, system roles, Knowledge operations, Memory
- * status, MCP servers, email health). Nothing is persisted; every item carries
- * human copy plus one jump target inside the Control Center.
+ * status, MCP servers, email health) and from thresholds over the content-free
+ * health telemetry counters. Nothing is persisted; every item carries human
+ * copy plus one jump target inside the Control Center.
  */
 export type AdminAttentionSeverity = "bad" | "neutral" | "warn";
 
 export type AdminAttentionCode =
   | "assistants_listing_pending"
+  | "background_failures"
   | "email_delivery_failing"
   | "email_not_configured"
   | "knowledge_needs_attention"
   | "knowledge_reindexing"
+  | "logs_dropped"
   | "mcp_server_needs_attention"
   | "memory_index_rebuild_required"
   | "memory_processing_blocked"
   | "memory_worker_not_running"
   | "memory_worker_stalled"
+  | "operation_timeouts_rising"
+  | "process_restarting"
   | "provider_key_check_failed"
   | "provider_catalog_models_available"
   | "provider_key_rejected"
+  | "provider_runtime_failing"
+  | "provider_runtime_key_rejected"
+  | "provider_runtime_quota_exhausted"
   | "search_source_model_off"
+  | "server_errors_rising"
   | "skills_pending_approval"
   | "system_role_not_assigned"
   | "system_role_unavailable"
@@ -34,6 +43,7 @@ export const adminAttentionSections = [
   "assistants",
   "email",
   "groups",
+  "health",
   "mcp",
   "providers",
   "retrieval",
@@ -69,6 +79,7 @@ export const adminAttentionSources = [
   "assistants",
   "dashboard",
   "email",
+  "health",
   "knowledge",
   "mcp",
   "memory",
@@ -95,6 +106,38 @@ export type AdminAttentionErrorResponse = ErrorResponse<
   "admin_attention_failed" | "forbidden" | "unauthorized"
 >;
 
+/**
+ * The app-wide administrator badge: severity counts from the cheap sources only
+ * (health telemetry rules and provider key checks), never items or copy.
+ */
+export type AdminAttentionSummary = {
+  bad: number;
+  checkedAt: string;
+  /** Active health telemetry items (the Health section count); `null` while health is unavailable. */
+  health: number | null;
+  /** Sources that could not be read this time; their counts are missing. */
+  unavailable: AdminAttentionSource[];
+  warn: number;
+};
+
+export type AdminAttentionSummaryResponse = {
+  summary: AdminAttentionSummary;
+};
+
+/** Items derived from the health telemetry rules. */
+export const adminHealthAttentionCodes = [
+  "background_failures",
+  "logs_dropped",
+  "operation_timeouts_rising",
+  "process_restarting",
+  "provider_runtime_failing",
+  "provider_runtime_key_rejected",
+  "provider_runtime_quota_exhausted",
+  "server_errors_rising"
+] as const satisfies readonly AdminAttentionCode[];
+
+const HEALTH_CODES = new Set<string>(adminHealthAttentionCodes);
+
 const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "assistants_listing_pending",
   "email_delivery_failing",
@@ -110,6 +153,7 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "provider_catalog_models_available",
   "provider_key_rejected",
   "search_source_model_off",
+  ...adminHealthAttentionCodes,
   "skills_pending_approval",
   "system_role_not_assigned",
   "system_role_unavailable",
@@ -122,6 +166,7 @@ const MAX_ITEMS = 200;
 
 /** The source owns freshness even when an item jumps to a different section. */
 export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttentionSource {
+  if (HEALTH_CODES.has(item.code)) return "health";
   if (item.code.startsWith("memory_")) return "memory";
   if (item.code.startsWith("system_role_")) return "system_roles";
   if (item.code.startsWith("provider_")) return "providers";
@@ -201,6 +246,30 @@ export function decodeAdminAttentionResponse(value: unknown): AdminAttentionResp
       checkedAt: attention.checkedAt,
       items: items as AdminAttentionItem[],
       unavailable: [...new Set(attention.unavailable as AdminAttentionSource[])]
+    }
+  };
+}
+
+function count(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+export function decodeAdminAttentionSummaryResponse(value: unknown): AdminAttentionSummaryResponse | null {
+  if (!isRecord(value) || !isRecord(value.summary)) return null;
+  const summary = value.summary;
+  if (typeof summary.checkedAt !== "string" || !Number.isFinite(Date.parse(summary.checkedAt)) ||
+    !count(summary.bad) || !count(summary.warn) || !(summary.health === null || count(summary.health)) ||
+    !Array.isArray(summary.unavailable) ||
+    !summary.unavailable.every((source) => typeof source === "string" && ATTENTION_SOURCES.has(source))) {
+    return null;
+  }
+  return {
+    summary: {
+      bad: summary.bad,
+      checkedAt: summary.checkedAt,
+      health: summary.health,
+      unavailable: [...new Set(summary.unavailable as AdminAttentionSource[])],
+      warn: summary.warn
     }
   };
 }

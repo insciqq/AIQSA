@@ -9,7 +9,9 @@ import {
   UiV2MenuSurface
 } from "@/components/ui-v2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import { useState } from "react";
+import { useId, useState } from "react";
+import { AdminAttentionDot } from "./AdminAttentionDot";
+import { adminAttentionIndicator, useAdminAttentionSummary } from "./useAdminAttentionSummary";
 
 /** Two-letter initials for the rail avatar: "operator@aiqsa.local" → "OP". */
 export function accountInitialsV2(label: string | null | undefined): string {
@@ -43,6 +45,10 @@ export function AccountMenuV2({
 }>) {
   const [open, setOpen] = useState(false);
   const controlCenterHref = useControlCenterHref();
+  const attention = adminAttentionIndicator(useAdminAttentionSummary(adminEntryVisible));
+  // The rail's own Control Center entry carries the dot; the drawer row is the only entry on phones.
+  const triggerAttention = variant === "row" ? attention : null;
+  const attentionHintId = useId();
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const { menuRef, triggerRef } = useMenuDismissalV2({
@@ -68,14 +74,17 @@ export function AccountMenuV2({
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label="Account menu"
+        aria-describedby={triggerAttention ? attentionHintId : undefined}
         data-tooltip={variant === "avatar" ? accountLabel || "Account" : undefined}
         data-tooltip-side={variant === "avatar" ? "right" : undefined}
         ref={triggerRef}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="v2-navigation-account-avatar" aria-hidden="true">
+        <span className={`v2-navigation-account-avatar${triggerAttention ? " relative" : ""}`} aria-hidden="true">
           {accountInitialsV2(accountLabel)}
+          {triggerAttention ? <AdminAttentionDot className="-right-0.5 -top-0.5 ring-workspace-rail" indicator={triggerAttention} /> : null}
         </span>
+        {triggerAttention ? <span className="sr-only" id={attentionHintId}>Control Center: {triggerAttention.label}</span> : null}
         {variant === "row" ? (
           <>
             <span className="v2-chat-title">{accountLabel || "Account"}</span>
@@ -105,7 +114,24 @@ export function AccountMenuV2({
             </UiV2MenuItem>
           ) : null}
           {adminEntryVisible ? (
-            <UiV2MenuLink href={controlCenterHref} icon="monitor">Control Center</UiV2MenuLink>
+            <UiV2MenuLink
+              aria-label={attention ? `Control Center, ${attention.label}` : undefined}
+              href={controlCenterHref}
+              icon="monitor"
+            >
+              Control Center
+              {attention ? (
+                <span
+                  aria-hidden="true"
+                  className={`ml-2 inline-flex min-w-5 items-center justify-center rounded-pill px-1.5 text-metadata font-semibold ${
+                    attention.severity === "bad" ? "bg-critical/15 text-critical" : "bg-caution/15 text-caution"
+                  }`}
+                  data-testid="admin-attention-count"
+                >
+                  {attention.count > 99 ? "99+" : attention.count}
+                </span>
+              ) : null}
+            </UiV2MenuLink>
           ) : null}
           <UiV2MenuItem disabled={signingOut} icon="logout" onClick={() => void signOut()}>
             {signingOut ? "Signing out…" : "Sign out"}
