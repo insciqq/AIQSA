@@ -170,6 +170,17 @@ describe("durable conversational images", () => {
     await expect(service.execute(revoked.call, revoked.context)).rejects.toThrow("image_provider_revoked");
     expect(fetchFn).toHaveBeenCalledTimes(1);
   }));
+  it("prices an image reported without a cost from the model's stored image prices", async () => fixture(async (f) => {
+    await f.db.providerModel.update({ where: { id: f.modelId },
+      data: { inputTokenPriceUsdPerMillion: 5, outputTokenPriceUsdPerMillion: 40 } });
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(imageResponse);
+    const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    const { call, context } = await f.call();
+    await service.execute(call, context);
+    // 3 input tokens at $5 and 11 output tokens at $40 per million.
+    expect(await f.db.usageEvent.findUniqueOrThrow({ where: { imageToolCallId: context.persistedToolCallId! } }))
+      .toMatchObject({ purpose: "image_generation", providerModelId: f.modelId, estimatedCostMicros: 455 });
+  }));
   it("retains a received image when Stop settles the run before publication finishes", async () => fixture(async (f) => {
     const call = await f.call();
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => {

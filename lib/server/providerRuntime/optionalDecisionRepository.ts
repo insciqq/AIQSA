@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { DecisionAnswer, DecisionReceipt } from "../providers/decisions";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros } from "../usage";
 
 export type OptionalDecisionOwner = Readonly<{
   userId: string;
@@ -83,7 +84,11 @@ export function createOptionalDecisionRepository(db: PrismaClient): OptionalDeci
         const receipt = result.receipt;
         const usage = { inputTokens: receipt?.usage.inputTokens ?? null, outputTokens: receipt?.usage.outputTokens ?? null,
           totalTokens: receipt ? receipt.usage.inputTokens + receipt.usage.outputTokens : null,
-          estimatedCostMicros: receipt?.usage.costUsd == null ? null : Math.round(receipt.usage.costUsd * 1_000_000),
+          estimatedCostMicros: receipt ? providerModelUsageCostMicros({
+            basis: await loadProviderModelCostBasis(tx, snapshot.providerModelId),
+            reportedCostUsd: receipt.usage.costUsd ?? null,
+            usage: { inputTokens: receipt.usage.inputTokens, outputTokens: receipt.usage.outputTokens }
+          }) : null,
           usageCompleteness: receipt ? "COMPLETE" as const : "UNAVAILABLE" as const };
         await tx.usageEvent.upsert({ where: { optionalDecisionAttemptId: id }, update: usage,
           create: { ...usage, optionalDecision: true, optionalDecisionAttemptId: id, purpose: "skill_selection", userId: owner.userId,

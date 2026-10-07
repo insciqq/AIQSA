@@ -519,7 +519,7 @@ describe("Prisma Knowledge Source ingestion claims", () => {
         modelId: "embedding-upstream",
         provider: "test",
         providerModelId: fixture.modelId,
-        usage: { inputTokens: 4, totalTokens: 4 }
+        usage: { costUsd: 0.000004, inputTokens: 4, totalTokens: 4 }
       },
       now: new Date(restartNow.getTime() + 5_000),
       ownerUserId: fixture.ownerUserId,
@@ -529,8 +529,10 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       fixture.artifactId,
       fixture.sourceVersionId
     )).resolves.toEqual([0]);
+    // The batch's row names its deployment and keeps the reported cost.
     await expect(prisma.usageEvent.findFirstOrThrow({
       select: {
+        estimatedCostMicros: true,
         knowledgeBaseId: true,
         knowledgeBatchIndex: true,
         knowledgeDocumentVersionId: true,
@@ -541,12 +543,13 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       },
       where: { modelId: "embedding-upstream", userId: fixture.ownerUserId }
     })).resolves.toEqual({
+      estimatedCostMicros: 4,
       knowledgeBaseId: null,
       knowledgeBatchIndex: null,
       knowledgeDocumentVersionId: null,
       knowledgeIndexGenerationId: null,
       modelId: "embedding-upstream",
-      providerModelId: null,
+      providerModelId: fixture.modelId,
       purpose: "knowledge_indexing"
     });
     await expect(restartedRepository.activateSourceVersion({

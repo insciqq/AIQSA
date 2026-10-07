@@ -27,6 +27,7 @@ import {
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { memoryVectorSpaceFingerprint } from "../execution/policy";
+import { memoryVectorCallUsage } from "../execution/usage";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
   MEMORY_ITEM_EMBEDDING_VERSIONS,
@@ -79,21 +80,6 @@ const deterministicInputErrors = new Set([
   "embedding_input_invalid",
   "embedding_request_too_large"
 ]);
-
-function resultUsage(result: EmbeddingResult): MemoryReportedUsage {
-  const { inputTokens, totalTokens } = result.usage;
-  if (inputTokens === null && totalTokens === null) return unavailableUsage;
-  const complete = inputTokens !== null && totalTokens !== null;
-  return {
-    cachedInputTokens: 0,
-    completeness: complete ? "COMPLETE" : "PARTIAL",
-    estimatedCostMicros: null,
-    inputTokens,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens
-  };
-}
 
 function terminalResult(
   job: MemoryJobDescriptor,
@@ -413,7 +399,7 @@ export function createMemoryItemEmbeddingHandler(
           errorCode: "memory_embedding_output_invalid",
           providerResponseId: result.requestId,
           state: "FAILED",
-          usage: resultUsage(result)
+          usage: memoryVectorCallUsage(result.usage)
         });
         await deps.repository.applyFailed(target, deps.now());
         throw new MemoryCoordinatorError("memory_embedding_output_invalid", true);
@@ -424,7 +410,7 @@ export function createMemoryItemEmbeddingHandler(
         errorCode: null,
         providerResponseId: result.requestId,
         state: "SUCCEEDED",
-        usage: resultUsage(result)
+        usage: memoryVectorCallUsage(result.usage)
       });
       if (context.signal.aborted) throw context.signal.reason;
 

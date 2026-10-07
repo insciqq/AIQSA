@@ -1,3 +1,4 @@
+import { reportedCostMicros } from "../../../domain/usage";
 import type { DecisionModelRoleResolution } from "../../providerRuntime/decisionModelRole";
 import { ProviderAdmissionError } from "../../providerRuntime/admission";
 import type { createAcceptedDecisionRuntime } from "../../providerRuntime/decisionRuntime";
@@ -74,6 +75,8 @@ function responseId(receipt: DecisionReceipt | null): string | null {
     ? receipt.requestId : null;
 }
 
+/** The call's usage and reported cost; settlement prices an unreported cost
+ * from the decision model's frozen prices. */
 function usage(receipt: DecisionReceipt | null) {
   if (!receipt) return memoryReportedUsage(null);
   const reportedCost = receipt.usage.costUsd;
@@ -81,7 +84,7 @@ function usage(receipt: DecisionReceipt | null) {
     inputTokens: receipt.usage.inputTokens,
     outputTokens: receipt.usage.outputTokens,
     totalTokens: receipt.usage.inputTokens + receipt.usage.outputTokens,
-    estimatedCostMicros: reportedCost === null ? null : Math.round(reportedCost * 1_000_000)
+    estimatedCostMicros: reportedCost === null ? null : reportedCostMicros(reportedCost)
   });
 }
 

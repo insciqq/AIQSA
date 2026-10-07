@@ -1,5 +1,5 @@
 import { retainDatabaseFailure } from "../observability/databaseFailure";
-import { storedTokenUsage } from "../usage";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../prisma";
@@ -824,8 +824,14 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           await tx.usageEvent.create({
             data: {
               ...storedTokenUsage(input.batch.usage),
+              estimatedCostMicros: providerModelUsageCostMicros({
+                basis: await loadProviderModelCostBasis(tx, input.batch.providerModelId),
+                reportedCostUsd: input.batch.usage.costUsd ?? null,
+                usage: input.batch.usage
+              }),
               modelId: input.batch.modelId,
               provider: input.batch.provider,
+              providerModelId: input.batch.providerModelId,
               purpose: "knowledge_indexing",
               userId: input.ownerUserId
             }
