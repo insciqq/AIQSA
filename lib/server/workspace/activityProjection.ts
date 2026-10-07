@@ -5,7 +5,9 @@ import {
   WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS,
   WORKSPACE_ACTIVITY_PATH_MAX_CHARS,
   WORKSPACE_ACTIVITY_PREVIEW_MAX_BYTES,
+  decodeThreadWorkspaceActivityCodeMcp,
   isWorkspaceErrorCode,
+  type ThreadWorkspaceActivityCodeMcp,
   type ThreadWorkspaceActivityEntry,
   type WorkspaceActivityKind,
   type WorkspaceActivityPhase,
@@ -189,9 +191,17 @@ function errorCodeFrom(result: ToolExecutionResult): WorkspaceErrorCode | undefi
   return isWorkspaceErrorCode(code) ? code : undefined;
 }
 
+/** The coordinator's content-free summary of a command's code MCP calls, if any. */
+function codeMcpOf(result: ToolExecutionResult): ThreadWorkspaceActivityCodeMcp | undefined {
+  return result.rawPreview?.codeMcp === undefined ? undefined
+    : decodeThreadWorkspaceActivityCodeMcp(result.rawPreview.codeMcp) ?? undefined;
+}
+
 export type ExecOutputBuffer = {
+  codeMcp?: ThreadWorkspaceActivityCodeMcp;
   done: boolean;
   exitCode: number | null;
+  secretMasked?: boolean;
   stderr: string;
   stdout: string;
   streams?: { stderr: ReturnType<WorkspaceActivityText["stream"]>; stdout: ReturnType<WorkspaceActivityText["stream"]> };
@@ -224,7 +234,10 @@ export function applyExecPoll(buffer: ExecOutputBuffer, result: ToolExecutionRes
   const data = resultData(result);
   const payload = data && isRecord(data.data) ? data.data : null;
   if (!payload) return buffer;
-  const next = { ...buffer, streams: buffer.streams ?? { stderr: text.stream(), stdout: text.stream() } };
+  const codeMcp = codeMcpOf(result);
+  const next = { ...buffer, streams: buffer.streams ?? { stderr: text.stream(), stdout: text.stream() },
+    ...(result.rawPreview?.secretMasked === true ? { secretMasked: true } : {}),
+    ...(codeMcp ? { codeMcp } : {}) };
   const append = (stream: "stdout" | "stderr", value: string, done = false) => {
     const masked = next.streams[stream].push(value, done);
     if (utf8Bytes(next[stream]) + utf8Bytes(masked) > OUTPUT_BUFFER_MAX_BYTES) next.truncated = true;
@@ -300,11 +313,14 @@ function commandEntry(
     stdout: (input.text ?? plainText).text(payload && typeof payload.stdout === "string" ? payload.stdout : "")
   });
   const truncated = output.truncated || input.result.rawPreview?.truncated === true;
+  const secretMasked = input.result.rawPreview?.secretMasked === true;
+  const codeMcp = codeMcpOf(input.result);
   const errorCode = errorCodeFrom(input.result);
   const originalByteCount = input.result.rawPreview?.originalByteCount;
   return {
     ...base,
     command: {
+      ...(codeMcp ? { codeMcp } : {}),
       ...(cwd ? { cwd } : {}),
       exitCode,
       ...(typeof originalByteCount === "number" && Number.isSafeInteger(originalByteCount)
@@ -313,6 +329,7 @@ function commandEntry(
       ...preview,
       ...(output.stderrPreview ? { stderrPreview: output.stderrPreview } : {}),
       ...(output.stdoutPreview ? { stdoutPreview: output.stdoutPreview } : {}),
+      ...(secretMasked ? { secretMasked: true } : {}),
       ...(truncated ? { truncated: true } : {})
     },
     ...(errorCode ? { errorCode } : {}),
@@ -402,7 +419,8 @@ function projectActivity(
     // command evidence comes from poll; run-outcome folding handles Stop.
     const settled = buffer.done;
     input.execOutputs?.set(groupId, buffer);
-    if (!settled && buffer.stdout === previous.stdout && buffer.stderr === previous.stderr) {
+    if (!settled && buffer.stdout === previous.stdout && buffer.stderr === previous.stderr &&
+      buffer.secretMasked === previous.secretMasked && buffer.codeMcp === previous.codeMcp) {
       // A poll that produced neither output nor completion is transport noise.
       return null;
     }
@@ -410,10 +428,12 @@ function projectActivity(
     const output = boundedOutputPreview({ failed, stderr: buffer.stderr, stdout: buffer.stdout });
     return {
       command: {
+        ...(buffer.codeMcp ? { codeMcp: buffer.codeMcp } : {}),
         ...(buffer.done ? { exitCode: buffer.exitCode } : {}),
         preview: "…",
         ...(output.stderrPreview ? { stderrPreview: output.stderrPreview } : {}),
         ...(output.stdoutPreview ? { stdoutPreview: output.stdoutPreview } : {}),
+        ...(buffer.secretMasked ? { secretMasked: true } : {}),
         ...(output.truncated || buffer.truncated ? { truncated: true } : {})
       },
       groupId,

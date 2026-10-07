@@ -204,6 +204,14 @@ describe("run lifecycle v2 presentation", () => {
     expect(presentToolActivityV2([external])?.calls[0]).not.toHaveProperty("skillName");
   });
 
+  it("names a chat Skill save instead of a load", () => {
+    const call = { origin: "skill", toolName: "save_skill" };
+    expect(describeToolCallV2(call, "running")).toBe("Saving Skill");
+    expect(describeToolCallV2(call, "settled")).toBe("Saved Skill");
+    expect(describeToolCallV2(call, "failed")).toBe("Skill was not saved");
+    expect(describeToolCallV2(call, "cancelled")).toBe("Saving Skill stopped");
+  });
+
   it("names artifact lifecycle phases and preserves an explicit MCP origin", () => {
     for (const call of [{ origin: "artifact" }, { toolName: "create_artifact" }]) {
       expect(describeToolCallV2(call, "running")).toBe("Creating artifact");

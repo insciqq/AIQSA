@@ -14,7 +14,7 @@ const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
   timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, toolsEnabled: false,
-  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard"
+  workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90
 };
 const hourlyDraft: ScheduledTaskDraft = {
   ...draft, chatMode: "same",

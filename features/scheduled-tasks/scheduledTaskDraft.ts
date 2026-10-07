@@ -2,6 +2,7 @@ import type { Catalog, CatalogModel } from "@/lib/contracts/catalog";
 import type { MemoryConsumerSettingsResponse } from "@/lib/contracts/memoryConsumer";
 import type { WorkspaceUnavailableReason } from "@/lib/contracts/workspace";
 import {
+  SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
   SCHEDULED_TASK_EVERY_HOURS,
   SCHEDULED_TASK_ONCE_MIN_LEAD_MS,
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
@@ -15,7 +16,9 @@ import {
   type ScheduledTaskChatMode,
   type ScheduledTaskDraft,
   type ScheduledTaskEveryHours,
+  type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskKind,
+  type ScheduledTaskPinnedSkill,
   type ScheduledTaskSchedule,
   type ScheduledTaskUpdateRequest,
   type ScheduledTaskWeekday
@@ -115,13 +118,18 @@ export type ScheduledTaskEditorDraft = Readonly<{
   workspaceEnabled: boolean;
   /** Runs read the owner's Memory and never add to it; a new task starts with it on. */
   memoryEnabled: boolean;
+  /** Skills every run loads, as the owner sees them; only with tools on. */
+  pinnedSkills: readonly ScheduledTaskPinnedSkill[];
   /** The owner's choice for other schedules; hourly and monitoring tasks always continue in one chat. */
   chatMode: ScheduledTaskChatMode;
   kind: ScheduledTaskKind;
+  /** How long old task chats are kept; a new task keeps 90 days, null keeps them forever. */
+  historyRetentionDays: ScheduledTaskHistoryRetentionDays;
 }>;
 
 export type ScheduledTaskFieldErrors = Partial<Record<
-  "title" | "prompt" | "kind" | "schedule" | "timeZone" | "model" | "search" | "tools" | "workspace" | "chatMode" | "form",
+  "title" | "prompt" | "kind" | "schedule" | "timeZone" | "model" | "search" | "tools" | "workspace" | "skills" | "chatMode" |
+  "form",
   string
 >>;
 
@@ -199,8 +207,10 @@ export function blankScheduledTaskDraft(
     emailNotify: false,
     ...scheduledTaskStartingTools(catalog, model, workspace),
     memoryEnabled: true,
+    pinnedSkills: [],
     chatMode: "new",
     kind: "standard",
+    historyRetentionDays: SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
     ...preset
   };
 }
@@ -235,9 +245,23 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
     toolsEnabled: task.toolsEnabled,
     workspaceEnabled: task.workspaceEnabled,
     memoryEnabled: task.memoryEnabled,
+    // A task read without the owner's view (never from the owner API) names no pinned Skill.
+    pinnedSkills: task.pinnedSkills ??
+      task.pinnedSkillIds.map((id) => ({ available: false, hasExecutables: false, id, name: null })),
     chatMode: task.chatMode,
-    kind: task.kind
+    kind: task.kind,
+    historyRetentionDays: task.historyRetentionDays
   };
+}
+
+/**
+ * Pinned Skills with scripts while Workspace is off: their instructions load,
+ * their scripts cannot run. Saving is allowed; the editor says so.
+ */
+export function scheduledTaskSkillsNeedingWorkspace(
+  draft: Pick<ScheduledTaskEditorDraft, "pinnedSkills" | "workspaceEnabled">
+): ScheduledTaskPinnedSkill[] {
+  return draft.workspaceEnabled ? [] : draft.pinnedSkills.filter((skill) => skill.hasExecutables);
 }
 
 /** What keeps an hourly draft from decoding, in the decoder's terms; null when it is complete. */
@@ -374,6 +398,8 @@ export function validateScheduledTaskDraft(
   if (draft.kind === "monitoring" && blockers.monitoring) errors.kind = blockers.monitoring;
   if (draft.toolsEnabled && blockers.tools) errors.tools = scheduledTaskErrorMessage("scheduled_task_tools_unavailable");
   if (draft.workspaceEnabled && blockers.workspace) errors.workspace = scheduledTaskErrorMessage("scheduled_task_workspace_unavailable");
+  // Pins never silently outlive tools: the owner removes them or keeps tools on.
+  if (!draft.toolsEnabled && draft.pinnedSkills.length > 0) errors.skills = scheduledTaskErrorMessage("scheduled_task_skills_need_tools");
   return errors;
 }
 
@@ -398,9 +424,15 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     toolsEnabled: draft.toolsEnabled,
     workspaceEnabled: draft.workspaceEnabled,
     memoryEnabled: draft.memoryEnabled,
+    pinnedSkillIds: draft.pinnedSkills.map((skill) => skill.id),
     chatMode: scheduledTaskDraftChatMode(draft),
-    kind: draft.kind
+    kind: draft.kind,
+    historyRetentionDays: draft.historyRetentionDays
   } : null;
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
 /**
@@ -426,8 +458,10 @@ export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, orig
   if (next.toolsEnabled !== original.toolsEnabled) patch.toolsEnabled = next.toolsEnabled;
   if (next.workspaceEnabled !== original.workspaceEnabled) patch.workspaceEnabled = next.workspaceEnabled;
   if (next.memoryEnabled !== original.memoryEnabled) patch.memoryEnabled = next.memoryEnabled;
+  if (!sameIds(next.pinnedSkillIds, original.pinnedSkillIds)) patch.pinnedSkillIds = next.pinnedSkillIds;
   if (next.chatMode !== original.chatMode) patch.chatMode = next.chatMode;
   if (next.kind !== original.kind) patch.kind = next.kind;
+  if (next.historyRetentionDays !== original.historyRetentionDays) patch.historyRetentionDays = next.historyRetentionDays;
   return patch;
 }
 
@@ -439,6 +473,9 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
     left.everyHours === right.everyHours && left.hourlyWindow === right.hourlyWindow && left.until === right.until &&
     left.toolsEnabled === right.toolsEnabled && left.workspaceEnabled === right.workspaceEnabled &&
     left.memoryEnabled === right.memoryEnabled && left.kind === right.kind &&
+    left.historyRetentionDays === right.historyRetentionDays &&
+    sameIds(left.pinnedSkills.map((skill) => skill.id), right.pinnedSkills.map((skill) => skill.id)) &&
+
     scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days) &&
     scheduledTaskWeekdayMask(left.hourlyDays) === scheduledTaskWeekdayMask(right.hourlyDays);
 }

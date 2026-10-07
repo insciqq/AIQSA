@@ -25,10 +25,39 @@ export const SCHEDULED_TASK_SEEN_RUNS_LIMIT = 50;
 export const SCHEDULED_TASK_RUN_DEADLINE_MINUTES = 30;
 /** Scheduled runs in a row that complete without a relevant source before the task pauses (`source_unavailable`). */
 export const SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD = 3;
+/**
+ * The reason a pending run carries while it waits for a free scheduled
+ * Workspace slot (the installation's cap, or a runner capacity refusal). A
+ * wait, not a failure; the next start attempt clears it.
+ */
+export const SCHEDULED_TASK_WORKSPACE_WAIT_CODE = "waiting_for_workspace";
+/**
+ * The skip of a run still waiting for a Workspace slot when its window ended.
+ * Like every skip it never counts toward the failure pause.
+ */
+export const SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE = "workspace_capacity";
 /** Unavailable sources one run records; at most the enabled MCP servers of one plan. */
 export const SCHEDULED_TASK_UNAVAILABLE_SOURCES_LIMIT = 64;
 /** Code points of a recorded source name; longer display names are shortened with an ellipsis. */
 export const SCHEDULED_TASK_SOURCE_NAME_MAX_LENGTH = 120;
+/** Skills one task may pin; every run loads exactly them at their current version. */
+export const SCHEDULED_TASK_MAX_PINNED_SKILLS = 4;
+/** Bound of a pinned Skill id, as the composer's pinned Skill ids. */
+export const SCHEDULED_TASK_SKILL_ID_MAX_LENGTH = 64;
+/** Code points of a pinned Skill's name as a task projects it, the Skill name bound. */
+export const SCHEDULED_TASK_SKILL_NAME_MAX_LENGTH = 64;
+/**
+ * Days a chat the task created is kept after its last run once it is no longer
+ * the task's chat; `null` keeps such chats forever.
+ */
+export const SCHEDULED_TASK_HISTORY_RETENTION_DAYS = [30, 90, 365] as const;
+export type ScheduledTaskHistoryRetentionDays = (typeof SCHEDULED_TASK_HISTORY_RETENTION_DAYS)[number] | null;
+/** What a new task keeps; tasks saved before the choice existed keep everything. */
+export const SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS = 90 satisfies ScheduledTaskHistoryRetentionDays;
+
+export function isScheduledTaskHistoryRetentionDays(value: unknown): value is ScheduledTaskHistoryRetentionDays {
+  return value === null || (SCHEDULED_TASK_HISTORY_RETENTION_DAYS as readonly unknown[]).includes(value);
+}
 
 export const SCHEDULED_TASK_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 export type ScheduledTaskWeekday = (typeof SCHEDULED_TASK_WEEKDAYS)[number];
@@ -54,7 +83,9 @@ export type ScheduledTaskSchedule =
 
 /**
  * `new`: every run, Run now included, starts its own Memory-excluded chat.
- * `same`: runs continue in the task's chat. Hourly and monitoring tasks are always `same`.
+ * `same`: runs continue in the task's chat, which starts anew with the first
+ * run of each calendar month in the task's zone. Hourly and monitoring tasks
+ * are always `same`.
  */
 export type ScheduledTaskChatMode = "new" | "same";
 export const SCHEDULED_TASK_CHAT_MODES = ["new", "same"] as const satisfies readonly ScheduledTaskChatMode[];
@@ -95,6 +126,23 @@ export type ScheduledTaskRunState = "pending" | "running" | "completed" | "faile
 export type ScheduledTaskSettledRunState = Extract<ScheduledTaskRunState, "completed" | "failed" | "skipped">;
 export type ScheduledTaskRunTrigger = "schedule" | "manual";
 
+/**
+ * One of a task's pinned Skills as its owner may see it now. `name` is null
+ * when the Skill is gone or no longer visible to the owner (deleted, or no
+ * longer shared), so its name never outlives the owner's access. `available`:
+ * a run can load it (not archived, enabled for the owner, still shared).
+ * `hasExecutables`: its version a run would load has scripts, which need Workspace.
+ */
+export type ScheduledTaskPinnedSkill = Readonly<{
+  id: string;
+  name: string | null;
+  available: boolean;
+  hasExecutables: boolean;
+}>;
+
+/** A pinned Skill a run loaded: the name and version (revision number) it used, content-free. */
+export type ScheduledTaskRunSkill = Readonly<{ name: string; version: number }>;
+
 /** The newest settled occurrence. */
 export type ScheduledTaskLastRun = {
   scheduledFor: string;
@@ -121,8 +169,26 @@ export type ScheduledTask = {
   workspaceEnabled: boolean;
   /** See `ScheduledTaskDraft.memoryEnabled`. */
   memoryEnabled: boolean;
+  /** See `ScheduledTaskDraft.pinnedSkillIds`. */
+  pinnedSkillIds: string[];
+  /**
+   * The pinned Skills as the owner may see them now, in `pinnedSkillIds`
+   * order. The owner API always projects them; a task in a chat card or a
+   * model tool result omits them.
+   */
+  pinnedSkills?: ScheduledTaskPinnedSkill[];
   chatMode: ScheduledTaskChatMode;
   kind: ScheduledTaskKind;
+  /** See `ScheduledTaskDraft.historyRetentionDays`. */
+  historyRetentionDays: ScheduledTaskHistoryRetentionDays;
+  /** Old chats of this task its history retention deleted; a count only. */
+  historyDeletedChats: number;
+  /**
+   * When the history retention deletes the next old chat of this task as
+   * things stand (the owner can still keep it); null when none is due.
+   * Projections without the task's history (cards, tool results) say null.
+   */
+  historyNextDeletionAt: string | null;
   status: ScheduledTaskStatus;
   /** Stable code of an automatic pause; null for owner pauses and other states. */
   pauseReason: string | null;
@@ -136,6 +202,11 @@ export type ScheduledTask = {
   lastRun: ScheduledTaskLastRun | null;
   /** A pending or running occurrence exists. */
   running: boolean;
+  /**
+   * A pending run of this task is waiting for a free scheduled Workspace slot
+   * (`SCHEDULED_TASK_WORKSPACE_WAIT_CODE`). Absent otherwise.
+   */
+  waitingForWorkspace?: true;
   /**
    * The newest chat a run used while it is usable: the one to open. Null before
    * the first run or after its deletion. Every run keeps its own `chatId`.
@@ -193,6 +264,8 @@ export type ScheduledTaskRun = {
    * `isScheduledTaskRunIncomplete`); its answer still completed.
    */
   unavailableSources: ScheduledTaskUnavailableSource[];
+  /** The task's pinned Skills the run loaded, with the version each used; empty without pins or a run. */
+  skills: ScheduledTaskRunSkill[];
 };
 
 /**
@@ -259,10 +332,27 @@ export type ScheduledTaskDraft = {
    * may be read. New tasks start with it on.
    */
   memoryEnabled: boolean;
+  /**
+   * Up to `SCHEDULED_TASK_MAX_PINNED_SKILLS` unique ids of Skills available
+   * to the owner that every run loads at their current version beside the
+   * Auto catalog; only with `toolsEnabled`. A pinned Skill that is no longer
+   * available pauses the task (`skill_unavailable`); a run never goes on in
+   * Auto without it. Optional in a create body (none). Changing the pins
+   * keeps the task's previous result.
+   */
+  pinnedSkillIds: string[];
   /** `new` is the default the editor offers; hourly schedules and monitoring tasks require `same`. */
   chatMode: ScheduledTaskChatMode;
   /** `monitoring` requires a model that can call tools. */
   kind: ScheduledTaskKind;
+  /**
+   * How long the task's old chats are kept after their last run: 30, 90 or
+   * 365 days, or null for forever. Only chats the task's runs created count,
+   * never its current chat, and a chat the owner wrote in, pinned, put in a
+   * folder, shared, renamed or restored from the archive is always kept.
+   * Optional in a create body: new tasks keep 90 days.
+   */
+  historyRetentionDays: ScheduledTaskHistoryRetentionDays;
 };
 export type ScheduledTaskCreateRequest = ScheduledTaskDraft;
 
@@ -287,7 +377,10 @@ export function scheduledTaskToolDefaults(defaults: Readonly<{ mcpMode?: ChatDef
  * `chatMode: "same"` unless the task already continues in one chat. A changed
  * prompt, schedule kind or type starts the task's checks afresh: the next run
  * has no previous result. Turning tools or Workspace on, like an active
- * result, rechecks them against the model.
+ * result, rechecks them against the model; changed pinned Skills and those of
+ * an active result are rechecked against the owner's available Skills. Pins
+ * never outlive tools: turning tools off needs `pinnedSkillIds: []`. A longer
+ * or forever history retention keeps chats that were not yet deleted.
  */
 export type ScheduledTaskUpdateRequest = Partial<ScheduledTaskDraft> & {
   expectedRevision: number;
@@ -305,6 +398,8 @@ export const SCHEDULED_TASK_ERROR_CODES = [
   "scheduled_task_search_unavailable",
   "scheduled_task_tools_unavailable",
   "scheduled_task_workspace_unavailable",
+  "scheduled_task_skills_need_tools",
+  "scheduled_task_skill_unavailable",
   "scheduled_task_limit",
   "scheduled_task_hourly_limit",
   "scheduled_task_stale",
@@ -379,6 +474,18 @@ export function isScheduledTaskModelIdentity(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= SCHEDULED_TASK_MODEL_IDENTITY_MAX_LENGTH;
 }
 
+/**
+ * A task's pinned Skill ids: unique, bounded, non-empty strings, at most
+ * `SCHEDULED_TASK_MAX_PINNED_SKILLS`, in the given order; null when malformed.
+ */
+export function decodeScheduledTaskPinnedSkillIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > SCHEDULED_TASK_MAX_PINNED_SKILLS ||
+    !value.every((entry) => typeof entry === "string" && entry.length > 0 &&
+      entry.length <= SCHEDULED_TASK_SKILL_ID_MAX_LENGTH && entry.trim() === entry) ||
+    new Set(value).size !== value.length) return null;
+  return [...value] as string[];
+}
+
 /** Unique weekdays (1..7), normalized Monday first; null when malformed. */
 function weekdays(value: unknown): ScheduledTaskWeekday[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > SCHEDULED_TASK_WEEKDAYS.length ||
@@ -437,8 +544,9 @@ export function scheduledTaskChatModeAllowed(
 
 const TASK_KEYS = [
   "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
-  "workspaceEnabled", "memoryEnabled", "chatMode", "kind", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun",
-  "running", "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
+  "workspaceEnabled", "memoryEnabled", "pinnedSkillIds", "chatMode", "kind", "historyRetentionDays", "historyDeletedChats",
+  "historyNextDeletionAt", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun", "running", "chatId",
+  "unseenResult", "revision", "createdAt", "updatedAt"
 ] as const;
 const STATUSES: readonly unknown[] = ["active", "paused", "completed"] satisfies ScheduledTaskStatus[];
 const CHAT_MODES: readonly unknown[] = SCHEDULED_TASK_CHAT_MODES;
@@ -452,10 +560,42 @@ function lastRun(value: unknown): value is ScheduledTaskLastRun {
     nullable(value.reasonCode, code) && instant(value.finishedAt) && typeof value.unseen === "boolean";
 }
 
+/**
+ * A Skill name as a task projects it: control characters removed, trimmed
+ * and shortened to the Skill name bound; null when nothing is left.
+ */
+export function scheduledTaskSkillNameProjection(name: string): string | null {
+  const text = Array.from(name.replace(/[\u0000-\u001f\u007f]/gu, " ").trim())
+    .slice(0, SCHEDULED_TASK_SKILL_NAME_MAX_LENGTH).join("").trim();
+  return text || null;
+}
+
+/** A pinned Skill's projected name: trimmed, control-free text within the Skill name bound. */
+function skillName(value: unknown): value is string {
+  return typeof value === "string" && value.trim() === value && value.length > 0 &&
+    !/[\u0000-\u001f\u007f]/u.test(value) && codePointLength(value) <= SCHEDULED_TASK_SKILL_NAME_MAX_LENGTH;
+}
+
+/** The projected pinned Skills of `ids`, one each in the same order; null when malformed. */
+function pinnedSkills(value: unknown, ids: readonly string[]): ScheduledTaskPinnedSkill[] | null {
+  if (!Array.isArray(value) || value.length !== ids.length) return null;
+  const skills = value.map((entry, index) => record(entry) && keys(entry, ["id", "name", "available", "hasExecutables"]) &&
+    entry.id === ids[index] && nullable(entry.name, skillName) && typeof entry.available === "boolean" &&
+    typeof entry.hasExecutables === "boolean" && !(entry.available && entry.name === null)
+    ? { id: entry.id as string, name: entry.name as string | null, available: entry.available, hasExecutables: entry.hasExecutables }
+    : null);
+  return skills.every(Boolean) ? skills as ScheduledTaskPinnedSkill[] : null;
+}
+
 export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   if (!record(value)) return null;
-  const { promptLinksPending, ...fields } = value;
-  if (!keys(fields, TASK_KEYS) || (promptLinksPending !== undefined && promptLinksPending !== true)) return null;
+  const { promptLinksPending, pinnedSkills: projectedSkills, waitingForWorkspace, ...fields } = value;
+  if (!keys(fields, TASK_KEYS) || (promptLinksPending !== undefined && promptLinksPending !== true) ||
+    (waitingForWorkspace !== undefined && (waitingForWorkspace !== true || value.running !== true))) return null;
+  const pinnedSkillIds = decodeScheduledTaskPinnedSkillIds(value.pinnedSkillIds);
+  if (!pinnedSkillIds || (pinnedSkillIds.length > 0 && value.toolsEnabled !== true)) return null;
+  const skills = projectedSkills === undefined ? undefined : pinnedSkills(projectedSkills, pinnedSkillIds);
+  if (skills === null) return null;
   const schedule = decodeScheduledTaskSchedule(value.schedule);
   const title = normalizeScheduledTaskTitle(value.title), prompt = value.prompt;
   if (!schedule || !id(value.id) || !title || title !== value.title || !isScheduledTaskPrompt(prompt) ||
@@ -465,6 +605,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     typeof value.workspaceEnabled !== "boolean" || typeof value.memoryEnabled !== "boolean" ||
     !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
     !scheduledTaskChatModeAllowed({ kind: value.kind as ScheduledTaskKind, schedule }, value.chatMode as ScheduledTaskChatMode) ||
+    !isScheduledTaskHistoryRetentionDays(value.historyRetentionDays) || !count(value.historyDeletedChats, 0) ||
+    !nullable(value.historyNextDeletionAt, instant) ||
     !STATUSES.includes(value.status) || !nullable(value.pauseReason, code) ||
     !nullable(value.completionReason, code) || (value.status !== "completed" && value.completionReason !== null) ||
     !nullable(value.nextRunAt, instant) || (value.status !== "active" && value.nextRunAt !== null) ||
@@ -475,20 +617,25 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   return {
     id: value.id, title, prompt, schedule, timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
     searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, toolsEnabled: value.toolsEnabled,
-    workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, chatMode: value.chatMode as ScheduledTaskChatMode,
-    kind: value.kind as ScheduledTaskKind, status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
+    workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, pinnedSkillIds,
+    ...(skills ? { pinnedSkills: skills } : {}), chatMode: value.chatMode as ScheduledTaskChatMode,
+    kind: value.kind as ScheduledTaskKind, historyRetentionDays: value.historyRetentionDays,
+    historyDeletedChats: value.historyDeletedChats, historyNextDeletionAt: value.historyNextDeletionAt,
+    status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
     completionReason: value.completionReason, nextRunAt: value.nextRunAt,
     lastRun: run && {
       scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt, unseen: run.unseen
     },
-    running: value.running, chatId: value.chatId, unseenResult: value.unseenResult,
+    running: value.running, ...(waitingForWorkspace ? { waitingForWorkspace: true as const } : {}), chatId: value.chatId,
+    unseenResult: value.unseenResult,
     ...(promptLinksPending ? { promptLinksPending: true as const } : {}), revision: value.revision,
     createdAt: value.createdAt, updatedAt: value.updatedAt
   };
 }
 
 const RUN_KEYS = [
-  "id", "scheduledFor", "trigger", "state", "reasonCode", "startedAt", "finishedAt", "chatId", "unseen", "unavailableSources"
+  "id", "scheduledFor", "trigger", "state", "reasonCode", "startedAt", "finishedAt", "chatId", "unseen", "unavailableSources",
+  "skills"
 ] as const;
 const SOURCE_REASONS: readonly unknown[] = SCHEDULED_TASK_SOURCE_REASONS;
 
@@ -508,6 +655,14 @@ export function decodeScheduledTaskUnavailableSources(value: unknown): Scheduled
   }));
 }
 
+/** The pinned Skills one run loaded, or null when malformed. */
+export function decodeScheduledTaskRunSkills(value: unknown): ScheduledTaskRunSkill[] | null {
+  if (!Array.isArray(value) || value.length > SCHEDULED_TASK_MAX_PINNED_SKILLS ||
+    !value.every((entry) => record(entry) && keys(entry, ["name", "version"]) && skillName(entry.name) &&
+      count(entry.version, 1))) return null;
+  return value.map((entry: Record<string, unknown>) => ({ name: entry.name as string, version: entry.version as number }));
+}
+
 export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null {
   if (!record(value) || !keys(value, RUN_KEYS) || !id(value.id) ||
     !instant(value.scheduledFor) || (value.trigger !== "schedule" && value.trigger !== "manual") ||
@@ -515,11 +670,12 @@ export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null 
     !nullable(value.finishedAt, instant) || !nullable(value.chatId, id) || typeof value.unseen !== "boolean" ||
     (value.unseen && value.finishedAt === null)) return null;
   const unavailableSources = decodeScheduledTaskUnavailableSources(value.unavailableSources);
-  if (!unavailableSources) return null;
+  const skills = decodeScheduledTaskRunSkills(value.skills);
+  if (!unavailableSources || !skills) return null;
   return {
     id: value.id, scheduledFor: value.scheduledFor, trigger: value.trigger, state: value.state as ScheduledTaskRunState,
     reasonCode: value.reasonCode, startedAt: value.startedAt, finishedAt: value.finishedAt, chatId: value.chatId,
-    unseen: value.unseen, unavailableSources
+    unseen: value.unseen, unavailableSources, skills
   };
 }
 
@@ -566,6 +722,8 @@ export function scheduledTaskErrorMessage(errorCode: unknown): string {
     case "scheduled_task_tools_unavailable": return "This model cannot use tools. Turn tools off or choose another model.";
     case "scheduled_task_workspace_unavailable":
       return "Workspace is not available for this task. It needs a model with tool support and Workspace turned on by the administrator.";
+    case "scheduled_task_skills_need_tools": return "Pinned Skills need tools. Turn tools on or remove the pinned Skills.";
+    case "scheduled_task_skill_unavailable": return "A pinned Skill is not available to you. Remove it or choose another Skill.";
     case "scheduled_task_limit":
       return `You can have up to ${SCHEDULED_TASK_MAX_ACTIVE} active and ${SCHEDULED_TASK_MAX_TOTAL} saved scheduled tasks.`;
     case "scheduled_task_hourly_limit":
@@ -592,6 +750,10 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "workspace_unavailable":
       return "Workspace can no longer be used for this task. Turn Workspace off or choose a model with tool support, then resume.";
     case "workspace_secret_limit": return "Your saved Workspace secrets exceed the limit. Remove some in Settings or turn Workspace off, then resume.";
+    case "workspace_carryover_unavailable":
+      return "The Workspace files of the task's previous chat could not be carried into its new chat, so nothing ran. " +
+        "The next run tries again; to go on without them, turn Workspace off for this task.";
+    case "skill_unavailable": return "A pinned Skill is no longer available. Edit the task's Skills, then resume.";
     case "source_unavailable":
       return `Paused after ${SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD} runs in a row could not reach a source the task uses. Reconnect it and resume.`;
     case "account_inactive": return "Paused while the account was not active. Resume to continue.";
@@ -613,6 +775,8 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
       return "Skipped: your monthly budget was used up. Runs continue after it resets or an administrator raises it.";
     case "installation_budget_exhausted":
       return "Skipped: the monthly budget shared by everyone was used up. Runs continue after it resets or an administrator raises it.";
+    case "waiting_for_workspace": return "Waiting for a free Workspace slot: other scheduled runs are using Workspace.";
+    case "workspace_capacity": return "Skipped: no Workspace slot became free in time; other scheduled runs were using Workspace.";
     case "paused": return "Skipped: the task was paused.";
     case "admission_failed": return "The run could not start.";
     case "run_unavailable": return "The task's chat was deleted before the run finished.";
@@ -623,7 +787,20 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
 }
 
 /**
+ * Why a task paused with `skill_unavailable`, as a clause: the pinned Skills
+ * that are no longer available by the names the owner may still see, and a
+ * neutral clause when none of them can be named (gone, or no longer shared).
+ */
+export function scheduledTaskSkillUnavailableReason(task: Readonly<Pick<ScheduledTask, "pinnedSkills">>): string {
+  const names = (task.pinnedSkills ?? []).flatMap((skill) => !skill.available && skill.name !== null ? [`“${skill.name}”`] : []);
+  if (names.length === 0) return "a pinned Skill is no longer available";
+  if (names.length === 1) return `the pinned Skill ${names[0]} is no longer available`;
+  return `the pinned Skills ${names.slice(0, -1).join(", ")} and ${names.at(-1)} are no longer available`;
+}
+
+/**
  * What an answer's `manage_scheduled_task` call last did to a task: changed,
+
  * paused or resumed it, or proposed deleting it, which deletes nothing until
  * the owner confirms on the card. A card without one shows a task the
  * answer's `create_scheduled_task` call created.

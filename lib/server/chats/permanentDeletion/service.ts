@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemoryDeletionState
@@ -50,11 +51,21 @@ export type PermanentChatDeletionStatus = Readonly<{
   updatedAt: Date;
 }>;
 
+/**
+ * A caller's own condition for one admission, checked inside its transaction
+ * after the chat row is locked and before anything changes; false refuses the
+ * admission as stale. Owner actions on the chat (pin, rename, folder, share,
+ * restore) take the same row lock, so the condition and the fence are one
+ * decision. Scheduled task history retention passes its eligibility here.
+ */
+export type PermanentChatDeletionCondition = (tx: Prisma.TransactionClient) => Promise<boolean>;
+
 export type PermanentChatDeletionRepository = Readonly<{
   admit(input: Readonly<{
     alsoForgetOriginMemories: boolean;
     authorization: MemoryMutationAuthorizationUse & Readonly<{ requestId: string }>;
     chatId: string;
+    condition?: PermanentChatDeletionCondition;
     expectedActiveLeafMessageId: string | null;
     expectedChatRevision: number;
     now: Date;
@@ -175,7 +186,8 @@ export function createPermanentChatDeletionService(input: Readonly<{
   async function admitInternal(
     userId: string,
     chatId: string,
-    request: ChatPermanentDeleteRequest
+    request: ChatPermanentDeleteRequest,
+    condition?: PermanentChatDeletionCondition
   ): Promise<ChatPermanentDeleteAdmissionResponse> {
     assertCapability(input.capability);
     const authorization: MemoryMutationAuthorizationUse = {
@@ -195,6 +207,7 @@ export function createPermanentChatDeletionService(input: Readonly<{
         alsoForgetOriginMemories: request.alsoForgetOriginMemories,
         authorization: { ...authorization, requestId: resolved.requestId },
         chatId,
+        ...(condition ? { condition } : {}),
         expectedActiveLeafMessageId: request.expectedActiveLeafMessageId,
         expectedChatRevision: request.expectedChatRevision,
         now: now(),
@@ -218,7 +231,8 @@ export function createPermanentChatDeletionService(input: Readonly<{
     async confirm(
       userId: string,
       chatId: string,
-      request: MemoryConsumerPermanentChatDeleteInput
+      request: MemoryConsumerPermanentChatDeleteInput,
+      options: Readonly<{ condition?: PermanentChatDeletionCondition }> = {}
     ): Promise<MemoryConsumerPermanentChatDeleteResponse> {
       assertCapability(input.capability);
       const snapshot = await input.repository.readSnapshot({ chatId, userId });
@@ -256,7 +270,7 @@ export function createPermanentChatDeletionService(input: Readonly<{
         expectedActiveLeafMessageId: snapshot.activeLeafMessageId,
         expectedChatRevision: snapshot.sourceRevision,
         mutationAuthorizationId: authorization.id
-      });
+      }, options.condition);
       return { status: consumerStatus(admission.state) };
     },
 

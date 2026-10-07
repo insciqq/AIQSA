@@ -18,6 +18,7 @@ import { decodeThreadGeneratedArtifact, type ThreadCitation } from "../../contra
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadSearchActivitySnapshot, type ThreadSearchActivitySnapshot } from "../../contracts/searchActivity";
 import { decodeScheduledTaskCard, type ScheduledTaskCard } from "../../contracts/scheduledTasks";
+import { decodeSkillSaveCard, type SkillSaveCard } from "../../contracts/skillSaves";
 
 type RunOutputGeneratedArtifact = {
   byteSize?: number;
@@ -39,6 +40,8 @@ export type RunOutputArtifactEvent =
   | { type: "artifact"; data: { artifactType: "search_activity"; payload: ThreadSearchActivitySnapshot } }
   /** A task the answer's scheduled task call created or managed, as that call left it. */
   | { type: "artifact"; data: { artifactType: "scheduled_task"; payload: ScheduledTaskCard } }
+  /** A Skill the answer's `save_skill` call saved, as that call left it. */
+  | { type: "artifact"; data: { artifactType: "skill_save"; payload: SkillSaveCard } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
       data: {
@@ -211,6 +214,11 @@ export function projectRunOutputArtifactEvent(
     return payload && !payload.deleted ? { type: "artifact", data: { artifactType: "scheduled_task", payload } } : null;
   }
 
+  if (event.data.artifactType === "skill_save") {
+    const payload = decodeSkillSaveCard(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "skill_save", payload } } : null;
+  }
+
   if (event.data.artifactType === "workspace_checkpoint") {
     const payload = decodeThreadWorkspaceCheckpointOutput(event.data.payload);
     return payload ? { type: "artifact", data: { artifactType: "workspace_checkpoint", payload } } : null;
@@ -290,6 +298,10 @@ export function isRunOutputArtifactEvent(
     const decoded = decodeScheduledTaskCard(event.data.payload);
     return decoded !== null && !decoded.deleted &&
       JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
+  }
+  if (event.data.artifactType === "skill_save") {
+    const decoded = decodeSkillSaveCard(event.data.payload);
+    return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
   }
   if (event.data.artifactType !== "search" || !isRecord(event.data.payload) ||
     !hasOnlyKeys(event.data.payload, ["action"]) ||

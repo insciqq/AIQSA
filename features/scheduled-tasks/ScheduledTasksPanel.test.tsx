@@ -23,6 +23,7 @@ vi.mock("./scheduledTasksApi", async (importOriginal) => {
     createScheduledTask: vi.fn(),
     deleteScheduledTask: vi.fn(),
     getScheduledTask: vi.fn(),
+    listScheduledTaskSkillOptions: vi.fn(async () => []),
     listScheduledTasks: vi.fn(),
     markScheduledTaskSeen: vi.fn(),
     runScheduledTaskNow: vi.fn(),
@@ -156,10 +157,10 @@ describe("ScheduledTasksPanel", () => {
     detail.mockResolvedValueOnce({ task, recentRuns: [
       { id: "run-2", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
         startedAt: "2026-10-02T08:00:05.000Z", finishedAt: "2026-10-02T08:01:00.000Z", chatId: "chat-1", unseen: false,
-        unavailableSources: [] },
+        unavailableSources: [], skills: [] },
       { id: "run-1", scheduledFor: "2026-10-01T12:00:00.000Z", trigger: "manual", state: "failed", reasonCode: "model_unavailable",
         startedAt: "2026-10-01T12:00:00.000Z", finishedAt: "2026-10-01T12:00:02.000Z", chatId: "chat-1", unseen: false,
-        unavailableSources: [] }
+        unavailableSources: [], skills: [] }
     ] }).mockResolvedValueOnce({ task: { ...task, revision: 3, title: "Renamed elsewhere" }, recentRuns: [] });
     update.mockRejectedValueOnce(new ScheduledTaskApiError("scheduled_task_stale", 409))
       .mockResolvedValueOnce({ ...task, revision: 4, title: "My brief" });
@@ -179,6 +180,36 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(update).toHaveBeenLastCalledWith(task.id, { expectedRevision: 3, title: "My brief" });
+  });
+
+  it("edits a task's pinned Skills, shows a lost one and the versions its runs used, and maps the server's refusal", async () => {
+    const lost = { id: "skill-gone", name: "gitlab-digest", available: false, hasExecutables: true };
+    const task = scheduledTaskFixture({ revision: 2, toolsEnabled: true, status: "paused", nextRunAt: null,
+      pauseReason: "skill_unavailable", pinnedSkillIds: [lost.id], pinnedSkills: [lost] });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [
+      { id: "run-1", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
+        startedAt: "2026-10-02T08:00:05.000Z", finishedAt: "2026-10-02T08:01:00.000Z", chatId: null, unseen: false,
+        unavailableSources: [], skills: [{ name: "gitlab-digest", version: 3 }] }
+    ] });
+    update.mockRejectedValueOnce(new ScheduledTaskApiError("scheduled_task_skill_unavailable", 400))
+      .mockResolvedValueOnce({ ...task, revision: 3, pinnedSkillIds: [], pinnedSkills: [] });
+    renderPanel();
+    expect(await screen.findByText(/the pinned Skill “gitlab-digest” is no longer available/u)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
+    const picker = within(sheet).getByTestId("scheduled-task-skills");
+    expect(picker).toHaveTextContent("No longer available");
+    const runs = await within(sheet).findByRole("region", { name: "Recent runs" });
+    expect(runs).toHaveTextContent("Skills: gitlab-digest v3");
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Digest" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
+    expect(await within(picker).findByRole("alert")).toHaveTextContent("A pinned Skill is not available to you.");
+    fireEvent.click(within(picker).getByRole("button", { name: "Remove gitlab-digest" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(update).toHaveBeenLastCalledWith(task.id, { expectedRevision: 2, title: "Digest", pinnedSkillIds: [] });
   });
 
   it("explains instructions whose links runs cannot read yet and allows them when the owner saves them unchanged", async () => {
@@ -217,12 +248,12 @@ describe("ScheduledTasksPanel", () => {
     detail.mockResolvedValueOnce({ task, recentRuns: [
       { id: "run-3", scheduledFor: "2026-10-03T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
         startedAt: "2026-10-03T08:00:01.000Z", finishedAt: "2026-10-03T08:01:00.000Z", chatId: "chat-3", unseen: true,
-        unavailableSources: [] },
+        unavailableSources: [], skills: [] },
       { id: "run-2", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "previous_running",
-        startedAt: null, finishedAt: "2026-10-02T08:00:01.000Z", chatId: null, unseen: false, unavailableSources: [] },
+        startedAt: null, finishedAt: "2026-10-02T08:00:01.000Z", chatId: null, unseen: false, unavailableSources: [], skills: [] },
       { id: "run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "manual", state: "completed", reasonCode: null,
         startedAt: "2026-10-01T08:00:01.000Z", finishedAt: "2026-10-01T08:01:00.000Z", chatId: "chat-1", unseen: true,
-        unavailableSources: [] }
+        unavailableSources: [], skills: [] }
     ] });
     const seen = vi.mocked(markScheduledTaskSeen).mockReset().mockResolvedValue();
     const { onOpenChat } = renderPanel();
@@ -271,7 +302,8 @@ describe("ScheduledTasksPanel", () => {
     const newChat = within(sheet).getByRole("radio", { name: "Each run starts a new chat" });
     expect(newChat).toBeDisabled();
     expect(within(sheet).getByRole("radio", { name: "Continue in this task's chat" })).toBeChecked();
-    expect(within(sheet).getByRole("group", { name: "Chat" })).toHaveAccessibleDescription("Hourly tasks always continue in one chat.");
+    expect(within(sheet).getByRole("group", { name: "Chat" })).toHaveAccessibleDescription("Hourly tasks always continue in one chat. " +
+      "Each month starts a new chat with the last result. The previous one is archived unless you pinned it, put it in a folder or shared it.");
 
     fireEvent.change(within(sheet).getByLabelText("Interval"), { target: { value: "2" } });
     fireEvent.click(within(sheet).getByRole("radio", { name: "Set hours" }));
@@ -307,7 +339,10 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "hourly" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
     const error = await within(sheet).findByText(/up to 3 active hourly tasks/u);
-    expect(within(sheet).getByRole("group", { name: "Schedule" })).toHaveAttribute("aria-describedby", error.id);
+    // The group names the recurring start spread and the error.
+    const spread = within(sheet).getByTestId("scheduled-task-spread-hint");
+    expect(spread).toHaveTextContent("Starts within 3 minutes of the scheduled time.");
+    expect(within(sheet).getByRole("group", { name: "Schedule" })).toHaveAttribute("aria-describedby", `${spread.id} ${error.id}`);
     expect(update).toHaveBeenCalledWith(task.id, {
       expectedRevision: 1, chatMode: "same",
       schedule: { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
@@ -370,7 +405,8 @@ describe("ScheduledTasksPanel", () => {
     const chat = within(sheet).getByRole("group", { name: "Chat" });
     expect(within(chat).getByRole("radio", { name: "Each run starts a new chat" })).toBeDisabled();
     expect(within(chat).getByRole("radio", { name: "Continue in this task's chat" })).toBeChecked();
-    expect(chat).toHaveAccessibleDescription("Monitoring compares each check with the last result, so it always continues in one chat.");
+    expect(chat).toHaveAccessibleDescription(new RegExp("^Monitoring compares each check with the last result, so it always continues " +
+      "in one chat\\. Each month starts a new chat with the last result"));
 
     // A model without tool calling cannot report a check: the reason shows at once, and its switches turn off.
     expect(within(sheet).getByRole("switch", { name: "Tools (MCP and Skills)" })).toHaveAttribute("aria-checked", "true");
@@ -456,6 +492,50 @@ describe("ScheduledTasksPanel", () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith(task.id, { expectedRevision: 1, memoryEnabled: true }));
   });
 
+  it("shows each task's history retention on its card with what is kept, and saves a new task with 90 days", async () => {
+    list.mockResolvedValue(listed([
+      scheduledTaskFixture({ id: "kept", title: "Kept brief", historyDeletedChats: 2, historyNextDeletionAt: "2026-11-12T09:00:00.000Z" }),
+      scheduledTaskFixture({ id: "forever", title: "Old task", historyRetentionDays: null })
+    ]));
+    create.mockResolvedValue(scheduledTaskFixture({ id: "new", title: "Brief" }));
+    renderPanel();
+    const [kept, forever] = await screen.findAllByRole("listitem");
+    expect(within(kept!).getByTestId("scheduled-task-history-line"))
+      .toHaveTextContent("History: 90 days · next cleanup Thu 12 Nov · 2 old chats deleted");
+    expect(within(kept!).getByText("The current chat is kept, and so is any chat you wrote in, pinned, put in a folder, shared, " +
+      "renamed or restored.")).toBeInTheDocument();
+    expect(within(forever!).getByTestId("scheduled-task-history-line")).toHaveTextContent("History: kept forever");
+    expect(within(forever!).getByText("Old chats stay until you delete them.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    const sheet = screen.getByRole("dialog", { name: "New scheduled task" });
+    const history = within(sheet).getByLabelText("Keep old chats");
+    expect(history).toHaveValue("90");
+    expect(within(history).getAllByRole("option").map((option) => option.textContent)).toEqual(["30 days", "90 days", "1 year", "Forever"]);
+    expect(history).toHaveAccessibleDescription(/^Older chats of this task are deleted this long after their last run\./u);
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Brief" } });
+    fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Summarize" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ historyRetentionDays: 90, title: "Brief" })));
+  });
+
+  it("keeps an old task's chats forever until its owner chooses, and sends the change", async () => {
+    const task = scheduledTaskFixture({ historyRetentionDays: null });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [] });
+    update.mockResolvedValueOnce({ ...task, historyRetentionDays: 365, revision: 2 });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
+    const history = within(sheet).getByLabelText("Keep old chats");
+    expect(history).toHaveValue("forever");
+    expect(history).toHaveAccessibleDescription(/^This task's old chats stay until you delete them\./u);
+    fireEvent.change(history, { target: { value: "365" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(task.id, { expectedRevision: 1, historyRetentionDays: 365 }));
+  });
+
   it("labels monitoring tasks, keeps Resume for a reached goal and shows check outcomes and missing sources in the history", async () => {
     const watching = scheduledTaskFixture({ id: "watch", title: "Release watch", kind: "monitoring", chatId: "chat-w" });
     const done = scheduledTaskFixture({ id: "done", title: "Ticket watch", kind: "monitoring", status: "completed", nextRunAt: null,
@@ -466,7 +546,7 @@ describe("ScheduledTasksPanel", () => {
     const run = (id: string, reasonCode: string, extra: Partial<ScheduledTaskRun> = {}): ScheduledTaskRun => ({
       id, scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode,
       startedAt: "2026-10-02T08:00:01.000Z", finishedAt: "2026-10-02T08:01:00.000Z", chatId: "chat-w", unseen: false,
-      unavailableSources: [], ...extra
+      unavailableSources: [], skills: [], ...extra
     });
     detail.mockResolvedValueOnce({ task: watching, recentRuns: [
       run("r3", "could_not_check", { unavailableSources: [{ name: "Release tracker", reason: "mcp_reauthorization_required" }] }),

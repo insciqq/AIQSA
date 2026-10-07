@@ -47,6 +47,36 @@ function newestRunIsSettledScheduledSql(sessionColumn: Prisma.Sql): Prisma.Sql {
   )`;
 }
 
+/**
+ * The disk-retention pin of the chat in `chatColumn`: an active same-chat
+ * task with Workspace on keeps its chat's disk, and an active Workspace
+ * task's monthly rotation keeps the disk of the chat it left while the files
+ * carried from it are not restored yet; each until the task's next run
+ * (`pinnedAfter` is now minus the normal retention). Cleanup and the
+ * administrator's counts share it.
+ */
+export function workspaceDiskPinnedByScheduledTaskSql(chatColumn: Prisma.Sql, pinnedAfter: Date): Prisma.Sql {
+  return Prisma.sql`(EXISTS (
+    SELECT 1
+    FROM "ScheduledTask" task
+    WHERE task."chatId" = ${chatColumn}
+      AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
+      AND task."chatMode" = 'SAME'::"ScheduledTaskChatMode"
+      AND task."workspaceEnabled"
+      AND task."nextRunAt" > ${pinnedAfter}
+  ) OR EXISTS (
+    SELECT 1
+    FROM "ChatContinuationWorkspaceSeed" seed
+    INNER JOIN "ScheduledTask" task ON task."id" = seed."scheduledTaskId"
+    WHERE seed."sourceChatId" = ${chatColumn}
+      AND seed."status" IN ('CAPTURING'::"ChatContinuationWorkspaceSeedStatus", 'READY'::"ChatContinuationWorkspaceSeedStatus",
+        'TRANSFERRED'::"ChatContinuationWorkspaceSeedStatus", 'RESTORING'::"ChatContinuationWorkspaceSeedStatus")
+      AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
+      AND task."workspaceEnabled"
+      AND task."nextRunAt" > ${pinnedAfter}
+  ))`;
+}
+
 type IdleCandidate = Readonly<{
   chat: Readonly<{ archived: boolean }>;
   chatId: string;
@@ -287,18 +317,23 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
   // disk, but before creating the destination. Such READY seeds have no live
   // session lease for the recovery loop above to find.
   const abandonedBefore = new Date(now.getTime() - 180_000);
+  // A scheduled task's rotation holds its captured seed for its admission's lease.
   const orphanedSeeds = await input.prisma.chatContinuationWorkspaceSeed.findMany({
     select: { id: true, sourceChatId: true }, orderBy: [{ updatedAt: "asc" }, { id: "asc" }], take: limit,
     where: { newChatId: null, updatedAt: { lte: abandonedBefore },
       status: { in: ["CAPTURING", "READY", "FAILED", "ABANDONED"] },
-      OR: [{ continuation: null }, { continuation: { status: "failed" } },
-        { continuation: { status: "running", OR: [{ leaseExpiresAt: { lte: now } }, { leaseExpiresAt: null, updatedAt: { lte: abandonedBefore } }] } }] }
+      AND: [
+        { OR: [{ scheduledTaskId: null }, { leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }] },
+        { OR: [{ continuation: null }, { continuation: { status: "failed" } },
+          { continuation: { status: "running", OR: [{ leaseExpiresAt: { lte: now } }, { leaseExpiresAt: null, updatedAt: { lte: abandonedBefore } }] } }] }
+      ] }
   });
   for (const candidate of orphanedSeeds) {
     await input.prisma.$transaction(async (tx) => {
       if (candidate.sourceChatId) await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${candidate.sourceChatId} FOR UPDATE`;
       const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { id: candidate.id }, include: { continuation: true } });
       if (!seed || seed.newChatId || seed.updatedAt > abandonedBefore ||
+        (seed.scheduledTaskId && seed.leaseExpiresAt && seed.leaseExpiresAt > now) ||
         (seed.continuation && (seed.continuation.status === "complete" ||
           seed.continuation.status === "running" && (seed.continuation.leaseExpiresAt ? seed.continuation.leaseExpiresAt > now : seed.continuation.updatedAt > abandonedBefore)))) return;
       // CAPTURING still needs receiver fencing; never race its disk operation.
@@ -320,8 +355,10 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
   // Disk-retention pin: while an active task that continues in this chat has
   // Workspace on, the disk outlives its normal expiry until the task's next
   // run plus the normal retention, so files reach the next run even of a
-  // weekly task. Pausing, deleting or switching the task off lifts the pin.
-  // The pin never keeps a VM running; idle stops below are separate.
+  // weekly task. So does the disk of the chat a monthly rotation left until
+  // the new chat restored the files carried from it. Pausing, deleting or
+  // switching the task off lifts the pin. The pin never keeps a VM running;
+  // idle stops below are separate.
   const pinnedAfter = new Date(now.getTime() - input.config.retentionSeconds * 1_000);
   const expired = await input.prisma.$transaction(async (tx) => {
     const candidates = await tx.$queryRaw<SessionCandidate[]>(Prisma.sql`
@@ -341,15 +378,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
               'streaming'::"ModelRunStatus"
             )
         )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "ScheduledTask" task
-          WHERE task."chatId" = ws."chatId"
-            AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
-            AND task."chatMode" = 'SAME'::"ScheduledTaskChatMode"
-            AND task."workspaceEnabled"
-            AND task."nextRunAt" > ${pinnedAfter}
-        )
+        AND NOT ${workspaceDiskPinnedByScheduledTaskSql(Prisma.sql`ws."chatId"`, pinnedAfter)}
       ORDER BY ws."expiresAt" ASC, ws."id" ASC
       FOR UPDATE OF ws SKIP LOCKED
       LIMIT ${limit}

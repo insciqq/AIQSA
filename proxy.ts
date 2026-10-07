@@ -46,7 +46,9 @@ const publicPrefixes = [
   "/api/test/auth-mails",
   "/api/public-shares",
   "/api/artifact-public",
-  // This endpoint authenticates short-lived, run-scoped bearer grants itself.
+  // Session-free for the Workspace runner relay only: the route refuses any
+  // request without the relay's proof before it looks up the run bearer.
+  // Never rely on this path being publicly reachable; proxies may block it.
   "/api/internal/agent",
   "/.well-known/oauth-authorization-server",
   "/.well-known/oauth-protected-resource",

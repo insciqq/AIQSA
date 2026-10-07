@@ -16,13 +16,14 @@ const catalog: ScheduledTaskCatalog = {
 const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
   modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard"
+  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90
 } as const;
 const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
 function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
-    ...draft, id: "task-1", schedule: { kind: "daily", time: "09:00" }, status: "active", pauseReason: null,
+    ...draft, pinnedSkillIds: [], id: "task-1", schedule: { kind: "daily", time: "09:00" }, status: "active", pauseReason: null,
+    historyDeletedChats: 0, historyNextDeletionAt: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
     unseenResult: false, revision: 2,
     createdAt: "2026-10-01T08:00:00.000Z", updatedAt: "2026-10-01T08:00:00.000Z", ...overrides
@@ -46,8 +47,15 @@ function fixture(current: ScheduledTask | null = task()) {
   const resolveAuth = vi.fn().mockResolvedValue({ userId: "owner", user: { id: "owner", status: "active" } });
   const kick = vi.fn();
   const workspacePolicy = { read: vi.fn().mockResolvedValue({ enabled: true }) };
-  const handlers = createScheduledTaskHandlers({ kick, loadCatalog, now: () => NOW, resolveAuth, store, workspacePolicy });
-  return { handlers, kick, loadCatalog, resolveAuth, store, workspacePolicy };
+  // Skills "skill-own" and "skill-shared" are the owner's to pin; any other is gone, "skill-off" is disabled.
+  const loadPinnedSkills = vi.fn(async (_userId: string, ids: readonly string[]) => ids.map((id) => ({
+    id, name: id === "skill-gone" ? null : id, available: id === "skill-own" || id === "skill-shared",
+    hasExecutables: id === "skill-shared"
+  })));
+  const handlers = createScheduledTaskHandlers({
+    kick, loadCatalog, loadPinnedSkills, now: () => NOW, resolveAuth, store, workspacePolicy
+  });
+  return { handlers, kick, loadCatalog, loadPinnedSkills, resolveAuth, store, workspacePolicy };
 }
 
 const json = (method: string, body: unknown, path = "") =>
@@ -73,7 +81,9 @@ describe("scheduled tasks owner API", () => {
     const response = await f.handlers.create(json("POST", { ...draft, title: "  Morning brief  " }));
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(f.store.create).toHaveBeenCalledWith("owner", draft, new Date("2026-10-05T06:00:00.000Z"), []);
+    expect(f.store.create).toHaveBeenCalledWith("owner", { ...draft, pinnedSkillIds: [] },
+      new Date("2026-10-05T06:00:00.000Z"), []);
+
     expect(f.loadCatalog).toHaveBeenCalledWith("owner");
     expect((await response.json()).task).toMatchObject({ title: "Morning brief", nextRunAt: "2026-10-05T06:00:00.000Z" });
   });
@@ -123,7 +133,7 @@ describe("scheduled tasks owner API", () => {
     // 4 October 2026 is a Sunday: the first hourly run is Monday 09:00 in Moscow.
     const hourlyTask = await f.handlers.create(json("POST", { ...draft, schedule: hourly, chatMode: "same" }));
     expect(hourlyTask.status).toBe(201);
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, schedule: hourly, chatMode: "same" },
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, pinnedSkillIds: [], schedule: hourly, chatMode: "same" },
       new Date("2026-10-05T06:00:00.000Z"), []);
   });
 
@@ -308,7 +318,7 @@ describe("scheduled tasks owner API", () => {
     const disabled = await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }));
     expect([disabled.status, await disabled.json()]).toEqual([400, { error: "scheduled_task_workspace_unavailable" }]);
     expect((await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }))).status).toBe(201);
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, workspaceEnabled: true }, expect.any(Date), []);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, pinnedSkillIds: [], workspaceEnabled: true }, expect.any(Date), []);
 
     // Turning tools on for a model without tool calling is refused, even for a paused task.
     const plain = fixture(task({ modelId: "model-plain", nextRunAt: null, searchEnabled: false, status: "paused", toolsEnabled: false }));
@@ -324,10 +334,48 @@ describe("scheduled tasks owner API", () => {
     expect(tools.workspacePolicy.read).toHaveBeenCalledTimes(1);
   });
 
+  it("pins up to four of the owner's available Skills, only with tools, and rechecks them on change or resume", async () => {
+    const f = fixture();
+    const created = await f.handlers.create(json("POST", { ...draft, pinnedSkillIds: ["skill-own", "skill-shared"] }));
+    expect(created.status).toBe(201);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, pinnedSkillIds: ["skill-own", "skill-shared"] },
+      expect.any(Date), []);
+    expect(f.loadPinnedSkills).toHaveBeenLastCalledWith("owner", ["skill-own", "skill-shared"]);
+    const cases: Array<[unknown, string]> = [
+      [{ ...draft, pinnedSkillIds: ["a", "b", "c", "d", "e"] }, "scheduled_task_invalid"],
+      [{ ...draft, pinnedSkillIds: ["skill-own", "skill-own"] }, "scheduled_task_invalid"],
+      [{ ...draft, pinnedSkillIds: [""] }, "scheduled_task_invalid"],
+      [{ ...draft, pinnedSkillIds: "skill-own" }, "scheduled_task_invalid"],
+      [{ ...draft, toolsEnabled: false, pinnedSkillIds: ["skill-own"] }, "scheduled_task_skills_need_tools"],
+      [{ ...draft, pinnedSkillIds: ["skill-own", "skill-gone"] }, "scheduled_task_skill_unavailable"],
+      [{ ...draft, pinnedSkillIds: ["skill-off"] }, "scheduled_task_skill_unavailable"]
+    ];
+    for (const [body, error] of cases) {
+      const response = await f.handlers.create(json("POST", body));
+      expect([response.status, await response.json()]).toEqual([400, { error }]);
+    }
+    expect(f.store.create).toHaveBeenCalledTimes(1);
+
+    // A paused task with a lost pin keeps other edits; changing pins or resuming rechecks them.
+    const paused = fixture(task({ nextRunAt: null, pauseReason: "skill_unavailable", pinnedSkillIds: ["skill-gone"], status: "paused" }));
+    expect((await paused.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1")).status).toBe(200);
+    expect(paused.loadPinnedSkills).not.toHaveBeenCalled();
+    const resume = await paused.handlers.update(patch({ expectedRevision: 2, status: "active" }), "task-1");
+    expect(await resume.json()).toEqual({ error: "scheduled_task_skill_unavailable" });
+    const repinned = await paused.handlers.update(patch({ expectedRevision: 2, status: "active", pinnedSkillIds: ["skill-own"] }), "task-1");
+    expect(repinned.status).toBe(200);
+    expect(lastWrite(paused)).toMatchObject({ draft: { pinnedSkillIds: ["skill-own"] }, status: "active" });
+    // Pins never outlive tools silently.
+    const off = await paused.handlers.update(patch({ expectedRevision: 2, toolsEnabled: false }), "task-1");
+    expect(await off.json()).toEqual({ error: "scheduled_task_skills_need_tools" });
+    expect((await paused.handlers.update(patch({ expectedRevision: 2, toolsEnabled: false, pinnedSkillIds: [] }), "task-1")).status)
+      .toBe(200);
+  });
+
   it("stores the Memory switch as sent and changes it without a model check", async () => {
     const f = fixture();
     await f.handlers.create(json("POST", { ...draft, memoryEnabled: false }));
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, memoryEnabled: false }, expect.any(Date), []);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, pinnedSkillIds: [], memoryEnabled: false }, expect.any(Date), []);
     // Memory needs no tool calling: a paused task with a plain model turns it on as it is.
     const plain = fixture(task({ memoryEnabled: false, modelId: "model-plain", nextRunAt: null, searchEnabled: false,
       status: "paused", toolsEnabled: false }));
@@ -339,6 +387,32 @@ describe("scheduled tasks owner API", () => {
     expect(lastWrite(plain)).toMatchObject({ draft: { memoryEnabled: false, title: "Renamed" } });
     const malformed = await plain.handlers.update(patch({ expectedRevision: 2, memoryEnabled: "off" }), "task-1");
     expect([malformed.status, await malformed.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
+  });
+
+  it("keeps 90 days of a new task's old chats unless the owner chooses, and changes it without a model check", async () => {
+    const f = fixture();
+    const { historyRetentionDays: _omitted, ...withoutHistory } = draft;
+    await f.handlers.create(json("POST", withoutHistory));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ historyRetentionDays: 90 }),
+      expect.any(Date), []);
+    await f.handlers.create(json("POST", { ...draft, historyRetentionDays: null }));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ historyRetentionDays: null }),
+      expect.any(Date), []);
+    for (const historyRetentionDays of [0, 60, "90"]) {
+      const refused = await f.handlers.create(json("POST", { ...draft, historyRetentionDays }));
+      expect([refused.status, await refused.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
+    }
+    // A legacy task keeps everything until its owner chooses; forever is a choice, not an omission.
+    const legacy = fixture(task({ historyRetentionDays: null, modelId: "model-plain", nextRunAt: null, searchEnabled: false,
+      status: "paused", toolsEnabled: false }));
+    expect((await legacy.handlers.update(patch({ expectedRevision: 2, historyRetentionDays: 30 }), "task-1")).status).toBe(200);
+    expect(lastWrite(legacy)).toMatchObject({ draft: { historyRetentionDays: 30 }, status: "paused" });
+    expect(legacy.loadCatalog).not.toHaveBeenCalled();
+    await legacy.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(legacy)).toMatchObject({ draft: { historyRetentionDays: null, title: "Renamed" } });
+    const kept = fixture(task({ historyRetentionDays: 365 }));
+    await kept.handlers.update(patch({ expectedRevision: 2, historyRetentionDays: null }), "task-1");
+    expect(lastWrite(kept)).toMatchObject({ draft: { historyRetentionDays: null } });
   });
 
   it("wakes the runner after create and update", async () => {

@@ -11,7 +11,9 @@ import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
 import { createMemoryStorageAdapter, createPooledStorageAdapter } from "@/tests/support/storage";
 import { WORKSPACE_ATTACHMENT_STORAGE_WAIT_MS } from "./attachmentAcquisition";
 import { getWorkspaceConfig } from "./config";
+import type { PrismaClient } from "@prisma/client";
 import {
+  createPrismaWorkspaceCoordinatorRepository,
   createWorkspaceCoordinator,
   type WorkspaceCoordinatorRepository,
   type WorkspaceExecutionBinding
@@ -25,6 +27,9 @@ import type {
 import { WorkspaceRuntimeError } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 import { sameOutputIdentities, type WorkspaceOutputCapture } from "./outputManifest";
+import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
+import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 
 const config = getWorkspaceConfig({
   AIQSA_TEST_MODE: "1",
@@ -494,6 +499,85 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
   });
 
+  it("holds whichever run first restores a scheduled rotation's seed to it, the owner's own run included", async () => {
+    const seed = { byteSize: 11, checksum: "a".repeat(64), id: "seed", leaseExpiresAt: null as Date | null, newChatId: "chat_1",
+      scheduledTaskId: "task_1" as string | null, status: "TRANSFERRED", storageKey: "workspace-continuation/seed.tar.gz" };
+    const session = { chatId: "chat_1", id: "session_1", operationOwner: "run:run_owner", version: 2 };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      chatContinuationWorkspaceSeed: { findUnique: vi.fn(async () => seed), updateMany: vi.fn(async () => ({ count: 1 })) },
+      modelRun: { count: vi.fn(async () => 0) },
+      workspaceSession: { findUnique: vi.fn(async () => session) }
+    };
+    const repository = createPrismaWorkspaceCoordinatorRepository({
+      $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx)
+    } as unknown as PrismaClient);
+    const claim = () => repository.claimContinuationSeed!({ chatId: "chat_1", operation: { generation: 2, owner: "run:run_owner" },
+      sessionId: "session_1" });
+    // An interactive run in the new chat: required by the seed itself, never by which run claims it.
+    await expect(claim()).resolves.toMatchObject({ id: "seed", required: true });
+    expect(tx.modelRun.count).not.toHaveBeenCalled();
+    // While another run restores it, a start fails visibly instead of opening an empty project.
+    Object.assign(seed, { leaseExpiresAt: new Date(Date.now() + 60_000), status: "RESTORING" });
+    await expect(claim()).rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
+    // Deleting the task leaves an ordinary continuation seed.
+    Object.assign(seed, { leaseExpiresAt: null, scheduledTaskId: null, status: "TRANSFERRED" });
+    await expect(claim()).resolves.not.toHaveProperty("required");
+  });
+
+  it.each(["restore", "unsupported"])("never lets a run go on with an empty carried project (%s fails)", async (failure) => {
+    const value = fixture();
+    Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token",
+      storageKey: "user_1/input", byteSize: 11, checksum: createHash("sha256").update("input bytes").digest("hex"), required: true })),
+      settleContinuationSeed: vi.fn(async () => true) });
+    value.runtime.restoreProjectArchive = failure === "unsupported" ? undefined
+      : vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_archive_invalid"); });
+    const running = vi.spyOn(value.repository, "markSessionRunning");
+    await expect(value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
+    // The claim is released with its archive kept for the next run; nothing settles it failed.
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledOnce();
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith({ id: "seed", status: "TRANSFERRED", token: "token" });
+    expect(running).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
+  it("restores a scheduled run's carried files before its first request and leaves other runs alone", async () => {
+    const value = fixture();
+    const pendingCarryover = vi.fn(async () => false);
+    Object.assign(value.repository, { pendingCarryover, claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token",
+      storageKey: "user_1/input", byteSize: 11, checksum: createHash("sha256").update("input bytes").digest("hex"), required: true })),
+      settleContinuationSeed: vi.fn(async () => true) });
+    value.runtime.restoreProjectArchive = vi.fn(async () => undefined);
+    const prepare = () => value.coordinator.prepareCarryover!({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    await prepare();
+    expect(value.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(value.runtime.restoreProjectArchive).not.toHaveBeenCalled();
+    pendingCarryover.mockResolvedValue(true);
+    await prepare();
+    expect(pendingCarryover).toHaveBeenLastCalledWith({ chatId: "chat_1", runId: value.runId });
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith(expect.objectContaining({ status: "RESTORED" }));
+    // The first command reuses the started Workspace: nothing is restored twice.
+    await value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+  });
+
+  it("reports a carried project whose Workspace cannot start as unavailable, and nothing else", async () => {
+    const value = fixture();
+    const pendingCarryover = vi.fn(async () => true);
+    Object.assign(value.repository, { pendingCarryover });
+    vi.mocked(value.runtime.ensureSession).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_runtime_unavailable"));
+    const prepare = () => value.coordinator.prepareCarryover!({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    await expect(prepare()).rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
+    // Without a carried project a failing lookup keeps its own error.
+    pendingCarryover.mockRejectedValueOnce(new Error("database_unavailable"));
+    await expect(prepare()).rejects.toThrow("database_unavailable");
+  });
+
   it.each(["cleanup", "settlement"])("fails closed when restore %s cannot be proven", async (failure) => {
     const value = fixture();
     Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token", storageKey: "user_1/input", byteSize: 11, checksum: "a".repeat(64) })),
@@ -668,6 +752,53 @@ describe("Workspace coordinator", () => {
     }));
     expect(vi.mocked(value.runtime.syncPersonalSecrets).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(value.runtime.callBoundTool).mock.invocationCallOrder[0]!);
     expect(value.runtime.callBoundTool).not.toHaveBeenCalledWith(expect.objectContaining({ secrets }));
+  });
+
+  it.each([[true, true], [false, false], [undefined, false]] as const)(
+    "bounds the uv cache once per execution initialization only for a scheduled run (scheduled %s)", async (scheduled, bounded) => {
+      const value = fixture();
+      const read = value.repository.binding.bind(value.repository);
+      vi.spyOn(value.repository, "binding").mockImplementation(async (input) => {
+        const binding = await read(input);
+        return binding ? { ...binding, ...(scheduled === undefined ? {} : { scheduled }) } : null;
+      });
+      for (const id of ["first", "second"]) await value.coordinator.execute({
+        call: { arguments: { command: "pwd" }, id, name: value.shellToolName },
+        modelRunToolCallId: id, runId: value.runId, userId: "user_1", workspace: value.workspace
+      });
+      expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledOnce();
+      const [delivered] = vi.mocked(value.runtime.syncPersonalSecrets).mock.calls[0]!;
+      expect(delivered.boundUvCache === true).toBe(bounded);
+      // Never a model tool call: the only dispatched tool calls are the two commands.
+      expect(value.runtime.callBoundTool).toHaveBeenCalledTimes(2);
+    });
+
+  it("masks delivered secret values before the result is persisted, sent to a provider or shown", async () => {
+    const value = fixture();
+    const token = "synthetic-token-0123456789";
+    vi.mocked(value.repository.personalSecrets).mockResolvedValue([{ id: "10000000-0000-4000-8000-000000000001",
+      versionId: "10000000-0000-4000-8000-000000000002", name: "Fixture", description: "",
+      value: { kind: "env", entries: [{ name: "MY_TOKEN", value: token }] } }]);
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ content: [{ type: "text",
+      text: JSON.stringify({ ok: true, data: { stdout: `${token}\n`, stderr: "", exitCode: 0, success: true } }, null, 2) }],
+    exitCode: 0, status: "complete" });
+    const activity: ThreadWorkspaceActivityEntry[] = [];
+    const result = await value.coordinator.execute({
+      call: { arguments: { command: "echo $MY_TOKEN" }, id: "call_secret", name: value.shellToolName },
+      modelRunToolCallId: "call_secret", onActivity: async (entry) => { activity.push(entry); },
+      runId: value.runId, userId: "user_1", workspace: value.workspace
+    });
+    const persisted = JSON.stringify(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes));
+    const provider = JSON.stringify([openAIResponsesToolBridge.appendToolResult({}, result),
+      anthropicMessagesToolBridge.appendToolResult({}, result)]);
+    for (const surface of [persisted, provider, JSON.stringify(result)]) {
+      expect(surface).toContain("[secret:MY_TOKEN]");
+      expect(surface).not.toContain(token);
+    }
+    expect(result.rawPreview).toMatchObject({ secretMasked: true });
+    const settled = (result.artifacts ?? []).map((event) => (event.data as { payload: ThreadWorkspaceActivityEntry }).payload);
+    expect(settled.at(-1)?.command).toMatchObject({ secretMasked: true, stdoutPreview: "[secret:MY_TOKEN]\n" });
+    expect(JSON.stringify([activity, settled])).not.toContain(token);
   });
 
   it("does not adopt a later operation generation during an old finalizer's settlement", async () => {
@@ -2190,5 +2321,179 @@ describe("Workspace coordinator bounded attachment acquisition", () => {
     expect(guest.written.size).toBe(0);
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
     expect(pool.stats).toMatchObject({ open: 0, opened: 0, waiting: 0 });
+  });
+});
+
+describe("Workspace coordinator guest-code MCP", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const token = "Synthetic_code_token_0123456789abcdefghijkl";
+  const invocation = "b".repeat(32);
+  const gateway = "http://host.microsandbox.internal:4311";
+  type CodeRepository = Required<Pick<WorkspaceCoordinatorRepository,
+    "closeCodeInvocation" | "codeCallSummary" | "issueCodeGrant" | "openCodeInvocation" | "revokeCodeGrant">>;
+
+  function withCode(value: ReturnType<typeof fixture>,
+    issue: Awaited<ReturnType<CodeRepository["issueCodeGrant"]>> = { environment: { AIQSA_GATEWAY_URL: gateway, AIQSA_RUN_TOKEN: token }, token }) {
+    const code = {
+      closeCodeInvocation: vi.fn<CodeRepository["closeCodeInvocation"]>(async () => undefined),
+      codeCallSummary: vi.fn<CodeRepository["codeCallSummary"]>(async () => null),
+      issueCodeGrant: vi.fn<CodeRepository["issueCodeGrant"]>(async () => issue),
+      openCodeInvocation: vi.fn<CodeRepository["openCodeInvocation"]>(async () => invocation),
+      revokeCodeGrant: vi.fn<CodeRepository["revokeCodeGrant"]>(async () => undefined)
+    };
+    Object.assign(value.repository, code);
+    return code;
+  }
+
+  const shell = (value: ReturnType<typeof fixture>, id: string, onActivity?: (entry: ThreadWorkspaceActivityEntry) => Promise<void>) =>
+    value.coordinator.execute({ call: { arguments: { command: "python3 report.py" }, id, name: value.shellToolName },
+      modelRunToolCallId: id, ...(onActivity ? { onActivity } : {}), runId: value.runId, userId: "user_1", workspace: value.workspace });
+
+  it("delivers a fresh run bearer through the run-bound environment and masks it in output", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ content: [{ type: "text",
+      text: JSON.stringify({ ok: true, data: { stdout: `AIQSA_RUN_TOKEN=${token}\n`, stderr: "", exitCode: 0, success: true } }, null, 2) }],
+    exitCode: 0, status: "complete" });
+    const activity: ThreadWorkspaceActivityEntry[] = [];
+    const result = await shell(value, "call_env", async (entry) => { activity.push(entry); });
+    expect(code.issueCodeGrant).toHaveBeenCalledOnce();
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      runEnvironment: { AIQSA_GATEWAY_URL: gateway, AIQSA_RUN_TOKEN: token } }));
+    for (const surface of [JSON.stringify(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)),
+      JSON.stringify(result), JSON.stringify(activity)]) {
+      expect(surface).not.toContain(token);
+    }
+    expect(JSON.stringify(result)).toContain("[secret:AIQSA_RUN_TOKEN]");
+  });
+
+  it("gives every dispatched command its own invocation and closes it when the command returns", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    await shell(value, "call_one");
+    expect(code.openCodeInvocation).toHaveBeenCalledWith({ kind: "command", modelRunToolCallId: "call_one",
+      runId: value.runId, sessionId: value.workspace.sessionId });
+    expect(value.runtime.callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ invocationId: invocation }));
+    expect(code.closeCodeInvocation).toHaveBeenCalledWith({ invocationId: invocation, runId: value.runId });
+    // A failing command closes its invocation too.
+    vi.mocked(value.runtime.callBoundTool).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_tool_outcome_unknown"));
+    await expect(shell(value, "call_two")).rejects.toMatchObject({ code: "workspace_tool_outcome_unknown" });
+    expect(code.closeCodeInvocation).toHaveBeenCalledTimes(2);
+    // File tools run no code: no invocation.
+    await value.coordinator.execute({ call: { arguments: { path: "/workspace/project/a.txt" }, id: "call_read",
+      name: namespacedWorkspaceToolName("sandbox_fs_read") }, modelRunToolCallId: "call_read", runId: value.runId,
+    userId: "user_1", workspace: value.workspace });
+    expect(code.openCodeInvocation).toHaveBeenCalledTimes(2);
+    expect(code.issueCodeGrant).toHaveBeenCalledOnce();
+  });
+
+  it("opens a fresh invocation when a lost guest is recreated before dispatch", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    code.openCodeInvocation.mockResolvedValueOnce("c".repeat(32)).mockResolvedValueOnce("d".repeat(32));
+    vi.mocked(value.runtime.callBoundTool)
+      .mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_session_lost_before_dispatch"))
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "ok" }], status: "complete" });
+    await shell(value, "call_recreated");
+    // Recreation rotates the bearer (fencing the undispatched invocation); the command runs with a new one.
+    expect(code.issueCodeGrant).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(value.runtime.callBoundTool).mock.calls.map(([input]) => input.invocationId))
+      .toEqual(["c".repeat(32), "d".repeat(32)]);
+    expect(code.closeCodeInvocation).toHaveBeenCalledWith({ invocationId: "d".repeat(32), runId: value.runId });
+  });
+
+  it("appends one compact, content-free line about the command's code calls and shows it in activity", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    code.codeCallSummary.mockResolvedValueOnce({ calls: 37, failed: 1, refused: 0, unknown: 0, tools: [
+      { calls: 35, errorCodes: [], failed: 0, label: { serverName: "GitLab", toolName: "list_commits" }, unknown: 0 },
+      { calls: 2, errorCodes: ["upstream_unavailable"], failed: 1, label: { serverName: "GitLab", toolName: "get_job_log" }, unknown: 0 }
+    ] });
+    const activity: ThreadWorkspaceActivityEntry[] = [];
+    const result = await shell(value, "call_summary", async (entry) => { activity.push(entry); });
+    expect(code.codeCallSummary).toHaveBeenCalledWith({ runId: value.runId, toolCallId: "call_summary" });
+    expect(result.content.at(-1)).toEqual({ type: "text",
+      text: "code made 37 MCP calls: GitLab.list_commits ×35, GitLab.get_job_log ×2 (1 failed: upstream_unavailable)" });
+    const settled = (result.artifacts ?? []).map((event) => (event.data as { payload: ThreadWorkspaceActivityEntry }).payload).at(-1);
+    expect(settled?.command?.codeMcp).toEqual({ calls: 37, failed: 1, tools: [
+      { calls: 35, failed: 0, serverName: "GitLab", toolName: "list_commits" },
+      { calls: 2, failed: 1, serverName: "GitLab", toolName: "get_job_log" }
+    ] });
+    // Without code calls the result is unchanged.
+    const plain = await shell(value, "call_plain");
+    expect(plain.content).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  it("keeps an exec session's invocation open and reports its calls on polls that change them", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ content: [{ text: JSON.stringify({ data: { execSessionId: "exec_code" }, ok: true }),
+      type: "text" }], execSessionId: "exec_code", status: "complete" });
+    await value.coordinator.execute({ call: { arguments: { command: "python3 monitor.py" }, id: "start",
+      name: namespacedWorkspaceToolName("sandbox_exec_start") }, modelRunToolCallId: "start", runId: value.runId,
+    userId: "user_1", workspace: value.workspace });
+    expect(code.openCodeInvocation).toHaveBeenCalledWith(expect.objectContaining({ kind: "session", modelRunToolCallId: "start" }));
+    expect(code.closeCodeInvocation).not.toHaveBeenCalled();
+    code.codeCallSummary.mockResolvedValue({ calls: 2, failed: 0, refused: 0, unknown: 0, tools: [
+      { calls: 2, errorCodes: [], failed: 0, label: { serverName: "GitLab", toolName: "list_commits" }, unknown: 0 }] });
+    const poll = (id: string) => value.coordinator.execute({ call: { arguments: { execSessionId: "exec_code" }, id,
+      name: namespacedWorkspaceToolName("sandbox_exec_poll") }, modelRunToolCallId: id, runId: value.runId, userId: "user_1",
+    workspace: value.workspace });
+    expect((await poll("poll_1")).content.at(-1)).toEqual({ type: "text", text: "code made 2 MCP calls: GitLab.list_commits ×2" });
+    expect(code.codeCallSummary).toHaveBeenLastCalledWith({ runId: value.runId, toolCallId: "start" });
+    expect((await poll("poll_2")).content).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  it("revokes guest-code authority first on every terminal path", async () => {
+    for (const outcome of ["completed", "cancelled", "failed", "timed_out"] as const) {
+      const value = fixture();
+      const code = withCode(value);
+      await shell(value, "call");
+      await value.coordinator.settle({ outcome, runId: value.runId, userId: "user_1", workspace: value.workspace });
+      expect(code.revokeCodeGrant).toHaveBeenCalledWith({ runId: value.runId });
+    }
+    // Answer completion hands off after the last guest command.
+    const value = fixture();
+    const code = withCode(value);
+    await shell(value, "call");
+    await value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(code.revokeCodeGrant).toHaveBeenCalledWith({ runId: value.runId });
+    expect(code.revokeCodeGrant.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(value.runtime.collectOutputs).mock.invocationCallOrder[0]!);
+    // A revocation failure never blocks settlement.
+    const failing = fixture();
+    withCode(failing).revokeCodeGrant.mockRejectedValue(new Error("database unavailable"));
+    await expect(failing.coordinator.settle({ outcome: "failed", runId: failing.runId, userId: "user_1" }))
+      .resolves.toMatchObject({ quiesced: true });
+  });
+
+  it("tells code why it has no MCP authority, also when the grant cannot be issued", async () => {
+    const value = fixture();
+    withCode(value, { environment: { AIQSA_MCP_UNAVAILABLE: "internet_off" } });
+    await shell(value, "call");
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      runEnvironment: { AIQSA_MCP_UNAVAILABLE: "internet_off" } }));
+    const failing = fixture();
+    withCode(failing).issueCodeGrant.mockRejectedValue(new Error("database unavailable"));
+    await expect(shell(failing, "call")).resolves.toMatchObject({ status: "complete" });
+    expect(failing.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      runEnvironment: { AIQSA_MCP_UNAVAILABLE: "gateway_unavailable" } }));
+    // A stale operation still fails initialization.
+    const stale = fixture();
+    withCode(stale).issueCodeGrant.mockRejectedValue(new WorkspaceRuntimeError("workspace_operation_stale"));
+    await expect(shell(stale, "call")).rejects.toMatchObject({ code: "workspace_operation_stale" });
+  });
+
+  it("never mints guest-code authority while exporting outputs", async () => {
+    const value = fixture();
+    value.setUntouchedSession("STOPPED");
+    value.unregisteredCommands.count = 1;
+    const code = withCode(value);
+    const restarted = createWorkspaceCoordinator({ ...value, repository: value.repository, runtime: value.runtime });
+    await expect(restarted.finalize({ runId: value.runId, userId: "user_1" })).resolves.toMatchObject({ status: "complete" });
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalled();
+    expect(value.runtime.syncPersonalSecrets).not.toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: expect.anything() }));
+    expect(code.issueCodeGrant).not.toHaveBeenCalled();
   });
 });

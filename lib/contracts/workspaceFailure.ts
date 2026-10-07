@@ -16,6 +16,7 @@ export const WORKSPACE_OPERATION_FAILURE_MESSAGES = {
   workspace_execution_outcome_unknown: "This execution's outcome is unknown. Historical cleanup status does not prove command success or a current cleanup failure.",
   workspace_execution_stop_failed: "Workspace could not confirm that execution stopped. The session remains fenced until cleanup is confirmed.",
   workspace_execution_settlement_failed: "Workspace stopped execution, but could not durably confirm cleanup. The session remains fenced.",
+  workspace_carryover_unavailable: "The Workspace files of this scheduled task's previous chat could not be restored here, so nothing ran. The next run tries again; the previous chat keeps its Workspace meanwhile.",
 } as const;
 
 export type WorkspaceOperationFailureCode = keyof typeof WORKSPACE_OPERATION_FAILURE_MESSAGES;

@@ -18,9 +18,11 @@ import { executeReadToolResult, READ_TOOL_RESULT_NAME, readToolResultTool } from
 import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
 import { READ_TOOL_CALL_NAME } from "../runs/toolHistoryContract";
 import { defaultToolObservations } from "../toolObservations/defaultService";
+import { executeSaveSkill, SAVE_SKILL_TOOL_NAME, skillSaveToolsForRequest, type SkillSaveCommitter } from "../tools/skillSave";
+import type { SkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
 
 export const AGENT_BUILTIN_TOOL_NAMES = [ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME, IMAGE_GENERATION_TOOL_NAME, ANALYZE_IMAGE_TOOL_NAME, CHECKPOINT_OUTPUTS_TOOL_NAME, READ_TOOL_RESULT_NAME,
-  READ_TOOL_CALL_NAME] as const;
+  READ_TOOL_CALL_NAME, SAVE_SKILL_TOOL_NAME] as const;
 /** Reads run again with current authority on every delivery, replays included. */
 const READERS: ReadonlySet<string> = new Set([READ_TOOL_RESULT_NAME, READ_TOOL_CALL_NAME]);
 export const agentBuiltinTools = (request: NormalizedRunRequest) => [
@@ -29,7 +31,8 @@ export const agentBuiltinTools = (request: NormalizedRunRequest) => [
   ...(request.artifactTool ? [artifactTool(request.artifactToolDescription), readArtifactTool()] : []),
   ...(request.workspace && request.workspaceCheckpoints ? [checkpointOutputsToolForRequest(request)] : []),
   ...(request.imagePlan ? [imageGenerationTool(request.imagePlan)] : []),
-  ...(request.workspace && request.visionAnalysis ? [analyzeImageTool(request.visionAnalysis)] : [])
+  ...(request.workspace && request.visionAnalysis ? [analyzeImageTool(request.visionAnalysis)] : []),
+  ...skillSaveToolsForRequest(request)
 ];
 
 const imageErrors = new Set(["image_input_invalid", "image_parameters_invalid", "image_reference_unavailable", "image_reference_invalid",
@@ -50,6 +53,8 @@ export function createAgentBuiltinDispatcher(input: {
   observations?: Pick<Awaited<ReturnType<typeof defaultToolObservations>>, "read">;
   /** Saved call records of the run's branch; absent means unavailable. */
   toolCalls?: ToolCallReader;
+  /** `save_skill` dependencies; defaults read the run's Workspace and commit with the delivery's claim. */
+  skillSave?: Readonly<{ reader?: () => Promise<SkillSaveWorkspaceReader>; commit?: (claimId: string) => SkillSaveCommitter }>;
 }) {
   const admitted = new Set(agentBuiltinTools(input.request).map(tool => tool.name));
   const deliver = async (result: ToolExecutionResult, signal: AbortSignal): Promise<ToolExecutionResult> => {
@@ -93,6 +98,15 @@ export function createAgentBuiltinDispatcher(input: {
         const result = await executeReadToolCall(input.toolCalls, call, context, signal, undefined,
           { resultReader: input.request.toolObservationVersion === 1 });
         if (claim.claimed) await input.store.settleBuiltinTool(claim.id, readToolCallReceipt(call, result));
+        return result;
+      }
+      if (call.name === SAVE_SKILL_TOOL_NAME) {
+        // The same server path as a chat save: saved and settled with this
+        // delivery's claim in one transaction; a refusal settles here.
+        const commit = input.skillSave?.commit?.(claim.id) ?? await defaultAgentSkillSaveCommitter(input, claim.id);
+        const result = await executeSaveSkill(call, context, { signal, commit,
+          reader: input.skillSave?.reader ?? (async () => (await import("../workspace/skillSaveCapture")).defaultSkillSaveWorkspaceReader()) });
+        await input.store.settleBuiltinTool(claim.id, result);
         return result;
       }
       if (call.name === CHECKPOINT_OUTPUTS_TOOL_NAME) {
@@ -145,4 +159,10 @@ export function createAgentBuiltinDispatcher(input: {
       throw error;
     }
   };
+}
+
+async function defaultAgentSkillSaveCommitter(input: Readonly<{ runId: string; userId: string;
+  store: ReturnType<typeof createAgentRunStore> }>, claimId: string): Promise<SkillSaveCommitter> {
+  const [{ prisma }, { agentSkillSaveCommitter }] = await Promise.all([import("../prisma"), import("./skillSaveCommit")]);
+  return agentSkillSaveCommitter(prisma, input.store, { claimId, runId: input.runId, userId: input.userId });
 }

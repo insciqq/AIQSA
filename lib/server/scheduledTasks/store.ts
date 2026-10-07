@@ -10,18 +10,24 @@ import {
 import {
   SCHEDULED_TASK_MAX_ACTIVE,
   SCHEDULED_TASK_MAX_ACTIVE_HOURLY,
+  SCHEDULED_TASK_MAX_PINNED_SKILLS,
   SCHEDULED_TASK_MAX_TOTAL,
   SCHEDULED_TASK_RECENT_RUNS_LIMIT,
+  SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
+  isScheduledTaskHistoryRetentionDays,
   type ScheduledTask,
   type ScheduledTaskChatMode,
   type ScheduledTaskDetailResponse,
   type ScheduledTaskDraft,
   type ScheduledTaskErrorCode,
   type ScheduledTaskEveryHours,
+  type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskKind,
   type ScheduledTaskLastRun,
   type ScheduledTaskListResponse,
+  type ScheduledTaskPinnedSkill,
   type ScheduledTaskRun,
+  type ScheduledTaskRunSkill,
   type ScheduledTaskRunState,
   type ScheduledTaskSchedule,
   type ScheduledTaskSettledRunState,
@@ -34,6 +40,8 @@ import {
   scheduledTaskWeekdaysFromMask
 } from "../../domain/scheduledTaskSchedule";
 import { SMTP_CONTROL_ID } from "../email/repository";
+import { loadScheduledTaskHistoryNextDeletions } from "./historyRetention";
+import { loadScheduledTaskPinnedSkillMap, loadScheduledTaskRunSkills, scheduledTaskPinnedSkillsFrom } from "./pinnedSkills";
 import { scheduledPromptLinksPending, type ScheduledPromptUrlDigests } from "./promptUrls";
 import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
 import { unavailableSourcesWire } from "./sourceHealth";
@@ -56,7 +64,15 @@ export type ScheduledTaskScheduleColumns = {
   everyHours: number | null;
   untilMinutes: number | null;
 };
-export type ScheduledTaskActivity = { lastRun: ScheduledTaskLastRun | null; running: boolean; unseen: boolean };
+export type ScheduledTaskActivity = {
+  lastRun: ScheduledTaskLastRun | null;
+  running: boolean;
+  /** A pending run waits for a free scheduled Workspace slot. */
+  waitingForWorkspace?: boolean;
+  unseen: boolean;
+  /** When the task's history retention deletes its next old chat; absent for projections without history. */
+  historyNextDeletionAt?: string | null;
+};
 export type ScheduledTaskUpdateWrite = Readonly<{
   expectedRevision: number;
   draft: ScheduledTaskDraft;
@@ -88,7 +104,10 @@ export interface ScheduledTaskStore {
    * active limits.
    */
   update(userId: string, taskId: string, write: ScheduledTaskUpdateWrite): Promise<ScheduledTask>;
-  /** The chats and any accepted run stay; occurrences go with the task. */
+  /**
+   * The chats and any accepted run stay, as ordinary chats no retention
+   * deletes; occurrences and a carried result go with the task.
+   */
   delete(userId: string, taskId: string): Promise<boolean>;
   /**
    * Marks the named settled results of the task seen; others, including one
@@ -118,15 +137,16 @@ const KIND_COLUMN = {
 export const scheduledTaskRowSelect = {
   id: true, title: true, prompt: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
   onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
-  searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true, chatMode: true,
-  kind: true, status: true, pauseReason: true, completionReason: true, nextRunAt: true, chatId: true, revision: true,
-  createdAt: true, updatedAt: true, promptUrlDigests: true, chat: { select: { permanentDeletionAt: true } }
+  searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true, pinnedSkillIds: true,
+  chatMode: true, kind: true, historyRetentionDays: true, historyDeletedChats: true, status: true, pauseReason: true,
+  completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true, promptUrlDigests: true,
+  chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
 export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof scheduledTaskRowSelect }>;
 
 const runSelect = {
   id: true, scheduledFor: true, trigger: true, state: true, reasonCode: true, startedAt: true, finishedAt: true, chatId: true,
-  unseenAt: true, unavailableSources: true, chat: { select: { permanentDeletionAt: true } }
+  runId: true, unseenAt: true, unavailableSources: true, chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskOccurrenceSelect;
 type RunRow = Prisma.ScheduledTaskOccurrenceGetPayload<{ select: typeof runSelect }>;
 
@@ -166,19 +186,38 @@ export function scheduledTaskKindFromColumn(column: TaskKindColumn): ScheduledTa
   return TASK_KIND_WIRE[column];
 }
 
+/** The database check keeps the column to the offered choices. */
+function historyRetentionDaysWire(value: number | null): ScheduledTaskHistoryRetentionDays {
+  return isScheduledTaskHistoryRetentionDays(value) ? value : null;
+}
+
 /** A chat that permanent deletion has fenced is no longer offered. */
 function usableChatId(chatId: string | null, chat: { permanentDeletionAt: Date | null } | null): string | null {
   return chatId !== null && chat?.permanentDeletionAt === null ? chatId : null;
 }
 
-export function toScheduledTask(row: ScheduledTaskRow, activity: ScheduledTaskActivity): ScheduledTask {
+/**
+ * The task as its owner reads it. `skills`, the owner's current view of the
+ * pinned Skills (`loadScheduledTaskPinnedSkillMap`), adds `pinnedSkills`; a
+ * projection that only needs the task's own fields (a card) leaves it out.
+ */
+export function toScheduledTask(
+  row: ScheduledTaskRow,
+  activity: ScheduledTaskActivity,
+  skills?: ReadonlyMap<string, ScheduledTaskPinnedSkill>
+): ScheduledTask {
   return {
     id: row.id, title: row.title, prompt: row.prompt, schedule: scheduledTaskScheduleFromColumns(row), timeZone: row.timeZone,
     modelId: row.modelId, provider: row.provider, searchEnabled: row.searchEnabled, emailNotify: row.emailNotify,
     toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled, memoryEnabled: row.memoryEnabled,
-    chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind], status: STATUS_WIRE[row.status],
+    pinnedSkillIds: [...row.pinnedSkillIds],
+    ...(skills ? { pinnedSkills: scheduledTaskPinnedSkillsFrom(skills, row.pinnedSkillIds) } : {}),
+    chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind],
+    historyRetentionDays: historyRetentionDaysWire(row.historyRetentionDays), historyDeletedChats: row.historyDeletedChats,
+    historyNextDeletionAt: activity.historyNextDeletionAt ?? null, status: STATUS_WIRE[row.status],
     pauseReason: row.pauseReason, completionReason: row.completionReason,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
+    ...(activity.running && activity.waitingForWorkspace ? { waitingForWorkspace: true as const } : {}),
     chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen,
     // A flag only: the snapshot's digests never leave the server.
     ...(scheduledPromptLinksPending(row.prompt, row.promptUrlDigests) ? { promptLinksPending: true as const } : {}),
@@ -194,13 +233,14 @@ function scheduledTaskRunUnseen(row: Readonly<{ unseenAt: Date | null; finishedA
   return row.unseenAt !== null && row.finishedAt !== null;
 }
 
-function toScheduledTaskRun(row: RunRow): ScheduledTaskRun {
+function toScheduledTaskRun(row: RunRow, skills: ReadonlyMap<string, ScheduledTaskRunSkill[]>): ScheduledTaskRun {
   return {
     id: row.id, scheduledFor: row.scheduledFor.toISOString(), trigger: row.trigger === "manual" ? "manual" : "schedule",
     state: RUN_STATE_WIRE[row.state], reasonCode: row.reasonCode, startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null, chatId: usableChatId(row.chatId, row.chat),
     unseen: scheduledTaskRunUnseen(row),
-    unavailableSources: unavailableSourcesWire(row.unavailableSources)
+    unavailableSources: unavailableSourcesWire(row.unavailableSources),
+    skills: row.runId ? (skills.get(row.runId) ?? []).slice(0, SCHEDULED_TASK_MAX_PINNED_SKILLS) : []
   };
 }
 
@@ -211,14 +251,18 @@ type SettledRow = {
 
 /**
  * Per task of the owner: the newest settled occurrence with its own unread
- * flag, whether one is pending or running, and whether any result is unread.
+ * flag, whether one is pending or running (and waiting for a Workspace slot),
+ * whether any result is unread and when its history retention deletes the
+ * next old chat.
  */
 export async function loadScheduledTaskActivity(
   client: ScheduledTaskClient,
   userId: string,
-  taskIds: readonly string[]
+  taskIds: readonly string[],
+  now: Date = new Date()
 ): Promise<Map<string, ScheduledTaskActivity>> {
-  const activity = new Map<string, ScheduledTaskActivity>(taskIds.map((taskId) => [taskId, { lastRun: null, running: false, unseen: false }]));
+  const activity = new Map<string, ScheduledTaskActivity>(taskIds.map((taskId) => [taskId,
+    { historyNextDeletionAt: null, lastRun: null, running: false, unseen: false }]));
   if (taskIds.length === 0) return activity;
   const settled = await client.$queryRaw<SettledRow[]>`
     SELECT task_row."id" AS "taskId", latest."scheduledFor", latest."state"::text AS "state", latest."reasonCode", latest."finishedAt",
@@ -234,7 +278,7 @@ export async function loadScheduledTaskActivity(
     ) AS latest
   `;
   const open = await client.scheduledTaskOccurrence.findMany({
-    select: { taskId: true },
+    select: { reasonCode: true, state: true, taskId: true },
     where: { state: { in: ["PENDING", "RUNNING"] }, taskId: { in: [...taskIds] }, userId }
   });
   const unseen = await client.scheduledTaskOccurrence.findMany({
@@ -252,8 +296,16 @@ export async function loadScheduledTaskActivity(
       }
     });
   }
-  for (const row of open) activity.set(row.taskId, { ...activity.get(row.taskId)!, running: true });
+  for (const row of open) {
+    const current = activity.get(row.taskId)!;
+    activity.set(row.taskId, { ...current, running: true,
+      waitingForWorkspace: current.waitingForWorkspace === true ||
+        (row.state === "PENDING" && row.reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE) });
+  }
   for (const row of unseen) activity.set(row.taskId, { ...activity.get(row.taskId)!, unseen: true });
+  for (const [taskId, dueAt] of await loadScheduledTaskHistoryNextDeletions(client, userId, taskIds, now)) {
+    activity.set(taskId, { ...activity.get(taskId)!, historyNextDeletionAt: dueAt.toISOString() });
+  }
   return activity;
 }
 
@@ -270,7 +322,8 @@ function draftColumns(draft: ScheduledTaskDraft) {
     title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule), timeZone: draft.timeZone,
     modelId: draft.modelId, provider: draft.provider, searchEnabled: draft.searchEnabled, emailNotify: draft.emailNotify,
     toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled, memoryEnabled: draft.memoryEnabled,
-    chatMode: CHAT_MODE_COLUMN[draft.chatMode], kind: TASK_KIND_COLUMN[draft.kind]
+    pinnedSkillIds: [...draft.pinnedSkillIds], chatMode: CHAT_MODE_COLUMN[draft.chatMode], kind: TASK_KIND_COLUMN[draft.kind],
+    historyRetentionDays: draft.historyRetentionDays
   };
 }
 
@@ -332,12 +385,13 @@ export async function insertScheduledTask(
     data: { ...draftColumns(draft), nextRunAt, promptUrlDigests: [...promptUrls], status: "ACTIVE", userId },
     select: scheduledTaskRowSelect
   });
-  return toScheduledTask(row, { lastRun: null, running: false, unseen: false });
+  return toScheduledTask(row, { lastRun: null, running: false, unseen: false },
+    await loadScheduledTaskPinnedSkillMap(tx, userId, row.pinnedSkillIds));
 }
 
 async function project(client: ScheduledTaskClient, userId: string, row: ScheduledTaskRow): Promise<ScheduledTask> {
   const activity = await loadScheduledTaskActivity(client, userId, [row.id]);
-  return toScheduledTask(row, activity.get(row.id)!);
+  return toScheduledTask(row, activity.get(row.id)!, await loadScheduledTaskPinnedSkillMap(client, userId, row.pinnedSkillIds));
 }
 
 /**
@@ -371,7 +425,8 @@ export async function updateScheduledTask(
     throw new ScheduledTaskError("scheduled_task_hourly_limit");
   }
   // A new question starts a new generation: earlier results are no baseline for it.
-  // So does a changed type: a first monitoring check is always shown.
+  // So does a changed type: a first monitoring check is always shown. Changed
+  // pinned Skills keep the generation: the question is the same.
   const newGeneration = current.prompt !== write.draft.prompt || current.scheduleKind !== kind ||
     current.kind !== TASK_KIND_COLUMN[write.draft.kind];
   // The revision guard also fences a runner status transition committed after the read.
@@ -391,6 +446,8 @@ export async function updateScheduledTask(
     where: { id: taskId, revision: write.expectedRevision, userId }
   });
   if (updated.count !== 1) throw new ScheduledTaskError("scheduled_task_stale");
+  // A result carried into a rotated chat belongs to the old question as well.
+  if (newGeneration) await tx.scheduledTaskCarryover.deleteMany({ where: { taskId, userId } });
   const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
   return project(tx, userId, row);
 }
@@ -405,8 +462,9 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
           where: { user: { status: "active" }, userId }
         });
         const activity = await loadScheduledTaskActivity(tx, userId, rows.map((row) => row.id));
+        const skills = await loadScheduledTaskPinnedSkillMap(tx, userId, rows.flatMap((row) => row.pinnedSkillIds));
         return {
-          tasks: rows.map((row) => toScheduledTask(row, activity.get(row.id)!)),
+          tasks: rows.map((row) => toScheduledTask(row, activity.get(row.id)!, skills)),
           limits: {
             maxActive: SCHEDULED_TASK_MAX_ACTIVE, maxTotal: SCHEDULED_TASK_MAX_TOTAL, maxActiveHourly: SCHEDULED_TASK_MAX_ACTIVE_HOURLY
           },
@@ -429,7 +487,9 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
           take: SCHEDULED_TASK_RECENT_RUNS_LIMIT,
           where: { taskId: row.id, userId }
         });
-        return { task, recentRuns: runs.map(toScheduledTaskRun) };
+        const skills = await loadScheduledTaskRunSkills(tx, userId, runs.flatMap((run) => run.runId ? [run.runId] : []));
+        return { task, recentRuns: runs.map((run) => toScheduledTaskRun(run, skills)) };
+
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
     async create(userId, draft, nextRunAt, promptUrls) {

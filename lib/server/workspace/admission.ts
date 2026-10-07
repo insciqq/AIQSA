@@ -163,7 +163,16 @@ export function createWorkspaceAdmissionService(input: Readonly<{
       const sandboxName = existing?.sandboxName ?? workspaceSandboxName(sessionId);
       const imageRef = existing?.imageRef ?? input.config.imageRef;
       const internetEnabled = existing?.internetEnabled ?? policy.internetEnabled;
+      // Guest code reaches MCP only through the runner relay, which only an
+      // Internet-On guest of a runner with the gateway enabled can reach.
+      // Agent runs keep their own bearer. Budgets freeze with the run; a
+      // Project run's stay unused, since minting refuses it from its chat.
+      const codeMcp = !request.agentEnabled && internetEnabled && health.agentReady === true
+        ? { version: 1 as const, maxCalls: input.config.codeMcpMaxCalls,
+          maxConcurrent: input.config.codeMcpMaxConcurrent, maxPerSecond: input.config.codeMcpMaxPerSecond }
+        : undefined;
       const normalized: NormalizedRunWorkspace = {
+        ...(codeMcp ? { codeMcp } : {}),
         enabled: true,
         imageRef,
         inboxIndexPath: WORKSPACE_INBOX_INDEX_PATH,
