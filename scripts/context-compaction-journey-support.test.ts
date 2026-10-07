@@ -191,6 +191,19 @@ describe("run parameters", () => {
     expect(failureCode(() => journeyRunParams(catalogModel({ providerFamily: "gemini" }), 2_048)))
       .toBe("model_family_unsupported");
   });
+
+  it("builds OpenRouter parameters like the composer", () => {
+    expect(journeyRunParams(catalogModel({ defaultParams: { reasoning: { exclude: true } }, providerFamily: "openrouter" }), 2_048))
+      .toEqual({ maxTokens: 2_048, reasoning: { effort: "low", enabled: true, exclude: true }, stream: true, temperature: 1 });
+    const off = journeyRunParams(catalogModel({
+      defaultParams: { verbosity: "medium" },
+      parameterControls: { ...catalogModel({}).parameterControls,
+        reasoningEffort: { defaultValue: "high", options: ["none", "high"], supported: true },
+        temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: false } },
+      providerFamily: "openrouter"
+    }), 2_048);
+    expect(off).toEqual({ maxTokens: 2_048, reasoning: { enabled: false }, stream: true, verbosity: "medium" });
+  });
 });
 
 const modelConfig = (upstreamModelId: string, contextWindow?: number) => ({
