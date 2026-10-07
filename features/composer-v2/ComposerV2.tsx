@@ -742,6 +742,11 @@ export function ComposerV2({
     !onUploadFiles || (!attachmentAccept && !attachmentPolicy.files) ||
       inputDisabled || activeRun || uploading
   );
+  /* Dimmed "+" rows say why: the composer's own blocking reason (an inline
+     edit, a disabled hint) rather than a bare "Unavailable" or the row's
+     ordinary description. The "+" button itself is off while a response runs. */
+  const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
+  const artifactMenuReason = artifactReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
   const workspaceToggleReason = workspace?.loading
     ? "Checking Workspace availability…"
     : workspace && !workspace.available
@@ -1339,6 +1344,9 @@ export function ComposerV2({
   const agentDisabledReason = activeRun ? "A response is running." : !agent?.enabled ? agentReason : null;
   const agentExplanation = activeRun ? "A response is running." : agentReason;
   const agentDescription = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ? `${agentExplanation} ` : ""}${AGENT_HELP}`;
+  /* The hover tooltip stays short so a blocking reason reads first; the full
+     help remains the chip's accessible description. */
+  const agentTooltip = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ?? "Codex carries out your task in Workspace."}`;
   const agentStatus = agentNotice && agentNotice.sessionKey === sessionKey && agent
     ? agentNotice.kind === "blocked" ? agentDisabledReason : agent.enabled ? "Agent on · Codex in Workspace. Memory and Knowledge are unavailable." : "Agent off."
     : null;
@@ -1493,7 +1501,7 @@ export function ComposerV2({
               {agent ? (
                 <button type="button" className="v2-composer-indicator v2-focusable"
                   data-glyph="bot" data-quiet={agent.enabled ? undefined : ""}
-                  data-tooltip={agentDescription} data-tooltip-side="top"
+                  data-tooltip={agentTooltip} data-tooltip-side="top"
                   aria-label="Agent" aria-pressed={agent.enabled}
                   aria-describedby={`${layerId}-agent-reason`} aria-disabled={Boolean(agentDisabledReason)}
                   onClick={() => {
@@ -2146,15 +2154,17 @@ export function ComposerV2({
                 /* Search, MCP and parameters live behind their own chips. */
                 <div className="v2-composer-layer-scroll">
                   <CapabilityRow icon="artifact" selectionRole="item"
-                    disabled={Boolean(artifactReason || !onCreateArtifact || inputDisabled || activeRun)}
-                    reason={artifactReason ?? "Page, slides, game or chart"}
+                    disabled={Boolean(artifactMenuReason)}
+                    reason={artifactMenuReason ?? "Page, slides, game or chart"}
                     onClick={() => { onCreateArtifact?.(); closeLayer(); textareaRef.current?.focus({ preventScroll: true }); }}>
                     Create artifact
                   </CapabilityRow>
                   <CapabilityRow
                     icon="attach"
                     disabled={attachmentSelectionDisabled}
-                    reason={attachmentSelectionDisabled ? "Unavailable" : uploadLimitHint ?? "XLSX · DOCX · PDF · images"}
+                    reason={attachmentSelectionDisabled
+                      ? inputBlockedReason ?? "Unavailable"
+                      : uploadLimitHint ?? "XLSX · DOCX · PDF · images"}
                     selectionRole="item"
                     onClick={() => {
                       fileInputRef.current?.click();

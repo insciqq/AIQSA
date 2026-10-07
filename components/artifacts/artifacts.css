@@ -31,7 +31,8 @@
   container-type: inline-size;
 }
 
-.v2-artifact-thumbnail { position: relative; display: grid; width: 96px; height: 60px; flex: 0 0 96px; overflow: hidden; place-items: center; border-radius: var(--v2-radius-s); color: var(--v2-color-accent); background: var(--v2-color-surface2); pointer-events: none; }
+/* The hairline outline paints over the preview frame, so light slides and the empty tile stay apart from the canvas. */
+.v2-artifact-thumbnail { position: relative; display: grid; width: 96px; height: 60px; flex: 0 0 96px; overflow: hidden; place-items: center; border-radius: var(--v2-radius-s); outline: 1px solid var(--v2-color-border); outline-offset: -1px; color: var(--v2-color-accent); background: var(--v2-color-surface2); pointer-events: none; }
 .v2-artifact-thumbnail-frame { position: absolute; top: 0; left: 0; width: 1280px; height: 800px; border: 0; transform: scale(0.075); transform-origin: top left; pointer-events: none; }
 
 .v2-artifact-tabpanel[hidden] {

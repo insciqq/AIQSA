@@ -75,44 +75,45 @@ describe("Assistant strip fit v2", () => {
     // HR Helper, Meeting notes, the long procurement name, another long name, Onboarding buddy.
     const measured = [101, 128, 260, 259, 140];
     const minimums = [101, 128, LONG_MIN, LONG_MIN, 140];
-    // The first row keeps 125 px beside the short names, below the long name's minimum:
-    // it starts the second row, shortened to the 243 px beside the link, and the rest are left out.
-    expect(fit(366, measured, minimums)).toEqual({ count: 3, limits: [null, null, 243] });
-    expect(fit(660, measured, minimums)).toEqual({ count: 5, limits: [null, null, null, 153, null] });
-    expect(fit(740, measured, minimums)).toEqual({ count: 5, limits: [null, null, null, 233, null] });
+    // Beside the link the row keeps 136 px after the two short names: the long name's
+    // 142 px minimum does not fit, so it and every later pill are left out.
+    expect(fit(366, measured, minimums)).toEqual({ count: 2, limits: [null, null] });
+    expect(fit(660, measured, minimums)).toEqual({ count: 3, limits: [null, null, null] });
+    expect(fit(740, measured, minimums)).toEqual({ count: 3, limits: [null, null, null] });
+    // At 780 px the second long name keeps its minimum and is shortened to the 150 px left.
+    expect(fit(780, measured, minimums)).toEqual({ count: 4, limits: [null, null, null, 150] });
   });
 
-  it("keeps thirteen short names in two rows with the link last", () => {
+  it("keeps thirteen short names in one row with the link last", () => {
     const short = Array.from({ length: 13 }, () => 100);
-    expect(fit(366, short)).toEqual({ count: 5, limits: unchanged(5) });
-    expect(fit(660, short)).toEqual({ count: 11, limits: unchanged(11) });
-    expect(fit(740, short)).toEqual({ count: 12, limits: unchanged(12) });
+    expect(fit(366, short)).toEqual({ count: 2, limits: unchanged(2) });
+    expect(fit(660, short)).toEqual({ count: 5, limits: unchanged(5) });
+    expect(fit(740, short)).toEqual({ count: 5, limits: unchanged(5) });
   });
 
   it("shortens thirteen long names only down to their minimum and leaves out the rest", () => {
     const long = Array.from({ length: 13 }, () => 263);
     const minimums = long.map(() => LONG_MIN);
-    expect(fit(366, long, minimums)).toEqual({ count: 2, limits: [null, 243] });
-    expect(fit(660, long, minimums)).toEqual({ count: 4, limits: unchanged(4) });
-    expect(fit(740, long, minimums)).toEqual({ count: 5, limits: [null, null, 202, null, null] });
+    expect(fit(366, long, minimums)).toEqual({ count: 1, limits: [243] });
+    expect(fit(660, long, minimums)).toEqual({ count: 2, limits: unchanged(2) });
+    expect(fit(740, long, minimums)).toEqual({ count: 2, limits: unchanged(2) });
   });
 
-  it("starts the second row with a pill that does not fit even shortened, and leaves out the rest", () => {
-    // The first row keeps 60 px, below the minimum: the next pill wraps whole.
-    expect(fit(366, [300, 200, 200], [LONG_MIN, LONG_MIN, LONG_MIN])).toEqual({ count: 2, limits: [null, null] });
-    // Beside the link the second row keeps 243 px: a longer pill is shortened to it.
-    expect(fit(366, [300, 260], [LONG_MIN, LONG_MIN])).toEqual({ count: 2, limits: [null, 243] });
-    expect(fit(366, [300, 90, 200, 100], [LONG_MIN, 90, LONG_MIN, 100])).toEqual({ count: 3, limits: [null, null, 147] });
-    // 141 px beside the link is one pixel short of the minimum: the pill is left out, not cut to a stump.
-    expect(fit(366, [300, 96, 200], [LONG_MIN, 96, LONG_MIN])).toEqual({ count: 2, limits: [null, null] });
+  it("keeps order: a pill that does not fit even shortened ends the row, and a later shorter one is left out too", () => {
+    // 136 px remain beside the link after the first pill.
+    expect(fit(366, [101, 200, 20], [101, LONG_MIN, 20])).toEqual({ count: 1, limits: [null] });
+    // A long pill whose minimum fits there is shortened to the room.
+    expect(fit(366, [101, 200, 20], [101, 120, 20])).toEqual({ count: 2, limits: [null, 136] });
+    // One pixel short of the minimum: the pill is left out, not cut to a stump.
+    expect(fit(366, [101, 200], [101, 137])).toEqual({ count: 1, limits: [null] });
   });
 
-  it("caps a pill wider than the strip at the strip's width", () => {
-    expect(fit(200, [260], [LONG_MIN])).toEqual({ count: 1, limits: [200] });
+  it("shortens a pill wider than the strip to the room beside the link", () => {
+    expect(fit(400, [400], [LONG_MIN])).toEqual({ count: 1, limits: [277] });
   });
 
-  it("never shortens a short name: it wraps or is left out whole", () => {
-    expect(fit(366, [300, 120, 250], [LONG_MIN, 120, 250])).toEqual({ count: 2, limits: [null, null] });
+  it("never shortens a short name: it is left out whole", () => {
+    expect(fit(366, [101, 150], [101, 150])).toEqual({ count: 1, limits: [null] });
   });
 });
 
@@ -121,7 +122,7 @@ describe("Assistant strip v2", () => {
     vi.restoreAllMocks();
   });
 
-  it("leaves out the pills past two lines so they are neither focusable nor announced", () => {
+  it("leaves out the pills past one row so they are neither focusable nor announced", () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
       return this.dataset.testid === "assistant-strip" ? 358 : 0;
     });
@@ -135,8 +136,9 @@ describe("Assistant strip v2", () => {
     render(<AssistantStripV2 idle items={items} {...handlers} />);
 
     const group = screen.getByRole("group", { name: "Pinned and Featured Assistants" });
-    expect(within(group).getAllByRole("button").map((button) => button.textContent)).toEqual(["one", "two", "three", "All Assistants…"]);
-    const overflow = screen.getByText("four").closest("button")!;
+    // 358 px less the 100 px link keep one 170 px pill.
+    expect(within(group).getAllByRole("button").map((button) => button.textContent)).toEqual(["one", "All Assistants…"]);
+    const overflow = screen.getByText("two").closest("button")!;
     expect(overflow).toHaveAttribute("data-overflow");
     expect(overflow).toHaveAttribute("inert");
     expect(overflow).toHaveAttribute("tabindex", "-1");
@@ -155,11 +157,11 @@ describe("Assistant strip v2", () => {
   });
 
   it("shortens a long pill to the room beside the link, names it whole in its title, and leaves out the rest", () => {
-    // Without the stylesheet the gap is 0: the second row keeps 358 - 100 px.
+    // Without the stylesheet the gap is 0: the row keeps 500 - 100 px beside the link.
     // Names are 6 px a character, pills 40 px wider than their names.
     const LONG = "Travel and expense policy assistant for field teams";
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
-      return this.dataset.testid === "assistant-strip" ? 358 : 0;
+      return this.dataset.testid === "assistant-strip" ? 500 : 0;
     });
     vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
       return this.classList.contains("v2-composer-indicator-label") ? (this.textContent?.length ?? 0) * 6 : 0;
@@ -172,15 +174,15 @@ describe("Assistant strip v2", () => {
       return { bottom: 0, height: 0, left: 0, right: width, toJSON: () => ({}), top: 0, width, x: 0, y: 0 };
     });
     const { handlers } = strip();
-    // 160 + 142 px fill the first row; the long name (346 px) keeps 258 px beside the link,
+    // After the 160 px first pill the long name (346 px) keeps 240 px beside the link,
     // above its 148 px minimum (40 px, then sixteen characters and the ellipsis at 6 px a character).
-    const items = ["Code reviewer helper", "Meeting notes kit", LONG, "four"].map((id) => assistant(id, { pinned: true }));
+    const items = ["Code reviewer helper", LONG, "four"].map((id) => assistant(id, { pinned: true }));
     render(<AssistantStripV2 idle items={items} {...handlers} />);
 
     const long = screen.getByRole("button", { name: LONG });
-    expect(long).toHaveStyle({ maxWidth: "258px" });
+    expect(long).toHaveStyle({ maxWidth: "240px" });
     expect(long).toHaveAttribute("title", LONG);
-    expect(screen.getByRole("button", { name: "Meeting notes kit" })).not.toHaveAttribute("title");
+    expect(screen.getByRole("button", { name: "Code reviewer helper" })).not.toHaveAttribute("title");
     expect(screen.getByText("four").closest("button")).toHaveAttribute("data-overflow");
     expect(screen.getByText("four").closest("button")).not.toHaveAttribute("title");
   });

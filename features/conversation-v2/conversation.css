@@ -381,7 +381,12 @@ html[data-motion="off"] .v2-conversation-turn[data-search-reveal] > .v2-conversa
   white-space: nowrap;
 }
 
+/* Body cells keep ordinary words whole: an anywhere break would let a long
+   token in one column squeeze its neighbours into mid-word breaks
+   («contain ed»). Links and inline code keep their own anywhere breaks; a
+   plain unbroken token widens the table, whose wrapper scrolls. */
 .v2-conversation-markdown [data-testid="markdown-table-scroll"] td {
+  overflow-wrap: break-word;
   border-color: var(--v2-color-border);
 }
 
@@ -819,6 +824,21 @@ html[data-motion="off"] .v2-skeleton {
 
   .v2-conversation-orientation {
     width: calc(100% - 1.5rem);
+  }
+
+  /* The floating islands (PRD §4.8) have no bar behind them: a canvas band
+     that fades out below them keeps scrolled text from showing between and
+     around them. At rest the thread starts below it. */
+  .v2-conversation::before {
+    position: absolute;
+    z-index: 11;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: calc(env(safe-area-inset-top) + 4.25rem);
+    background: linear-gradient(to bottom, var(--v2-color-canvas) calc(100% - 1rem), transparent);
+    content: "";
+    pointer-events: none;
   }
 
   .v2-conversation-turn[data-role="user"] .v2-conversation-turn-content {

@@ -898,7 +898,7 @@
   visibility: hidden;
 }
 
-/* Pills past the strip's two rows leave the flow but stay measurable. */
+/* Pills past the strip's row leave the flow but stay measurable. */
 .v2-assistant-strip > [data-overflow] {
   position: absolute;
   top: 0;

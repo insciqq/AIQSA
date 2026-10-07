@@ -4,7 +4,8 @@ import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
 import type { AssistantSummary } from "@/lib/contracts/assistants";
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 
-const STRIP_LINES = 2;
+/* One quiet row keeps the blank chat about the composer (operator, 2026-10-07). */
+const STRIP_LINES = 1;
 /* Sub-pixel sizes from layout must not push a fitting pill to the next line. */
 export const WIDTH_TOLERANCE_PX = 0.5;
 
@@ -97,12 +98,12 @@ export type AssistantStripFitV2 = Readonly<{
 }>;
 
 /**
- * Lays the pills out as flex-wrap does, in at most two rows with "All
- * Assistants…" last. A pill that does not fit the room left on its row
- * (on the second row, the room beside the link) is shortened to that room if
- * it keeps its minimum there (see assistantStripMinPillWidthV2); on the first
- * row a pill that does not fit even then starts the second row, and on the
- * second row it and every later pill are left out, so order is kept and
+ * Lays the pills out as flex-wrap does, in at most STRIP_LINES rows with
+ * "All Assistants…" last. A pill that does not fit the room left on its row
+ * (on the last row, the room beside the link) is shortened to that room if
+ * it keeps its minimum there (see assistantStripMinPillWidthV2); on an
+ * earlier row a pill that does not fit even then starts the next row, and on
+ * the last row it and every later pill are left out, so order is kept and
  * pinned outlast Featured.
  */
 export function assistantStripFitV2(input: Readonly<{
@@ -176,7 +177,7 @@ function sameValues<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-/** Measures the strip and keeps its two-row layout current. */
+/** Measures the strip and keeps its one-row layout current. */
 function useStripFit(
   rowRef: RefObject<HTMLDivElement | null>,
   rendered: boolean,
@@ -222,7 +223,7 @@ function useStripFit(
 /**
  * Pinned and Featured Assistants under the blank personal composer: pills in
  * the style of an inactive composer chip, then "All Assistants…" for the
- * picker. It never takes more than two rows: a pill that does not fit is
+ * picker. It never takes more than one row: a pill that does not fit is
  * shortened first and left out only when even that fails (see
  * assistantStripFitV2). A pill whose name is cut shows it whole as its
  * title. The caller mounts it only when there is something to offer.
@@ -260,7 +261,7 @@ export function AssistantStripV2({
       role="group"
     >
       {items.map((assistant, index) => {
-        // Pills past two rows stay measurable but are neither shown,
+        // Pills past the row stay measurable but are neither shown,
         // focusable nor announced; a shortened pill ends in an ellipsis.
         const left = index >= fit.count;
         const limit = left ? null : fit.limits[index] ?? null;
