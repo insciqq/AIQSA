@@ -49,6 +49,8 @@ import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runt
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
+import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
+  WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
@@ -1161,7 +1163,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     session.secretEnvironment = undefined;
     try {
       const secrets = parseAcceptedWorkspaceSecrets(input.secrets);
-      const environment = workspaceSecretEnvironment(secrets);
+      // Server-owned run values win over a saved variable of the same name.
+      const environment = { ...workspaceSecretEnvironment(secrets),
+        ...parseWorkspaceRunEnvironment(input.runEnvironment, AGENT_GATEWAY_ORIGIN) };
       const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
       const deadline = AbortSignal.timeout(90_000);
@@ -1214,11 +1218,12 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     try {
       const result = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
         .args(["-I", "-c", READ_WORKSPACE_SECRET_ENV, modelRunId]).timeout(10_000));
-      if (!result.success || result.stdoutBytes().byteLength > WORKSPACE_SECRET_ENV_MAX_BYTES * 2) throw new Error("invalid");
+      const maximum = WORKSPACE_SECRET_ENV_MAX_BYTES + WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES;
+      if (!result.success || result.stdoutBytes().byteLength > maximum * 2) throw new Error("invalid");
       const values: unknown = JSON.parse(result.stdout());
       if (!values || typeof values !== "object" || Array.isArray(values) ||
         Object.entries(values).some(([name, value]) => !isWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0")) ||
-        Buffer.byteLength(JSON.stringify(values), "utf8") > WORKSPACE_SECRET_ENV_MAX_BYTES) throw new Error("invalid");
+        Buffer.byteLength(JSON.stringify(values), "utf8") > maximum) throw new Error("invalid");
       session.secretEnvironment = { modelRunId, values: values as Record<string, string> };
       return session.secretEnvironment.values;
     } catch { throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed"); }
@@ -1386,8 +1391,13 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested))) {
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
-        if (Object.keys(environment).length || requested !== undefined) {
-          argumentsWithIdentity.env = { ...environment, ...(requested as Record<string, unknown> | undefined) };
+        if (input.invocationId !== undefined && !isWorkspaceCodeInvocationId(input.invocationId)) {
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        }
+        // The invocation id reaches this command alone, never the saved environment file.
+        const invocation = input.invocationId ? { [WORKSPACE_CODE_INVOCATION_ENV]: input.invocationId } : {};
+        if (Object.keys(environment).length || requested !== undefined || input.invocationId) {
+          argumentsWithIdentity.env = { ...environment, ...(requested as Record<string, unknown> | undefined), ...invocation };
         }
       }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"

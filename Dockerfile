@@ -139,7 +139,7 @@ CMD ["node", "scripts/runtime-launcher.cjs", "runtime/server.js"]
 
 # The microVM guest contains general-purpose document/code tooling only. No
 # AIQSA source tree, application dependency graph, or installation secret is
-# copied into this stage.
+# copied into this stage; only the standard-library MCP client below.
 FROM ${NODE_IMAGE} AS workspace-guest
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -171,6 +171,19 @@ RUN apt-get update \
 RUN npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.160.0 \
   && codex --version
 
+# Guest code calls the run's MCP tools through `import aiqsa` or `aiqsa-mcp`.
+# The package uses the standard library only; PYTHONPATH (the guest gets it
+# from the OCI config) reaches other interpreters such as `uv run` scripts.
+ENV PYTHONPATH=/opt/aiqsa-guest/python
+COPY ops/workspace-guest/python/aiqsa /opt/aiqsa-guest/python/aiqsa
+COPY ops/workspace-guest/bin/aiqsa-mcp /usr/local/bin/aiqsa-mcp
+RUN chmod 0755 /usr/local/bin/aiqsa-mcp \
+  && chmod -R u=rwX,go=rX /opt/aiqsa-guest \
+  && echo /opt/aiqsa-guest/python > "$(/opt/aiqsa-python/bin/python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/aiqsa-guest.pth" \
+  && /opt/aiqsa-python/bin/python3 -I -c 'import aiqsa.cli, aiqsa.mcp; print("aiqsa", aiqsa.__version__)' \
+  && aiqsa-mcp --version \
+  && (aiqsa-mcp list; test $? -eq 3)
+
 WORKDIR /workspace/project
 
 FROM ${NODE_IMAGE} AS workspace-image-layout
@@ -184,7 +197,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.31 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.32 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.

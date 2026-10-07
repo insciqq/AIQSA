@@ -27,6 +27,10 @@ export function workspaceToolTransportMaxBytes(toolOutputMaxBytes: number): numb
 
 export type WorkspaceConfig = Readonly<{
   agentGatewayEnabled?: boolean;
+  /** MCP calls from guest code, separate from the model's tool budgets; frozen per run at admission. */
+  codeMcpMaxCalls: number;
+  codeMcpMaxConcurrent: number;
+  codeMcpMaxPerSecond: number;
   cpus: number;
   diskMiB: number;
   idleTtlSeconds: number;
@@ -70,6 +74,24 @@ type IntegerSetting = Readonly<{
 }>;
 
 const integerSettings = Object.freeze({
+  codeMcpMaxCalls: {
+    defaultValue: 200,
+    maximum: 5_000,
+    minimum: 1,
+    name: "AIQSA_WORKSPACE_CODE_MCP_MAX_CALLS"
+  },
+  codeMcpMaxConcurrent: {
+    defaultValue: 4,
+    maximum: 16,
+    minimum: 1,
+    name: "AIQSA_WORKSPACE_CODE_MCP_CONCURRENCY"
+  },
+  codeMcpMaxPerSecond: {
+    defaultValue: 10,
+    maximum: 100,
+    minimum: 1,
+    name: "AIQSA_WORKSPACE_CODE_MCP_RATE_PER_SECOND"
+  },
   cpus: { defaultValue: 2, maximum: 8, minimum: 1, name: "AIQSA_WORKSPACE_CPUS" },
   diskMiB: {
     defaultValue: 10_240,
@@ -233,10 +255,13 @@ export function getWorkspaceConfig(
   });
   const config = {
     ...(env.AIQSA_AGENT_APP_ORIGIN?.trim() ? { agentGatewayEnabled: true } : {}),
+    codeMcpMaxCalls: integerValue(env, integerSettings.codeMcpMaxCalls),
+    codeMcpMaxConcurrent: integerValue(env, integerSettings.codeMcpMaxConcurrent),
+    codeMcpMaxPerSecond: integerValue(env, integerSettings.codeMcpMaxPerSecond),
     cpus: integerValue(env, integerSettings.cpus),
     diskMiB: integerValue(env, integerSettings.diskMiB),
     idleTtlSeconds: integerValue(env, integerSettings.idleTtlSeconds),
-    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.31", 512),
+    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.32", 512),
     maxToolCalls,
     maxToolRounds,
     mcpVersion: boundedText(env.AIQSA_WORKSPACE_MCP_VERSION, WORKSPACE_MCP_VERSION, 64),
