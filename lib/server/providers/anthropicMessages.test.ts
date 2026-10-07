@@ -1473,8 +1473,11 @@ describe("Anthropic Messages adapter", () => {
       finalText: "Current findings.",
       providerResponseId: "msg-hosted-search",
       toolCalls: [],
-      usage: { inputTokens: 8, outputTokens: 5, totalTokens: 13 }
+      // message_delta repeats the cumulative count; the answer row is billed one search.
+      usage: { inputTokens: 8, outputTokens: 5, totalTokens: 13, webSearchCount: 1 }
     });
+    expect(normalized.events.filter(event => event.type === "usage").map(event => event.data))
+      .toEqual([expect.objectContaining({ webSearchCount: 1 }), expect.objectContaining({ outputTokens: 5, webSearchCount: 1 })]);
     expect(normalized.result).not.toHaveProperty("providerToolCallMessage");
     expect(normalized.events).toEqual(expect.arrayContaining([
       expect.objectContaining({

@@ -266,9 +266,15 @@ export function snapshotToolLoopJson(value: unknown, maxBytes: number): ToolLoop
   return jsonSnapshot(value, maxBytes);
 }
 
+/** The six token fields, an optional completeness and, for a round whose
+ * provider reported web searches, their positive count. */
 function normalizedUsage(value: unknown): NormalizedTokenUsage | null {
-  if (!isRecord(value) || ![6, 7].includes(Object.keys(value).length)) return null;
-  if (Object.keys(value).length === 7 && !["complete", "partial", "unavailable"].includes(String(value.completeness))) return null;
+  if (!isRecord(value)) return null;
+  const searches = Object.hasOwn(value, "webSearchCount");
+  if (searches && !(Number.isSafeInteger(value.webSearchCount) && Number(value.webSearchCount) > 0)) return null;
+  const keys = Object.keys(value).length - (searches ? 1 : 0);
+  if (![6, 7].includes(keys)) return null;
+  if (keys === 7 && !["complete", "partial", "unavailable"].includes(String(value.completeness))) return null;
   if (!normalizedUsageFields.every((field) =>
     Object.hasOwn(value, field) && (value[field] === null || Number.isSafeInteger(value[field]) && Number(value[field]) >= 0))) {
     return null;

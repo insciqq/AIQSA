@@ -68,11 +68,15 @@ import { ADMIN_MODEL_PRICE_ERROR, isAdminModelPriceField, modelClassPriceFields,
   type AdminModelPriceField } from "@/lib/contracts/adminProviderModelPrices";
 
 const priceLabels: Record<AdminModelPriceField, string> = { inputTokenPriceUsdPerMillion: "Input",
-  cachedInputTokenPriceUsdPerMillion: "Cached input", cacheWriteInputTokenPriceUsdPerMillion: "Cache write", outputTokenPriceUsdPerMillion: "Output" };
+  cachedInputTokenPriceUsdPerMillion: "Cached input", cacheWriteInputTokenPriceUsdPerMillion: "Cache write", outputTokenPriceUsdPerMillion: "Output",
+  webSearchPriceUsdPerThousand: "Web search" };
 
 /** What the class's price fields do; outside answers a provider-reported cost wins. */
 function priceNote(modelClass: AdminProviderModelClass): string {
-  if (modelClass === "answer") return "An empty Cached input or Cache write is charged as regular input. An empty Input or Output means no cost is estimated for this model.";
+  if (modelClass === "answer") {
+    return "An empty Cached input or Cache write is charged as regular input. An empty Input or Output means no cost is estimated for this model. " +
+      "Web search is added for each search the provider reports; empty adds nothing. When this model runs Search and the provider reports a cost, that cost is used instead.";
+  }
   const empty = modelClass === "decision" || modelClass === "image" ? "An empty Input or Output" : "An empty Input";
   return `Used only when the provider reports no cost for a request. ${empty} means no cost is estimated for this model.`;
 }
@@ -729,7 +733,9 @@ function SheetBody({
 
           {priceFields.length ? <fieldset className="min-w-0 border-y border-trace-subtle py-4">
             <legend className="px-1 text-sm font-semibold text-ink">Prices</legend>
-            <p className="mb-3 text-xs text-ink-secondary">US dollars per 1M tokens</p>
+            <p className="mb-3 text-xs text-ink-secondary">
+              {priceFields.includes("webSearchPriceUsdPerThousand") ? "US dollars per 1M tokens; Web search per 1,000 searches" : "US dollars per 1M tokens"}
+            </p>
             <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
               {priceFields.map(field => <div className="min-w-0" key={field}>
                 <label className={fieldLabel} htmlFor={`${formId}-${field}`}>{priceLabels[field]}</label>

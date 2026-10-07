@@ -543,9 +543,12 @@ describe("OpenAI Responses adapter", () => {
         inputTokens: 11,
         outputTokens: 5,
         reasoningTokens: 2,
-        totalTokens: 16
+        totalTokens: 16,
+        // The hosted search the answer ran, for its per-search fee on the answer row.
+        webSearchCount: 1
       }
     });
+    expect(events).toContainEqual({ data: expect.objectContaining({ inputTokens: 11, webSearchCount: 1 }), type: "usage" });
   });
 
   it("collapses provider error frames from Responses streams", async () => {

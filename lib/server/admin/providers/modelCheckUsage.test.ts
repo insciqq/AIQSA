@@ -218,7 +218,8 @@ describe("administrator model-check usage", () => {
         .test(hosted);
       expect(outcome.evidence.capabilitySetup?.checks.hostedSearch).toBe(status === "completed" ? "verified" : "incomplete");
       expect(rows).toHaveLength(fetchFn.mock.calls.length);
-      for (const row of rows) expect(row.usage).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+      // The billed search is counted: the writer charges the answer model's per-search price for it.
+      for (const row of rows) expect(row.usage).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15, webSearchCount: 1 });
     }
     const { recordUsage, rows } = writer();
     await createAdminProviderDraftTester({ recordUsage, createFetch: () => async () => Response.json({ encrypted_output: "opaque",

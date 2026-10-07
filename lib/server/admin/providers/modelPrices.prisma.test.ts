@@ -117,7 +117,7 @@ describe("Prisma admin model prices", () => {
     const row = await prisma.providerModel.findUniqueOrThrow({ where: { id: created.id } });
     expect(row).toMatchObject({ templateKey: null, priceSource: "catalog" });
     expect([row.inputTokenPriceUsdPerMillion, row.cachedInputTokenPriceUsdPerMillion, row.cacheWriteInputTokenPriceUsdPerMillion,
-      row.outputTokenPriceUsdPerMillion].map(price => price?.toNumber())).toEqual([0.1, 0.01, 0.125, 0.5]);
+      row.outputTokenPriceUsdPerMillion, row.webSearchPriceUsdPerThousand].map(price => price?.toNumber())).toEqual([0.1, 0.01, 0.125, 0.5, 10]);
     const custom = await f.service.createModelDraft({ connectionId: f.connectionId, displayName: "Created custom",
       configuration: adminProviderModelConfiguration({ ...configuration, upstreamModelId: "vendor/unlisted" }) });
     expect(await prisma.providerModel.findUniqueOrThrow({ where: { id: custom.id } })).toMatchObject({

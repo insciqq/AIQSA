@@ -104,7 +104,7 @@ for (const theme of ["light", "dark"] as const) {
       await page.setViewportSize(size);
       const fields = sheet.getByRole("group", { name: "Prices", exact: true });
       await fields.scrollIntoViewIfNeeded();
-      for (const label of ["Input", "Cached input", "Cache write", "Output"]) {
+      for (const label of ["Input", "Cached input", "Cache write", "Output", "Web search"]) {
         await sheet.getByLabel(label, { exact: true }).scrollIntoViewIfNeeded();
         await expectWithinViewport(page, sheet.getByLabel(label, { exact: true }));
       }
@@ -114,7 +114,7 @@ for (const theme of ["light", "dark"] as const) {
     }
     await page.setViewportSize({ width: 1440, height: 900 });
     await sheet.getByLabel("Input", { exact: true }).focus();
-    for (const label of ["Cached input", "Cache write", "Output"]) {
+    for (const label of ["Cached input", "Cache write", "Output", "Web search"]) {
       await page.keyboard.press("Tab"); await expect(sheet.getByLabel(label, { exact: true })).toBeFocused();
     }
     await page.keyboard.press("Tab"); await expect(sheet.getByRole("button", { name: "Use catalog price" })).toBeFocused();
@@ -184,7 +184,7 @@ test("an embedding model shows, saves and restores only its input price", async 
   await open();
   const input = sheet.getByLabel("Input", { exact: true });
   await expect(input).toHaveValue("0.13");
-  for (const label of ["Cached input", "Cache write", "Output"]) await expect(sheet.getByLabel(label, { exact: true })).toHaveCount(0);
+  for (const label of ["Cached input", "Cache write", "Output", "Web search"]) await expect(sheet.getByLabel(label, { exact: true })).toHaveCount(0);
   await expect(sheet.getByText("Catalog price", { exact: true })).toBeVisible();
   await expect(input).toHaveAccessibleDescription(/^Used only when the provider reports no cost/);
   await input.fill("0.2");

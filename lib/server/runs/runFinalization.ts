@@ -1,7 +1,7 @@
 import { RunSettlementError } from "./settlementFailure";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import {
-  estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage, type ModelTokenPricing
+  normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage, usageCostMicros, type ModelTokenPricing
 } from "../../domain/usage";
 import type { RunUsageAttributionPurpose } from "../../domain/usagePurpose";
 import { providerModelUsageCostMicros } from "../usage";
@@ -45,10 +45,14 @@ export type RunCompletionFinalizationResult =
       status: "not_completed";
     }>;
 
-function hasUsablePricing(pricing: ModelTokenPricing | null): pricing is ModelTokenPricing {
-  return Boolean(pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null));
-}
+const NO_PRICES: ModelTokenPricing = { inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null };
 
+/**
+ * Usage priced from a model's stored answer prices: its tokens, plus each web
+ * search its provider reported at the model's per-search price (native search
+ * in answers, Search engine calls). The repository prices answer-class rows,
+ * which include every Search engine.
+ */
 export async function usageWithEstimatedCost(
   repository: Pick<RunRepository, "loadModelPricing">,
   input: Readonly<{
@@ -62,7 +66,7 @@ export async function usageWithEstimatedCost(
   const pricing = input.providerModelId
     ? await repository.loadModelPricing(input.provider, input.modelId, input.providerModelId).catch(error => { throw new RunSettlementError("accounting", error); })
     : await repository.loadModelPricing(input.provider, input.modelId).catch(error => { throw new RunSettlementError("accounting", error); });
-  const estimatedCostMicros = hasUsablePricing(pricing) ? estimateCostMicros(normalizedUsage, pricing) : null;
+  const estimatedCostMicros = usageCostMicros({ reportedCostUsd: null, usage: normalizedUsage, pricing: pricing ?? NO_PRICES, modelClass: "answer" });
 
   return {
     ...normalizedUsage,
@@ -72,9 +76,11 @@ export async function usageWithEstimatedCost(
 
 /** Run attributions whose cost settles per call: Knowledge retrieval calls,
  * charged their reported cost or their deployment's prices (the shared cost
- * rule). Answer and Search usage is priced from token prices when written. */
+ * rule), and Search engine calls, charged their reported cost or the engine's
+ * token prices plus its per-search fee. Answer usage is priced from token
+ * prices, plus the answer model's per-search fee, when written. */
 export function settlesRunUsageCostPerCall(purpose: RunUsageAttributionPurpose): boolean {
-  return purpose === "knowledge_retrieval";
+  return purpose === "knowledge_retrieval" || purpose === "web_search";
 }
 
 // Durable cost columns are signed 32-bit integers; a larger sum is unknown.
@@ -125,12 +131,21 @@ export function groupedUsageAttributions(attributions: readonly RunUsageAttribut
 }
 
 /** A settled cost stays; an unsettled call is priced with the shared cost rule
- * from its deployment's stored class prices. */
+ * from its deployment's stored class prices. A Search call without a reported
+ * cost is priced from its engine's answer prices and per-search fee. */
 async function perCallUsageCost(
-  repository: Pick<RunRepository, "loadProviderModelCostBasis">,
+  repository: Pick<RunRepository, "loadModelPricing" | "loadProviderModelCostBasis">,
   attribution: RunUsageAttribution
 ): Promise<number | null> {
   if (attribution.estimatedCostMicros !== undefined) return attribution.estimatedCostMicros;
+  if (attribution.purpose === "web_search") {
+    return (await usageWithEstimatedCost(repository, {
+      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
+      modelId: attribution.modelId,
+      provider: attribution.provider,
+      usage: attribution.usage
+    })).estimatedCostMicros ?? null;
+  }
   if (!attribution.providerModelId) return null;
   const basis = await repository.loadProviderModelCostBasis(attribution.providerModelId)
     .catch(error => { throw new RunSettlementError("accounting", error); });

@@ -161,6 +161,15 @@ function extractOpenAIText(
   return accumulator?.value() ?? parts.join("");
 }
 
+/** OpenAI bills each `web_search_call` whose action is a search; opening or
+ * searching within a page is free. A call without a known action counts as
+ * a search. DeepSeek reports its calls the same way. */
+function billedWebSearchCount(response: OpenAIResponseRecord): number {
+  const output = Array.isArray(response.output) ? response.output : [];
+  return output.filter((item) => isRecord(item) && item.type === "web_search_call" &&
+    !(isRecord(item.action) && (item.action.type === "open_page" || item.action.type === "find_in_page"))).length;
+}
+
 export function extractOpenAIUsage(response: OpenAIResponseRecord): ModelRunUsage {
   const usage = typeof response.usage === "object" && response.usage !== null ? response.usage : {};
 
@@ -170,7 +179,8 @@ export function extractOpenAIUsage(response: OpenAIResponseRecord): ModelRunUsag
     inputTokens: valueAtPath(usage, ["input_tokens"]),
     outputTokens: valueAtPath(usage, ["output_tokens"]),
     reasoningTokens: valueAtPath(usage, ["output_tokens_details", "reasoning_tokens"]),
-    totalTokens: valueAtPath(usage, ["total_tokens"])
+    totalTokens: valueAtPath(usage, ["total_tokens"]),
+    webSearchCount: billedWebSearchCount(response)
   });
 }
 

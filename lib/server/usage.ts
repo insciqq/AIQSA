@@ -1,9 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import type { AdminProviderModelClass } from "../contracts/adminProviders";
 import { normalizeTokenUsage, usageCostMicros, type ModelTokenPricing, type TokenUsage } from "../domain/usage";
-import { modelTokenPricing, modelTokenPricingSelect } from "./providers/modelTokenPricing";
+import { modelSearchPricing, modelSearchPricingSelect } from "./providers/modelTokenPricing";
 
-/** Explicit accounting projection: the domain discriminator is not a database column. */
+/** Explicit accounting projection: the domain discriminator is not a database
+ * column; the provider-reported search count is (`webSearchCount`). */
 export function storedTokenUsage(value: TokenUsage) {
   const { completeness, ...counts } = normalizeTokenUsage(value);
   return {
@@ -14,7 +15,8 @@ export function storedTokenUsage(value: TokenUsage) {
 }
 
 /** What a usage row of one deployment is charged at when its provider reported
- * no cost: the ProviderModel's own class and stored token prices. */
+ * no cost: the ProviderModel's own class and stored prices (token prices, and
+ * for answer models the per-search price of the web searches it reports). */
 export type ProviderModelCostBasis = Readonly<{
   modelClass: AdminProviderModelClass;
   pricing: ModelTokenPricing;
@@ -27,15 +29,16 @@ export async function loadProviderModelCostBasis(
   providerModelId: string
 ): Promise<ProviderModelCostBasis | null> {
   const model = await db.providerModel.findUnique({
-    select: { modelClass: true, ...modelTokenPricingSelect },
+    select: { modelClass: true, ...modelSearchPricingSelect },
     where: { id: providerModelId }
   });
-  return model ? { modelClass: model.modelClass, pricing: modelTokenPricing(model) } : null;
+  return model ? { modelClass: model.modelClass, pricing: modelSearchPricing(model) } : null;
 }
 
 const UNKNOWN_PRICES: ModelTokenPricing = Object.freeze({
   inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null,
-  cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null
+  cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null,
+  webSearchPriceUsdPerThousand: null
 });
 
 /**

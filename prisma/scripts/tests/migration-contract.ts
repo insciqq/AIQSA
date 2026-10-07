@@ -58,6 +58,7 @@ import { DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION, dropRetiredMemo
 import { RETIRE_MEMORY_DIGESTS_MIGRATION, retireMemoryDigestsFixtureSql, retireMemoryDigestsProofSql } from "./retire-memory-digests-adoption";
 import { RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION, retireDreamSynthesisStagingFixtureSql, retireDreamSynthesisStagingProofSql } from "./retire-dream-synthesis-staging-adoption";
 import { USAGE_EVENT_PURPOSE_MIGRATION, usageEventPurposeFixtureSql, usageEventPurposeProofSql } from "./usage-event-purpose-adoption";
+import { WEB_SEARCH_PRICES_MIGRATION, webSearchPricesFixtureSql, webSearchPricesProofSql } from "./web-search-prices-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7748,6 +7749,8 @@ function main(
     dropRetiredMemoryDigestSynthesisStorageProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, USAGE_EVENT_PURPOSE_MIGRATION,
     usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, WEB_SEARCH_PRICES_MIGRATION,
+    webSearchPricesFixtureSql, webSearchPricesProofSql, webSearchPricesProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

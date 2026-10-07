@@ -34,6 +34,7 @@ export function searchObservationReceipt(result: ToolExecutionResult): SearchObs
   if (!executions.length || executions.length !== searchExecutionPreviewCount(result)) throw new ObservationStoreError("tool_observation_unavailable");
   const build = (sources: (execution: SearchExecutionEvidence) => readonly SearchSource[]) =>
     decodeSearchObservationReceipt({ version: 1, executions: executions.map(execution => ({
+      ...(execution.costUsd !== undefined ? { costUsd: execution.costUsd } : {}),
       displayName: execution.displayName, invocationId: execution.invocationId, modelId: execution.modelId,
       optionId: execution.optionId, provider: execution.provider, revisionId: execution.revisionId,
       sources: sources(execution), status: execution.status, usage: execution.usage
@@ -55,8 +56,10 @@ export function decodeSearchObservationReceipt(value: unknown): SearchObservatio
     !Array.isArray(value.executions) || value.executions.length < 1 || value.executions.length > 3) return null;
   const executions: SearchExecutionEvidence[] = [];
   for (const entry of value.executions) {
-    if (!record(entry) || Object.keys(entry).sort().join(",") !==
+    // A reported engine cost is optional; receipts written before it lack the key.
+    if (!record(entry) || Object.keys(entry).filter(key => key !== "costUsd").sort().join(",") !==
       "displayName,invocationId,modelId,optionId,provider,revisionId,sources,status,usage" ||
+      entry.costUsd !== undefined && (typeof entry.costUsd !== "number" || !Number.isFinite(entry.costUsd) || entry.costUsd < 0) ||
       !identity(entry.displayName) || !identity(entry.invocationId) || !identity(entry.optionId) ||
       !identity(entry.provider) || !identity(entry.revisionId) || entry.modelId !== null && !identity(entry.modelId) ||
       !Array.isArray(entry.sources) || entry.sources.length > 20 ||
@@ -71,7 +74,8 @@ export function decodeSearchObservationReceipt(value: unknown): SearchObservatio
     const usage = decodeTokenUsage(entry.usage);
     const cost = entry.usage.estimatedCostMicros;
     if (!usage || cost !== undefined && cost !== null && (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0)) return null;
-    executions.push({ displayName: entry.displayName, invocationId: entry.invocationId, modelId: entry.modelId,
+    executions.push({ ...(entry.costUsd !== undefined ? { costUsd: entry.costUsd as number } : {}),
+      displayName: entry.displayName, invocationId: entry.invocationId, modelId: entry.modelId,
       optionId: entry.optionId, provider: entry.provider, revisionId: entry.revisionId, sources, status: entry.status,
       usage: { ...usage, ...(cost !== undefined ? { estimatedCostMicros: cost as number | null } : {}) } });
   }

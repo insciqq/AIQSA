@@ -96,6 +96,7 @@ import {
   SearchToolCancelledError,
   searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
+  searchUsageAttribution,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import {
@@ -951,6 +952,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           purpose,
           usage
         });
+      }
+
+      /** Each engine call of a Search, with the searches it reported and a
+       * reported cost that settles it. */
+      function rememberSearchUsage(execution: SearchExecutionEvidence): void {
+        reportedUsageAttributions.push(searchUsageAttribution(execution));
       }
 
       /** Each paid call of a Knowledge operation, with its deployment and
@@ -2295,7 +2302,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           const unrecorded = unrecordedSearches.get(persisted.id);
           const executions = receipt.length === 0 && unrecorded ? searchExecutionsFromToolResult(unrecorded) : receipt;
           for (const execution of executions) {
-            if (persisted.usageAccountedAt == null) rememberReportedUsage("web_search", execution.provider, execution.modelId ?? "search", execution.usage);
+            if (persisted.usageAccountedAt == null) rememberSearchUsage(execution);
             await persistPlanSearchExecution({ execution, modelRunId: runId, repository: input.repository });
           }
           observationUsageCollected.add(persisted.id);
@@ -2404,9 +2411,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   );
                 }
                 for (const execution of executions) {
-                  if (execution.usage) {
-                    rememberReportedUsage("web_search", execution.provider, execution.modelId ?? "search", execution.usage);
-                  }
+                  if (execution.usage) rememberSearchUsage(execution);
                   await persistPlanSearchExecution({
                     execution,
                     modelRunId: runId,
@@ -3071,9 +3076,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   if (settled !== "settled" && settled !== "reused") {
                     throw new RunPipelineError("tool_call_settle_conflict", "Search result could not be durably settled");
                   }
-                  for (const execution of searchExecutionsFromToolResult(error.result)) {
-                    rememberReportedUsage("web_search", execution.provider, execution.modelId ?? "search", execution.usage);
-                  }
+                  for (const execution of searchExecutionsFromToolResult(error.result)) rememberSearchUsage(execution);
                   usageAccountedToolCallIds.add(claim.call.id);
                   await settleSearchActivity({ persistedId: claim.call.id, toolName: call.name,
                     executions: searchExecutionsFromToolResult(error.result) });

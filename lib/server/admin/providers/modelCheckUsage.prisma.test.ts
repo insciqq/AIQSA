@@ -19,7 +19,8 @@ async function withFixture(run: (fixture: { userId: string; answerId: string; em
     await prisma.providerConnection.create({ data: { id: connectionId, displayName: "Model check fixture", family: "openai_compatible",
       activeConfig: config, draftConfig: config, activeVersion: 1, draftVersion: 1, activatedAt: NOW, enabled: true } });
     for (const [id, modelClass, upstream, prices] of [
-      [answerId, "answer", "fixture/answer", { inputTokenPriceUsdPerMillion: 1, outputTokenPriceUsdPerMillion: 4 }],
+      [answerId, "answer", "fixture/answer", { inputTokenPriceUsdPerMillion: 1, outputTokenPriceUsdPerMillion: 4,
+        webSearchPriceUsdPerThousand: 10 }],
       [embeddingId, "embedding", "fixture/embedding", { inputTokenPriceUsdPerMillion: 0.02 }]
     ] as const) {
       const model = { adapterKind: modelClass === "answer" ? "openai_responses_compatible" : "openai_embeddings_compatible",
@@ -45,6 +46,9 @@ describe("Prisma model-check usage writer", () => {
     // Stored answer prices: 1000 input tokens at $1/M and 500 output tokens at $4/M = 3000 micro-dollars.
     await write({ ...identity, modelId: "fixture/answer", providerModelId: f.answerId, modelClass: "answer",
       usage: { inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500 }, reportedCostUsd: null });
+    // A hosted Search check's two billed searches at the answer model's $10 per 1,000: 3000 + 20000 micro-dollars.
+    await write({ ...identity, modelId: "fixture/answer", providerModelId: f.answerId, modelClass: "answer",
+      usage: { inputTokens: 1_000, outputTokens: 500, totalTokens: 1_500, webSearchCount: 2 }, reportedCostUsd: null });
     // A reported cost wins over the embedding's stored input price.
     await write({ ...identity, modelId: "fixture/embedding", providerModelId: f.embeddingId, modelClass: "embedding",
       usage: { inputTokens: 4, totalTokens: 4 }, reportedCostUsd: 0.000123 });
@@ -59,13 +63,17 @@ describe("Prisma model-check usage writer", () => {
       usage: {}, reportedCostUsd: 0.002 });
 
     const rows = await prisma.usageEvent.findMany({ where: { userId: f.userId } });
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(6);
     for (const row of rows) {
       expect(row).toMatchObject({ purpose: "model_check", chatId: null, modelRunId: null, projectId: null, provider: "openai_compatible" });
     }
     const byModel = (modelId: string) => rows.filter((row) => row.modelId === modelId);
-    expect(byModel("fixture/answer")).toEqual([expect.objectContaining({ providerModelId: f.answerId, inputTokens: 1_000,
-      outputTokens: 500, usageCompleteness: "COMPLETE", estimatedCostMicros: 3_000 })]);
+    expect(byModel("fixture/answer")).toHaveLength(2);
+    expect(byModel("fixture/answer")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ providerModelId: f.answerId, inputTokens: 1_000, outputTokens: 500, usageCompleteness: "COMPLETE",
+        webSearchCount: null, estimatedCostMicros: 3_000 }),
+      expect.objectContaining({ providerModelId: f.answerId, webSearchCount: 2, estimatedCostMicros: 23_000 })
+    ]));
     expect(byModel("fixture/embedding").map((row) => row.estimatedCostMicros).sort((a, b) => a! - b!)).toEqual([123, 1_000]);
     expect(byModel("fixture/draft")).toHaveLength(2);
     expect(byModel("fixture/draft")).toEqual(expect.arrayContaining([

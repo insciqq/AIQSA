@@ -617,6 +617,7 @@ export function createAdminProviderService(input: Readonly<{
         cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
         cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
         outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
+        webSearchPriceUsdPerThousand: candidate.webSearchPriceUsdPerThousand ?? null,
         templateKey: connection.id === setupPolicy?.connection.id ? candidate.templateKey : null
       }));
     const checkedConnection = {
@@ -1057,6 +1058,7 @@ export function createAdminProviderService(input: Readonly<{
           cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
           cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
           outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
+          webSearchPriceUsdPerThousand: candidate.webSearchPriceUsdPerThousand ?? null,
           templateKey: connection!.id === policy?.connection.id ? candidate.templateKey : null
         }));
         if (additions.length && await input.repository.addSetupModelsCas({
@@ -1356,6 +1358,7 @@ export function createAdminProviderService(input: Readonly<{
           cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
           cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
           outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
+          webSearchPriceUsdPerThousand: candidate.webSearchPriceUsdPerThousand ?? null,
           templateKey: connection.id === policy?.connection.id ? candidate.templateKey : null
         }));
         if (additions.length) requireUpdated(await input.repository.addSetupModelsCas({
