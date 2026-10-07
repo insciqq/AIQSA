@@ -5,6 +5,7 @@
  * passage text, source titles, headings, or raw provider payloads — only
  * immutable identifiers, counts, scores, and bounded operational facts.
  */
+import type { KnowledgeBilledCall } from "./retrievalTypes";
 
 export const KNOWLEDGE_RERANKER_EVIDENCE_VERSION = 2 as const;
 
@@ -17,8 +18,9 @@ export type KnowledgeRerankerEvidenceStatus =
 
 export type KnowledgeRerankerUsageEvidence = Readonly<{
   /** USD the provider reported for the call; null when it reported none.
-   * Recorded, with `inputTokens`, only for a provider call since reranking is
-   * accounted; absent on older receipts and on evidence without a call. */
+   * Recorded, with `inputTokens`, only for a provider response since
+   * reranking is accounted, also one the adapter rejected (degraded); absent
+   * on older receipts and on evidence without a response. */
   costUsd?: number | null;
   inputTokens?: number | null;
   searchUnits: number | null;
@@ -120,30 +122,55 @@ function decodeUsage(value: unknown): KnowledgeRerankerUsageEvidence | null {
  * adapters Knowledge reranking has used. */
 const OPENROUTER_RERANK_ADAPTER = /^openrouter-rerank-v\d+$/u;
 
+/** A reranker usage row names the billing family like every other usage row
+ * of an OpenRouter deployment; a receipt's `provider` is the routed upstream
+ * provider. */
+function billingProvider<Provider extends string | null>(
+  adapterVersion: string | null,
+  provider: Provider
+): "openrouter" | Provider {
+  return OPENROUTER_RERANK_ADAPTER.test(adapterVersion ?? "") ? "openrouter" : provider;
+}
+
 /**
  * The reranker call a receipt bills, if any: a complete or partial ranking the
- * provider returned. A disabled role, a skipped pool of at most one candidate
- * and a degraded fallback record no billed response. Its row names the billing
- * family like every other usage row of an OpenRouter deployment; the
- * receipt's `provider` is the routed upstream provider.
+ * provider returned, or a degraded fallback whose usage records a response the
+ * adapter rejected (call usage, with `costUsd` and `inputTokens`). A disabled
+ * role, a skipped pool of at most one candidate and a fallback without a
+ * response bill nothing.
  */
-export function knowledgeRerankerBilledCall(evidence: KnowledgeRerankerBindingEvidenceV2): Readonly<{
-  costUsd: number | null;
-  inputTokens: number | null;
-  modelId: string;
-  provider: string;
-  providerModelId: string;
-  totalTokens: number | null;
-}> | null {
-  if (evidence.status !== "complete" && evidence.status !== "partial" || evidence.provider === null ||
-    evidence.providerModelId === null || evidence.upstreamModelId === null) return null;
+export function knowledgeRerankerBilledCall(
+  evidence: KnowledgeRerankerBindingEvidenceV2
+): KnowledgeBilledCall | null {
+  const responded = evidence.status === "complete" || evidence.status === "partial"
+    ? evidence.provider !== null
+    : evidence.status === "degraded" && evidence.usage.costUsd !== undefined;
+  const provider = billingProvider(evidence.adapterVersion, evidence.provider);
+  if (!responded || provider === null || evidence.providerModelId === null ||
+    evidence.upstreamModelId === null) return null;
   return {
     costUsd: evidence.usage.costUsd ?? null,
     inputTokens: evidence.usage.inputTokens ?? null,
     modelId: evidence.upstreamModelId,
-    provider: OPENROUTER_RERANK_ADAPTER.test(evidence.adapterVersion ?? "") ? "openrouter" : evidence.provider,
+    provider,
     providerModelId: evidence.providerModelId,
     totalTokens: evidence.usage.totalTokens
+  };
+}
+
+/** The pinned reranker call whose rejected response failed its operation
+ * instead of degrading it: the usage that response reported. */
+export function knowledgeRerankerRejectedCall(
+  pin: Readonly<{ adapterVersion: string; provider: string; providerModelId: string; upstreamModelId: string }>,
+  usage: Readonly<{ costUsd?: number | null; inputTokens: number | null; totalTokens: number | null }>
+): KnowledgeBilledCall {
+  return {
+    costUsd: usage.costUsd ?? null,
+    inputTokens: usage.inputTokens,
+    modelId: pin.upstreamModelId,
+    provider: billingProvider(pin.adapterVersion, pin.provider),
+    providerModelId: pin.providerModelId,
+    totalTokens: usage.totalTokens
   };
 }
 

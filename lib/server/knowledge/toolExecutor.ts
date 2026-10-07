@@ -1,7 +1,8 @@
 import { normalizeTokenUsage } from "../../domain/usage";
 import { createHash } from "node:crypto";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import { EmbeddingAdapterError, type EmbeddingAdapter } from "../providers/embeddings";
+import { EmbeddingAdapterError, type EmbeddingAdapter, type EmbeddingUsage } from "../providers/embeddings";
+import { RerankAdapterError } from "../providers/rerank";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
@@ -16,9 +17,10 @@ import type {
   ToolExecutor
 } from "../tools/types";
 import { createKnowledgeVectorSpacePin } from "./indexProfile";
-import { KnowledgeSearchFailure } from "./searchFailure";
+import { KnowledgeSearchFailure, recordKnowledgeFailureBilledCalls } from "./searchFailure";
 import {
   aggregateKnowledgeUsage,
+  knowledgeEmbeddingBilledCall,
   knowledgeToolResultContent,
   knowledgeToolResultText
 } from "./toolResult";
@@ -35,6 +37,7 @@ import {
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
   type KnowledgeAcceptedBinding,
   type KnowledgeBaseRetrievalEvidence,
+  type KnowledgeBilledCall,
   type KnowledgeEmbeddingExecutionEvidence,
   type KnowledgeExactSearchRequest,
   type KnowledgeExactSearchResult,
@@ -86,7 +89,11 @@ import {
   knowledgeRerankerUnavailableEvidence,
   type KnowledgeRerankExecutor
 } from "./rerankExecution";
-import type { KnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
+import {
+  knowledgeRerankerBilledCall,
+  knowledgeRerankerRejectedCall,
+  type KnowledgeRerankerBindingEvidenceV2
+} from "./rerankEvidence";
 import type { KnowledgeRerankerRuntimeResolver } from "./rerankerRuntime";
 import type { KnowledgeRelevanceExecutor } from "./relevanceRuntime";
 import { knowledgeRelevanceKeptChunks } from "./relevancePolicy";
@@ -277,6 +284,20 @@ function safeFailureCode(error: unknown): string {
   return /^[a-z][a-z0-9_]{0,127}$/u.test(candidate)
     ? candidate
     : "embedding_unavailable";
+}
+
+/** Usage a query embedding response reported, or null when it reported none. */
+function reportedEmbeddingUsage(usage: EmbeddingUsage | null): EmbeddingUsage | null {
+  return usage && (usage.inputTokens !== null || usage.totalTokens !== null || (usage.costUsd ?? null) !== null)
+    ? usage
+    : null;
+}
+
+/** A query embedding that returned a response: accepted, or rejected after
+ * reporting usage. A failure without a response stays unbilled. */
+function returnedResponse(execution: KnowledgeEmbeddingExecutionEvidence): boolean {
+  return execution.status === "complete" || execution.inputTokens !== null ||
+    execution.totalTokens !== null || (execution.costUsd ?? null) !== null;
 }
 
 function permitsLexicalQueryDegradation(error: unknown): boolean {
@@ -1367,6 +1388,11 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         reservationDispatched = true;
       }
 
+      // The paid calls of this operation. Its receipt bills them; when the
+      // operation fails instead, its error carries those that returned a
+      // response to the failure result, which bills them once.
+      const embeddingExecutions: KnowledgeEmbeddingExecutionEvidence[] = [];
+      const rerankCalls: KnowledgeBilledCall[] = [];
       try {
       const persistEvidence = async (
         evidence: KnowledgeRetrievalEvidence,
@@ -1695,7 +1721,6 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       const groups = bindingGroups(scopedBindings);
       if (groups.length !== 1) throw new Error("knowledge_embedding_space_incompatible");
 
-      const embeddingExecutions: KnowledgeEmbeddingExecutionEvidence[] = [];
       let semanticUnavailable = false;
       const semanticQueries = anchorQuery
         ? [anchorQuery, request.query]
@@ -1710,6 +1735,8 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       for (const group of groups) {
         const embeddingStartedAt = monotonicNow();
         let runtime: KnowledgeAcceptedEmbeddingRuntime | null = null;
+        // Usage of a received response this operation rejects below.
+        let rejectedUsage: EmbeddingUsage | null = null;
         try {
           runtime = await input.embeddingRuntime.resolve(group.bindings[0]!);
           const result = await runtime.adapter.embed({
@@ -1717,10 +1744,10 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             ...(options?.signal ? { signal: options.signal } : {}),
             texts: semanticQueries
           });
-          throwIfAborted(options?.signal);
           if (result.vectors.length !== semanticQueries.length || result.vectors.some((vector) =>
             vector.length !== group.bindings[0]!.targetDimension ||
             vector.some((value) => !Number.isFinite(value)))) {
+            rejectedUsage = result.usage;
             throw new Error("embedding_response_dimension_mismatch");
           }
           embeddingExecutions.push({
@@ -1735,6 +1762,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             status: "complete",
             totalTokens: result.usage.totalTokens ?? null
           });
+          throwIfAborted(options?.signal);
           for (const binding of group.bindings) {
             for (const vector of result.vectors) {
               vectors.push({
@@ -1747,6 +1775,26 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             }
           }
         } catch (error) {
+          const failedExecution = (usage: EmbeddingUsage | null): KnowledgeEmbeddingExecutionEvidence => ({
+            bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
+            costUsd: usage?.costUsd ?? null,
+            durationMs: elapsedSince(embeddingStartedAt),
+            inputTokens: usage?.inputTokens ?? null,
+            modelId: runtime?.configuration.upstreamModelId ??
+              group.snapshot.model.upstreamModelId,
+            provider: runtime?.provider ?? group.snapshot.providerFamily,
+            providerModelId: runtime?.providerModelId ??
+              group.bindings[0]!.embeddingProviderModelId,
+            requestId: null,
+            status: "error",
+            totalTokens: usage?.totalTokens ?? null
+          });
+          // A rejected response (invalid vectors, a wrong model) was still
+          // paid for: it is billed whether the operation degrades or fails.
+          const reported = reportedEmbeddingUsage(
+            error instanceof EmbeddingAdapterError ? error.usage : rejectedUsage
+          );
+          if (reported) embeddingExecutions.push(failedExecution(reported));
           throwIfAborted(options?.signal);
           const permitted = permitsLexicalQueryDegradation(error);
           logEvent("tool_execution", {
@@ -1755,20 +1803,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           });
           if (permitted) {
             semanticUnavailable = true;
-            embeddingExecutions.push({
-              bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
-              costUsd: null,
-              durationMs: elapsedSince(embeddingStartedAt),
-              inputTokens: null,
-              modelId: runtime?.configuration.upstreamModelId ??
-                group.snapshot.model.upstreamModelId,
-              provider: runtime?.provider ?? group.snapshot.providerFamily,
-              providerModelId: runtime?.providerModelId ??
-                group.bindings[0]!.embeddingProviderModelId,
-              requestId: null,
-              status: "error",
-              totalTokens: null
-            });
+            if (!reported) embeddingExecutions.push(failedExecution(null));
             continue;
           }
           throw new Error(safeFailureCode(error), { cause: error });
@@ -1787,15 +1822,34 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           outcome: "degraded", code: "reranker_model_unavailable", action: "degrade"
         });
       }
-      const rerankExecutor: KnowledgeRerankExecutor | null =
-        rerankResolution?.kind === "ready"
-          ? createKnowledgeRerankStage({
-              adapter: rerankResolution.adapter,
-              now: monotonicNow,
-              pin: rerankResolution.pin,
-              query: request.query
-            })
-          : null;
+      const rerankPin = rerankResolution?.kind === "ready" ? rerankResolution.pin : null;
+      const rerankStage = rerankResolution?.kind === "ready"
+        ? createKnowledgeRerankStage({
+            adapter: rerankResolution.adapter,
+            now: monotonicNow,
+            pin: rerankResolution.pin,
+            query: request.query
+          })
+        : null;
+      // The stage's billed call is known before the receipt is: a later
+      // failure of this operation still bills it.
+      const rerankExecutor: KnowledgeRerankExecutor | null = rerankStage && rerankPin
+        ? async (stageInput) => {
+            try {
+              const stage = await rerankStage(stageInput);
+              const billed = knowledgeRerankerBilledCall(stage.evidence);
+              if (billed) rerankCalls.push(billed);
+              return stage;
+            } catch (error) {
+              // A rejection the stage propagates instead of degrading still
+              // reported its response's usage.
+              if (error instanceof RerankAdapterError && error.usage) {
+                rerankCalls.push(knowledgeRerankerRejectedCall(rerankPin, error.usage));
+              }
+              throw error;
+            }
+          }
+        : null;
       let search: KnowledgeHybridSearchResult;
       try {
         search = await input.store.hybridSearch({
@@ -1945,6 +1999,10 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         version: KNOWLEDGE_RESULT_VERSION
       }), search.canonicalSourceProvenance ?? []);
       } catch (error) {
+        recordKnowledgeFailureBilledCalls(error, [
+          ...embeddingExecutions.filter(returnedResponse).map(knowledgeEmbeddingBilledCall),
+          ...rerankCalls
+        ]);
         if (activeReservation && reservationDispatched) {
           await input.budgetReservations!.markAmbiguous({
             leaseToken: activeReservation.leaseToken,

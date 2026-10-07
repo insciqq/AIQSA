@@ -344,6 +344,39 @@ describe("Memory item vector enrichment handler", () => {
     expect(fixture.applyFailed).not.toHaveBeenCalled();
   });
 
+  it("bills a document embedding response the adapter rejected once with its binding", async () => {
+    const fixture = dependencies({
+      runtime: {
+        resolve: vi.fn(async () => ({
+          adapter: {
+            embed: vi.fn(async () => {
+              throw new EmbeddingAdapterError("embedding_response_vector_invalid", {
+                usage: { costUsd: null, inputTokens: 4, totalTokens: 4 }
+              });
+            })
+          }
+        }))
+      } as never
+    });
+    const handler = createMemoryItemEmbeddingHandler(fixture.base);
+
+    await expect(handler.execute(claim(), context())).rejects.toMatchObject({
+      code: "embedding_response_vector_invalid",
+      retryable: true
+    } satisfies Partial<MemoryCoordinatorError>);
+    expect(fixture.settle).toHaveBeenCalledOnce();
+    expect(fixture.settle).toHaveBeenCalledWith(
+      "user-1",
+      "binding-1",
+      expect.objectContaining({
+        errorCode: "embedding_response_vector_invalid",
+        state: "FAILED",
+        usage: expect.objectContaining({ completeness: "COMPLETE", inputTokens: 4, totalTokens: 4 })
+      })
+    );
+    expect(fixture.applyFailed).toHaveBeenCalledOnce();
+  });
+
   it("degrades uncertain and recovered calls without replaying provider I/O", async () => {
     const recovered = dependencies();
     const recoveredClaim = claim();

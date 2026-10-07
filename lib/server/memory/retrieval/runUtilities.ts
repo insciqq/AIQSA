@@ -1,4 +1,8 @@
-import { memoryReportedUsage as providerUsage, memoryVectorCallUsage } from "../execution/usage";
+import {
+  memoryReportedUsage as providerUsage,
+  memoryVectorCallErrorUsage,
+  memoryVectorCallUsage
+} from "../execution/usage";
 import type { PrismaClient } from "@prisma/client";
 import {
   createAcceptedEmbeddingRuntime,
@@ -1170,7 +1174,8 @@ async function runDedicatedRerankBatch(
           : "memory_reranker_outcome_unknown",
       providerResponseId: null,
       state: uncertain ? "OUTCOME_UNKNOWN" : "FAILED",
-      usage: unavailableUsage
+      // A rejected ranking or drifted deployment still billed its response.
+      usage: memoryVectorCallErrorUsage(error)
     });
     return {
       ...unavailable(uncertain
@@ -1373,7 +1378,8 @@ async function runQueryEmbeddingAttempt(
           : "memory_query_embedding_outcome_unknown",
       providerResponseId: null,
       state: uncertain ? "OUTCOME_UNKNOWN" : "FAILED",
-      usage: unavailableUsage
+      // Rejected vectors or a wrong model still billed their response.
+      usage: memoryVectorCallErrorUsage(error)
     });
     return {
       ...unavailable(uncertain
