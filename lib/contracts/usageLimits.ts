@@ -63,7 +63,12 @@ export type AdminUsageLimitGroupRow = UsageLimitValues & {
   groupId: string;
   memberCount: number;
   name: string;
+  /** The saved allowance's version; `null` when the group has none. */
+  version: number | null;
 };
+
+/** A saved user override with the version its next save or removal expects. */
+export type AdminUsageUserOverride = UsageUserLimits & { version: number };
 
 export type AdminUsageLimitUserRow = {
   displayName: string;
@@ -73,7 +78,7 @@ export type AdminUsageLimitUserRow = {
   messagesLastHour: number;
   /** Known estimated cost in the current UTC month. */
   monthSpentMicros: number;
-  override: UsageUserLimits | null;
+  override: AdminUsageUserOverride | null;
   status: string;
   userId: string;
 };
@@ -89,8 +94,14 @@ export type AdminUsageLimits = UsageMonthPeriod & {
 export type AdminUsageLimitsResponse = { limits: AdminUsageLimits };
 
 export type AdminUsageInstallationLimitsInput = Omit<UsageInstallationLimits, "version"> & { expectedVersion: number };
-export type AdminUsageGroupLimitsInput = UsageLimitValues;
-export type AdminUsageUserLimitsInput = UsageLimitValues & { exempt: boolean };
+
+/**
+ * Group and user saves name the version they were edited from; `null` (absent
+ * on the wire) expects that nothing is saved yet. A different saved version
+ * answers `usage_limits_stale`.
+ */
+export type AdminUsageGroupLimitsInput = UsageLimitValues & { expectedVersion: number | null };
+export type AdminUsageUserLimitsInput = UsageLimitValues & { exempt: boolean; expectedVersion: number | null };
 
 export type AdminUsageLimitsErrorCode =
   | "forbidden"
@@ -161,6 +172,8 @@ function count(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+const VERSION_BOUND = { min: 1, max: Number.MAX_SAFE_INTEGER } as const;
+
 function instant(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
@@ -190,19 +203,30 @@ export function decodeUsageLimitValues(value: unknown, extraKeys: readonly strin
 
 export function decodeAdminUsageInstallationLimitsInput(value: unknown): AdminUsageInstallationLimitsInput | null {
   const values = decodeUsageLimitValues(value, ["expectedVersion", "monthlyCapMicros"]);
-  if (!values || !isRecord(value) || !bounded(value.expectedVersion, { min: 1, max: Number.MAX_SAFE_INTEGER }) ||
+  if (!values || !isRecord(value) || !bounded(value.expectedVersion, VERSION_BOUND) ||
     !nullableBounded(value.monthlyCapMicros, USAGE_LIMIT_BOUNDS.budgetMicros)) return null;
   return { ...values, expectedVersion: value.expectedVersion, monthlyCapMicros: value.monthlyCapMicros };
 }
 
+/** `null` for an absent or null `expectedVersion`, `undefined` for an invalid one. */
+export function decodeExpectedUsageLimitVersion(value: unknown): number | null | undefined {
+  if (value === undefined || value === null) return null;
+  return bounded(value, VERSION_BOUND) ? value : undefined;
+}
+
 export function decodeAdminUsageGroupLimitsInput(value: unknown): AdminUsageGroupLimitsInput | null {
-  return decodeUsageLimitValues(value);
+  const values = decodeUsageLimitValues(value, ["expectedVersion"]);
+  const expectedVersion = isRecord(value) ? decodeExpectedUsageLimitVersion(value.expectedVersion) : undefined;
+  if (!values || expectedVersion === undefined) return null;
+  return { ...values, expectedVersion };
 }
 
 export function decodeAdminUsageUserLimitsInput(value: unknown): AdminUsageUserLimitsInput | null {
-  const values = decodeUsageLimitValues(value, ["exempt"]);
+  const values = decodeUsageLimitValues(value, ["exempt", "expectedVersion"]);
   if (!values || !isRecord(value) || typeof value.exempt !== "boolean") return null;
-  return { ...values, exempt: value.exempt };
+  const expectedVersion = decodeExpectedUsageLimitVersion(value.expectedVersion);
+  if (expectedVersion === undefined) return null;
+  return { ...values, exempt: value.exempt, expectedVersion };
 }
 
 function source(value: unknown): value is UsageLimitSource | null {
@@ -224,10 +248,10 @@ function effectiveLimits(value: unknown): value is EffectiveUsageLimits {
     effectiveLimit(value.messagesPerDay, USAGE_LIMIT_BOUNDS.messagesPerDay);
 }
 
-function userOverride(value: unknown): value is UsageUserLimits | null {
+function userOverride(value: unknown): value is AdminUsageUserOverride | null {
   if (value === null) return true;
   return isRecord(value) && text(value.userId, 128) && typeof value.exempt === "boolean" &&
-    decodeUsageLimitValues(value, ["exempt", "userId"]) !== null;
+    bounded(value.version, VERSION_BOUND) && decodeUsageLimitValues(value, ["exempt", "userId", "version"]) !== null;
 }
 
 export function decodeAdminUsageLimitsResponse(value: unknown): AdminUsageLimitsResponse | null {
@@ -235,12 +259,13 @@ export function decodeAdminUsageLimitsResponse(value: unknown): AdminUsageLimits
   const limits = value.limits;
   const installation = limits.installation;
   if (!instant(limits.periodStart) || !instant(limits.resetsAt) || !count(limits.installationSpentMicros) ||
-    !isRecord(installation) || !bounded(installation.version, { min: 1, max: Number.MAX_SAFE_INTEGER }) ||
+    !isRecord(installation) || !bounded(installation.version, VERSION_BOUND) ||
     !nullableBounded(installation.monthlyCapMicros, USAGE_LIMIT_BOUNDS.budgetMicros) ||
     decodeUsageLimitValues(installation, ["monthlyCapMicros", "version"]) === null ||
     !Array.isArray(limits.groups) || !limits.groups.every((row) => isRecord(row) &&
       text(row.groupId, 128) && text(row.name, 256) && nullableInstant(row.archivedAt) && count(row.memberCount) &&
-      decodeUsageLimitValues(row, ["archivedAt", "groupId", "memberCount", "name"]) !== null) ||
+      nullableBounded(row.version, VERSION_BOUND) &&
+      decodeUsageLimitValues(row, ["archivedAt", "groupId", "memberCount", "name", "version"]) !== null) ||
     !Array.isArray(limits.users) || !limits.users.every((row) => isRecord(row) &&
       text(row.userId, 128) && text(row.displayName, 512) && (row.email === null || text(row.email, 512)) &&
       text(row.status, 64) && count(row.monthSpentMicros) && count(row.messagesLastHour) &&

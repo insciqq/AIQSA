@@ -3300,6 +3300,10 @@ model UsageLimit {
   monthlyBudgetMicros BigInt?
   messagesPerHour     Int?
   messagesPerDay      Int?
+  /// Optimistic concurrency token for administrator saves. Every insert and
+  /// change takes the next value of one sequence, so a row removed and created
+  /// again never repeats a version that a stale draft still holds.
+  version             Int      @default(autoincrement())
   updatedByUserId     String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

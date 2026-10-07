@@ -2,13 +2,14 @@ import {
   decodeAdminUsageGroupLimitsInput,
   decodeAdminUsageInstallationLimitsInput,
   decodeAdminUsageUserLimitsInput,
+  decodeExpectedUsageLimitVersion,
   type AdminUsageLimitsErrorCode,
   type AdminUsageLimitsErrorResponse,
   type AdminUsageLimitsResponse
 } from "../../contracts/usageLimits";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
-import type { UsageLimitsRepository } from "./repository";
+import type { UsageLimitsRepository, UsageLimitWriteResult } from "./repository";
 
 const ERROR_STATUS: Readonly<Record<AdminUsageLimitsErrorCode, number>> = {
   forbidden: 403,
@@ -40,6 +41,18 @@ function isJson(request: Request): boolean {
 }
 
 type Mutation = (adminUserId: string, body: unknown) => Promise<AdminUsageLimitsErrorCode | null>;
+
+function writeError(result: UsageLimitWriteResult, missing: "group_not_found" | "user_not_found"): AdminUsageLimitsErrorCode | null {
+  if (result === "written") return null;
+  return result === "stale" ? "usage_limits_stale" : missing;
+}
+
+/** `?expectedVersion=` of a removal: `null` when absent, `undefined` when malformed. */
+function expectedVersionParam(request: Request): number | null | undefined {
+  const raw = new URL(request.url).searchParams.get("expectedVersion");
+  if (raw === null) return null;
+  return /^[1-9]\d{0,15}$/u.test(raw) ? decodeExpectedUsageLimitVersion(Number(raw)) ?? undefined : undefined;
+}
 
 /**
  * Administrator usage limits. Every successful call answers with the whole
@@ -90,7 +103,7 @@ export function createAdminUsageLimitsHandlers(input: Readonly<{
       if (!groupId) return "group_not_found";
       const limits = decodeAdminUsageGroupLimitsInput(body);
       if (!limits) return "usage_limits_input_invalid";
-      return await repository.putGroupLimits({ groupId, limits, userId: adminUserId }) ? null : "group_not_found";
+      return writeError(await repository.putGroupLimits({ groupId, limits, userId: adminUserId }), "group_not_found");
     }),
 
     putUser: (request: Request, rawUserId: string) => handle(request, async (adminUserId, body) => {
@@ -98,13 +111,15 @@ export function createAdminUsageLimitsHandlers(input: Readonly<{
       if (!targetUserId) return "user_not_found";
       const limits = decodeAdminUsageUserLimitsInput(body);
       if (!limits) return "usage_limits_input_invalid";
-      return await repository.putUserLimits({ limits, targetUserId, userId: adminUserId }) ? null : "user_not_found";
+      return writeError(await repository.putUserLimits({ limits, targetUserId, userId: adminUserId }), "user_not_found");
     }),
 
     deleteUser: (request: Request, rawUserId: string) => handle(request, async () => {
       const targetUserId = resourceId(rawUserId);
       if (!targetUserId) return "user_not_found";
-      return await repository.deleteUserLimits({ targetUserId }) ? null : "user_not_found";
+      const expectedVersion = expectedVersionParam(request);
+      if (expectedVersion === undefined) return "usage_limits_input_invalid";
+      return writeError(await repository.deleteUserLimits({ expectedVersion, targetUserId }), "user_not_found");
     }, "none")
   };
 }
