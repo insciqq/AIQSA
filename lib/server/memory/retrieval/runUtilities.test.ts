@@ -554,6 +554,39 @@ describe("Memory run utility execution", () => {
     expect(JSON.stringify(embed.mock.calls)).not.toContain("web search");
   });
 
+  it("bills a query embedding response the adapter rejected once with its binding", async () => {
+    const bound = execution([]);
+    const embed = vi.fn(async () => {
+      throw new EmbeddingAdapterError("embedding_response_dimension_mismatch", {
+        providerRequestCount: 1,
+        usage: { costUsd: 0.0000123, inputTokens: 7, totalTokens: 7 }
+      });
+    });
+    const service = createMemoryRunUtilityService({
+      embeddingRuntime: { resolve: vi.fn(async () => ({ adapter: { embed } })) } as never,
+      execution: bound.value,
+      provider: { run: vi.fn() } as unknown as MemoryRunUtilityProvider
+    });
+
+    await expect(service.embedQuery({
+      ...baseInput(),
+      profile,
+      query: "What did I say about release readiness?"
+    })).resolves.toMatchObject({
+      externalCallCount: 1,
+      reason: "memory_query_embedding_failed",
+      status: "UNAVAILABLE"
+    });
+    expect(embed).toHaveBeenCalledOnce();
+    expect(bound.lifecycle.settle).toHaveBeenCalledOnce();
+    expect(bound.lifecycle.settle.mock.calls[0]?.[2]).toMatchObject({
+      errorCode: "embedding_response_dimension_mismatch",
+      providerResponseId: null,
+      state: "FAILED",
+      usage: { completeness: "COMPLETE", estimatedCostMicros: 12, inputTokens: 7, totalTokens: 7 }
+    });
+  });
+
   it("does not retry a transport-uncertain interactive query embedding", async () => {
     const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({
       id: `embedding-binding-${input.ordinal}`
@@ -2583,6 +2616,44 @@ describe("Memory run utility execution", () => {
       status: "UNAVAILABLE"
     });
     expect(harness.rerank).toHaveBeenCalledOnce();
+  });
+
+  it("bills each rejected dedicated rerank response once with its own binding", async () => {
+    vi.useFakeTimers();
+    try {
+      const usage = { costUsd: 0.000004, inputTokens: 320, searchUnits: null, totalTokens: 320 };
+      const harness = dedicatedHarness(async () => {
+        throw new RerankAdapterError("rerank_response_invalid", { usage });
+      });
+      const pending = harness.service.rerank({
+        ...baseInput(),
+        candidates: dedicatedCandidates(3),
+        profileRequested: false,
+        query: "query"
+      });
+      await vi.runAllTimersAsync();
+      await expect(pending).resolves.toMatchObject({
+        reason: "memory_run_utility_output_invalid",
+        status: "UNAVAILABLE"
+      });
+      // The invalid ranking buys one fresh dispatch; each response settles
+      // once, on its own binding, with the usage it reported.
+      expect(harness.rerank).toHaveBeenCalledTimes(MEMORY_RERANK_MAX_ATTEMPTS);
+      expect(harness.settle.mock.calls.map(([, bindingId, input]) => [bindingId, input])).toEqual(
+        ["binding-2", "binding-3"].map((bindingId) => [bindingId, expect.objectContaining({
+          errorCode: "rerank_response_invalid",
+          state: "FAILED",
+          usage: expect.objectContaining({
+            completeness: "COMPLETE",
+            estimatedCostMicros: 4,
+            inputTokens: 320,
+            totalTokens: 320
+          })
+        })])
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("splits the 180-candidate aggregation pool only at the dedicated envelope", async () => {

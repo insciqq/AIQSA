@@ -26,7 +26,7 @@ import {
   type PrismaMemoryExecutionService
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
-import { memoryVectorCallUsage } from "../execution/usage";
+import { memoryVectorCallErrorUsage, memoryVectorCallUsage } from "../execution/usage";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
 import {
   MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
@@ -631,7 +631,8 @@ export function createMemoryEmbeddingBatchHandler(
           errorCode: code,
           providerResponseId: null,
           state: uncertain ? "OUTCOME_UNKNOWN" : "FAILED",
-          usage: unavailableUsage
+          // Rejected vectors or a wrong model still billed their response.
+          usage: memoryVectorCallErrorUsage(error)
         });
         if (uncertain) {
           // Embedding requests are pure computations over the hashed batch.

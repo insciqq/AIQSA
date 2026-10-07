@@ -27,7 +27,7 @@ import {
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { memoryVectorSpaceFingerprint } from "../execution/policy";
-import { memoryVectorCallUsage } from "../execution/usage";
+import { memoryVectorCallErrorUsage, memoryVectorCallUsage } from "../execution/usage";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import {
   MEMORY_ITEM_EMBEDDING_VERSIONS,
@@ -358,7 +358,7 @@ export function createMemoryItemEmbeddingHandler(
               : "memory_embedding_provider_outcome_unknown",
             providerResponseId: null,
             state: "OUTCOME_UNKNOWN",
-            usage: unavailableUsage
+            usage: memoryVectorCallErrorUsage(error)
           });
           await deps.repository.applyFailed(target, deps.now());
           throw new MemoryCoordinatorError("memory_embedding_outcome_unknown", false);
@@ -371,7 +371,8 @@ export function createMemoryItemEmbeddingHandler(
           errorCode: code,
           providerResponseId: null,
           state: "FAILED",
-          usage: unavailableUsage
+          // Rejected vectors or a wrong model still billed their response.
+          usage: memoryVectorCallErrorUsage(error)
         });
         await deps.repository.applyFailed(target, deps.now());
         throw new MemoryCoordinatorError(
