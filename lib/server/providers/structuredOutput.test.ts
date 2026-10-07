@@ -699,6 +699,33 @@ describe("provider structured output", () => {
     await expect(adapter.execute(request)).rejects.toThrow("structured_output_invalid");
   });
 
+  it("reports OpenRouter's charge for a structured call, also when its output is refused", async () => {
+    const createChatCompletion = vi.fn(async (): Promise<Record<string, unknown>> => ({
+      choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ ok: true }) } }],
+      id: "openrouter-priced",
+      usage: { completion_tokens: 3, cost: 0.0000062, cost_details: { upstream_inference_cost: 0.000124 }, is_byok: true,
+        prompt_tokens: 9, total_tokens: 12 }
+    }));
+    const adapter = createOpenRouterStructuredOutputAdapter({ client: { createChatCompletion }, model: openRouterModel });
+    const onCostUsd = vi.fn();
+    await expect(adapter.execute(request, { onCostUsd })).resolves.toEqual({ ok: true });
+    expect(onCostUsd).toHaveBeenCalledExactlyOnceWith(0.0001302);
+
+    createChatCompletion.mockResolvedValueOnce({ choices: [{ finish_reason: "length", message: { content: "{" } }],
+      id: "openrouter-priced-cut", usage: { completion_tokens: 3, cost: 0.00002, prompt_tokens: 9, total_tokens: 12 } });
+    const refused = vi.fn();
+    await expect(adapter.execute(request, { onCostUsd: refused })).rejects.toThrow("structured_output_output_limit_exceeded");
+    expect(refused).toHaveBeenCalledExactlyOnceWith(0.00002);
+
+    for (const usage of [{ completion_tokens: 3, prompt_tokens: 9, total_tokens: 12 }, { cost: "0.1" }, undefined]) {
+      createChatCompletion.mockResolvedValueOnce({ choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }],
+        id: "openrouter-unpriced", usage });
+      const unpriced = vi.fn();
+      await adapter.execute(request, { onCostUsd: unpriced });
+      expect(unpriced).not.toHaveBeenCalled();
+    }
+  });
+
   it("unwraps only the exact transport wrapper from OpenRouter root unions", async () => {
     const response = (value: Record<string, unknown>) => ({
       choices: [{

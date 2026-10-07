@@ -6,6 +6,7 @@ import type { RunRepository } from "./runRepositoryContract";
 import {
   finalizeRunCompletion,
   groupedUsageAttributions,
+  reportedAnswerCost,
   usageAttributionsWithEstimatedCost,
   usageWithEstimatedCost
 } from "./runFinalization";
@@ -559,5 +560,62 @@ describe("run usage attribution cost", () => {
     await expect(usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis: async () => {
       throw privateError;
     } }, [{ ...embedding, usage: { inputTokens: 1 } }])).rejects.toMatchObject({ stage: "accounting" });
+  });
+});
+
+describe("reported answer costs", () => {
+  const answer = { modelId: "deepseek/deepseek-v4.1-flash", provider: "openrouter", purpose: "chat_answer" as const };
+  const tokens = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
+  const pricing = { inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10 };
+
+  it("settles an answer call at exactly the reported charge, or prices it from tokens without a usable one", () => {
+    expect(reportedAnswerCost(0.000123)).toEqual({ costReported: true, estimatedCostMicros: 123 });
+    expect(reportedAnswerCost(0.0001302)).toEqual({ costReported: true, estimatedCostMicros: 130 });
+    expect(reportedAnswerCost(0.0000005)).toEqual({ costReported: true, estimatedCostMicros: 1 });
+    expect(reportedAnswerCost(0)).toEqual({ costReported: true, estimatedCostMicros: 0 });
+    for (const unusable of [undefined, -1, Number.NaN, 2_148]) expect(reportedAnswerCost(unusable)).toEqual({});
+  });
+
+  it("sums reported calls apart from token-priced ones and keeps them through every regrouping", () => {
+    const grouped = groupedUsageAttributions([
+      { ...answer, ...reportedAnswerCost(0.000123), operationCount: 1, usage: tokens },
+      { ...answer, operationCount: 1, usage: tokens },
+      { ...answer, ...reportedAnswerCost(0.000077), operationCount: 1, usage: tokens },
+      // A stored cost without a reported charge never settles an answer row.
+      { ...answer, estimatedCostMicros: 9, operationCount: 1, usage: tokens }
+    ]);
+    expect(grouped).toEqual([
+      { ...answer, costReported: true, estimatedCostMicros: 200, operationCount: 2, usage: expect.objectContaining({ inputTokens: 2_000 }) },
+      { ...answer, operationCount: 2, usage: expect.objectContaining({ inputTokens: 2_000 }) }
+    ]);
+    expect(groupedUsageAttributions(grouped)).toEqual(grouped);
+  });
+
+  it("charges reported calls their reported cost and prices only the rest from token prices", async () => {
+    const loadModelPricing = vi.fn(async () => pricing);
+    const loadProviderModelCostBasis = vi.fn(async () => null);
+    const priced = await usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis }, groupedUsageAttributions([
+      { ...answer, ...reportedAnswerCost(0.000123), operationCount: 1, usage: tokens },
+      { ...answer, operationCount: 1, usage: tokens }
+    ]));
+    expect(priced.map(({ costReported, estimatedCostMicros }) => [costReported, estimatedCostMicros]))
+      .toEqual([[true, 123], [undefined, 3_000]]);
+    expect(loadModelPricing).toHaveBeenCalledExactlyOnceWith("openrouter", "deepseek/deepseek-v4.1-flash");
+    expect(loadProviderModelCostBasis).not.toHaveBeenCalled();
+  });
+
+  it("completes a run at the sum of its reported answer costs", async () => {
+    const completeRun = vi.fn(async () => true);
+    const loadModelPricing = vi.fn(async () => pricing);
+    const input = completionInput({ completeRun, loadModelPricing, publishRunAnswer: vi.fn(async () => true) });
+    const result = await finalizeRunCompletion({ ...input, run: { ...input.run, ...answer }, result: { ...input.result,
+      usageAttributions: groupedUsageAttributions([
+        { ...answer, ...reportedAnswerCost(0.00041), operationCount: 1, usage: tokens },
+        { ...answer, ...reportedAnswerCost(0.000013), operationCount: 1, usage: tokens }
+      ]) } });
+    expect(result).toMatchObject({ status: "completed", usage: { estimatedCostMicros: 423 } });
+    expect(completeRun).toHaveBeenCalledWith(expect.objectContaining({ estimatedCostMicros: 423,
+      usageAttributions: [expect.objectContaining({ costReported: true, estimatedCostMicros: 423, operationCount: 2 })] }));
+    expect(loadModelPricing).not.toHaveBeenCalled();
   });
 });

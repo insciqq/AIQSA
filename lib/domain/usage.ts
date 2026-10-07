@@ -225,7 +225,8 @@ export type UsageCostInput = Readonly<{
  * 1. A provider-reported cost wins over configured prices: exact half-up
  *    micro-dollars, so a sub-micro amount is a known zero. A negative,
  *    non-finite or unrepresentable amount is unknown and is never replaced by
- *    an estimate. Writers whose rows keep token prices (answers) pass null.
+ *    an estimate. A run settles a reported answer charge per call before
+ *    pricing (`reportedAnswerCost`) and prices only the rest, passing null.
  * 2. Otherwise the configured prices of the class (`modelClassPriceFields`):
  *    answer, decision and image usage needs complete input and output counts
  *    and both prices, charging cached input as input where the class or the

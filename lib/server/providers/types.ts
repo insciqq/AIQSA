@@ -436,6 +436,9 @@ export type ProviderRunRequest = NormalizedRunRequest & {
 };
 
 export type ProviderRunResult = {
+  /** USD the provider reported for this call (OpenRouter `usage.cost`, with
+   * the upstream charge of a BYOK call); absent when it reported none usable. */
+  costUsd?: number;
   finalText: string;
   finalProviderResponsePreview: Record<string, unknown>;
   providerToolCallMessage?: unknown;
