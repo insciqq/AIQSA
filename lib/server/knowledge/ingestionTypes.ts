@@ -95,13 +95,19 @@ export type KnowledgeEmbeddingChunkWrite = Readonly<{
 
 export type KnowledgeIngestionWarningCode = ParsedDocumentWarningCode;
 
-export type KnowledgeEmbeddingBatchWrite = Readonly<{
-  batchIndex: number;
-  chunks: readonly KnowledgeEmbeddingChunkWrite[];
+/** One paid embedding response's accounting. `usageEventId` is minted once per
+ * provider response, so writing the same response again never bills twice. */
+export type KnowledgeEmbeddingUsageWrite = Readonly<{
   modelId: string;
   provider: string;
   providerModelId: string;
   usage: EmbeddingUsage;
+  usageEventId: string;
+}>;
+
+export type KnowledgeEmbeddingBatchWrite = KnowledgeEmbeddingUsageWrite & Readonly<{
+  batchIndex: number;
+  chunks: readonly KnowledgeEmbeddingChunkWrite[];
 }>;
 
 export type KnowledgeWorkIdentity = Readonly<{

@@ -413,11 +413,38 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       ...uncertainIdentity,
       now: new Date(restartNow.getTime() + 1)
     })).rejects.toEqual(new KnowledgeModelPdfAttemptError("pdf_processing_ambiguous"));
-    await expect(pdfAttempts.reserve({
+    const retried = await pdfAttempts.reserve({
       ...uncertainIdentity,
       now: new Date(restartNow.getTime() + 2),
       processingGeneration: 1
-    })).resolves.toMatchObject({ kind: "dispatch" });
+    });
+    expect(retried).toMatchObject({ kind: "dispatch" });
+    if (retried.kind !== "dispatch") throw new Error("expected PDF dispatch");
+
+    // Responses that never settle their attempt still write their usage, once
+    // per attempt; a settled attempt keeps its single row.
+    const rejectedUsage = { inputTokens: 7, outputTokens: 3, reasoningTokens: 0, totalTokens: 10 };
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await pdfAttempts.recordUnsettledUsage({ ...uncertainIdentity, attemptId: uncertain.attemptId,
+        ownerUserId: fixture.ownerUserId, snapshot, usage: rejectedUsage });
+      await pdfAttempts.recordUnsettledUsage({ ...identity, attemptId: reservation.attemptId,
+        ownerUserId: fixture.ownerUserId, snapshot, usage: rejectedUsage });
+    }
+    await pdfAttempts.recordUnsettledUsage({ ...uncertainIdentity, attemptId: retried.attemptId, processingGeneration: 1,
+      ownerUserId: fixture.ownerUserId, snapshot, usage: { completeness: "unavailable" } });
+    await expect(pdfAttempts.markDispatched({ ...uncertainIdentity, attemptId: retried.attemptId,
+      now: restartNow, processingGeneration: 1 })).resolves.toBe(true);
+    await expect(pdfAttempts.settle({ ...uncertainIdentity, attemptId: retried.attemptId, now: restartNow,
+      ownerUserId: fixture.ownerUserId, processingGeneration: 1, resultText: "   ", snapshot, usage: rejectedUsage
+    })).rejects.toEqual(new KnowledgeModelPdfAttemptError("pdf_processing_state_invalid"));
+    for (const [attemptId, rows] of [[uncertain.attemptId, 1], [reservation.attemptId, 1], [retried.attemptId, 1]] as const) {
+      await expect(prisma.usageEvent.count({ where: { knowledgePdfProcessingAttemptId: attemptId } })).resolves.toBe(rows);
+    }
+    await expect(prisma.usageEvent.findUniqueOrThrow({
+      select: { inputTokens: true, outputTokens: true, providerModelId: true, purpose: true, usageCompleteness: true, userId: true },
+      where: { knowledgePdfProcessingAttemptId: uncertain.attemptId }
+    })).resolves.toEqual({ inputTokens: 7, outputTokens: 3, providerModelId: fixture.modelId, purpose: "knowledge_indexing",
+      usageCompleteness: "COMPLETE", userId: fixture.ownerUserId });
 
     const chunkingDueAt = new Date(restartNow.getTime() + 2_000);
     await expect(restartedRepository.completeParsing({
@@ -511,16 +538,19 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       fixture.artifactId,
       fixture.sourceVersionId
     )).resolves.toEqual([]);
+    const embeddingBatch = (usageEventId: string) => ({
+      batchIndex: 0,
+      chunks: [{ ...chunk, vector: Array<number>(1_024).fill(0) }],
+      modelId: "embedding-upstream",
+      provider: "test",
+      providerModelId: fixture.modelId,
+      usage: { costUsd: 0.000004, inputTokens: 4, totalTokens: 4 },
+      usageEventId
+    });
+    const firstResponse = randomUUID();
     await expect(restartedRepository.persistEmbeddingBatch({
       ...embeddingWork,
-      batch: {
-        batchIndex: 0,
-        chunks: [{ ...chunk, vector: Array<number>(1_024).fill(0) }],
-        modelId: "embedding-upstream",
-        provider: "test",
-        providerModelId: fixture.modelId,
-        usage: { costUsd: 0.000004, inputTokens: 4, totalTokens: 4 }
-      },
+      batch: embeddingBatch(firstResponse),
       now: new Date(restartNow.getTime() + 5_000),
       ownerUserId: fixture.ownerUserId,
       targetDimension: 1_024
@@ -552,6 +582,37 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       providerModelId: fixture.modelId,
       purpose: "knowledge_indexing"
     });
+    // Writing the same response again bills nothing more; another paid
+    // response for passages that already hold vectors (nothing inserted) and a
+    // response that lost its lease are each accounted once.
+    const persistAgain = (usageEventId: string, claimToken = embeddingWork.claimToken) =>
+      restartedRepository.persistEmbeddingBatch({
+        ...embeddingWork,
+        batch: embeddingBatch(usageEventId),
+        claimToken,
+        now: new Date(restartNow.getTime() + 5_500),
+        ownerUserId: fixture.ownerUserId,
+        targetDimension: 1_024
+      });
+    const secondResponse = randomUUID();
+    const staleResponse = randomUUID();
+    await expect(persistAgain(firstResponse)).resolves.toBe(true);
+    await expect(persistAgain(secondResponse)).resolves.toBe(true);
+    await expect(persistAgain(secondResponse)).resolves.toBe(true);
+    await expect(persistAgain(staleResponse, "stale-embedding-worker")).resolves.toBe(false);
+    await expect(persistAgain(staleResponse, "stale-embedding-worker")).resolves.toBe(false);
+    const rejectedResponse = randomUUID();
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await restartedRepository.recordEmbeddingUsage({ ownerUserId: fixture.ownerUserId,
+        usage: { ...embeddingBatch(rejectedResponse), usage: { costUsd: null, inputTokens: 4, totalTokens: 4 } } });
+    }
+    await expect(prisma.usageEvent.findMany({
+      orderBy: { id: "asc" },
+      select: { estimatedCostMicros: true, id: true, purpose: true },
+      where: { modelId: "embedding-upstream", userId: fixture.ownerUserId }
+    })).resolves.toEqual([firstResponse, secondResponse, staleResponse, rejectedResponse].sort().map((id) => ({
+      estimatedCostMicros: id === rejectedResponse ? null : 4, id, purpose: "knowledge_indexing"
+    })));
     await expect(restartedRepository.activateSourceVersion({
       ...embeddingWork,
       expectedChunkCount: 1,

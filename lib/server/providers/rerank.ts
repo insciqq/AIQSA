@@ -93,16 +93,27 @@ export type RerankErrorCode =
   | "rerank_response_provider_mismatch"
   | "rerank_response_too_large";
 
+/** True when a usage object holds anything the provider reported. */
+function rerankUsageReported(usage: RerankUsage | null | undefined): usage is RerankUsage {
+  return Boolean(usage) && (usage!.inputTokens !== null || usage!.searchUnits !== null ||
+    usage!.totalTokens !== null || usage!.costUsd !== null && usage!.costUsd !== undefined);
+}
+
 export class RerankAdapterError extends Error {
   readonly httpStatus: number | null;
   readonly retryAfterMs: number | null;
+  /** What a response the adapter then rejected (an invalid ranking, a wrong
+   * model or provider) reported, so the caller can account the paid call;
+   * null when no response reported usage. Never use its scores. */
+  readonly usage: RerankUsage | null;
 
   constructor(
     readonly code: RerankErrorCode,
-    options: Readonly<{ httpStatus?: number; retryAfterMs?: number | null }> = {}
+    options: Readonly<{ httpStatus?: number; retryAfterMs?: number | null; usage?: RerankUsage | null }> = {}
   ) {
     super(code);
     this.name = "RerankAdapterError";
+    this.usage = rerankUsageReported(options.usage) ? Object.freeze({ ...options.usage }) : null;
     this.httpStatus = Number.isSafeInteger(options.httpStatus) &&
       Number(options.httpStatus) >= 100 && Number(options.httpStatus) <= 599
       ? Number(options.httpStatus)
@@ -276,6 +287,28 @@ function responseProviderMatches(
 }
 
 function responseBody(
+  value: unknown,
+  documents: readonly RerankDocument[],
+  model: ProviderModelConfiguration,
+  headerRequestId: string | null,
+  validation: RerankResponseValidation
+): RerankResult {
+  // A rejected response keeps the usage it reported for accounting.
+  let reported: RerankUsage | null = null;
+  try {
+    reported = isRecord(value) ? responseUsage(value.usage) : null;
+  } catch { /* Malformed usage is no accounting evidence. */ }
+  try {
+    return acceptedResponseBody(value, documents, model, headerRequestId, validation);
+  } catch (error) {
+    if (error instanceof RerankAdapterError && rerankUsageReported(reported)) {
+      throw new RerankAdapterError(error.code, { usage: reported });
+    }
+    throw error;
+  }
+}
+
+function acceptedResponseBody(
   value: unknown,
   documents: readonly RerankDocument[],
   model: ProviderModelConfiguration,

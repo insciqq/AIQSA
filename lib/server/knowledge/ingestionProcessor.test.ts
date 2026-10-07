@@ -115,6 +115,7 @@ function repository() {
     completeParsing: vi.fn(async () => true),
     persistEmbeddingBatch: vi.fn<KnowledgeIngestionProcessorRepository["persistEmbeddingBatch"]>(async () => true),
     persistHierarchicalIndex: vi.fn(async () => true),
+    recordEmbeddingUsage: vi.fn<KnowledgeIngestionProcessorRepository["recordEmbeddingUsage"]>(async () => undefined),
     reuseEmbeddingChunks: vi.fn(async () => [] as number[])
   };
 }
@@ -709,6 +710,57 @@ describe("Knowledge ingestion processor", () => {
     expect(embed).toHaveBeenCalledTimes(2);
     expect(repo.persistEmbeddingBatch).toHaveBeenCalledTimes(outcome === "lease_lost" ? 2 : 1);
     expect(repo.activateSourceVersion).not.toHaveBeenCalled();
+  });
+
+  it("gives every paid response its own usage id and accounts rejected responses once", async () => {
+    const storage = createMemoryStorageAdapter();
+    const encoded = encodeKnowledgeNormalizedDocument(parsed(), config);
+    await storage.putObject({ body: encoded.body, contentType: "application/json", storageKey: "normalized.json" });
+    const work = () => claim("embedding", {
+      ingestChunkCount: 1, normalizedTextByteSize: encoded.body.byteLength, normalizedTextChecksum: encoded.checksum
+    });
+    const usage = { costUsd: 0.000002, inputTokens: 3, totalTokens: 3 };
+    const run = async (embed: EmbeddingRuntimeBinding["adapter"]["embed"]) => {
+      const repo = repository();
+      const outcome = await createKnowledgeIngestionProcessor({
+        config, embeddingRuntime: { resolveForInstallation: vi.fn(), resolveForUser: vi.fn(async () => binding(embed)) },
+        repository: repo, storage
+      })(work()).catch((error: unknown) => error);
+      return { outcome, repo };
+    };
+    const accounted = { modelId: "embed-v1", provider: "openai", providerModelId: "embedding-1",
+      usageEventId: expect.stringMatching(/^[0-9a-f-]{36}$/u) };
+
+    const persisted = await run(async (request) => ({ model: "embed-v1", requestId: null, usage,
+      vectors: request.texts.map(() => Array(1024).fill(0.1)) }));
+    expect(persisted.outcome).toBeUndefined();
+    expect(persisted.repo.persistEmbeddingBatch).toHaveBeenCalledWith(expect.objectContaining({
+      batch: expect.objectContaining({ ...accounted, usage }) }));
+    expect(persisted.repo.recordEmbeddingUsage).not.toHaveBeenCalled();
+
+    // A response with a vector of the wrong dimension is rejected but paid.
+    const wrongDimension = await run(async (request) => ({ model: "embed-v1", requestId: null, usage,
+      vectors: request.texts.map(() => Array(512).fill(0.1)) }));
+    expect(wrongDimension.outcome).toMatchObject({ code: "embedding_failed" });
+    expect(wrongDimension.repo.persistEmbeddingBatch).not.toHaveBeenCalled();
+    expect(wrongDimension.repo.recordEmbeddingUsage).toHaveBeenCalledOnce();
+    expect(wrongDimension.repo.recordEmbeddingUsage).toHaveBeenCalledWith({ ownerUserId: "owner-1",
+      usage: { ...accounted, usage } });
+
+    // The adapter rejected a response that reported usage.
+    const rejected = await run(async () => {
+      throw new EmbeddingAdapterError("embedding_response_vector_invalid", { usage });
+    });
+    expect(rejected.outcome).toBeInstanceOf(KnowledgeIngestionError);
+    expect(rejected.repo.recordEmbeddingUsage).toHaveBeenCalledWith({ ownerUserId: "owner-1",
+      usage: { ...accounted, usage } });
+
+    // A failure without a reported response stays unaccounted.
+    const unknown = await run(async () => {
+      throw new EmbeddingAdapterError("embedding_request_timed_out", { usage: { inputTokens: null, totalTokens: null, costUsd: null } });
+    });
+    expect(unknown.outcome).toBeInstanceOf(KnowledgeIngestionError);
+    expect(unknown.repo.recordEmbeddingUsage).not.toHaveBeenCalled();
   });
 
   it("activates a replacement without provider access when every embedding is reusable", async () => {
