@@ -135,6 +135,7 @@ function createBootstrapTransaction(input: {
     memoryUtilityModelPolicyUpsert: record("memoryUtilityModelPolicy.upsert", { id: "installation" }),
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     mcpPolicyUpsert: record("mcpPolicy.upsert", { id: "installation" }),
+    usageLimitPolicyUpsert: record("usageLimitPolicy.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
@@ -224,6 +225,7 @@ function createBootstrapTransaction(input: {
       upsert: spies.workspacePolicyUpsert
     },
     mcpPolicy: { upsert: spies.mcpPolicyUpsert },
+    usageLimitPolicy: { upsert: spies.usageLimitPolicyUpsert },
     user: {
       create: spies.userCreate,
       findUnique: spies.userFindUnique
@@ -501,6 +503,12 @@ describe("installation bootstrap", () => {
       update: {},
       where: { id: "installation" }
     });
+    // Usage limits start unset; the singleton reads the same with or without its row.
+    expect(fixture.spies.usageLimitPolicyUpsert).toHaveBeenCalledWith({
+      create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
     expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
       defaultSearchStrategies.length
     );
@@ -672,6 +680,12 @@ describe("installation bootstrap", () => {
     }
     expect(fixture.spies.groupCreate).toHaveBeenCalledOnce();
     expect(fixture.spies.userGroupUpsert).toHaveBeenCalledOnce();
+    // A rerun repairs a missing limits singleton and never touches saved limits.
+    expect(fixture.spies.usageLimitPolicyUpsert).toHaveBeenCalledWith({
+      create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
     expect(fixture.spies.userMemorySettingsUpsert).toHaveBeenCalledWith({
       create: { userId: USER_ID },
       select: { userId: true },
