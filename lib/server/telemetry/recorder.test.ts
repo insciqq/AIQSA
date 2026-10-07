@@ -212,4 +212,24 @@ describe("telemetry recorder", () => {
     recorder = second;
     expect(second).not.toBe(first);
   });
+
+  it("registers its bounded final write for a fatal exit and withdraws it on stop", async () => {
+    const hooks = () => (globalThis as unknown as Record<symbol, { fatalExitTask?: (() => Promise<unknown>) | null }>)[
+      Symbol.for("aiqsa.observability.process-hooks.v1")];
+    const db = {
+      $executeRaw: vi.fn(async () => 1),
+      $queryRaw: vi.fn(),
+      $transaction: vi.fn(async (operations: Promise<unknown>[]) => Promise.all(operations))
+    };
+    const started = startTelemetryRecorder({ prisma: db as never });
+    recorder = started;
+    const task = hooks()?.fatalExitTask;
+    expect(task).toEqual(expect.any(Function));
+    // A crash before the first interval still persists the failure it saw.
+    providerFailure();
+    await task!();
+    expect(db.$transaction).toHaveBeenCalledOnce();
+    expect(hooks()?.fatalExitTask).toBeNull();
+    recorder = null;
+  });
 });
