@@ -4,6 +4,7 @@ import { PrismaClient, type Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { UsageLimitValues } from "../../contracts/usageLimits";
 import { decideUsageAdmission, USAGE_DAY_MS, USAGE_HOUR_MS } from "../../domain/usageLimits";
+import { PERSONAL_USAGE_PURPOSES, type UsagePurpose } from "../../domain/usagePurpose";
 import { prisma } from "../prisma";
 import { createUsageLimitsRepository, recordUsageMessageAdmission, USAGE_MESSAGE_ADMISSION_RETENTION_MS } from "./repository";
 
@@ -105,9 +106,8 @@ async function runs(userId: string, offsets: readonly number[], scheduled = fals
   return { remove };
 }
 
-function usage(userId: string, createdAt: string, estimatedCostMicros: number | null) {
-  return { createdAt: new Date(createdAt), estimatedCostMicros, modelId: "usage-limit-fixture", provider: "fake",
-    purpose: "chat_answer" as const, userId };
+function usage(userId: string, createdAt: string, estimatedCostMicros: number | null, purpose: UsagePurpose = "chat_answer") {
+  return { createdAt: new Date(createdAt), estimatedCostMicros, modelId: "usage-limit-fixture", provider: "fake", purpose, userId };
 }
 
 describe("usage limit persistence", () => {
@@ -229,6 +229,35 @@ describe("usage limit persistence", () => {
     const capless = await repository.loadUsageLimitStatus(member, now);
     expect(capless).toMatchObject({ installationCapMicros: null, installationSpentMicros: 0, lastHour: { count: 4, freesAt: null } });
     expect(capless.lastDay).toEqual({ count: 6, freesAt: null });
+  });
+
+  it("counts only personal purposes toward a user's budget and every purpose toward the pooled cap", async () => {
+    const [admin, member] = await people(2) as [string, string];
+    await setPolicy({ monthlyCapMicros: 10_000_000 });
+    await repository.putUserLimits({
+      limits: { ...unset, exempt: false, expectedVersion: null, monthlyBudgetMicros: 3_000_000 }, targetUserId: member, userId: admin
+    });
+    // System work far beyond the budget, and personal usage below it.
+    await prisma.usageEvent.createMany({ data: [
+      usage(member, "2033-03-02T00:00:00.000Z", 4_000_000, "memory_processing"),
+      usage(member, "2033-03-03T00:00:00.000Z", 2_000_000, "knowledge_indexing"),
+      usage(member, "2033-03-04T00:00:00.000Z", 1_000_000, "chat_title"),
+      ...PERSONAL_USAGE_PURPOSES.map((purpose, index) => usage(member, `2033-03-0${5 + index}T00:00:00.000Z`, 500_000, purpose))
+    ] });
+
+    const status = await repository.loadUsageLimitStatus(member, now);
+    expect(status).toMatchObject({ installationSpentMicros: 8_500_000, userSpentMicros: 1_500_000 });
+    expect(decideUsageAdmission({ ...status, interactive: true, now })).toEqual({ ok: true });
+    // The admin view (and the budget alerts and attention that read it) agrees with admission.
+    const view = await repository.readAdminUsageLimits(now);
+    expect(view.installationSpentMicros).toBe(8_500_000);
+    expect(view.users.find(({ userId }) => userId === member)?.monthSpentMicros).toBe(1_500_000);
+
+    // System work that fills the pooled cap refuses everyone, the user included.
+    await prisma.usageEvent.create({ data: usage(member, "2033-03-10T00:00:00.000Z", 1_500_000, "memory_retrieval") });
+    const capped = await repository.loadUsageLimitStatus(member, now);
+    expect(capped).toMatchObject({ installationSpentMicros: 10_000_000, userSpentMicros: 1_500_000 });
+    expect(decideUsageAdmission({ ...capped, interactive: true, now })).toMatchObject({ code: "installation_budget_exhausted" });
   });
 
   it("records an admission at its run's time and prunes only that user's rows no window counts", async () => {

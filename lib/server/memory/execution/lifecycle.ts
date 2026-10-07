@@ -145,18 +145,21 @@ function validateSettlement(input: MemoryExecutionSettlementInput): void {
   }
 }
 
-/** The usage a settlement records. Without a provider-reported cost, complete
- * usage is priced from the catalog price frozen when the binding was admitted,
- * so every settlement, replay and recovery of the binding derives the same
- * value for the binding and its UsageEvent. */
+/** The usage a settlement records. Without a provider-reported cost, usage is
+ * priced with the shared cost rule from the catalog price frozen when the
+ * binding was admitted and the executed model's class, so every settlement,
+ * replay and recovery of the binding derives the same value for the binding
+ * and its UsageEvent. */
 function settlementUsage(
   binding: MemoryExecutionBindingRecord,
   usage: MemoryReportedUsage
 ): MemoryReportedUsage {
-  return memoryUsageWithCatalogCost(
-    usage,
-    memoryExecutionCatalogTokenPricing(binding.secretFreeExecutionSnapshot)
-  );
+  const pricing = memoryExecutionCatalogTokenPricing(binding.secretFreeExecutionSnapshot);
+  if (!pricing) return usage;
+  const model = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot)
+    .providerExecutionSnapshot.model;
+  // Fake test deployments carry no class; they price like an answer model.
+  return memoryUsageWithCatalogCost(usage, pricing, "modelClass" in model ? model.modelClass : "answer");
 }
 
 function usageFromBinding(binding: MemoryExecutionBindingRecord): MemoryReportedUsage {

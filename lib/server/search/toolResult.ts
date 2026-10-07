@@ -1,4 +1,4 @@
-import { decodeTokenUsage } from "../../domain/usage";
+import { decodeTokenUsage, reportedCostMicros } from "../../domain/usage";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { mergeSearchEvidence } from "../../domain/search";
 import type { ToolExecutionResult } from "../tools/types";
@@ -33,6 +33,9 @@ function persistedContentMarker(version: number) {
 }
 
 export type SearchExecutionEvidence = Readonly<{
+  /** USD the provider reported for this engine call (OpenRouter `usage.cost`);
+   * absent when it reported none. */
+  costUsd?: number;
   displayName: string;
   failure?: Readonly<{
     code: string;
@@ -143,6 +146,7 @@ export function searchExecutionsFromToolResult(
       usage !== undefined
     )) return [];
     const allowedKeys = new Set([
+      "costUsd",
       "displayName",
       "failure",
       "findings",
@@ -159,6 +163,7 @@ export function searchExecutionsFromToolResult(
       "warning"
     ]);
     if (Object.keys(value).some((key) => !allowedKeys.has(key))) return [];
+    if (value.costUsd !== undefined && !nonNegativeNumber(value.costUsd)) return [];
     const failure = value.failure === undefined ? undefined : decodedFailure(value.failure);
     if (value.failure !== undefined && !failure) return [];
     const findings = decodedFindings(value.findings);
@@ -192,6 +197,7 @@ export function searchExecutionsFromToolResult(
     }
     if (value.status === "error" && !failure) return [];
     return [{
+      ...(value.costUsd !== undefined ? { costUsd: value.costUsd as number } : {}),
       displayName: typeof value.displayName === "string" && value.displayName.trim()
         ? value.displayName.trim().slice(0, 256)
         : "Search source",
@@ -210,6 +216,32 @@ export function searchExecutionsFromToolResult(
       ...(warning ? { warning } : {})
     }];
   });
+}
+
+/** A Search engine call as a run usage attribution. */
+export type SearchUsageAttribution = Readonly<{
+  /** Micro-dollars the provider reported for the call. Absent when it reported
+   * none: the run's attribution row then prices the call from the engine
+   * model's token prices and per-search fee. */
+  estimatedCostMicros?: number | null;
+  modelId: string;
+  operationCount: 1;
+  provider: string;
+  purpose: "web_search";
+  usage: ModelRunUsage;
+}>;
+
+/** The paid call of one engine as a run usage attribution: its tokens and the
+ * searches it reported; a reported cost settles the call. */
+export function searchUsageAttribution(execution: SearchExecutionEvidence): SearchUsageAttribution {
+  return {
+    ...(execution.costUsd !== undefined ? { estimatedCostMicros: reportedCostMicros(execution.costUsd) } : {}),
+    modelId: execution.modelId ?? "search",
+    operationCount: 1,
+    provider: execution.provider,
+    purpose: "web_search",
+    usage: execution.usage
+  };
 }
 
 /** Version 2's merged numbered source list, or "" without sources. */

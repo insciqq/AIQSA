@@ -30,6 +30,7 @@ import {
   type ProviderRetryOptions
 } from "./providerRetry";
 import { parseRetryAfterMs } from "../retryAfter";
+import { reportedUsageCostUsd } from "./reportedUsageCost";
 
 export const MAX_RERANK_DOCUMENTS = 96;
 // Transport counts UTF-16 units. A valid Knowledge query may contain 3000
@@ -62,8 +63,9 @@ export type RerankUsage = Readonly<{
   inputTokens: number | null;
   searchUnits: number | null;
   totalTokens: number | null;
-  /** USD the provider reported for this request (OpenRouter `usage.cost`); null,
-   * or absent outside this adapter, when it reported none. */
+  /** USD this request cost as the provider reported it
+   * (`reportedUsageCostUsd`); null when it reported no usable cost. The
+   * adapter always sets it; test doubles may omit it. */
   costUsd?: number | null;
 }>;
 
@@ -177,10 +179,6 @@ function nonnegativeInteger(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
 }
 
-function nonnegativeAmount(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
 function requestDocuments(documents: readonly RerankDocument[]): RerankDocument[] {
   if (!Array.isArray(documents) || documents.length < 1 ||
     documents.length > MAX_RERANK_DOCUMENTS) {
@@ -216,15 +214,15 @@ function responseUsage(value: unknown): RerankUsage {
   const totalTokens = value.total_tokens === undefined
     ? null
     : nonnegativeInteger(value.total_tokens);
-  const costUsd = value.cost === undefined ? null : nonnegativeAmount(value.cost);
+  const costUsd = reportedUsageCostUsd(value);
   if (
     (value.input_tokens !== undefined || value.prompt_tokens !== undefined) &&
       inputTokens === null ||
     value.search_units !== undefined && searchUnits === null ||
     value.total_tokens !== undefined && totalTokens === null ||
-    value.cost !== undefined && costUsd === null
+    costUsd === null
   ) throw new RerankAdapterError("rerank_response_invalid");
-  return { inputTokens, searchUnits, totalTokens, costUsd };
+  return { inputTokens, searchUnits, totalTokens, costUsd: costUsd ?? null };
 }
 
 function responseModelMatches(

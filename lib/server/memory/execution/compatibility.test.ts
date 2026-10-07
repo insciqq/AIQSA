@@ -171,15 +171,26 @@ describe("Memory execution compatibility", () => {
     expect(memoryExecutionCatalogTokenPricing(stored)).toEqual(pricing);
     expect(parseMemoryExecutionSnapshot(stored)).toEqual(snapshot);
     expect(memoryExecutionSnapshotIdentity(stored)).toEqual(JSON.parse(JSON.stringify(snapshot)));
-    // Bindings admitted before freezing, and models without both prices, have none.
+    // Bindings admitted before freezing, and models without an input price, have none.
     expect(memoryExecutionCatalogTokenPricing(JSON.parse(JSON.stringify(snapshot)))).toBeNull();
     expect(memoryExecutionCatalogTokenPricing(storedMemoryExecutionSnapshot(snapshot, null))).toBeNull();
     expect(freezeMemoryCatalogTokenPricing({
-      inputTokenPriceUsdPerMillion: 0.1, outputTokenPriceUsdPerMillion: null
+      inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 0.5
     })).toBeNull();
+    // Embedding and reranker models carry an input price only.
+    const inputOnly = {
+      cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null,
+      inputTokenPriceUsdPerMillion: 0.13, outputTokenPriceUsdPerMillion: null
+    };
+    expect(freezeMemoryCatalogTokenPricing({
+      inputTokenPriceUsdPerMillion: 0.13, outputTokenPriceUsdPerMillion: null
+    })).toEqual(inputOnly);
+    expect(memoryExecutionCatalogTokenPricing(JSON.parse(JSON.stringify(
+      storedMemoryExecutionSnapshot(snapshot, inputOnly))))).toEqual(inputOnly);
     for (const invalid of [
       { ...pricing, inputTokenPriceUsdPerMillion: -1 },
-      { ...pricing, outputTokenPriceUsdPerMillion: null },
+      { ...pricing, inputTokenPriceUsdPerMillion: null },
+      { ...pricing, outputTokenPriceUsdPerMillion: -1 },
       { ...pricing, reasoningTokenPriceUsdPerMillion: 1 },
       "0.1"
     ]) {

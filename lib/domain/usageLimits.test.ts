@@ -145,7 +145,8 @@ describe("usage limit wire helpers", () => {
   });
 
   it("decodes user override input strictly", () => {
-    expect(decodeAdminUsageUserLimitsInput({ ...unset, exempt: false })).toEqual({ ...unset, exempt: false });
+    expect(decodeAdminUsageUserLimitsInput({ ...unset, exempt: false })).toEqual({ ...unset, exempt: false, expectedVersion: null });
+    expect(decodeAdminUsageUserLimitsInput({ ...unset, exempt: false, expectedVersion: 7 })).toEqual({ ...unset, exempt: false, expectedVersion: 7 });
     expect(decodeAdminUsageUserLimitsInput({ ...unset })).toBeNull();
     expect(decodeAdminUsageUserLimitsInput({ ...unset, exempt: false, messagesPerHour: -1 })).toBeNull();
     expect(decodeAdminUsageUserLimitsInput({ ...unset, exempt: false, userId: "x" })).toBeNull();

@@ -104,6 +104,8 @@ type ActiveRefresh = (input: Readonly<{
   credentialId: string;
   providerModelId: string;
   signal?: AbortSignal;
+  /** The administrator charged with the check's `model_check` usage. */
+  userId?: string;
 }>) => Promise<Readonly<{
   evidence: unknown;
   status: "available" | "unavailable";
@@ -751,6 +753,7 @@ export function createAdminSystemModelPolicyService(
       providerModelId: string;
       role: SystemModelVerificationRole;
       signal?: AbortSignal;
+      userId?: string;
     }>): Promise<void> {
       const model = await prisma.providerModel.findUnique({
         include: { activeCredentialChecks: true, connection: { include: { defaultCredential: { include: { activeVersion: true } } } } },
@@ -786,7 +789,8 @@ export function createAdminSystemModelPolicyService(
         const result = await dependencies.refreshActive({
           capabilityRole: input.role, confirmPaidRequest: true,
           connectionId: model.connectionId, credentialId: credential.id,
-          providerModelId: model.id, signal: input.signal
+          providerModelId: model.id, signal: input.signal,
+          ...(input.userId ? { userId: input.userId } : {})
         });
         const valid = input.role === "memory"
           ? structuredOutputVerificationStatus(result.evidence, configuration) === "verified" &&

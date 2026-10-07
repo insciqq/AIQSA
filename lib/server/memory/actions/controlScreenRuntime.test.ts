@@ -154,6 +154,16 @@ describe("optional Memory control screen", () => {
     expect(f.withAuthorizedResultCommit).toHaveBeenCalledOnce();
   });
 
+  it("settles the reported cost as exact half-up micro-dollars, unrounded by binary arithmetic", async () => {
+    const f = fixture();
+    // 0.0001245 * 1e6 is 124.49999999999999 in binary floating point.
+    f.decide.mockResolvedValueOnce({ ...f.output, usage: { ...f.output.usage, costUsd: 0.0001245 } });
+    await f.service(f.input);
+    expect(f.settle).toHaveBeenCalledWith("user", "binding-0", expect.objectContaining({
+      usage: expect.objectContaining({ estimatedCostMicros: 125 })
+    }));
+  });
+
   it("passes the frozen threshold and malformed responses to the strict classifier", async () => {
     const f = fixture();
     f.decide.mockResolvedValueOnce({ ...f.output, answers: {

@@ -50,6 +50,7 @@ export function UsageLimitsSettingsV2({ load }: Readonly<{ load?: UsageLimitStat
             <span style={{ width: `${view.budget.percent}%` }} />
           </div>
           <small>{view.budget.resets}</small>
+          <small>Counts the models you use; Memory, Knowledge and chat titles don&apos;t count.</small>
         </div>
       ) : null}
       {view.messages ? (

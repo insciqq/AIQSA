@@ -96,6 +96,7 @@ import {
   SearchToolCancelledError,
   searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
+  searchUsageAttribution,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import {
@@ -211,6 +212,7 @@ import { acceptedClientSearchOptions } from "../search/activityProjection";
 import type { ThreadSearchEngineActivity } from "../../contracts/searchActivity";
 import {
   finalizeRunCompletion,
+  groupedUsageAttributions,
   usageAttributionsWithEstimatedCost,
   type KnowledgeAnswerFinalizationContracts
 } from "./runFinalization";
@@ -311,6 +313,7 @@ export type RunExecutionRepository = Pick<
   | "loadCheckpointedToolLoopRun"
   | "loadFocusedKnowledgeRecoveryScope"
   | "loadModelPricing"
+  | "loadProviderModelCostBasis"
   | "markRunAnswerStarted"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
@@ -564,36 +567,6 @@ class RunPipelineError extends Error {
 
 function zeroUsage(): ModelRunUsage {
   return normalizeTokenUsage({});
-}
-
-function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]): RunUsageAttribution[] {
-  const grouped = new Map<string, RunUsageAttribution & { usages: ModelRunUsage[] }>();
-
-  for (const attribution of attributions) {
-    const key = `${attribution.purpose}\u0000${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
-    const current = grouped.get(key);
-    if (current) {
-      current.usages.push(attribution.usage);
-      current.operationCount = current.operationCount == null || attribution.operationCount == null
-        ? null : current.operationCount + attribution.operationCount;
-      continue;
-    }
-
-    grouped.set(key, {
-      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
-      operationCount: attribution.operationCount ?? null,
-      modelId: attribution.modelId,
-      provider: attribution.provider,
-      purpose: attribution.purpose,
-      usage: attribution.usage,
-      usages: [attribution.usage]
-    });
-  }
-
-  return [...grouped.values()].map(({ usages, ...attribution }) => ({
-    ...attribution,
-    usage: sumTokenUsage(usages)
-  }));
 }
 
 function toolExecutionErrorResult(
@@ -979,6 +952,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           purpose,
           usage
         });
+      }
+
+      /** Each engine call of a Search, with the searches it reported and a
+       * reported cost that settles it. */
+      function rememberSearchUsage(execution: SearchExecutionEvidence): void {
+        reportedUsageAttributions.push(searchUsageAttribution(execution));
+      }
+
+      /** Each paid call of a Knowledge operation, with its deployment and
+       * reported cost (embeddings and the hosted reranker). */
+      function rememberKnowledgeUsage(result: ToolExecutionResult): void {
+        for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
+          reportedUsageAttributions.push({ operationCount: 1, ...attribution });
+        }
       }
 
       async function persistReportedUsageForIncompleteRun(
@@ -1447,9 +1434,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         if (!focusedUsageAccounted) {
-          for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
-            rememberReportedUsage(attribution.purpose, attribution.provider, attribution.modelId, attribution.usage);
-          }
+          rememberKnowledgeUsage(result);
           usageAccountedToolCallIds.add(persisted.id);
           await persistReportedUsageForIncompleteRun();
         }
@@ -1800,9 +1785,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   previousEvidence,
                   request: { ...input.prepared.providerRequest, content: textMessageContent(requestText) }, result, runId, signal, userId: input.userId,
                   async onResult(toolResult) {
-                    for (const attribution of knowledgeUsageAttributionsFromToolResult(toolResult)) {
-                      rememberReportedUsage(attribution.purpose, attribution.provider, attribution.modelId, attribution.usage);
-                    }
+                    rememberKnowledgeUsage(toolResult);
                     for (const artifact of toolResult.artifacts ?? []) await emit(controller, encoder, input.repository, runId, artifact);
                   }
                 }) })
@@ -2319,7 +2302,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           const unrecorded = unrecordedSearches.get(persisted.id);
           const executions = receipt.length === 0 && unrecorded ? searchExecutionsFromToolResult(unrecorded) : receipt;
           for (const execution of executions) {
-            if (persisted.usageAccountedAt == null) rememberReportedUsage("web_search", execution.provider, execution.modelId ?? "search", execution.usage);
+            if (persisted.usageAccountedAt == null) rememberSearchUsage(execution);
             await persistPlanSearchExecution({ execution, modelRunId: runId, repository: input.repository });
           }
           observationUsageCollected.add(persisted.id);
@@ -2428,9 +2411,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   );
                 }
                 for (const execution of executions) {
-                  if (execution.usage) {
-                    rememberReportedUsage("web_search", execution.provider, execution.modelId ?? "search", execution.usage);
-                  }
+                  if (execution.usage) rememberSearchUsage(execution);
                   await persistPlanSearchExecution({
                     execution,
                     modelRunId: runId,
@@ -2449,14 +2430,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (isKnowledgeCall(call.name)) {
                 knowledgeToolResults.set(call.id, result);
-                for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
-                  rememberReportedUsage(
-                    attribution.purpose,
-                    attribution.provider,
-                    attribution.modelId,
-                    attribution.usage
-                  );
-                }
+                rememberKnowledgeUsage(result);
                 const persistedCall = persistedCalls.get(call.id);
                 if (persistedCall && persistedCall.usageAccountedAt == null) {
                   usageAccountedToolCallIds.add(persistedCall.id);
@@ -3102,9 +3076,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   if (settled !== "settled" && settled !== "reused") {
                     throw new RunPipelineError("tool_call_settle_conflict", "Search result could not be durably settled");
                   }
-                  for (const execution of searchExecutionsFromToolResult(error.result)) {
-                    rememberReportedUsage("web_search", execution.provider, execution.modelId ?? "search", execution.usage);
-                  }
+                  for (const execution of searchExecutionsFromToolResult(error.result)) rememberSearchUsage(execution);
                   usageAccountedToolCallIds.add(claim.call.id);
                   await settleSearchActivity({ persistedId: claim.call.id, toolName: call.name,
                     executions: searchExecutionsFromToolResult(error.result) });

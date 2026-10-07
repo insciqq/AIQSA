@@ -5,6 +5,7 @@ import { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "../knowledge/evidenceAns
 import type { RunRepository } from "./runRepositoryContract";
 import {
   finalizeRunCompletion,
+  groupedUsageAttributions,
   usageAttributionsWithEstimatedCost,
   usageWithEstimatedCost
 } from "./runFinalization";
@@ -17,9 +18,10 @@ const rawUsage: ModelRunUsage = {
   reasoningTokens: 2
 };
 
-function completionInput(repository: Pick<RunRepository, "completeRun" | "loadModelPricing" | "publishRunAnswer">) {
+function completionInput(repository: Pick<RunRepository, "completeRun" | "loadModelPricing" | "publishRunAnswer"> &
+  Partial<Pick<RunRepository, "loadProviderModelCostBasis">>) {
   return {
-    repository,
+    repository: { loadProviderModelCostBasis: async () => null, ...repository },
     result: {
       finalText: "Final answer",
       providerResponseId: "provider-response-1",
@@ -444,38 +446,118 @@ describe("run finalization", () => {
 describe("web search fees in run attributions", () => {
   const tokens = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
   const pricing = { inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10, webSearchPriceUsdPerThousand: 10 };
+  const loadProviderModelCostBasis = vi.fn(async () => null);
+  const sonar = { modelId: "perplexity/sonar-pro-search", provider: "openrouter", purpose: "web_search" as const };
+  const claude = { modelId: "claude-sonnet-5", provider: "anthropic", purpose: "web_search" as const };
 
-  it("charges an answer's native searches at the answer model's per-search price and ignores a reported cost", async () => {
+  it("charges an answer's native searches at the answer model's per-search price", async () => {
     const loadModelPricing = vi.fn(async () => pricing);
-    const [answer] = await usageAttributionsWithEstimatedCost({ loadModelPricing }, [{ modelId: "claude-opus-5-5",
-      provider: "anthropic", purpose: "chat_answer", usage: { ...tokens, webSearchCount: 2, costUsd: 1 } }]);
-    // Tokens $0.003 plus two searches at one cent each; answer rows keep token prices.
+    const [answer] = await usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis }, [{ modelId: "claude-opus-5-5",
+      provider: "anthropic", purpose: "chat_answer", usage: { ...tokens, webSearchCount: 2 } }]);
+    // Tokens $0.003 plus two searches at one cent each.
     expect(answer).toMatchObject({ estimatedCostMicros: 23_000, purpose: "chat_answer", usage: { webSearchCount: 2 } });
     expect(loadModelPricing).toHaveBeenCalledWith("anthropic", "claude-opus-5-5");
   });
 
-  it("prefers the cost a Search provider reported, else its tokens plus the per-search fee", async () => {
+  it("keeps a Search call's settled reported cost and prices the rest from the engine's tokens plus its per-search fee", async () => {
     const loadModelPricing = vi.fn(async () => pricing);
-    const attributions = await usageAttributionsWithEstimatedCost({ loadModelPricing }, [
-      { modelId: "perplexity/sonar-pro-search", provider: "openrouter", purpose: "web_search", usage: { ...tokens, costUsd: 0.0142 } },
-      { modelId: "claude-sonnet-5", provider: "anthropic", purpose: "web_search", usage: { ...tokens, webSearchCount: 3 } },
-      { modelId: "deepseek-v4-pro", provider: "deepseek", purpose: "web_search", usage: { ...tokens, webSearchCount: 1 } }
+    const attributions = await usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis }, [
+      { ...sonar, estimatedCostMicros: 14_200, usage: tokens },
+      { ...claude, usage: { ...tokens, webSearchCount: 3 } },
+      { modelId: "deepseek-v4-pro", provider: "deepseek", purpose: "web_search", usage: { ...tokens, webSearchCount: 1 } },
+      // An Agent search attempt names its deployment.
+      { ...claude, providerModelId: "claude-deployment", usage: { ...tokens, webSearchCount: 1 } }
     ]);
-    expect(attributions.map(({ estimatedCostMicros }) => estimatedCostMicros)).toEqual([14_200, 33_000, 13_000]);
-    // A reported cost needs no configured price; a missing per-search price charges tokens only.
-    const unpriced = await usageAttributionsWithEstimatedCost({ loadModelPricing: async () => null }, [
-      { modelId: "perplexity/sonar-pro-search", provider: "openrouter", purpose: "web_search", usage: { ...tokens, costUsd: 0.0142 } }]);
-    expect(unpriced[0]?.estimatedCostMicros).toBe(14_200);
-    const tokensOnly = await usageWithEstimatedCost({ loadModelPricing: async () => ({ ...pricing, webSearchPriceUsdPerThousand: null }) },
-      { modelId: "custom", provider: "openai_compatible", purpose: "web_search", usage: { ...tokens, webSearchCount: 3 } });
-    expect(tokensOnly.estimatedCostMicros).toBe(3_000);
+    expect(attributions.map(({ estimatedCostMicros }) => estimatedCostMicros)).toEqual([14_200, 33_000, 13_000, 13_000]);
+    expect(loadModelPricing.mock.calls).toEqual([["anthropic", "claude-sonnet-5"], ["deepseek", "deepseek-v4-pro"],
+      ["anthropic", "claude-sonnet-5", "claude-deployment"]]);
+    expect(loadProviderModelCostBasis).not.toHaveBeenCalled();
+    // A missing per-search price charges tokens only; incomplete usage stays unknown.
+    const tokensOnly = await usageAttributionsWithEstimatedCost({ loadModelPricing: async () => ({ ...pricing, webSearchPriceUsdPerThousand: null }),
+      loadProviderModelCostBasis }, [{ ...claude, usage: { ...tokens, webSearchCount: 3 } },
+      { ...sonar, usage: { inputTokens: 2_000, outputTokens: 200, totalTokens: 2_200, completeness: "partial" } }]);
+    expect(tokensOnly.map(({ estimatedCostMicros }) => estimatedCostMicros)).toEqual([3_000, null]);
   });
 
-  it("keeps a grouped Search row's cost unknown when one of its calls reported no usage", async () => {
-    const attributions = await usageAttributionsWithEstimatedCost({ loadModelPricing: async () => pricing }, [{
-      modelId: "perplexity/sonar-pro-search", provider: "openrouter", purpose: "web_search",
-      usage: { inputTokens: 2_000, outputTokens: 200, totalTokens: 2_200, completeness: "partial" }
-    }]);
-    expect(attributions[0]?.estimatedCostMicros).toBeNull();
+  it("never re-prices a Search row's settled cost when the run's rows are grouped again", () => {
+    const grouped = groupedUsageAttributions([
+      { ...sonar, operationCount: 1, estimatedCostMicros: 14_200, usage: tokens },
+      { ...sonar, operationCount: 1, estimatedCostMicros: 9_800, usage: tokens },
+      { ...sonar, operationCount: 1, usage: { inputTokens: 1, completeness: "partial" } },
+      { ...claude, operationCount: 1, usage: { ...tokens, webSearchCount: 2 } },
+      { ...claude, operationCount: 1, usage: { ...tokens, webSearchCount: 1 } }
+    ]);
+    expect(grouped.map(({ estimatedCostMicros, modelId, operationCount, usage }) =>
+      [modelId, operationCount, usage.webSearchCount, estimatedCostMicros])).toEqual([
+      ["perplexity/sonar-pro-search", 2, undefined, 24_000],
+      ["perplexity/sonar-pro-search", 1, undefined, undefined],
+      ["claude-sonnet-5", 2, 3, undefined]
+    ]);
+    // Rows read back after a write (recovery) keep the cost each was written with, and their search count.
+    const readBack = [{ ...grouped[0]!, estimatedCostMicros: 24_000 }, { ...grouped[1]!, estimatedCostMicros: null },
+      { ...grouped[2]!, estimatedCostMicros: 63_000 }];
+    expect(groupedUsageAttributions(readBack)).toEqual(readBack);
+  });
+});
+
+describe("run usage attribution cost", () => {
+  const embedding = { modelId: "qwen/qwen3-embedding-8b", provider: "openrouter",
+    providerModelId: "embedding-deployment", purpose: "knowledge_retrieval" as const };
+  const reranker = { modelId: "voyageai/rerank-2.5", provider: "openrouter",
+    providerModelId: "reranker-deployment", purpose: "knowledge_retrieval" as const };
+  const answer = { modelId: "answer", provider: "openai", purpose: "chat_answer" as const };
+
+  it("keeps settled Knowledge costs apart from calls still to price and never merges known into unknown", () => {
+    const grouped = groupedUsageAttributions([
+      { ...embedding, operationCount: 1, estimatedCostMicros: 3, usage: { inputTokens: 5, totalTokens: 5 } },
+      { ...embedding, operationCount: 1, estimatedCostMicros: 4, usage: { inputTokens: 7, totalTokens: 7 } },
+      { ...embedding, operationCount: 1, usage: { inputTokens: 2, totalTokens: 2 } },
+      { ...embedding, operationCount: 1, estimatedCostMicros: null, usage: { inputTokens: 1, totalTokens: 1 } },
+      { ...reranker, operationCount: 1, estimatedCostMicros: 0, usage: { totalTokens: 2 } },
+      // Answer rows are priced whenever written: a stored cost never splits or settles them.
+      { ...answer, operationCount: 1, estimatedCostMicros: 9, usage: { inputTokens: 1, outputTokens: 1 } },
+      { ...answer, operationCount: 1, usage: { inputTokens: 1, outputTokens: 1 } }
+    ]);
+    expect(grouped.map(({ estimatedCostMicros, modelId, operationCount, usage }) =>
+      [modelId, operationCount, usage.inputTokens ?? usage.totalTokens, estimatedCostMicros]))
+      .toEqual([
+        ["qwen/qwen3-embedding-8b", 2, 12, 7],
+        ["qwen/qwen3-embedding-8b", 1, 2, undefined],
+        ["qwen/qwen3-embedding-8b", 1, 1, null],
+        ["voyageai/rerank-2.5", 1, 2, 0],
+        ["answer", 2, 2, undefined]
+      ]);
+    expect(grouped.every((attribution) => attribution.purpose !== "knowledge_retrieval" ||
+      attribution.providerModelId !== undefined)).toBe(true);
+    // Regrouping persisted rows with nothing new keeps every row and cost.
+    expect(groupedUsageAttributions(grouped)).toEqual(grouped);
+    expect(groupedUsageAttributions([
+      { ...embedding, estimatedCostMicros: 2_147_483_000, usage: { inputTokens: 1 } },
+      { ...embedding, estimatedCostMicros: 1_000, usage: { inputTokens: 1 } }
+    ])[0]!.estimatedCostMicros).toBeNull();
+  });
+
+  it("keeps a settled Knowledge cost, prices the rest from the deployment's class and answers from token prices", async () => {
+    const loadModelPricing = vi.fn(async () => ({ inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10 }));
+    const loadProviderModelCostBasis = vi.fn(async (providerModelId: string) => providerModelId === embedding.providerModelId
+      ? { modelClass: "embedding" as const, pricing: { inputTokenPriceUsdPerMillion: 0.13, outputTokenPriceUsdPerMillion: null } }
+      : null);
+    const priced = await usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis }, [
+      { ...embedding, estimatedCostMicros: 7, usage: { inputTokens: 12 } },
+      { ...embedding, usage: { inputTokens: 1_000_000 } },
+      // A deployment that no longer exists has no prices.
+      { ...reranker, usage: { totalTokens: 2 } },
+      { ...answer, usage: { inputTokens: 1_000, outputTokens: 100 } }
+    ]);
+    expect(priced.map((attribution) => [attribution.providerModelId, attribution.estimatedCostMicros])).toEqual([
+      ["embedding-deployment", 7], ["embedding-deployment", 130_000], ["reranker-deployment", null], [undefined, 3_000]
+    ]);
+    expect(loadProviderModelCostBasis.mock.calls).toEqual([["embedding-deployment"], ["reranker-deployment"]]);
+    expect(loadModelPricing).toHaveBeenCalledExactlyOnceWith("openai", "answer");
+
+    const privateError = new Error("PRIVATE connection detail");
+    await expect(usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis: async () => {
+      throw privateError;
+    } }, [{ ...embedding, usage: { inputTokens: 1 } }])).rejects.toMatchObject({ stage: "accounting" });
   });
 });

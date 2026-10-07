@@ -11,8 +11,8 @@ const analytics = serializeAdminUsageAnalytics({ groups: [], models: new Map(), 
 const exported: UsageExport = {
   models: new Map(),
   plan,
-  rows: [{ amounts: { ...emptyUsageAmounts(), recordCount: 1 }, bucket: "2026-10-07", category: "chat",
-    model: rawUsageModelKey("p", "m"), userId: "u1" }],
+  rows: [{ amounts: { ...emptyUsageAmounts(), recordCount: 1 }, bucket: "2026-10-07", category: "system",
+    model: rawUsageModelKey("p", "m"), purpose: "chat_title", userId: "u1" }],
   users: new Map([["u1", { displayName: "Иван", email: "ivan@example.com", groups: [], id: "u1" }]])
 };
 
@@ -89,7 +89,7 @@ describe("admin usage handlers", () => {
     const body = new TextDecoder().decode(bytes.slice(3));
     expect(body.split("\r\n")).toEqual([
       expect.stringMatching(/^period_start,user_email,/u),
-      "2026-10-07,ivan@example.com,Иван,,chat,p,m,0,1,,,,,,,,0",
+      "2026-10-07,ivan@example.com,Иван,,system,chat_title,p,m,0,1,,,,,,,,0",
       ""
     ]);
   });

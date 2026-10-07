@@ -10,7 +10,7 @@ import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION } from "./hierarchicalIndex";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
 import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
-import { KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
+import { decodeKnowledgeRerankerBindingEvidenceV2, KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
 import type { KnowledgeRerankExecutor } from "./rerankExecution";
 import { loadKnowledgeRerankOperationalMetrics } from "./rerankMetrics";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
@@ -343,8 +343,10 @@ function rerankerBinding(status: "complete" | "degraded") {
     status,
     timedOut: status !== "complete",
     upstreamModelId: "qwen/qwen3-reranker-8b",
+    // A provider call records its input tokens and reported cost; evidence
+    // without a call keeps the two-field usage of every earlier receipt.
     usage: status === "complete"
-      ? { searchUnits: 1, totalTokens: 64 }
+      ? { costUsd: 0.0000123, inputTokens: 64, searchUnits: 1, totalTokens: 64 }
       : { searchUnits: null, totalTokens: null },
     version: KNOWLEDGE_RERANKER_EVIDENCE_VERSION
   } as const;
@@ -386,6 +388,7 @@ function evidence(fixture: RunFixture, input: Readonly<{
     durationMs: 4,
     embeddingExecutions: [{
       bindingOrdinals: [0],
+      costUsd: 5e-8,
       durationMs: 2,
       inputTokens: 4,
       modelId: "knowledge-rerank-test-embedding",
@@ -542,6 +545,30 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
         readReceipt: { rerankerBinding: binding }
       } })).rejects.toThrow();
     }
+  });
+
+  it("guards reranker call usage in PostgreSQL exactly like the server decoder", async () => {
+    const check = async (usage: unknown) => {
+      const binding = { ...rerankerBinding("complete"), usage };
+      const [row] = await prisma.$queryRaw<Array<{ valid: boolean }>>`
+        SELECT knowledge_reranker_binding_valid_v2(${JSON.stringify(binding)}::jsonb) AS "valid"`;
+      // The server decoder accepts exactly what the database accepts.
+      expect(decodeKnowledgeRerankerBindingEvidenceV2(binding) !== null).toBe(row!.valid);
+      return row!.valid;
+    };
+    for (const usage of [
+      { searchUnits: 1, totalTokens: 64 },
+      { costUsd: 0.0000123, inputTokens: 64, searchUnits: 1, totalTokens: 64 },
+      { costUsd: null, inputTokens: null, searchUnits: null, totalTokens: 2 }
+    ]) await expect(check(usage)).resolves.toBe(true);
+    for (const usage of [
+      { costUsd: 0.0000123, searchUnits: 1, totalTokens: 64 },
+      { inputTokens: 64, searchUnits: 1, totalTokens: 64 },
+      { costUsd: -0.000001, inputTokens: 64, searchUnits: 1, totalTokens: 64 },
+      { costUsd: "0.0000123", inputTokens: 64, searchUnits: 1, totalTokens: 64 },
+      { costUsd: 0.0000123, inputTokens: 1.5, searchUnits: 1, totalTokens: 64 },
+      { costUsd: 0.0000123, inputTokens: 64, searchUnits: 1, totalTokens: 64, query: "secret question" }
+    ]) await expect(check(usage)).resolves.toBe(false);
   });
 
   it("persists and replays excerpt-budget omissions beside a truncated top passage", async () => {
