@@ -53,7 +53,9 @@ describe("background queue repository over PostgreSQL", () => {
       } });
       await prisma.knowledgeDeletionJob.create({ data: {
         attemptCount: 1, createdAt: dueAt, lastAttemptAt: recent, lastErrorCode: "knowledge_purge_failed",
-        ownerUserId: user.id, state: "RUNNING", targetId: deletionTarget, targetType: "SOURCE"
+        ownerUserId: user.id, state: "RUNNING", targetId: deletionTarget, targetType: "SOURCE",
+        // A RUNNING job always carries its claim; this one's lease expired with its worker.
+        claimToken: randomUUID(), claimedAt: dueAt, leaseExpiresAt: dueAt
       } });
 
       const snapshot = await service.read();

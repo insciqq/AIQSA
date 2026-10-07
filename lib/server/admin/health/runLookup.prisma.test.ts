@@ -44,7 +44,7 @@ describe("admin health run lookup on PostgreSQL", () => {
       await prisma.modelRun.create({
         data: {
           id, chatId: chat.id, userId: OWNER, userMessageId: message.id, provider: "lookup-provider", modelId: "lookup-model",
-          status, createdAt: created,
+          status, createdAt: created, normalizedRequest: {},
           ...(status === "error" ? { errorPayload: { code: "provider_auth_rejected", message: "Private provider detail" } } : {})
         }
       });
