@@ -102,6 +102,9 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         const entry = await tx.runFollowup.create({ data: { chatId: run.chatId, modelRunId: run.id,
           ordinal: run.followupRevision + 1, nonce: input.nonce, text: decoded.text,
           authorUserId: input.userId, authorName: takeUtf16SafePrefix(actor.displayName, 256) } });
+        // The owner wrote in a scheduled task's chat (locked above): its history retention keeps the chat.
+        await tx.$executeRaw`UPDATE "Chat" SET "ownerKeptAt" = CURRENT_TIMESTAMP
+          WHERE "id" = ${run.chatId} AND "scheduledTaskId" IS NOT NULL AND "ownerKeptAt" IS NULL`;
         await tx.modelRun.update({ where: { id: run.id }, data: {
           followupRevision: { increment: 1 }, followupBudgetTokens: { decrement: cost }
         } });
