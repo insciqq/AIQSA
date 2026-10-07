@@ -51,6 +51,7 @@ import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_S
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
   WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
+import { WORKSPACE_GUEST_COMMAND_DEFAULTS } from "./guestCache";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
@@ -1271,7 +1272,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input.signal?.throwIfAborted();
     const handle = await session.sandbox.execStreamWith("/usr/local/bin/codex", (builder) => {
       const command = builder.args(args).cwd(WORKSPACE_PROJECT_DIRECTORY)
-        .envs({ ...environment, HOME: "/root", CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
+        .envs({ ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment, HOME: "/root", CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
         .stdinBytes(Buffer.from(input.prompt));
       return input.timeoutSeconds === null ? command : command.timeout(input.timeoutSeconds * 1000);
     });
@@ -1396,9 +1397,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         }
         // The invocation id reaches this command alone, never the saved environment file.
         const invocation = input.invocationId ? { [WORKSPACE_CODE_INVOCATION_ENV]: input.invocationId } : {};
-        if (Object.keys(environment).length || requested !== undefined || input.invocationId) {
-          argumentsWithIdentity.env = { ...environment, ...(requested as Record<string, unknown> | undefined), ...invocation };
-        }
+        argumentsWithIdentity.env = { ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment,
+          ...(requested as Record<string, unknown> | undefined), ...invocation };
       }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
         ? {
