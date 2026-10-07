@@ -22,11 +22,13 @@ function pushMessage(event) {
   }
 }
 
-function pathOf(client) {
+/** A window shows the target when the path matches and, for a target with a query (a Control Center section), the query too. */
+function shows(client, target) {
   try {
-    return new URL(client.url).pathname;
+    const url = new URL(client.url);
+    return url.pathname === target.pathname && (!target.search || url.search === target.search);
   } catch {
-    return "";
+    return false;
   }
 }
 
@@ -40,7 +42,7 @@ async function showPush(event) {
   await self.registration.showNotification(message.title, {
     badge: "/icon-192.png",
     body: message.body,
-    data: { url: message.url.pathname },
+    data: { url: `${message.url.pathname}${message.url.search}` },
     icon: "/icon-192.png",
     tag: message.tag
   });
@@ -50,7 +52,7 @@ async function openTarget(path) {
   const target = new URL(typeof path === "string" ? path : "/", self.location.origin);
   if (target.origin !== self.location.origin) return;
   const windows = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
-  const showing = windows.find((client) => pathOf(client) === target.pathname);
+  const showing = windows.find((client) => shows(client, target));
   // Another open window keeps its own chat and draft; the target opens beside it.
   if (showing) await showing.focus();
   else await self.clients.openWindow(target.href);

@@ -917,6 +917,7 @@ model User {
   usageLimit                          UsageLimit?                        @relation("UsageLimitUser")
   usageLimitUpdates                   UsageLimit[]                       @relation("UsageLimitUpdater")
   usageLimitPolicyUpdates             UsageLimitPolicy[]                 @relation("UsageLimitPolicyUpdater")
+  usageLimitAlerts                    UsageLimitAlert[]
   usageMessageAdmissions              UsageMessageAdmission[]
   workspaceSecrets                    WorkspaceSecret[]
   workspaceSecretValues               WorkspaceSecretValue[]
@@ -3320,6 +3321,39 @@ model UsageMessageAdmission {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+}
+
+enum UsageLimitAlertKind {
+  installation_cap_near
+  installation_cap_reached
+  user_budget_reached
+}
+
+enum UsageLimitAlertState {
+  claimed
+  delivered
+  undelivered
+}
+
+/// One budget alert to administrators per UTC month, threshold and user
+/// (`userId` only for `user_budget_reached`; the unique index treats NULLs as
+/// equal). The row is the claim, inserted before sending, so replicas and
+/// restarts send an alert at most once. `claimed` is in flight or
+/// crash-ambiguous and never retried; `undelivered` means no administrator
+/// received it on any channel, so a later check may claim it again.
+model UsageLimitAlert {
+  id          String               @id @default(uuid())
+  periodStart DateTime
+  kind        UsageLimitAlertKind
+  userId      String?
+  state       UsageLimitAlertState @default(claimed)
+  attempts    Int                  @default(1)
+  claimedAt   DateTime
+  settledAt   DateTime?
+  user        User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([periodStart, kind, userId])
+  @@index([userId])
 }
 
 model WorkspacePolicy {

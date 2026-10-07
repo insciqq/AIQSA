@@ -36,7 +36,7 @@ export type BrowserPushMessage = Readonly<{
   /** Coalesces repeated notices of one chat or of scheduled tasks. */
   tag: string;
   title: string;
-  /** `/c/<chatId>` or `/scheduled`. */
+  /** `/c/<chatId>`, `/scheduled` or, for administrators' budget alerts, `/admin?section=limits`. */
   url: string;
   v: 1;
 }>;
