@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
-import type { CreateAuthSessionInput } from "./requestAuth";
+import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import { lockAuthIdentity } from "./transactionLocks";
 
 export type PasswordIdentityRecord = {
@@ -31,7 +31,7 @@ export type PasswordAuthRepository = {
   createSessionForCurrentPassword(input: {
     identityId: string;
     passwordHash: string;
-    session: Omit<CreateAuthSessionInput, "userId">;
+    session: SignInSessionInput;
   }): Promise<{ user: PasswordIdentityRecord["user"] } | null>;
   /** The normalized email lets the caller clear that account's password-login lock. */
   completePasswordReset(input: {
@@ -70,11 +70,10 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
           return null;
         }
 
-        await tx.authSession.create({
-          data: {
-            ...input.session,
-            userId: identity.userId
-          }
+        await issueSignInSession(tx, {
+          session: input.session,
+          signInMethod: "password",
+          userId: identity.userId
         });
 
         return {
