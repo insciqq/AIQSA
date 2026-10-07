@@ -1,4 +1,4 @@
-import { Image, ImageInUseError, ImageNotFoundError, type ImageHandle } from "microsandbox";
+import { Image, ImageInUseError, ImageNotFoundError, Sandbox, type ImageHandle, type SandboxHandle } from "microsandbox";
 import { logEvent } from "../observability";
 import { WORKSPACE_DEFAULT_IMAGE_REF } from "./config";
 
@@ -9,15 +9,24 @@ export type WorkspaceCachedImage = Readonly<{
   reference: string;
 }>;
 
+/** The image an existing sandbox record was created from; never logged. */
+export type WorkspaceSandboxImage = Readonly<{
+  manifestDigest: string | null;
+  reference: string | null;
+}>;
+
 /**
  * The runtime's guest image cache. `remove` never forces: inside its own
  * transaction the runtime refuses an image whose manifest the root disk of
  * any existing sandbox pins, running or stopped with a retained disk.
+ * `sandboxImages` lists the images of every sandbox record, including one
+ * whose first boot failed before the runtime bound a disk to its image.
  */
 export type WorkspaceImageStore = Readonly<{
   find(reference: string): Promise<WorkspaceCachedImage | null>;
   list(): Promise<readonly WorkspaceCachedImage[]>;
   remove(reference: string): Promise<"in_use" | "missing" | "removed">;
+  sandboxImages(): Promise<readonly WorkspaceSandboxImage[]>;
 }>;
 
 export type WorkspaceImageEvictionSummary = Readonly<{
@@ -37,6 +46,9 @@ export type WorkspaceImageEvictionSummary = Readonly<{
 const WORKSPACE_IMAGE_EVICTION_MAX_ATTEMPTS = 16;
 /** No removal starts after this budget, so a pass cannot hold startup back further. */
 const WORKSPACE_IMAGE_EVICTION_BUDGET_MS = 30_000;
+/** Sandbox records read per page and at most; more records leave the cache as it is. */
+const WORKSPACE_SANDBOX_PAGE_SIZE = 100;
+const WORKSPACE_SANDBOX_MAX_PAGES = 100;
 
 /** The repository of an image reference, without its tag and digest. */
 export function workspaceImageRepository(reference: string): string | null {
@@ -77,7 +89,7 @@ function selectWorkspaceImageEvictions(input: Readonly<{
 
 /**
  * Evicts cached guest versions that are neither the configured or previous
- * guest nor pinned by a sandbox disk. The runner calls this before it accepts
+ * guest nor the image of any sandbox record. The runner calls this before it accepts
  * any request, so no session operation can be creating a guest meanwhile; a
  * failure only leaves space unreclaimed until a later startup.
  */
@@ -96,6 +108,7 @@ export async function evictUnusedWorkspaceImages(input: Readonly<{
     candidates: 0, deferred: 0, failed: 0, inUse: 0, outcome: "degraded", removed: 0
   }, now() - startedAt);
   let candidates: WorkspaceCachedImage[];
+  let referenced: WorkspaceCachedImage[];
   try {
     const current = await input.store.find(input.imageRef);
     // Without the current manifest identity an alias of it cannot be told apart.
@@ -103,12 +116,21 @@ export async function evictUnusedWorkspaceImages(input: Readonly<{
     candidates = selectWorkspaceImageEvictions({
       current, currentReference: input.imageRef, images: await input.store.list()
     });
+    // The runtime pins only images whose disk it bound. A record whose first
+    // boot failed still restarts from its image, so any record's image stays.
+    const sandboxImages = await input.store.sandboxImages();
+    const references = new Set(sandboxImages.flatMap((image) => image.reference ? [image.reference] : []));
+    const digests = new Set(sandboxImages.flatMap((image) => image.manifestDigest ? [image.manifestDigest] : []));
+    const kept = (image: WorkspaceCachedImage) => references.has(image.reference) ||
+      (image.manifestDigest !== null && digests.has(image.manifestDigest));
+    referenced = candidates.filter(kept);
+    candidates = candidates.filter((image) => !kept(image));
   } catch {
     return unavailable();
   }
   let attempted = 0;
   let failed = 0;
-  let inUse = 0;
+  let inUse = referenced.length;
   let removed = 0;
   for (const image of candidates) {
     if (failed > 0 || attempted >= maxAttempts || now() - startedAt >= budgetMs) break;
@@ -121,7 +143,7 @@ export async function evictUnusedWorkspaceImages(input: Readonly<{
     }
   }
   return report({
-    candidates: candidates.length, deferred: candidates.length - attempted, failed, inUse,
+    candidates: candidates.length + referenced.length, deferred: candidates.length - attempted, failed, inUse,
     outcome: failed > 0 ? "degraded" : "completed", removed
   }, now() - startedAt);
 }
@@ -140,6 +162,21 @@ function cachedImage(handle: ImageHandle): WorkspaceCachedImage {
   return { createdAt: handle.createdAt, manifestDigest: handle.manifestDigest, reference: handle.reference };
 }
 
+function nonEmptyText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** The OCI image of one sandbox record; an unreadable record throws, so nothing is evicted. */
+function sandboxImage(handle: SandboxHandle): WorkspaceSandboxImage | null {
+  const config: unknown = JSON.parse(handle.configJson);
+  if (typeof config !== "object" || config === null) throw new Error("workspace_sandbox_config_invalid");
+  const { image, manifestDigest } = config as { image?: unknown; manifestDigest?: unknown };
+  const oci = typeof image === "object" && image !== null && "Oci" in image ? (image as { Oci?: unknown }).Oci : undefined;
+  const reference = typeof oci === "object" && oci !== null ? nonEmptyText((oci as { reference?: unknown }).reference) : null;
+  const digest = nonEmptyText(manifestDigest);
+  return reference || digest ? { manifestDigest: digest, reference } : null;
+}
+
 export function createMicrosandboxImageStore(): WorkspaceImageStore {
   return {
     async find(reference) {
@@ -152,6 +189,23 @@ export function createMicrosandboxImageStore(): WorkspaceImageStore {
     },
     async list() {
       return (await Image.list()).map(cachedImage);
+    },
+    async sandboxImages() {
+      const images: WorkspaceSandboxImage[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < WORKSPACE_SANDBOX_MAX_PAGES; page += 1) {
+        const result = await Sandbox.listWith((list) => {
+          list.limit(WORKSPACE_SANDBOX_PAGE_SIZE);
+          return cursor ? list.cursor(cursor) : list;
+        });
+        for (const handle of result.sandboxes) {
+          const image = sandboxImage(handle);
+          if (image) images.push(image);
+        }
+        if (!result.nextCursor) return images;
+        cursor = result.nextCursor;
+      }
+      throw new Error("workspace_sandbox_inventory_too_large");
     },
     async remove(reference) {
       try {
