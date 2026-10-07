@@ -43,6 +43,7 @@ describe("Settings usage limits", () => {
     expect(meter).toHaveAttribute("aria-valuenow", "32");
     expect(meter).toHaveAttribute("data-tone", "ok");
     expect(block).toHaveTextContent(/Resets on .+\. Months follow UTC\./u);
+    expect(block).toHaveTextContent("Counts the models you use; Memory, Knowledge and chat titles don't count.");
     expect(block).toHaveTextContent("Messages12 of 30 in the last hour · 40 of 200 in the last 24 hours");
   });
 

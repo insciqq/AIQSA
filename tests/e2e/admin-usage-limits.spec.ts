@@ -7,7 +7,8 @@ import { decodeAdminUsageLimitsResponse } from "../../lib/contracts/usageLimits"
  * Control Center → Budgets & limits over a synthetic installation: limits are
  * configured through the admin API, current-month spend is seeded, and the
  * section, its sheets and the Needs-attention items are captured in every
- * layout and theme.
+ * layout and theme. One person also has system usage above their budget: it
+ * fills the pooled cap but never their personal spend.
  */
 const prisma = new PrismaClient();
 test.describe.configure({ mode: "serial" });
@@ -24,7 +25,7 @@ const people = [
   { name: "Anna Kim", groups: [1], spend: 4_200_000 },
   { name: "Ivan Orlov", groups: [1], spend: 5_400_000 },
   { name: "Sofia Lind", groups: [2], spend: 900_000 },
-  { name: "Pavel Gromov", groups: [], spend: 300_000 }
+  { name: "Pavel Gromov", groups: [], spend: 300_000, systemSpend: 3_000_000 }
 ].map((person) => ({ ...person, id: randomUUID(), email: `${person.name.toLowerCase().replace(" ", ".")}.${tag}@example.test` }));
 
 async function signIn(page: Page, theme: "dark" | "light", baseURL: string): Promise<void> {
@@ -55,14 +56,21 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
 test.beforeAll(async () => {
   await prisma.group.createMany({ data: groups.map(({ id, name }) => ({ id, name })) });
   const now = new Date();
+  const createdAt = new Date(Math.max(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1), now.getTime() - 60_000));
   for (const person of people) {
     await prisma.user.create({ data: { displayName: person.name, email: person.email, id: person.id, status: "active" } });
     await prisma.userGroup.createMany({ data: person.groups.map((index) => ({ groupId: groups[index]!.id, role: "member", userId: person.id })) });
     await prisma.usageEvent.create({ data: {
-      chatId: randomUUID(), createdAt: new Date(Math.max(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1), now.getTime() - 60_000)),
+      chatId: randomUUID(), createdAt,
       estimatedCostMicros: person.spend, inputTokens: 1_000, modelId: "gpt-5.5", outputTokens: 100, provider: "openai",
       purpose: "chat_answer", totalTokens: 1_100, usageCompleteness: "COMPLETE", userId: person.id
     } });
+    if (person.systemSpend) {
+      await prisma.usageEvent.create({ data: {
+        createdAt, estimatedCostMicros: person.systemSpend, inputTokens: 1_000, modelId: "gpt-5.5", outputTokens: 100,
+        provider: "openai", purpose: "memory_processing", totalTokens: 1_100, usageCompleteness: "COMPLETE", userId: person.id
+      } });
+    }
   }
 });
 
@@ -114,6 +122,10 @@ test("limits are configured through the admin API", async ({ page }, testInfo) =
   expect(row(people[3]!.id).effective.monthlyBudgetMicros.value).toBe(5_000_000);
   expect(row(people[4]!.id).effective.exempt).toBe(true);
   expect(row(people[5]!.id).effective.monthlyBudgetMicros).toEqual({ source: { kind: "installation" }, value: 2_000_000 });
+  // System usage counts toward the pooled cap only, never toward the person's own budget.
+  expect(row(people[5]!.id).monthSpentMicros).toBe(300_000);
+  const seeded = people.reduce((sum, person) => sum + person.spend + (person.systemSpend ?? 0), 0);
+  expect(limits.installationSpentMicros).toBeGreaterThanOrEqual(seeded);
 });
 
 for (const viewport of [
@@ -139,6 +151,7 @@ for (const viewport of [
       const usersList = page.getByTestId("admin-usage-limit-users");
       await usersList.scrollIntoViewIfNeeded();
       await expect(usersList.getByText("Mira Petrova").locator("visible=true").first()).toBeVisible();
+      await expect(usersList).toContainText("system features count only toward the monthly cap");
       await page.screenshot({ path: testInfo.outputPath("03-users.png") });
       await expectNoPageOverflow(page);
 
@@ -153,7 +166,10 @@ for (const viewport of [
         await page.goto("/admin?section=overview");
         const items = page.getByTestId("admin-attention-item");
         await expect(items.filter({ hasText: "The monthly cap for everyone is almost used" })).toBeVisible();
-        await expect(items.filter({ hasText: "A user reached their monthly budget" })).toBeVisible();
+        // Only Ivan's personal spend reached a budget; Pavel's system usage does not put him there.
+        const atBudget = items.filter({ hasText: "A user reached their monthly budget" });
+        await expect(atBudget).toBeVisible();
+        await expect(atBudget).not.toContainText("Pavel Gromov");
         await page.screenshot({ path: testInfo.outputPath("05-attention.png") });
       }
     });
