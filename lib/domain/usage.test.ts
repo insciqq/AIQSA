@@ -4,7 +4,9 @@ import {
   mergeTokenUsage,
   normalizeTokenUsage,
   subtractTokenUsage,
-  sumTokenUsage
+  sumTokenUsage,
+  usageCostMicros,
+  type UsageCostInput
 } from "./usage";
 
 describe("usage helpers", () => {
@@ -188,5 +190,67 @@ describe("usage helpers", () => {
         }
       )
     ).toBe(820);
+  });
+});
+
+describe("usage row cost", () => {
+  const prices = { inputTokenPriceUsdPerMillion: 2, cachedInputTokenPriceUsdPerMillion: 0.2,
+    cacheWriteInputTokenPriceUsdPerMillion: 2.5, outputTokenPriceUsdPerMillion: 10 };
+  const unpriced = { inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null };
+  const answerUsage = { inputTokens: 10_000, cachedInputTokens: 8_000, outputTokens: 1_000 };
+  const cost = (reportedCostUsd: number | null, input: Partial<Omit<UsageCostInput, "reportedCostUsd">> = {}) =>
+    usageCostMicros({ reportedCostUsd, usage: answerUsage, pricing: prices, modelClass: "embedding", ...input });
+
+  it("prefers a provider-reported cost over configured prices, keeping a reported zero known", () => {
+    for (const modelClass of ["answer", "decision", "image", "embedding", "reranker"] as const) {
+      expect(cost(0.0123, { modelClass })).toBe(12_300);
+      expect(cost(0, { modelClass })).toBe(0);
+    }
+    expect(cost(0.0000123, { usage: {}, pricing: unpriced })).toBe(12);
+    // OpenRouter's reported embedding and rerank costs (probed 2026-10-07) are sub-micro: a known zero.
+    expect(cost(5e-8)).toBe(0);
+    expect(cost(1e-7, { modelClass: "reranker" })).toBe(0);
+  });
+
+  it("rounds the reported decimal half up exactly, not its binary approximation", () => {
+    expect([5e-7, 0.0000025, 0.0000015, 0.0000014, 1.5e-7, 0.13, 1, 2147.483647].map(usd => cost(usd)))
+      .toEqual([1, 3, 2, 1, 0, 130_000, 1_000_000, 2_147_483_647]);
+  });
+
+  it("keeps an invalid or unrepresentable reported cost unknown instead of estimating it", () => {
+    for (const usd of [Number.NaN, -0.000001, Number.POSITIVE_INFINITY, 2147.4836475, 2148, 1e300]) {
+      expect(cost(usd, { modelClass: "answer" })).toBeNull();
+    }
+    expect(cost(2147.4836474)).toBe(2_147_483_647);
+  });
+
+  it("costs embedding and reranker usage from input tokens, else total tokens, and never needs output", () => {
+    expect(cost(null, { usage: { inputTokens: 1_000_000 }, pricing: { ...unpriced, inputTokenPriceUsdPerMillion: 0.13 } })).toBe(130_000);
+    expect(cost(null, { modelClass: "reranker", usage: { totalTokens: 20_000, completeness: "partial" },
+      pricing: { ...unpriced, inputTokenPriceUsdPerMillion: 0.05 } })).toBe(1_000);
+    // Input wins over total; output tokens and prices outside the class are ignored.
+    expect(cost(null, { usage: { inputTokens: 5_000, outputTokens: 900, totalTokens: 9_000 }, pricing: { ...prices, outputTokenPriceUsdPerMillion: 1_000 } }))
+      .toBe(10_000);
+    expect(cost(null, { usage: { inputTokens: 50 }, pricing: { ...unpriced, inputTokenPriceUsdPerMillion: 0.29 } })).toBe(15);
+    expect(cost(null, { usage: { outputTokens: 10 } })).toBeNull();
+    expect(cost(null, { usage: { inputTokens: 10, completeness: "unavailable" } })).toBeNull();
+    expect(cost(null, { usage: { inputTokens: 10 }, pricing: unpriced })).toBeNull();
+    expect(cost(null, { usage: { inputTokens: 10 }, pricing: { ...unpriced, inputTokenPriceUsdPerMillion: Number.NaN } })).toBeNull();
+    expect(cost(null, { usage: { inputTokens: 2_000_000_000 }, pricing: { ...unpriced, inputTokenPriceUsdPerMillion: 2 } })).toBeNull();
+  });
+
+  it("costs decision and image usage like an answer but charges cached input as input", () => {
+    for (const modelClass of ["decision", "image"] as const) {
+      expect(cost(null, { modelClass })).toBe(30_000);
+      expect(cost(null, { modelClass, usage: { inputTokens: 10, completeness: "partial" } })).toBeNull();
+      expect(cost(null, { modelClass, pricing: { ...prices, outputTokenPriceUsdPerMillion: null } })).toBeNull();
+    }
+  });
+
+  it("keeps answer costing identical to the token-price estimate", () => {
+    for (const usage of [answerUsage, { ...answerUsage, cacheWriteInputTokens: 1_000 }, { inputTokens: 4 }, { inputTokens: 50, outputTokens: 0 }]) {
+      expect(cost(null, { modelClass: "answer", usage })).toBe(estimateCostMicros(usage, prices));
+    }
+    expect(cost(null, { modelClass: "answer" })).toBe(15_600);
   });
 });
