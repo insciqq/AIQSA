@@ -91,6 +91,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
+import { useAnswerReadAloud } from "@/features/read-aloud/useAnswerReadAloud";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
@@ -1240,6 +1241,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     />
   ) : null;
   const messageById = new Map(thread.visibleMessages.map((message) => [message.id, message]));
+  const readAloud = useAnswerReadAloud({
+    chatKey: session.activeChatId,
+    hasMessage: (id) => messageById.has(id),
+    runActive: thread.activeChatStreaming
+  });
   const previousAnswerById = previousVisibleAnswersV2(thread.visibleMessages);
   const liveTail = thread.visibleMessages.at(-1);
   const readingAnchorMessageId = liveTail?.role === "assistant"
@@ -1294,6 +1300,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ...(message.role === "user" ? {
         onEdit: () => thread.handleEditMessage(message)
       } : {
+        ...(readAloud && messageText(message).trim() ? {
+          onReadAloud: () => readAloud.toggle(message.id, messageText(message)),
+          readingAloud: readAloud.activeId === message.id
+        } : {}),
         onRegenerate: () => thread.handleRegenerateMessage(message.id),
         regenerateDisabled: mutationBlocked || regenerateUnavailable
       })
