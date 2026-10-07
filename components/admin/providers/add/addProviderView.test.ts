@@ -73,7 +73,9 @@ describe("addProviderView", () => {
     expect(discoveredModelHint({ capabilities: {}, id: "gpt-5.5" })).toEqual({ hint: "chat", supported: true });
     expect(discoveredModelHint({ capabilities: {}, id: "text-embedding-3-large" })).toEqual({ hint: "embeddings", supported: false });
     expect(discoveredModelHint({ capabilities: {}, id: "cohere/rerank-4-pro" })).toEqual({ hint: "reranking", supported: false });
-    expect(discoveredModelHint({ capabilities: {}, id: "whisper-1" })).toEqual({ hint: "not supported", supported: false });
+    expect(discoveredModelHint({ capabilities: {}, id: "whisper-1" })).toEqual({ hint: "speech to text · set in Defaults & roles", supported: false });
+    expect(discoveredModelHint({ capabilities: {}, id: "gpt-4o-mini-transcribe" })).toEqual({ hint: "speech to text · set in Defaults & roles", supported: false });
+    expect(discoveredModelHint({ capabilities: {}, id: "gpt-4o-mini-tts" })).toEqual({ hint: "not supported", supported: false });
   });
 
   it("requires a private http endpoint and Chat Completions for a no-key setup", () => {

@@ -234,7 +234,9 @@ export function discoveredModelHint(model: AdminProviderCustomDiscoveredModel): 
   const id = model.id.toLowerCase();
   if (/embed/u.test(id)) return { hint: "embeddings", supported: false };
   if (/rerank/u.test(id)) return { hint: "reranking", supported: false };
-  if (/whisper|\btts\b|speech|audio|transcri|moderation|dall-e|image-|imagen|stable-diffusion/u.test(id)) {
+  // Speech-to-text ids are used by the Speech to text role (Defaults & roles), not as chat models.
+  if (/whisper|transcri/u.test(id)) return { hint: "speech to text · set in Defaults & roles", supported: false };
+  if (/\btts\b|speech|audio|moderation|dall-e|image-|imagen|stable-diffusion/u.test(id)) {
     return { hint: "not supported", supported: false };
   }
   const parts: string[] = [];
