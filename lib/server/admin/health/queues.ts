@@ -57,6 +57,16 @@ export function projectAdminHealthQueues(
   });
 }
 
+/** Stalled rows of the queues that raise their own "Needs attention" item. */
+export function adminHealthQueueFindings(
+  rows: readonly AdminHealthQueueRow[],
+  policies: Policies = ADMIN_HEALTH_QUEUE_POLICIES
+): AdminHealthQueueFinding[] {
+  return rows.flatMap((row) => policies[row.queue].attention && row.state === "stalled" && row.oldestSeconds !== null
+    ? [{ queue: row.queue, waiting: row.waiting ?? 0, running: row.running ?? 0, oldestSeconds: row.oldestSeconds }]
+    : []);
+}
+
 export function createAdminHealthQueuesService(input: Readonly<{
   read(queues: readonly AdminHealthQueueId[], now: Date): Promise<AdminHealthQueueReading[]>;
   now?: () => Date;
@@ -74,9 +84,7 @@ export function createAdminHealthQueuesService(input: Readonly<{
       const now = clock();
       const rows = projectAdminHealthQueues(await input.read(watched, now), now, policies);
       if (rows.some((row) => row.state === "unavailable")) throw new Error("admin_health_queues_unavailable");
-      return rows.flatMap((row) => row.state === "stalled" && row.oldestSeconds !== null
-        ? [{ queue: row.queue, waiting: row.waiting ?? 0, running: row.running ?? 0, oldestSeconds: row.oldestSeconds }]
-        : []);
+      return adminHealthQueueFindings(rows, policies);
     }
   };
 }
