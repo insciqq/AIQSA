@@ -42,7 +42,7 @@ function run(options: Readonly<{ cacheBytes?: number; uvExit?: number; symlink?:
     .replaceAll(WORKSPACE_UV_CACHE_DIRECTORY, cache)
     .replaceAll(String(WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES), "4096")
     .replace("/opt/aiqsa-python/bin", bin);
-  const stdout = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", env: {} });
+  const stdout = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", env: { NODE_ENV: "test" } });
   return { cache, outside, stdout, uvArgs: existsSync(record) ? readFileSync(record, "utf8").trim() : null };
 }
 
