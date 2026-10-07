@@ -38,7 +38,7 @@ Project surfaces use current Project catalogs; access loss clears stale selectio
 
 ## Management
 
-Studio owns model behavior and resources: Assistants, Instructions, Skills, Knowledge, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings owns appearance, account, personal MCP connections, external-client permissions and personal data. Lists/editors belong on pages or sheets.
+Studio owns model behavior and resources: Assistants, Instructions, Skills, Knowledge, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings owns appearance, account, personal MCP connections, external-client permissions and personal data. Users see their own monthly allowance in account Settings and a composer warning near a limit, never installation amounts; per-answer usage stays unavailable. Lists/editors belong on pages or sheets.
 
 Control Center resources have URLs; add/edit sheets own focus and dirty-discard confirmation. Ordinary navigation has no global save gate. Errors preserve fields; independent saves preserve drafts. Destructive actions name targets/consequences. Secret fields explain preserve/replace without echoing values; third-party secret inputs are masked text.
 
