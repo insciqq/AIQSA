@@ -501,6 +501,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         request,
         secureCookie: config.cookieSecure,
         sessions: deps.sessions,
+        signInMethod: rawProvider,
         userId: settlement.userId
       });
       // A completed login gives back only its own callback attempt; the source's earlier

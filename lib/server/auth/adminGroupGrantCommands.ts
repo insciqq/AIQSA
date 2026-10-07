@@ -6,6 +6,7 @@ import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminRepository, AdminSetGroupGrantsResult } from "./adminRepositoryContract";
 import { normalizeAdminGroupName } from "./adminRepositoryInputs";
 import { serializeAdminGroup } from "./adminRepositorySerializers";
+import { applyMembershipChange } from "./groupMembership";
 
 export type AdminGroupGrantCommands = Pick<
   AdminRepository,
@@ -334,68 +335,11 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
           if (JSON.stringify([...currentGroupIds].sort()) !== JSON.stringify(expectedGroupIds)) {
             return "user_access_stale" as const;
           }
-          const removedGroupIds = [...currentGroupIds].filter(
-            (groupId) => !activeGroupIds.has(groupId)
-          );
-          const addedGroupIds = [...activeGroupIds].filter(
-            (groupId) => !currentGroupIds.has(groupId)
-          );
-          const affectedGroupIds = [...new Set([
-            ...currentMemberships.map((membership) => membership.groupId),
-            ...activeGroupIds
-          ])];
-          const affectedMcpServers = affectedGroupIds.length
-            ? await tx.mcpGrant.findMany({
-                distinct: ["serverId"],
-                select: { serverId: true },
-                where: { canUse: true, groupId: { in: affectedGroupIds } }
-              })
-            : [];
-
-          if (removedGroupIds.length) {
-            await tx.userGroup.deleteMany({
-              where: {
-                groupId: { in: removedGroupIds },
-                userId: input.userId
-              }
-            });
-          }
-
-          for (const groupId of addedGroupIds) {
-            await tx.userGroup.create({
-              data: {
-                groupId,
-                role: "member",
-                userId: input.userId
-              }
-            });
-          }
-
-          const affectedServerIds = affectedMcpServers.map((grant) => grant.serverId);
-          if (affectedServerIds.length) {
-            await tx.mcpUserServer.updateMany({
-              data: { desiredRuntimeGenerationId: null },
-              where: { serverId: { in: affectedServerIds }, userId: input.userId }
-            });
-            for (const serverId of affectedServerIds) {
-              const canStillUse = await tx.mcpGrant.count({
-                where: {
-                  canUse: true,
-                  serverId,
-                  OR: [
-                    { userId: input.userId },
-                    ...(activeGroupIds.size ? [{ groupId: { in: [...activeGroupIds] } }] : [])
-                  ]
-                }
-              });
-              if (!canStillUse) {
-                await tx.mcpUserServer.updateMany({
-                  data: { enabled: false },
-                  where: { serverId, userId: input.userId }
-                });
-              }
-            }
-          }
+          await applyMembershipChange(tx, {
+            add: [...activeGroupIds].filter((groupId) => !currentGroupIds.has(groupId)),
+            remove: [...currentGroupIds].filter((groupId) => !activeGroupIds.has(groupId)),
+            userId: input.userId
+          });
 
           return "applied" as const;
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
