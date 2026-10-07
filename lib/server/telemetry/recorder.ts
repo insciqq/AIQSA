@@ -1,5 +1,5 @@
 import {
-  logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, setRecordObserver
+  logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, setFatalExitTask, setRecordObserver
 } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { createTelemetryAggregator, type TelemetryAggregator } from "./aggregator";
@@ -12,8 +12,8 @@ export const TELEMETRY_FLUSH_INTERVAL_MS = 30_000;
  * loop still leaves its start (and early failures) behind. */
 export const TELEMETRY_FIRST_FLUSH_MS = 5_000;
 export const TELEMETRY_RETENTION_INTERVAL_MS = 3_600_000;
-/** A shutdown waits at most this long for the final write; losing the last
- * interval on a hard exit is accepted. */
+/** A shutdown or a fatal exit waits at most this long for the final write;
+ * a process killed from outside loses its last interval. */
 export const TELEMETRY_FINAL_FLUSH_MS = 2_000;
 
 export type TelemetryRecorder = Readonly<{
@@ -149,11 +149,17 @@ export function startTelemetryRecorder(input: Readonly<{ prisma: TelemetryDataba
   const handle: TelemetryRecorder = Object.freeze({
     flush: recorder.flush,
     async stop() {
-      if (scope[RECORDER_KEY] === handle) delete scope[RECORDER_KEY];
+      if (scope[RECORDER_KEY] === handle) {
+        delete scope[RECORDER_KEY];
+        setFatalExitTask(null);
+      }
       await recorder.stop();
     }
   });
   scope[RECORDER_KEY] = handle;
   recorder.start();
+  // A process dying on an unhandled error still writes its start, its fatal
+  // record and its last interval, so a fast crash loop shows in Health.
+  setFatalExitTask(handle.stop);
   return handle;
 }
