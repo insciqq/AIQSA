@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   }
 
   const relay = process.env.AIQSA_AGENT_APP_ORIGIN?.trim()
-    ? createAgentRelay(process.env.AIQSA_AGENT_APP_ORIGIN.trim()) : null;
+    ? createAgentRelay(process.env.AIQSA_AGENT_APP_ORIGIN.trim(), token) : null;
   if (relay) await new Promise<void>((resolve, reject) => {
     relay.once("error", reject);
     relay.listen(AGENT_GATEWAY_PORT, "127.0.0.1", resolve);

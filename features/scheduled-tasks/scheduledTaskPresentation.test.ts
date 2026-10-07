@@ -10,6 +10,7 @@ import {
   scheduledTaskForcedChatReason,
   scheduledTaskMemoryAvailability,
   scheduledTaskPreview,
+  scheduledTaskSkillsNeedingWorkspace,
   scheduledTaskStartingTools,
   scheduledTaskUpdateRequest,
   scheduledTaskWorkspaceAvailability,
@@ -17,8 +18,10 @@ import {
 } from "./scheduledTaskDraft";
 import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
 import {
+  formatScheduledDay,
   formatScheduledInstant,
   scheduledTaskFailureMessage,
+  scheduledTaskHistoryLine,
   scheduledTaskLastRunLine,
   scheduledTaskResultNotice,
   scheduledTaskRunRow,
@@ -88,9 +91,24 @@ describe("scheduled task presentation", () => {
   it("explains overlap skips in the run history", () => {
     const row = (reasonCode: string) => scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
       trigger: "schedule", state: "skipped", reasonCode, startedAt: null, finishedAt: "2026-10-05T08:00:01.000Z",
-      chatId: null, unseen: false, unavailableSources: [] }, "Europe/London", now).outcome;
+      chatId: null, unseen: false, unavailableSources: [], skills: [] }, "Europe/London", now).outcome;
     expect(row("previous_running")).toBe("Skipped: the previous run was still in progress");
     expect(row("superseded")).toBe("Skipped: a newer scheduled time arrived before it could start");
+  });
+
+  it("shows a run waiting for a free Workspace slot as waiting, and its skip with the capacity reason", () => {
+    const run = (overrides: Partial<ScheduledTaskRun>): ScheduledTaskRun => ({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
+      trigger: "schedule", state: "pending", reasonCode: null, startedAt: null, finishedAt: null, chatId: null, unseen: false,
+      unavailableSources: [], skills: [], ...overrides });
+    expect(scheduledTaskRunRow(run({}), "Europe/London", now)).toMatchObject({ outcome: "Starting", tone: "live" });
+    expect(scheduledTaskRunRow(run({ reasonCode: "waiting_for_workspace" }), "Europe/London", now))
+      .toMatchObject({ outcome: "Waiting for a free Workspace slot", tone: "live" });
+    expect(scheduledTaskRunRow(run({ finishedAt: "2026-10-05T20:00:01.000Z", reasonCode: "workspace_capacity", state: "skipped" }),
+      "Europe/London", now)).toMatchObject({
+      outcome: "Skipped: no Workspace slot became free in time; other scheduled runs were using Workspace", tone: "neutral"
+    });
+    expect(scheduledTaskStatusLine(scheduledTaskFixture({ running: true, waitingForWorkspace: true }), now))
+      .toEqual({ text: "Waiting for a free Workspace slot", tone: "live" });
   });
 
   it("summarizes hourly schedules", () => {
@@ -230,11 +248,60 @@ describe("scheduled task drafts", () => {
   });
 });
 
+describe("pinned Skills in the editor and history", () => {
+  const digest = { id: "skill-digest", name: "gitlab-digest", available: true, hasExecutables: true };
+  const style = { id: "skill-style", name: "House style", available: true, hasExecutables: false };
+
+  it("sends the pins on create and only changed pins on update, and needs tools for them", () => {
+    const pinned = scheduledTaskFixture({ toolsEnabled: true, pinnedSkillIds: [digest.id], pinnedSkills: [digest] });
+    const draft = scheduledTaskDraftFromTask(pinned, now);
+    expect(draft.pinnedSkills).toEqual([digest]);
+    expect(scheduledTaskCreateRequest(draft)).toMatchObject({ pinnedSkillIds: ["skill-digest"] });
+    expect(scheduledTaskUpdateRequest(draft, pinned)).toEqual({ expectedRevision: 1 });
+    const added = { ...draft, pinnedSkills: [digest, style] };
+    expect(sameScheduledTaskDraft(added, draft)).toBe(false);
+    expect(scheduledTaskUpdateRequest(added, pinned)).toEqual({ expectedRevision: 1, pinnedSkillIds: ["skill-digest", "skill-style"] });
+    expect(scheduledTaskUpdateRequest({ ...draft, pinnedSkills: [] }, pinned)).toEqual({ expectedRevision: 1, pinnedSkillIds: [] });
+    // Pins never outlive tools silently: the owner removes them or keeps tools on.
+    expect(validateScheduledTaskDraft({ ...draft, toolsEnabled: false }, scheduledTaskCatalogFixture(), pinned, now).skills)
+      .toBe("Pinned Skills need tools. Turn tools on or remove the pinned Skills.");
+    expect(validateScheduledTaskDraft(draft, scheduledTaskCatalogFixture(), pinned, now).skills).toBeUndefined();
+    // Scripts need Workspace; saving is still allowed.
+    expect(scheduledTaskSkillsNeedingWorkspace(draft)).toEqual([digest]);
+    expect(scheduledTaskSkillsNeedingWorkspace({ ...draft, workspaceEnabled: true })).toEqual([]);
+    // A task read without the owner's view names no pin.
+    const { pinnedSkills: _view, ...bare } = pinned;
+    expect(scheduledTaskDraftFromTask(bare, now).pinnedSkills).toEqual([
+      { id: "skill-digest", name: null, available: false, hasExecutables: false }
+    ]);
+  });
+
+  it("names a lost pinned Skill in the pause line while the owner may see it, and the versions a run used", () => {
+    const paused = (pinnedSkills: ScheduledTask["pinnedSkills"]) => scheduledTaskStatusLine(scheduledTaskFixture({
+      status: "paused", nextRunAt: null, pauseReason: "skill_unavailable", toolsEnabled: true,
+      pinnedSkillIds: (pinnedSkills ?? []).map((skill) => skill.id), pinnedSkills
+    }), now);
+    expect(paused([{ ...digest, available: false }, style])).toEqual({ tone: "attention",
+      text: "Paused: the pinned Skill “gitlab-digest” is no longer available. Edit the task's Skills, then resume." });
+    expect(paused([{ id: "skill-gone", name: null, available: false, hasExecutables: false }]).text)
+      .toBe("Paused: a pinned Skill is no longer available. Edit the task's Skills, then resume.");
+    const row = scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule", state: "completed",
+      reasonCode: null, startedAt: "2026-10-05T08:00:01.000Z", finishedAt: "2026-10-05T08:01:00.000Z", chatId: "chat-1", unseen: false,
+      unavailableSources: [], skills: [{ name: "gitlab-digest", version: 3 }, { name: "House style", version: 1 }] }, "Europe/London", now);
+    expect(row.skills).toBe("Skills: gitlab-digest v3, House style v1");
+    expect(scheduledTaskRunRow({ ...{ id: "run-2", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule" as const,
+      state: "failed" as const, reasonCode: "skill_unavailable", startedAt: null, finishedAt: "2026-10-05T08:00:01.000Z",
+      chatId: null, unseen: false, unavailableSources: [], skills: [] } }, "Europe/London", now))
+      .toMatchObject({ outcome: "Failed: a pinned Skill was no longer available", skills: null });
+  });
+});
+
 describe("monitoring and tool copy", () => {
+
   const run = (overrides: Partial<ScheduledTaskRun>): ScheduledTaskRun => ({
     id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
     startedAt: "2026-10-05T08:00:01.000Z", finishedAt: "2026-10-05T08:01:00.000Z", chatId: "chat-1", unseen: false,
-    unavailableSources: [], ...overrides
+    unavailableSources: [], skills: [], ...overrides
   });
 
   it("gives check outcomes their copy, keeps no-update rows quiet and lists unavailable sources in attention tone", () => {
@@ -363,5 +430,46 @@ describe("scheduled task Memory in drafts", () => {
     for (const status of ["ON", "PREPARING", "UNAVAILABLE"] as const) {
       expect(scheduledTaskMemoryAvailability({ status })).toBe("available");
     }
+  });
+});
+
+describe("scheduled task history", () => {
+  it("starts new tasks with 90 days of old chats and sends a changed choice, forever included", () => {
+    const blank = blankScheduledTaskDraft(catalog, "Europe/London", now);
+    expect(blank.historyRetentionDays).toBe(90);
+    expect(scheduledTaskCreateRequest({ ...blank, title: "Brief", prompt: "Summarize." })).toMatchObject({ historyRetentionDays: 90 });
+    // A task saved before the choice keeps everything; only a change is sent.
+    const legacy = scheduledTaskFixture({ historyRetentionDays: null, revision: 3 });
+    const edit = scheduledTaskDraftFromTask(legacy, now);
+    expect(edit.historyRetentionDays).toBeNull();
+    expect(scheduledTaskUpdateRequest(edit, legacy)).toEqual({ expectedRevision: 3 });
+    expect(sameScheduledTaskDraft(edit, { ...edit, historyRetentionDays: 30 })).toBe(false);
+    expect(scheduledTaskUpdateRequest({ ...edit, historyRetentionDays: 30 }, legacy))
+      .toEqual({ expectedRevision: 3, historyRetentionDays: 30 });
+    const kept = scheduledTaskFixture({ historyRetentionDays: 365 });
+    expect(scheduledTaskUpdateRequest({ ...scheduledTaskDraftFromTask(kept, now), historyRetentionDays: null }, kept))
+      .toEqual({ expectedRevision: 1, historyRetentionDays: null });
+  });
+
+  it("states how long old chats are kept, when the next one goes and how many went, as counts only", () => {
+    const task = scheduledTaskFixture({ historyDeletedChats: 3, historyNextDeletionAt: "2026-11-12T09:00:00.000Z", historyRetentionDays: 90 });
+    expect(scheduledTaskHistoryLine(task, now)).toBe("History: 90 days · next cleanup Thu 12 Nov · 3 old chats deleted");
+    expect(scheduledTaskHistoryLine({ ...task, historyDeletedChats: 1, historyNextDeletionAt: null, historyRetentionDays: 30 }, now))
+      .toBe("History: 30 days · 1 old chat deleted");
+    expect(scheduledTaskHistoryLine({ ...task, historyDeletedChats: 0, historyNextDeletionAt: null, historyRetentionDays: 365 }, now))
+      .toBe("History: 1 year");
+    // Due already: the sweep takes it within minutes.
+    expect(scheduledTaskHistoryLine({ ...task, historyNextDeletionAt: "2026-10-04T09:00:00.000Z" }, now))
+      .toBe("History: 90 days · next cleanup soon · 3 old chats deleted");
+    // Forever deletes nothing more; what went before stays counted.
+    expect(scheduledTaskHistoryLine({ ...task, historyRetentionDays: null }, now)).toBe("History: kept forever · 3 old chats deleted");
+    expect(formatScheduledDay("2027-01-05T09:00:00.000Z", "UTC", now)).toBe("Tue 5 Jan 2027");
+  });
+
+  it("explains a Workspace carry-over failure with what to do", () => {
+    expect(scheduledTaskRunRow({ chatId: null, finishedAt: "2026-11-01T06:31:00.000Z", id: "run-1", reasonCode: "workspace_carryover_unavailable",
+      scheduledFor: "2026-11-01T06:00:00.000Z", skills: [], startedAt: "2026-11-01T06:00:00.000Z", state: "failed",
+      trigger: "schedule", unavailableSources: [], unseen: false }, "UTC", now))
+      .toMatchObject({ outcome: expect.stringContaining("turn Workspace off for the task"), tone: "attention" });
   });
 });

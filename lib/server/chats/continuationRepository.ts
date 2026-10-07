@@ -1,6 +1,6 @@
 import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
 import { storedTokenUsage } from "../usage";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
@@ -19,9 +19,9 @@ import {
 } from "../../contracts/chats";
 import { CHAT_SUMMARY_LEASE_MS, ChatContinuationError, type ContinuationRepository, type ContinuationSource } from "./continuation";
 import type { StorageAdapter } from "../uploads/storage";
-import { WorkspaceRuntimeError, type WorkspaceOutputStream, type WorkspaceRuntime } from "../workspace/runtime";
+import type { WorkspaceRuntime } from "../workspace/runtime";
+import { captureWorkspaceProjectSeed } from "../workspace/projectSeedCapture";
 import { WORKSPACE_OPERATION_LEASE_MS } from "../workspace/sessionOperation";
-import { parseWorkspaceOperation } from "../workspace/operationFence";
 import { loadExposedChatModelId } from "./chatCreationDefaults";
 import { loadProjectChatDefaultAuthority } from "../projects/chatDefaults";
 
@@ -338,80 +338,14 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         return { seedId: seed.id, sessionId: session.id, runtimeSandboxId: session.runtimeSandboxId, generation: session.version };
       });
       if (!observed) return;
-      const operation = parseWorkspaceOperation({ generation: observed.generation, owner: `continuation:${claim.id}` });
-      let storageKey: string | null = null;
-      let archiveOutput: WorkspaceOutputStream | null = null;
-      let timer: ReturnType<typeof setInterval> | undefined;
-      const renew = () => void client.workspaceSession.updateMany({
-        where: { id: observed.sessionId, version: observed.generation, operationOwner: operation.owner },
-        data: { operationExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS) }
-      }).then(() => client.chatContinuationWorkspaceSeed.updateMany({
-        where: { id: observed.seedId, status: "CAPTURING" },
-        data: { leaseExpiresAt: new Date(Date.now() + WORKSPACE_OPERATION_LEASE_MS) }
-      })).catch(() => undefined);
-      try {
-        await deps.runtime.claimSessionOperation?.({ operation, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId });
-        timer = setInterval(renew, Math.floor(WORKSPACE_OPERATION_LEASE_MS / 3));
-        timer.unref?.();
-        archiveOutput = await deps.runtime.createProjectArchive({ operation, restorable: true, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId, signal: captureSignal });
-        const output = archiveOutput;
-        storageKey = `workspace-continuation/${observed.seedId}.tar.gz`;
-        const reserved = await client.chatContinuationWorkspaceSeed.updateMany({
-          where: { id: observed.seedId, status: "CAPTURING" }, data: { storageKey }
-        });
-        if (reserved.count !== 1) {
-          await output.body.cancel("continuation_abandoned").catch(() => undefined);
-          if (output.batchId) await deps.runtime.releaseOutputs?.({
-            batchId: output.batchId, operation, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId
-          }).catch(() => undefined);
-          return;
-        }
-        if (deps.storage.putObjectStream) {
-          await deps.storage.putObjectStream({ body: output.body, byteSize: output.byteSize, checksum: output.checksum,
-            contentType: "application/gzip", signal: captureSignal, storageKey });
-        } else {
-          const reader = output.body.getReader();
-          const chunks: Uint8Array[] = [];
-          let bytes = 0;
-          try { while (true) { captureSignal.throwIfAborted(); const next = await reader.read(); if (next.done) break; bytes += next.value.byteLength; if (bytes > output.byteSize) throw new Error("archive_size"); chunks.push(next.value); } }
-          finally { reader.releaseLock(); }
-          if (bytes !== output.byteSize) throw new Error("archive_size");
-          const body = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-          if (createHash("sha256").update(body).digest("hex") !== output.checksum) throw new Error("archive_checksum");
-          await deps.storage.putObject({ body, contentType: "application/gzip", storageKey });
-        }
-        await client.$transaction(async (tx) => {
-          const seedReady = (await tx.chatContinuationWorkspaceSeed.updateMany({ where: { id: observed.seedId, status: "CAPTURING" }, data: {
-            status: "READY", storageKey, checksum: output.checksum, byteSize: output.byteSize, leaseToken: null, leaseExpiresAt: null
-          } })).count === 1;
-          if (!seedReady && storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey }, create: { storageKey }, update: {} });
-        });
-      } catch (error) {
-        const failureCode = captureSignal.aborted ? "workspace_tool_timeout" : error instanceof WorkspaceRuntimeError ? error.code : "workspace_archive_export_failed";
-        if (archiveOutput?.batchId) await deps.runtime.releaseOutputs?.({
-          batchId: archiveOutput.batchId, operation, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId
-        }).catch(() => undefined);
-        await client.$transaction(async (tx) => {
-          await tx.chatContinuationWorkspaceSeed.updateMany({ where: { id: observed.seedId, status: "CAPTURING" }, data: {
-            status: "FAILED", failureCode, storageKey, leaseToken: null, leaseExpiresAt: null
-          } });
-          if (storageKey) await tx.attachmentDeletionJob.upsert({ where: { storageKey }, create: { storageKey }, update: {} });
-        });
-        // A copy failure is visible in the destination, but does not discard
-        // a usable conversation summary. Cancellation still ends this claim.
-        signal?.throwIfAborted();
-      } finally {
-        if (timer) clearInterval(timer);
-        try {
-          const runtimeInput = { operation, runtimeSandboxId: observed.runtimeSandboxId, sessionId: observed.sessionId };
-          if (deps.runtime.retireSessionOperation) await deps.runtime.retireSessionOperation(runtimeInput);
-          else await deps.runtime.stopSession(runtimeInput);
-          await client.workspaceSession.updateMany({ where: { id: observed.sessionId, version: observed.generation, operationOwner: operation.owner },
-            data: { operationOwner: null, operationExpiresAt: null, state: "STOPPED", stoppedAt: new Date() } });
-        } catch {
-          // Keep the database reservation until maintenance proves retirement.
-        }
-      }
+      const captured = await captureWorkspaceProjectSeed({
+        client, generation: observed.generation, owner: `continuation:${claim.id}`, runtime: deps.runtime,
+        runtimeSandboxId: observed.runtimeSandboxId, seedId: observed.seedId, sessionId: observed.sessionId,
+        signal: captureSignal, storage: deps.storage
+      });
+      // A copy failure is visible in the destination, but does not discard
+      // a usable conversation summary. Cancellation still ends this claim.
+      if (captured.kind === "failed") signal?.throwIfAborted();
     },
 
     complete: async (source, claim, summary) => {

@@ -222,6 +222,8 @@ import {
   isScheduledTaskCreateCall,
   scheduledTaskToolsForRequest
 } from "../tools/scheduledTaskCreation";
+import { executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
+import { defaultSkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
 import {
   executeManageScheduledTask,
   isScheduledTaskManageCall,
@@ -374,6 +376,7 @@ export type RunRecoveryRepository = Pick<
   | "recordMonitoringVerdict"
   | "createScheduledTaskForCall"
   | "manageScheduledTaskForCall"
+  | "saveSkillForCall"
   | "loadRunFetchUrlCalls"
   | "loadRunSearchSourceUrls"
   | "toolCallsAvailable"
@@ -1052,10 +1055,10 @@ function isRecoveredMonitoringCall(context: RecoveryToolContext, name: string): 
   return isMonitoringVerdictCall(context.run.normalizedRequest, name);
 }
 
-/** The run's scheduled task creation or management as admitted; each settles its call atomically. */
+/** The run's scheduled task creation or management, or its Skill save, as admitted; each settles its call atomically. */
 function isRecoveredScheduledTaskCall(context: RecoveryToolContext, name: string): boolean {
   return isScheduledTaskCreateCall(context.run.normalizedRequest, name) ||
-    isScheduledTaskManageCall(context.run.normalizedRequest, name);
+    isScheduledTaskManageCall(context.run.normalizedRequest, name) || isSkillSaveCall(context.run.normalizedRequest, name);
 }
 
 function recoveredVerdictRecorder(deps: RunRecoveryDeps): MonitoringVerdictRecorder | undefined {
@@ -1660,7 +1663,10 @@ async function executePersistedToolCallInContext(
     const owner = { persistedToolCallId: persisted.id, request: context.run.normalizedRequest, runId: context.run.id,
       userId: context.run.userId };
     const repository = context.deps.repository;
-    const result = isScheduledTaskManageCall(context.run.normalizedRequest, call.name)
+    const result = isSkillSaveCall(context.run.normalizedRequest, call.name)
+      ? await executeSaveSkill(call, owner, { reader: defaultSkillSaveWorkspaceReader,
+        commit: runSkillSaveCommitter(repository, { callId: persisted.id, runId: context.run.id, userId: context.run.userId }) })
+      : isScheduledTaskManageCall(context.run.normalizedRequest, call.name)
       ? await executeManageScheduledTask(call, owner, repository.manageScheduledTaskForCall?.bind(repository))
       : await executeCreateScheduledTask(call, owner, repository.createScheduledTaskForCall?.bind(repository));
     const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
@@ -2646,6 +2652,7 @@ async function recoverCheckpointedToolLoop(
       ...(run.normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
       ...scheduledTaskToolsForRequest(run.normalizedRequest),
       ...scheduledTaskManagementToolsForRequest(run.normalizedRequest),
+      ...skillSaveToolsForRequest(run.normalizedRequest),
       ...fetchUrlToolsForRequest(run.normalizedRequest),
       ...(run.normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
       ...(run.normalizedRequest.toolCallReader ? [readToolCallTool] : []),

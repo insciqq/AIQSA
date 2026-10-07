@@ -119,6 +119,37 @@ describe("SkillLibraryDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("shows Versions only on the owner's Skill and reloads the Skill after a restore", async () => {
+    let detailReads = 0;
+    let version = 2;
+    const versions = (current: number) => ({ skillId: ownedSkill.id, version, archived: false, nextBefore: null, versions: [current, 1].map((number) => ({
+      revisionId: `rev-${number}`, revisionNumber: number, createdAt: "2026-10-07T08:00:00.000Z", authorDisplayName: "Viewer", fileCount: 0,
+      byteSize: 30, hasExecutables: false, current: number === current, shared: false, changeNote: null, restoredFrom: null })) });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/skill-owned/revisions/rev-1/restore") && init?.method === "POST") {
+        version = 3;
+        return Response.json({ outcome: "restored", version: 3, revisionNumber: 3, restoredFrom: 1 });
+      }
+      if (url.endsWith("/skill-owned/revisions")) return Response.json(versions(version === 2 ? 2 : 3));
+      if (url.endsWith("/skill-owned")) { detailReads += 1; return Response.json({ skill: { ...ownedSkillDetail, version } }); }
+      if (url.endsWith("/skill-shared")) return Response.json({ skill: sharedSkillDetail });
+      return listResponse();
+    }));
+    render(<SkillLibraryDialog onClose={vi.fn()} onSelectionChange={vi.fn()} selectedIds={[]} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Careful editor" }));
+    const section = await screen.findByRole("region", { name: "Versions" });
+    fireEvent.click(await within(section).findByRole("button", { name: "Restore v1" }));
+    fireEvent.click(within(within(section).getByRole("group", { name: "Restore v1" })).getByRole("button", { name: "Restore v1" }));
+    expect(await within(section).findByRole("status")).toHaveTextContent("v1 restored as v3.");
+    await waitFor(() => expect(detailReads).toBe(2));
+    expect(await within(section).findByText("v3")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Skills" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Action closer" }));
+    await screen.findByRole("heading", { name: "Action closer" });
+    expect(screen.queryByRole("region", { name: "Versions" })).toBeNull();
+  });
+
   it("enables all Skills for Auto without changing Always use selections", async () => {
     let enabled = false;
     const onSelectionChange = vi.fn();

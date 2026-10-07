@@ -13,7 +13,29 @@ const MAX_QUERY_CHARACTERS = 4096;
 export type SkillCatalogRelevancePlan = Readonly<{
   request: DecisionRequest;
   skillIdsByKey: ReadonlyMap<string, string>;
+  /** Candidates the user's message names exactly: kept whatever their score, first. */
+  namedSkillIds?: readonly string[];
 }>;
+
+/** Letters, digits, `_` and `-` continue a token; anything else bounds one. */
+const TOKEN_CHARACTER = /[\p{L}\p{N}_-]/u;
+
+/**
+ * Whether `query` contains `name` as a whole token, case-insensitively: the
+ * characters around the occurrence do not continue it, so "run my
+ * gitlab-digest" names "gitlab-digest" but "gitlab-digests" does not.
+ */
+export function queryNamesSkill(query: string, name: string): boolean {
+  const haystack = query.toLowerCase();
+  const needle = name.trim().toLowerCase();
+  if (!needle) return false;
+  for (let index = haystack.indexOf(needle); index >= 0; index = haystack.indexOf(needle, index + 1)) {
+    const before = haystack.slice(0, index).at(-1);
+    const after = haystack.slice(index + needle.length).at(0);
+    if ((!before || !TOKEN_CHARACTER.test(before)) && (!after || !TOKEN_CHARACTER.test(after))) return true;
+  }
+  return false;
+}
 
 /** Disclose the complete query and catalog metadata only. If the full cohort
  * does not fit, retain the baseline rather than evaluating a partial catalog. */
@@ -36,11 +58,15 @@ export function buildSkillCatalogRelevancePlan(input: Readonly<{
     }]))
   };
   if (Buffer.byteLength(JSON.stringify(request), "utf8") > MAX_REQUEST_BYTES) return null;
-  return { request, skillIdsByKey };
+  // A Skill the user asks for by its exact name is never filtered out.
+  const namedSkillIds = candidates.filter((skill) => queryNamesSkill(query, skill.name)).map((skill) => skill.skillId);
+  return { request, skillIdsByKey, ...(namedSkillIds.length > 0 ? { namedSkillIds } : {}) };
 }
 
 /** Null means use the original complete catalog, including its original order.
- * An empty array is valid only when every cohort member was scored irrelevant. */
+ * An empty array is valid only when every cohort member was scored irrelevant
+ * and the message names none of them. Named Skills come first, in catalog
+ * order, then the others by score. */
 export function skillCatalogRelevanceSelection(plan: SkillCatalogRelevancePlan, answers: unknown): readonly string[] | null {
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) return null;
   const values = answers as Record<string, unknown>;
@@ -54,6 +80,10 @@ export function skillCatalogRelevanceSelection(plan: SkillCatalogRelevancePlan, 
     if (answer.type !== "noul" || typeof answer.noul !== "number" || !Number.isFinite(answer.noul) || answer.noul < 0 || answer.noul > 1) return null;
     scored.push({ skillId, score: answer.noul, position: scored.length });
   }
-  return scored.filter(item => item.score >= SKILL_CATALOG_RELEVANCE_KEEP_FLOOR)
-    .sort((left, right) => right.score - left.score || left.position - right.position).map(item => item.skillId);
+  const named = new Set(plan.namedSkillIds ?? []);
+  return [
+    ...scored.filter(item => named.has(item.skillId)).map(item => item.skillId),
+    ...scored.filter(item => !named.has(item.skillId) && item.score >= SKILL_CATALOG_RELEVANCE_KEEP_FLOOR)
+      .sort((left, right) => right.score - left.score || left.position - right.position).map(item => item.skillId)
+  ];
 }

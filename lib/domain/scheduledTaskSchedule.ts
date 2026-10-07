@@ -260,14 +260,37 @@ export function describeScheduledTaskSchedule(schedule: ScheduledTaskSchedule): 
   }
 }
 
+/** "<task title><suffix>", shortening the task title to keep the chat title bound. */
+function titleWithSuffix(title: string, suffix: string): string {
+  const room = SCHEDULED_TASK_TITLE_MAX_LENGTH - Array.from(suffix).length;
+  const characters = Array.from(title.trim());
+  const shortened = characters.length > room ? `${characters.slice(0, room - 1).join("").trimEnd()}…` : characters.join("");
+  return `${shortened}${suffix}`;
+}
+
 /**
  * The title of the chat a run starts in "new chat each run" mode: "<task title> ·
  * <local date of the run>", shortening the task title to keep the chat title bound.
  */
 export function scheduledTaskRunChatTitle(title: string, instant: Date, timeZone: string): string {
-  const suffix = ` · ${dateLabel(scheduledTaskLocalDate(instant, timeZone))}`;
-  const room = SCHEDULED_TASK_TITLE_MAX_LENGTH - Array.from(suffix).length;
-  const characters = Array.from(title.trim());
-  const shortened = characters.length > room ? `${characters.slice(0, room - 1).join("").trimEnd()}…` : characters.join("");
-  return `${shortened}${suffix}`;
+  return titleWithSuffix(title, ` · ${dateLabel(scheduledTaskLocalDate(instant, timeZone))}`);
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"
+];
+
+/** The calendar month of an instant in a zone, "YYYY-MM"; it orders as text. Throws RangeError for an unknown zone. */
+export function scheduledTaskMonthKey(instant: Date, timeZone: string): string {
+  const date = scheduledTaskLocalDate(instant, timeZone);
+  return `${String(date.year).padStart(4, "0")}-${String(date.month).padStart(2, "0")}`;
+}
+
+/**
+ * The title of the chat a same-chat task starts for a calendar month: "<task
+ * title> · October 2026", shortening the task title to keep the chat title bound.
+ */
+export function scheduledTaskMonthChatTitle(title: string, instant: Date, timeZone: string): string {
+  const date = scheduledTaskLocalDate(instant, timeZone);
+  return titleWithSuffix(title, ` · ${MONTH_NAMES[date.month - 1]} ${date.year}`);
 }

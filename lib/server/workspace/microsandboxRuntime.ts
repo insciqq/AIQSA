@@ -49,6 +49,10 @@ import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runt
 import { resolveRuntimeModulePath } from "../runtimeModulePath";
 import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
+import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
+  WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
+import { BOUND_WORKSPACE_UV_CACHE, parseWorkspaceUvCacheBoundOutcome, WORKSPACE_GUEST_COMMAND_DEFAULTS, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS,
+  type WorkspaceUvCacheBoundOutcome } from "./guestCache";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
@@ -1161,7 +1165,9 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     session.secretEnvironment = undefined;
     try {
       const secrets = parseAcceptedWorkspaceSecrets(input.secrets);
-      const environment = workspaceSecretEnvironment(secrets);
+      // Server-owned run values win over a saved variable of the same name.
+      const environment = { ...workspaceSecretEnvironment(secrets),
+        ...parseWorkspaceRunEnvironment(input.runEnvironment, AGENT_GATEWAY_ORIGIN) };
       const bundle = Buffer.from(JSON.stringify({ secrets, environment, guide: workspaceSecretsGuide(secrets), runId: input.modelRunId }));
       if (bundle.byteLength > WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES) throw new Error("prepare_input_too_large");
       const deadline = AbortSignal.timeout(90_000);
@@ -1202,10 +1208,41 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       });
       input.signal?.throwIfAborted();
       session.secretEnvironment = { modelRunId: input.modelRunId, values: environment };
+      if (input.boundUvCache) {
+        await this.boundUvCache(session, input.signal);
+        input.signal?.throwIfAborted();
+      }
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
       if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
+    }
+  }
+
+  /**
+   * One bounded run of the fixed cache helper. Every failure is logged
+   * content-free and ignored; only an unproven guest stop after cancellation
+   * propagates, like every other fenced guest operation.
+   */
+  private async boundUvCache(session: LocalSession, signal: AbortSignal | undefined): Promise<void> {
+    const startedAt = Date.now();
+    let outcome: WorkspaceUvCacheBoundOutcome = "failed";
+    try {
+      // The SDK timeout kills the helper but does not bound its native promise.
+      const result = await this.withGuestOperation(session, signal, () => readStreamWithAbort(() => session.sandbox.execWith("/bin/sh",
+        builder => builder.args(["-c", BOUND_WORKSPACE_UV_CACHE]).timeout(WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS)),
+      AbortSignal.timeout(WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS + 5_000)));
+      if (result.success) outcome = parseWorkspaceUvCacheBoundOutcome(result.stdout());
+    } catch (error) {
+      if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
+      if (signal?.aborted) return;
+    }
+    if (outcome === "pruned") {
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "cleanup", outcome: "completed",
+        code: "workspace_uv_cache_pruned", duration_ms: Date.now() - startedAt });
+    } else if (outcome === "failed") {
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "cleanup", outcome: "degraded", action: "skip",
+        code: "workspace_uv_cache_prune_failed", duration_ms: Date.now() - startedAt });
     }
   }
 
@@ -1214,11 +1251,12 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     try {
       const result = await session.sandbox.execWith("/usr/bin/python3", (builder) => builder
         .args(["-I", "-c", READ_WORKSPACE_SECRET_ENV, modelRunId]).timeout(10_000));
-      if (!result.success || result.stdoutBytes().byteLength > WORKSPACE_SECRET_ENV_MAX_BYTES * 2) throw new Error("invalid");
+      const maximum = WORKSPACE_SECRET_ENV_MAX_BYTES + WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES;
+      if (!result.success || result.stdoutBytes().byteLength > maximum * 2) throw new Error("invalid");
       const values: unknown = JSON.parse(result.stdout());
       if (!values || typeof values !== "object" || Array.isArray(values) ||
         Object.entries(values).some(([name, value]) => !isWorkspaceEnvName(name) || typeof value !== "string" || value.includes("\0")) ||
-        Buffer.byteLength(JSON.stringify(values), "utf8") > WORKSPACE_SECRET_ENV_MAX_BYTES) throw new Error("invalid");
+        Buffer.byteLength(JSON.stringify(values), "utf8") > maximum) throw new Error("invalid");
       session.secretEnvironment = { modelRunId, values: values as Record<string, string> };
       return session.secretEnvironment.values;
     } catch { throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed"); }
@@ -1266,7 +1304,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     input.signal?.throwIfAborted();
     const handle = await session.sandbox.execStreamWith("/usr/local/bin/codex", (builder) => {
       const command = builder.args(args).cwd(WORKSPACE_PROJECT_DIRECTORY)
-        .envs({ ...environment, HOME: "/root", CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
+        .envs({ ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment, HOME: "/root", CODEX_HOME: CODEX_HOME_DIRECTORY, [CODEX_RUN_TOKEN_ENV]: input.runToken })
         .stdinBytes(Buffer.from(input.prompt));
       return input.timeoutSeconds === null ? command : command.timeout(input.timeoutSeconds * 1000);
     });
@@ -1386,9 +1424,13 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         if (requested !== undefined && (!requested || typeof requested !== "object" || Array.isArray(requested))) {
           throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
-        if (Object.keys(environment).length || requested !== undefined) {
-          argumentsWithIdentity.env = { ...environment, ...(requested as Record<string, unknown> | undefined) };
+        if (input.invocationId !== undefined && !isWorkspaceCodeInvocationId(input.invocationId)) {
+          throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
         }
+        // The invocation id reaches this command alone, never the saved environment file.
+        const invocation = input.invocationId ? { [WORKSPACE_CODE_INVOCATION_ENV]: input.invocationId } : {};
+        argumentsWithIdentity.env = { ...WORKSPACE_GUEST_COMMAND_DEFAULTS, ...environment,
+          ...(requested as Record<string, unknown> | undefined), ...invocation };
       }
       const boundedArguments = input.originalName === "sandbox_shell" || input.originalName === "sandbox_exec"
         ? {

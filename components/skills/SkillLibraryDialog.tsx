@@ -42,6 +42,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { SkillSelectionSummary, type SelectedSkillName } from "./SkillSelectionSummary";
 import { skillShareStateLabels, skillSharingErrorMessage } from "./skillSharingPresentation";
 import { SkillSourceImportDialog } from "./SkillSourceImportDialog";
+import { SkillVersionsSection } from "./SkillVersionsSection";
 
 type EditorState = {
   draft: SkillDraft;
@@ -684,6 +685,9 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
                   <UiV2IconButton icon="close" label="Close file preview" onClick={() => setFilePreview(null)} /></div>
                   <pre aria-label={filePreview.path} tabIndex={0}>{filePreview.text}</pre></div> : null}
               </div> : null}
+
+              {detail.owned ? <SkillVersionsSection key={detail.id} skill={detail} published={Boolean(detail.sharing?.sharedRevision)} disabled={busy}
+                onChanged={() => void runAction(() => reloadDetail(detail.id))} /> : null}
 
               <div className="v2-skill-detail-section">
                 <h4>Current audiences</h4>

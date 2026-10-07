@@ -7,7 +7,6 @@ import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import type { AuthenticatedSession } from "../auth/requestAuth";
-import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { createPrismaMemoryFactRepository } from "../memory/persistence/facts";
 import { memorySha256 } from "../memory/persistence/lexical";
@@ -25,6 +24,7 @@ import { createPrismaRunRepository } from "../runs/prismaRepository";
 import type { CreateRunInput, ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import { createScheduledTaskRunner } from "./runner";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
 import { scheduledTaskScheduleColumns } from "./store";
@@ -35,7 +35,6 @@ import { scheduledTaskScheduleColumns } from "./store";
  * creation itself for the frozen contract.
  */
 const users: string[] = [];
-const chats = createPrismaChatRepository();
 const sendDeps = () => ({ ...createDefaultSendMessageDeps(), allowFakeProvider: true });
 const FACT = "My preferred editor is Vim.";
 const suppressionKeyring = MemorySuppressionKeyring.parse(
@@ -46,8 +45,10 @@ function runner() {
   const deps = sendDeps();
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
+    // Due tasks start at once here; the spread has its own tests.
+    dispatchOffsetMs: () => 0,
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
-    async renameChat(input) { await chats.updateChat(input); },
+    loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
     send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: deps }),
     stopRun: ({ code, message, runId, userId }) => stopModelRun(deps, { payload: { code, message }, runId, userId }),
     store: createPrismaScheduledTaskRunnerStore(prisma)

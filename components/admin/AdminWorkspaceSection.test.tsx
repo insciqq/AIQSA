@@ -43,7 +43,7 @@ describe("AdminWorkspaceSection", () => {
     workspaceApi.get.mockReset().mockResolvedValue({ data: readyPolicy, ok: true });
     workspaceApi.update.mockReset();
     workspaceApi.overview.mockReset().mockResolvedValue({ ok: true, data: {
-      activeCount: 0, filter: "active", observedAt: "2026-09-09T12:00:00.000Z", page: 1, pageSize: 20,
+      activeCount: 0, filter: "active", footprint: null, observedAt: "2026-09-09T12:00:00.000Z", page: 1, pageSize: 20,
       rows: [], state: "fresh", stoppedCount: 1, totalCount: 0, transitioningCount: 0, unknownCount: 0,
       updatedAt: "2026-09-09T12:00:00.000Z"
     } });

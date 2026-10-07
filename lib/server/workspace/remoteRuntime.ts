@@ -394,6 +394,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
   async syncPersonalSecrets(input: Parameters<WorkspaceRuntime["syncPersonalSecrets"]>[0]): Promise<void> {
     await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/secrets`, {
       body: JSON.stringify({ secrets: input.secrets, modelRunId: input.modelRunId,
+        ...(input.runEnvironment ? { runEnvironment: input.runEnvironment } : {}),
+        ...(input.boundUvCache ? { boundUvCache: true } : {}),
         operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST", signal: input.signal
     });
@@ -502,6 +504,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     const request = {
       body: JSON.stringify({
         arguments: input.arguments,
+        ...(input.invocationId ? { invocationId: input.invocationId } : {}),
         modelRunId: input.modelRunId,
         modelRunToolCallId: input.modelRunToolCallId,
         operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId

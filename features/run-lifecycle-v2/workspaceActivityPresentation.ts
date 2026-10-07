@@ -2,6 +2,7 @@ import type { RunEventView } from "@/lib/contracts/runs";
 import {
   decodeThreadWorkspaceActivityEntry,
   type ThreadWorkspaceActivity,
+  type ThreadWorkspaceActivityCodeMcp,
   type ThreadWorkspaceActivityEntry,
   type ThreadWorkspaceOutputStatus
 } from "@/lib/contracts/workspace";
@@ -203,6 +204,19 @@ export function workspaceActivityOutcomeV2(activity: ThreadWorkspaceActivity | n
 
 export const WORKSPACE_RECREATED_NOTICE_V2 =
   "Previous runtime state and installed dependencies may no longer be available. Original attachments were restored.";
+
+/** One line for the MCP calls a command's code made: tools and counts, never arguments or results. */
+export function workspaceCodeMcpCopyV2(codeMcp: ThreadWorkspaceActivityCodeMcp): string {
+  const listed = codeMcp.tools.map((tool) =>
+    `${tool.serverName ? `${tool.serverName} · ` : ""}${tool.toolName} ×${tool.calls}${tool.failed ? ` (${tool.failed} failed)` : ""}`);
+  const unlisted = codeMcp.calls - codeMcp.tools.reduce((sum, tool) => sum + tool.calls, 0);
+  if (unlisted > 0) listed.push(`${unlisted} more`);
+  const parts = [`MCP calls from code: ${codeMcp.calls}`];
+  if (listed.length) parts.push(listed.join(", "));
+  if (codeMcp.failed) parts.push(`${codeMcp.failed} failed`);
+  if (codeMcp.refused) parts.push(`${codeMcp.refused} refused, call budget used up`);
+  return parts.join(" · ");
+}
 
 export function workspaceDurationV2(durationMs: number | undefined): string | null {
   if (durationMs === undefined) return null;

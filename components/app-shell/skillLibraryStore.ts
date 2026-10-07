@@ -13,6 +13,12 @@ import type {
 } from "@/lib/contracts/skills";
 import { SKILL_SHARE_REQUEST_STATES } from "@/lib/contracts/skills";
 import {
+  decodeSkillRestoreResponse,
+  decodeSkillVersionsResponse,
+  type SkillRestoreResponse,
+  type SkillVersionsResponse
+} from "@/lib/contracts/skillVersions";
+import {
   decodeSkillImportSource,
   type SkillSourceImportRequest,
   type SkillSourcePreview,
@@ -572,6 +578,26 @@ export async function importSkillSource(input: SkillSourceImportRequest): Promis
   }));
   await refreshCurrentSkillLibrary();
   return result;
+}
+
+/** One page of the owner's Skill versions, newest first; `before` continues older ones. */
+export async function loadSkillVersions(skillId: string, before?: number, signal?: AbortSignal): Promise<SkillVersionsResponse> {
+  const value = await request(`/api/me/skills/${encodeURIComponent(skillId)}/revisions${before ? `?${new URLSearchParams({ before: String(before) })}` : ""}`,
+    signal ? { signal } : undefined);
+  const page = decodeSkillVersionsResponse(value);
+  if (!page || page.skillId !== skillId) throw new Error("skill_response_invalid");
+  return page;
+}
+
+/** Makes `revisionId` current again as a new version, guarded by the definition version the list showed. */
+export async function restoreSkillVersion(skillId: string, revisionId: string, expectedVersion: number): Promise<SkillRestoreResponse> {
+  const value = await request(`/api/me/skills/${encodeURIComponent(skillId)}/revisions/${encodeURIComponent(revisionId)}/restore`, {
+    body: JSON.stringify({ expectedVersion }), headers: { "content-type": "application/json" }, method: "POST"
+  });
+  const response = decodeSkillRestoreResponse(value);
+  if (!response) throw new Error("skill_response_invalid");
+  if (response.outcome === "restored") await refreshCurrentSkillLibrary();
+  return response;
 }
 
 export async function loadSkillFile(skillId: string, path: string): Promise<string> {
