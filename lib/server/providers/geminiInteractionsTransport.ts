@@ -85,9 +85,22 @@ function geminiInitialRequestRetryDecision(error: unknown, signal: AbortSignal):
   return providerRequestNotSent(error) ? { retryAfterMs: null } : null;
 }
 
+/** Google's structured reasons for a key it does not accept. Google answers an
+ * invalid or expired API key with HTTP 400 INVALID_ARGUMENT (observed on the
+ * Interactions endpoint 2026-10-07), so only this closed `google.rpc.ErrorInfo`
+ * reason, never the message, marks the failure as a rejected key. */
+const GEMINI_KEY_REJECTED_REASONS = new Set(["API_KEY_INVALID", "API_KEY_EXPIRED"]);
+
+function geminiKeyRejected(error: Record<string, unknown>): boolean {
+  return Array.isArray(error.details) && error.details.some((detail) => isRecord(detail) &&
+    detail["@type"] === "type.googleapis.com/google.rpc.ErrorInfo" &&
+    typeof detail.reason === "string" && GEMINI_KEY_REJECTED_REASONS.has(detail.reason));
+}
+
 function geminiHttpErrorIdentity(text: string, httpStatus: number): Readonly<{
   code?: GeminiHttpErrorCode;
   counts?: ProviderContextLengthCounts;
+  keyRejected?: true;
 }> {
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return {}; }
@@ -97,7 +110,8 @@ function geminiHttpErrorIdentity(text: string, httpStatus: number): Readonly<{
   const counts = httpStatus === 400 ? providerContextLengthRejection(value.error) : null;
   if (counts) return { code: "context_length_exceeded", counts };
   const candidate = value.error.code;
-  return { code: GEMINI_HTTP_ERROR_CODES.find((code) => code !== "context_length_exceeded" && code === candidate) };
+  const code = GEMINI_HTTP_ERROR_CODES.find((item) => item !== "context_length_exceeded" && item === candidate);
+  return httpStatus === 400 && code === undefined && geminiKeyRejected(value.error) ? { keyRejected: true } : { code };
 }
 
 export type GeminiInteractionsClientRequestOptions = Readonly<{
@@ -187,7 +201,8 @@ async function throwHttpError(response: Response, signal: AbortSignal): Promise<
     }
   }
 
-  throw new GeminiHttpError(response.status, identity.code, identity.counts, retryAfterMs);
+  const error = new GeminiHttpError(response.status, identity.code, identity.counts, retryAfterMs);
+  throw identity.keyRejected ? Object.assign(error, { keyRejected: true }) : error;
 }
 
 export function createFetchGeminiInteractionsClient(input: Readonly<{
