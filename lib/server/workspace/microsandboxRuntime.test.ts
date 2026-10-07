@@ -20,7 +20,7 @@ import { tarGzipStream } from "../chats/tarArchive";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
-import { WORKSPACE_UV_CACHE_DIRECTORY } from "./guestCache";
+import { BOUND_WORKSPACE_UV_CACHE, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS, WORKSPACE_UV_CACHE_DIRECTORY } from "./guestCache";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -757,6 +757,56 @@ describe("Microsandbox Workspace lifecycle", () => {
     await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "cancelled", signal: controller.signal,
       secrets: [] })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
     expect(value.secretPipe.close).not.toHaveBeenCalled();
+  });
+
+  it("runs the fixed uv cache helper only when asked, after delivery, with a bounded timeout", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const cacheCalls = () => value.sandbox.execWith.mock.calls.filter(([command]) => command === "/bin/sh");
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "interactive", secrets: [] });
+    expect(cacheCalls()).toHaveLength(0);
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis() };
+    value.sandbox.execWith.mockImplementationOnce(async (_command, configure) => {
+      (configure as (input: typeof builder) => unknown)(builder);
+      return { success: true, stdout: () => "pruned\n", stdoutBytes: () => Buffer.from("pruned\n") };
+    });
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(line => { lines.push(String(line)); return true; });
+    try {
+      await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "scheduled", secrets: [], boundUvCache: true });
+    } finally { writer.mockRestore(); }
+    expect(cacheCalls()).toHaveLength(1);
+    expect(builder.args).toHaveBeenCalledWith(["-c", BOUND_WORKSPACE_UV_CACHE]);
+    expect(builder.timeout).toHaveBeenCalledWith(WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS);
+    expect(vi.mocked(value.sandbox.execWith).mock.invocationCallOrder.at(-1)).toBeGreaterThan(value.secretHelper.wait.mock.invocationCallOrder.at(-1)!);
+    const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "runtime_lifecycle", subsystem: "workspace", stage: "cleanup",
+      outcome: "completed", code: "workspace_uv_cache_pruned" }));
+    expect(sdk.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "nonzero", "garbled", "within"] as const)("never fails delivery when the uv cache helper does not prune (%s)", async (mode) => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    value.sandbox.execWith.mockImplementationOnce(async () => {
+      if (mode === "rejected") throw new Error("PRIVATE_CACHE_CANARY");
+      const stdout = mode === "within" ? "within\n" : "PRIVATE_CACHE_CANARY";
+      return { success: mode !== "nonzero", stdout: () => stdout, stdoutBytes: () => Buffer.from(stdout) };
+    });
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(line => { lines.push(String(line)); return true; });
+    try {
+      await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "scheduled", secrets: [], boundUvCache: true });
+    } finally { writer.mockRestore(); }
+    const codes = lines.map((line) => (JSON.parse(line) as Record<string, unknown>).code);
+    if (mode === "within") expect(codes).not.toContain("workspace_uv_cache_prune_failed");
+    else expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>)).toContainEqual(expect.objectContaining({
+      event: "runtime_lifecycle", stage: "cleanup", outcome: "degraded", action: "skip", code: "workspace_uv_cache_prune_failed" }));
+    expect(lines.join("\n")).not.toContain("PRIVATE_CACHE_CANARY");
+    // The delivered environment survives: the next command still carries it.
+    await value.runtime.callBoundTool({ ...callInput, modelRunId: "scheduled" });
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+    expect(value.sandbox.stopWithTimeout).not.toHaveBeenCalled();
   });
 
   it("reads labelled inventory pages without connecting, touching or starting stopped environments", async () => {
