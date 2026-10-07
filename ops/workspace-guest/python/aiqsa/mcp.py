@@ -37,6 +37,7 @@ from .errors import (
     InvocationClosed,
     McpOff,
     NotInWorkspace,
+    ProjectUnsupported,
     ProtocolError,
     RateLimited,
     RequestTooLarge,
@@ -64,6 +65,9 @@ _UNAVAILABLE = {
     "mcp_off": (McpOff, "MCP tools are off for this chat run, or none are connected."),
     "gateway_unavailable": (GatewayUnavailable,
                             "This AIQSA installation or run cannot give code access to MCP tools."),
+    "project_unsupported": (ProjectUnsupported,
+                            "Code can call MCP tools in personal chats only, because members share a Project chat's "
+                            "Workspace."),
 }
 _AGENT_INTERNAL_TOOLS = frozenset({"find_tools", "call_tool"})
 

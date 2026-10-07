@@ -6,7 +6,6 @@ import { prisma } from "../prisma";
 import { textMessageContent } from "@/lib/domain/content";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { agentTokenHash } from "../agents/store";
-import { defaultWorkspaceCodeMcpDependencies } from "./codeMcpGateway";
 import {
   createPrismaWorkspaceCodeGatewayStore,
   createPrismaWorkspaceCodeGrantRepository,
@@ -57,8 +56,7 @@ async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unkn
     ordinal: ordinal++, providerCallId: randomUUID(), roundIndex: 0, toolName: "workspace__sandbox_shell",
     workspaceRunBindingId: runId } })).id;
   const binding = { operationGeneration: session.version, operationOwner: `run:${runId}`, runId, sessionId: session.id, userId };
-  return { binding, chat, command, project: project && accepted ? { ...accepted, projectId: project.id } : null, runId, session,
-    userId };
+  return { binding, chat, command, runId, session, userId };
 }
 
 const grants = createPrismaWorkspaceCodeGrantRepository(prisma);
@@ -92,7 +90,7 @@ describe("Workspace code MCP grants", () => {
     const row = await prisma.workspaceCodeGrant.findUniqueOrThrow({ where: { modelRunId: f.runId } });
     expect(row).toMatchObject({ revokedAt: null, tokenHash: workspaceCodeTokenHash(first.token!), workspaceSessionId: f.session.id });
     expect(JSON.stringify(row)).not.toContain(first.token);
-    expect(await grantFor(first.token!)).toMatchObject({ budgets, project: null, runId: f.runId, userId: f.userId,
+    expect(await grantFor(first.token!)).toMatchObject({ budgets, runId: f.runId, userId: f.userId,
       authority: { kind: "catalog" } });
     // Recovery takeover or guest recreation: the previous bearer dies.
     const second = await grants.issueCodeGrant(f.binding);
@@ -238,23 +236,17 @@ describe("Workspace code MCP invocations and receipts", () => {
     await expect(gateway.assertActive(grant, invocationId)).rejects.toMatchObject({ reason: "authority" });
   });
 
-  it("serves a Project run's frozen shared plan to its initiator only at the accepted Project revisions", async () => {
-    const snapshot = { servers: [{ fingerprint: "f".repeat(64), revisionId: "revision-1", serverId: "server-shared",
-      serverName: "Shared" }], tools: [], version: 1 };
-    const f = await fixture({ project: true, normalizedRequest: { mcp: { ...snapshot, tools: [{ definitionHash: "d".repeat(64),
-      description: null, inputSchema: { type: "object" }, name: "search", namespacedName: "mcp_shared_search_3333333333",
-      originalName: "search", serverId: "server-shared", serverName: "Shared" }] },
-    workspace: { codeMcp: budgets, enabled: true, internetEnabled: true } } });
-    const grant = await grantFor((await grants.issueCodeGrant(f.binding)).token!);
-    expect(grant).toMatchObject({ authority: { kind: "plan" }, project: f.project, userId: f.userId });
-    const invocationId = (await grants.openCodeInvocation({ kind: "command", modelRunToolCallId: await f.command(),
-      runId: f.runId, sessionId: f.session.id }))!;
-    await gateway.assertActive(grant, invocationId);
-    // The gateway's Project check is the model's: linking or unlinking a server bumps the policy revision.
-    const { projectAccess } = defaultWorkspaceCodeMcpDependencies();
-    expect(await projectAccess({ ...grant.project!, userId: f.userId })).toBe(true);
-    await prisma.project.update({ where: { id: f.project!.projectId }, data: { policyRevision: { increment: 1 } } });
-    expect(await projectAccess({ ...grant.project!, userId: f.userId })).toBe(false);
+  it("gives a Project run no bearer, only the typed reason, since members share its Workspace", async () => {
+    const f = await fixture({ project: true });
+    expect(await grants.issueCodeGrant(f.binding)).toEqual({ environment: { AIQSA_MCP_UNAVAILABLE: "project_unsupported" } });
+    expect(await prisma.workspaceCodeGrant.count({ where: { modelRunId: f.runId } })).toBe(0);
+    expect(await grants.openCodeInvocation({ kind: "command", modelRunToolCallId: await f.command(), runId: f.runId,
+      sessionId: f.session.id })).toBeNull();
+    // The gateway refuses a Project run's bearer on its own as well.
+    const token = "p".repeat(43);
+    await prisma.workspaceCodeGrant.create({ data: { issuedAt: new Date(), modelRunId: f.runId, tokenHash: workspaceCodeTokenHash(token),
+      workspaceSessionId: f.session.id } });
+    expect(await gateway.load(workspaceCodeTokenHash(token))).toBeNull();
   });
 
   it("deletes grants, invocations and receipts with their run", async () => {

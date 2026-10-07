@@ -16,7 +16,9 @@ export const WORKSPACE_CODE_INVOCATION_ENV = "AIQSA_INVOCATION_ID";
 /** Forwarded by the relay; the gateway requires an open invocation of the bearer's run. */
 export const WORKSPACE_CODE_INVOCATION_HEADER = "x-aiqsa-invocation-id";
 
-export const WORKSPACE_CODE_UNAVAILABLE_REASONS = Object.freeze(["internet_off", "gateway_unavailable", "mcp_off"] as const);
+export const WORKSPACE_CODE_UNAVAILABLE_REASONS = Object.freeze([
+  "internet_off", "gateway_unavailable", "mcp_off", "project_unsupported"
+] as const);
 export type WorkspaceCodeUnavailableReason = (typeof WORKSPACE_CODE_UNAVAILABLE_REASONS)[number];
 
 const INVOCATION_ID = /^[a-f0-9]{32}$/u;
@@ -59,6 +61,8 @@ export type WorkspaceCodeMcpRequest = Readonly<{
   agent?: unknown;
   mcp?: Readonly<{ tools?: readonly unknown[] }> | null;
   mcpDiscovery?: Readonly<{ catalog?: Readonly<{ servers?: readonly Readonly<{ tools?: readonly unknown[] }>[] }> }> | null;
+  /** The run's chat belongs to a Project. */
+  project?: boolean;
   workspace?: Readonly<{ codeMcp?: unknown; internetEnabled?: unknown }> | null;
 }>;
 
@@ -68,12 +72,15 @@ export type WorkspaceCodeMcpEligibility =
   | Readonly<{ kind: "eligible"; budgets: NormalizedWorkspaceCodeMcp }>;
 
 /**
- * Agent runs keep their own bearer and gateway surface. Otherwise the run
- * needs Internet On, a reachable relay recorded at admission, and MCP
- * authority: an Auto catalog or a frozen plan with tools.
+ * Agent runs keep their own bearer and gateway surface. Project runs get
+ * none: members share a Project chat's Workspace, so code one member left
+ * there would run with another member's authority. Otherwise the run needs
+ * Internet On, a reachable relay recorded at admission, and MCP authority:
+ * an Auto catalog or a frozen plan with tools.
  */
 export function workspaceCodeMcpEligibility(request: WorkspaceCodeMcpRequest): WorkspaceCodeMcpEligibility {
   if (request.agent !== undefined && request.agent !== null) return { kind: "agent" };
+  if (request.project === true) return { kind: "unavailable", reason: "project_unsupported" };
   if (request.workspace?.internetEnabled !== true) return { kind: "unavailable", reason: "internet_off" };
   const budgets = request.workspace.codeMcp;
   if (!isNormalizedWorkspaceCodeMcp(budgets)) return { kind: "unavailable", reason: "gateway_unavailable" };

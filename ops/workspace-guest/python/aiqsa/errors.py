@@ -49,6 +49,12 @@ class AgentModeUnsupported(McpUnavailable):
     code = "agent_mode_unsupported"
 
 
+class ProjectUnsupported(McpUnavailable):
+    """Project chats share their Workspace among members, so their code gets no MCP access."""
+
+    code = "project_unsupported"
+
+
 class TokenRevoked(AiqsaMcpError):
     """The run ended, was stopped, or its access was replaced: start a new request."""
 

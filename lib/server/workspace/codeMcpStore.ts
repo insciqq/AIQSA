@@ -44,6 +44,7 @@ type FrozenRow = {
   agent: boolean;
   catalogTools: boolean;
   planTools: boolean;
+  project: boolean;
   workspace: Prisma.JsonValue | null;
 };
 
@@ -58,23 +59,26 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
      */
     async issueCodeGrant(binding: WorkspaceCodeRunIdentity): Promise<WorkspaceCodeGrantIssue> {
       const [frozen] = await prisma.$queryRaw<FrozenRow[]>(Prisma.sql`
-        SELECT ("normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof("normalizedRequest" -> 'agent') <> 'null' AS "agent",
-          "normalizedRequest" -> 'workspace' AS "workspace",
+        SELECT (run."normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof(run."normalizedRequest" -> 'agent') <> 'null' AS "agent",
+          run."normalizedRequest" -> 'workspace' AS "workspace",
           COALESCE((
             SELECT bool_or(CASE WHEN jsonb_typeof(server -> 'tools') = 'array'
               THEN jsonb_array_length(server -> 'tools') > 0 ELSE false END)
-            FROM jsonb_array_elements(CASE WHEN jsonb_typeof("normalizedRequest" #> '{mcpDiscovery,catalog,servers}') = 'array'
-              THEN "normalizedRequest" #> '{mcpDiscovery,catalog,servers}' ELSE '[]'::jsonb END) AS server
+            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(run."normalizedRequest" #> '{mcpDiscovery,catalog,servers}') = 'array'
+              THEN run."normalizedRequest" #> '{mcpDiscovery,catalog,servers}' ELSE '[]'::jsonb END) AS server
           ), false) AS "catalogTools",
-          CASE WHEN jsonb_typeof("normalizedRequest" #> '{mcp,tools}') = 'array'
-            THEN jsonb_array_length("normalizedRequest" #> '{mcp,tools}') > 0 ELSE false END AS "planTools"
-        FROM "ModelRun"
-        WHERE "id" = ${binding.runId} AND "userId" = ${binding.userId}
-          AND "status" IN ('queued'::"ModelRunStatus", 'in_progress'::"ModelRunStatus", 'streaming'::"ModelRunStatus")
+          CASE WHEN jsonb_typeof(run."normalizedRequest" #> '{mcp,tools}') = 'array'
+            THEN jsonb_array_length(run."normalizedRequest" #> '{mcp,tools}') > 0 ELSE false END AS "planTools",
+          chat."projectId" IS NOT NULL AS "project"
+        FROM "ModelRun" AS run
+        JOIN "Chat" AS chat ON chat."id" = run."chatId"
+        WHERE run."id" = ${binding.runId} AND run."userId" = ${binding.userId}
+          AND run."status" IN ('queued'::"ModelRunStatus", 'in_progress'::"ModelRunStatus", 'streaming'::"ModelRunStatus")
       `);
       if (!frozen) return { environment: {} };
       const eligibility = workspaceCodeMcpEligibility({
         ...(frozen.agent ? { agent: true } : {}),
+        project: frozen.project,
         workspace: frozen.workspace && typeof frozen.workspace === "object" && !Array.isArray(frozen.workspace)
           ? frozen.workspace as Record<string, unknown> : null,
         mcp: { tools: frozen.planTools ? [true] : [] },
@@ -189,23 +193,10 @@ export type WorkspaceCodeAuthority =
   | Readonly<{ kind: "catalog"; catalog: McpCapabilityCatalog }>
   | Readonly<{ kind: "plan"; snapshot: McpRunPlanSnapshot }>;
 
-/**
- * A Project run's accepted Project revisions. As for the model, a change of
- * any of them (access, policy including linked servers, instructions, memory)
- * ends the run's Project authority, here its code's MCP calls too.
- */
-export type WorkspaceCodeProjectAuthority = Readonly<{
-  accessRevision: number;
-  instructionsRevision: number;
-  memoryRevision: number;
-  policyRevision: number;
-  projectId: string;
-}>;
-
+/** A personal run's code authority: Project runs never hold a code bearer. */
 export type WorkspaceCodeGatewayGrant = Readonly<{
   authority: WorkspaceCodeAuthority;
   budgets: NormalizedWorkspaceCodeMcp;
-  project: WorkspaceCodeProjectAuthority | null;
   runId: string;
   sessionId: string;
   tokenHash: string;
@@ -267,16 +258,10 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
   return {
     async load(tokenHash) {
       const [row] = await prisma.$queryRaw<Array<{
-        accessRevision: number | null;
         agent: boolean;
         catalog: Prisma.JsonValue | null;
-        initiatorUserId: string | null;
-        instructionsRevision: number | null;
         mcp: Prisma.JsonValue | null;
-        memoryRevision: number | null;
-        policyRevision: number | null;
-        projectId: string | null;
-        projectRunProjectId: string | null;
+        project: boolean;
         runId: string;
         sessionId: string;
         status: string;
@@ -284,38 +269,24 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         workspace: Prisma.JsonValue | null;
       }>>(Prisma.sql`
         SELECT code_grant."modelRunId" AS "runId", code_grant."workspaceSessionId" AS "sessionId",
-          run."userId", run."status"::text AS "status", chat."projectId",
+          run."userId", run."status"::text AS "status", chat."projectId" IS NOT NULL AS "project",
           (run."normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof(run."normalizedRequest" -> 'agent') <> 'null' AS "agent",
           run."normalizedRequest" -> 'workspace' AS "workspace",
           run."normalizedRequest" -> 'mcp' AS "mcp",
-          run."normalizedRequest" #> '{mcpDiscovery,catalog}' AS "catalog",
-          project_run."projectId" AS "projectRunProjectId", project_run."initiatorUserId",
-          project_run."accessRevision", project_run."instructionsRevision",
-          project_run."memoryRevision", project_run."policyRevision"
+          run."normalizedRequest" #> '{mcpDiscovery,catalog}' AS "catalog"
         FROM "WorkspaceCodeGrant" AS code_grant
         JOIN "ModelRun" AS run ON run."id" = code_grant."modelRunId"
         JOIN "Chat" AS chat ON chat."id" = run."chatId"
-        LEFT JOIN "ProjectRunBinding" AS project_run ON project_run."modelRunId" = run."id"
         WHERE code_grant."tokenHash" = ${tokenHash} AND code_grant."revokedAt" IS NULL
       `);
       if (!row || !(ACTIVE_RUN_STATUSES as readonly string[]).includes(row.status)) return null;
       const workspace = record(row.workspace);
       const authority = decodeAuthority(row.mcp, row.catalog);
-      const eligibility = workspaceCodeMcpEligibility({ ...(row.agent ? { agent: true } : {}), workspace,
+      const eligibility = workspaceCodeMcpEligibility({ ...(row.agent ? { agent: true } : {}), project: row.project, workspace,
         mcp: authority?.kind === "plan" ? authority.snapshot : null,
         mcpDiscovery: authority?.kind === "catalog" ? { catalog: authority.catalog } : null });
       if (eligibility.kind !== "eligible" || !authority) return null;
-      let project: WorkspaceCodeProjectAuthority | null = null;
-      if (row.projectId !== null) {
-        // A Project run without its accepted Project binding has no authority to keep.
-        const revisions = [row.accessRevision, row.instructionsRevision, row.memoryRevision, row.policyRevision];
-        if (row.projectRunProjectId !== row.projectId || row.initiatorUserId !== row.userId ||
-          revisions.some((revision) => revision === null || !Number.isSafeInteger(revision))) return null;
-        project = { accessRevision: row.accessRevision!, instructionsRevision: row.instructionsRevision!,
-          memoryRevision: row.memoryRevision!, policyRevision: row.policyRevision!, projectId: row.projectId };
-      }
-      return { authority, budgets: eligibility.budgets, project, runId: row.runId,
-        sessionId: row.sessionId, tokenHash, userId: row.userId };
+      return { authority, budgets: eligibility.budgets, runId: row.runId, sessionId: row.sessionId, tokenHash, userId: row.userId };
     },
 
     async assertActive(grant, invocationId) {
@@ -325,7 +296,7 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
             workspaceSessionId: grant.sessionId,
             workspaceSession: { operationOwner: workspaceRunOperationOwner(grant.runId), state: { not: "DELETING" } },
             modelRun: { userId: grant.userId, status: { in: [...ACTIVE_RUN_STATUSES] },
-              chat: grant.project ? { projectId: grant.project.projectId } : { userId: grant.userId, user: { status: "active" } } }
+              chat: { userId: grant.userId, user: { status: "active" } } }
           } },
         select: { invocations: { where: { id: invocationId }, select: { state: true } } }
       });

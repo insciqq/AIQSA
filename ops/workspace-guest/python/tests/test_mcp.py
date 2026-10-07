@@ -137,7 +137,8 @@ class EnvironmentTests(unittest.TestCase):
     def test_typed_errors_without_access(self) -> None:
         cases = [({}, errors.NotInWorkspace), ({"AIQSA_MCP_UNAVAILABLE": "internet_off"}, errors.InternetOff),
                  ({"AIQSA_MCP_UNAVAILABLE": "mcp_off"}, errors.McpOff),
-                 ({"AIQSA_MCP_UNAVAILABLE": "gateway_unavailable"}, errors.GatewayUnavailable)]
+                 ({"AIQSA_MCP_UNAVAILABLE": "gateway_unavailable"}, errors.GatewayUnavailable),
+                 ({"AIQSA_MCP_UNAVAILABLE": "project_unsupported"}, errors.ProjectUnsupported)]
         for environ, expected in cases:
             client = mcp.Client(environ=environ)
             with self.assertRaises(expected):
@@ -313,9 +314,11 @@ class CliTests(unittest.TestCase):
             code, out, err = self.run_cli("call", name)
             self.assertEqual((code, out), (exit_code, ""), name)
             self.assertEqual(json.loads(err)["error"]["code"], error_code)
-        self.client = mcp.Client(environ={"AIQSA_MCP_UNAVAILABLE": "internet_off"})
-        code, _, err = self.run_cli("list")
-        self.assertEqual((code, json.loads(err)["error"]["code"]), (3, "internet_off"))
+        for reason in ("internet_off", "project_unsupported"):
+            self.client = mcp.Client(environ={"AIQSA_MCP_UNAVAILABLE": reason})
+            code, _, err = self.run_cli("list")
+            self.assertEqual((code, json.loads(err)["error"]["code"]), (3, reason))
+        self.assertIn("personal chats only", json.loads(err)["error"]["message"])
 
 
 if __name__ == "__main__":
