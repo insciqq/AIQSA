@@ -13,6 +13,7 @@ Start with [critical invariants](CRITICAL_INVARIANTS.md), then read only the own
 | Run context, tools, Knowledge, recovery, outputs, usage | [Run contracts](RUN_CONTRACTS.md) |
 | UI state, interaction, visual intent | [Frontend](FRONTEND.md) |
 | Trust, secrets, dependencies, exposed deployment | [Security](SECURITY.md) |
+| External sign-in, identities, IdP-managed groups and admin role | [Sign-in](SIGN_IN.md) |
 | Environment and Compose | [Environment](ENV_VARIABLES.md) |
 | Verification and test authoring | [Testing](TESTING.md) |
 | Queued, parallel, or multi-session work | [Autonomous workflow](AUTONOMOUS_WORKFLOW.md), [task manual](tasks/README.md) |
