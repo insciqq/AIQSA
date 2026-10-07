@@ -1,6 +1,8 @@
 "use client";
 
 import { inputClass } from "@/components/admin/adminPrimitives";
+import { AdminHealthRunLookup } from "@/components/admin/health/AdminHealthRunLookup";
+import type { AdminHealthRunLookupRequest } from "@/components/admin/health/adminHealthRunLookupApi";
 import { healthCategoryLabels, healthStageLabel, healthTime } from "@/components/admin/health/healthFormat";
 import type { AdminHealthIncidentsController } from "@/components/admin/health/useAdminHealth";
 import {
@@ -11,6 +13,7 @@ import {
   type AdminHealthIncident,
   type AdminHealthIncidentCategory
 } from "@/lib/contracts/adminHealth";
+import { normalizeRunReference } from "@/lib/contracts/runReference";
 import { useId, useState, type FormEvent } from "react";
 
 export type AdminHealthIncidentFilterState = Readonly<{
@@ -84,16 +87,22 @@ function IncidentRow({ incident }: Readonly<{ incident: AdminHealthIncident }>) 
   );
 }
 
-/** Recent error incidents, newest first, with filters, run/trace lookup and paging. */
+/**
+ * Recent error incidents, newest first, with filters, run/trace lookup and
+ * paging. A run reference (an error reference or a whole run id) also shows
+ * the matching runs, even when they recorded no incident.
+ */
 export function AdminHealthIncidents({
   controller,
   filters,
   onChangeFilters,
+  requestRunLookup,
   retentionNote
 }: Readonly<{
   controller: AdminHealthIncidentsController;
   filters: AdminHealthIncidentFilterState;
   onChangeFilters(next: AdminHealthIncidentFilterState): void;
+  requestRunLookup?: AdminHealthRunLookupRequest;
   retentionNote: boolean;
 }>) {
   const [codeDraft, setCodeDraft] = useState(filters.code ?? "");
@@ -101,11 +110,13 @@ export function AdminHealthIncidents({
   const [fieldError, setFieldError] = useState<"code" | "q" | null>(null);
   const errorId = useId();
   const filtered = filters.category !== null || filters.code !== null || filters.level !== null || filters.q !== null;
+  const runReference = filters.q === null ? null : normalizeRunReference(filters.q);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const code = codeDraft.trim();
-    const q = queryDraft.trim();
+    const typed = queryDraft.trim();
+    const q = normalizeRunReference(typed) ?? typed;
     if (code && !ADMIN_HEALTH_CODE_PATTERN.test(code)) {
       setFieldError("code");
       return;
@@ -115,6 +126,7 @@ export function AdminHealthIncidents({
       return;
     }
     setFieldError(null);
+    setQueryDraft(q);
     onChangeFilters({ ...filters, code: code || null, q: q || null });
   };
 
@@ -176,7 +188,7 @@ export function AdminHealthIncidents({
             className={inputClass}
             maxLength={128}
             onChange={(event) => setQueryDraft(event.target.value)}
-            placeholder="Exact id"
+            placeholder="Error reference, run or trace id"
             spellCheck={false}
             type="search"
             value={queryDraft}
@@ -189,10 +201,13 @@ export function AdminHealthIncidents({
       </form>
       {fieldError ? (
         <p className="mt-1.5 text-xs text-critical" id={errorId} role="alert">
-          {fieldError === "q" ? "Enter an exact run id or a 32-character trace id." : "Codes use letters, digits, dots, dashes and underscores."}
+          {fieldError === "q"
+            ? "Enter an error reference (at least 8 characters), an exact run id or a 32-character trace id."
+            : "Codes use letters, digits, dots, dashes and underscores."}
         </p>
       ) : null}
       {retentionNote ? <p className="mt-2 text-xs text-ink-muted">Incidents are kept for 14 days.</p> : null}
+      {runReference ? <AdminHealthRunLookup reference={runReference} request={requestRunLookup} /> : null}
 
       <div className="mt-3 min-w-0 overflow-hidden rounded-[12px] border border-trace-subtle bg-answer-paper">
         {controller.loading && controller.items.length === 0 ? (

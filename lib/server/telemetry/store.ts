@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { normalizeRunReference, runReferenceRange } from "../../contracts/runReference";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
 import {
   TELEMETRY_DIMENSIONS, TELEMETRY_DURATION_BUCKETS, TELEMETRY_LEVELS, telemetryDimensionsJson,
@@ -58,6 +59,8 @@ export type TelemetryIncidentQuery = Readonly<{
   connectionIds?: readonly string[];
   levels?: readonly TelemetryIncidentLevel[];
   runId?: string;
+  /** A normalized run reference (`normalizeRunReference`): incidents of every run id starting with it. */
+  runIdPrefix?: string;
   traceId?: string;
   /** Opaque position from a previous page. */
   cursor?: string | null;
@@ -75,6 +78,8 @@ export type TelemetryStore = Readonly<{
   deleteExpired(now: Date): Promise<TelemetryRetentionResult>;
   readCounters(query: TelemetryCounterQuery): Promise<readonly TelemetryCounterGroup[]>;
   readIncidents(query: TelemetryIncidentQuery): Promise<TelemetryIncidentPage>;
+  /** Retained incidents per run id (at most 64 ids); ids without incidents are absent. */
+  countIncidentsByRun(runIds: readonly string[]): Promise<ReadonlyMap<string, number>>;
 }>;
 
 export type TelemetryDatabase = Pick<PrismaClient, "$executeRaw" | "$queryRaw" | "$transaction">;
@@ -263,6 +268,12 @@ function incidentConditions(query: TelemetryIncidentQuery): Prisma.Sql[] {
     if (typeof query.runId !== "string" || !identifierPattern.test(query.runId)) invalid();
     conditions.push(Prisma.sql`"runId" = ${query.runId}`);
   }
+  if (query.runIdPrefix !== undefined) {
+    const prefix = query.runIdPrefix;
+    if (typeof prefix !== "string" || normalizeRunReference(prefix) !== prefix) invalid();
+    const range = runReferenceRange(prefix);
+    conditions.push(Prisma.sql`"runId" >= ${range.lower} AND "runId" < ${range.upper} AND starts_with("runId", ${prefix})`);
+  }
   if (query.traceId !== undefined) {
     if (typeof query.traceId !== "string" || !tracePattern.test(query.traceId)) invalid();
     conditions.push(Prisma.sql`"traceId" = ${query.traceId}`);
@@ -418,6 +429,21 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
         }));
         const last = items.at(-1);
         return { items, nextCursor: rows.length > pageSize && last ? encodeCursor(last) : null };
+      } catch (error) {
+        return retainDatabaseFailure(error);
+      }
+    },
+
+    async countIncidentsByRun(runIds: readonly string[]): Promise<ReadonlyMap<string, number>> {
+      const ids = list(runIds, identifierPattern) ?? invalid();
+      try {
+        const rows = await db.$queryRaw<Array<{ runId: string; count: bigint | number }>>(Prisma.sql`
+          SELECT "runId", COUNT(*)::bigint AS "count"
+          FROM "TelemetryIncident"
+          WHERE "runId" = ANY(${ids}::text[])
+          GROUP BY "runId"
+        `);
+        return new Map(rows.map((row) => [row.runId, number(row.count)]));
       } catch (error) {
         return retainDatabaseFailure(error);
       }

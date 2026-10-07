@@ -15,7 +15,8 @@ import {
   type AdminHealthRoleStarts
 } from "../../../contracts/adminHealth";
 import { TELEMETRY_DURATION_BUCKETS } from "../../telemetry/aggregator";
-import type { TelemetryCounterGroup, TelemetryGroupValue, TelemetryStore } from "../../telemetry/store";
+import { normalizeRunReference, RUN_ID_LENGTH } from "../../../contracts/runReference";
+import type { TelemetryCounterGroup, TelemetryGroupValue, TelemetryIncidentQuery, TelemetryStore } from "../../telemetry/store";
 import {
   ADMIN_HEALTH_INCIDENT_DETAIL_KEYS,
   adminHealthFailureClass,
@@ -150,6 +151,17 @@ function incidentDetails(details: Readonly<Record<string, string | number | bool
     .map(([key, value]) => ({ key, value }));
 }
 
+/**
+ * The search box value as an incident filter: a trace id, a run id, or an
+ * error reference (a run-id prefix of at least eight characters).
+ */
+function referenceFilter(reference: string): Pick<TelemetryIncidentQuery, "runId" | "runIdPrefix" | "traceId"> {
+  if (ADMIN_HEALTH_TRACE_PATTERN.test(reference)) return { traceId: reference };
+  const run = normalizeRunReference(reference);
+  if (run === null) return { runId: reference };
+  return run.length === RUN_ID_LENGTH ? { runId: run } : { runIdPrefix: run };
+}
+
 export function createAdminHealthService(dependencies: AdminHealthDependencies): AdminHealthService {
   const now = dependencies.now ?? (() => new Date());
   const { store } = dependencies;
@@ -265,7 +277,7 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
         ...(events ? { events } : {}),
         ...(filters.code ? { codes: [filters.code] } : {}),
         ...(filters.level ? { levels: [filters.level] } : {}),
-        ...(reference ? ADMIN_HEALTH_TRACE_PATTERN.test(reference) ? { traceId: reference } : { runId: reference } : {}),
+        ...(reference ? referenceFilter(reference) : {}),
         cursor: filters.cursor,
         limit: INCIDENT_PAGE
       });
