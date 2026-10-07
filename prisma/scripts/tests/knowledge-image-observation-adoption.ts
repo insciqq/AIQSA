@@ -9,7 +9,7 @@ CREATE TABLE "_KnowledgeImageObservationUpgradeFixture" AS SELECT to_jsonb(u) AS
 export const knowledgeImageObservationProofSql = `
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "_KnowledgeImageObservationUpgradeFixture" f JOIN "UsageEvent" u ON u.id = 'knowledge-image-adoption-usage'
-    WHERE f.usage = to_jsonb(u) - 'knowledgeImageObservationRunId' AND u."knowledgeImageObservationRunId" IS NULL)
+    WHERE f.usage = to_jsonb(u) - 'knowledgeImageObservationRunId' - 'purpose' - 'webSearchCount' - 'costReported' AND u."knowledgeImageObservationRunId" IS NULL)
     THEN RAISE EXCEPTION 'knowledge_image_observation_changed_existing_accounting'; END IF;
   IF EXISTS (SELECT 1 FROM "KnowledgeImageObservation") THEN RAISE EXCEPTION 'knowledge_image_observation_invented_dispatch'; END IF;
 END $$;

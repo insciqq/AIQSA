@@ -14,6 +14,7 @@ import {
 } from "@/lib/contracts/account";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SettingsRowV2 } from "./SettingsV2";
+import { UsageLimitsSettingsV2 } from "./UsageLimitsSettingsV2";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 
 /** "operator@aiqsa.local" → "Operator": a readable stand-in for a missing Display name. */
@@ -210,6 +211,7 @@ export function AccountSettingsRowsV2({
           </div>
         </form>
       ) : null}
+      <UsageLimitsSettingsV2 />
     </>
   );
 }

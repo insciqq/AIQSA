@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decodeThreadGeneratedImage, IMAGE_MAX_BYTES, IMAGE_MAX_INPUT_BYTES, IMAGE_MAX_INPUTS, IMAGE_MAX_PROMPT_CHARACTERS, normalizeImageGenerationParameters, type ThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { createImageModelRoleResolver, type AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
-import { createImageGenerationAdapter, type ImageGenerationInput } from "../providers/imageGeneration";
+import { createImageGenerationAdapter, ImageGenerationError, type ImageGenerationInput, type ImageGenerationUsage } from "../providers/imageGeneration";
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import { getSecretEncryptionKey } from "../secrets/envelope";
 import { resolveChatAccess } from "../projects/access";
@@ -11,6 +11,7 @@ import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from ".
 import type { StorageAdapter } from "../uploads/storage";
 import type { ProviderRunRequest, ProviderAttachment } from "../providers/types";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
 
 const MAX_IMAGE_CALLS_PER_RUN = 4;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -167,16 +168,35 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       // call proves an earlier paid dispatch, so a lost upload is never
       // regenerated.
       if (await prisma.usageEvent.findUnique({ where: { imageToolCallId: toolCallId }, select: { id: true } })) throw new Error("image_dispatch_claimed");
-      const generated = await adapter.generate({ prompt: args.prompt, images, parameters, signal });
+      // Read before dispatch, so only the usage write follows the paid call.
+      const costBasis = await loadProviderModelCostBasis(prisma, plan.authority.providerModelId);
       // Provider-reported accounting is recorded before any storage work, so
       // publication failure, access loss or a stale claim cannot lose it.
-      // Nothing is estimated from pixels.
-      const micros = generated.usage.costUsd === null ? null : Math.round(generated.usage.costUsd * 1_000_000);
-      await prisma.usageEvent.create({ data: { imageGeneration: true, imageToolCallId: toolCallId, modelRunId: runId, userId, chatId: request.chatId,
-        projectId: access.project?.projectId, provider: snapshot.providerFamily,
-        providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
-        inputTokens: generated.usage.inputTokens, outputTokens: generated.usage.outputTokens, totalTokens: generated.usage.totalTokens,
-        estimatedCostMicros: micros !== null && micros <= 2_147_483_647 ? micros : null } });
+      // Nothing is estimated from pixels: the reported cost, else the model's
+      // token prices on the reported tokens. The tool call's unique link keeps
+      // it to one row, also proving the paid dispatch to any retry. The row
+      // keeps the completeness its reported tokens prove.
+      const recordUsage = (usage: ImageGenerationUsage) => {
+        const tokens = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens };
+        return prisma.usageEvent.create({ data: {
+          imageGeneration: true, imageToolCallId: toolCallId, purpose: "image_generation",
+          modelRunId: runId, userId, chatId: request.chatId,
+          projectId: access.project?.projectId, provider: snapshot.providerFamily,
+          providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
+          ...storedTokenUsage(tokens),
+          estimatedCostMicros: providerModelUsageCostMicros({ basis: costBasis, reportedCostUsd: usage.costUsd ?? null,
+            usage: tokens }) } });
+      };
+      let generated: Awaited<ReturnType<typeof adapter.generate>>;
+      try {
+        generated = await adapter.generate({ prompt: args.prompt, images, parameters, signal });
+      } catch (error) {
+        // A completed response whose image was rejected was still paid for;
+        // the provider failure stays the reported outcome.
+        if (error instanceof ImageGenerationError && error.usage) await recordUsage(error.usage).catch(() => undefined);
+        throw error;
+      }
+      await recordUsage(generated.usage);
       const attachmentId = randomUUID();
       const token = randomUUID();
       const storageKey = `generated-images/${attachmentId}`;

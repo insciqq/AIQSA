@@ -1,7 +1,8 @@
-/** Exact operational USD prices per million tokens, matching Decimal(18,8). */
+/** Exact operational USD prices matching Decimal(18,8): token prices per million
+ * tokens, and the web search price per thousand provider-reported searches. */
 export const ADMIN_MODEL_PRICE_FIELDS = [
   "inputTokenPriceUsdPerMillion", "cachedInputTokenPriceUsdPerMillion",
-  "cacheWriteInputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"
+  "cacheWriteInputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion", "webSearchPriceUsdPerThousand"
 ] as const;
 export type AdminModelPriceField = typeof ADMIN_MODEL_PRICE_FIELDS[number];
 export type AdminModelTokenPrices = Readonly<Record<AdminModelPriceField, string | null>>;
@@ -14,7 +15,8 @@ export type AdminModelPriceChange = Readonly<{ mode: "manual"; prices: AdminMode
   Readonly<{ mode: "restore_catalog" }>;
 export const EMPTY_ADMIN_MODEL_PRICES: AdminModelTokenPrices = Object.freeze({
   inputTokenPriceUsdPerMillion: null, cachedInputTokenPriceUsdPerMillion: null,
-  cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null
+  cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null,
+  webSearchPriceUsdPerThousand: null
 });
 export const ADMIN_MODEL_PRICE_ERROR = "Enter a non-negative decimal up to 9999999999.99999999 with at most 8 decimal places; exponent notation is not supported.";
 
@@ -67,12 +69,20 @@ export function invalidAdminModelPriceField(value: unknown): AdminModelPriceFiel
 export function isAdminModelPriceField(value: unknown): value is AdminModelPriceField {
   return ADMIN_MODEL_PRICE_FIELDS.includes(value as AdminModelPriceField);
 }
+
+const INPUT_AND_OUTPUT_PRICES: readonly AdminModelPriceField[] = Object.freeze(["inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"]);
+const INPUT_PRICE: readonly AdminModelPriceField[] = Object.freeze(["inputTokenPriceUsdPerMillion"]);
+
 /**
- * Only answer usage is costed from token prices. Decision (Jev) cost comes
- * from the provider-reported amount, so its rows carry no editable price.
+ * The prices a model class can carry: answer models all four token prices and
+ * the web search price (native search in answers, Search engines), decision
+ * and image models input and output, embedding and reranker models input only.
+ * Every other field of the class stays null; an unknown class carries none.
  */
-export function modelClassUsesTokenPrices(modelClass: string): boolean {
-  return modelClass === "answer";
+export function modelClassPriceFields(modelClass: string): readonly AdminModelPriceField[] {
+  if (modelClass === "answer") return ADMIN_MODEL_PRICE_FIELDS;
+  if (modelClass === "decision" || modelClass === "image") return INPUT_AND_OUTPUT_PRICES;
+  return modelClass === "embedding" || modelClass === "reranker" ? INPUT_PRICE : [];
 }
 
 export function adminModelPriceChangeMatches(change: AdminModelPriceChange, pricing: AdminModelPricing): boolean {

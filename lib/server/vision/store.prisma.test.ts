@@ -156,7 +156,7 @@ describe("durable auxiliary Vision accounting", () => {
     expect(await f.db.visionAnalysisAttempt.findMany({ where: { modelRunId: f.context.runId } }))
       .toEqual([expect.objectContaining({ toolCallId: tool.id, state: "settled", requestHash: hashCanonicalMcpValue(call.arguments) })]);
     expect(await f.db.usageEvent.findMany({ where: { modelRunId: f.context.runId } }))
-      .toEqual([expect.objectContaining({ visionAnalysis: true, providerModelId: f.plan.authority.providerModelId,
+      .toEqual([expect.objectContaining({ visionAnalysis: true, purpose: "chat_vision", providerModelId: f.plan.authority.providerModelId,
         inputTokens: 7, outputTokens: 2, totalTokens: 9, usageCompleteness: "COMPLETE" })]);
     expect(await dispatch(call, signal)).toEqual(result);
     expect(execute).toHaveBeenCalledOnce();

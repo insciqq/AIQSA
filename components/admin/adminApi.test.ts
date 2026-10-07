@@ -29,24 +29,6 @@ function emptyDashboard(): AdminDashboard {
       },
       teamConfigured: false
     },
-    usage: {
-      byGroup: [],
-      byUser: [],
-      totals: {
-        estimatedCostMicros: null,
-        recordCount: 0,
-        knownCostRecordCount: 0,
-        incompleteUsageCount: 0,
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
-        inputTokens: 0,
-        lastUsedAt: null,
-        outputTokens: 0,
-        reasoningTokens: 0,
-        runCount: 0,
-        totalTokens: 0
-      }
-    },
     users: []
   };
 }
@@ -106,9 +88,6 @@ describe("admin API client", () => {
         }
       }
     ],
-    ["usage groups", { ...emptyDashboard(), usage: { ...emptyDashboard().usage, byGroup: null } }],
-    ["usage users", { ...emptyDashboard(), usage: { ...emptyDashboard().usage, byUser: null } }],
-    ["usage totals", { ...emptyDashboard(), usage: { byGroup: [], byUser: [] } }],
     ["users", { ...emptyDashboard(), users: null }]
   ])("rejects a dashboard without the required shallow %s collection", (_label, dashboard) => {
     expect(isAdminDashboard(dashboard)).toBe(false);

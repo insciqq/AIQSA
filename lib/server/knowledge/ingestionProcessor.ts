@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type { LifecycleStage } from "../observability";
 import { ingestionAttempt, ingestionPersistence, ingestionStage, retainIngestionFailure } from "./ingestionObservability";
@@ -13,7 +13,7 @@ import {
 } from "../parsing";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import type { EmbeddingRuntimeBinding } from "../providerRuntime/embeddingRuntime";
-import { EmbeddingAdapterError } from "../providers/embeddings";
+import { EmbeddingAdapterError, type EmbeddingUsage } from "../providers/embeddings";
 import {
   isStoredObjectTooLargeError,
   type StorageAdapter
@@ -32,6 +32,7 @@ import {
   KnowledgeIngestionError,
   knowledgeWorkIdentity,
   type KnowledgeEmbeddingBatchWrite,
+  type KnowledgeEmbeddingUsageWrite,
   type KnowledgeIngestionWarningCode,
   type KnowledgeWorkClaim,
   type KnowledgeWorkIdentity
@@ -87,6 +88,11 @@ export type KnowledgeIngestionProcessorRepository = Readonly<{
     document: StoredKnowledgeNormalizedDocument | null;
     now: Date;
   }): Promise<boolean>;
+  /** Accounts a paid response whose vectors are never persisted, once. */
+  recordEmbeddingUsage(input: Readonly<{
+    ownerUserId: string;
+    usage: KnowledgeEmbeddingUsageWrite;
+  }>): Promise<void>;
   reuseEmbeddingChunks(input: KnowledgeWorkIdentity & {
     chunks: readonly KnowledgeChunkPlanEntry[];
     now: Date;
@@ -385,6 +391,19 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
       bindingPromise ??= resolveEmbedding(claim);
       const binding = await bindingPromise;
       checkBatchAdmission();
+      // One id per provider response: its usage row is written once however
+      // the response ends.
+      const responseUsage = (usage: EmbeddingUsage): KnowledgeEmbeddingUsageWrite => ({
+        modelId: binding.configuration.upstreamModelId,
+        provider: binding.provider,
+        providerModelId: binding.providerModelId,
+        usage,
+        usageEventId: randomUUID()
+      });
+      const recordRejectedResponse = (usage: EmbeddingUsage) => input.repository.recordEmbeddingUsage({
+        ownerUserId: claim.ownerUserId,
+        usage: responseUsage(usage)
+      }).catch(() => undefined);
       let result: Awaited<ReturnType<EmbeddingRuntimeBinding["adapter"]["embed"]>>;
       try {
         result = await binding.adapter.embed({
@@ -393,15 +412,15 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
           texts: remaining.map((chunk) => chunk.embeddingText)
         });
       } catch (error) {
+        // A response the adapter rejected still reported what it cost.
+        if (error instanceof EmbeddingAdapterError && error.usage) await recordRejectedResponse(error.usage);
         if (signal?.aborted) throw signal.reason ?? error;
         throw originalFailure(embeddingFailure(error), error, "embed");
       }
-      if (result.vectors.length !== remaining.length) {
-        throw new KnowledgeIngestionError("embedding_failed", true);
-      }
-      if (result.vectors.some((vector) =>
+      if (result.vectors.length !== remaining.length || result.vectors.some((vector) =>
         vector.length !== claim.artifact.targetDimension ||
         vector.some((value) => !Number.isFinite(value)))) {
+        await recordRejectedResponse(result.usage);
         throw new KnowledgeIngestionError("embedding_failed", true);
       }
       const accepted = await ingestionPersistence(claim, "embed", () => input.repository.persistEmbeddingBatch({
@@ -412,10 +431,7 @@ export function createKnowledgeIngestionProcessor(input: Readonly<{
             ...chunk,
             vector: result.vectors[index] ?? []
           })),
-          modelId: binding.configuration.upstreamModelId,
-          provider: binding.provider,
-          providerModelId: binding.providerModelId,
-          usage: result.usage
+          ...responseUsage(result.usage)
         },
         now: now(),
         ownerUserId: claim.ownerUserId,

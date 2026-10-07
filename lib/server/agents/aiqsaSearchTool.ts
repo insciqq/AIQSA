@@ -61,7 +61,7 @@ export function createAgentAiqsaSearch(input: Readonly<{
                   signal.throwIfAborted();
                   await input.store.assertActive();
                   const response = await attempt.execute();
-                  await input.store.settleProvider(id, "COMPLETE", attempt.usage(response));
+                  await input.store.settleProvider(id, "COMPLETE", attempt.usage(response), attempt.cost?.(response) ?? null);
                   settled = true;
                   return response;
                 } finally {

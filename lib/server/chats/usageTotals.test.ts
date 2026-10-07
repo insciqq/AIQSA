@@ -16,8 +16,8 @@ describe("cumulative chat accounting", () => {
     await loadChatUsageTotals({ $queryRaw: query } as never, "stopped-chat");
     const sql = (query.mock.calls[0]![0].strings as string[]).join("?").replace(/\s+/gu, " ");
     expect(sql).toContain(`"role" = 'assistant' AND "status" = 'complete' ) OR EXISTS ( SELECT 1 FROM "UsageEvent" WHERE "chatId" = ? AND "modelRunId" IS NOT NULL`);
-    for (const stage of ["chatPdfPreparation", "imageGeneration", "visionAnalysis", "chatTitleGeneration",
-      "knowledgeRelevance", "optionalDecision", "mcpHubDiscovery"]) expect(sql).toContain(`AND NOT "${stage}"`);
+    // Only the answer model's own rows are an answer attempt; Search, Knowledge and system receipts are not.
+    expect(sql).toContain(`AND "modelRunId" IS NOT NULL AND "purpose" = 'chat_answer'::"UsagePurpose" )`);
   });
   it("preserves unavailable totals and rejects unsafe numeric overflow", async () => {
     const query = vi.fn().mockResolvedValueOnce([{ hasCompletedAnswer: false, recordCount: 0n, knownCostRecordCount: 0n,

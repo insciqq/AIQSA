@@ -126,7 +126,8 @@ describe("durable conversational images", () => {
     expect(await f.db.attachmentDeletionJob.count({ where: { storageKey: attachment.storageKey } })).toBe(0);
     const usage = await f.db.usageEvent.findMany({ where: { modelRunId: f.runId } });
     expect(usage).toHaveLength(2);
-    expect(usage.every((entry) => entry.imageGeneration && entry.estimatedCostMicros === null && entry.totalTokens === 14)).toBe(true);
+    expect(usage.every((entry) => entry.imageGeneration && entry.purpose === "image_generation" &&
+      entry.estimatedCostMicros === null && entry.totalTokens === 14)).toBe(true);
     expect(await createPrismaRunRepository(f.db).loadRunUsageAttributions({ runId: f.runId, userId: f.userId })).toEqual([]);
     await f.db.modelRun.update({ where: { id: f.runId }, data: { status: "error" } });
     await f.db.message.update({ where: { id: f.assistantId }, data: { status: "error" } });
@@ -169,6 +170,17 @@ describe("durable conversational images", () => {
     await expect(service.execute(revoked.call, revoked.context)).rejects.toThrow("image_provider_revoked");
     expect(fetchFn).toHaveBeenCalledTimes(1);
   }));
+  it("prices an image reported without a cost from the model's stored image prices", async () => fixture(async (f) => {
+    await f.db.providerModel.update({ where: { id: f.modelId },
+      data: { inputTokenPriceUsdPerMillion: 5, outputTokenPriceUsdPerMillion: 40 } });
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(imageResponse);
+    const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    const { call, context } = await f.call();
+    await service.execute(call, context);
+    // 3 input tokens at $5 and 11 output tokens at $40 per million.
+    expect(await f.db.usageEvent.findUniqueOrThrow({ where: { imageToolCallId: context.persistedToolCallId! } }))
+      .toMatchObject({ purpose: "image_generation", providerModelId: f.modelId, estimatedCostMicros: 455 });
+  }));
   it("retains a received image when Stop settles the run before publication finishes", async () => fixture(async (f) => {
     const call = await f.call();
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => {
@@ -192,7 +204,7 @@ describe("durable conversational images", () => {
     await expect(failing.execute(call, context)).rejects.toThrow("storage_unavailable");
     const where = { imageToolCallId: context.persistedToolCallId! };
     expect(await f.db.usageEvent.findMany({ where })).toEqual([expect.objectContaining({ imageGeneration: true, modelRunId: f.runId,
-      inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: null })]);
+      purpose: "image_generation", inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: null })]);
     expect(await f.db.attachment.count({ where })).toBe(0);
     const { storageKey } = put.mock.calls[0]![0];
     expect(f.storage.objects.has(storageKey)).toBe(false);
@@ -343,5 +355,36 @@ describe("durable conversational images", () => {
     const where = { imageToolCallId: context.persistedToolCallId! };
     expect(await f.db.usageEvent.count({ where })).toBe(0);
     expect(await f.db.attachment.count({ where })).toBe(0);
+  }));
+
+  it("accounts a completed response whose image is rejected once and never re-dispatches it", async () => fixture(async (f) => {
+    const { call, context } = await f.call();
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: [],
+      usage: { input_tokens: 3, output_tokens: 11, total_tokens: 14, cost: 0.04 } }));
+    const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    await expect(service.execute(call, context)).rejects.toThrow("image_output_missing");
+    const where = { imageToolCallId: context.persistedToolCallId! };
+    expect(await f.db.usageEvent.findMany({ where })).toEqual([expect.objectContaining({ imageGeneration: true, modelRunId: f.runId,
+      purpose: "image_generation", inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: 40_000,
+      usageCompleteness: "COMPLETE" })]);
+    await expect(service.execute(call, context)).rejects.toThrow("image_dispatch_claimed");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(await f.db.attachment.count({ where })).toBe(0);
+  }));
+
+  it("keeps the completeness an image's reported tokens prove", async () => fixture(async (f) => {
+    const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: "blue" } }).png().toBuffer();
+    for (const [usage, usageCompleteness] of [
+      [{ input_tokens: 3, output_tokens: 11, total_tokens: 14 }, "COMPLETE"],
+      [{ input_tokens: 3, output_tokens: 11 }, "PARTIAL"],
+      [{ cost: 0.04 }, "UNAVAILABLE"]
+    ] as const) {
+      const { call, context } = await f.call();
+      const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () =>
+        Response.json({ data: [{ b64_json: png.toString("base64") }], usage }));
+      await createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn }).execute(call, context);
+      expect(await f.db.usageEvent.findUniqueOrThrow({ where: { imageToolCallId: context.persistedToolCallId! } }))
+        .toMatchObject({ purpose: "image_generation", usageCompleteness });
+    }
   }));
 });

@@ -436,6 +436,9 @@ export type ProviderRunRequest = NormalizedRunRequest & {
 };
 
 export type ProviderRunResult = {
+  /** USD the provider reported for this call (OpenRouter `usage.cost`, with
+   * the upstream charge of a BYOK call); absent when it reported none usable. */
+  costUsd?: number;
   finalText: string;
   finalProviderResponsePreview: Record<string, unknown>;
   providerToolCallMessage?: unknown;
@@ -479,6 +482,9 @@ export type ProviderSearchRequest = Readonly<{
 
 export type ProviderSearchResult = {
   artifacts: ModelRunSseEvent[];
+  /** USD the provider reported for this search (OpenRouter `usage.cost`, with
+   * the upstream charge of a BYOK call); absent or null when it reported none. */
+  costUsd?: number | null;
   finalProviderResponsePreview: Record<string, unknown>;
   findings: string;
   providerResponseId?: string;
@@ -493,6 +499,8 @@ export type ProviderSearchResult = {
 export type ProviderSearchExecutionFailure = Readonly<{
   artifacts: ModelRunSseEvent[];
   code: string;
+  /** USD the provider reported for the failed search; absent or null when none. */
+  costUsd?: number | null;
   providerStatus?: string;
   reason?: string;
   usage: ModelRunUsage;
@@ -503,6 +511,7 @@ export type ProviderSearchExecutionFailure = Readonly<{
 export class ProviderSearchExecutionError extends Error {
   readonly artifacts: ModelRunSseEvent[];
   readonly code: string;
+  readonly costUsd: number | null;
   readonly providerStatus?: string;
   readonly reason?: string;
   readonly usage: ModelRunUsage;
@@ -512,6 +521,7 @@ export class ProviderSearchExecutionError extends Error {
     this.name = "ProviderSearchExecutionError";
     this.artifacts = failure.artifacts;
     this.code = failure.code;
+    this.costUsd = failure.costUsd ?? null;
     this.providerStatus = failure.providerStatus;
     this.reason = failure.reason;
     this.usage = failure.usage;

@@ -258,6 +258,9 @@ export type KnowledgeBaseRetrievalEvidence = Readonly<{
 
 export type KnowledgeEmbeddingExecutionEvidence = Readonly<{
   bindingOrdinals: readonly number[];
+  /** USD the provider reported for the query embedding; null when it reported
+   * none. Absent on receipts accepted before costs were recorded. */
+  costUsd?: number | null;
   durationMs: number;
   inputTokens: number | null;
   modelId: string;
@@ -476,8 +479,26 @@ export type KnowledgeSourceDiscoveryResult = Readonly<{
   sources: readonly KnowledgeDiscoveredSourceEvidence[];
 }>;
 
-export type KnowledgeRetrievalUsageAttribution = Readonly<{
+/** One paid call of a Knowledge operation as its usage row needs it: the
+ * deployment, the reported tokens and the provider-reported cost (null when
+ * it reported none). */
+export type KnowledgeBilledCall = Readonly<{
+  costUsd: number | null;
+  inputTokens: number | null;
   modelId: string;
   provider: string;
+  providerModelId: string;
+  totalTokens: number | null;
+}>;
+
+export type KnowledgeRetrievalUsageAttribution = Readonly<{
+  /** Micro-dollars the provider reported for the call. Absent when it reported
+   * none: the run's attribution row is then priced from the deployment. */
+  estimatedCostMicros?: number | null;
+  modelId: string;
+  provider: string;
+  providerModelId: string;
+  /** Query embeddings and reranking retrieve for the run's answer. */
+  purpose: "knowledge_retrieval";
   usage: ModelRunUsage;
 }>;

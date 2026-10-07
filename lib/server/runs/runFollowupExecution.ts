@@ -57,7 +57,7 @@ export function createRunFollowupExecution(input: {
   beforeDelivery(): Promise<string>;
   onDelivery(entries: readonly RunFollowup[]): Promise<void>;
   onInterruptedUsage(usage: ModelRunUsage, request: ProviderRunRequest,
-    generation: { completed: boolean; providerResponseId: string | null }): Promise<void>;
+    generation: { completed: boolean; costUsd?: number; providerResponseId: string | null }): Promise<void>;
 }) {
   let revision = 0;
   let entries: readonly RunFollowup[] = [];
@@ -177,6 +177,7 @@ export function createRunFollowupExecution(input: {
         const parent = timeout.signal;
         let reported: ModelRunUsage = normalizeTokenUsage({});
         let completed = false;
+        let costUsd: number | undefined;
         let dispatched = false;
         let result: ProviderRunResult | null = null;
         let providerResponseId: string | null = null;
@@ -206,6 +207,7 @@ export function createRunFollowupExecution(input: {
             next = await iterator.next();
           }
           completed = true;
+          costUsd = next.value.costUsd;
           reported = mergeTokenUsage(reported, next.value.usage);
           result = { ...next.value, usage: reported };
           parent.throwIfAborted();
@@ -222,7 +224,7 @@ export function createRunFollowupExecution(input: {
           if (dispatched) {
             const usage = normalizeTokenUsage({ ...reported, ...(completed ? {} : { completeness: "partial" as const }) });
             if (steering) {
-              try { await input.onInterruptedUsage(usage, prepared, { completed, providerResponseId }); }
+              try { await input.onInterruptedUsage(usage, prepared, { completed, ...(costUsd !== undefined ? { costUsd } : {}), providerResponseId }); }
               catch (settlementError) {
                 dispatchFailed = true;
                 yield { type: "usage", data: typeof settlementError === "object" && settlementError !== null

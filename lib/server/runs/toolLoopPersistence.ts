@@ -37,6 +37,9 @@ export const AUTOMATIC_KNOWLEDGE_CALL_PREFIX = "knowledge-focused-v1-";
 
 export type PersistedAnswerRoundUsage = Readonly<{
   completeness: "partial" | "terminal";
+  /** Micro-dollars the provider reported it charged for the round's answer
+   * call (OpenRouter); absent when it reported no usable cost. */
+  reportedCostMicros?: number;
   roundIndex: number;
   usage: NormalizedTokenUsage;
 }>;
@@ -266,9 +269,15 @@ export function snapshotToolLoopJson(value: unknown, maxBytes: number): ToolLoop
   return jsonSnapshot(value, maxBytes);
 }
 
+/** The six token fields, an optional completeness and, for a round whose
+ * provider reported web searches, their positive count. */
 function normalizedUsage(value: unknown): NormalizedTokenUsage | null {
-  if (!isRecord(value) || ![6, 7].includes(Object.keys(value).length)) return null;
-  if (Object.keys(value).length === 7 && !["complete", "partial", "unavailable"].includes(String(value.completeness))) return null;
+  if (!isRecord(value)) return null;
+  const searches = Object.hasOwn(value, "webSearchCount");
+  if (searches && !(Number.isSafeInteger(value.webSearchCount) && Number(value.webSearchCount) > 0)) return null;
+  const keys = Object.keys(value).length - (searches ? 1 : 0);
+  if (![6, 7].includes(keys)) return null;
+  if (keys === 7 && !["complete", "partial", "unavailable"].includes(String(value.completeness))) return null;
   if (!normalizedUsageFields.every((field) =>
     Object.hasOwn(value, field) && (value[field] === null || Number.isSafeInteger(value[field]) && Number(value[field]) >= 0))) {
     return null;
@@ -314,6 +323,13 @@ export function decodeContextCompactionCheckpoint(value: unknown): ContextCompac
   return validContextCompactionCheckpoint(value) ? value : null;
 }
 
+// Durable cost columns are signed 32-bit integers.
+const MAX_REPORTED_COST_MICROS = 2_147_483_647;
+
+function validReportedCostMicros(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= MAX_REPORTED_COST_MICROS;
+}
+
 function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAnswerRoundUsage[] | null {
   if (!Array.isArray(value) || value.length > checkpointRound) return null;
   const entries: PersistedAnswerRoundUsage[] = [];
@@ -322,7 +338,11 @@ function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAns
   ) as Record<TokenUsageField, number>;
   let previousRound = 0;
   for (const candidate of value) {
-    if (!isRecord(candidate) || Object.keys(candidate).length !== 3 ||
+    // An in-memory entry may hold the key with no value; stored JSON never does.
+    const costKey = isRecord(candidate) && Object.hasOwn(candidate, "reportedCostMicros");
+    const reportedCost = costKey && candidate.reportedCostMicros !== undefined;
+    if (!isRecord(candidate) || Object.keys(candidate).length !== (costKey ? 4 : 3) ||
+      reportedCost && !validReportedCostMicros(candidate.reportedCostMicros) ||
       !["completeness", "roundIndex", "usage"].every((key) => Object.hasOwn(candidate, key)) ||
       (candidate.completeness !== "partial" && candidate.completeness !== "terminal") ||
       !Number.isSafeInteger(candidate.roundIndex) || Number(candidate.roundIndex) <= previousRound ||
@@ -340,6 +360,7 @@ function answerRoundUsage(value: unknown, checkpointRound: number): PersistedAns
     previousRound = Number(candidate.roundIndex);
     entries.push({
       completeness: candidate.completeness,
+      ...(reportedCost ? { reportedCostMicros: Number(candidate.reportedCostMicros) } : {}),
       roundIndex: previousRound,
       usage
     });
@@ -409,6 +430,7 @@ export function mergeAnswerRoundUsage(
 ): readonly PersistedAnswerRoundUsage[] | null {
   const current = answerRoundUsage(currentEntries, checkpointRound);
   if (!current || entry.completeness !== "partial" && entry.completeness !== "terminal" ||
+    entry.reportedCostMicros !== undefined && !validReportedCostMicros(entry.reportedCostMicros) ||
     !Number.isSafeInteger(entry.roundIndex) || entry.roundIndex < 1 ||
     entry.roundIndex > checkpointRound ||
     entry.roundIndex > toolLoopPersistenceLimits.roundIndex || !normalizedUsage(entry.usage)) {
@@ -418,11 +440,14 @@ export function mergeAnswerRoundUsage(
   if (index >= 0) {
     const existing = current[index]!;
     if (existing.completeness === "terminal") {
+      // A re-read of the same call stays the recorded evidence, cost included.
       return entry.completeness === "terminal" && sameUsage(existing.usage, entry.usage)
         ? current
         : null;
     }
-    current[index] = { ...entry, usage: mergeTokenUsage(existing.usage, entry.usage) };
+    const reportedCostMicros = entry.reportedCostMicros ?? existing.reportedCostMicros;
+    current[index] = { completeness: entry.completeness, ...(reportedCostMicros !== undefined ? { reportedCostMicros } : {}),
+      roundIndex: entry.roundIndex, usage: mergeTokenUsage(existing.usage, entry.usage) };
   } else {
     current.push(entry);
     current.sort((left, right) => left.roundIndex - right.roundIndex);

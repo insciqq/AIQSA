@@ -305,6 +305,7 @@ async function createClassifiedSafety(input: Readonly<{
         outputTokens: 0,
         provider: "memory-retrieval-fixture",
         providerModelId: "memory-retrieval-fixture-model",
+        purpose: "memory_processing",
         reasoningTokens: 0,
         totalTokens: 0,
         userId: input.userId

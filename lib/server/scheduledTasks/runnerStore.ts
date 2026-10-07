@@ -22,6 +22,7 @@ import {
   type ScheduledTaskOpenOccurrence,
   type ScheduledTaskOutcome,
   type ScheduledTaskSettledState,
+  type ScheduledTaskSkipReason,
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
 import {
@@ -162,10 +163,11 @@ export interface ScheduledTaskRunnerStore {
   archiveRotatedChat(input: Readonly<{ chatId: string; taskId: string; userId: string }>): Promise<boolean>;
   readOccurrence(occurrenceId: string): Promise<Readonly<{ runId: string | null; state: string }> | null>;
   /**
-   * Releases a still pending occurrence for a later attempt; a busy chat and
-   * Workspace files that could not be carried yet are remembered for the window's end.
+   * Releases a still pending occurrence for a later attempt; a skip reason
+   * (busy chat, used-up budget) and Workspace files that could not be carried
+   * yet are remembered for the window's end.
    */
-  retryLater(occurrenceId: string, reasonCode: "chat_busy" | "workspace_carryover_unavailable" | null): Promise<void>;
+  retryLater(occurrenceId: string, reasonCode: ScheduledTaskSkipReason | "workspace_carryover_unavailable" | null): Promise<void>;
   /** Settles a pending occurrence that has no run; pauses are decided against `observedRevision`. */
   settlePending(occurrenceId: string, outcome: ScheduledTaskOutcome, now: Date, observedRevision?: number):
     Promise<ScheduledTaskSettlement | null>;

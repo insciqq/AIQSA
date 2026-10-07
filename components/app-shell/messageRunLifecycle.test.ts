@@ -598,6 +598,41 @@ describe("message run lifecycle", () => {
     expect(visible).not.toMatch(/memory/iu);
   });
 
+  it("rejects a usage-limit refusal once with its reason for the kept draft, never retrying it", async () => {
+    prepareThread();
+    const request = vi.fn(async () => Response.json({
+      error: "usage_budget_exhausted",
+      usageLimit: { limit: 5_000_000, resetsAt: "2026-11-01T00:00:00.000Z", scope: "user", used: 5_100_000, window: "month" }
+    }, { headers: { "retry-after": "60" }, status: 429 }));
+    const settleFailedRunState = vi.fn();
+    const consumeRunStream = vi.fn<ConsumeMessageRunStream>();
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef: { current: new Map() },
+      chatId: "chat-1",
+      consumeRunStream,
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix: "send_failed",
+      fetchRun: vi.fn(async () => null),
+      notifyAnswerReady: vi.fn(async () => undefined),
+      optimisticAssistantMessageId: "assistant-optimistic",
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request,
+      settleFailedRunState
+    });
+
+    expect(result).toMatchObject({ cancelled: false, failed: true, failureCode: "usage_budget_exhausted", runId: null });
+    expect(result.rejectionMessage).toMatch(/^Your monthly budget of \$5\.00 is used up\. You can send messages again after it resets /u);
+    // The composer keeps this reason with the restored draft.
+    expect(result.failureMessage).toBe(result.rejectionMessage);
+    // The owner rolls back its optimistic turn, as for every refusal.
+    expect(settleFailedRunState).toHaveBeenCalledWith(expect.objectContaining({ kind: "rejected", runId: null }));
+    expect(request).toHaveBeenCalledOnce();
+    expect(consumeRunStream).not.toHaveBeenCalled();
+  });
+
   it("records an inactive HTTP failure only on its owning chat and releases the stream", async () => {
     prepareThread();
     useRunSurfaceStore.getState().appendEvent("chat-2", {

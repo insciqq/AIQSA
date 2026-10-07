@@ -464,18 +464,18 @@ async function applyAggregateDeletion(
       });
   const executionBindingIds = executionBindings.map((binding) => binding.id);
 
-  await tx.usageEvent.deleteMany({
-    where: {
-      OR: [
-        { chatId: claim.targetId },
-        ...(runIds.length > 0 ? [{ modelRunId: { in: runIds } }] : []),
-        ...(executionBindingIds.length > 0
-          ? [{ memoryExecutionBindingId: { in: executionBindingIds } }]
-          : [])
-      ],
-      userId: claim.userId
-    }
-  });
+  // Content-free accounting outlives the chat: Memory receipts detach before
+  // their bindings go with their owners; chat/run receipts keep the opaque
+  // chatId while the SET NULL foreign keys drop their run and attempt links.
+  if (executionBindingIds.length > 0) {
+    await tx.usageEvent.updateMany({
+      data: { memoryExecutionBindingId: null, providerModelId: null },
+      where: {
+        memoryExecutionBindingId: { in: executionBindingIds },
+        userId: claim.userId
+      }
+    });
+  }
   await tx.memoryMutationAuthorization.deleteMany({
     where: {
       OR: [
@@ -560,12 +560,8 @@ async function applyAggregateDeletion(
   const remainingShares = await tx.sharedChatSnapshot.count({
     where: { chatId: claim.targetId }
   });
-  const remainingUsage = await tx.usageEvent.count({
-    where: { chatId: claim.targetId, userId: claim.userId }
-  });
   if (
-    remainingMessages + remainingRuns + remainingAttachments +
-      remainingShares + remainingUsage !== 0
+    remainingMessages + remainingRuns + remainingAttachments + remainingShares !== 0
   ) {
     throw new MemoryCoordinatorError("memory_temporary_purge_incomplete", true);
   }

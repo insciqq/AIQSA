@@ -3,6 +3,7 @@ import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { createAdminProviderCredentialTester } from "./credentialTester";
 import { createAdminProviderService } from "./service";
 import { createAdminProviderDraftTester } from "./tester";
+import { createPrismaModelCheckUsageWriter } from "./modelCheckUsage";
 import { createAdminProviderBootstrap } from "./bootstrapService";
 import { createAdminModelPolicyService } from "./modelPolicyService";
 import { createAdminSystemModelPolicyService } from "./systemModelPolicyService";
@@ -13,7 +14,7 @@ export const adminProviderService = createAdminProviderService({
   completeSetup: (input) => completeSetup(input),
   credentialTester: createAdminProviderCredentialTester(),
   repository: createPrismaAdminProviderRepository(prisma),
-  tester: createAdminProviderDraftTester()
+  tester: createAdminProviderDraftTester({ recordUsage: createPrismaModelCheckUsageWriter(prisma) })
 });
 
 const completeSetup = createAdminProviderBootstrap({

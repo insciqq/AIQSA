@@ -58,16 +58,28 @@ import type {
   AdminProviderAdapterKind,
   AdminProviderConnection,
   AdminProviderModel,
-  AdminProviderModelCapabilities
+  AdminProviderModelCapabilities,
+  AdminProviderModelClass
 } from "@/lib/contracts/adminProviders";
 import { ADMIN_PROVIDER_RESPONSE_TIMEOUT_DEFAULT_SECONDS, ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS, ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { ADMIN_MODEL_PRICE_ERROR, ADMIN_MODEL_PRICE_FIELDS, isAdminModelPriceField, modelClassUsesTokenPrices,
+import { ADMIN_MODEL_PRICE_ERROR, isAdminModelPriceField, modelClassPriceFields,
   type AdminModelPriceField } from "@/lib/contracts/adminProviderModelPrices";
 
 const priceLabels: Record<AdminModelPriceField, string> = { inputTokenPriceUsdPerMillion: "Input",
-  cachedInputTokenPriceUsdPerMillion: "Cached input", cacheWriteInputTokenPriceUsdPerMillion: "Cache write", outputTokenPriceUsdPerMillion: "Output" };
+  cachedInputTokenPriceUsdPerMillion: "Cached input", cacheWriteInputTokenPriceUsdPerMillion: "Cache write", outputTokenPriceUsdPerMillion: "Output",
+  webSearchPriceUsdPerThousand: "Web search" };
+
+/** What the class's price fields do; outside answers a provider-reported cost wins. */
+function priceNote(modelClass: AdminProviderModelClass): string {
+  if (modelClass === "answer") {
+    return "An empty Cached input or Cache write is charged as regular input. An empty Input or Output means no cost is estimated for this model. " +
+      "Web search is added for each search the provider reports; empty adds nothing. When this model runs Search and the provider reports a cost, that cost is used instead.";
+  }
+  const empty = modelClass === "decision" || modelClass === "image" ? "An empty Input or Output" : "An empty Input";
+  return `Used only when the provider reports no cost for a request. ${empty} means no cost is estimated for this model.`;
+}
 
 const fieldLabel = "mb-1 block text-xs font-medium text-ink-secondary";
 const helpText = "mt-1 block text-xs leading-5 text-ink-muted";
@@ -371,6 +383,7 @@ function SheetBody({
   const dirty = !modelFormsEqual(form, baseline);
   const nameOnly = editing !== null && modelNameOnlyChanged(form, baseline);
   const metadataOnly = editing !== null && modelMetadataOnlyChanged(form, baseline);
+  const priceFields = modelClassPriceFields(form.modelClass);
   const catalogPrices = editing?.pricing.catalogPrices ?? null;
   const priceSourceLabel = modelPriceSourceLabel(form, catalogPrices);
   const restorable = form.priceSource === "admin" ? catalogPrices : null;
@@ -451,7 +464,7 @@ function SheetBody({
       : uncertain ? "Save status could not be confirmed. Your draft is kept. " : "";
     // A price the server rejected stays in its field with the field's message.
     const priceField = saved.error.code === "provider_model_pricing_invalid" && isAdminModelPriceField(saved.error.field) &&
-      modelClassUsesTokenPrices(submitted.modelClass) ? saved.error.field : null;
+      modelClassPriceFields(submitted.modelClass).includes(saved.error.field) ? saved.error.field : null;
     setError(`${prefix}${priceField ? ADMIN_MODEL_PRICE_ERROR : saved.message}`);
     if (uncertain || saved.persistence?.receipt) setInterrupted(true);
     setErrorField(priceField ?? (saved.error.code === "provider_configuration_invalid" ? "configuration" : null));
@@ -718,11 +731,13 @@ function SheetBody({
             />
           </label>
 
-          {modelClassUsesTokenPrices(form.modelClass) ? <fieldset className="min-w-0 border-y border-trace-subtle py-4">
+          {priceFields.length ? <fieldset className="min-w-0 border-y border-trace-subtle py-4">
             <legend className="px-1 text-sm font-semibold text-ink">Prices</legend>
-            <p className="mb-3 text-xs text-ink-secondary">US dollars per 1M tokens</p>
+            <p className="mb-3 text-xs text-ink-secondary">
+              {priceFields.includes("webSearchPriceUsdPerThousand") ? "US dollars per 1M tokens; Web search per 1,000 searches" : "US dollars per 1M tokens"}
+            </p>
             <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
-              {ADMIN_MODEL_PRICE_FIELDS.map(field => <div className="min-w-0" key={field}>
+              {priceFields.map(field => <div className="min-w-0" key={field}>
                 <label className={fieldLabel} htmlFor={`${formId}-${field}`}>{priceLabels[field]}</label>
                 <input className={inputClass} id={`${formId}-${field}`} type="text" inputMode="decimal" maxLength={64} disabled={busy}
                   aria-invalid={errorField === field || undefined} aria-describedby={errorField === field ? `${formId}-${field}-error` : `${formId}-price-note`}
@@ -731,7 +746,7 @@ function SheetBody({
                 {errorField === field ? <span className="mt-1 block text-xs text-critical" id={`${formId}-${field}-error`}>{error}</span> : null}
               </div>)}
             </div>
-            <p className={helpText} id={`${formId}-price-note`}>An empty Cached input or Cache write is charged as regular input. An empty Input or Output means no cost is estimated for this model.</p>
+            <p className={helpText} id={`${formId}-price-note`}>{priceNote(form.modelClass)}</p>
             {priceSourceLabel || restorable ? <div className="mt-3 flex flex-wrap items-center gap-3">
               {priceSourceLabel ? <span className="text-xs text-ink-muted">{priceSourceLabel}</span> : null}
               {restorable ? <UiV2Button disabled={busy} type="button" tone="ghost"

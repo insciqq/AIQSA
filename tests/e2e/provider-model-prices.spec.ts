@@ -104,7 +104,7 @@ for (const theme of ["light", "dark"] as const) {
       await page.setViewportSize(size);
       const fields = sheet.getByRole("group", { name: "Prices", exact: true });
       await fields.scrollIntoViewIfNeeded();
-      for (const label of ["Input", "Cached input", "Cache write", "Output"]) {
+      for (const label of ["Input", "Cached input", "Cache write", "Output", "Web search"]) {
         await sheet.getByLabel(label, { exact: true }).scrollIntoViewIfNeeded();
         await expectWithinViewport(page, sheet.getByLabel(label, { exact: true }));
       }
@@ -114,7 +114,7 @@ for (const theme of ["light", "dark"] as const) {
     }
     await page.setViewportSize({ width: 1440, height: 900 });
     await sheet.getByLabel("Input", { exact: true }).focus();
-    for (const label of ["Cached input", "Cache write", "Output"]) {
+    for (const label of ["Cached input", "Cache write", "Output", "Web search"]) {
       await page.keyboard.press("Tab"); await expect(sheet.getByLabel(label, { exact: true })).toBeFocused();
     }
     await page.keyboard.press("Tab"); await expect(sheet.getByRole("button", { name: "Use catalog price" })).toBeFocused();
@@ -149,3 +149,62 @@ for (const theme of ["light", "dark"] as const) {
     await expect(sheet.getByRole("button", { name: "Use catalog price" })).toHaveCount(0);
   });
 }
+
+test("an embedding model shows, saves and restores only its input price", async ({ page }, testInfo) => {
+  const connectionId = "embedding-price-provider";
+  const catalogPrices = { ...EMPTY_ADMIN_MODEL_PRICES, inputTokenPriceUsdPerMillion: "0.13" };
+  const answer = fixtureModel({ connectionId, displayName: "Embedding fixture", enabled: false, id: "embedding-price-model",
+    pricing: { source: "catalog", prices: catalogPrices, catalogPrices } });
+  const model = { ...answer, modelClass: "embedding" as const, activeConfig: { ...answer.activeConfig!, modelClass: "embedding" as const },
+    draftConfig: { ...answer.draftConfig, modelClass: "embedding" as const } };
+  let connection = fixtureConnection({ displayName: "Embedding price provider", id: connectionId, models: [model] });
+  const writes: Record<string, unknown>[] = [];
+  await page.route("**/api/admin/providers**", async route => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { connections: [connection] } });
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    writes.push(body);
+    const change = decodeAdminModelPriceChange(body.pricing);
+    expect(body.action).toBe("metadata");
+    expect(change).not.toBeNull();
+    const current = connection.models[0]!;
+    const pricing: AdminModelPricing = { source: change!.mode === "manual" ? "admin" : "catalog",
+      prices: change!.mode === "manual" ? change!.prices : catalogPrices, catalogPrices };
+    connection = { ...connection, models: [{ ...current, pricing, updatedAt: new Date(Date.parse(current.updatedAt) + 1).toISOString() }] };
+    await route.fulfill({ json: { receipt: { connectionId, modelId: model.id, displayName: current.displayName,
+      draftVersion: current.draftVersion, saved: "metadata", publication: "not_requested", checks: "not_requested", pricing } } });
+  });
+  await signInWithLocalToken(page);
+  await page.goto(`/admin?section=providers&resource=${connectionId}`);
+  const sheet = page.getByRole("dialog", { name: "Edit model", exact: true });
+  const open = async () => {
+    await page.getByTestId(`provider-model-${model.id}`).getByRole("button", { name: "More actions for Embedding fixture" }).click();
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    await expect(sheet).toBeVisible();
+  };
+  await open();
+  const input = sheet.getByLabel("Input", { exact: true });
+  await expect(input).toHaveValue("0.13");
+  for (const label of ["Cached input", "Cache write", "Output", "Web search"]) await expect(sheet.getByLabel(label, { exact: true })).toHaveCount(0);
+  await expect(sheet.getByText("Catalog price", { exact: true })).toBeVisible();
+  await expect(input).toHaveAccessibleDescription(/^Used only when the provider reports no cost/);
+  await input.fill("0.2");
+  await sheet.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+  expect(decodeAdminModelPriceChange(writes[0]!.pricing)).toEqual({ mode: "manual",
+    prices: { ...EMPTY_ADMIN_MODEL_PRICES, inputTokenPriceUsdPerMillion: "0.2" } });
+  await open();
+  await expect(sheet.getByText("Edited by an administrator", { exact: true })).toBeVisible();
+  for (const size of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(size);
+    await input.scrollIntoViewIfNeeded();
+    await expectWithinViewport(page, input);
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`embedding-model-prices-${size.width}x${size.height}.png`) });
+  }
+  await sheet.getByRole("button", { name: "Use catalog price" }).click();
+  await expect(input).toHaveValue("0.13");
+  await sheet.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+  expect(decodeAdminModelPriceChange(writes[1]!.pricing)).toEqual({ mode: "restore_catalog" });
+  expect(connection.models[0]!.pricing).toEqual({ source: "catalog", prices: catalogPrices, catalogPrices });
+});

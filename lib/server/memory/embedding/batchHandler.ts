@@ -26,6 +26,7 @@ import {
   type PrismaMemoryExecutionService
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
+import { memoryVectorCallErrorUsage, memoryVectorCallUsage } from "../execution/usage";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
 import {
   MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION,
@@ -89,21 +90,6 @@ const deterministicInputErrors = new Set([
   "embedding_input_invalid",
   "embedding_request_too_large"
 ]);
-
-function resultUsage(result: EmbeddingResult): MemoryReportedUsage {
-  const { inputTokens, totalTokens } = result.usage;
-  if (inputTokens === null && totalTokens === null) return unavailableUsage;
-  const complete = inputTokens !== null && totalTokens !== null;
-  return {
-    cachedInputTokens: 0,
-    completeness: complete ? "COMPLETE" : "PARTIAL",
-    estimatedCostMicros: null,
-    inputTokens,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens
-  };
-}
 
 function boundedResponseId(value: string | null): string | null {
   return value && value.length <= 255 &&
@@ -645,7 +631,8 @@ export function createMemoryEmbeddingBatchHandler(
           errorCode: code,
           providerResponseId: null,
           state: uncertain ? "OUTCOME_UNKNOWN" : "FAILED",
-          usage: unavailableUsage
+          // Rejected vectors or a wrong model still billed their response.
+          usage: memoryVectorCallErrorUsage(error)
         });
         if (uncertain) {
           // Embedding requests are pure computations over the hashed batch.
@@ -691,7 +678,7 @@ export function createMemoryEmbeddingBatchHandler(
           errorCode: "memory_embedding_batch_output_invalid",
           providerResponseId: boundedResponseId(result.requestId),
           state: "FAILED",
-          usage: resultUsage(result)
+          usage: memoryVectorCallUsage(result.usage)
         });
         await deps.repository.retryableFailure(
           job.userId,
@@ -712,7 +699,7 @@ export function createMemoryEmbeddingBatchHandler(
           errorCode: null,
           providerResponseId: boundedResponseId(result.requestId),
           state: "SUCCEEDED",
-          usage: resultUsage(result)
+          usage: memoryVectorCallUsage(result.usage)
         },
         (tx) => deps.repository.persistResult(tx, {
           acceptedOutputHash: outputHash,

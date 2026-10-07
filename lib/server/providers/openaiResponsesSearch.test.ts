@@ -229,6 +229,39 @@ describe("OpenAI Responses query-only Search adapter", () => {
     expect(result.artifacts.map((event) => event.type)).toEqual(["artifact", "artifact"]);
   });
 
+  it("reports the billed search calls, never page actions, in success, failure and dispatch usage", async () => {
+    const output = [
+      { action: { query: "Moscow news", sources: [{ title: "Source", url: "https://example.com/news" }], type: "search" },
+        id: "ws-1", status: "completed", type: "web_search_call" },
+      { action: { type: "open_page", url: "https://example.com/news" }, id: "ws-2", status: "completed", type: "web_search_call" },
+      { action: { pattern: "Moscow", type: "find_in_page", url: "https://example.com/news" }, id: "ws-3", status: "completed", type: "web_search_call" },
+      // A call without its action (the older shape) is still a billed search.
+      { id: "ws-4", status: "completed", type: "web_search_call" },
+      { content: [{ annotations: [{ title: "Source", type: "url_citation", url: "https://example.com/news" }],
+        text: "Current findings.", type: "output_text" }], type: "message" }
+    ];
+    const usage = { input_tokens: 11, output_tokens: 7, total_tokens: 18 };
+    const dispatched: unknown[] = [];
+    const completed = createOpenAIResponsesSearchAdapter({
+      client: client(async () => ({ id: "resp-search-1", output, status: "completed", usage })), provider: "openai"
+    });
+    const result = await completed.search(searchRequest(), {
+      dispatch: async (attempt) => {
+        const response = await attempt.execute();
+        dispatched.push(attempt.usage(response));
+        return response;
+      }
+    });
+    expect(result.usage).toMatchObject({ inputTokens: 11, outputTokens: 7, totalTokens: 18, webSearchCount: 2 });
+    expect(dispatched).toEqual([result.usage]);
+
+    const incomplete = createOpenAIResponsesSearchAdapter({
+      client: client(async () => ({ id: "resp-search-2", output: output.slice(0, 2), status: "incomplete", usage })), provider: "openai"
+    });
+    await expect(incomplete.search(searchRequest())).rejects.toMatchObject({
+      code: "openai_response_incomplete", usage: { inputTokens: 11, webSearchCount: 1 } });
+  });
+
   it("normalizes the explicitly requested action sources without response traversal", async () => {
     const adapter = createOpenAIResponsesSearchAdapter({
       client: client(async () => ({

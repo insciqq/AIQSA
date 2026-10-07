@@ -771,6 +771,10 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "previous_running": return "Skipped: the previous run was still in progress.";
     case "superseded": return "Skipped: a newer scheduled time arrived before this run could start.";
     case "chat_busy": return "Skipped: the task's chat was busy.";
+    case "usage_budget_exhausted":
+      return "Skipped: your monthly budget was used up. Runs continue after it resets or an administrator raises it.";
+    case "installation_budget_exhausted":
+      return "Skipped: the monthly budget shared by everyone was used up. Runs continue after it resets or an administrator raises it.";
     case "waiting_for_workspace": return "Waiting for a free Workspace slot: other scheduled runs are using Workspace.";
     case "workspace_capacity": return "Skipped: no Workspace slot became free in time; other scheduled runs were using Workspace.";
     case "paused": return "Skipped: the task was paused.";

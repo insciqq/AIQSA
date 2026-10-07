@@ -1,4 +1,5 @@
 import { MODEL_PRICES_MIGRATION, modelPricesFixtureSql, modelPricesProofSql, modelPricesGuardProofSql } from "./model-prices-adoption";
+import { EMBEDDING_MODEL_PRICES_MIGRATION, embeddingModelPricesFixtureSql, embeddingModelPricesProofSql } from "./embedding-model-prices-adoption";
 import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
 import { WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION, workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql } from "./workspace-checkpoint-deletion-job-repair-adoption";
 import { TOOL_OBSERVATION_MIGRATION, toolObservationFixtureSql, toolObservationProofSql } from "./tool-observation-adoption";
@@ -56,6 +57,8 @@ import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivation
 import { DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION, dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql } from "./drop-retired-memory-digest-synthesis-storage-adoption";
 import { RETIRE_MEMORY_DIGESTS_MIGRATION, retireMemoryDigestsFixtureSql, retireMemoryDigestsProofSql } from "./retire-memory-digests-adoption";
 import { RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION, retireDreamSynthesisStagingFixtureSql, retireDreamSynthesisStagingProofSql } from "./retire-dream-synthesis-staging-adoption";
+import { USAGE_EVENT_PURPOSE_MIGRATION, usageEventPurposeFixtureSql, usageEventPurposeProofSql } from "./usage-event-purpose-adoption";
+import { WEB_SEARCH_PRICES_MIGRATION, webSearchPricesFixtureSql, webSearchPricesProofSql } from "./web-search-prices-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -607,6 +610,11 @@ function bootstrapFoundationDigest(database: string): string {
       'mcp_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, "personalLocalNetworkEnabled", version) ORDER BY id)
         FROM "McpPolicy"
+      ), '[]'::jsonb),
+      'usage_limit_policy', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, "monthlyCapMicros", "monthlyBudgetMicros", "messagesPerHour",
+          "messagesPerDay", version, "updatedByUserId") ORDER BY id)
+        FROM "UsageLimitPolicy"
       ), '[]'::jsonb)
     )::text);`,
   );
@@ -655,6 +663,8 @@ function runBootstrapProof(database: string): void {
       AND s."decayPolicyVersion" = 'memory-decay-v1';`), "1", "initial administrator Memory defaults");
   psqlScalar(database, `UPDATE "UserMemorySettings" SET "learnAutomatically" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);
+  // Adoption recreates a missing usage limits singleton exactly as the migration inserted it.
+  psqlScalar(database, `DELETE FROM "UsageLimitPolicy";`);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /"code":"installation_already_adopted"/u);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "learnAutomatically" OR "decayEnabled";`), "0",
@@ -668,13 +678,14 @@ function runBootstrapProof(database: string): void {
   );
   psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
     UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';
-    UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';`);
+    UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';
+    UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(
     bootstrapFoundationDigest(database),
     disabledDigest,
-    "bootstrap adoption must preserve an administrator's saved Workspace and personal MCP local network Off",
+    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off and usage limits",
   );
   assert.equal(
     psqlScalar(
@@ -7695,6 +7706,8 @@ function main(
      END $$;`);
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_PRICES_MIGRATION,
     modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, EMBEDDING_MODEL_PRICES_MIGRATION,
+    embeddingModelPricesFixtureSql, embeddingModelPricesProofSql, embeddingModelPricesProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION,
     workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
   // Both proofs read the activation token and stages the later drop removes.
@@ -7734,6 +7747,10 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION,
     dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql,
     dropRetiredMemoryDigestSynthesisStorageProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, USAGE_EVENT_PURPOSE_MIGRATION,
+    usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, WEB_SEARCH_PRICES_MIGRATION,
+    webSearchPricesFixtureSql, webSearchPricesProofSql, webSearchPricesProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

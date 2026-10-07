@@ -192,6 +192,15 @@ describe("catalog cost backfill", () => {
       outcome: "degraded", action: "stop", code: "catalog_cost_backfill_failed", prisma_code: "P1001" }));
   });
 
+  it("never prices a historical non-answer receipt, even for a model that carries a price today", async () => {
+    // The tariffs are the answer prices frozen at the upgrade; current ProviderModel prices are never read.
+    const embedding = { provider: "openai", modelId: "text-embedding-3-large", cachedInputTokens: 0, outputTokens: 0 };
+    const database = fakeDatabase(store({ usage: [usage("u-a", { ...embedding, providerModelId: "embedding-model" }), usage("u-b", embedding)] }));
+    await runCatalogCostBackfill(database.db, { sleep: noSleep });
+    expect(database.read().usage.map(row => row.estimatedCostMicros)).toEqual([null, null]);
+    expect(database.read().state.completedAt).toBeInstanceOf(Date);
+  });
+
   it("keeps a Memory receipt without cost", async () => {
     const database = fakeDatabase(store({ usage: [usage("u-a", { providerModelId: PRICE.id, memoryExecutionBindingId: "binding-1" })] }));
     await runCatalogCostBackfill(database.db, { sleep: noSleep });

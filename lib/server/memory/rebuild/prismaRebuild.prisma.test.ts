@@ -328,6 +328,7 @@ async function createStatementClassificationReceipt(
       outputTokens: 2,
       provider: "openai",
       providerModelId: classifierProvider.modelId,
+      purpose: "memory_processing",
       reasoningTokens: 0,
       totalTokens: 7,
       userId: execution.userId

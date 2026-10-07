@@ -144,6 +144,8 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
   switch (reasonCode) {
     case "missed": return "the scheduled time passed while runs were unavailable";
     case "chat_busy": return "the task's chat was busy with another answer";
+    case "usage_budget_exhausted": return "your monthly budget was used up";
+    case "installation_budget_exhausted": return "the monthly budget shared by everyone was used up";
     case "previous_running": return "the previous run was still in progress";
     case "superseded": return "a newer scheduled time arrived before it could start";
     case "workspace_capacity": return "no Workspace slot became free in time; other scheduled runs were using Workspace";

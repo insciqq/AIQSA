@@ -326,6 +326,19 @@ describe("model Test & Save (B2)", () => {
     });
   });
 
+  it("charges Test & Save, Check models and Refresh probes to the acting administrator; startup adoption stays unaccounted", async () => {
+    const test = vi.fn(async (input: AdminProviderDraftTesterInput) => okOutcome(input));
+    const providers = service(repository(), { test });
+    await providers.activateModel({ connectionId: "conn-openai", modelId: "model-sol", userId: "admin-1" });
+    const run = await providers.startCheckRun({ connectionId: "conn-openai", credentialId: "cred-primary",
+      modelIds: ["model-sol"], reason: "requested", userId: "admin-2" });
+    await waitFor(() => providers.checkRun({ connectionId: "conn-openai", runId: run.id }).state === "completed");
+    await providers.refreshActive({ confirmPaidRequest: true, connectionId: "conn-openai", credentialId: "cred-primary",
+      providerModelId: "model-sol", userId: "admin-3" });
+    await providers.activateModel({ connectionId: "conn-openai", modelId: "model-sol" });
+    expect(test.mock.calls.map(([input]) => input.actorUserId)).toEqual(["admin-1", "admin-2", "admin-3", undefined]);
+  });
+
   it("takes a never-activated connection live with the model and skips the check without a usable key", async () => {
     const activateModelCas = vi.fn<AdminProviderRepository["activateModelCas"]>(async () => "updated");
     const test = vi.fn();

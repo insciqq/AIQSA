@@ -417,7 +417,7 @@ describe("Temporary chat retention", () => {
           strategyId: "temporary-test"
         }
       });
-      await prisma.modelRunToolCall.create({
+      const toolCall = await prisma.modelRunToolCall.create({
         data: {
           arguments: {},
           modelRunId: second.runId,
@@ -445,12 +445,106 @@ describe("Temporary chat retention", () => {
         now: new Date(),
         userId
       })).resolves.toEqual([]);
-      await prisma.usageEvent.create({
+      const answerUsage = await prisma.usageEvent.create({
         data: {
           chatId: chat.id,
+          estimatedCostMicros: 900,
+          inputTokens: 30,
           modelId: secondRequest.modelId,
           modelRunId: second.runId,
+          outputTokens: 6,
           provider: secondRequest.provider,
+          purpose: "chat_answer",
+          totalTokens: 36,
+          usageCompleteness: "COMPLETE",
+          userId
+        }
+      });
+      // A flagged receipt whose guard accepts only its attempt link becoming NULL.
+      await prisma.chatTitleGeneration.create({
+        data: {
+          answerText: "Synthetic answer",
+          chatId: chat.id,
+          expectedTitle: "Temporary",
+          expiresAt: new Date(Date.now() + 60_000),
+          providerSnapshot: {
+            model: { upstreamModelId: "temporary-title-model" },
+            providerFamily: "temporary-title-provider",
+            providerModelId: "temporary-title-v1"
+          },
+          questionText: "Synthetic question",
+          runId: first.runId,
+          status: "dispatched",
+          titleRevision: 0,
+          userId
+        }
+      });
+      const titleUsage = await prisma.usageEvent.create({
+        data: {
+          chatId: chat.id,
+          chatTitleGeneration: true,
+          chatTitleGenerationId: first.runId,
+          purpose: "chat_title",
+          estimatedCostMicros: 25,
+          inputTokens: 18,
+          modelId: "temporary-title-model",
+          modelRunId: first.runId,
+          outputTokens: 3,
+          provider: "temporary-title-provider",
+          providerModelId: "temporary-title-v1",
+          totalTokens: 21,
+          usageCompleteness: "COMPLETE",
+          userId
+        }
+      });
+      // A run-owned Memory receipt must detach before its binding goes.
+      const memoryBindingId = randomUUID();
+      const memoryStartedAt = new Date();
+      const memoryCompletedAt = new Date(memoryStartedAt.getTime() + 1);
+      await prisma.memoryExecutionBinding.create({
+        data: {
+          acceptedOutputHash: "temporary-memory-output",
+          completedAt: memoryCompletedAt,
+          createdAt: memoryStartedAt,
+          destinationFingerprint: "temporary-memory-destination",
+          id: memoryBindingId,
+          inputHash: "temporary-memory-input",
+          logicalRole: "MEMORY_QUERY_EMBED",
+          modelRunId: second.runId,
+          modelRunToolCallId: toolCall.id,
+          ordinal: 0,
+          ownerType: "MODEL_RUN_TOOL_CALL",
+          pipelineVersion: "temporary-memory-fixture-v1",
+          policyVersion: "temporary-memory-policy-v1",
+          promptVersion: "temporary-memory-prompt-v1",
+          providerId: "temporary-memory-fixture",
+          recoverableUntil: memoryCompletedAt,
+          relationsDetachedAt: memoryCompletedAt,
+          schemaVersion: "temporary-memory-schema-v1",
+          secretFreeExecutionSnapshot: {
+            providerExecutionSnapshot: {
+              providerFamily: "temporary-memory-fixture",
+              providerModelId: "temporary-memory-embed-v1"
+            },
+            version: 1
+          },
+          startedAt: memoryStartedAt,
+          state: "SUCCEEDED",
+          userId
+        }
+      });
+      const memoryUsage = await prisma.usageEvent.create({
+        data: {
+          estimatedCostMicros: 2,
+          inputTokens: 5,
+          memoryExecutionBindingId: memoryBindingId,
+          modelId: "temporary-memory-embed",
+          outputTokens: 0,
+          provider: "temporary-memory-fixture",
+          providerModelId: "temporary-memory-embed-v1",
+          purpose: "memory_indexing",
+          totalTokens: 5,
+          usageCompleteness: "COMPLETE",
           userId
         }
       });
@@ -556,7 +650,19 @@ describe("Temporary chat retention", () => {
         .resolves.toBe(0);
       await expect(prisma.sharedChatSnapshot.count({ where: { chatId: chat.id } }))
         .resolves.toBe(0);
+      // Content-free accounting survives with its counts, cost and time; only
+      // the links into the deleted aggregate are gone.
       await expect(prisma.usageEvent.count({ where: { chatId: chat.id } }))
+        .resolves.toBe(2);
+      await expect(prisma.usageEvent.findUniqueOrThrow({ where: { id: answerUsage.id } }))
+        .resolves.toEqual({ ...answerUsage, modelRunId: null });
+      await expect(prisma.usageEvent.findUniqueOrThrow({ where: { id: titleUsage.id } }))
+        .resolves.toEqual({ ...titleUsage, chatTitleGenerationId: null, modelRunId: null });
+      await expect(prisma.usageEvent.findUniqueOrThrow({ where: { id: memoryUsage.id } }))
+        .resolves.toEqual({ ...memoryUsage, memoryExecutionBindingId: null, providerModelId: null });
+      await expect(prisma.memoryExecutionBinding.count({ where: { id: memoryBindingId } }))
+        .resolves.toBe(0);
+      await expect(prisma.chatTitleGeneration.count({ where: { chatId: chat.id } }))
         .resolves.toBe(0);
       await expect(prisma.memoryDeletionOutbox.findFirstOrThrow({
         where: { operation: "TEMPORARY_DELETE", targetId: chat.id, userId }

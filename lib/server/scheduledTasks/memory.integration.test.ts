@@ -89,7 +89,7 @@ async function saveFact(userId: string): Promise<Readonly<{ factId: string; vers
     } });
     await tx.usageEvent.create({ data: { cachedInputTokens: 0, inputTokens: 0, memoryExecutionBindingId: executionId,
       modelId: "scheduled-memory-fixture-model", outputTokens: 0, provider: "scheduled-memory-fixture",
-      providerModelId: "scheduled-memory-fixture-model", reasoningTokens: 0, totalTokens: 0, userId } });
+      providerModelId: "scheduled-memory-fixture-model", purpose: "memory_processing", reasoningTokens: 0, totalTokens: 0, userId } });
     await tx.memoryFactVersion.update({ data: {
       safetyClassificationReasonCode: "fixture_normal", safetyClassificationState: "CLASSIFIED", safetyClassifiedAt: completedAt,
       safetyClassifierExecutionId: executionId, safetyClassifierModelId: "scheduled-memory-fixture-model",

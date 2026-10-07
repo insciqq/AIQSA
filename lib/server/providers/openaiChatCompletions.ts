@@ -274,6 +274,9 @@ type OpenAIChatResponseProfile<Context extends OpenAIChatCompletionsContext> = R
   createStreamExtension?(): OpenAIChatStreamExtension;
   done(data: string): boolean;
   extractArtifacts?(response: OpenAIChatCompletionsRecord): ModelRunSseEvent[];
+  /** The USD a provider reported for the call from one usage object; absent
+   * when the provider reports no usable cost. */
+  extractCostUsd?(usage: Readonly<Record<string, unknown>>): number | undefined;
   extractUsage(response: OpenAIChatCompletionsRecord): ModelRunUsage;
   initialResponseId?(response: Response): string | undefined;
   invalidTerminalError: string;
@@ -333,7 +336,9 @@ export async function* streamOpenAIChatJsonResponse<
     yield { data: { delta: finalText }, type: "token" };
   }
 
+  const costUsd = isOpenAIChatRecord(response.usage) ? profile.extractCostUsd?.(response.usage) : undefined;
   return {
+    ...(costUsd !== undefined ? { costUsd } : {}),
     finalProviderResponsePreview: profile.buildPreview(
       response,
       request,
@@ -491,6 +496,7 @@ export async function* streamOpenAIChatSseResponse<
   });
   let usage: ModelRunUsage = normalizeTokenUsage({});
   let rawUsage: unknown = null;
+  let costUsd: number | undefined;
   let summaryEmitted = false;
   let terminalSeen = false;
   const toolCallParts = new Map<number, StreamedToolCall>();
@@ -547,6 +553,7 @@ export async function* streamOpenAIChatSseResponse<
 
     if (isOpenAIChatRecord(parsed.usage)) {
       rawUsage = parsed.usage;
+      costUsd = profile.extractCostUsd?.(parsed.usage) ?? costUsd;
       usage = mergeTokenUsage(usage, profile.extractUsage(parsed));
       yield { data: usage, type: "usage" };
     }
@@ -633,6 +640,7 @@ export async function* streamOpenAIChatSseResponse<
   }
 
   return {
+    ...(costUsd !== undefined ? { costUsd } : {}),
     finalProviderResponsePreview: profile.buildPreview(
       syntheticResponse,
       request,

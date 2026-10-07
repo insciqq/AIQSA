@@ -17,7 +17,7 @@ import {
 } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
 import { defaultProviderModels, type ProviderModelCatalogEntry } from "@/lib/domain/catalog";
-import { ADMIN_MODEL_PRICE_FIELDS, ADMIN_MODEL_PRICE_ERROR, EMPTY_ADMIN_MODEL_PRICES, modelClassUsesTokenPrices,
+import { ADMIN_MODEL_PRICE_FIELDS, ADMIN_MODEL_PRICE_ERROR, EMPTY_ADMIN_MODEL_PRICES, modelClassPriceFields,
   normalizeAdminModelPrice, type AdminModelPriceChange, type AdminModelPriceField, type AdminModelTokenPrices } from "@/lib/contracts/adminProviderModelPrices";
 
 /**
@@ -59,20 +59,22 @@ export function modelPriceFormValues(prices: AdminModelTokenPrices): ModelForm["
   return Object.fromEntries(ADMIN_MODEL_PRICE_FIELDS.map(field => [field, prices[field] ?? ""])) as ModelForm["prices"];
 }
 
+/** The class's own prices; every field the class is not costed with is sent as unknown. */
 export function modelFormPricing(form: ModelForm, editing: Pick<AdminProviderModel, "pricing"> | null):
   { ok: true; pricing?: AdminModelPriceChange } | { ok: false; error: string; field: AdminModelPriceField } {
-  if (!modelClassUsesTokenPrices(form.modelClass)) return { ok: true };
+  const fields = modelClassPriceFields(form.modelClass);
+  if (!fields.length) return { ok: true };
   const prices = { ...EMPTY_ADMIN_MODEL_PRICES };
-  for (const field of ADMIN_MODEL_PRICE_FIELDS) {
+  for (const field of fields) {
     const price = normalizeAdminModelPrice(form.prices[field].trim() || null);
     if (price === undefined) return { ok: false, field, error: ADMIN_MODEL_PRICE_ERROR };
     prices[field] = price;
   }
-  if (!editing) return ADMIN_MODEL_PRICE_FIELDS.every(field => prices[field] === null) ? { ok: true } : { ok: true, pricing: { mode: "manual", prices } };
+  if (!editing) return fields.every(field => prices[field] === null) ? { ok: true } : { ok: true, pricing: { mode: "manual", prices } };
   const stored = editing.pricing;
   if (form.priceSource === "catalog" && stored.source === "admin" && stored.catalogPrices) return { ok: true, pricing: { mode: "restore_catalog" } };
   // The stored values again are no change: the row keeps its source and catalog updates.
-  if (ADMIN_MODEL_PRICE_FIELDS.every(field => prices[field] === stored.prices[field])) return { ok: true };
+  if (fields.every(field => prices[field] === stored.prices[field])) return { ok: true };
   return { ok: true, pricing: { mode: "manual", prices } };
 }
 
@@ -94,7 +96,7 @@ export function withModelPrice(form: ModelForm, baseline: ModelForm, field: Admi
  */
 export function modelPriceSourceLabel(form: ModelForm, catalogPrices: AdminModelTokenPrices | null): string | null {
   if (form.priceSource === "catalog") return catalogPrices ? "Catalog price" : null;
-  return catalogPrices || ADMIN_MODEL_PRICE_FIELDS.some(field => form.prices[field].trim())
+  return catalogPrices || modelClassPriceFields(form.modelClass).some(field => form.prices[field].trim())
     ? "Edited by an administrator" : null;
 }
 

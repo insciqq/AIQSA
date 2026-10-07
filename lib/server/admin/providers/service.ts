@@ -617,6 +617,7 @@ export function createAdminProviderService(input: Readonly<{
         cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
         cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
         outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
+        webSearchPriceUsdPerThousand: candidate.webSearchPriceUsdPerThousand ?? null,
         templateKey: connection.id === setupPolicy?.connection.id ? candidate.templateKey : null
       }));
     const checkedConnection = {
@@ -728,6 +729,8 @@ export function createAdminProviderService(input: Readonly<{
     initialSetup?: InitialCapabilityCheck;
     onCapabilityProgress?: CapabilityCheckRequest["onCapabilityProgress"];
     onSavedCheckpoint?(check: AdminProviderActiveCheck): void;
+    /** The administrator charged with the check's `model_check` usage. */
+    userId?: string;
   }): Promise<ActiveCheckResult> {
     let candidate = value.candidate;
     const connection = normalizeProviderConnectionConfiguration(candidate.connection.configuration);
@@ -796,7 +799,8 @@ export function createAdminProviderService(input: Readonly<{
         connection, connectionDisplayName: candidate.connection.displayName, connectionId: candidate.connection.id,
         credentialId: candidate.credential.id, credentialVersionIdentity: candidate.credential.versionId,
         mode: value.mode, model, modelDisplayName: candidate.model.displayName,
-        providerFamily: candidate.connection.family, providerModelId: candidate.model.id, secret, signal: value.signal
+        providerFamily: candidate.connection.family, providerModelId: candidate.model.id, secret, signal: value.signal,
+        ...(value.userId ? { actorUserId: value.userId } : {})
       });
       value.signal?.throwIfAborted();
       logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: outcome.status === "available" ? "completed" : "failed", code: outcome.evidence.detail });
@@ -850,7 +854,8 @@ export function createAdminProviderService(input: Readonly<{
         onSavedCheckpoint: (check) => value.onResult?.({ providerModelId: value.providerModelId,
           state: "partial", checks: check.evidence?.capabilitySetup?.checks, attempts: check.evidence?.capabilitySetup?.attempts }),
         mode: "tiny_generation",
-        signal: controller.signal
+        signal: controller.signal,
+        userId: value.userId
       });
       if (result.kind === "stored") {
         const complete = Boolean(result.check.evidence && settledUnsupportedImageCapabilities(result.check.evidence)) ||
@@ -1053,6 +1058,7 @@ export function createAdminProviderService(input: Readonly<{
           cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
           cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
           outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
+          webSearchPriceUsdPerThousand: candidate.webSearchPriceUsdPerThousand ?? null,
           templateKey: connection!.id === policy?.connection.id ? candidate.templateKey : null
         }));
         if (additions.length && await input.repository.addSetupModelsCas({
@@ -1165,7 +1171,8 @@ export function createAdminProviderService(input: Readonly<{
       connectionId: connection.id,
       credentialId: value.credentialId,
       modelIds,
-      reason: value.reason
+      reason: value.reason,
+      ...(value.userId ? { userId: value.userId } : {})
     });
     return checkRuns.get(run.id)!;
   }
@@ -1225,6 +1232,7 @@ export function createAdminProviderService(input: Readonly<{
       expectedDraftVersion: number;
       signal?: AbortSignal;
       unassignedPolicy: AdminProviderUnassignedPolicy;
+      userId?: string;
     }) {
       const connection = (await input.repository.listConnections()).find(({ id }) => id === value.connectionId);
       if (!connection) throw new AdminProviderServiceError("provider_connection_not_found");
@@ -1295,7 +1303,8 @@ export function createAdminProviderService(input: Readonly<{
       });
       requireUpdated(result);
       if (connection.defaultCredentialId) {
-        await startBackgroundChecks({ connectionId: connection.id, credentialId: connection.defaultCredentialId, reason: "requested" });
+        await startBackgroundChecks({ connectionId: connection.id, credentialId: connection.defaultCredentialId, reason: "requested",
+          userId: value.userId });
       }
     },
 
@@ -1312,7 +1321,7 @@ export function createAdminProviderService(input: Readonly<{
 
     async addCatalogModels(value: {
       connectionId: string; credentialId: string; expectedConnectionVersion: number;
-      expectedCredentialVersionId: string; modelIds: readonly string[]; signal?: AbortSignal;
+      expectedCredentialVersionId: string; modelIds: readonly string[]; signal?: AbortSignal; userId?: string;
     }): Promise<{ unavailableModelIds: string[] }> {
       if (catalogSelectionsInFlight.has(value.connectionId)) throw new AdminProviderServiceError("provider_checks_running");
       catalogSelectionsInFlight.add(value.connectionId);
@@ -1349,6 +1358,7 @@ export function createAdminProviderService(input: Readonly<{
           cachedInputTokenPriceUsdPerMillion: candidate.cachedInputTokenPriceUsdPerMillion ?? null,
           cacheWriteInputTokenPriceUsdPerMillion: candidate.cacheWriteInputTokenPriceUsdPerMillion ?? null,
           outputTokenPriceUsdPerMillion: candidate.outputTokenPriceUsdPerMillion,
+          webSearchPriceUsdPerThousand: candidate.webSearchPriceUsdPerThousand ?? null,
           templateKey: connection.id === policy?.connection.id ? candidate.templateKey : null
         }));
         if (additions.length) requireUpdated(await input.repository.addSetupModelsCas({
@@ -1373,7 +1383,8 @@ export function createAdminProviderService(input: Readonly<{
           connectionId: connection.id, credentialId: credential.id, modelIds, reason: "requested",
           // Persisted initial receipts carry model revision authority across retries.
           retryUnresolved: true, reuseCurrentChecks: true,
-          expectedConnectionVersion: value.expectedConnectionVersion, expectedCredentialVersionId: value.expectedCredentialVersionId
+          expectedConnectionVersion: value.expectedConnectionVersion, expectedCredentialVersionId: value.expectedCredentialVersionId,
+          userId: value.userId
         });
         return { unavailableModelIds: missing.filter((candidate) => !available.includes(candidate)).map((candidate) => candidate.modelId) };
       } finally { catalogSelectionsInFlight.delete(value.connectionId); }
@@ -1420,6 +1431,8 @@ export function createAdminProviderService(input: Readonly<{
       signal?: AbortSignal;
       onProgress?(value: AdminProviderSetupProgress): void;
       onActivated?(): void;
+      /** The administrator charged with the check; startup adoption has none. */
+      userId?: string;
     }): Promise<{ check: "checked" | "failed" | "skipped"; affectedRoles?: AdminProviderAssignedRole[] }> {
       const candidate = await input.repository.loadModelActivationCandidate(value);
       if (!candidate) throw new AdminProviderServiceError("provider_model_not_found");
@@ -1440,7 +1453,8 @@ export function createAdminProviderService(input: Readonly<{
         connectionId: candidate.connection.id,
         credentialId: credential.id,
         modelIds: [candidate.model.id],
-        reason: "model"
+        reason: "model",
+        userId: value.userId
       });
       const cancel = () => checkRuns.cancel(run.id);
       value.signal?.addEventListener("abort", cancel, { once: true });
@@ -1576,6 +1590,7 @@ export function createAdminProviderService(input: Readonly<{
       credentialId: string;
       providerModelId: string;
       signal?: AbortSignal;
+      userId?: string;
     }) {
       const candidate = await input.repository.loadActiveRefreshCandidate(value);
       if (!candidate) {
@@ -1595,7 +1610,8 @@ export function createAdminProviderService(input: Readonly<{
         candidate,
         capabilityRole: value.capabilityRole,
         mode,
-        signal: value.signal
+        signal: value.signal,
+        userId: value.userId
       });
       if (result.kind === "stale") throw new AdminProviderServiceError("provider_draft_stale");
       if (result.kind !== "stored") throw new AdminProviderServiceError("provider_refresh_failed");
@@ -1715,6 +1731,7 @@ export function createAdminProviderService(input: Readonly<{
       connectionId: string;
       enableConnection: boolean;
       signal?: AbortSignal;
+      userId?: string;
     }) {
       const candidate = await input.repository.loadActivationCandidate(value.connectionId);
       if (!candidate) {
@@ -1897,7 +1914,8 @@ export function createAdminProviderService(input: Readonly<{
                 providerFamily: candidate.connection.family,
                 providerModelId: model.id,
                 secret,
-                signal: value.signal
+                signal: value.signal,
+                ...(value.userId ? { actorUserId: value.userId } : {})
               });
             } catch {
               if (value.signal?.aborted) {

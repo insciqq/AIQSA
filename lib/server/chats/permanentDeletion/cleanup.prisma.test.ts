@@ -247,6 +247,7 @@ async function attachRunOwnedSafetyExecution(input: Readonly<{
         modelId: "permanent-chat-control-v1",
         provider: "permanent-chat-fixture",
         providerModelId: "permanent-chat-control-v1",
+        purpose: "memory_processing",
         userId: input.userId
       }
     });
@@ -642,14 +643,65 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
       userId
     }
   });
-  await prisma.usageEvent.create({
+  const answerUsage = await prisma.usageEvent.create({
     data: {
       chatId: source.chat.id,
+      estimatedCostMicros: 1_200,
+      inputTokens: 40,
       modelId: source.run.modelId,
       modelRunId: source.run.id,
+      outputTokens: 8,
       provider: source.run.provider,
+      purpose: "chat_answer",
+      totalTokens: 48,
+      usageCompleteness: "COMPLETE",
       userId
     }
+  });
+  // A flagged receipt whose guard refuses identity/count changes but accepts
+  // its attempt link becoming NULL when the title row goes with the chat.
+  await prisma.chatTitleGeneration.create({
+    data: {
+      answerText: "Synthetic answer",
+      chatId: source.chat.id,
+      expectedTitle: "Source",
+      expiresAt: new Date(Date.now() + 60_000),
+      providerSnapshot: {
+        model: { upstreamModelId: "permanent-chat-title-model" },
+        providerFamily: "permanent-chat-test-provider",
+        providerModelId: "permanent-chat-title-v1"
+      },
+      questionText: "Synthetic question",
+      runId: source.run.id,
+      status: "dispatched",
+      titleRevision: 0,
+      userId
+    }
+  });
+  const titleUsage = await prisma.usageEvent.create({
+    data: {
+      chatId: source.chat.id,
+      chatTitleGeneration: true,
+      chatTitleGenerationId: source.run.id,
+      purpose: "chat_title",
+      estimatedCostMicros: 30,
+      inputTokens: 20,
+      modelId: "permanent-chat-title-model",
+      modelRunId: source.run.id,
+      outputTokens: 4,
+      provider: "permanent-chat-test-provider",
+      providerModelId: "permanent-chat-title-v1",
+      totalTokens: 24,
+      usageCompleteness: "COMPLETE",
+      userId
+    }
+  });
+  await prisma.chatTitleGeneration.update({
+    data: { finishedAt: new Date(), status: "settled" },
+    where: { runId: source.run.id }
+  });
+  const memoryUsage = await prisma.usageEvent.findUniqueOrThrow({
+    where: { memoryExecutionBindingId: sourceOwnedSafetyExecutionId }
   });
   const shareSlugHash = `permanent-share-${randomUUID()}`;
   await createPrismaShareRepository(prisma).createChatShare({
@@ -793,6 +845,16 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
   await expect(prisma.memoryExecutionBinding.findUnique({
     where: { id: sourceOwnedSafetyExecutionId }
   })).resolves.toBeNull();
+  // Content-free accounting survives with its counts, cost and time; only the
+  // links into the deleted aggregate are gone.
+  await expect(prisma.usageEvent.findUniqueOrThrow({ where: { id: answerUsage.id } }))
+    .resolves.toEqual({ ...answerUsage, modelRunId: null });
+  await expect(prisma.usageEvent.findUniqueOrThrow({ where: { id: titleUsage.id } }))
+    .resolves.toEqual({ ...titleUsage, chatTitleGenerationId: null, modelRunId: null });
+  await expect(prisma.usageEvent.findUniqueOrThrow({ where: { id: memoryUsage.id } }))
+    .resolves.toEqual({ ...memoryUsage, memoryExecutionBindingId: null, providerModelId: null });
+  await expect(prisma.chatTitleGeneration.count({ where: { chatId: source.chat.id } }))
+    .resolves.toBe(0);
   if (alsoForgetOriginMemories) {
     await expect(prisma.memorySuppression.count({
       where: { scope: { in: ["FACT", "VALUE"] }, userId }
@@ -823,7 +885,7 @@ describe("permanent chat deletion cleanup", () => {
     await prisma.$disconnect();
   });
 
-  it("resumes after object-stage failure and preserves accepted destination evidence", async () => {
+  it("resumes after object-stage failure and preserves accepted destination evidence and usage", async () => {
     const { userId } = await runScenario(false);
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.delete({ where: { id: userId } });

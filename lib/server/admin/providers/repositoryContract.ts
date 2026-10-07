@@ -229,6 +229,7 @@ export type ProviderCredentialActivationWrite = Readonly<{
     cachedInputTokenPriceUsdPerMillion?: number | null;
     cacheWriteInputTokenPriceUsdPerMillion?: number | null;
     outputTokenPriceUsdPerMillion: number | null;
+    webSearchPriceUsdPerThousand?: number | null;
     templateKey: string | null;
   }>[];
   bootstrap?: Readonly<{

@@ -1,3 +1,4 @@
+import type { AdminProviderModelClass } from "../contracts/adminProviders";
 import type { ModelTokenPricing } from "./usage";
 
 // Base token tariffs checked 2026-09-30. Runtime never refreshes saved prices.
@@ -6,7 +7,7 @@ import type { ModelTokenPricing } from "./usage";
 // https://ai.google.dev/gemini-api/docs/pricing
 // https://api-docs.deepseek.com/quick_start/pricing/
 // https://openrouter.ai/api/v1/models
-type Tariff = readonly [input: number, read: number | null, write: number | null, output: number];
+type Tariff = readonly [input: number, read: number | null, write: number | null, output: number | null];
 const openai: Record<string, Tariff> = {
   "gpt-6-astra": [10, 1, 12.5, 50],
   "gpt-6-sol": [2, 0.2, 2.5, 10],
@@ -57,20 +58,58 @@ const openrouter: Record<string, Tariff> = {
   "perplexity/sonar-pro-search": [3, null, null, 15]
 };
 
+// Embedding tariffs price input tokens only. The OpenRouter presets report each
+// call's cost, so only deployments that report none need a tariff.
+// https://developers.openai.com/api/docs/pricing ("Specialized models", checked 2026-10-07)
+const openaiEmbeddings: Record<string, Tariff> = {
+  "text-embedding-3-large": [0.13, null, null, null]
+};
+
+const tariffs: ReadonlyArray<readonly [AdminProviderModelClass, Readonly<Record<string, Record<string, Tariff>>>]> = [
+  ["answer", { openai, anthropic, gemini, deepseek, openrouter }],
+  ["embedding", { openai: openaiEmbeddings }]
+];
+
+// Web search fees in USD per 1,000 searches, checked 2026-10-07, for every answer
+// tariff of the family; free monthly allowances are not modeled.
+// OpenAI: "Web search (all models) $10.00 / 1k calls"; only `search` actions are billed.
+//   https://developers.openai.com/api/docs/pricing
+//   https://developers.openai.com/api/docs/guides/tools-web-search
+// Anthropic: "$10 per 1,000 searches". https://platform.claude.com/docs/en/about-claude/pricing
+// Gemini 3.x (every Gemini tariff above): "5,000 free search requests per month ...,
+//   then $14 per 1,000 requests", charged per search query.
+//   https://ai.google.dev/gemini-api/docs/pricing
+//   https://ai.google.dev/gemini-api/docs/google-search
+// DeepSeek publishes no search fee (https://api-docs.deepseek.com/quick_start/pricing/);
+// OpenRouter reports each call's cost.
+const webSearchFees: Readonly<Record<string, number>> = { openai: 10, anthropic: 10, gemini: 14 };
+
+const catalog = new Map<string, Readonly<{ modelClass: AdminProviderModelClass; tariff: Tariff; webSearch: number | null }>>(
+  tariffs.flatMap(([modelClass, providers]) => Object.entries(providers).flatMap(([provider, models]) =>
+    Object.entries(models).map(([modelId, tariff]) => [`${provider}:${modelId}`, {
+      modelClass, tariff, webSearch: modelClass === "answer" ? webSearchFees[provider] ?? null : null
+    }] as const))));
+
 /** Keyed by `<family>:<upstream model>`; codex-lb rows resolve to the `openai:` tariff. */
 export const catalogModelPrices: Readonly<Record<string, ModelTokenPricing>> = Object.fromEntries(
-  Object.entries({ openai, anthropic, gemini, deepseek, openrouter }).flatMap(([provider, models]) =>
-    Object.entries(models).map(([modelId, [input, read, write, output]]) => [`${provider}:${modelId}`, {
-      inputTokenPriceUsdPerMillion: input,
-      cachedInputTokenPriceUsdPerMillion: read,
-      cacheWriteInputTokenPriceUsdPerMillion: write,
-      outputTokenPriceUsdPerMillion: output
-    }]))
+  [...catalog].map(([key, { tariff: [input, read, write, output], webSearch }]) => [key, {
+    inputTokenPriceUsdPerMillion: input,
+    cachedInputTokenPriceUsdPerMillion: read,
+    cacheWriteInputTokenPriceUsdPerMillion: write,
+    outputTokenPriceUsdPerMillion: output,
+    webSearchPriceUsdPerThousand: webSearch
+  }])
 );
+
+/** The one model class a catalog tariff prices; rows of any other class never take it. */
+export function catalogModelPriceClass(key: string): AdminProviderModelClass | null {
+  return catalog.get(key)?.modelClass ?? null;
+}
 
 export function catalogModelTokenPricing(templateKey: string): ModelTokenPricing {
   return catalogModelPrices[templateKey] ?? {
     inputTokenPriceUsdPerMillion: null, cachedInputTokenPriceUsdPerMillion: null,
-    cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null
+    cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null,
+    webSearchPriceUsdPerThousand: null
   };
 }

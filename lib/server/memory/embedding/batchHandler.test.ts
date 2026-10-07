@@ -530,6 +530,27 @@ describe("Memory durable embedding batch handler", () => {
     expect(f.applyFailed).toHaveBeenCalledTimes(2);
   });
 
+  it("bills a rejected batch response once with its binding and keeps the batch retryable", async () => {
+    const f = fixture();
+    f.embed.mockRejectedValueOnce(new EmbeddingAdapterError("embedding_response_count_mismatch", {
+      usage: { costUsd: 0.000001, inputTokens: 8, totalTokens: 8 }
+    }));
+
+    await expect(createMemoryEmbeddingBatchHandler(f.dependencies)
+      .execute(f.job, context())).rejects.toMatchObject({
+        code: "embedding_response_count_mismatch",
+        retryable: true
+      } satisfies Partial<MemoryCoordinatorError>);
+    expect(f.settle).toHaveBeenCalledOnce();
+    expect(f.settle.mock.calls[0]?.[2]).toMatchObject({
+      errorCode: "embedding_response_count_mismatch",
+      state: "FAILED",
+      usage: { completeness: "COMPLETE", estimatedCostMicros: 1, inputTokens: 8, totalTokens: 8 }
+    });
+    expect(f.repository.persistResult).not.toHaveBeenCalled();
+    expect(f.rows.every(({ state }) => state === "PENDING")).toBe(true);
+  });
+
   it("accepts no child when result count is not exact", async () => {
     const f = fixture();
     f.embed.mockResolvedValueOnce({

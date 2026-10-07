@@ -1,4 +1,7 @@
-import { estimateCostMicros, normalizeTokenUsage, type ModelTokenPricing } from "../../../domain/usage";
+import type { AdminProviderModelClass } from "../../../contracts/adminProviders";
+import { normalizeTokenUsage, reportedCostMicros, usageCostMicros, type ModelTokenPricing } from "../../../domain/usage";
+import { EmbeddingAdapterError } from "../../providers/embeddings";
+import { RerankAdapterError } from "../../providers/rerank";
 import type { MemoryReportedUsage } from "./lifecycle";
 
 export function memoryReportedUsage(
@@ -20,24 +23,76 @@ export function memoryReportedUsage(
   };
 }
 
-/** Prices complete usage with the catalog estimate answer runs use. A
- * provider-reported cost wins; partial or unavailable usage and an unpriced
- * model keep an unknown cost. */
+const UNAVAILABLE_VECTOR_CALL_USAGE: MemoryReportedUsage = Object.freeze({
+  cachedInputTokens: null,
+  completeness: "UNAVAILABLE",
+  estimatedCostMicros: null,
+  inputTokens: null,
+  outputTokens: null,
+  reasoningTokens: null,
+  totalTokens: null
+});
+
+/** Usage of one embedding or reranker call as settlement input: its reported
+ * tokens (it generates no output) and its provider-reported cost. A reported
+ * cost without token counts is still partial usage, never unavailable. */
+export function memoryVectorCallUsage(usage: Readonly<{
+  costUsd?: number | null;
+  inputTokens: number | null;
+  totalTokens: number | null;
+}>): MemoryReportedUsage {
+  const { inputTokens, totalTokens } = usage;
+  const estimatedCostMicros = usage.costUsd == null ? null : reportedCostMicros(usage.costUsd);
+  if (inputTokens === null && totalTokens === null && estimatedCostMicros === null) {
+    return UNAVAILABLE_VECTOR_CALL_USAGE;
+  }
+  return {
+    cachedInputTokens: 0,
+    completeness: inputTokens !== null && totalTokens !== null ? "COMPLETE" : "PARTIAL",
+    estimatedCostMicros,
+    inputTokens,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens
+  };
+}
+
+/** Settlement usage of an embedding or reranker call that threw: what the
+ * response the adapter then rejected reported (`usage` on its error), so the
+ * binding accounts that paid response once. Every other failure reported no
+ * usage and settles unavailable. */
+export function memoryVectorCallErrorUsage(error: unknown): MemoryReportedUsage {
+  const usage = error instanceof EmbeddingAdapterError || error instanceof RerankAdapterError
+    ? error.usage
+    : null;
+  return usage ? memoryVectorCallUsage(usage) : UNAVAILABLE_VECTOR_CALL_USAGE;
+}
+
+/** Prices usage the provider reported no cost for with the shared cost rule:
+ * the frozen catalog prices of the executed model's class. A provider-reported
+ * cost wins; unavailable usage, usage the class cannot price (an answer needs
+ * complete counts) and an unpriced model keep an unknown cost. */
 export function memoryUsageWithCatalogCost(
   usage: MemoryReportedUsage,
-  pricing: ModelTokenPricing | null
+  pricing: ModelTokenPricing | null,
+  modelClass: AdminProviderModelClass
 ): MemoryReportedUsage {
-  if (!pricing || usage.estimatedCostMicros !== null || usage.completeness !== "COMPLETE") {
+  if (!pricing || usage.estimatedCostMicros !== null || usage.completeness === "UNAVAILABLE") {
     return usage;
   }
-  const estimatedCostMicros = estimateCostMicros({
-    cachedInputTokens: usage.cachedInputTokens,
-    cacheWriteInputTokens: usage.cacheWriteInputTokens ?? null,
-    completeness: "complete",
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    reasoningTokens: usage.reasoningTokens,
-    totalTokens: usage.totalTokens
-  }, pricing);
+  const estimatedCostMicros = usageCostMicros({
+    modelClass,
+    pricing,
+    reportedCostUsd: null,
+    usage: {
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheWriteInputTokens: usage.cacheWriteInputTokens ?? null,
+      completeness: usage.completeness === "COMPLETE" ? "complete" : "partial",
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      reasoningTokens: usage.reasoningTokens,
+      totalTokens: usage.totalTokens
+    }
+  });
   return estimatedCostMicros === null ? usage : { ...usage, estimatedCostMicros };
 }

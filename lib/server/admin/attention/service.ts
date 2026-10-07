@@ -1,4 +1,5 @@
 import { adminMemoryProcessingCopy } from "../../../domain/adminMemoryProcessing";
+import { formatEstimatedCostMicros } from "../../../domain/formatEstimatedCost";
 import { adminMemoryProcessingIssueKey } from "../../../contracts/adminMemory";
 import type { AdminDashboard } from "../../../contracts/admin";
 import type {
@@ -13,8 +14,10 @@ import type { AdminSearchCatalog } from "../../../contracts/adminSearch";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import type { AdminEmailState } from "../../../contracts/email";
 import { adminMcpAttention, type AdminMcpServer } from "../../../contracts/mcp";
+import { USAGE_LIMIT_WARNING_RATIO, type AdminUsageLimits } from "../../../contracts/usageLimits";
 
 export type AdminAttentionDashboardInput = Pick<AdminDashboard, "users">;
+export type AdminAttentionUsageLimitsInput = Pick<AdminUsageLimits, "installation" | "installationSpentMicros" | "resetsAt" | "users">;
 
 /**
  * Narrow read-only loaders over data the Control Center already serves. Each
@@ -32,6 +35,7 @@ export type AdminAttentionSources = Readonly<{
   systemRoles(): Promise<AdminSystemModelPolicyCatalog>;
   skills?(actingAdminUserId: string): Promise<number>;
   assistants?(actingAdminUserId: string): Promise<number>;
+  usageLimits?(): Promise<AdminAttentionUsageLimitsInput>;
 }>;
 
 export type AdminAttentionInputs = Readonly<{
@@ -46,6 +50,7 @@ export type AdminAttentionInputs = Readonly<{
   systemRoles: AdminSystemModelPolicyCatalog | null;
   skills?: number | null;
   assistants?: number | null;
+  usageLimits?: AdminAttentionUsageLimitsInput | null;
 }>;
 
 export type AdminAttentionService = Readonly<{
@@ -101,6 +106,51 @@ function dashboardItems(
       severity: "warn",
       target: { filter: "no-model-access", section: "users" },
       title: "Active users have no model access"
+    });
+  }
+  return items;
+}
+
+const capUsd = new Intl.NumberFormat("en-US", { currency: "USD", maximumFractionDigits: 6, minimumFractionDigits: 2, style: "currency" });
+const utcDay = new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", timeZone: "UTC" });
+
+/** Spend is the known estimated cost of the current UTC calendar month. */
+function usageLimitItems(limits: AdminAttentionUsageLimitsInput): AdminAttentionItem[] {
+  const items: AdminAttentionItem[] = [];
+  const resets = `${utcDay.format(new Date(limits.resetsAt))} (UTC)`;
+  const cap = limits.installation.monthlyCapMicros;
+  const spent = limits.installationSpentMicros;
+  if (cap !== null && spent >= cap * USAGE_LIMIT_WARNING_RATIO) {
+    const used = `${formatEstimatedCostMicros(spent)} of the ${capUsd.format(cap / 1_000_000)} cap`;
+    const reached = spent >= cap;
+    items.push({
+      action: "Open budgets",
+      code: reached ? "usage_budget_cap_reached" : "usage_budget_cap_near",
+      count: null,
+      detail: reached
+        ? `${used} · new messages are refused for everyone until it resets on ${resets} or you raise the cap`
+        : `${Math.floor((spent / cap) * 100)}% used · ${used} · resets on ${resets}`,
+      id: reached ? "usage_budget_cap_reached" : "usage_budget_cap_near",
+      severity: reached ? "bad" : "warn",
+      target: { section: "limits" },
+      title: reached ? "The monthly cap for everyone is reached" : "The monthly cap for everyone is almost used"
+    });
+  }
+  // A zero budget blocks a person on purpose; only budgets that ran out need a decision.
+  const atBudget = limits.users.filter(({ effective, monthSpentMicros, status }) => {
+    const budget = effective.monthlyBudgetMicros.value;
+    return status === "active" && budget !== null && budget > 0 && monthSpentMicros >= budget;
+  });
+  if (atBudget.length > 0) {
+    items.push({
+      action: "Review budgets",
+      code: "usage_users_budget_reached",
+      count: atBudget.length,
+      detail: `${listNames(atBudget.map((user) => user.displayName))} · no new messages until ${resets} unless you raise their budget`,
+      id: "usage_users_budget_reached",
+      severity: "warn",
+      target: { section: "limits" },
+      title: atBudget.length === 1 ? "A user reached their monthly budget" : "Users reached their monthly budget"
     });
   }
   return items;
@@ -458,6 +508,7 @@ function emailItems(email: AdminEmailState): AdminAttentionItem[] {
 export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAttentionItem[] {
   return [
     ...(inputs.dashboard ? dashboardItems(inputs.dashboard, inputs.actingAdminUserId) : []),
+    ...(inputs.usageLimits ? usageLimitItems(inputs.usageLimits) : []),
     ...(inputs.providers ? providerItems(inputs.providers) : []),
     ...(inputs.search ? searchItems(inputs.search, inputs.providers) : []),
     ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles).filter((item) =>
@@ -496,7 +547,7 @@ export function createAdminAttentionService(input: Readonly<{
           return null;
         }
       }
-      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills, assistants] = await Promise.all([
+      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills, assistants, usageLimits] = await Promise.all([
         load("dashboard", () => sources.dashboard(actingAdminUserId)),
         load("providers", () => sources.providers()),
         load("search", () => sources.search(actingAdminUserId)),
@@ -506,7 +557,8 @@ export function createAdminAttentionService(input: Readonly<{
         load("mcp", () => sources.mcp(actingAdminUserId)),
         load("email", () => sources.email()),
         sources.skills ? load("skills", () => sources.skills!(actingAdminUserId)) : Promise.resolve(0),
-        sources.assistants ? load("assistants", () => sources.assistants!(actingAdminUserId)) : Promise.resolve(0)
+        sources.assistants ? load("assistants", () => sources.assistants!(actingAdminUserId)) : Promise.resolve(0),
+        sources.usageLimits ? load("usage_limits", () => sources.usageLimits!()) : Promise.resolve(null)
       ]);
       return {
         checkedAt: now().toISOString(),
@@ -521,7 +573,8 @@ export function createAdminAttentionService(input: Readonly<{
           search,
           systemRoles,
           skills,
-          assistants
+          assistants,
+          usageLimits
         }),
         unavailable
       };

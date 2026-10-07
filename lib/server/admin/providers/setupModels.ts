@@ -18,6 +18,7 @@ export type SetupModel = Readonly<{
   cachedInputTokenPriceUsdPerMillion?: number | null;
   cacheWriteInputTokenPriceUsdPerMillion?: number | null;
   outputTokenPriceUsdPerMillion: number | null;
+  webSearchPriceUsdPerThousand?: number | null;
 }>;
 
 /**
@@ -60,7 +61,8 @@ export function providerSetupModels(family: string, connection?: Pick<ProviderCo
     inputTokenPriceUsdPerMillion: candidate.model.inputTokenPriceUsdPerMillion,
     cachedInputTokenPriceUsdPerMillion: candidate.model.cachedInputTokenPriceUsdPerMillion ?? null,
     cacheWriteInputTokenPriceUsdPerMillion: candidate.model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
-    outputTokenPriceUsdPerMillion: candidate.model.outputTokenPriceUsdPerMillion
+    outputTokenPriceUsdPerMillion: candidate.model.outputTokenPriceUsdPerMillion,
+    webSearchPriceUsdPerThousand: candidate.model.webSearchPriceUsdPerThousand ?? null
   }));
   const helpers = family === "openrouter" ? [
     ...embeddingPresetsForFamily(family).filter((preset) => preset.default).map((preset) => ({

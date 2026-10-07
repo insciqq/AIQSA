@@ -34,6 +34,7 @@ import {
 } from "@/components/ui-v2";
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
+import { UsageLimitNoticeV2 } from "./UsageLimitNoticeV2";
 import { SavedFilePickerV2 } from "@/features/attachments-v2/SavedFilePickerV2";
 import {
   attachmentItemBlocksSend,
@@ -427,6 +428,8 @@ export type ComposerV2Props = Readonly<{
   stopping?: boolean;
   uploading?: boolean;
   uploadLimitHint?: string;
+  /** The signed-in account whose usage limits the composer reads; absent reads nothing. */
+  usageLimitsAccountId?: string | null;
   workspace?: Readonly<{
     available: boolean;
     busy: boolean;
@@ -646,6 +649,7 @@ export function ComposerV2({
   stopping = false,
   uploading = false,
   uploadLimitHint,
+  usageLimitsAccountId = null,
   workspace
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
@@ -1428,6 +1432,9 @@ export function ComposerV2({
           </div>
         ) : null}
         {artifactBlockReason && !followupMode ? <p className="v2-composer-status" role="alert">{artifactBlockReason}. Remove the artifact selection or change the chat mode before sending.</p> : null}
+        {usageLimitsAccountId ? (
+          <UsageLimitNoticeV2 accountId={usageLimitsAccountId} busy={activeRun || sending} />
+        ) : null}
         <AttachmentTrayV2
           items={attachmentItems}
           onRemove={onRemoveAttachment}

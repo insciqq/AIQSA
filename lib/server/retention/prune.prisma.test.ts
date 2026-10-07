@@ -532,6 +532,7 @@ describe("Prisma attachment retention outbox", () => {
         modelId: "fake-qsa",
         provider: "fake",
         providerModelId: providerTemplateIds.fakeModel,
+        purpose: "knowledge_indexing",
         totalTokens: 3,
         userId: user.id
       }

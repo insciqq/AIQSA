@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { decodeTokenUsage, normalizeTokenUsage } from "@/lib/domain/usage";
+import { decodeTokenUsage, normalizeTokenUsage, reportedCostMicros } from "@/lib/domain/usage";
 import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import type { RunUsageAttribution } from "../runs/runRepositoryContract";
 import { json, lockRunSettlementScope } from "../runs/prismaRepositoryShared";
@@ -363,7 +363,9 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
       if (result.failureCode) throw new AgentExecutionError(result.failureCode);
       return result.id!;
     },
-    async settleProvider(id: string, state: "COMPLETE" | "ERROR" | "UNKNOWN", usage: ModelRunUsage | null) {
+    /** `costUsd` is what the provider reported the call cost (a Search engine
+     * through OpenRouter); it is kept beside the attempt's usage. */
+    async settleProvider(id: string, state: "COMPLETE" | "ERROR" | "UNKNOWN", usage: ModelRunUsage | null, costUsd: number | null = null) {
       await locked(async (tx) => {
         const attempt = await tx.agentProviderAttempt.findFirst({ where: { id, modelRunId: runId } });
         if (!attempt || (attempt.state !== "DISPATCHED" && attempt.state !== "UNKNOWN")) return;
@@ -373,7 +375,8 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
         const consumed = canRelease ? reported.totalTokens! : attempt.reservedTokens;
         await tx.agentProviderAttempt.update({ where: { id }, data: {
           state: attempt.state === "UNKNOWN" ? "UNKNOWN" : state,
-          usage: json(reported), completedAt: new Date()
+          usage: json(costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 ? { ...reported, costUsd } : reported),
+          completedAt: new Date()
         } });
         await tx.agentRunBinding.update({ where: { modelRunId: runId }, data: {
           reservedTokens: { increment: consumed - attempt.reservedTokens },
@@ -504,8 +507,17 @@ export async function loadAgentUsage(database: Pick<Prisma.TransactionClient, "a
     include: { providerBinding: { select: { executionSnapshot: true } } }, orderBy: { createdAt: "asc" } });
   return attempts.map((attempt) => {
     const snapshot = normalizeProviderExecutionSnapshot(attempt.providerBinding.executionSnapshot);
+    // Generation is answer usage; the native and AIQSA Search calls the Agent
+    // makes are the Search it was given.
+    const search = attempt.providerBindingKey.startsWith("agent-native_search:") ||
+      attempt.providerBindingKey.startsWith("agent-aiqsa_search:");
+    // A Search call's reported cost settles it; answer generation keeps token prices.
+    const costUsd = search && attempt.usage !== null && typeof attempt.usage === "object" && !Array.isArray(attempt.usage)
+      ? (attempt.usage as Record<string, unknown>).costUsd : undefined;
     return { providerModelId: snapshot.providerModelId,
       provider: snapshot.providerFamily, modelId: snapshot.model.upstreamModelId, operationCount: 1,
+      purpose: search ? "web_search" as const : "chat_answer" as const,
+      ...(typeof costUsd === "number" ? { estimatedCostMicros: reportedCostMicros(costUsd) } : {}),
       usage: decodeTokenUsage(attempt.usage) ?? normalizeTokenUsage({}) };
   });
 }

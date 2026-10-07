@@ -205,7 +205,8 @@ export type ProviderToolLoopInput = Readonly<{
   onUsage?(
     usage: ModelRunUsage,
     request: ProviderRunRequest,
-    context: Readonly<{ completeness: "partial" | "terminal"; round: number }>
+    /** `costUsd`: what the provider reported the round's call cost, when it did. */
+    context: Readonly<{ completeness: "partial" | "terminal"; costUsd?: number; round: number }>
   ): Promise<void> | void;
   parallelToolCalls: boolean;
   prepareRequest?(request: ProviderRunRequest, round: number): Promise<ProviderRunRequest> | ProviderRunRequest;
@@ -607,6 +608,7 @@ export async function runProviderToolLoop(
       try {
         await input.onUsage?.(result.usage, roundRequest, {
           completeness: "terminal",
+          ...(result.costUsd !== undefined ? { costUsd: result.costUsd } : {}),
           round
         });
       } catch (error) {

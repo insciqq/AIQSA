@@ -86,7 +86,7 @@ function execution(): MemoryFactExtractionHandlerDependencies["execution"] {
     await tx.usageEvent.create({ data: { cachedInputTokens: result.usage.cachedInputTokens,
       estimatedCostMicros: result.usage.estimatedCostMicros, inputTokens: result.usage.inputTokens,
       memoryExecutionBindingId: bindingId, modelId: "extraction-heal-model", outputTokens: result.usage.outputTokens,
-      provider: "openai_compatible", providerModelId: authority.providerModelId,
+      provider: "openai_compatible", providerModelId: authority.providerModelId, purpose: "memory_processing",
       reasoningTokens: result.usage.reasoningTokens, totalTokens: result.usage.totalTokens,
       usageCompleteness: result.usage.completeness, userId } });
     return { state: result.state };
