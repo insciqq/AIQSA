@@ -30,13 +30,14 @@ export type UsageSpendChartProps = Readonly<{
   timeZone: string;
 }>;
 
-function pointValue(point: AdminUsageSeriesPoint, category: (typeof USAGE_CATEGORY_ORDER)[number], metric: UsageChartMetric) {
+/** A category's reading; a `null` cost is usage whose cost is unknown and draws no mark. */
+function pointValue(point: AdminUsageSeriesPoint, category: (typeof USAGE_CATEGORY_ORDER)[number], metric: UsageChartMetric): number | null {
   const value = point.categories[category];
   return metric === "cost" ? value.estimatedCostMicros : value.totalTokens;
 }
 
 function pointTotal(point: AdminUsageSeriesPoint, metric: UsageChartMetric): number {
-  return USAGE_CATEGORY_ORDER.reduce((sum, category) => sum + pointValue(point, category, metric), 0);
+  return USAGE_CATEGORY_ORDER.reduce((sum, category) => sum + (pointValue(point, category, metric) ?? 0), 0);
 }
 
 /** Rounded data end, square baseline. */
@@ -187,7 +188,7 @@ export function UsageSpendChart({ bucket, metric, series, timeZone }: UsageSpend
           {series.map((point, index) => {
             const x = left + slot * index + (slot - barWidth) / 2;
             const drawn = USAGE_CATEGORY_ORDER.flatMap((category) => {
-              const value = pointValue(point, category, metric);
+              const value = pointValue(point, category, metric) ?? 0;
               return value > 0 ? [{ category, value }] : [];
             });
             let cumulative = 0;
@@ -236,19 +237,22 @@ export function UsageSpendChart({ bucket, metric, series, timeZone }: UsageSpend
           >
             <p className="font-medium text-ink">{formatBucketDate(activePoint.start, timeZone, bucket, true)}</p>
             <ul className="mt-1.5 grid gap-1">
-              {USAGE_CATEGORY_ORDER.map((category) => (
-                <li className="flex items-center gap-2" key={category}>
-                  <span
-                    aria-hidden="true"
-                    className="h-0.5 w-3 shrink-0 rounded-full"
-                    style={{ background: USAGE_CATEGORY_META[category].color }}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{USAGE_CATEGORY_META[category].label}</span>
-                  <span className="font-mono font-medium tabular-nums text-ink">
-                    {formatMetricValue(metric, pointValue(activePoint, category, metric))}
-                  </span>
-                </li>
-              ))}
+              {USAGE_CATEGORY_ORDER.map((category) => {
+                const value = pointValue(activePoint, category, metric);
+                return (
+                  <li className="flex items-center gap-2" key={category}>
+                    <span
+                      aria-hidden="true"
+                      className="h-0.5 w-3 shrink-0 rounded-full"
+                      style={{ background: USAGE_CATEGORY_META[category].color }}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{USAGE_CATEGORY_META[category].label}</span>
+                    <span className={value === null ? "text-ink-secondary" : "font-mono font-medium tabular-nums text-ink"}>
+                      {formatMetricValue(metric, value)}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
             <p className="mt-1.5 flex items-center gap-2 border-t border-trace-subtle pt-1.5">
               <span className="flex-1">Total · {formatCount(activePoint.runCount)} runs</span>

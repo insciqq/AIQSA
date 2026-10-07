@@ -67,10 +67,10 @@
   --v2-light-shadow-overlay: 0 16px 48px rgb(30 40 60 / 0.2);
 
   /*
-   * Categorical chart palette in a fixed slot order (usage categories map
-   * chat 1, scheduled 2, images 3, memory 4, background 5). Validated for
-   * adjacent-pair colour-vision separation; several light slots stay below
-   * 3:1 on the surface, so charted values must also be readable as text.
+   * Categorical chart palette in a fixed slot order, assigned per entity and
+   * never by rank. Validated for adjacent-pair colour-vision separation;
+   * several light slots stay below 3:1 on the surface, so charted values
+   * must also be readable as text.
    * Marks only: chart text keeps the text tokens.
    */
   --v2-dark-chart-1: #3987e5;
