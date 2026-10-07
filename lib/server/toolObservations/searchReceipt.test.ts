@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { SEARCH_TOOL_RESULT_VERSION, searchExecutionsFromToolResult, searchToolResultContent,
+import { SEARCH_TOOL_RESULT_VERSION, searchExecutionsFromToolResult, searchToolResultContent, searchUsageAttribution,
   type SearchExecutionEvidence } from "../search/toolResult";
 import type { ToolExecutionResult } from "../tools/types";
 import { decodeSearchObservationReceipt, SEARCH_OBSERVATION_RECEIPT_BYTES, searchObservationReceipt } from "./searchReceipt";
@@ -67,6 +67,27 @@ describe("bounded Search receipt", () => {
     expect(Buffer.byteLength(JSON.stringify(receipt))).toBeLessThanOrEqual(SEARCH_OBSERVATION_RECEIPT_BYTES);
     expect(Buffer.byteLength(jsonbText(receipt))).toBeLessThanOrEqual(65536);
     expect(decodeSearchObservationReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
+  });
+
+  it("keeps each engine's reported web searches and cost, the evidence its row is priced from", () => {
+    const result = searchResult({ sources: 2, snippet: 10, title: 30, url: 40 });
+    const executions = (result.rawPreview!.searchExecutions as SearchExecutionEvidence[]).map((execution, index) =>
+      index === 0 ? { ...execution, usage: { ...execution.usage, webSearchCount: 2 } } : { ...execution, costUsd: 0.0142 });
+    const priced: ToolExecutionResult = { ...result, content: searchToolResultContent(executions),
+      rawPreview: { ...result.rawPreview, searchExecutions: executions } };
+    const persisted = searchExecutionsFromToolResult(JSON.parse(JSON.stringify(priced)) as ToolExecutionResult);
+    expect(persisted.map(execution => [execution.usage.webSearchCount, execution.costUsd]))
+      .toEqual([[2, undefined], [undefined, 0.0142], [undefined, 0.0142]]);
+    const receipt = searchObservationReceipt(priced);
+    const decoded = decodeSearchObservationReceipt(JSON.parse(JSON.stringify(receipt)));
+    expect(decoded?.executions.map(execution => [execution.usage, execution.costUsd]))
+      .toEqual(persisted.map(execution => [execution.usage, execution.costUsd]));
+    // A run attribution settles the reported cost; the rest is priced when the row is written.
+    expect(persisted.map(searchUsageAttribution).map(attribution => attribution.estimatedCostMicros)).toEqual([undefined, 14_200, 14_200]);
+    // A malformed reported cost is not evidence.
+    expect(decodeSearchObservationReceipt({ version: 1, executions: [{ ...receipt.executions[1], costUsd: "1" }] })).toBeNull();
+    expect(searchExecutionsFromToolResult({ ...priced, rawPreview: { ...priced.rawPreview,
+      searchExecutions: [{ ...executions[1], costUsd: -1 }] } })).toEqual([]);
   });
 
   it("never splits a code point when it shortens a snippet", () => {

@@ -142,6 +142,7 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
     nativeRoutingAdoptionEvidence: null,
     modelId: "retired-upstream",
     outputTokenPriceUsdPerMillion: null,
+    webSearchPriceUsdPerThousand: null,
     provider: "retired-family",
     supportsNativeSearch: false,
     supportsPdf: false,

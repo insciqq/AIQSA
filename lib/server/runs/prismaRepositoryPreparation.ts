@@ -22,6 +22,7 @@ import {
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { memoryRoleUsagePurpose } from "../../domain/usagePurpose";
 import { titleFromMessageContent } from "../chats/titlePolicy";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import {
@@ -155,6 +156,7 @@ import {
   type ProjectRunAdmission
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
+import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
 import { workspaceRunOperationOwner } from "../workspace/sessionOperation";
@@ -1163,6 +1165,8 @@ export async function admitProjectRunWithClient(
           userMessageId
         }
       });
+      // Project turns are always interactive: scheduled tasks post only into personal chats.
+      await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
         assistantMessageId,
@@ -1727,6 +1731,9 @@ export async function admitPreparingRunWithClient(
           taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision,
           unavailableSources: input.admissionKind === "NORMAL_SEND" ? input.scheduledUnavailableSources ?? [] : [],
           userId: input.userId, userMessageId });
+      } else {
+        // Message limits count interactive admissions in a log that outlives the chat.
+        await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
       }
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
@@ -3862,6 +3869,7 @@ async function settlePreparingAttemptExecutions(
           outputTokens: open ? null : binding.outputTokens,
           provider: provider.providerFamily,
           providerModelId: provider.providerModelId,
+          purpose: memoryRoleUsagePurpose(binding.logicalRole),
           reasoningTokens: open ? null : binding.reasoningTokens,
           totalTokens: open ? null : binding.totalTokens,
           userId: input.userId

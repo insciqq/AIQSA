@@ -1,4 +1,5 @@
-import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
+import { modelSearchPricing, modelSearchPricingSelect } from "../providers/modelTokenPricing";
+import { loadProviderModelCostBasis } from "../usage";
 import { loadWorkspaceInboxFacts } from "../workspace/inboxFacts";
 import { decodeSearchPlan } from "../../domain/search";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
@@ -114,6 +115,7 @@ import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { createPrismaRunAnswerOperations, persistCompletedAnswerUsage } from "./prismaRepositoryAnswer";
+import { runAttributionUsageWhere, storedRunAttributionPurpose } from "./prismaRepositoryUsage";
 import { createPrismaRunFollowupOperations, runFollowupSelect, runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
 import { projectRunFollowups } from "./runFollowups";
 import { decodeRunFollowupState } from "../../contracts/runFollowups";
@@ -1879,23 +1881,25 @@ export function createPrismaRunRepository(
     interruptExpiredAgentRun: (input) => interruptExpiredAgentRun(prismaClient, input),
     loadModelPricing: async (provider, modelId, providerModelId) => {
       const models = await prismaClient.providerModel.findMany({
-        select: {
-          ...modelTokenPricingSelect
-        },
+        // Answers and Search engines can report the web searches they ran.
+        select: modelSearchPricingSelect,
         take: 2,
         where: { modelClass: "answer", ...(providerModelId ? { id: providerModelId } : { modelId, provider }) }
       }).catch(retainRunPrismaCode);
 
       return models.length === 1
-        ? modelTokenPricing(models[0])
+        ? modelSearchPricing(models[0])
         : null;
     },
+    loadProviderModelCostBasis: (providerModelId) =>
+      loadProviderModelCostBasis(prismaClient, providerModelId).catch(retainRunPrismaCode),
     loadRunUsageAttributions: async (input) => {
       const rows = await prismaClient.usageEvent.findMany({
         orderBy: { createdAt: "asc" },
         select: {
           cachedInputTokens: true,
           cacheWriteInputTokens: true,
+          costReported: true,
           createdAt: true,
           estimatedCostMicros: true,
           inputTokens: true,
@@ -1903,18 +1907,23 @@ export function createPrismaRunRepository(
           operationCount: true,
           outputTokens: true,
           provider: true,
+          providerModelId: true,
+          purpose: true,
           reasoningTokens: true,
           totalTokens: true,
-          usageCompleteness: true
+          usageCompleteness: true,
+          webSearchCount: true
         },
-        where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, visionAnalysis: false,
-          knowledgeRelevance: false, optionalDecision: false, modelRunId: input.runId, userId: input.userId }
+        where: { ...runAttributionUsageWhere(input.runId), userId: input.userId }
       }).catch(retainRunPrismaCode);
       return rows.map((row) => ({
+        ...(row.costReported ? { costReported: true as const } : {}),
         estimatedCostMicros: row.estimatedCostMicros,
         modelId: row.modelId,
         operationCount: row.operationCount,
         provider: row.provider,
+        ...(row.providerModelId ? { providerModelId: row.providerModelId } : {}),
+        purpose: storedRunAttributionPurpose(row.purpose),
         recordedAt: row.createdAt.toISOString(),
         usage: {
           cachedInputTokens: row.cachedInputTokens,
@@ -1924,7 +1933,8 @@ export function createPrismaRunRepository(
           reasoningTokens: row.reasoningTokens,
           totalTokens: row.totalTokens,
           completeness: row.usageCompleteness === "COMPLETE" ? "complete" :
-            row.usageCompleteness === "PARTIAL" ? "partial" : "unavailable"
+            row.usageCompleteness === "PARTIAL" ? "partial" : "unavailable",
+          ...(row.webSearchCount !== null ? { webSearchCount: row.webSearchCount } : {})
         }
       }));
     },

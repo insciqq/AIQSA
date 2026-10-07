@@ -24,6 +24,7 @@ const MESSAGE_KINDS = new Set<SmtpProductMessageKind>([
   "invitation",
   "password_reset",
   "scheduled_task_result",
+  "usage_limit_alert",
   "verification"
 ]);
 
@@ -47,6 +48,7 @@ export type SmtpProductMessageKind =
   | "invitation"
   | "password_reset"
   | "scheduled_task_result"
+  | "usage_limit_alert"
   | "verification";
 
 export type SmtpProductMessage = {

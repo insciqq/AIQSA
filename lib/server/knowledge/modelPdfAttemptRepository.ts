@@ -1,10 +1,8 @@
-import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
-import { decodeTokenUsage, TOKEN_USAGE_FIELDS } from "../../domain/usage";
-import { storedTokenUsage } from "../usage";
+import { decodeTokenUsage, normalizeTokenUsage, TOKEN_USAGE_FIELDS, type NormalizedTokenUsage } from "../../domain/usage";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
 import type { PdfModelProcessingMode } from "../parsing/pdfPreparation";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 
@@ -104,8 +102,58 @@ function settledBatch(
   };
 }
 
-export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
+type AttemptUsageInput = Readonly<{
+  attemptId: string;
+  ownerUserId: string;
+  snapshot: ProviderExecutionSnapshot;
+}>;
+
+/** The attempt's one Knowledge indexing row: the provider-reported tokens,
+ * priced at the deployment's stored prices (answer models report no cost). */
+async function attemptUsageRow(
+  tx: Pick<Prisma.TransactionClient, "providerModel">,
+  input: AttemptUsageInput,
+  usage: NormalizedTokenUsage
+) {
+  const estimatedCostMicros = providerModelUsageCostMicros({
+    basis: await loadProviderModelCostBasis(tx, input.snapshot.providerModelId),
+    reportedCostUsd: null,
+    usage
+  });
   return {
+    ...storedTokenUsage(usage),
+    estimatedCostMicros,
+    knowledgePdfProcessingAttemptId: input.attemptId,
+    modelId: input.snapshot.model.upstreamModelId,
+    provider: input.snapshot.providerFamily,
+    providerModelId: input.snapshot.providerModelId,
+    purpose: "knowledge_indexing" as const,
+    userId: input.ownerUserId
+  };
+}
+
+export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
+  /**
+   * Usage of provider responses that never settle the attempt (rejected
+   * output, a lost settle race): written at most once per attempt through the
+   * same unique link a settled attempt's row uses, and never for a settled
+   * attempt. Nothing reported means nothing is written.
+   */
+  async function recordUnsettledUsage(
+    input: KnowledgeModelPdfAttemptIdentity & AttemptUsageInput & Readonly<{ usage: ModelRunUsage }>
+  ): Promise<void> {
+    const usage = normalizeTokenUsage(input.usage);
+    if (usage.completeness === "unavailable") return;
+    await prisma.$transaction(async (tx) => {
+      const attempt = await tx.knowledgePdfProcessingAttempt.findUnique({ where: { id: input.attemptId } });
+      if (!attempt || attempt.state === "settled" || !exactAttempt(attempt, input)) return;
+      await tx.usageEvent.createMany({ data: [await attemptUsageRow(tx, input, usage)], skipDuplicates: true });
+    });
+  }
+
+  return {
+    recordUnsettledUsage,
+
     async markAmbiguous(attemptId: string, now: Date): Promise<void> {
       await prisma.knowledgePdfProcessingAttempt.updateMany({
         data: { state: "ambiguous", updatedAt: now },
@@ -210,21 +258,16 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
       usage: ModelRunUsage;
     }>): Promise<SettledKnowledgeModelPdfBatch> {
       if (!input.resultText.trim() || input.resultText.length > 500_000) {
+        // A rejected result was still a paid response.
+        await recordUnsettledUsage(input).catch(() => undefined);
         throw new KnowledgeModelPdfAttemptError("pdf_processing_state_invalid");
       }
       const resultChecksum = checksum(input.resultText);
       try {
         return await prisma.$transaction(async (tx) => {
-          const pricing = await tx.providerModel.findUnique({
-            select: { ...modelTokenPricingSelect },
-            where: { id: input.snapshot.providerModelId }
-          });
           const normalized = normalizeTokenUsage(input.usage);
-          const estimatedCostMicros = pricing &&
-            (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
-            ? estimateCostMicros(normalized, modelTokenPricing(pricing))
-            : null;
-          const usage: ModelRunUsage = { ...normalized, estimatedCostMicros };
+          const row = await attemptUsageRow(tx, input, normalized);
+          const usage: ModelRunUsage = { ...normalized, estimatedCostMicros: row.estimatedCostMicros };
           const updated = await tx.knowledgePdfProcessingAttempt.updateMany({
             data: {
               resultChecksum,
@@ -255,21 +298,7 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
               prior.resultChecksum?.trim() === resultChecksum) return settledBatch(prior);
             throw new KnowledgeModelPdfAttemptError("pdf_processing_state_invalid");
           }
-          await tx.usageEvent.create({
-            data: {
-              ...storedTokenUsage(normalized),
-              estimatedCostMicros,
-              inputTokens: normalized.inputTokens,
-              knowledgePdfProcessingAttemptId: input.attemptId,
-              outputTokens: normalized.outputTokens,
-              provider: input.snapshot.providerFamily,
-              providerModelId: input.snapshot.providerModelId,
-              reasoningTokens: normalized.reasoningTokens,
-              totalTokens: normalized.totalTokens,
-              userId: input.ownerUserId,
-              modelId: input.snapshot.model.upstreamModelId
-            }
-          });
+          await tx.usageEvent.create({ data: row });
           const settled = await tx.knowledgePdfProcessingAttempt.findUniqueOrThrow({
             where: { id: input.attemptId }
           });
@@ -285,6 +314,8 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
           data: { state: "ambiguous", updatedAt: input.now },
           where: { id: input.attemptId, state: "dispatched" }
         }).catch(() => undefined);
+        // The response arrived but did not settle this attempt.
+        await recordUnsettledUsage(input).catch(() => undefined);
         throw error;
       }
     }

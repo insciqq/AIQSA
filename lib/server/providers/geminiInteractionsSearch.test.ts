@@ -172,7 +172,8 @@ describe("Gemini Interactions query-only Search adapter", () => {
         inputTokens: 9,
         outputTokens: 9,
         reasoningTokens: 3,
-        totalTokens: 18
+        totalTokens: 18,
+        webSearchCount: 1
       }
     });
     expect(result.artifacts).toEqual(expect.arrayContaining([
@@ -193,6 +194,29 @@ describe("Gemini Interactions query-only Search adapter", () => {
       /PRIVATE_THOUGHT_SIGNATURE|PRIVATE_CALL_SIGNATURE|PRIVATE_RESULT_SIGNATURE|search_suggestions|Search on Google/u
     );
     expect(result.requestPreview).not.toHaveProperty("body.input");
+  });
+
+  it("reports each distinct non-empty query Gemini bills, in success, failure and dispatch usage", async () => {
+    const searchCall = (id: string, queries?: unknown[]) => ({
+      ...(queries ? { arguments: { queries } } : {}), id, signature: "PRIVATE_CALL_SIGNATURE", type: "google_search_call" });
+    const [thought, , searchResult, output] = response().steps as Record<string, unknown>[];
+    // Two distinct queries (one repeated, one empty) plus a call that lists none.
+    const steps = [thought, searchCall("google-search-1", ["Valencia weather", "Valencia forecast"]),
+      searchCall("google-search-2", ["Valencia weather", "  "]), searchCall("google-search-3"), searchResult, output];
+    const dispatched: unknown[] = [];
+    const result = await createGeminiInteractionsSearchAdapter({ client: client(async () => response({ steps })) })
+      .search(request(), { dispatch: async (attempt) => {
+        const value = await attempt.execute();
+        dispatched.push(attempt.usage(value));
+        return value;
+      } });
+    expect(result.usage).toMatchObject({ inputTokens: 9, webSearchCount: 3 });
+    expect(dispatched).toEqual([expect.objectContaining({ inputTokens: 9, webSearchCount: 3 })]);
+
+    const failed = await createGeminiInteractionsSearchAdapter({
+      client: client(async () => response({ steps: [thought, searchCall("google-search-1", ["Valencia weather"]), searchResult] }))
+    }).search(request()).then(() => null, (value: unknown) => value);
+    expect(failed).toMatchObject({ usage: { inputTokens: 9, webSearchCount: 1 } });
   });
 
   it("fails closed without terminal grounded citation proof while retaining safe usage", async () => {

@@ -1,4 +1,4 @@
-import { storedTokenUsage } from "../usage";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { EmbeddingUsage } from "../providers/embeddings";
 import { KNOWLEDGE_EMBEDDING_BATCH_SIZE } from "./chunking";
@@ -318,6 +318,34 @@ function validUsage(usage: EmbeddingUsage): boolean {
       usage.totalTokens >= usage.inputTokens);
 }
 
+type BulkEmbeddingUsageInput = KnowledgeBulkEmbeddingTarget & Readonly<{
+  modelId: string;
+  provider: string;
+  usage: EmbeddingUsage;
+  usageEventId: string;
+}>;
+
+/** The batch response's one `knowledge_indexing` row, keyed by its usage id. */
+async function bulkEmbeddingUsageRow(
+  db: Pick<Prisma.TransactionClient, "providerModel">,
+  input: BulkEmbeddingUsageInput
+) {
+  return {
+    id: input.usageEventId,
+    ...storedTokenUsage(input.usage),
+    estimatedCostMicros: providerModelUsageCostMicros({
+      basis: await loadProviderModelCostBasis(db, input.embeddingProviderModelId),
+      reportedCostUsd: input.usage.costUsd ?? null,
+      usage: input.usage
+    }),
+    modelId: input.modelId,
+    provider: input.provider,
+    providerModelId: input.embeddingProviderModelId,
+    purpose: "knowledge_indexing" as const,
+    userId: input.ownerUserId
+  };
+}
+
 export function createPrismaKnowledgeBulkEmbeddingRepository(
   client: PrismaClient
 ) {
@@ -441,15 +469,7 @@ export function createPrismaKnowledgeBulkEmbeddingRepository(
         if (inserted.length !== input.passages.length) {
           throw new KnowledgeBulkEmbeddingError("knowledge_bulk_embedding_conflict");
         }
-        await tx.usageEvent.create({
-          data: {
-            id: input.usageEventId,
-            ...storedTokenUsage(input.usage),
-            modelId: input.modelId,
-            provider: input.provider,
-            userId: input.ownerUserId
-          }
-        });
+        await tx.usageEvent.create({ data: await bulkEmbeddingUsageRow(tx, input) });
 
         const artifactIds = [...new Set(input.passages.map(
           ({ sourceArtifactId }) => sourceArtifactId
@@ -490,6 +510,14 @@ export function createPrismaKnowledgeBulkEmbeddingRepository(
         isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
         maxWait: KNOWLEDGE_BULK_EMBEDDING_TRANSACTION_MAX_WAIT_MS,
         timeout: KNOWLEDGE_BULK_EMBEDDING_TRANSACTION_TIMEOUT_MS
+      }).catch(async (error: unknown) => {
+        // The response was paid even when its vectors are refused (a
+        // concurrent writer won, the target moved): its row is written under
+        // the same usage id, so a retry of this response never bills again.
+        await bulkEmbeddingUsageRow(client, input)
+          .then((row) => client.usageEvent.createMany({ data: [row], skipDuplicates: true }))
+          .catch(() => undefined);
+        throw error;
       });
     }
   };

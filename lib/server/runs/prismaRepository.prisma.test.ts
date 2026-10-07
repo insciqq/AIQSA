@@ -11,7 +11,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { providerTemplateIds } from "../../domain/providerTemplates";
-import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
 import { mcpRuntimeFingerprint, mcpSharedRuntimeFingerprint } from "../mcp/access";
 import {
   encryptMcpEnvelope,
@@ -48,6 +47,7 @@ import {
 } from "./toolLoopPersistence";
 import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
+import { USAGE_MESSAGE_ADMISSION_RETENTION_MS } from "../usageLimits/repository";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
@@ -559,6 +559,46 @@ describe("Prisma-backed run repository", () => {
         title: "Atomic personal first send",
         workspaceEnabled: false
       });
+    });
+  });
+
+  it("logs every interactive send and regeneration with its run and prunes only that user's rows past 25 hours", async () => {
+    await withRunUser(async ({ userId }) => {
+      const otherUserId = `run-repository-test-${randomUUID()}`;
+      await prisma.user.create({ data: { displayName: "Other admission log user", id: otherUserId, status: "active" } });
+      try {
+        const repository = createPrismaRunRepository(prisma);
+        const log = (owner: string) => prisma.usageMessageAdmission.findMany({
+          orderBy: { createdAt: "asc" }, select: { createdAt: true }, where: { userId: owner }
+        });
+        const runCreatedAt = async (runId: string) =>
+          (await prisma.modelRun.findUniqueOrThrow({ select: { createdAt: true }, where: { id: runId } })).createdAt;
+        const stale = new Date(Date.now() - USAGE_MESSAGE_ADMISSION_RETENTION_MS - 60_000);
+        const kept = new Date(Date.now() - USAGE_MESSAGE_ADMISSION_RETENTION_MS + 60 * 60_000);
+        await prisma.usageMessageAdmission.createMany({ data: [
+          { createdAt: stale, userId }, { createdAt: kept, userId }, { createdAt: stale, userId: otherUserId }
+        ] });
+        const chat = await prisma.chat.create({
+          data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Admission log", userId }
+        });
+        const sendInput = createRunInput({ chatId: chat.id, question: "A counted send", userId });
+        const sent = await repository.createRun(sendInput);
+        // The row carries its run's creation time; only this user's rows past the retention went.
+        expect(await log(userId)).toEqual([{ createdAt: kept }, { createdAt: await runCreatedAt(sent.runId) }]);
+        expect(await log(otherUserId)).toEqual([{ createdAt: stale }]);
+
+        await prisma.modelRun.update({ data: { status: "complete" }, where: { id: sent.runId } });
+        const regenerated = await repository.createRegenerationRun(
+          createRegenerationInput(sendInput, sent.userMessageId, sent.assistantMessageId)
+        );
+        expect(await log(userId)).toEqual([
+          { createdAt: kept }, { createdAt: await runCreatedAt(sent.runId) }, { createdAt: await runCreatedAt(regenerated.runId) }
+        ]);
+      } finally {
+        await prisma.user.deleteMany({ where: { id: otherUserId } });
+      }
+      // The log goes with its account.
+      expect(await prisma.usageMessageAdmission.count({ where: { userId: otherUserId } })).toBe(0);
     });
   });
 
@@ -1626,7 +1666,7 @@ describe("Prisma-backed run repository", () => {
       const recordUsage = (completeness: "partial" | "terminal") => repository.recordRunUsageEvents({
         chatId: active.chatId, runId: active.runId, userId,
         answerRoundUsage: { completeness, roundIndex: 1, usage },
-        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }]
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }]
       });
       expect(await recordUsage("partial")).toBe(true);
       expect(await repository.beginToolLoopProviderRound(correction)).toBe("conflict");
@@ -1643,7 +1683,7 @@ describe("Prisma-backed run repository", () => {
         roundIndex: 1, runId: cancelled.runId, userId })).toBe("started");
       expect(await repository.recordRunUsageEvents({ chatId: cancelled.chatId, runId: cancelled.runId, userId,
         answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage },
-        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }] })).toBe(true);
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] })).toBe(true);
       await repository.cancelRun({ payload: cancelPayload, runId: cancelled.runId, userId });
       expect(await repository.beginToolLoopProviderRound({ ...correction, runId: cancelled.runId })).toBe("cancelled");
     });
@@ -1663,7 +1703,7 @@ describe("Prisma-backed run repository", () => {
       const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
       const recordUsage = (runId: string, chatId: string, completeness: "partial" | "terminal") => repository.recordRunUsageEvents({
         chatId, runId, userId, answerRoundUsage: { completeness, roundIndex: 1, usage },
-        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }]
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }]
       });
       expect(await recordUsage(active.runId, active.chatId, "partial")).toBe(true);
       expect(await repository.beginToolLoopProviderRound(synthesis)).toBe("conflict");
@@ -2407,6 +2447,8 @@ describe("Prisma-backed run repository", () => {
         await expect(prisma.mcpRunBinding.count({
           where: { runtimeGenerationId: fixture.generation.id }
         })).resolves.toBe(0);
+        // The message-limit row written with the run rolls back with it.
+        await expect(prisma.usageMessageAdmission.count({ where: { userId } })).resolves.toBe(0);
         // The failed acceptance must leave previously stored defaults intact.
         await expect(storedDefaults(userId)).resolves.toMatchObject({
           defaultControlValues: priorControlValues
@@ -2680,18 +2722,21 @@ describe("Prisma-backed run repository", () => {
         inputTokenPriceUsdPerMillion: 11,
         modelId,
         outputTokenPriceUsdPerMillion: 12,
-        provider
+        provider,
+        webSearchPriceUsdPerThousand: 14
       }
     });
 
     try {
       const repository = createPrismaRunRepository(prisma);
 
+      // Run attributions also price the web searches answers and Search engines report.
       await expect(repository.loadModelPricing(provider, modelId)).resolves.toEqual({
         inputTokenPriceUsdPerMillion: 11,
         cachedInputTokenPriceUsdPerMillion: null,
         cacheWriteInputTokenPriceUsdPerMillion: null,
-        outputTokenPriceUsdPerMillion: 12
+        outputTokenPriceUsdPerMillion: 12,
+        webSearchPriceUsdPerThousand: 14
       });
 
       await prisma.providerModel.create({
@@ -2716,6 +2761,27 @@ describe("Prisma-backed run repository", () => {
       await prisma.providerConnection.deleteMany({
         where: { id: { in: connectionIds } }
       });
+    }
+  });
+
+  it("resolves a Knowledge deployment's own class and stored prices by its id", async () => {
+    const connectionId = `repo-cost-basis-${randomUUID()}`;
+    const modelId = `${connectionId}-embedding`;
+    await prisma.providerConnection.create({ data: { displayName: "Cost basis connection", family: "openrouter", id: connectionId } });
+    await prisma.providerModel.create({ data: { capabilities: {}, connectionId, defaultParams: {},
+      displayName: "Cost basis embedding", id: modelId, inputTokenPriceUsdPerMillion: 0.13,
+      modelClass: "embedding", modelId: "qwen/qwen3-embedding-8b", provider: "openrouter" } });
+    try {
+      const repository = createPrismaRunRepository(prisma);
+      await expect(repository.loadProviderModelCostBasis(modelId)).resolves.toEqual({
+        modelClass: "embedding",
+        pricing: { inputTokenPriceUsdPerMillion: 0.13, cachedInputTokenPriceUsdPerMillion: null,
+          cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null, webSearchPriceUsdPerThousand: null }
+      });
+      await expect(repository.loadProviderModelCostBasis(`${modelId}-deleted`)).resolves.toBeNull();
+    } finally {
+      await prisma.providerModel.deleteMany({ where: { id: modelId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
     }
   });
 
@@ -3618,7 +3684,7 @@ describe("Prisma-backed run repository", () => {
       });
       await expect(prisma.usageEvent.count({ where: { modelRunId: created.runId } })).resolves.toBe(1);
       await expect(repository.recordRunUsageEvents({ chatId: created.chatId, runId: created.runId, userId,
-        usageAttributions: [{ provider: "fake", modelId: "fake-qsa", usage: { inputTokens: 999 } }] }))
+        usageAttributions: [{ provider: "fake", modelId: "fake-qsa", purpose: "chat_answer", usage: { inputTokens: 999 } }] }))
         .resolves.toBe(false);
       const recovered = await repository.loadPublishedRunAnswer!({ runId: created.runId, userId });
       expect(recovered).toMatchObject({ finalText: completion.finalText, estimatedCostMicros: 17,
@@ -3775,9 +3841,11 @@ describe("Prisma-backed run repository", () => {
       const repository = createPrismaRunRepository(prisma);
       const active = await createActiveRun(repository, userId, "Incomplete usage");
       const usageAttributions = [
-        { modelId: "unavailable", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({}) },
-        { modelId: "partial", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 7 }) },
-        { modelId: "zero", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 0, outputTokens: 0 }) }
+        { modelId: "unavailable", provider: "fake", operationCount: 1, purpose: "chat_answer" as const, usage: normalizeTokenUsage({}) },
+        { modelId: "partial", provider: "fake", operationCount: 1, purpose: "web_search" as const,
+          usage: normalizeTokenUsage({ inputTokens: 7 }) },
+        { modelId: "zero", provider: "fake", operationCount: 1, purpose: "knowledge_retrieval" as const,
+          usage: normalizeTokenUsage({ inputTokens: 0, outputTokens: 0 }) }
       ];
       const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
       expect(await repository.recordRunUsageEvents(input)).toBe(true);
@@ -3798,32 +3866,99 @@ describe("Prisma-backed run repository", () => {
       const chat = await createPrismaChatRepository(prisma).getChat({ chatId: active.chatId, userId });
       expect(chat?.usageStats).toMatchObject({ totalTokens: 0, incompleteRecordCount: 2, recordCount: 3,
         knownCostRecordCount: 0, estimatedCostMicros: null });
-      const aggregate = await loadAdminUsageQueryRows(prisma);
-      expect(aggregate.userRows.find((row) => row.userId === userId)).toMatchObject({
-        _count: { _all: 1 }, incompleteUsageCount: 2,
-        _sum: { inputTokens: 7, outputTokens: 0, totalTokens: 0, reasoningTokens: null }
+      const userUsage = await prisma.usageEvent.findMany({
+        select: { modelRunId: true, usageCompleteness: true }, where: { userId }
       });
+      expect(new Set(userUsage.map((row) => row.modelRunId))).toEqual(new Set([active.runId]));
+      expect(userUsage.filter((row) => row.usageCompleteness !== "COMPLETE")).toHaveLength(2);
     });
   });
 
-  it.each(["complete", "partial", "error"] as const)("preserves independent decision usage through %s accounting", async terminal => {
+  it("keeps the web searches a run attribution paid for through its rewrite and read-back", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Search fees");
+      const usageAttributions = [
+        { modelId: "answer", provider: "anthropic", operationCount: 1, purpose: "chat_answer" as const, estimatedCostMicros: 23_000,
+          usage: normalizeTokenUsage({ inputTokens: 1_000, outputTokens: 100, webSearchCount: 2 }) },
+        { modelId: "sonar", provider: "openrouter", operationCount: 1, purpose: "web_search" as const, estimatedCostMicros: 14_200,
+          usage: normalizeTokenUsage({ inputTokens: 11, outputTokens: 5 }) }
+      ];
+      const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
+      // Rewriting the run's rows again keeps the same count, never a doubled one.
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      const receipts = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
+      expect(receipts.find((row) => row.modelId === "answer")).toMatchObject({ estimatedCostMicros: 23_000, usage: { webSearchCount: 2 } });
+      const search = receipts.find((row) => row.modelId === "sonar");
+      expect(search).toMatchObject({ estimatedCostMicros: 14_200 });
+      expect(search?.usage).not.toHaveProperty("webSearchCount");
+      expect(await prisma.usageEvent.findMany({ select: { modelId: true, webSearchCount: true },
+        where: { modelRunId: active.runId }, orderBy: { modelId: "asc" } }))
+        .toEqual([{ modelId: "answer", webSearchCount: 2 }, { modelId: "sonar", webSearchCount: null }]);
+    });
+  });
+
+  it("keeps a reported answer charge settled through the run's rewrite and read-back", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Reported answer charges");
+      const answer = { modelId: "deepseek/deepseek-v4.1-flash", provider: "openrouter", purpose: "chat_answer" as const };
+      const usageAttributions = [
+        { ...answer, costReported: true as const, estimatedCostMicros: 323, operationCount: 2,
+          usage: normalizeTokenUsage({ inputTokens: 20, outputTokens: 8 }) },
+        { ...answer, estimatedCostMicros: 41, operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 9, outputTokens: 2 }) }
+      ];
+      const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      const receipts = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
+      expect(receipts.map(({ costReported, estimatedCostMicros, operationCount }) => [costReported, estimatedCostMicros, operationCount])
+        .sort((left, right) => Number(right[1]) - Number(left[1]))).toEqual([[true, 323, 2], [undefined, 41, 1]]);
+      expect(await prisma.usageEvent.findMany({ select: { costReported: true, estimatedCostMicros: true },
+        where: { modelRunId: active.runId }, orderBy: { estimatedCostMicros: "desc" } }))
+        .toEqual([{ costReported: true, estimatedCostMicros: 323 }, { costReported: false, estimatedCostMicros: 41 }]);
+      // Only answer rows carry a reported charge.
+      await expect(prisma.usageEvent.create({ data: { userId, chatId: active.chatId, modelRunId: active.runId, provider: "openrouter",
+        modelId: "sonar", purpose: "web_search", costReported: true, estimatedCostMicros: 1 } }))
+        .rejects.toThrow(/UsageEvent_cost_reported_answer_check/u);
+    });
+  });
+
+  it.each(["complete", "partial", "error"] as const)("keeps every non-attribution row of the run through %s accounting", async terminal => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);
       const active = await createActiveRun(repository, userId, "Independent utility usage");
+      const run = { userId, chatId: active.chatId, modelRunId: active.runId, providerModelId: providerTemplateIds.fakeModel,
+        provider: "fake", inputTokens: 10, outputTokens: 2, totalTokens: 12, usageCompleteness: "COMPLETE" as const };
       const utility = await prisma.usageEvent.create({ data: {
-        knowledgeRelevance: true, providerModelId: providerTemplateIds.fakeModel,
+        knowledgeRelevance: true, purpose: "knowledge_retrieval", providerModelId: providerTemplateIds.fakeModel,
         userId, chatId: active.chatId, modelRunId: active.runId,
         provider: "fake", modelId: "utility", inputTokens: 80, outputTokens: 20,
         totalTokens: 100, estimatedCostMicros: 17, usageCompleteness: "COMPLETE"
       } });
       const interactiveUtility = await prisma.usageEvent.create({ data: {
-        optionalDecision: true, providerModelId: providerTemplateIds.fakeModel,
+        optionalDecision: true, purpose: "skill_selection", providerModelId: providerTemplateIds.fakeModel,
         userId, chatId: active.chatId, modelRunId: active.runId,
         provider: "fake", modelId: "interactive-utility", inputTokens: 10, outputTokens: 2,
         totalTokens: 12, estimatedCostMicros: 3, usageCompleteness: "COMPLETE"
       } });
+      // Receipts whose dispatch records are gone keep their flag and purpose;
+      // replica mode skips only the dispatch guards that would require those records.
+      const receipts = await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+        return Promise.all([
+          tx.usageEvent.create({ data: { ...run, chatTitleGeneration: true, purpose: "chat_title", modelId: "title" } }),
+          tx.usageEvent.create({ data: { ...run, visionAnalysis: true, purpose: "chat_vision", modelId: "vision" } }),
+          tx.usageEvent.create({ data: { ...run, chatPdfPreparation: true, purpose: "chat_pdf", modelId: "pdf-reader" } }),
+          tx.usageEvent.create({ data: { ...run, imageGeneration: true, purpose: "image_generation", modelId: "image" } })
+        ]);
+      });
+      // A run-linked row without a flag belongs to its writer by purpose alone.
+      const unflagged = await prisma.usageEvent.create({ data: { ...run, providerModelId: null, purpose: "chat_summary",
+        modelId: "summary" } });
       const completion = completionInput(active);
-      const usageAttributions = [{ provider: completion.provider, modelId: completion.modelId,
+      const usageAttributions = [{ provider: completion.provider, modelId: completion.modelId, purpose: "chat_answer" as const,
         usage: completion.usage, estimatedCostMicros: completion.estimatedCostMicros }];
       if (terminal === "complete") expect(await repository.completeRun(completion)).toBe(true);
       else if (terminal === "partial") expect(await repository.recordRunUsageEvents({
@@ -3832,11 +3967,14 @@ describe("Prisma-backed run repository", () => {
       else expect(await repository.settleRecoveredRunError({ runId: active.runId, userId,
         error: { code: "provider_failed", message: "Provider unavailable" }, outputEvents: [],
         usageAttributions })).toBe(true);
-      expect(await prisma.usageEvent.findUnique({ where: { id: utility.id } })).toEqual(utility);
-      expect(await prisma.usageEvent.findUnique({ where: { id: interactiveUtility.id } })).toEqual(interactiveUtility);
+      for (const kept of [utility, interactiveUtility, ...receipts, unflagged]) {
+        expect(await prisma.usageEvent.findUnique({ where: { id: kept.id } })).toEqual(kept);
+      }
       const recovered = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
       expect(recovered).toHaveLength(1);
-      expect(recovered[0]?.modelId).toBe(completion.modelId);
+      expect(recovered[0]).toMatchObject({ modelId: completion.modelId, purpose: "chat_answer" });
+      expect(await prisma.usageEvent.findMany({ select: { purpose: true },
+        where: { modelRunId: active.runId, modelId: completion.modelId } })).toEqual([{ purpose: "chat_answer" }]);
     });
   });
 
@@ -3849,6 +3987,7 @@ describe("Prisma-backed run repository", () => {
           estimatedCostMicros: 11,
           modelId: "answer-model",
           provider: "openai",
+          purpose: "chat_answer" as const,
           usage: {
             inputTokens: 2,
             outputTokens: 1,
@@ -3860,6 +3999,7 @@ describe("Prisma-backed run repository", () => {
           estimatedCostMicros: 13,
           modelId: "perplexity/sonar-pro-search",
           provider: "openrouter",
+          purpose: "web_search" as const,
           usage: {
             inputTokens: 3,
             outputTokens: 2,
@@ -3886,7 +4026,7 @@ describe("Prisma-backed run repository", () => {
         })
       ).resolves.toBe(true);
 
-      const [run, chat, usageEvents, adminUsage] = await Promise.all([
+      const [run, chat, usageEvents] = await Promise.all([
         prisma.modelRun.findUniqueOrThrow({
           select: {
             estimatedCostMicros: true,
@@ -3913,12 +4053,12 @@ describe("Prisma-backed run repository", () => {
             modelId: true,
             outputTokens: true,
             provider: true,
+            purpose: true,
             reasoningTokens: true,
             totalTokens: true
           },
           where: { modelRunId: active.runId }
-        }),
-        loadAdminUsageQueryRows(prisma)
+        })
       ]);
 
       expect(run).toEqual({
@@ -3940,6 +4080,7 @@ describe("Prisma-backed run repository", () => {
           modelId: "answer-model",
           outputTokens: 1,
           provider: "openai",
+          purpose: "chat_answer",
           reasoningTokens: 0,
           totalTokens: 3
         },
@@ -3948,28 +4089,17 @@ describe("Prisma-backed run repository", () => {
           modelId: "perplexity/sonar-pro-search",
           outputTokens: 2,
           provider: "openrouter",
+          purpose: "web_search",
           reasoningTokens: 1,
           totalTokens: 5
         }
       ]);
-      expect(adminUsage.userRows.find((row) => row.userId === userId)?._count._all).toBe(1);
-      expect(
-        adminUsage.providerModelRows
-          .filter((row) => row.userId === userId)
-          .map((row) => row._count._all)
-      ).toEqual([1, 1]);
-
       await prisma.modelRun.delete({ where: { id: active.runId } });
-      const detachedUsage = await loadAdminUsageQueryRows(prisma);
-      expect(detachedUsage.userRows.find((row) => row.userId === userId)).toMatchObject({
-        _count: { _all: 0 },
-        _sum: { totalTokens: 8 }
+      const detachedUsage = await prisma.usageEvent.findMany({
+        select: { modelRunId: true, totalTokens: true }, where: { userId }
       });
-      expect(
-        detachedUsage.providerModelRows
-          .filter((row) => row.userId === userId)
-          .map((row) => row._count._all)
-      ).toEqual([0, 0]);
+      expect(detachedUsage.map((row) => row.modelRunId)).toEqual([null, null]);
+      expect(detachedUsage.reduce((sum, row) => sum + (row.totalTokens ?? 0), 0)).toBe(8);
     });
   });
 
@@ -4008,6 +4138,7 @@ describe("Prisma-backed run repository", () => {
       const usageAttributions = [{
         modelId: "tool-model",
         provider: "tool-provider",
+        purpose: "knowledge_retrieval" as const,
         usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
       }];
       const usageCheckpoint = {
@@ -4040,6 +4171,7 @@ describe("Prisma-backed run repository", () => {
       })).resolves.toEqual([expect.objectContaining({
         modelId: "tool-model",
         provider: "tool-provider",
+        purpose: "knowledge_retrieval",
         usage: expect.objectContaining({ inputTokens: 3, totalTokens: 3 })
       })]);
 
@@ -4050,6 +4182,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "incorrect-model",
           provider: "tool-provider",
+          purpose: "knowledge_retrieval",
           usage: { inputTokens: 99, outputTokens: 0, reasoningTokens: 0, totalTokens: 99 }
         }],
         userId
@@ -4091,6 +4224,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 6, reasoningTokens: 0, totalTokens: 18 }
         }],
         userId
@@ -4102,6 +4236,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 0, totalTokens: 20 }
         }],
         userId
@@ -4113,6 +4248,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 0, totalTokens: 20 }
         }],
         userId
@@ -4128,6 +4264,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 9, reasoningTokens: 0, totalTokens: 21 }
         }],
         userId
@@ -4173,7 +4310,7 @@ describe("Prisma-backed run repository", () => {
       });
       const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.",
         sourceDigest: "b".repeat(64), sourceRefs: ["message-old"] };
-      const summaryUsage = [{ modelId: "gpt-test", operationCount: 1, provider: "openai",
+      const summaryUsage = [{ modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer" as const,
         usage: { inputTokens: 900, outputTokens: 40, reasoningTokens: 0, totalTokens: 940 } }];
       const receipt = (entry: ContextSummaryAttempt, extra: Partial<{ summary: ContextSummary; usage: typeof summaryUsage }> = {}) =>
         repository.recordRunUsageEvents({ chatId: active.chatId, runId: active.runId, userId, usageAttributions: extra.usage ?? [],
@@ -4352,6 +4489,7 @@ describe("Prisma-backed run repository", () => {
             estimatedCostMicros: 19,
             modelId: "fake-qsa",
             provider: "fake",
+            purpose: "chat_answer",
             usage: {
               inputTokens: 7,
               outputTokens: 2,

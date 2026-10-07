@@ -28,7 +28,7 @@ DO $$ BEGIN
         'inputTokenPriceUsdPerMillion', NULLIF((original.snapshot ->> 'inputTokenPriceMicros')::numeric, 0),
         'cachedInputTokenPriceUsdPerMillion', NULL, 'cacheWriteInputTokenPriceUsdPerMillion', NULL,
         'outputTokenPriceUsdPerMillion', NULLIF((original.snapshot ->> 'outputTokenPriceMicros')::numeric, 0),
-        'priceSource', 'catalog') <> to_jsonb(model)) THEN
+        'webSearchPriceUsdPerThousand', NULL, 'priceSource', 'catalog') <> to_jsonb(model)) THEN
     RAISE EXCEPTION 'optional_decisions_changed_existing_model';
   END IF;
   PERFORM 'decision'::"ProviderModelClass";

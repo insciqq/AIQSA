@@ -290,7 +290,17 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
       const decisionClaims = await Promise.all(Array.from({ length: 4 }, () => relevance.start(decisionInput)));
       const decisionId = decisionClaims.find((id): id is string => id !== null)!;
       expect(decisionClaims.filter(Boolean)).toHaveLength(1);
-      const unknown = { dispatched: true, failureCode: "knowledge_relevance_cancelled", receipt: null, usefulness: null };
+      // The usage row is claimed with the attempt, before any dispatch.
+      expect(await prisma.usageEvent.findMany({ where: { knowledgeRelevanceAttemptId: decisionId } })).toEqual([
+        expect.objectContaining({ usageCompleteness: "UNAVAILABLE", estimatedCostMicros: null, knowledgeRelevance: true,
+          purpose: "knowledge_retrieval", modelRunId: run.id, userId, providerModelId: modelId, operationCount: 1 })]);
+      const undispatchedId = await relevance.start({ ...decisionInput, ordinal: 2 });
+      expect(undispatchedId).toEqual(expect.any(String));
+      expect(await prisma.usageEvent.count({ where: { knowledgeRelevanceAttemptId: undispatchedId! } })).toBe(1);
+      await relevance.settle(relevanceOwner, undispatchedId!, { dispatched: false, failureCode: "decision_input_invalid",
+        receipt: null, usefulness: null });
+      expect(await prisma.usageEvent.count({ where: { knowledgeRelevanceAttemptId: undispatchedId! } })).toBe(0);
+      const unknown ={ dispatched: true, failureCode: "knowledge_relevance_cancelled", receipt: null, usefulness: null };
       await relevance.settle(relevanceOwner, decisionId, unknown);
       const unavailableUsage = await prisma.usageEvent.findUniqueOrThrow({ where: { knowledgeRelevanceAttemptId: decisionId } });
       expect(unavailableUsage.usageCompleteness).toBe("UNAVAILABLE");
@@ -300,7 +310,8 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
       await Promise.all([relevance.settle(relevanceOwner, decisionId, late), relevance.settle(relevanceOwner, decisionId, late)]);
       const recoveredUsage = await prisma.usageEvent.findUniqueOrThrow({ where: { knowledgeRelevanceAttemptId: decisionId } });
       expect(recoveredUsage).toMatchObject({ id: unavailableUsage.id, inputTokens: 80, outputTokens: 20, totalTokens: 100,
-        estimatedCostMicros: 17, usageCompleteness: "COMPLETE", knowledgeRelevance: true, modelRunId: run.id, userId });
+        estimatedCostMicros: 17, usageCompleteness: "COMPLETE", knowledgeRelevance: true, purpose: "knowledge_retrieval",
+        modelRunId: run.id, userId });
       expect(await prisma.knowledgeRelevanceAttempt.findUnique({ where: { id: decisionId } })).toMatchObject({
         state: "settled", usefulness: null, failureCode: "knowledge_relevance_cancelled" });
       expect(await relevance.start(decisionInput)).toBeNull();
@@ -399,7 +410,7 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
         receiptHash,
         state: "settled"
       });
-      expect(await relevance.start({ ...decisionInput, ordinal: 2 })).toBeNull();
+      expect(await relevance.start({ ...decisionInput, ordinal: 3 })).toBeNull();
     } finally {
       if (chatId) await prisma.chat.deleteMany({ where: { id: chatId, userId } });
       await prisma.user.deleteMany({ where: { id: userId } });

@@ -40,11 +40,6 @@ export type {
   AdminSetUserGroupsInput,
   AdminSetUserRoleInput,
   AdminSetUserRoleResult,
-  AdminUsageDashboard,
-  AdminUsageGroupRecord,
-  AdminUsageProviderModelRecord,
-  AdminUsageTokenTotals,
-  AdminUsageUserRecord,
   AdminUserRecord
 } from "./adminRepositoryContract";
 

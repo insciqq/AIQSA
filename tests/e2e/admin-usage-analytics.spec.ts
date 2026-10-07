@@ -1,0 +1,265 @@
+import { randomUUID } from "node:crypto";
+import { PrismaClient, type Prisma } from "@prisma/client";
+import { expect, test, type Page } from "@playwright/test";
+import { decodeAdminUsageAnalyticsResponse } from "../../lib/contracts/adminUsageAnalytics";
+import { textMessageContent } from "../../lib/domain/content";
+
+/**
+ * The Usage management view over a realistic synthetic installation: several
+ * users and groups, a few models, daily chat and scheduled runs over two
+ * months (so the previous window has data) and system work beside them: chat
+ * titles and Memory processing with known prices, Memory search and Knowledge
+ * indexing embeddings without one. Screenshots cover every layout and theme.
+ */
+const prisma = new PrismaClient();
+test.describe.configure({ mode: "serial", timeout: 300_000 });
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const tag = randomUUID().slice(0, 6);
+const groups = ["Engineering", "Marketing", "Support"].map((name) => ({ id: randomUUID(), name: `${name} ${tag}` }));
+const models = [
+  { modelId: "gpt-5.5", provider: "openai", inputPrice: 1.25, outputPrice: 10 },
+  { modelId: "claude-sonnet-5-5", provider: "anthropic", inputPrice: 3, outputPrice: 15 },
+  { modelId: "gemini-3-flash", provider: "gemini", inputPrice: 0.3, outputPrice: 2.5 }
+];
+const systemModel = { modelId: "gpt-5-mini", provider: "openai", inputPrice: 0.25, outputPrice: 2 };
+const embeddingModel = { modelId: "text-embedding-3-small", provider: "openai" };
+const people = [
+  { name: "Mira Petrova", groups: [0], model: 1, intensity: 9 },
+  { name: "Oleg Sokolov", groups: [0], model: 0, intensity: 7 },
+  { name: "Anna Kim", groups: [1], model: 2, intensity: 5 },
+  { name: "Ivan Orlov", groups: [1, 2], model: 0, intensity: 3 },
+  { name: "Sofia Lind", groups: [2], model: 2, intensity: 2 },
+  { name: "Pavel Gromov", groups: [0, 2], model: 1, intensity: 1 }
+].map((person) => ({ ...person, id: randomUUID(), email: `${person.name.toLowerCase().replace(" ", ".")}.${tag}@example.test` }));
+
+function random(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+    return state / 2_147_483_648;
+  };
+}
+
+async function seed(): Promise<void> {
+  await prisma.group.createMany({ data: groups });
+  for (const person of people) {
+    await prisma.user.create({ data: { displayName: person.name, email: person.email, id: person.id, status: "active" } });
+    await prisma.userGroup.createMany({ data: person.groups.map((index) => ({ groupId: groups[index]!.id, role: "member", userId: person.id })) });
+  }
+  const next = random(42);
+  const now = Date.now();
+  for (const [personIndex, person] of people.entries()) {
+    const chatId = randomUUID();
+    await prisma.chat.create({ data: { id: chatId, title: "Synthetic usage", userId: person.id } });
+    let parent: string | null = null;
+    const messages: Prisma.MessageCreateManyInput[] = [];
+    const runs: Prisma.ModelRunCreateManyInput[] = [];
+    const usage: Prisma.UsageEventCreateManyInput[] = [];
+    for (let day = 59; day >= 0; day -= 1) {
+      const count = Math.max(0, Math.round(person.intensity * (0.4 + next()) * (day < 30 ? 1.25 : 1) - (day % 7 >= 5 ? 3 : 0)));
+      for (let index = 0; index < count; index += 1) {
+        const createdAt = new Date(now - day * DAY_MS - Math.floor(next() * 8 * 60 * 60 * 1000) - 60_000);
+        const scheduled = personIndex < 2 && index === 0;
+        const questionId = randomUUID();
+        const answerId = randomUUID();
+        const runId = randomUUID();
+        const model = models[scheduled ? 2 : person.model]!;
+        messages.push({ chatId, content: textMessageContent("Q"), createdAt, id: questionId, parentMessageId: parent,
+          role: "user", status: "complete" });
+        messages.push({ chatId, content: textMessageContent("A"), createdAt, id: answerId, parentMessageId: questionId,
+          role: "assistant", status: "complete" });
+        parent = answerId;
+        runs.push({
+          assistantMessageId: answerId, chatId, createdAt, id: runId, modelId: model.modelId, normalizedRequest: {},
+          provider: model.provider, status: "complete", userId: person.id, userMessageId: questionId,
+          ...(scheduled ? { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() } : {})
+        });
+        const inputTokens = Math.round(4_000 + next() * 40_000);
+        const cachedInputTokens = Math.round(inputTokens * next() * 0.6);
+        const outputTokens = Math.round(300 + next() * 3_000);
+        const cost = Math.round(((inputTokens - cachedInputTokens) * model.inputPrice + cachedInputTokens * model.inputPrice * 0.1 +
+          outputTokens * model.outputPrice));
+        usage.push({ cachedInputTokens, chatId, createdAt, estimatedCostMicros: cost, inputTokens, modelId: model.modelId,
+          modelRunId: runId, outputTokens, provider: model.provider, purpose: "chat_answer", totalTokens: inputTokens + outputTokens,
+          usageCompleteness: "COMPLETE", userId: person.id });
+      }
+      if (day % 2 === 0) {
+        const inputTokens = Math.round(2_000 + next() * 20_000);
+        usage.push({ createdAt: new Date(now - day * DAY_MS - 3 * 60 * 60 * 1000), inputTokens, modelId: embeddingModel.modelId,
+          provider: embeddingModel.provider, purpose: "knowledge_indexing", totalTokens: inputTokens, usageCompleteness: "PARTIAL",
+          userId: person.id });
+      }
+      // System work beside the answers: Memory search embeddings without a price, priced Memory processing and titles.
+      if (count > 0) {
+        const inputTokens = Math.round(200 + next() * 800);
+        usage.push({ chatId, createdAt: new Date(now - day * DAY_MS - 2 * 60 * 60 * 1000), inputTokens,
+          modelId: embeddingModel.modelId, provider: embeddingModel.provider, purpose: "memory_retrieval", totalTokens: inputTokens,
+          usageCompleteness: "COMPLETE", userId: person.id });
+      }
+      for (const [purpose, every, minutes] of [["memory_processing", 3, 150], ["chat_title", 4, 170]] as const) {
+        if (day % every !== personIndex % every) continue;
+        const inputTokens = Math.round((purpose === "chat_title" ? 300 : 3_000) + next() * 4_000);
+        const outputTokens = Math.round(20 + next() * 600);
+        usage.push({ ...(purpose === "chat_title" ? { chatId } : {}), createdAt: new Date(now - day * DAY_MS - minutes * 60 * 1000),
+          estimatedCostMicros: Math.round(inputTokens * systemModel.inputPrice + outputTokens * systemModel.outputPrice), inputTokens,
+          modelId: systemModel.modelId, outputTokens, provider: systemModel.provider, purpose, totalTokens: inputTokens + outputTokens,
+          usageCompleteness: "COMPLETE", userId: person.id });
+      }
+    }
+    // One statement per table: a message's parent is an earlier row of the same insert.
+    await prisma.message.createMany({ data: messages });
+    await prisma.modelRun.createMany({ data: runs });
+    await prisma.usageEvent.createMany({ data: usage });
+  }
+}
+
+async function signIn(page: Page, theme: "dark" | "light", baseURL: string): Promise<void> {
+  await page.context().addCookies([{ name: "aiqsa.theme", url: baseURL, value: theme }]);
+  const auth = await page.request.post("/api/auth/token", { data: { token: "aiqsa-test-token" } });
+  expect(auth.ok()).toBe(true);
+}
+
+async function expectNoPageOverflow(page: Page): Promise<void> {
+  const overflowing = await page.evaluate(() => {
+    const limit = document.documentElement.clientWidth + 0.5;
+    return [...document.querySelectorAll<HTMLElement>("body *")]
+      // Content inside a visually hidden clip or a local horizontal scroller cannot widen the page.
+      .filter((element) => {
+        if (element.closest(".sr-only") || element.getBoundingClientRect().right <= limit) return false;
+        for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+          if (getComputedStyle(parent).overflowX !== "visible" && parent.getBoundingClientRect().right <= limit) return false;
+        }
+        return true;
+      })
+      .slice(0, 12)
+      .map((element) => `${element.tagName.toLowerCase()}${element.dataset.testid ? `[${element.dataset.testid}]` : ""}` +
+        ` .${String(element.className).slice(0, 80)} right=${Math.round(element.getBoundingClientRect().right)}`);
+  });
+  expect(overflowing, "elements beyond the viewport's right edge").toEqual([]);
+  await expect.poll(() => page.evaluate(() => ({
+    body: document.body.scrollWidth <= document.body.clientWidth,
+    document: document.documentElement.scrollWidth <= document.documentElement.clientWidth
+  }))).toEqual({ body: true, document: true });
+}
+
+test.beforeAll(async () => { await seed(); });
+test.afterAll(async () => {
+  await prisma.user.deleteMany({ where: { id: { in: people.map((person) => person.id) } } });
+  await prisma.group.deleteMany({ where: { id: { in: groups.map((group) => group.id) } } });
+  await prisma.$disconnect();
+});
+
+test("usage analytics endpoint and CSV describe the seeded period", async ({ page }, testInfo) => {
+  await signIn(page, "light", testInfo.project.use.baseURL!);
+  const response = await page.request.get("/api/admin/usage?period=30d&tz=Europe/Moscow");
+  expect(response.ok()).toBe(true);
+  const analytics = decodeAdminUsageAnalyticsResponse(await response.json());
+  expect(analytics).not.toBeNull();
+  const usage = analytics!.usage;
+  expect(usage.series).toHaveLength(30);
+  expect(usage.previous?.systemEstimatedCostMicros ?? 0).toBeGreaterThan(0);
+  const seeded = usage.byUser.filter((row) => people.some((person) => person.id === row.userId));
+  expect(seeded).toHaveLength(people.length);
+  // Every seeded user has priced system work and unpriced embeddings beside it.
+  for (const row of seeded) {
+    expect(row.system.recordCount).toBeGreaterThan(row.system.knownCostRecordCount);
+    expect(row.system.estimatedCostMicros ?? 0).toBeGreaterThan(0);
+    expect(row.system.estimatedCostMicros ?? 0).toBeLessThan(row.estimatedCostMicros ?? 0);
+  }
+  expect(usage.byCategory.map((row) => row.category)).toEqual(expect.arrayContaining(["chat", "scheduled", "system"]));
+  expect(usage.bySystemFunction.map((row) => row.purpose)).toEqual(
+    expect.arrayContaining(["chat_title", "knowledge_indexing", "memory_processing", "memory_retrieval"]));
+  const embedding = usage.bySystemModel.find((row) => row.purposes.includes("knowledge_indexing") && row.purposes.includes("memory_retrieval"));
+  expect(embedding, "the embedding model serves Knowledge indexing and Memory search").toBeDefined();
+  // System models stay out of the models people chose; the answer models stay in.
+  expect(usage.byModel.some((row) => row.provider === embedding!.provider && row.modelId === embedding!.modelId)).toBe(false);
+  expect(usage.byModel.length).toBeGreaterThanOrEqual(models.length);
+
+  const csv = await page.request.get("/api/admin/usage/export?period=30d&tz=Europe/Moscow");
+  expect(csv.ok()).toBe(true);
+  expect(csv.headers()["content-type"]).toContain("text/csv");
+  expect(csv.headers()["content-disposition"]).toMatch(/^attachment; filename="aiqsa-usage-30d-\d{4}-\d{2}-\d{2}\.csv"$/u);
+  const lines = (await csv.text()).replace(/^﻿/u, "").trim().split("\r\n");
+  expect(lines[0]).toBe("period_start,user_email,user_name,groups,category,purpose,provider,model,runs,records,input_tokens," +
+    "cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_tokens,total_tokens,estimated_cost_usd,cost_known_records");
+  expect(lines.length).toBeGreaterThan(30);
+  for (const pair of [",chat,chat_answer,", ",scheduled,chat_answer,", ",system,memory_processing,", ",system,memory_retrieval,"]) {
+    expect(lines.some((line) => line.includes(pair)), pair).toBe(true);
+  }
+});
+
+for (const viewport of [
+  { name: "desktop", width: 1440, height: 1000 },
+  { name: "tablet-portrait", width: 768, height: 1024 },
+  { name: "tablet-landscape", width: 1024, height: 768 },
+  { name: "phone-portrait", width: 390, height: 844 },
+  { name: "phone-landscape", width: 844, height: 390 }
+]) {
+  for (const theme of ["light", "dark"] as const) {
+    test(`usage management view ${viewport.name} ${theme}`, async ({ page }, testInfo) => {
+      await page.setViewportSize(viewport);
+      await signIn(page, theme, testInfo.project.use.baseURL!);
+      await page.goto("/admin?section=usage");
+      const section = page.getByTestId("admin-section-usage");
+      const summary = section.getByLabel("Usage summary");
+      await expect(summary).toBeVisible();
+      await expect(summary.getByTestId("usage-kpi-cost")).toContainText("$");
+      await expect(summary.getByTestId("usage-kpi-system")).toContainText("$");
+      await expect(summary.getByTestId("usage-kpi-system")).toContainText("of the estimated cost");
+      await page.screenshot({ path: testInfo.outputPath("01-top.png") });
+
+      const chart = section.getByTestId("usage-spend-chart");
+      await chart.scrollIntoViewIfNeeded();
+      const box = await chart.boundingBox();
+      if (box) await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.6);
+      await expect(section.getByTestId("usage-chart-tooltip")).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath("02-chart-hover.png") });
+
+      await section.getByRole("group", { name: "Chart metric" }).getByRole("button", { name: "Tokens" }).click();
+      await page.screenshot({ path: testInfo.outputPath("03-chart-tokens.png") });
+
+      const byModel = section.getByTestId("admin-usage-by-model");
+      await byModel.scrollIntoViewIfNeeded();
+      await expect(section.getByTestId("admin-usage-by-source").getByText("System", { exact: true })).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath("04-breakdowns.png") });
+
+      const system = section.getByTestId("admin-usage-system");
+      const functions = system.getByTestId("admin-usage-system-functions");
+      await functions.scrollIntoViewIfNeeded();
+      for (const label of ["Memory processing", "Chat titles", "Memory search", "Knowledge indexing"]) {
+        await expect(functions.getByText(label, { exact: true })).toBeVisible();
+      }
+      await page.screenshot({ path: testInfo.outputPath("05-system-functions.png") });
+
+      const systemModels = viewport.width >= 1024
+        ? page.getByRole("region", { name: "System model usage table" })
+        : system.getByTestId("admin-usage-system-models-mobile");
+      await systemModels.scrollIntoViewIfNeeded();
+      await expect(systemModels.getByText(/Knowledge indexing/u).first()).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath("06-system-models.png") });
+
+      const users = section.getByText("Mira Petrova").locator("visible=true").first();
+      await users.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("07-users.png") });
+
+      const groupsHeading = section.getByText(groups[0]!.name).locator("visible=true").last();
+      await groupsHeading.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("08-groups.png") });
+      await expectNoPageOverflow(page);
+
+      if (viewport.name === "desktop") {
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await section.getByRole("combobox").first().selectOption("90d");
+        await expect(page).toHaveURL(/filter=90d/u);
+        await expect(summary.getByTestId("usage-kpi-cost")).toContainText("$");
+        await page.screenshot({ path: testInfo.outputPath("09-90d.png") });
+        await section.getByRole("combobox").first().selectOption("12m");
+        await expect(page).toHaveURL(/filter=12m/u);
+        await expect(summary.getByTestId("usage-kpi-cost")).toContainText("$");
+        await chart.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: testInfo.outputPath("10-12m.png") });
+      }
+    });
+  }
+}

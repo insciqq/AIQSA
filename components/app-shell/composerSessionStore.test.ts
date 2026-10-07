@@ -524,19 +524,40 @@ describe("composer session store", () => {
     store.activateSession(key);
     store.setDraft("too much context");
     const first = store.beginSend(key)!;
-    store.finishSend(first, "failed", "Context did not fit", true, null, true);
+    store.finishSend(first, "failed", "Context did not fit", true, null, "context_too_large");
     expect(session(key)).toMatchObject({ draft: "too much context", contextRejectionGeneration: first.generation });
     store.setDraft("shorter");
     expect(session(key).contextRejectionGeneration).toBeNull();
     const second = store.beginSend(key)!;
     store.setDraft("new draft while waiting");
-    store.finishSend(second, "failed", "Context did not fit", true, null, true);
+    store.finishSend(second, "failed", "Context did not fit", true, null, "context_too_large");
     expect(session(key)).toMatchObject({
       draft: "shorter\n\nnew draft while waiting",
       contextRejectionGeneration: null,
       operationErrorRetryable: false
     });
   });
+
+  it.each(["usage_budget_exhausted", "installation_budget_exhausted", "message_rate_limited"])(
+    "keeps the draft and the reason of a %s refusal without offering Retry",
+    (failureCode) => {
+      const key = composerSessionKey(`usage-limit-${failureCode}`);
+      const store = useComposerSessionStore.getState();
+      store.activateSession(key);
+      store.setDraft("Summarize the report");
+      const send = store.beginSend(key)!;
+      store.finishSend(send, "failed", "Your monthly budget is used up.", true, null, failureCode);
+      expect(session(key)).toMatchObject({
+        draft: "Summarize the report",
+        operationError: "Your monthly budget is used up.",
+        operationErrorRetryable: false
+      });
+      // Any other refusal before a run stays retryable.
+      const again = store.beginSend(key)!;
+      store.finishSend(again, "failed", "Send failed. Your draft was preserved.", true, null, "send_failed");
+      expect(session(key)).toMatchObject({ draft: "Summarize the report", operationErrorRetryable: true });
+    }
+  );
 
   it("restores a refused send exactly when only non-content controls changed while it was pending", () => {
     const key = composerSessionKey("workspace-toggle");

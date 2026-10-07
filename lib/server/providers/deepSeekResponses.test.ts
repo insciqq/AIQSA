@@ -370,7 +370,9 @@ describe("DeepSeek Responses provider", () => {
     expect(result).toMatchObject({
       findings: "Verified finding",
       sourceAttribution: "provider_unavailable",
-      sources: []
+      sources: [],
+      // DeepSeek reports its search calls; it publishes no fee, so only a configured price charges them.
+      usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6, webSearchCount: 1 }
     });
     expect(requestBody).toMatchObject({
       tool_choice: "auto",
@@ -389,7 +391,8 @@ describe("DeepSeek Responses provider", () => {
           { id: "search-1", status: "completed", type: "web_search_call" },
           { content: [{ text: "Current finding", type: "output_text" }], type: "message" }
         ],
-        status: "completed"
+        status: "completed",
+        usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 }
       }),
       stream: async () => { throw new Error("unexpected stream"); }
     };
@@ -414,5 +417,9 @@ describe("DeepSeek Responses provider", () => {
       },
       type: "artifact"
     });
+    // The answer's own usage carries its hosted search calls for the answer row's fee.
+    expect(events).toContainEqual({ data: expect.objectContaining({ inputTokens: 5, webSearchCount: 1 }), type: "usage" });
+    if (!next.done) throw new Error("expected the answer to finish");
+    expect(next.value.usage).toMatchObject({ inputTokens: 5, webSearchCount: 1 });
   });
 });

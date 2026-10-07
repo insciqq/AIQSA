@@ -1,6 +1,7 @@
 import { normalizeTokenUsage } from "../../domain/usage";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import { knowledgeEvidenceFromToolResult } from "./toolResult";
+import type { KnowledgeBilledCall } from "./retrievalTypes";
+import { knowledgeEvidenceFromToolResult, knowledgeFailureBilledCalls } from "./toolResult";
 import { KNOWLEDGE_SEARCH_MAPPING_VERSION, KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION } from "../search/opensearch/contract";
 
 const messages = {
@@ -49,11 +50,27 @@ export function knowledgeSearchFailureCode(error: unknown): KnowledgeSearchFailu
   }
   return null;
 }
+/** Paid calls of failed operations, keyed by the error each operation threw,
+ * so the error keeps its identity for every caller's own classification. */
+const failedOperationBilledCalls = new WeakMap<object, readonly KnowledgeBilledCall[]>();
+
+/** Attach the paid calls a Knowledge operation made before it failed to the
+ * error it throws; its failure result carries them and the run accounts them
+ * once, with the tool call. */
+export function recordKnowledgeFailureBilledCalls(error: unknown, calls: readonly KnowledgeBilledCall[]): void {
+  if (calls.length > 0 && typeof error === "object" && error !== null) {
+    failedOperationBilledCalls.set(error, Object.freeze([...calls]));
+  }
+}
+
 export function knowledgeSearchFailureToolResult(call: ModelToolCall, error: unknown): ToolExecutionResult {
   const code = knowledgeSearchFailureCode(error) ?? "knowledge_retrieval_failed";
+  const recorded = typeof error === "object" && error !== null ? failedOperationBilledCalls.get(error) : undefined;
+  const billedCalls = recorded ? knowledgeFailureBilledCalls(recorded) : null;
   return { callId: call.id, name: call.name, status: "error",
     content: [{ text: knowledgeSearchFailureMessage(code), type: "text" }],
     rawPreview: { knowledgeFailure: {
+      ...(billedCalls?.length ? { billedCalls } : {}),
       code, mappingVersion: KNOWLEDGE_SEARCH_MAPPING_VERSION,
       physicalIndexVersion: KNOWLEDGE_SEARCH_PHYSICAL_INDEX_VERSION,
       scopeFingerprint: error instanceof KnowledgeSearchFailure ? error.scopeFingerprint : null,

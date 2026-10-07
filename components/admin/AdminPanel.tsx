@@ -11,6 +11,7 @@ import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnav
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminGroupsSection } from "@/components/admin/groups/AdminGroupsSection";
+import { AdminUsageLimitsSection } from "@/components/admin/limits/AdminUsageLimitsSection";
 import { AdminMcpSection } from "@/components/admin/mcp/AdminMcpSection";
 import { AdminSkillsSection } from "@/components/admin/skills/AdminSkillsSection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
@@ -49,6 +50,7 @@ import {
 import { useAdminUsersController, type AdminUsersController } from "@/components/admin/useAdminUsersController";
 import type { AdminDashboard } from "@/lib/contracts/admin";
 import type { AdminAttentionTarget } from "@/lib/contracts/adminAttention";
+import { DEFAULT_ADMIN_USAGE_PERIOD } from "@/lib/contracts/adminUsageAnalytics";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 type AdminPanelProps = Readonly<{
@@ -199,6 +201,8 @@ function AdminSectionContent({
       );
     case "access-rules":
       return <AdminSignupRulesSection controller={accessRules} groups={dashboard.groups} />;
+    case "limits":
+      return <AdminUsageLimitsSection reportNotice={reportNotice} />;
     case "groups":
       return (
         <AdminGroupsSection
@@ -238,7 +242,12 @@ function AdminSectionContent({
         />
       );
     case "usage":
-      return <AdminUsageSection catalog={dashboard.catalog} usage={dashboard.usage} />;
+      return (
+        <AdminUsageSection
+          onPeriodChange={(period) => navigation.selectFilter(period === DEFAULT_ADMIN_USAGE_PERIOD ? null : period)}
+          period={navigation.activeFilter}
+        />
+      );
   }
 
   return assertNeverSection(activeSection);

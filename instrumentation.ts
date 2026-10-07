@@ -45,6 +45,14 @@ export async function register(): Promise<void> {
       reportSubsystemFailure({ subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" });
     }
     try {
+      const { startDefaultUsageLimitAlerts } = await import("./lib/server/usageLimits/defaultAlerts");
+      startDefaultUsageLimitAlerts();
+      reportSubsystemHealthy("usage_alerts", "startup");
+    } catch {
+      // Budget alerts are best effort; limits and Control Center attention work without them.
+      reportSubsystemFailure({ subsystem: "usage_alerts", stage: "startup", code: "usage_alert_startup_failed", action: "degrade" });
+    }
+    try {
       const { getDefaultAttachmentProcessingCoordinator } = await import(
         "./lib/server/uploads/defaultProcessing"
       );

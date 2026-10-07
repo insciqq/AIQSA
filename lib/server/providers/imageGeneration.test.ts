@@ -138,6 +138,17 @@ describe("image adapters", () => {
     expect(body.provider).toEqual({ data_collection: "deny", allow_fallbacks: false, only: ["fixture"], order: ["fixture"] });
     expect(body.input_references[0].image_url.url).toBe(`data:image/png;base64,${png.toString("base64")}`);
   });
+  it("reports OpenRouter's image cost, adding the upstream charge of a BYOK call", async () => {
+    const generate = async (usage: Record<string, unknown>) => (await createImageGenerationAdapter({ connection,
+      model: model("openrouter"), secret: "fixture-secret", fetchFn: vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+        data: [{ b64_json: png.toString("base64") }], usage: { input_tokens: 12, output_tokens: 20, total_tokens: 32, ...usage }
+      })) }).generate({ prompt: "A square" })).usage.costUsd;
+    await expect(generate({ cost: 0.04 })).resolves.toBe(0.04);
+    await expect(generate({ cost: 0.002, is_byok: true, cost_details: { upstream_inference_cost: 0.04 } })).resolves.toBe(0.042);
+    // A malformed or incomplete report keeps the image and leaves the cost unreported.
+    await expect(generate({ cost: 0.002, is_byok: true })).resolves.toBeNull();
+    await expect(generate({ cost: "0.04" })).resolves.toBeNull();
+  });
   it("does not retry ambiguous paid requests or leak response text", async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response("private upstream detail fixture-secret", { status: 503 }));
     await expect(createImageGenerationAdapter({ connection, model: model("openai"), secret: "fixture-secret", fetchFn }).generate({ prompt: "A square" })).rejects.toMatchObject({ message: "image_provider_http_error", httpStatus: 503 });
@@ -151,6 +162,17 @@ describe("image adapters", () => {
     const result = await createImageGenerationAdapter({ connection, model: model("openai"), secret: "fixture-secret", fetchFn }).generate({ prompt: "A square" });
     expect(result.bytes).toEqual(png);
     expect(result.usage).toEqual({ inputTokens: null, outputTokens: null, totalTokens: null, costUsd: null });
+  });
+  it("carries the usage of a completed response whose image it rejects, never of a failed request", async () => {
+    const generate = (body: Response) => createImageGenerationAdapter({ connection, model: model("openrouter"), secret: "fixture-secret",
+      fetchFn: vi.fn<typeof fetch>().mockResolvedValue(body) }).generate({ prompt: "A square" }).catch((error: unknown) => error);
+    expect(await generate(Response.json({ data: [], usage: { input_tokens: 12, output_tokens: 20, total_tokens: 32, cost: 0.04 } })))
+      .toMatchObject({ code: "image_output_missing", usage: { inputTokens: 12, outputTokens: 20, totalTokens: 32, costUsd: 0.04 } });
+    expect(await generate(Response.json({ data: [{ b64_json: "AAAA" }], usage: { cost: 0.04 } })))
+      .toMatchObject({ code: "image_response_invalid", usage: { inputTokens: null, costUsd: 0.04 } });
+    expect(await generate(Response.json({ data: [] }))).toMatchObject({ code: "image_output_missing", usage: null });
+    expect(await generate(Response.json({ usage: { cost: 0.04 } }, { status: 500 })))
+      .toMatchObject({ code: "image_provider_http_error", usage: null });
   });
   it("validates outputs and refuses remote URLs, forged MIME or a corrupt raster", async () => {
     await expect(validateGeneratedImage(png, "image/jpeg")).rejects.toThrow("image_response_invalid");

@@ -67,6 +67,24 @@
   --v2-light-shadow-overlay: 0 16px 48px rgb(30 40 60 / 0.2);
 
   /*
+   * Categorical chart palette in a fixed slot order, assigned per entity and
+   * never by rank. Validated for adjacent-pair colour-vision separation;
+   * several light slots stay below 3:1 on the surface, so charted values
+   * must also be readable as text.
+   * Marks only: chart text keeps the text tokens.
+   */
+  --v2-dark-chart-1: #3987e5;
+  --v2-dark-chart-2: #d95926;
+  --v2-dark-chart-3: #199e70;
+  --v2-dark-chart-4: #c98500;
+  --v2-dark-chart-5: #d55181;
+  --v2-light-chart-1: #2a78d6;
+  --v2-light-chart-2: #eb6834;
+  --v2-light-chart-3: #1baf7a;
+  --v2-light-chart-4: #eda100;
+  --v2-light-chart-5: #e87ba4;
+
+  /*
    * Assistant avatar recipe palette: theme-invariant component tokens.
    * These are immutable identity data pinned inside Assistant revisions —
    * deliberately outside the semantic dark/light system so the same recipe
@@ -137,6 +155,11 @@
   --v2-color-scrim: var(--v2-light-color-scrim);
   --v2-shadow-float: var(--v2-light-shadow-float);
   --v2-shadow-overlay: var(--v2-light-shadow-overlay);
+  --v2-chart-1: var(--v2-light-chart-1);
+  --v2-chart-2: var(--v2-light-chart-2);
+  --v2-chart-3: var(--v2-light-chart-3);
+  --v2-chart-4: var(--v2-light-chart-4);
+  --v2-chart-5: var(--v2-light-chart-5);
 }
 
 :root[data-theme="dark"] {
@@ -171,6 +194,11 @@
   --v2-color-scrim: var(--v2-dark-color-scrim);
   --v2-shadow-float: var(--v2-dark-shadow-float);
   --v2-shadow-overlay: var(--v2-dark-shadow-overlay);
+  --v2-chart-1: var(--v2-dark-chart-1);
+  --v2-chart-2: var(--v2-dark-chart-2);
+  --v2-chart-3: var(--v2-dark-chart-3);
+  --v2-chart-4: var(--v2-dark-chart-4);
+  --v2-chart-5: var(--v2-dark-chart-5);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -206,5 +234,10 @@
     --v2-color-scrim: var(--v2-dark-color-scrim);
     --v2-shadow-float: var(--v2-dark-shadow-float);
     --v2-shadow-overlay: var(--v2-dark-shadow-overlay);
+    --v2-chart-1: var(--v2-dark-chart-1);
+    --v2-chart-2: var(--v2-dark-chart-2);
+    --v2-chart-3: var(--v2-dark-chart-3);
+    --v2-chart-4: var(--v2-dark-chart-4);
+    --v2-chart-5: var(--v2-dark-chart-5);
   }
 }

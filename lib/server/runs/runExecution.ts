@@ -44,6 +44,7 @@ import {
   type ModelRunUsage
 } from "../../domain/modelRunEvents";
 import { mergeTokenUsage, normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
+import type { RunUsageAttributionPurpose } from "../../domain/usagePurpose";
 import { validateRunAccess } from "../auth/entitlements";
 import { isProviderDeadlineExceededError } from "../providers/network";
 import { openRouterRoutingFailureCode, openRouterRoutingFailureMessage } from "../providers/responseFailure";
@@ -95,6 +96,7 @@ import {
   SearchToolCancelledError,
   searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
+  searchUsageAttribution,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import {
@@ -210,6 +212,8 @@ import { acceptedClientSearchOptions } from "../search/activityProjection";
 import type { ThreadSearchEngineActivity } from "../../contracts/searchActivity";
 import {
   finalizeRunCompletion,
+  groupedUsageAttributions,
+  reportedAnswerCost,
   usageAttributionsWithEstimatedCost,
   type KnowledgeAnswerFinalizationContracts
 } from "./runFinalization";
@@ -310,6 +314,7 @@ export type RunExecutionRepository = Pick<
   | "loadCheckpointedToolLoopRun"
   | "loadFocusedKnowledgeRecoveryScope"
   | "loadModelPricing"
+  | "loadProviderModelCostBasis"
   | "markRunAnswerStarted"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
@@ -563,35 +568,6 @@ class RunPipelineError extends Error {
 
 function zeroUsage(): ModelRunUsage {
   return normalizeTokenUsage({});
-}
-
-function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]): RunUsageAttribution[] {
-  const grouped = new Map<string, RunUsageAttribution & { usages: ModelRunUsage[] }>();
-
-  for (const attribution of attributions) {
-    const key = `${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
-    const current = grouped.get(key);
-    if (current) {
-      current.usages.push(attribution.usage);
-      current.operationCount = current.operationCount == null || attribution.operationCount == null
-        ? null : current.operationCount + attribution.operationCount;
-      continue;
-    }
-
-    grouped.set(key, {
-      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
-      operationCount: attribution.operationCount ?? null,
-      modelId: attribution.modelId,
-      provider: attribution.provider,
-      usage: attribution.usage,
-      usages: [attribution.usage]
-    });
-  }
-
-  return [...grouped.values()].map(({ usages, ...attribution }) => ({
-    ...attribution,
-    usage: sumTokenUsage(usages)
-  }));
 }
 
 function toolExecutionErrorResult(
@@ -898,7 +874,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 }
                 if (!stopped) throw new RunPipelineError("followup_generation_unconfirmed", "The previous background response could not be confirmed as stopped.");
               }
-              rememberReportedUsage(request.provider, request.modelId, reported);
+              rememberReportedUsage("chat_answer", request.provider, request.modelId, reported, generation.costUsd);
               const remembered = reportedUsageAttributions.at(-1)!;
               try {
                 await persistReportedUsageForIncompleteRun();
@@ -967,13 +943,33 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         );
       }
 
-      function rememberReportedUsage(provider: string, modelId: string, usage: ModelRunUsage): void {
+      /** One answer call's usage; the charge its provider reported, when it
+       * did, settles the call's cost. */
+      function rememberReportedUsage(
+        purpose: RunUsageAttributionPurpose, provider: string, modelId: string, usage: ModelRunUsage, costUsd?: number
+      ): void {
         reportedUsageAttributions.push({
+          ...reportedAnswerCost(costUsd),
           operationCount: 1,
           modelId,
           provider,
+          purpose,
           usage
         });
+      }
+
+      /** Each engine call of a Search, with the searches it reported and a
+       * reported cost that settles it. */
+      function rememberSearchUsage(execution: SearchExecutionEvidence): void {
+        reportedUsageAttributions.push(searchUsageAttribution(execution));
+      }
+
+      /** Each paid call of a Knowledge operation, with its deployment and
+       * reported cost (embeddings and the hosted reranker). */
+      function rememberKnowledgeUsage(result: ToolExecutionResult): void {
+        for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
+          reportedUsageAttributions.push({ operationCount: 1, ...attribution });
+        }
       }
 
       async function persistReportedUsageForIncompleteRun(
@@ -1084,14 +1080,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           }
 
           const usage = mergeTokenUsage(lastReportedUsage ?? {}, next.value.usage);
-          rememberReportedUsage(request.provider, request.modelId, usage);
+          rememberReportedUsage("chat_answer", request.provider, request.modelId, usage, next.value.costUsd);
           return { ...next.value, usage };
         } catch (error) {
           // A request refused before dispatch is no operation; a provider's
           // HTTP context-length refusal is unpaid and invents no usage.
           if (unpaidContextRejection(error, lastReportedUsage)?.httpStatus === undefined &&
             (lastReportedUsage !== null || answerDispatchStarted(error))) {
-            rememberReportedUsage(request.provider, request.modelId,
+            rememberReportedUsage("chat_answer", request.provider, request.modelId,
               normalizeTokenUsage({ ...(lastReportedUsage ?? {}), completeness: "partial" }));
           }
           throw error;
@@ -1442,9 +1438,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         if (!focusedUsageAccounted) {
-          for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
-            rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
-          }
+          rememberKnowledgeUsage(result);
           usageAccountedToolCallIds.add(persisted.id);
           await persistReportedUsageForIncompleteRun();
         }
@@ -1579,12 +1573,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             })
           : null;
         let reportedUsage: ModelRunUsage = normalizeTokenUsage({});
+        let reportedCostUsd: number | undefined;
         let operationCompleted = false;
         try {
           let providerResponseId: string | null = null;
           let output: Readonly<Record<string, unknown>>;
           if (input.structuredOutputAdapter) {
             output = await input.structuredOutputAdapter.execute(operation, {
+              onCostUsd(value) {
+                reportedCostUsd = value;
+              },
               onProviderResponseId(value) {
                 providerResponseId = value;
               },
@@ -1610,6 +1608,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               next = await stream.next();
             }
             reportedUsage = mergeTokenUsage(reportedUsage, next.value.usage);
+            reportedCostUsd = next.value.costUsd;
             executionOptions.onUsage?.(reportedUsage);
             if (next.value.synthesisToolCallForbidden || (next.value.toolCalls?.length ?? 0) > 0) {
               throw new Error("structured_output_tools_forbidden");
@@ -1639,8 +1638,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           }
           throw error;
         } finally {
-          rememberReportedUsage(normalizedRequest.provider, normalizedRequest.modelId,
-            normalizeTokenUsage({ ...reportedUsage, ...(operationCompleted ? {} : { completeness: "partial" }) }));
+          rememberReportedUsage("chat_answer", normalizedRequest.provider, normalizedRequest.modelId,
+            normalizeTokenUsage({ ...reportedUsage, ...(operationCompleted ? {} : { completeness: "partial" }) }), reportedCostUsd);
         }
       }
 
@@ -1795,15 +1794,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   previousEvidence,
                   request: { ...input.prepared.providerRequest, content: textMessageContent(requestText) }, result, runId, signal, userId: input.userId,
                   async onResult(toolResult) {
-                    for (const attribution of knowledgeUsageAttributionsFromToolResult(toolResult)) {
-                      rememberReportedUsage(attribution.provider, attribution.modelId, attribution.usage);
-                    }
+                    rememberKnowledgeUsage(toolResult);
                     for (const artifact of toolResult.artifacts ?? []) await emit(controller, encoder, input.repository, runId, artifact);
                   }
                 }) })
             : await executeKnowledgeEvidenceAnswerV1(evidenceInput);
           const usageAttributions = operationResult.operations.map(operation => ({
-            modelId: normalizedRequest.modelId, provider: normalizedRequest.provider, usage: operation.usage
+            modelId: normalizedRequest.modelId, provider: normalizedRequest.provider, purpose: "chat_answer" as const,
+            usage: operation.usage
           }));
           const providerResponseId = operationResult.operations.at(-1)?.providerResponseId;
           return Object.freeze({ contracts: operationResult.contracts, result: {
@@ -1832,6 +1830,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const usageAttributions = operationResult.operations.map((operation) => ({
           modelId: normalizedRequest.modelId,
           provider: normalizedRequest.provider,
+          purpose: "chat_answer" as const,
           usage: operation.usage
         }));
         const usage = sumTokenUsage(usageAttributions.map((entry) => entry.usage));
@@ -1918,9 +1917,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         return {
           claim: attempt => write({ attempt }),
           dispatch: attempt => write({ attempt }),
-          async settle(attempt, usage, summary) {
+          async settle(attempt, usage, summary, costUsd) {
             // A call refused before dispatch reported nothing and counts no operation.
-            if (usage) rememberReportedUsage(request.provider, request.modelId, usage);
+            if (usage) rememberReportedUsage("chat_answer", request.provider, request.modelId, usage, costUsd);
             await write({ attempt, ...(summary ? { summary } : {}) });
           }
         };
@@ -2312,7 +2311,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           const unrecorded = unrecordedSearches.get(persisted.id);
           const executions = receipt.length === 0 && unrecorded ? searchExecutionsFromToolResult(unrecorded) : receipt;
           for (const execution of executions) {
-            if (persisted.usageAccountedAt == null) rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
+            if (persisted.usageAccountedAt == null) rememberSearchUsage(execution);
             await persistPlanSearchExecution({ execution, modelRunId: runId, repository: input.repository });
           }
           observationUsageCollected.add(persisted.id);
@@ -2421,9 +2420,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   );
                 }
                 for (const execution of executions) {
-                  if (execution.usage) {
-                    rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
-                  }
+                  if (execution.usage) rememberSearchUsage(execution);
                   await persistPlanSearchExecution({
                     execution,
                     modelRunId: runId,
@@ -2442,13 +2439,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               }
               if (isKnowledgeCall(call.name)) {
                 knowledgeToolResults.set(call.id, result);
-                for (const attribution of knowledgeUsageAttributionsFromToolResult(result)) {
-                  rememberReportedUsage(
-                    attribution.provider,
-                    attribution.modelId,
-                    attribution.usage
-                  );
-                }
+                rememberKnowledgeUsage(result);
                 const persistedCall = persistedCalls.get(call.id);
                 if (persistedCall && persistedCall.usageAccountedAt == null) {
                   usageAccountedToolCallIds.add(persistedCall.id);
@@ -3094,9 +3085,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   if (settled !== "settled" && settled !== "reused") {
                     throw new RunPipelineError("tool_call_settle_conflict", "Search result could not be durably settled");
                   }
-                  for (const execution of searchExecutionsFromToolResult(error.result)) {
-                    rememberReportedUsage(execution.provider, execution.modelId ?? "search", execution.usage);
-                  }
+                  for (const execution of searchExecutionsFromToolResult(error.result)) rememberSearchUsage(execution);
                   usageAccountedToolCallIds.add(claim.call.id);
                   await settleSearchActivity({ persistedId: claim.call.id, toolName: call.name,
                     executions: searchExecutionsFromToolResult(error.result) });
@@ -3230,9 +3219,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           onUsage: async (usage, roundRequest, context) => {
             const reported = normalizeTokenUsage({ ...usage,
               ...(context.completeness === "partial" ? { completeness: "partial" } : {}) });
-            rememberReportedUsage(roundRequest.provider, roundRequest.modelId, reported);
+            rememberReportedUsage("chat_answer", roundRequest.provider, roundRequest.modelId, reported, context.costUsd);
+            const { estimatedCostMicros: reportedCostMicros } = reportedAnswerCost(context.costUsd);
             await persistReportedUsageForIncompleteRun({
               completeness: context.completeness,
+              ...(reportedCostMicros != null ? { reportedCostMicros } : {}),
               roundIndex: context.round,
               usage: reported
             });

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   decodeKnowledgeRerankerBindingEvidenceV2,
   KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
+  knowledgeRerankerBilledCall,
+  knowledgeRerankerRejectedCall,
   type KnowledgeRerankerBindingEvidenceV2
 } from "./rerankEvidence";
 
@@ -160,5 +162,69 @@ describe("Knowledge reranker binding evidence V2", () => {
     expect(decodeKnowledgeRerankerBindingEvidenceV2(completeEvidence({
       status: "disabled"
     }))).toBeNull();
+  });
+
+  it("round-trips a provider call's input tokens and reported cost beside older usage", () => {
+    const priced = completeEvidence({ usage: { costUsd: 1e-7, inputTokens: null, searchUnits: null, totalTokens: 2 } });
+    expect(decodeKnowledgeRerankerBindingEvidenceV2(JSON.parse(JSON.stringify(priced)))).toEqual(priced);
+    const unreported = completeEvidence({ usage: { costUsd: null, inputTokens: 40, searchUnits: 1, totalTokens: 40 } });
+    expect(decodeKnowledgeRerankerBindingEvidenceV2(unreported)).toEqual(unreported);
+    // Receipts accepted before reranking was accounted keep their exact shape.
+    expect(decodeKnowledgeRerankerBindingEvidenceV2(completeEvidence())?.usage).toEqual({ searchUnits: 1, totalTokens: 512 });
+    for (const usage of [
+      { costUsd: 1e-7, searchUnits: null, totalTokens: 2 },
+      { inputTokens: 2, searchUnits: null, totalTokens: 2 },
+      { costUsd: -1e-7, inputTokens: null, searchUnits: null, totalTokens: 2 },
+      { costUsd: "1e-7", inputTokens: null, searchUnits: null, totalTokens: 2 },
+      { costUsd: 1e-7, inputTokens: 1.5, searchUnits: null, totalTokens: 2 },
+      { costUsd: 1e-7, inputTokens: null, searchUnits: null, totalTokens: 2, queryText: "secret question" }
+    ]) {
+      expect(decodeKnowledgeRerankerBindingEvidenceV2(completeEvidence({ usage: usage as never }))).toBeNull();
+    }
+  });
+
+  it("names the billed reranker call of a scored ranking, under its billing family", () => {
+    expect(knowledgeRerankerBilledCall(completeEvidence({
+      provider: "VoyageAI by MongoDB",
+      usage: { costUsd: 1e-7, inputTokens: null, searchUnits: null, totalTokens: 2 }
+    }))).toEqual({ costUsd: 1e-7, inputTokens: null, modelId: "qwen/qwen3-reranker-8b", provider: "openrouter",
+      providerModelId: "deployment-1", totalTokens: 2 });
+    // A ranking recorded before reranking was accounted reported no cost.
+    expect(knowledgeRerankerBilledCall(completeEvidence({ relevanceScores: [0.91, 0.4, null], status: "partial" })))
+      .toMatchObject({ costUsd: null, inputTokens: null, totalTokens: 512 });
+    const skip = completeEvidence({ inputCandidateCount: 1, orderedCandidateChunkIds: ["chunk-a"], outputOrder: ["chunk-a"],
+      provider: null, providerRequestId: null, relevanceScores: [null], usage: { searchUnits: null, totalTokens: null } });
+    const degraded = completeEvidence({ fallbackReason: "rerank_provider_server_error", outputOrder: [], provider: null,
+      providerRequestId: null, relevanceScores: [], status: "degraded", usage: { searchUnits: null, totalTokens: null } });
+    for (const evidence of [skip, degraded]) {
+      expect(decodeKnowledgeRerankerBindingEvidenceV2(evidence)).not.toBeNull();
+      expect(knowledgeRerankerBilledCall(evidence)).toBeNull();
+    }
+  });
+
+  it("bills the rejected response a degraded fallback records, never a fallback without one", () => {
+    const rejected = completeEvidence({ fallbackReason: "rerank_response_invalid", outputOrder: [], provider: null,
+      providerRequestId: null, relevanceScores: [], status: "degraded",
+      usage: { costUsd: 0.0000042, inputTokens: null, searchUnits: null, totalTokens: 120 } });
+    const stored = decodeKnowledgeRerankerBindingEvidenceV2(JSON.parse(JSON.stringify(rejected)));
+    expect(stored).toEqual(rejected);
+    expect(knowledgeRerankerBilledCall(stored!)).toEqual({ costUsd: 0.0000042, inputTokens: null,
+      modelId: "qwen/qwen3-reranker-8b", provider: "openrouter", providerModelId: "deployment-1", totalTokens: 120 });
+    const unpinned = completeEvidence({ ...rejected, adapterVersion: null, candidateFormatterVersion: null,
+      connectionSnapshotId: null, credentialSnapshotRef: null, policyVersion: null, providerModelId: null,
+      upstreamModelId: null, fallbackReason: "reranker_model_unavailable" });
+    expect(knowledgeRerankerBilledCall(unpinned)).toBeNull();
+  });
+
+  it("names a rejected response that failed its operation under the pinned deployment", () => {
+    // What `RerankAdapterError.usage` carries.
+    const reported = { costUsd: 0.000003, inputTokens: 64, searchUnits: null, totalTokens: 64 };
+    expect(knowledgeRerankerRejectedCall({ adapterVersion: "openrouter-rerank-v2", provider: "openrouter",
+      providerModelId: "deployment-1", upstreamModelId: "qwen/qwen3-reranker-8b" }, reported)).toEqual({
+      costUsd: 0.000003, inputTokens: 64, modelId: "qwen/qwen3-reranker-8b", provider: "openrouter",
+      providerModelId: "deployment-1", totalTokens: 64 });
+    expect(knowledgeRerankerRejectedCall({ adapterVersion: "custom-rerank", provider: "cohere",
+      providerModelId: "deployment-2", upstreamModelId: "rerank-v4" }, { inputTokens: null, totalTokens: 8 }))
+      .toMatchObject({ costUsd: null, provider: "cohere", totalTokens: 8 });
   });
 });

@@ -30,18 +30,33 @@ describe("model sheet form", () => {
     const form = { ...baseline, priceSource: "admin" as const, prices: { ...baseline.prices,
       inputTokenPriceUsdPerMillion: "0.25000000", cachedInputTokenPriceUsdPerMillion: "0.025", outputTokenPriceUsdPerMillion: "2" } };
     const pricing = { mode: "manual", prices: { inputTokenPriceUsdPerMillion: "0.25",
-      cachedInputTokenPriceUsdPerMillion: "0.025", cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "2" } };
+      cachedInputTokenPriceUsdPerMillion: "0.025", cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "2",
+      webSearchPriceUsdPerThousand: null } };
     expect(modelMetadataOnlyChanged(form, baseline)).toBe(true);
     expect(modelNameOnlyChanged(form, baseline)).toBe(false);
     expect(modelFormPricing(form, model)).toEqual({ ok: true, pricing });
     expect(modelFormBody({ ...form, responseTimeoutSeconds: "120" }, openRouter, model))
       .toMatchObject({ ok: true, body: { pricing, configuration: { responseTimeoutSeconds: 120 } } });
-    expect(modelFormPricing({ ...form, modelClass: "embedding" }, model)).toEqual({ ok: true });
+    // Other classes send only their own prices; the rest is unknown even when the form still holds text.
+    expect(modelFormPricing({ ...form, modelClass: "embedding" }, model)).toEqual({ ok: true, pricing: { mode: "manual",
+      prices: { ...pricing.prices, cachedInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null } } });
+    expect(modelFormPricing({ ...form, modelClass: "image" }, model)).toEqual({ ok: true, pricing: { mode: "manual",
+      prices: { ...pricing.prices, cachedInputTokenPriceUsdPerMillion: null } } });
+    // Only answer models carry the per-search price.
+    const searched = { ...form, prices: { ...form.prices, webSearchPriceUsdPerThousand: "10.00" } };
+    expect(modelFormPricing(searched, model)).toEqual({ ok: true, pricing: { mode: "manual",
+      prices: { ...pricing.prices, webSearchPriceUsdPerThousand: "10" } } });
+    expect(modelFormPricing({ ...searched, modelClass: "image" }, model)).toEqual({ ok: true, pricing: { mode: "manual",
+      prices: { ...pricing.prices, cachedInputTokenPriceUsdPerMillion: null } } });
+    // A field the class is never costed with is neither validated nor compared with the stored row.
+    const hidden = { ...form, modelClass: "reranker" as const, prices: { ...form.prices, inputTokenPriceUsdPerMillion: "", outputTokenPriceUsdPerMillion: "bad" } };
+    expect(modelFormPricing(hidden, model)).toEqual({ ok: true });
+    expect(modelPriceSourceLabel(hidden, null)).toBeNull();
   });
 
   it("treats the stored prices typed again as no change and keeps their source", () => {
     const catalog = { inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: "0.2",
-      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "12" };
+      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "12", webSearchPriceUsdPerThousand: "10" };
     const model = fixtureModel({ id: "catalog", connectionId: "conn-or", displayName: "Catalog",
       pricing: { source: "catalog", prices: catalog, catalogPrices: catalog } });
     const baseline = modelFormFrom(model);
@@ -61,7 +76,7 @@ describe("model sheet form", () => {
 
   it("labels the price source only when the claim holds", () => {
     const catalog = { inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: null,
-      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "12" };
+      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "12", webSearchPriceUsdPerThousand: null };
     const form = blankModelForm(openRouter);
     const priced = { ...form, prices: { ...form.prices, outputTokenPriceUsdPerMillion: "2" } };
     expect(modelPriceSourceLabel({ ...form, priceSource: "catalog" }, catalog)).toBe("Catalog price");

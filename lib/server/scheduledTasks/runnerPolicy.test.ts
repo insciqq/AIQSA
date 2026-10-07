@@ -426,6 +426,30 @@ describe("send refusals", () => {
     expect(classifySendRefusal(400, "Not a code")).toEqual({ kind: "fail", outcome: { reasonCode: "admission_failed", state: "FAILED" } });
   });
 
+  it("retries a used-up budget within the window, then skips it with its reason, never counting a failure", () => {
+    const now = at("2026-10-05T12:00:00Z");
+    for (const code of ["usage_budget_exhausted", "installation_budget_exhausted"] as const) {
+      expect(classifySendRefusal(429, code)).toEqual({ kind: "retry", reasonCode: code });
+      const pending = { reasonCode: code, scheduledFor: at("2026-10-05T11:00:00Z") };
+      expect(expiredPendingOutcome({ ...pending, startedAt: at("2026-10-05T11:31:00Z") }, now)).toBeNull();
+      const skipped = expiredPendingOutcome({ ...pending, startedAt: at("2026-10-05T11:29:00Z") }, now);
+      expect(skipped).toEqual({ reasonCode: code, state: "SKIPPED" });
+      // The task stays active with its failure count, and the skip is no news.
+      expect(planTaskSettlement({ outcome: skipped!, task: { consecutiveFailures: 2, consecutiveIncompleteRuns: 0,
+        consecutiveMissingVerdicts: 0, revision: 1, status: "ACTIVE" }, trigger: "schedule" }))
+        .toMatchObject({ consecutiveFailures: 2, pauseReason: null });
+      expect(settlementNotifiesOwner({ reasonCode: code, state: "SKIPPED", taskPaused: false })).toBe(false);
+      // A newer instant replaces it with the same reason.
+      expect(planClaimOverlap({ now, open: [{ id: "spent", leaseExpiresAt: null, reasonCode: code, runId: null, state: "PENDING" }],
+        recurring: true })).toEqual({ previousRunning: false, superseded: [{ id: "spent", reasonCode: code }] });
+    }
+    // Scheduled runs never meet message limits; such a refusal would fail like any other.
+    expect(classifySendRefusal(429, "message_rate_limited")).toEqual({ kind: "fail",
+      outcome: { reasonCode: "message_rate_limited", state: "FAILED" } });
+    // Limits that cannot be read are an outage: retried, then a counted failure.
+    expect(classifySendRefusal(503, "usage_limits_unavailable")).toEqual({ kind: "retry", reasonCode: null });
+  });
+
   it("retries every transient tool and Workspace refusal within the window", () => {
     // Unlike a busy chat, a Workspace that stays busy ends the window as a counted failure, never a quiet skip.
     for (const [status, code] of [

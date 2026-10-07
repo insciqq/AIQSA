@@ -275,6 +275,25 @@ enum TokenUsageCompleteness {
   UNAVAILABLE
 }
 
+/// What a usage record paid for, chosen by its writer (lib/domain/usagePurpose.ts).
+enum UsagePurpose {
+  chat_answer
+  web_search
+  image_generation
+  chat_title
+  chat_summary
+  chat_vision
+  chat_pdf
+  skill_selection
+  memory_processing
+  memory_indexing
+  memory_retrieval
+  knowledge_indexing
+  knowledge_retrieval
+  model_check
+  other
+}
+
 enum ModelRunToolCallState {
   pending
   running
@@ -914,6 +933,11 @@ model User {
   usageEvents                         UsageEvent[]
   workspacePolicyUpdates              WorkspacePolicy[]                  @relation("WorkspacePolicyUpdater")
   agentPolicyUpdates                  AgentPolicy[]                      @relation("AgentPolicyUpdater")
+  usageLimit                          UsageLimit?                        @relation("UsageLimitUser")
+  usageLimitUpdates                   UsageLimit[]                       @relation("UsageLimitUpdater")
+  usageLimitPolicyUpdates             UsageLimitPolicy[]                 @relation("UsageLimitPolicyUpdater")
+  usageLimitAlerts                    UsageLimitAlert[]
+  usageMessageAdmissions              UsageMessageAdmission[]
   workspaceSecrets                    WorkspaceSecret[]
   workspaceSecretValues               WorkspaceSecretValue[]
   workspaceBrowserSequence            BigInt                             @default(0)
@@ -1289,6 +1313,7 @@ model Group {
   skillPublications             SkillPublication[]
   providerCredentialAssignments ProviderGroupCredentialAssignment[]
   projectGrants                 ProjectGrant[]
+  usageLimit                    UsageLimit?
   users                         UserGroup[]
 
   @@index([archivedAt])
@@ -2812,6 +2837,8 @@ model ProviderModel {
   cachedInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
   cacheWriteInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
   outputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
+  /// USD per 1,000 web searches the provider reports, charged on top of tokens; answer models only.
+  webSearchPriceUsdPerThousand Decimal? @db.Decimal(18, 8)
   priceSource ModelPriceSource @default(catalog)
   supportsVision              Boolean                         @default(false)
   supportsPdf                 Boolean                         @default(false)
@@ -3265,6 +3292,93 @@ model AgentPolicy {
   updatedBy       User?    @relation("AgentPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([updatedByUserId])
+}
+
+/// Installation usage limits: a pooled monthly cap for everyone plus per-user
+/// defaults, in USD micro-dollars and messages. Null means not set.
+model UsageLimitPolicy {
+  id                  String   @id
+  monthlyCapMicros    BigInt?
+  monthlyBudgetMicros BigInt?
+  messagesPerHour     Int?
+  messagesPerDay      Int?
+  version             Int      @default(1)
+  updatedByUserId     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  updatedBy           User?    @relation("UsageLimitPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+/// A group's per-member allowance or one user's override: exactly one target.
+/// Only a user override may be `exempt`; a row that sets nothing is deleted.
+model UsageLimit {
+  id                  String   @id @default(uuid())
+  groupId             String?  @unique
+  userId              String?  @unique
+  exempt              Boolean  @default(false)
+  monthlyBudgetMicros BigInt?
+  messagesPerHour     Int?
+  messagesPerDay      Int?
+  /// Optimistic concurrency token for administrator saves. Every insert and
+  /// change takes the next value of one sequence, so a row removed and created
+  /// again never repeats a version that a stale draft still holds.
+  version             Int      @default(autoincrement())
+  updatedByUserId     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  group               Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user                User?    @relation("UsageLimitUser", fields: [userId], references: [id], onDelete: Cascade)
+  updatedBy           User?    @relation("UsageLimitUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+/// One admitted interactive run (a send, edit or regeneration; never a
+/// scheduled run or the continuation of an accepted one), written with the run
+/// and kept 25 hours for the message limits. Unlike ModelRun it survives chat
+/// and branch deletion, so deleting chats cannot reset a limit.
+model UsageMessageAdmission {
+  id        String   @id @default(uuid())
+  userId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+enum UsageLimitAlertKind {
+  installation_cap_near
+  installation_cap_reached
+  user_budget_reached
+}
+
+enum UsageLimitAlertState {
+  claimed
+  delivered
+  undelivered
+}
+
+/// One budget alert to administrators per UTC month, threshold and user
+/// (`userId` only for `user_budget_reached`; the unique index treats NULLs as
+/// equal). The row is the claim, inserted before sending, so replicas and
+/// restarts send an alert at most once. `claimed` is in flight or
+/// crash-ambiguous and never retried; `undelivered` means no administrator
+/// received it on any channel, so a later check may claim it again.
+model UsageLimitAlert {
+  id          String               @id @default(uuid())
+  periodStart DateTime
+  kind        UsageLimitAlertKind
+  userId      String?
+  state       UsageLimitAlertState @default(claimed)
+  attempts    Int                  @default(1)
+  claimedAt   DateTime
+  settledAt   DateTime?
+  user        User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([periodStart, kind, userId])
+  @@index([userId])
 }
 
 model WorkspacePolicy {
@@ -5132,6 +5246,8 @@ model UsageEvent {
   chatPdfPageAttempt               ChatPdfPageAttempt?            @relation(fields: [chatPdfPageAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   id                              String                         @id @default(uuid())
   userId                          String
+  /// No default: every writer chooses. Previous-release inserts are classified by a database trigger.
+  purpose                         UsagePurpose
   chatId                          String?
   modelRunId                      String?
   projectId                       String?
@@ -5152,7 +5268,11 @@ model UsageEvent {
   reasoningTokens                 Int?
   totalTokens                     Int?
   usageCompleteness               TokenUsageCompleteness             @default(UNAVAILABLE)
+  /// Provider-reported billed web searches this row covers; null when none were reported.
+  webSearchCount                  Int?
   estimatedCostMicros             Int?
+  /// A run answer row whose cost is the charge its provider reported for its calls, kept by the run's rewrites.
+  costReported                    Boolean                        @default(false)
   createdAt                       DateTime                       @default(now())
   knowledgeBase                   KnowledgeBase?                 @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
   knowledgeDocumentVersion        KnowledgeDocumentVersion?      @relation("KnowledgeUsageDocumentVersion", fields: [knowledgeBaseId, knowledgeDocumentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeDocumentVersion_fkey")
@@ -5165,6 +5285,7 @@ model UsageEvent {
   @@unique([knowledgeIndexGenerationId, knowledgeDocumentVersionId, knowledgeBatchIndex])
   @@index([chatId])
   @@index([modelRunId])
+  @@index([createdAt])
   @@index([userId, createdAt])
   @@index([provider, modelId])
   @@index([projectId, createdAt])

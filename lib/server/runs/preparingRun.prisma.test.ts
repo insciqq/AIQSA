@@ -689,6 +689,7 @@ async function classifyExplicitFact(userId: string, versionId: string) {
         outputTokens: 0,
         provider: "preparing-run-fixture",
         providerModelId: "preparing-run-fixture-model",
+        purpose: "memory_processing",
         reasoningTokens: 0,
         totalTokens: 0,
         userId
@@ -2892,7 +2893,7 @@ describe("PREPARING run orchestration", () => {
           userId
         })).resolves.toBe(true);
 
-        const [attempt, executionBindings, usageCount] = await Promise.all([
+        const [attempt, executionBindings, usageRows] = await Promise.all([
           prisma.memoryRetrievalAttempt.findUniqueOrThrow({
             where: { id: admitted.attemptId }
           }),
@@ -2900,7 +2901,8 @@ describe("PREPARING run orchestration", () => {
             orderBy: { ordinal: "asc" },
             where: { id: { in: [control.id, bound.id] } }
           }),
-          prisma.usageEvent.count({
+          prisma.usageEvent.findMany({
+            select: { memoryExecutionBindingId: true, purpose: true },
             where: {
               memoryExecutionBindingId: { in: [control.id, bound.id] },
               userId
@@ -2922,7 +2924,52 @@ describe("PREPARING run orchestration", () => {
           retrievalAttemptId: admitted.attemptId,
           state: "FAILED"
         }]);
-        expect(usageCount).toBe(2);
+        // The control call processes Memory; the query embedding retrieves it.
+        expect(Object.fromEntries(usageRows.map((row) => [row.memoryExecutionBindingId, row.purpose]))).toEqual({
+          [control.id]: "memory_processing", [bound.id]: "memory_retrieval"
+        });
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  });
+
+  it("accounts a retrieval execution left open by a failed preparing run under its role's purpose", async () => {
+    await withPreparingUser(async ({ userId }) => {
+      const fixture = await createPreparingEmbeddingAuthority(userId);
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Interrupted retrieval utility", userId } });
+        const request = normalizedRequest(chat.id, "What did we discuss before?");
+        const repository = createPrismaRunRepository(prisma, { memoryExecutionAuthority: fixture.authority });
+        const admitted = await repository.admitPreparingRun({
+          admissionKind: "NORMAL_SEND", chatId: chat.id, content: request.content, expectedActiveLeafId: null,
+          modelId: request.modelId, normalizedRequest: request, provider: request.provider, providerRequestPreview: {}, userId
+        });
+        await expect(repository.beginPreparingRunAttempt({ attemptId: admitted.attemptId, now: new Date(),
+          runId: admitted.runId, userId })).resolves.toBe(true);
+        const execution = createPrismaMemoryExecutionService(fixture.authority, prisma);
+        const owner = { retrievalAttemptId: admitted.attemptId, type: "RETRIEVAL_ATTEMPT" } as const;
+        const control = await execution.admission.bind(userId, { inputHash: "0".repeat(64), ordinal: 0, owner,
+          role: "MEMORY_CONTROL", versions: MEMORY_CONTROL_VERSIONS });
+        await execution.admission.start(userId, control.id);
+        await expect(execution.lifecycle.settle(userId, control.id, {
+          acceptedOutputHash: "0".repeat(64), errorCode: null, providerResponseId: "interrupted-control-response",
+          state: "SUCCEEDED", usage: { cachedInputTokens: 0, completeness: "COMPLETE", estimatedCostMicros: null,
+            inputTokens: 10, outputTokens: 5, reasoningTokens: 0, totalTokens: 15 }
+        })).resolves.toMatchObject({ state: "SUCCEEDED" });
+        // Dispatched and never settled: the failure settles it with unknown usage.
+        const bound = await execution.admission.bind(userId, { inputHash: "1".repeat(64), ordinal: 1, owner,
+          role: "MEMORY_QUERY_EMBED", versions: queryEmbeddingVersions });
+        await execution.admission.start(userId, bound.id);
+
+        await expect(repository.settlePreparingRunFailure({ attemptId: admitted.attemptId, errorCode: "provider_failed",
+          message: "Provider unavailable", runId: admitted.runId, state: "FAILED", userId })).resolves.toBe(true);
+
+        await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: bound.id } }))
+          .resolves.toMatchObject({ state: "OUTCOME_UNKNOWN" });
+        await expect(prisma.usageEvent.findMany({ select: { purpose: true, usageCompleteness: true },
+          where: { memoryExecutionBindingId: bound.id, userId } }))
+          .resolves.toEqual([{ purpose: "memory_retrieval", usageCompleteness: "UNAVAILABLE" }]);
       } finally {
         await fixture.cleanup();
       }
@@ -3002,6 +3049,7 @@ describe("PREPARING run orchestration", () => {
               outputTokens: 5,
               provider: "historical-provider",
               providerModelId: "historical-model",
+              purpose: "memory_processing",
               reasoningTokens: 0,
               totalTokens: 15,
               userId

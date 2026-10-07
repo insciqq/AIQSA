@@ -198,7 +198,8 @@ describe("chat PDF database lifecycle", () => {
     const loaded = await repository.load(h.claim);
     expect(loaded.modelRun.chatPdfAttachments[0]).toMatchObject({ route: "system_pdf", processingMode: "use_pdf_reader", completedPages: 1 });
     expect(await prisma.usageEvent.findUnique({ where: { id: dispatch.usageEventId } }))
-      .toMatchObject({ providerModelId: h.admission.snapshot!.providerModelId, inputTokens: 0, usageCompleteness: "COMPLETE" });
+      .toMatchObject({ providerModelId: h.admission.snapshot!.providerModelId, purpose: "chat_pdf", inputTokens: 0,
+        usageCompleteness: "COMPLETE" });
   });
 
   it.each([false, true])("projects admitted PDF preparation as queued before answer dispatch (Workspace: %s)", async (workspace) => {

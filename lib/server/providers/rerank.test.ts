@@ -179,7 +179,7 @@ describe("OpenRouter reranker adapter", () => {
         { handle: "c1", index: 1, relevanceScore: 0.91 },
         { handle: "c0", index: 0, relevanceScore: 0.42 }
       ],
-      usage: { inputTokens: 23, searchUnits: 1, totalTokens: 23 }
+      usage: { inputTokens: 23, searchUnits: 1, totalTokens: 23, costUsd: null }
     });
   });
 
@@ -594,7 +594,41 @@ describe("OpenRouter reranker adapter", () => {
     await expect(adapter(fetchFn).rerank({
       documents: [{ handle: "c0", text: "first" }],
       query: "query"
-    })).rejects.toMatchObject({ code: "rerank_response_invalid" });
+    })).rejects.toMatchObject({ code: "rerank_response_invalid", usage: null });
+  });
+
+  it("keeps the reported usage of a ranking it rejects so the paid call can be accounted", async () => {
+    const rejected = (body: Response) => adapter(vi.fn<typeof fetch>(async () => body)).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    }).catch((error: unknown) => error);
+    expect(await rejected(response({ results: [], usage: { prompt_tokens: 23, total_tokens: 23, cost: 0.00002 } })))
+      .toMatchObject({ code: "rerank_response_invalid",
+        usage: { inputTokens: 23, searchUnits: null, totalTokens: 23, costUsd: 0.00002 } });
+    expect(await rejected(response({ model: "other/reranker" })))
+      .toMatchObject({ code: "rerank_response_model_mismatch", usage: { inputTokens: 23, searchUnits: 1 } });
+    expect(await rejected(response({ results: [], usage: {} })))
+      .toMatchObject({ code: "rerank_response_invalid", usage: null });
+  });
+
+  it("carries the provider-reported cost and rejects a malformed one in either validation mode", async () => {
+    const rerank = (usage: unknown, create = adapter) => create(vi.fn<typeof fetch>(async () => response({
+      provider: "Together", results: [{ index: 0, relevance_score: 0.5 }], usage
+    }))).rerank({ documents: [{ handle: "c0", text: "first" }], query: "query" });
+    // The usage block OpenRouter returned for voyageai/rerank-2.5, probed 2026-10-07.
+    await expect(rerank({ total_tokens: 2, cost: 1e-7 })).resolves.toMatchObject({
+      usage: { inputTokens: null, searchUnits: null, totalTokens: 2, costUsd: 1e-7 } });
+    await expect(rerank({ total_tokens: 2, cost: 0 }, strictAdapter)).resolves.toMatchObject({ usage: { costUsd: 0 } });
+    // BYOK: OpenRouter's fee plus what the upstream provider billed the installation's key.
+    await expect(rerank({ total_tokens: 2, cost: 5e-9, is_byok: true, cost_details: { upstream_inference_cost: 1e-7 } }))
+      .resolves.toMatchObject({ usage: { costUsd: 1.05e-7 } });
+    await expect(rerank({ total_tokens: 2, cost: 5e-9, is_byok: true }, strictAdapter))
+      .resolves.toMatchObject({ usage: { costUsd: null } });
+    for (const create of [adapter, strictAdapter]) {
+      for (const cost of [-1e-7, "1e-7", null, false]) {
+        await expect(rerank({ total_tokens: 2, cost }, create)).rejects.toMatchObject({ code: "rerank_response_invalid" });
+      }
+    }
   });
 
   it("keeps the lenient default tolerating dropped malformed entries", async () => {

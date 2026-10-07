@@ -15,6 +15,7 @@ import {
   type ScheduledOccurrenceAdmission
 } from "../runs/runRepositoryContract";
 import type { ToolHistorySnapshot } from "../runs/toolHistoryContract";
+import type { UsageLimitStatus } from "../usageLimits/repository";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import {
@@ -56,6 +57,21 @@ function admissionPlan(input: Parameters<NonNullable<RunHandlerDeps["providerAdm
   };
 }
 
+/** No usage limit set anywhere. */
+const NO_USAGE_LIMITS: UsageLimitStatus = {
+  effective: {
+    exempt: false,
+    messagesPerDay: { source: null, value: null },
+    messagesPerHour: { source: null, value: null },
+    monthlyBudgetMicros: { source: null, value: null }
+  },
+  installationCapMicros: null,
+  installationSpentMicros: 0,
+  lastDay: { count: 0, freesAt: null },
+  lastHour: { count: 0, freesAt: null },
+  userSpentMicros: 0
+};
+
 /** The real send handler's dependencies around an in-memory repository and the fake provider. */
 function fixture(options: Readonly<{
   chat?: RunOwnedChatRecord;
@@ -63,6 +79,8 @@ function fixture(options: Readonly<{
   path?: readonly ProviderConversationMessage[];
   toolCalling?: boolean;
   toolHistory?: ToolHistorySnapshot;
+  /** The owner's usage limit status at admission; none by default. */
+  usage?: UsageLimitStatus;
 }> = {}) {
   const state: {
     completedText: string | null; created: CreateRunInput | null; createRun?: (input: CreateRunInput) => void; failedCode: string | null;
@@ -125,7 +143,8 @@ function fixture(options: Readonly<{
     providerAdmission: { load: async (input) => admissionPlan(input, capabilities) },
     providerRuntime: { resolve: async () => ({ adapter, responseTimeoutMs: 300_000 }) } as unknown as RunHandlerDeps["providerRuntime"],
     providers: {},
-    repository
+    repository,
+    usageLimits: { loadUsageLimitStatus: async () => options.usage ?? NO_USAGE_LIMITS }
   };
   const loadOwner = vi.fn(async () => owner as AuthenticatedUser | null);
   return { loadOwner, send: createScheduledTaskSend({ loadOwner, sendDeps }), sendDeps, state };
@@ -426,6 +445,46 @@ describe("scheduled task admission through the ordinary send handler", () => {
       });
       expect([response.status, await response.json()]).toEqual([status, { error: code }]);
     }
+  });
+
+  it("applies budgets to a scheduled send but never the owner's message limits", async () => {
+    resetBootOrphanSweepForTest();
+    const messagesUsedUp: UsageLimitStatus = {
+      ...NO_USAGE_LIMITS,
+      effective: { ...NO_USAGE_LIMITS.effective, messagesPerDay: { source: { kind: "installation" }, value: 1 } },
+      lastDay: { count: 1, freesAt: new Date(Date.now() + 60 * 60_000) }
+    };
+    const scheduled = fixture({ usage: messagesUsedUp });
+    const admitted = await scheduled.send({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence, userId: owner.id });
+    expect(admitted.status).toBe(200);
+    await admitted.text();
+    expect(scheduled.state.created).toMatchObject({ scheduledOccurrence: occurrence });
+
+    // The owner's own message in the same state is an interactive run and is refused.
+    const interactive = fixture({ usage: messagesUsedUp });
+    const ownMessage = await createSendMessageHandler({
+      ...interactive.sendDeps, resolveAuth: scheduledTaskOwnerAuth(interactive.loadOwner, { taskId: "task-1", userId: owner.id })
+    })(new Request(`http://localhost/api/chats/${newChatId}/messages`, {
+      body: JSON.stringify(body({ chatId: newChatId, kind: "new" })), method: "POST"
+    }), { params: { chatId: newChatId } });
+    expect(ownMessage.status).toBe(429);
+    expect(await ownMessage.json()).toMatchObject({ error: "message_rate_limited", usageLimit: { limit: 1, used: 1, window: "day" } });
+    expect(interactive.state.created).toBeNull();
+
+    const budgetSpent = fixture({ usage: {
+      ...NO_USAGE_LIMITS,
+      effective: { ...NO_USAGE_LIMITS.effective,
+        monthlyBudgetMicros: { source: { groupId: "group-1", kind: "group", name: "Synthetic team" }, value: 1_000_000 } },
+      userSpentMicros: 1_000_000
+    } });
+    const refused = await budgetSpent.send({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence, userId: owner.id });
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await refused.json()).toMatchObject({
+      error: "usage_budget_exhausted", usageLimit: { limit: 1_000_000, scope: "user", used: 1_000_000, window: "month" }
+    });
+    expect(budgetSpent.state.created).toBeNull();
+    expect(budgetSpent.state.requests).toEqual([]);
   });
 
   it("never takes an occurrence from the request body", async () => {

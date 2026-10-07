@@ -96,6 +96,18 @@ describe("scheduled task presentation", () => {
     expect(row("superseded")).toBe("Skipped: a newer scheduled time arrived before it could start");
   });
 
+  it("explains a skip for a used-up budget in the history, quietly", () => {
+    const row = (reasonCode: string) => scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
+      trigger: "schedule", state: "skipped", reasonCode, startedAt: "2026-10-05T08:00:00.000Z", finishedAt: "2026-10-05T08:31:00.000Z",
+      chatId: null, unseen: false, unavailableSources: [], skills: [] }, "Europe/London", now);
+    expect(row("usage_budget_exhausted")).toMatchObject({ outcome: "Skipped: your monthly budget was used up", tone: "neutral" });
+    expect(row("installation_budget_exhausted").outcome).toBe("Skipped: the monthly budget shared by everyone was used up");
+    const notice = scheduledTaskResultNotice(scheduledTaskFixture({ unseenResult: true, lastRun: {
+      scheduledFor: "2026-10-05T08:00:00.000Z", state: "skipped", reasonCode: "usage_budget_exhausted",
+      finishedAt: "2026-10-05T08:31:00.000Z", unseen: true } }));
+    expect(notice).toBeNull();
+  });
+
   it("shows a run waiting for a free Workspace slot as waiting, and its skip with the capacity reason", () => {
     const run = (overrides: Partial<ScheduledTaskRun>): ScheduledTaskRun => ({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
       trigger: "schedule", state: "pending", reasonCode: null, startedAt: null, finishedAt: null, chatId: null, unseen: false,

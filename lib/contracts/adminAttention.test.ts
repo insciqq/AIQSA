@@ -37,6 +37,17 @@ describe("decodeAdminAttentionResponse", () => {
     expect(decoded?.attention.unavailable).toEqual(["assistants"]);
   });
 
+  it("accepts usage limit items that jump to Budgets & limits under their own source", () => {
+    const cap = { ...item, code: "usage_budget_cap_reached", count: null, id: "usage_budget_cap_reached",
+      severity: "bad", target: { section: "limits" } };
+    const decoded = decodeAdminAttentionResponse({
+      attention: { checkedAt: "2026-09-07T12:00:00.000Z", items: [cap], unavailable: ["usage_limits"] }
+    });
+    expect(decoded?.attention.items[0]?.target).toEqual({ section: "limits" });
+    expect(adminAttentionItemSource(decoded!.attention.items[0]!)).toBe("usage_limits");
+    expect(decoded?.attention.unavailable).toEqual(["usage_limits"]);
+  });
+
   it("rejects unknown codes, sections, sources, control characters and duplicate ids", () => {
     const base = { checkedAt: "2026-09-07T12:00:00.000Z", items: [item], unavailable: [] };
     expect(decodeAdminAttentionResponse({ attention: { ...base, items: [{ ...item, code: "mystery" }] } })).toBeNull();

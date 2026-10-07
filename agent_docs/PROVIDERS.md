@@ -49,7 +49,9 @@ Memory standing admission performs no external reads. Model-invoked search retai
 
 A reranker receives a sanitized query and bounded opaque-handle documents, returning scores only. Complete one-to-one handle coverage and governed model/provider identity are mandatory; one malformed or missing result invalidates the batch. Scores confer no ownership, lifecycle, safety, currentness or mutation authority. A selected-but-broken deployment never falls through to an unselected deployment or the generative System Model. Any configured Memory route fallback remains subject to [Memory](MEMORY.md)'s whole-pool atomicity. Internal Knowledge reasoning overrides may change only the admitted answer deployment's supported reasoning effort, never its destination or credential.
 
-Forward migrations update only `catalog` token prices, matched by `providerModelCatalogKey` (template key, else codex-lb or Quick Setup upstream); never synchronize at startup.
+Forward migrations never replace an administrator's token price: they update `catalog` rows, or unknown prices no administrator could have set, matched by `providerModelCatalogKey` (a tariff of the row's own model class: template key, else codex-lb or Quick Setup upstream); never synchronize at startup.
+
+Every paid call, answers included, takes the provider-reported cost (OpenRouter BYOK adds the upstream cost), else its model's class prices, else stays unknown; reported search counts add a per-search price only when one is set. A run's rewrites and recovery keep a reported answer cost. Every paid call that returned usage is recorded once with its purpose, failed and administrator check calls included.
 
 ## Upstream References
 

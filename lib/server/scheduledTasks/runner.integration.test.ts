@@ -19,12 +19,13 @@ import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "./
 const users: string[] = [];
 const sendDeps = () => ({ ...createDefaultSendMessageDeps(), allowFakeProvider: true });
 
-function runner(deps: ReturnType<typeof sendDeps> = sendDeps()) {
+function runner(deps: ReturnType<typeof sendDeps> = sendDeps(), now?: () => Date) {
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
     // Due tasks start at once here; the spread has its own tests.
     dispatchOffsetMs: () => 0,
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
+    ...(now ? { now } : {}),
     loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
     // The ordinary send admission, with the fake provider of the disposable stand.
     send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: deps }),
@@ -128,6 +129,36 @@ describe("scheduled task end to end", () => {
     const ownerRun = await prisma.modelRun.findFirstOrThrow({ where: { userMessageId: messages[2]!.id } });
     expect(ownerRun).toMatchObject({ scheduledOccurrenceId: null, scheduledTaskGeneration: null, scheduledTaskId: null });
     expect(second).toMatchObject({ baselineRunId: occurrences[1]!.runId, baselineUserMessageId: messages[4]!.id });
+    // Message limits count the owner's own message only, never the task's runs.
+    expect(await prisma.usageMessageAdmission.findMany({ select: { createdAt: true }, where: { userId } }))
+      .toEqual([{ createdAt: ownerRun.createdAt }]);
+  });
+
+  it("retries an occurrence while its owner's budget is used up, then skips it and keeps the task active", async () => {
+    const { task, userId } = await ownerWithTask("SAME");
+    // A zero budget is used up before any spend.
+    await prisma.usageLimit.create({ data: { monthlyBudgetMicros: 0, userId } });
+    let now = new Date();
+    const scheduler = runner(sendDeps(), () => now);
+
+    await scheduler.tick();
+    await scheduler.idle();
+    const [occurrence] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
+    expect(occurrence).toMatchObject({ reasonCode: "usage_budget_exhausted", runId: null, state: "PENDING" });
+
+    // Still used up when the retry window ends: skipped with its reason, never a failure.
+    now = new Date(now.getTime() + 31 * 60_000);
+    await scheduler.tick();
+    await scheduler.idle();
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence!.id } }))
+      .toMatchObject({ reasonCode: "usage_budget_exhausted", runId: null, state: "SKIPPED" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } }))
+      .toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
+    // No run, no turn, no usage and no message admission.
+    expect(await prisma.modelRun.count({ where: { userId } })).toBe(0);
+    expect(await prisma.message.count({ where: { chat: { userId } } })).toBe(0);
+    expect(await prisma.usageEvent.count({ where: { userId } })).toBe(0);
+    expect(await prisma.usageMessageAdmission.count({ where: { userId } })).toBe(0);
   });
 
   it("starts a new dated chat for every run in new-chat mode, each seeing only its prompt", async () => {

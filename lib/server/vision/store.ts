@@ -105,7 +105,7 @@ export function createVisionAnalysisStore(prisma: PrismaClient) {
         if (await tx.visionAnalysisAttempt.count({ where: { modelRunId: c.runId } }) >= VISION_ANALYSIS_LIMITS.callsPerRun) throw new VisionAnalysisError("vision_analysis_limit_exceeded");
         await tx.visionAnalysisAttempt.create({ data: { toolCallId: c.toolCallId, modelRunId: c.runId,
           providerBindingKey: "vision_analysis", requestHash: c.requestHash, images } });
-        await tx.usageEvent.create({ data: { visionAnalysis: true, visionAnalysisAttemptId: c.toolCallId,
+        await tx.usageEvent.create({ data: { visionAnalysis: true, visionAnalysisAttemptId: c.toolCallId, purpose: "chat_vision",
           userId: c.userId, chatId: c.chatId, modelRunId: c.runId, projectId: authority.projectId,
           provider: plan.snapshot.providerFamily, providerModelId: plan.authority.providerModelId, modelId: plan.snapshot.model.upstreamModelId } });
         return { result: null };

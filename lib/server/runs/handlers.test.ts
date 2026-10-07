@@ -37,7 +37,7 @@ import {
   createSendMessageHandler as createProductionSendMessageHandler,
   type RunHandlerDeps
 } from "./handlers";
-import { reconcileStaleRuns } from "./runRecovery";
+import { reconcileStaleRuns, sweepBootOrphanedRunsOnce } from "./runRecovery";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
@@ -56,6 +56,8 @@ import {
 } from "./toolLoopPersistence";
 import { conversationContextPolicy } from "./contextCompactionContract";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
+import type { UsageLimitStatus } from "../usageLimits/repository";
+import { decodeUsageLimitRefusal, type UsageLimitRefusalCode } from "../../contracts/usageLimits";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -211,10 +213,29 @@ function currentAdmissionPlan(
   };
 }
 
-function withTestRuntime(deps: RunHandlerDeps): RunHandlerDeps {
+/** An installation without any usage limit, as every admission reads it before limits are set. */
+const NO_USAGE_LIMITS: UsageLimitStatus = {
+  effective: {
+    exempt: false,
+    messagesPerDay: { source: null, value: null },
+    messagesPerHour: { source: null, value: null },
+    monthlyBudgetMicros: { source: null, value: null }
+  },
+  installationCapMicros: null,
+  installationSpentMicros: 0,
+  lastDay: { count: 0, freesAt: null },
+  lastHour: { count: 0, freesAt: null },
+  userSpentMicros: 0
+};
+
+/** Handler deps of a test; usage limits default to none. */
+type TestRunHandlerDeps = Omit<RunHandlerDeps, "usageLimits"> & Partial<Pick<RunHandlerDeps, "usageLimits">>;
+
+function withTestRuntime(deps: TestRunHandlerDeps): RunHandlerDeps {
   const harness = repositoryHarnesses.get(deps.repository);
   return {
     ...deps,
+    usageLimits: deps.usageLimits ?? { loadUsageLimitStatus: async () => NO_USAGE_LIMITS },
     allowFakeProvider: deps.allowFakeProvider ?? true,
     providerAdmission: deps.providerAdmission ?? {
       async load(input) {
@@ -292,19 +313,19 @@ async function withCurrentSearchPlan(request: Request): Promise<Request> {
   }
 }
 
-function createSendMessageHandler(deps: RunHandlerDeps) {
+function createSendMessageHandler(deps: TestRunHandlerDeps) {
   const handler = createProductionSendMessageHandler(withTestRuntime(deps));
   return async (...args: Parameters<typeof handler>) =>
     handler(await withCurrentSearchPlan(args[0]), args[1]);
 }
 
-function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
+function createRegenerateModelRunHandler(deps: TestRunHandlerDeps) {
   const handler = createProductionRegenerateModelRunHandler(withTestRuntime(deps));
   return async (...args: Parameters<typeof handler>) =>
     handler(await withCurrentSearchPlan(args[0]), args[1]);
 }
 
-function createGetModelRunHandler(deps: RunHandlerDeps) {
+function createGetModelRunHandler(deps: TestRunHandlerDeps) {
   return createProductionGetModelRunHandler(withTestRuntime(deps));
 }
 
@@ -761,6 +782,7 @@ function createMemoryRepository(
       })),
     loadEntitlements: async () => entitlements,
     loadModelPricing: async () => modelPricing,
+    loadProviderModelCostBasis: async () => null,
     loadRunUsageAttributions: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
     persistToolLoopCallBatch: async (input) => {
@@ -6398,7 +6420,7 @@ describe("run HTTP failure containment", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       const { repository } = createMemoryRepository();
-      const deps = { ...authDeps, repository, providers: {},
+      const deps = { ...authDeps, repository, providers: {}, usageLimits: { loadUsageLimitStatus: async () => NO_USAGE_LIMITS },
         resolveAuth: async () => { throw new TypeError("PRIVATE_RESOLVER_MESSAGE_CANARY"); } };
       const POST = stage === "send" ? createProductionSendMessageHandler(deps)
         : stage === "regenerate" ? createProductionRegenerateModelRunHandler(deps) : createCancelModelRunHandler(deps);
@@ -6433,5 +6455,216 @@ describe("run HTTP failure containment", () => {
       expect(records.every((entry) => entry.run_id === undefined)).toBe(true);
       expect(JSON.stringify([stdout.mock.calls, stderr.mock.calls])).not.toContain("PRIVATE_");
     } finally { stdout.mockRestore(); stderr.mockRestore(); }
+  });
+});
+
+describe("usage limit admission", () => {
+  beforeEach(() => {
+    resetBootOrphanSweepForTest();
+  });
+
+  const minute = 60_000;
+  /** The start of the UTC month after `now`, when budgets reset. */
+  const nextUtcMonth = (now: Date) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  const secondsUntil = (now: Date, at: Date) => String(Math.ceil((at.getTime() - now.getTime()) / 1000));
+
+  /** A reached limit as the admission reads it at `now`, with the facts its refusal carries. */
+  const reached: Record<UsageLimitRefusalCode, Readonly<{
+    facts(now: Date): Record<string, unknown>;
+    status(now: Date): UsageLimitStatus;
+  }>> = {
+    installation_budget_exhausted: {
+      facts: (now) => ({ limit: null, resetsAt: nextUtcMonth(now).toISOString(), scope: "installation", used: null, window: "month" }),
+      status: () => ({ ...NO_USAGE_LIMITS, installationCapMicros: 50_000_000, installationSpentMicros: 50_000_001 })
+    },
+    message_rate_limited: {
+      facts: (now) => ({ limit: 2, resetsAt: new Date(now.getTime() + 10 * minute).toISOString(), scope: "user", used: 2, window: "hour" }),
+      status: (now) => ({
+        ...NO_USAGE_LIMITS,
+        effective: { ...NO_USAGE_LIMITS.effective, messagesPerHour: { source: { kind: "installation" }, value: 2 } },
+        lastHour: { count: 2, freesAt: new Date(now.getTime() + 10 * minute) }
+      })
+    },
+    usage_budget_exhausted: {
+      facts: (now) => ({ limit: 5_000_000, resetsAt: nextUtcMonth(now).toISOString(), scope: "user", used: 5_250_000, window: "month" }),
+      status: () => ({
+        ...NO_USAGE_LIMITS,
+        effective: { ...NO_USAGE_LIMITS.effective, monthlyBudgetMicros: { source: { kind: "user" }, value: 5_000_000 } },
+        userSpentMicros: 5_250_000
+      })
+    }
+  };
+
+  function limitsReading(status: (now: Date) => UsageLimitStatus) {
+    return { loadUsageLimitStatus: vi.fn(async (_userId: string, now: Date) => status(now)) };
+  }
+
+  function send(body: Record<string, unknown> = {}, cookie: string | null = authCookie()) {
+    return new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", text: "One more question", ...body }),
+      headers: cookie ? { cookie } : {},
+      method: "POST"
+    });
+  }
+
+  function regenerate(messageId: string, body: Record<string, unknown> = {}) {
+    return new Request(`http://app.local/api/messages/${messageId}/regenerate`, {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", ...body }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    });
+  }
+
+  it.each(Object.keys(reached) as UsageLimitRefusalCode[])(
+    "refuses a send at %s with its facts and retry-after, before any run, provider call or usage",
+    async (code) => {
+      const { repository, state } = createMemoryRepository();
+      const recordUsage = vi.spyOn(repository, "recordRunUsageEvents");
+      const adapter = createFakeProviderAdapter();
+      const stream = vi.spyOn(adapter, "stream");
+      const usageLimits = limitsReading(reached[code].status);
+      const response = await createSendMessageHandler({ ...authDeps, providers: { fake: adapter }, repository, usageLimits })(
+        send(), { params: { chatId: "chat-1" } });
+
+      expect(response.status).toBe(429);
+      expect(usageLimits.loadUsageLimitStatus).toHaveBeenCalledOnce();
+      const [userId, now] = usageLimits.loadUsageLimitStatus.mock.calls[0]!;
+      expect(userId).toBe(config.bootstrapUserId);
+      const facts = reached[code].facts(now);
+      expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+      expect(response.headers.get("retry-after")).toBe(secondsUntil(now, new Date(String(facts.resetsAt))));
+      const body: unknown = await response.json();
+      expect(body).toEqual({ error: code, usageLimit: facts });
+      expect(decodeUsageLimitRefusal(body)).toEqual(body);
+      expect(state.created).toBeNull();
+      expect(stream).not.toHaveBeenCalled();
+      expect(recordUsage).not.toHaveBeenCalled();
+    }
+  );
+
+  it("refuses an Agent turn before its Workspace is prepared", async () => {
+    const { repository, state } = createMemoryRepository();
+    const prepare = vi.fn();
+    const usageLimits = limitsReading(reached.installation_budget_exhausted.status);
+    const response = await createSendMessageHandler({
+      ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository, usageLimits,
+      workspace: { prepare } as unknown as NonNullable<RunHandlerDeps["workspace"]>
+    })(send({ agentEnabled: true, workspace: { enabled: true } }), { params: { chatId: "chat-1" } });
+
+    expect(response.status).toBe(429);
+    // The pooled cap never discloses installation amounts.
+    expect(await response.json()).toMatchObject({
+      error: "installation_budget_exhausted", usageLimit: { limit: null, scope: "installation", used: null }
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(state.created).toBeNull();
+  });
+
+  it("counts regenerations, edits and document retries as interactive and refuses them before loading anything", async () => {
+    const { repository, state } = createMemoryRepository();
+    const adapter = createFakeProviderAdapter();
+    const stream = vi.spyOn(adapter, "stream");
+    const loadRetry = vi.fn();
+    const usageLimits = limitsReading(reached.message_rate_limited.status);
+    const POST = createRegenerateModelRunHandler({
+      ...authDeps, providers: { fake: adapter }, repository, usageLimits,
+      chatPdf: { findAdmission: async () => null, kick: vi.fn(), loadRetry, resolve: vi.fn() }
+    });
+    // A regeneration, the run of an edited message (its user message is the source) and a document retry.
+    for (const [messageId, body] of [
+      ["assistant-message-1", {}], ["user-message-1", {}], ["assistant-message-1", { retryPdfPreparation: true }]
+    ] as const) {
+      const response = await POST(regenerate(messageId, body), { params: { messageId } });
+      expect(response.status).toBe(429);
+      expect(await response.json()).toMatchObject({ error: "message_rate_limited", usageLimit: { limit: 2, used: 2, window: "hour" } });
+    }
+    expect(usageLimits.loadUsageLimitStatus).toHaveBeenCalledTimes(3);
+    expect(loadRetry).not.toHaveBeenCalled();
+    expect(state.regenerated).toBeNull();
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it("keeps earlier refusals and an accepted admission's retry first, never reading limits for them", async () => {
+    const usageLimits = limitsReading(() => { throw new Error("limits_must_not_be_read"); });
+    const expectRefusal = async (response: Response, status: number, body: Record<string, unknown>) => {
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject(body);
+    };
+    const { repository, state } = createMemoryRepository();
+    const deps = { ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository, usageLimits };
+    const POST = createSendMessageHandler(deps);
+
+    await expectRefusal(await POST(send({}, null), { params: { chatId: "chat-1" } }), 401, { error: "unauthorized" });
+    await expectRefusal(await POST(send({ expectedActiveLeafId: "" }), { params: { chatId: "chat-1" } }), 400,
+      { error: "expected_active_leaf_invalid" });
+    const findOwnedChat = repository.findOwnedChat;
+    repository.findOwnedChat = async () => null;
+    await expectRefusal(await POST(send(), { params: { chatId: "chat-1" } }), 404, { error: "chat_not_found" });
+    repository.findOwnedChat = findOwnedChat;
+    // The boot sweep would settle the fixture's active run; in a live process it ran long before.
+    await sweepBootOrphanedRunsOnce({ registry: activeRunControllerRegistry, repository });
+    state.recentActiveRun = { ...activeRunRecord({ chatId: "chat-1" }), updatedAt: new Date() };
+    await expectRefusal(await POST(send(), { params: { chatId: "chat-1" } }), 409, { error: "active_run_in_progress" });
+    const REGENERATE = createRegenerateModelRunHandler(deps);
+    await expectRefusal(await REGENERATE(regenerate("assistant-message-1"), { params: { messageId: "assistant-message-1" } }), 409,
+      { error: "active_run_in_progress" });
+    await expectRefusal(await REGENERATE(regenerate("missing-message"), { params: { messageId: "missing-message" } }), 404,
+      { error: "message_not_found_or_not_regeneratable" });
+    state.recentActiveRun = null;
+
+    // A retried send whose admission was already accepted answers with that run.
+    const accepted = { assistantMessageId: "assistant-message-1", run: { id: "run-1", status: "queued" as const },
+      userMessageId: "user-message-1", version: 1 as const };
+    const kick = vi.fn();
+    const duplicate = await createSendMessageHandler({ ...deps,
+      chatPdf: { findAdmission: async () => accepted, kick, resolve: vi.fn() } })(send({ admissionId: "accepted-invocation" }),
+      { params: { chatId: "chat-1" } });
+    expect(duplicate.status).toBe(202);
+    expect(await duplicate.json()).toEqual(accepted);
+    expect(kick).toHaveBeenCalledOnce();
+
+    expect(usageLimits.loadUsageLimitStatus).not.toHaveBeenCalled();
+    expect(state.created).toBeNull();
+    expect(state.regenerated).toBeNull();
+  });
+
+  it("refuses as unavailable, never admitting, when the limits cannot be read", async () => {
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const { repository, state } = createMemoryRepository();
+      const error = new Prisma.PrismaClientInitializationError("PRIVATE_LIMITS_CONNECTION_CANARY", "test", "P1001");
+      const usageLimits = { loadUsageLimitStatus: vi.fn(async (): Promise<UsageLimitStatus> => { throw error; }) };
+      const deps = { ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository, usageLimits };
+      const responses = [
+        await createSendMessageHandler(deps)(send(), { params: { chatId: "chat-1" } }),
+        await createRegenerateModelRunHandler(deps)(regenerate("assistant-message-1"), { params: { messageId: "assistant-message-1" } })
+      ];
+      for (const response of responses) {
+        expect(response.status).toBe(503);
+        expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+        expect(await response.json()).toEqual({ error: "usage_limits_unavailable" });
+      }
+      expect(state.created).toBeNull();
+      expect(state.regenerated).toBeNull();
+      const records = stdout.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      for (const stage of ["send", "regenerate"]) {
+        expect(records).toContainEqual(expect.objectContaining({
+          code: "usage_limits_unavailable", event: "run_http_failed", prisma_code: "P1001", stage
+        }));
+      }
+      expect(JSON.stringify(stdout.mock.calls)).not.toContain("PRIVATE_");
+    } finally { stdout.mockRestore(); }
+  });
+
+  it("admits exactly as before without limits, reading them once per admission", async () => {
+    const { repository, state } = createMemoryRepository();
+    const usageLimits = limitsReading(() => NO_USAGE_LIMITS);
+    const response = await createSendMessageHandler({ ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository,
+      usageLimits })(send(), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(state.created).toMatchObject({ chatId: "chat-1", userId: config.bootstrapUserId });
+    expect(state.completed).not.toBeNull();
+    expect(usageLimits.loadUsageLimitStatus).toHaveBeenCalledOnce();
   });
 });

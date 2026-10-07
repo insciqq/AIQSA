@@ -9,6 +9,7 @@ import {
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture
 } from "@/tests/support/knowledgeProfile";
+import { populatedUsageAnalytics, usageResponse } from "@/components/admin/usage/usageTestFixtures";
 import { StrictMode } from "react";
 import { AdminPanel } from "./AdminPanel";
 
@@ -196,125 +197,6 @@ const dashboard: AdminDashboard = {
     },
     teamConfigured: true
   },
-  usage: {
-    byGroup: [
-      {
-        estimatedCostMicros: null,
-        recordCount: 0,
-        knownCostRecordCount: 0,
-        incompleteUsageCount: 0,
-        archivedAt: null,
-        cachedInputTokens: 40,
-        cacheWriteInputTokens: 5,
-        contributingUsers: 1,
-        groupId: "group-1",
-        inputTokens: 300,
-        lastUsedAt: "2026-06-14T12:00:00.000Z",
-        name: "operators",
-        outputTokens: 500,
-        reasoningTokens: 80,
-        runCount: 3,
-        totalTokens: 800,
-        userCount: 1
-      },
-      {
-        estimatedCostMicros: null,
-        recordCount: 0,
-        knownCostRecordCount: 0,
-        incompleteUsageCount: 0,
-        archivedAt: null,
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
-        contributingUsers: 0,
-        groupId: "group-2",
-        inputTokens: 0,
-        lastUsedAt: null,
-        name: "reviewers",
-        outputTokens: 0,
-        reasoningTokens: 0,
-        runCount: 0,
-        totalTokens: 0,
-        userCount: 0
-      }
-    ],
-    byUser: [
-      {
-        estimatedCostMicros: null,
-        recordCount: 0,
-        knownCostRecordCount: 0,
-        incompleteUsageCount: 0,
-        cachedInputTokens: 40,
-        cacheWriteInputTokens: 5,
-        displayName: "Active User",
-        email: "active@example.com",
-        groups: [
-          {
-            groupId: "group-1",
-            name: "operators",
-            role: "member"
-          }
-        ],
-        inputTokens: 300,
-        lastUsedAt: "2026-06-14T12:00:00.000Z",
-        outputTokens: 500,
-        providerModels: [
-          {
-            estimatedCostMicros: null,
-            recordCount: 0,
-            knownCostRecordCount: 0,
-            incompleteUsageCount: 0,
-            cachedInputTokens: 40,
-            cacheWriteInputTokens: 5,
-            inputTokens: 300,
-            lastUsedAt: "2026-06-14T12:00:00.000Z",
-            modelId: "gpt-5.5",
-            outputTokens: 500,
-            provider: "openai",
-            reasoningTokens: 80,
-            runCount: 3,
-            totalTokens: 800
-          }
-        ],
-        reasoningTokens: 80,
-        runCount: 3,
-        totalTokens: 800,
-        userId: "active-1"
-      },
-      {
-        estimatedCostMicros: null,
-        recordCount: 0,
-        knownCostRecordCount: 0,
-        incompleteUsageCount: 0,
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
-        displayName: "Admin User",
-        email: "admin@example.com",
-        groups: [],
-        inputTokens: 0,
-        lastUsedAt: null,
-        outputTokens: 0,
-        providerModels: [],
-        reasoningTokens: 0,
-        runCount: 0,
-        totalTokens: 0,
-        userId: "admin-1"
-      }
-    ],
-    totals: {
-      estimatedCostMicros: null,
-      recordCount: 0,
-      knownCostRecordCount: 0,
-      incompleteUsageCount: 0,
-      cachedInputTokens: 40,
-      cacheWriteInputTokens: 5,
-      inputTokens: 300,
-      lastUsedAt: "2026-06-14T12:00:00.000Z",
-      outputTokens: 500,
-      reasoningTokens: 80,
-      runCount: 3,
-      totalTokens: 800
-    }
-  },
   users: [
     {
       deletion: {
@@ -406,24 +288,6 @@ const emptyDashboard: AdminDashboard = {
       pendingUsers: 0
     },
     teamConfigured: false
-  },
-  usage: {
-    byGroup: [],
-    byUser: [],
-    totals: {
-      estimatedCostMicros: null,
-      recordCount: 0,
-      knownCostRecordCount: 0,
-      incompleteUsageCount: 0,
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      inputTokens: 0,
-      lastUsedAt: null,
-      outputTokens: 0,
-      reasoningTokens: 0,
-      runCount: 0,
-      totalTokens: 0
-    }
   },
   users: []
 };
@@ -552,6 +416,10 @@ function mockAdminFetch(attention: AdminAttention = emptyAttention) {
 
     if (url === "/api/admin/attention") {
       return dashboardResponse({ attention });
+    }
+
+    if (url.startsWith("/api/admin/usage?")) {
+      return dashboardResponse(usageResponse(populatedUsageAnalytics()));
     }
 
     if (url === "/api/admin/release") {
@@ -918,7 +786,7 @@ describe("AdminPanel", () => {
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
     const usage = await screen.findByTestId("admin-section-usage");
     expect(screen.getByTestId("admin-section-column")).toHaveClass("max-lg:hidden");
-    expect(within(usage).getByRole("region", { name: "Usage summary" })).toBeInTheDocument();
+    expect(within(usage).getByLabelText("Period")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Sections" }));
     fireEvent.click(screen.getByRole("link", { name: "Providers" }));
@@ -1050,25 +918,24 @@ describe("AdminPanel", () => {
     expect(unload.defaultPrevented).toBe(false);
   });
 
-  it("renders read-only usage by group and user", async () => {
-    mockAdminFetch();
+  it("loads period-scoped usage from its own endpoint and keeps the period in the section URL", async () => {
+    const { fetch } = mockAdminFetch();
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     await screen.findByTestId("admin-section-users");
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
     const usage = await screen.findByTestId("admin-section-usage");
-    const groups = within(usage).getByTestId("admin-usage-groups");
-    const users = within(usage).getByTestId("admin-usage-users");
-    const mobileGroups = within(groups).getByTestId("admin-usage-groups-mobile");
-    const mobileUsers = within(users).getByTestId("admin-usage-users-mobile");
+    expect(await within(usage).findByTestId("usage-kpi-cost")).toHaveTextContent("≈ $4.00");
+    expect(within(within(usage).getByTestId("admin-usage-users-mobile")).getByText("Ada Admin")).toBeInTheDocument();
+    expect(within(within(usage).getByTestId("admin-usage-groups-mobile")).getByText("Operators")).toBeInTheDocument();
+    const usageUrls = () => fetch.mock.calls
+      .map(([input]) => String(input))
+      .filter((url) => url.startsWith("/api/admin/usage?"));
+    expect(new URLSearchParams(usageUrls().at(-1)!.split("?")[1]).get("period")).toBe("30d");
 
-    expect(within(usage).getByText("Reported tokens")).toBeInTheDocument();
-    expect(within(mobileGroups).getByText("operators")).toBeInTheDocument();
-    expect(within(mobileGroups).getByText("reviewers")).toBeInTheDocument();
-    expect(within(mobileUsers).getByText("Active User")).toBeInTheDocument();
-    expect(within(mobileUsers).getByText(/OpenAI \/ GPT 5\.5/)).toBeInTheDocument();
-    expect(within(mobileUsers).getByText("No reported usage")).toBeInTheDocument();
-    expect(within(usage).getByTestId("usage-total-cost")).toHaveTextContent("—");
+    fireEvent.change(within(usage).getByLabelText("Period"), { target: { value: "12m" } });
+    await waitFor(() => expect(window.location.search).toBe("?section=usage&filter=12m"));
+    await waitFor(() => expect(new URLSearchParams(usageUrls().at(-1)!.split("?")[1]).get("period")).toBe("12m"));
   });
 
   it("keeps primary admin workflows list-led while bounding analytical tables", async () => {
@@ -1091,6 +958,7 @@ describe("AdminPanel", () => {
     expect(within(users).queryByLabelText("Sort users")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
+    await screen.findByRole("region", { name: "Group usage table" });
     expectBoundedComparisonTable("Group usage table");
     expectBoundedComparisonTable("User usage table");
 

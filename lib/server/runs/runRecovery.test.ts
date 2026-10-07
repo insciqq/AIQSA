@@ -102,6 +102,7 @@ import {
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
+import { recordKnowledgeFailureBilledCalls } from "../knowledge/searchFailure";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import {
@@ -631,6 +632,7 @@ function createHarness(options: Readonly<{
           }
         : options.pricing;
     },
+    loadProviderModelCostBasis: async () => null,
     loadRunUsageAttributions: async () => [],
     persistToolLoopCallBatch: async () => ({ kind: "not_found" }),
     recordRunUsageEvents: async (input) => {
@@ -2587,7 +2589,7 @@ describe("run recovery", () => {
       providers: { openai: { buildRequestPreview: () => ({}), stream } }
     });
     harness.repository.loadRunUsageAttributions = async () => [{ operationCount: 1, modelId: "gpt-test", provider: "openai",
-      usage: { inputTokens: 11, outputTokens: 1 }, recordedAt: "2026-07-12T09:00:00.000Z" }];
+      purpose: "chat_answer", usage: { inputTokens: 11, outputTokens: 1 }, recordedAt: "2026-07-12T09:00:00.000Z" }];
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
@@ -4334,6 +4336,7 @@ describe("run recovery", () => {
     }, [{
       modelId: "embedding-model",
       provider: "test",
+      purpose: "knowledge_retrieval",
       recordedAt: "2026-07-12T09:02:00.000Z",
       usage: { inputTokens: 2, outputTokens: 0, reasoningTokens: 0 }
     }]);
@@ -4553,6 +4556,60 @@ describe("run recovery", () => {
     expect(harness.state.failed).toEqual(failedSearch ? [expect.objectContaining({ error: {
       code: "opensearch_authentication_failed", message: "Knowledge search access is misconfigured. Contact an administrator."
     } })] : []);
+  });
+
+  it("bills the paid response a recovered Knowledge operation rejected once, with its failure result", async () => {
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const execute = vi.fn(async () => {
+      const failure = new Error("embedding_response_model_mismatch");
+      recordKnowledgeFailureBilledCalls(failure, [{ costUsd: 0.000002, inputTokens: 2, modelId: "embedding-upstream",
+        provider: "openai_compatible", providerModelId: "embedding-model-1", totalTokens: 2 }]);
+      throw failure;
+    });
+    const harness = createHarness({
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight: vi.fn(async () => ({ kind: "admitted" as const })),
+        tool: knowledgeRetrievalTool,
+        tools: [knowledgeRetrievalTool]
+      },
+      providers: { openai: { buildRequestPreview: () => ({}), stream: vi.fn(async function* () {
+        return providerResult;
+      }) } }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "rejected embedding", sourceAliases: [] },
+      mcpBinding: null,
+      providerCallId: "knowledge-provider-call-rejected",
+      toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [knowledgeCall], phase: "tools_pending" }),
+      knowledgeScope: {
+        bindings: authorization.admitted.bindings,
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [],
+        knowledgePlan: authorization.scope.knowledgePlan,
+        resolvedSourceCount: 1
+      },
+      normalizedRequest: normalizedKnowledgeRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(installed.calls()).toEqual([expect.objectContaining({ state: "error", usageAccountedAt: expect.any(String) })]);
+    expect(harness.state.usageAttributions.at(-1)?.filter((attribution) => attribution.purpose === "knowledge_retrieval"))
+      .toEqual([expect.objectContaining({ estimatedCostMicros: 2, modelId: "embedding-upstream", provider: "openai_compatible",
+        providerModelId: "embedding-model-1", usage: expect.objectContaining({ inputTokens: 2, totalTokens: 2 }) })]);
   });
 
   it("rebuilds and dispatches an expired non-checkpointed RESERVED attempt exactly once", async () => {
@@ -5005,6 +5062,7 @@ describe("run recovery", () => {
             operationCount: 1, estimatedCostMicros: 110,
             modelId: "gpt-test",
             provider: "openai",
+            purpose: "chat_answer",
             usage: { completeness: "complete" as const,
               cachedInputTokens: null,
               cacheWriteInputTokens: null,
@@ -5879,8 +5937,8 @@ describe("run recovery", () => {
         compaction: { measurement: measurement("already_fits"), summary, summaryAttempts: [{ attempt: 1,
           bindingDigest: "f".repeat(64), id: "csa1_committed", sourceDigest: summary.sourceDigest, state: "committed",
           usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 } }] },
-        persistedUsage: [{ modelId: "gpt-test", operationCount: 2, provider: "openai", recordedAt: "2026-07-12T09:00:00.000Z",
-          usage: { ...roundOne, inputTokens: 1_000, outputTokens: 50, totalTokens: 1_050 } }],
+        persistedUsage: [{ modelId: "gpt-test", operationCount: 2, provider: "openai", purpose: "chat_answer",
+          recordedAt: "2026-07-12T09:00:00.000Z", usage: { ...roundOne, inputTokens: 1_000, outputTokens: 50, totalTokens: 1_050 } }],
         providerToolMessages: [
           { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" },
           openAIResponsesToolBridge.appendToolResult(undefined, toolResult(1)) as ToolLoopJsonValue
@@ -6053,7 +6111,7 @@ describe("run recovery", () => {
       calls: [{ ...persistedRecoveryCall("complete"), result: toolResult(1) as unknown as ToolLoopJsonValue }],
       compaction: { measurement: measurement("needs_summary"), summary, summaryAttempts: [committedSummary] },
       historyChars: 30_000,
-      persistedUsage: [{ modelId: "gpt-test", operationCount: input.operationCount, provider: "openai",
+      persistedUsage: [{ modelId: "gpt-test", operationCount: input.operationCount, provider: "openai", purpose: "chat_answer",
         recordedAt: "2026-07-12T09:00:00.000Z", usage: input.persistedUsage }],
       phase: "provider_running",
       providerToolMessages: [],
@@ -6636,7 +6694,7 @@ describe("run recovery", () => {
       assistantText: "Available ",
       normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
     }, [{
-      modelId: "gpt-test", provider: "openai", recordedAt: "2026-07-12T09:00:00.000Z",
+      modelId: "gpt-test", provider: "openai", purpose: "chat_answer", recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 8, outputTokens: 8, reasoningTokens: 0 }
     }]);
     harness.repository.getRunControlForUser = async () => control(harness.state.run);
@@ -7708,6 +7766,7 @@ describe("run recovery", () => {
     }, [{
       modelId: "search-model-1",
       provider: "openai_compatible",
+      purpose: "web_search",
       recordedAt: "2026-07-12T09:02:00.000Z",
       usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
     }]);
@@ -8396,6 +8455,7 @@ describe("run recovery", () => {
     }, [{
       modelId: selected.modelId!,
       provider: selected.provider,
+      purpose: "web_search",
       recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0 }
     }]);
@@ -9366,7 +9426,7 @@ describe("run recovery", () => {
     harness.repository.loadRunUsageAttributions = async (input) => [
       ...await loadUsage(input),
       {
-        modelId: "router-model", provider: "openai", recordedAt: "2026-09-06T10:00:00.000Z",
+        modelId: "router-model", provider: "openai", purpose: "chat_answer", recordedAt: "2026-09-06T10:00:00.000Z",
         usage: { inputTokens: 4, outputTokens: 1, reasoningTokens: 0 }
       }
     ];
@@ -9505,6 +9565,7 @@ describe("run recovery", () => {
       [{
         modelId: "gpt-test",
         provider: "openai",
+        purpose: "chat_answer",
         recordedAt: "2026-07-12T09:00:00.000Z",
         usage: { inputTokens: 7, outputTokens: 1, reasoningTokens: 0 }
       }]
@@ -9531,6 +9592,58 @@ describe("run recovery", () => {
       phase: "provider_running",
       roundIndex: 2,
       version: 2
+    });
+  });
+
+  describe("reported answer charges", () => {
+    const roundOne = { completeness: "complete" as const, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+      inputTokens: 7, outputTokens: 1, reasoningTokens: 0, totalTokens: 8 };
+    function chargedRecovery(reportedRowCost: number) {
+      const runtimeCall = vi.fn(async () => ({ isError: false, structuredContent: { stored: true }, text: [], unsupportedContentTypes: [] }));
+      const stream = vi.fn(async function* (): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        return { costUsd: 0.0002, finalProviderResponsePreview: {}, finalText: "done", providerResponseId: "response-final",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 } };
+      });
+      const harness = createHarness({ mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true },
+        providers: { openai: { buildRequestPreview: () => ({}), refresh: vi.fn(), stream } } });
+      const installed = installCheckpointState(harness, checkpointedRun({
+        answerRoundUsage: [{ completeness: "terminal", reportedCostMicros: 123, roundIndex: 1, usage: roundOne }],
+        calls: [persistedRecoveryCall()],
+        phase: "tools_pending"
+      }), [
+        // Round one and an in-run summary call, both settled at the charge their provider reported.
+        { costReported: true, estimatedCostMicros: reportedRowCost, modelId: "gpt-test", operationCount: 2, provider: "openai",
+          purpose: "chat_answer", recordedAt: "2026-07-12T09:00:00.000Z",
+          usage: { inputTokens: 10, outputTokens: 2, reasoningTokens: 0, totalTokens: 12 } },
+        // A call without a reported charge: its stored cost is priced again from token prices.
+        { estimatedCostMicros: 999, modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer",
+          recordedAt: "2026-07-12T09:00:00.000Z", usage: { inputTokens: 1_000, outputTokens: 100, reasoningTokens: 0, totalTokens: 1_100 } }
+      ]);
+      return { harness, installed, stream };
+    }
+
+    it("keeps every reported charge once and prices only unreported calls from token prices", async () => {
+      const { harness, installed } = chargedRecovery(163);
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(installed.checkpoint().answerRoundUsage).toMatchObject([
+        { reportedCostMicros: 123, roundIndex: 1 }, { completeness: "terminal", reportedCostMicros: 200, roundIndex: 2 }
+      ]);
+      // $10 and $20 per million: 1,000 input and 100 output tokens cost 12,000 micro-dollars.
+      expect(harness.state.completed).toMatchObject({ estimatedCostMicros: 12_363, usageAttributions: [
+        { costReported: true, estimatedCostMicros: 363, operationCount: 3, purpose: "chat_answer",
+          usage: expect.objectContaining({ inputTokens: 12, outputTokens: 5 }) },
+        { estimatedCostMicros: 12_000, operationCount: 1, purpose: "chat_answer", usage: expect.objectContaining({ inputTokens: 1_000 }) }
+      ] });
+      expect(harness.state.completed?.usageAttributions?.[1]).not.toHaveProperty("costReported");
+    });
+
+    it("refuses saved round charges larger than the persisted reported cost", async () => {
+      const { harness, stream } = chargedRecovery(100);
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(harness.state.completed).toBeNull();
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_usage_evidence_invalid" }) })]);
     });
   });
 
@@ -9632,10 +9745,12 @@ describe("run recovery", () => {
       providerToolMessages: [],
       roundIndex: 2
     }), [{
-      // The grouped row also includes 3 input and 4 output tokens consumed by
-      // a tool which intentionally uses the same provider/model as the answer.
+      // A row recorded before attributions carried a purpose (backfilled as
+      // answer usage) also includes 3 input and 4 output tokens consumed by a
+      // tool which intentionally uses the same provider/model as the answer.
       modelId: "gpt-test",
       provider: "openai",
+      purpose: "chat_answer",
       recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 12, outputTokens: 6, reasoningTokens: 0, totalTokens: 18 }
     }]);
@@ -9664,6 +9779,52 @@ describe("run recovery", () => {
         })
       ],
       version: 2
+    });
+  });
+
+  it("keeps a same-model Search attribution out of the saved answer rounds", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      result: {
+        finalProviderResponsePreview: {},
+        finalText: "Recovered after round two",
+        providerResponseId: "response-round-2",
+        usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0, totalTokens: 5 }
+      },
+      status: "completed",
+      terminal: true
+    }));
+    const harness = createHarness({ providers: { openai: providerWithRefresh(refresh) } });
+    const round = (roundIndex: number, inputTokens: number, outputTokens: number) => ({
+      completeness: roundIndex === 1 ? "terminal" as const : "partial" as const, roundIndex,
+      usage: { completeness: "complete" as const, cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens, outputTokens,
+        reasoningTokens: 0, totalTokens: inputTokens + outputTokens }
+    });
+    installCheckpointState(harness, checkpointedRun({
+      answerRoundUsage: [round(1, 7, 1), round(2, 2, 1)],
+      phase: "provider_running",
+      providerResponseId: "response-round-2",
+      providerToolMessages: [],
+      roundIndex: 2
+    }), [{
+      modelId: "gpt-test", provider: "openai", purpose: "chat_answer", recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 9, outputTokens: 2, reasoningTokens: 0, totalTokens: 11 }
+    }, {
+      // Search through the answer's own model is its own attribution.
+      modelId: "gpt-test", provider: "openai", purpose: "web_search", recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 }
+    }]);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(harness.state.completed).toMatchObject({
+      usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+      usageAttributions: [
+        { modelId: "gpt-test", provider: "openai", purpose: "web_search",
+          usage: expect.objectContaining({ inputTokens: 3, outputTokens: 4, totalTokens: 7 }) },
+        { modelId: "gpt-test", provider: "openai", purpose: "chat_answer",
+          usage: expect.objectContaining({ inputTokens: 9, outputTokens: 4, totalTokens: 13 }) }
+      ]
     });
   });
 
@@ -9698,6 +9859,7 @@ describe("run recovery", () => {
     }), [{
       modelId: "gpt-test",
       provider: "openai",
+      purpose: "chat_answer",
       recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0, totalTokens: 6 }
     }]);

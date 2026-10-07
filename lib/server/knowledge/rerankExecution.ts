@@ -3,7 +3,8 @@ import {
   MAX_RERANK_QUERY_CHARACTERS,
   RerankAdapterError,
   type RerankAdapter,
-  type RerankResult
+  type RerankResult,
+  type RerankUsage
 } from "../providers/rerank";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { elapsedMilliseconds, monotonicNowMilliseconds } from "../monotonicTime";
@@ -15,7 +16,8 @@ import {
 } from "./rerankCandidateFormatter";
 import {
   KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
-  type KnowledgeRerankerBindingEvidenceV2
+  type KnowledgeRerankerBindingEvidenceV2,
+  type KnowledgeRerankerUsageEvidence
 } from "./rerankEvidence";
 import { KNOWLEDGE_RANKING_PROFILE_VERSION } from "./retrievalRanking";
 
@@ -86,11 +88,17 @@ function rerankCancellationError(signal: AbortSignal): Error {
   return error;
 }
 
-function usageEvidence(result: RerankResult | null) {
-  return Object.freeze({
-    searchUnits: result?.usage.searchUnits ?? null,
-    totalTokens: result?.usage.totalTokens ?? null
-  });
+/** A provider response's usage also carries its input tokens and reported
+ * cost, which the run accounts as Knowledge retrieval usage: a ranking, or a
+ * response the adapter rejected (`RerankAdapterError.usage`). Evidence without
+ * a response keeps the two-field usage. */
+function usageEvidence(usage: RerankUsage | null): KnowledgeRerankerUsageEvidence {
+  return Object.freeze(usage ? {
+    costUsd: usage.costUsd ?? null,
+    inputTokens: usage.inputTokens ?? null,
+    searchUnits: usage.searchUnits ?? null,
+    totalTokens: usage.totalTokens ?? null
+  } : { searchUnits: null, totalTokens: null });
 }
 
 function pinnedEvidenceFields(pin: KnowledgeRerankPin) {
@@ -201,7 +209,8 @@ function classifiedFallbackCode(error: unknown): string | null {
  * Zero or one unique candidate skips the provider entirely; every classified
  * terminal provider failure degrades to the deterministic weighted RRF
  * fallback, while database, authority, invariant, and cancellation failures
- * propagate.
+ * propagate. A fallback after a response the adapter rejected keeps the usage
+ * that response reported, which the run accounts.
  */
 export function createKnowledgeRerankStage(input: Readonly<{
   adapter: RerankAdapter;
@@ -355,7 +364,8 @@ export function createKnowledgeRerankStage(input: Readonly<{
           relevanceScores: Object.freeze([]),
           status: "degraded" as const,
           timedOut,
-          usage: usageEvidence(null),
+          // A rejected ranking was still a billed response; its scores are not.
+          usage: usageEvidence(error instanceof RerankAdapterError ? error.usage : null),
           version: KNOWLEDGE_RERANKER_EVIDENCE_VERSION
         }),
         scores: new Map<string, number>(),
@@ -404,7 +414,7 @@ export function createKnowledgeRerankStage(input: Readonly<{
         relevanceScores,
         status,
         timedOut: false,
-        usage: usageEvidence(result),
+        usage: usageEvidence(result.usage),
         version: KNOWLEDGE_RERANKER_EVIDENCE_VERSION
       }),
       scores,

@@ -20,7 +20,8 @@ import { BoundedTextAccumulator } from "./boundedText";
 import { extractOpenAIUsage } from "./openaiResponsesResponse";
 import {
   extractOpenRouterText,
-  extractOpenRouterUsage
+  extractOpenRouterUsage,
+  openRouterReportedCostUsd
 } from "./openRouterChatResponse";
 import type { OpenRouterChatClient } from "./openRouterChatTransport";
 import type { ProviderModelConfiguration } from "./providerConfiguration";
@@ -60,6 +61,9 @@ export type ProviderStructuredOutputOptions = Readonly<{
   /** Server-owned admission/accounting barrier at the physical request boundary. */
   beforeDispatch?(): Promise<void>;
   onProviderResponseId?(providerResponseId: string | null): void;
+  /** USD the provider reported for the request (OpenRouter `usage.cost`, with
+   * the upstream charge of a BYOK call); called only with a usable amount. */
+  onCostUsd?(costUsd: number): void;
   onUsage?(usage: ModelRunUsage): void;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -834,6 +838,8 @@ export function createOpenRouterStructuredOutputAdapter(input: Readonly<{
       if (hasReportedTokenUsage(response.usage, ["prompt_tokens", "completion_tokens", "total_tokens"])) {
         options?.onUsage?.(extractOpenRouterUsage(response));
       }
+      const costUsd = isRecord(response.usage) ? openRouterReportedCostUsd(response.usage) : undefined;
+      if (costUsd !== undefined) options?.onCostUsd?.(costUsd);
       const choices = response.choices;
       const choice = Array.isArray(choices) && choices.length === 1 ? choices[0] : null;
       const message = isRecord(choice) && isRecord(choice.message) ? choice.message : null;

@@ -92,6 +92,7 @@ import {
   journeyRunParams,
   journeyVerdict,
   ledgerDelta,
+  LEDGER_USAGE_PATH,
   ledgerUsage,
   messageText,
   modelInConnection,
@@ -502,8 +503,8 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
   const params = journeyRunParams(model, JOURNEY_LIMITS.answerMaxOutputTokens);
   const ledgerKeys = { modelIds: [model.modelId, model.upstreamModelId!], providers: [model.provider, family] };
   const ledger = async () => {
-    const dashboard = await json(api, "evidence", "/api/admin");
-    return step(api, "evidence", "usage_ledger_failed", () => ledgerUsage(dashboard, api.userId, ledgerKeys));
+    const analytics = await json(api, "evidence", LEDGER_USAGE_PATH);
+    return step(api, "evidence", "usage_ledger_failed", () => ledgerUsage(analytics, ledgerKeys));
   };
   let ledgerBefore = await ledger();
   let leafId: string | null = null;

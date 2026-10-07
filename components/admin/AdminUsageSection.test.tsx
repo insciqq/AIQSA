@@ -1,267 +1,220 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import type { AdminCatalog, AdminUsageDashboard } from "@/lib/contracts/admin";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AdminUsageAnalytics, AdminUsagePeriod } from "@/lib/contracts/adminUsageAnalytics";
 import { AdminUsageSection } from "./AdminUsageSection";
+import { emptyUsageAnalytics, populatedUsageAnalytics, usageResponse } from "./usage/usageTestFixtures";
 
-const catalog: AdminCatalog = {
-  models: [{
-    displayName: "GPT 5.5",
-    modelId: "opaque-model-id",
-    provider: "opaque-connection-id",
-    providerFamily: "openai",
-    upstreamModelId: "gpt-5.5"
-  }],
-  providers: [{ id: "opaque-connection-id", name: "OpenAI" }],
-  searchStrategies: []
-};
-
-function emptyTotals() {
-  return {
-    estimatedCostMicros: null,
-    recordCount: 0,
-    knownCostRecordCount: 0,
-    incompleteUsageCount: 0,
-    cachedInputTokens: 0,
-    cacheWriteInputTokens: 0,
-    inputTokens: 0,
-    lastUsedAt: null,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    runCount: 0,
-    totalTokens: 0
-  };
+function Harness({ initial = null }: Readonly<{ initial?: string | null }>) {
+  const [period, setPeriod] = useState<string | null>(initial);
+  return <AdminUsageSection onPeriodChange={setPeriod} period={period} />;
 }
 
-function populatedUsage(): AdminUsageDashboard {
-  return {
-    byGroup: [
-      {
-        ...emptyTotals(),
-        contributingUsers: 1,
-        groupId: "group-active",
-        inputTokens: 600,
-        lastUsedAt: "2026-07-12T08:00:00.000Z",
-        name: "Operators",
-        outputTokens: 400,
-        runCount: 2,
-        totalTokens: 1000,
-        userCount: 2,
-        archivedAt: null
-      },
-      {
-        ...emptyTotals(),
-        archivedAt: "2026-07-01T00:00:00.000Z",
-        contributingUsers: 0,
-        groupId: "group-archived",
-        name: "Former team",
-        userCount: 0
-      }
-    ],
-    byUser: [
-      {
-        ...emptyTotals(),
-        displayName: "Alice Operator",
-        email: "alice@example.com",
-        groups: [{ groupId: "group-active", name: "Operators", role: "member" }],
-        inputTokens: 600,
-        lastUsedAt: "2026-07-12T08:00:00.000Z",
-        outputTokens: 400,
-        providerModels: [
-          {
-            ...emptyTotals(),
-            inputTokens: 600,
-            lastUsedAt: "2026-07-12T08:00:00.000Z",
-            modelId: "gpt-5.5",
-            outputTokens: 400,
-            provider: "openai",
-            runCount: 2,
-            totalTokens: 1000
-          }
-        ],
-        runCount: 2,
-        totalTokens: 1000,
-        userId: "user-alice"
-      },
-      {
-        ...emptyTotals(),
-        displayName: "No Usage User",
-        email: null,
-        groups: [],
-        providerModels: [],
-        userId: "user-empty"
-      }
-    ],
-    totals: {
-      ...emptyTotals(),
-      cachedInputTokens: 120,
-      cacheWriteInputTokens: 30,
-      inputTokens: 600,
-      lastUsedAt: "2026-07-12T08:00:00.000Z",
-      outputTokens: 400,
-      reasoningTokens: 100,
-      runCount: 2,
-      totalTokens: 1000
-    }
-  };
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" }, status });
 }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function requestedUrl(input: RequestInfo | URL): URL {
+  return new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url, "http://localhost");
+}
+
+function mockUsage(usage: AdminUsageAnalytics) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async () => json(usageResponse(usage)));
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("AdminUsageSection", () => {
-  it("shows the same known cost and partial coverage in every desktop and mobile usage surface", () => {
-    const usage = populatedUsage();
-    const cost = { estimatedCostMicros: 456_789, recordCount: 5, knownCostRecordCount: 3 };
-    Object.assign(usage.totals, cost);
-    Object.assign(usage.byGroup[0], cost);
-    Object.assign(usage.byUser[0], cost);
-    Object.assign(usage.byUser[0].providerModels[0], cost);
-    render(<AdminUsageSection catalog={catalog} usage={usage} />);
+  it("shows a pending state without zeros, then KPI tiles with changes against the previous window", async () => {
+    const response = deferred<Response>();
+    const fetch = vi.spyOn(globalThis, "fetch").mockReturnValue(response.promise);
+    render(<Harness />);
 
-    const summary = screen.getByRole("region", { name: "Usage summary" });
-    expect(within(summary).getByTestId("usage-total-cost")).toHaveTextContent("≈ $0.457");
-    expect(within(summary).getByText("cost known for 3 of 5 requests")).toBeVisible();
-    for (const region of [
-      screen.getByRole("region", { name: "Group usage table" }),
-      screen.getByRole("region", { name: "User usage table" }),
-      screen.getByTestId("admin-usage-groups-mobile"),
-      screen.getByTestId("admin-usage-users-mobile")
-    ]) {
-      expect(within(region).getAllByText("≈ $0.457").length).toBeGreaterThan(0);
-      expect(within(region).getAllByText("cost known for 3 of 5 requests").length).toBeGreaterThan(0);
-    }
-    const userRow = within(screen.getByRole("region", { name: "User usage table" }))
-      .getByText("Alice Operator").closest("tr")!;
-    expect(within(userRow).getAllByText("≈ $0.457")).toHaveLength(2);
-    expect(within(userRow).getAllByText("cost known for 3 of 5 requests")).toHaveLength(2);
+    expect(screen.getByTestId("admin-usage-loading")).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("0")).not.toBeInTheDocument();
+    const url = requestedUrl(fetch.mock.calls[0]![0]);
+    expect(url.pathname).toBe("/api/admin/usage");
+    expect(url.searchParams.get("period")).toBe("30d");
+    expect(url.searchParams.get("tz")).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+    await act(async () => response.resolve(json(usageResponse(populatedUsageAnalytics()))));
+    await screen.findByTestId("usage-kpi-cost");
+    const summary = screen.getByLabelText("Usage summary");
+    expect(within(summary).getByTestId("usage-kpi-cost")).toHaveTextContent("≈ $4.00");
+    expect(within(summary).getByTestId("usage-kpi-cost")).toHaveTextContent("cost known for 6 of 7 requests");
+    expect(screen.getByTestId("usage-kpi-cost-delta")).toHaveTextContent("↑ 100% vs previous 30 days");
+    const system = within(summary).getByTestId("usage-kpi-system");
+    expect(system).toHaveTextContent("System cost≈ $1.00");
+    expect(system).toHaveTextContent("25% of the estimated cost");
+    expect(system).toHaveTextContent("cost known for 2 of 3 requests");
+    expect(screen.getByTestId("usage-kpi-system-delta")).toHaveTextContent("↑ 100% vs previous 30 days");
+    expect(screen.getByTestId("usage-kpi-tokens")).toHaveTextContent("10,500");
+    expect(screen.getByTestId("usage-kpi-tokens-delta")).toHaveTextContent("—");
+    expect(screen.getByTestId("usage-kpi-runs-delta")).toHaveTextContent("↓ 20% vs previous 30 days");
+    expect(screen.getByTestId("usage-kpi-users")).toHaveTextContent("2 of 4 users");
+    expect(screen.getByTestId("usage-kpi-users-delta")).toHaveTextContent("No change vs previous 30 days");
   });
 
-  it("keeps unknown costs unavailable and displays reported zero without a partial-coverage note", () => {
-    const usage = populatedUsage();
-    Object.assign(usage.totals, { estimatedCostMicros: 0, recordCount: 2, knownCostRecordCount: 2 });
-    Object.assign(usage.byUser[0], { recordCount: 2 });
-    render(<AdminUsageSection catalog={catalog} usage={usage} />);
-    expect(screen.getByTestId("usage-total-cost")).toHaveTextContent("≈ <$0.01");
-    expect(screen.queryByText(/cost known for/)).not.toBeInTheDocument();
-    const userRow = within(screen.getByRole("region", { name: "User usage table" }))
-      .getByText("Alice Operator").closest("tr")!;
-    expect(within(userRow).getAllByText("—")).toHaveLength(2);
-  });
+  it("renders breakdowns by model, source, user and group for the period", async () => {
+    mockUsage(populatedUsageAnalytics());
+    render(<Harness />);
 
-  it("renders the complete read-only usage ledger and native comparison tables", () => {
-    render(<AdminUsageSection catalog={catalog} usage={populatedUsage()} />);
+    // Shares of the models people chose are of their own three dollars.
+    const models = await screen.findByTestId("admin-usage-by-model");
+    expect(within(models).getByText("OpenAI / GPT 5.5")).toBeInTheDocument();
+    expect(within(models).getByText("6,000 tokens · 2 users")).toBeInTheDocument();
+    expect(within(models).getByText("83%")).toBeInTheDocument();
+    expect(within(models).queryByText("OpenAI / GPT 5 mini")).not.toBeInTheDocument();
 
-    const summary = screen.getByRole("region", { name: "Usage summary" });
-    expect(within(summary).getByText("Provider-reported · all recorded usage")).toBeVisible();
-    expect(within(summary).getByTestId("usage-total-tokens")).toHaveTextContent(
-      new Intl.NumberFormat(undefined).format(1000)
-    );
-    expect(summary).toHaveTextContent("2 retained runs with usage records across 1 user and 1 group");
-    expect(summary).toHaveTextContent("Input tokens600");
-    expect(summary).toHaveTextContent("Cached input120");
-    expect(summary).toHaveTextContent("Cache write30");
-    expect(summary).toHaveTextContent("Output tokens400");
-    expect(summary).toHaveTextContent("Reasoning tokens100");
-    expect(screen.getByText("How to read these numbers")).toBeVisible();
-
-    const groupRegion = screen.getByRole("region", { name: "Group usage table" });
-    const userRegion = screen.getByRole("region", { name: "User usage table" });
-    expect(groupRegion).toHaveAttribute("tabindex", "0");
-    expect(userRegion).toHaveAttribute("tabindex", "0");
-    expect(screen.getByTestId("admin-usage-groups")).toHaveClass("min-w-0");
-    expect(screen.getByTestId("admin-usage-users")).toHaveClass("min-w-0");
-    expect(within(groupRegion).getByRole("table")).toBeVisible();
-    expect(within(userRegion).getByRole("table")).toBeVisible();
-    expect(within(groupRegion).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
-      "Group",
-      "Users",
-      "Runs",
-      "Tokens",
-      "Estimated cost",
-      "Last usage"
+    const sources = screen.getByTestId("admin-usage-by-source");
+    expect(within(sources).getAllByRole("listitem").map((item) => item.querySelector("p")?.textContent)).toEqual([
+      "Chats", "Scheduled tasks", "Images", "System"
     ]);
-    expect(within(userRegion).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
-      "User",
-      "Groups",
-      "Runs",
-      "Tokens",
-      "Estimated cost",
-      "Input / output",
-      "Top model",
-      "Last usage"
-    ]);
-    expect(within(userRegion).getByText("OpenAI / GPT 5.5")).toBeVisible();
-    expect(within(userRegion).getByText("No reported usage")).toBeVisible();
-    const mobileGroups = screen.getByTestId("admin-usage-groups-mobile");
-    const mobileUsers = screen.getByTestId("admin-usage-users-mobile");
-    expect(mobileGroups).toHaveClass("lg:hidden");
-    expect(mobileUsers).toHaveClass("lg:hidden");
-    expect(within(mobileGroups).getByText("Operators")).toBeVisible();
-    expect(within(mobileUsers).getByText(/OpenAI \/ GPT 5\.5/)).toBeVisible();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    expect(screen.queryByRole("form")).not.toBeInTheDocument();
-    expect(within(summary).getByTestId("usage-total-cost")).toHaveTextContent("—");
+    expect(within(sources).getByText("Titles, summaries, Memory, Knowledge and checks by system models · 2,500 tokens")).toBeInTheDocument();
+    expect(within(sources).getByText("25%")).toBeInTheDocument();
+
+    const users = screen.getByRole("region", { name: "User usage table" });
+    const rows = within(users).getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("Ada Admin");
+    expect(rows[1]).toHaveTextContent("OpenAI / GPT 5.5");
+    expect(rows[1]).toHaveTextContent("1,000 tokens · 33% of cost");
+    expect(rows[2]).toHaveTextContent("No email");
+    expect(rows[2]).toHaveTextContent("Cost unknown1,500 tokens");
+    expect(within(screen.getByTestId("admin-usage-users-mobile")).getByText("Bo Builder")).toBeInTheDocument();
+
+    const groups = screen.getByRole("region", { name: "Group usage table" });
+    expect(within(groups).getByText("Operators")).toBeInTheDocument();
+    expect(within(groups).getAllByRole("row")[1]).toHaveTextContent("2,500 tokens · 25% of cost");
+    expect(screen.getByTestId("admin-usage-groups")).toHaveTextContent("group totals can overlap");
+    expect(screen.getByText(/follow the\s+UTC time zone/u)).toBeInTheDocument();
   });
 
-  it("keeps both table regions and deliberate empty rows mounted", () => {
-    const usage: AdminUsageDashboard = {
-      byGroup: [],
-      byUser: [],
-      totals: emptyTotals()
-    };
-    render(<AdminUsageSection catalog={catalog} usage={usage} />);
+  it("breaks system spend down by function and model and keeps unknown cost unknown", async () => {
+    mockUsage(populatedUsageAnalytics());
+    render(<Harness />);
 
-    expect(within(screen.getByRole("region", { name: "Usage summary" })).getByText("Never")).toBeVisible();
-    const groupTable = screen.getByRole("region", { name: "Group usage table" });
-    const userTable = screen.getByRole("region", { name: "User usage table" });
-    expect(within(groupTable).getByText("No groups in this installation").closest("td")).toHaveAttribute("colspan", "6");
-    expect(within(userTable).getByText("No users in this installation").closest("td")).toHaveAttribute("colspan", "8");
-    expect(within(screen.getByTestId("admin-usage-groups-mobile")).getByText("No groups in this installation")).toBeVisible();
-    expect(within(screen.getByTestId("admin-usage-users-mobile")).getByText("No users in this installation")).toBeVisible();
+    const functions = await screen.findByTestId("admin-usage-system-functions");
+    const rows = within(functions).getAllByRole("listitem");
+    expect(rows.map((row) => row.querySelector("p")?.textContent)).toEqual(["Memory processing", "Chat titles", "Knowledge indexing"]);
+    expect(rows[0]).toHaveTextContent("≈ $0.800");
+    expect(rows[0]).toHaveTextContent("500 tokens · 1 request");
+    expect(rows[0]).toHaveTextContent("80%");
+    expect(rows[2]).toHaveTextContent("Cost unknown");
+    expect(rows[2]).toHaveTextContent("1,500 tokens · 1 request · 1 with unknown cost");
+    expect(rows[2]).toHaveTextContent("share unknown");
+    expect(rows[2]).not.toHaveTextContent("$");
+
+    const models = screen.getByRole("region", { name: "System model usage table" });
+    const modelRows = within(models).getAllByRole("row");
+    expect(modelRows[1]).toHaveTextContent("OpenAI / GPT 5 mini");
+    expect(modelRows[1]).toHaveTextContent("Chat titles, Memory processing");
+    expect(modelRows[1]).toHaveTextContent("100%");
+    expect(modelRows[2]).toHaveTextContent("OpenAI / Embedding 3 small");
+    expect(modelRows[2]).toHaveTextContent("Knowledge indexing");
+    expect(modelRows[2]).toHaveTextContent("Cost unknown");
+    expect(within(screen.getByTestId("admin-usage-system-models-mobile")).getByText("OpenAI / Embedding 3 small")).toBeInTheDocument();
   });
 
-  it("counts detached provider-reported usage even when no retained run remains", () => {
-    const usage = populatedUsage();
-    usage.byUser[1] = {
-      ...usage.byUser[1],
-      inputTokens: 5,
-      lastUsedAt: "2026-07-01T00:00:00.000Z",
-      totalTokens: 5
-    };
-    usage.byGroup[1] = {
-      ...usage.byGroup[1],
-      contributingUsers: 1,
-      inputTokens: 5,
-      lastUsedAt: "2026-07-01T00:00:00.000Z",
-      totalTokens: 5
-    };
+  it("says when the period has no usage instead of drawing an empty chart", async () => {
+    mockUsage(emptyUsageAnalytics());
+    render(<Harness />);
 
-    render(<AdminUsageSection catalog={catalog} usage={usage} />);
-
-    expect(screen.getByRole("region", { name: "Usage summary" })).toHaveTextContent(
-      "2 retained runs with usage records across 2 users and 2 groups"
-    );
+    const spend = await screen.findByTestId("admin-usage-spend");
+    expect(within(spend).getByRole("status")).toHaveTextContent("No usage in this period");
+    expect(screen.queryByTestId("usage-spend-chart")).not.toBeInTheDocument();
+    expect(screen.getByTestId("usage-kpi-cost")).toHaveTextContent("—");
+    expect(screen.getByTestId("usage-kpi-system")).toHaveTextContent("no system usage in this period");
+    expect(within(screen.getByTestId("admin-usage-system")).getByText("No system usage in this period.")).toBeInTheDocument();
+    expect(screen.getByText("No user had usage in this period.", { selector: "p" })).toBeInTheDocument();
   });
 
-  it("preserves archived, missing-identity, and no-group context without raw catalog fallbacks", () => {
-    const usage = populatedUsage();
-    usage.byUser[1] = {
-      ...usage.byUser[1],
-      providerModels: [
-        {
-          ...emptyTotals(),
-          modelId: "unknown-model",
-          provider: "unknown-provider",
-          runCount: 1,
-          totalTokens: 5
-        }
-      ],
-      runCount: 1,
-      totalTokens: 5
-    };
-    render(<AdminUsageSection catalog={catalog} usage={usage} />);
+  it("switches the chart between cost and tokens", async () => {
+    mockUsage(populatedUsageAnalytics());
+    render(<Harness />);
 
-    expect(screen.getAllByText("Archived group")).toHaveLength(2);
-    expect(screen.getAllByText("No email")).toHaveLength(2);
-    expect(screen.getAllByText("No groups")).toHaveLength(2);
-    expect(screen.getAllByText(/Unavailable model/)).toHaveLength(2);
-    expect(screen.queryByText(/unknown-provider|unknown-model/)).not.toBeInTheDocument();
+    await screen.findByTestId("usage-spend-chart");
+    expect(screen.getByRole("table", { name: "Estimated cost per day by source" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Tokens" }));
+    expect(screen.getByRole("button", { name: "Tokens" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("table", { name: "Tokens per day by source" })).toBeInTheDocument();
+  });
+
+  it("aborts the stale request on a period change and keeps the previous data marked as updating", async () => {
+    const next = deferred<Response>();
+    const signals: AbortSignal[] = [];
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      signals.push(init!.signal!);
+      return requestedUrl(input).searchParams.get("period") === "7d"
+        ? next.promise
+        : json(usageResponse(populatedUsageAnalytics()));
+    });
+    render(<Harness />);
+    await screen.findByTestId("usage-kpi-cost");
+
+    fireEvent.change(screen.getByLabelText("Period"), { target: { value: "7d" } });
+    expect(requestedUrl(fetch.mock.calls.at(-1)![0]).searchParams.get("period")).toBe("7d");
+    expect(signals[0]!.aborted).toBe(true);
+    expect(screen.getByTestId("admin-usage-content")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText("Updating…")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-kpi-cost")).toHaveTextContent("≈ $4.00");
+
+    const weekly: AdminUsageAnalytics = {
+      ...populatedUsageAnalytics(),
+      totals: { ...populatedUsageAnalytics().totals, estimatedCostMicros: 1_500_000 },
+      window: { ...populatedUsageAnalytics().window, period: "7d" }
+    };
+    await act(async () => next.resolve(json(usageResponse(weekly))));
+    await waitFor(() => expect(screen.getByTestId("admin-usage-content")).not.toHaveAttribute("aria-busy"));
+    expect(screen.getByTestId("usage-kpi-cost")).toHaveTextContent("≈ $1.50");
+    expect(screen.getByTestId("usage-kpi-cost-delta")).toHaveTextContent("vs previous 7 days");
+  });
+
+  it("links the CSV export to the selected period and the browser time zone", async () => {
+    mockUsage(populatedUsageAnalytics());
+    render(<Harness initial="90d" />);
+
+    const link = screen.getByRole("link", { name: "Download CSV" });
+    const url = new URL(link.getAttribute("href")!, "http://localhost");
+    expect(url.pathname).toBe("/api/admin/usage/export");
+    expect(url.searchParams.get("period")).toBe("90d");
+    expect(url.searchParams.get("tz")).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(screen.getByLabelText("Period")).toHaveValue("90d");
+    await screen.findByTestId("usage-kpi-cost");
+  });
+
+  it("falls back to the default period for an unknown filter value", async () => {
+    const fetch = mockUsage(populatedUsageAnalytics());
+    render(<Harness initial="forever" />);
+    expect(screen.getByLabelText("Period")).toHaveValue("30d" satisfies AdminUsagePeriod);
+    expect(requestedUrl(fetch.mock.calls[0]![0]).searchParams.get("period")).toBe("30d");
+    await screen.findByTestId("usage-kpi-cost");
+  });
+
+  it("shows a load failure with Retry instead of an empty result", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(json({ error: "usage_analytics_failed" }, 500))
+      .mockResolvedValueOnce(json({ usage: { malformed: true } }))
+      .mockResolvedValueOnce(json(usageResponse(populatedUsageAnalytics())));
+    render(<Harness />);
+
+    let alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Usage could not be loaded");
+    expect(screen.queryByText("No usage in this period")).not.toBeInTheDocument();
+
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    alert = await screen.findByRole("alert");
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(await screen.findByTestId("usage-kpi-cost")).toHaveTextContent("≈ $4.00");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

@@ -92,6 +92,7 @@ import {
   SearchToolCancelledError,
   searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
+  searchUsageAttribution,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import {
@@ -190,6 +191,9 @@ import { normalizeWorkspaceProviderToolName } from "../workspace/toolCatalog";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
   finalizeRunCompletion,
+  groupedUsageAttributions,
+  hasSettledRunUsageCost,
+  reportedAnswerCost,
   usageAttributionsWithEstimatedCost
 } from "./runFinalization";
 import {
@@ -343,6 +347,7 @@ export type RunRecoveryRepository = Pick<
   | "loadFocusedKnowledgeCall"
   | "loadFocusedKnowledgeScopeExclusions"
   | "loadModelPricing"
+  | "loadProviderModelCostBasis"
   | "loadPublishedRunAnswer"
   | "loadRunUsageAttributions"
   | "persistToolLoopCallBatch"
@@ -764,51 +769,19 @@ function reportedUsage(refreshed: ProviderRunRefreshResult): ModelRunUsage | nul
 async function recoveredUsageAttributions(
   deps: RunRecoveryDeps,
   control: Readonly<{ modelId: string; provider: string }>,
-  usage: ModelRunUsage | null
+  usage: ModelRunUsage | null,
+  costUsd?: number
 ) {
   return usageAttributionsWithEstimatedCost(deps.repository, [
     {
+      ...reportedAnswerCost(costUsd),
       operationCount: 1,
       modelId: control.modelId,
       provider: control.provider,
+      purpose: "chat_answer",
       usage: usage ?? normalizeTokenUsage({})
     }
   ]);
-}
-
-function groupedUsageAttributions(
-  attributions: readonly RunUsageAttribution[]
-): RunUsageAttribution[] {
-  const grouped = new Map<string, {
-    providerModelId?: string;
-    operationCount: number | null;
-    modelId: string;
-    provider: string;
-    usages: ModelRunUsage[];
-  }>();
-  for (const attribution of attributions) {
-    const key = `${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
-    const existing = grouped.get(key);
-    if (existing) {
-      existing.usages.push(attribution.usage);
-      existing.operationCount = existing.operationCount === null || attribution.operationCount == null
-        ? null : existing.operationCount + attribution.operationCount;
-    }
-    else grouped.set(key, {
-      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
-      operationCount: attribution.operationCount ?? null,
-      modelId: attribution.modelId,
-      provider: attribution.provider,
-      usages: [attribution.usage]
-    });
-  }
-  return [...grouped.values()].map((entry) => ({
-    ...(entry.providerModelId ? { providerModelId: entry.providerModelId } : {}),
-    operationCount: entry.operationCount,
-    modelId: entry.modelId,
-    provider: entry.provider,
-    usage: sumTokenUsage(entry.usages)
-  }));
 }
 
 function hasTokenUsage(usage: ModelRunUsage): boolean {
@@ -865,6 +838,40 @@ function lostAnswerRoundOutcomeUnknown(
     !checkpoint.answerRoundUsage.some((entry) => entry.roundIndex === round);
 }
 
+/** A saved answer round as its run attribution; a charge its provider
+ * reported settles its cost. */
+function answerRoundAttribution(
+  answer: Readonly<{ modelId: string; provider: string }>,
+  entry: PersistedAnswerRoundUsage
+): RunUsageAttribution {
+  return { ...(entry.reportedCostMicros !== undefined ? { costReported: true, estimatedCostMicros: entry.reportedCostMicros } : {}),
+    modelId: answer.modelId, operationCount: 1, provider: answer.provider, purpose: "chat_answer", usage: entry.usage };
+}
+
+/** The answer calls of one persisted answer attribution that are not saved
+ * rounds: its operations, usage and, for reported charges, cost minus theirs. */
+function answerRemainder(
+  attribution: RunUsageAttribution | undefined,
+  answer: Readonly<{ modelId: string; provider: string }>,
+  rounds: readonly PersistedAnswerRoundUsage[],
+  reported: boolean
+): RunUsageAttribution[] | null {
+  // Subtracting nothing would only mark complete usage partial.
+  if (rounds.length === 0) return attribution ? [attribution] : [];
+  const remainderCount = attribution?.operationCount == null ? null : attribution.operationCount - rounds.length;
+  if (remainderCount !== null && remainderCount < 0) return null;
+  const remainder = subtractTokenUsage(attribution?.usage ?? sumTokenUsage([]), sumTokenUsage(rounds.map((entry) => entry.usage)));
+  if (!remainder) return null;
+  const roundCost = rounds.reduce((sum, entry) => sum + (entry.reportedCostMicros ?? 0), 0);
+  const cost = !reported || attribution?.estimatedCostMicros === null ? null : (attribution?.estimatedCostMicros ?? 0) - roundCost;
+  if (cost !== null && cost < 0) return null;
+  return remainderCount !== 0 && (remainderCount !== null || hasTokenUsage(remainder) || (cost ?? 0) > 0)
+    ? [{ ...(reported ? { costReported: true as const, estimatedCostMicros: cost } : {}),
+        operationCount: remainderCount, modelId: answer.modelId, provider: answer.provider, purpose: "chat_answer" as const,
+        usage: remainder }]
+    : [];
+}
+
 function usageAttributionsWithoutAnswerRounds(
   persisted: readonly RunUsageAttribution[],
   answer: Readonly<{ modelId: string; provider: string }>,
@@ -875,26 +882,22 @@ function usageAttributionsWithoutAnswerRounds(
   if (grouped.some((attribution) => !hasValidUsageEvidence(attribution.usage))) return null;
   if (answerRoundUsage.length === 0) return grouped;
 
-  const answerKey = `${answer.provider}\u0000${answer.modelId}`;
-  const answerAttribution = grouped.find((attribution) =>
-    `${attribution.provider}\u0000${attribution.modelId}` === answerKey);
-  const remainderCount = answerAttribution?.operationCount == null ? null
-    : answerAttribution.operationCount - answerRoundUsage.length;
-  if (remainderCount !== null && remainderCount < 0) return null;
-  const answerTotal = sumTokenUsage(answerRoundUsage.map((entry) => entry.usage));
-  const remainder = subtractTokenUsage(
-    answerAttribution?.usage ?? sumTokenUsage([]),
-    answerTotal
-  );
-  if (!remainder) return null;
-
-  return [
-    ...grouped.filter((attribution) =>
-      `${attribution.provider}\u0000${attribution.modelId}` !== answerKey),
-    ...(remainderCount !== 0 && (remainderCount !== null || hasTokenUsage(remainder))
-      ? [{ operationCount: remainderCount, modelId: answer.modelId, provider: answer.provider, usage: remainder }]
-      : [])
-  ];
+  // Saved rounds are the answer model's own answer usage; a Search or
+  // Knowledge attribution of the same model is never part of them. A round
+  // whose provider reported its charge belongs to the answer rows with that
+  // settled cost, every other round to the rows priced from token prices.
+  const isAnswer = (attribution: RunUsageAttribution) => attribution.purpose === "chat_answer" &&
+    attribution.provider === answer.provider && attribution.modelId === answer.modelId;
+  const reportedRounds = answerRoundUsage.filter((entry) => entry.reportedCostMicros !== undefined);
+  const pricedRounds = answerRoundUsage.filter((entry) => entry.reportedCostMicros === undefined);
+  const settledAnswers = grouped.filter((attribution) => isAnswer(attribution) && hasSettledRunUsageCost(attribution));
+  // Reported round costs are whole micro-dollars, never an unknown sum.
+  if (reportedRounds.length > 0 && settledAnswers.some((attribution) => attribution.estimatedCostMicros === null)) return null;
+  const reportedAnswers = reportedRounds.length === 0 ? settledAnswers : answerRemainder(settledAnswers[0], answer, reportedRounds, true);
+  const pricedAnswers = answerRemainder(grouped.find((attribution) => isAnswer(attribution) && !hasSettledRunUsageCost(attribution)),
+    answer, pricedRounds, false);
+  if (!reportedAnswers || !pricedAnswers) return null;
+  return [...grouped.filter((attribution) => !isAnswer(attribution)), ...reportedAnswers, ...pricedAnswers];
 }
 
 async function settleToolLoopRecoveryError(
@@ -1455,13 +1458,8 @@ async function recordRecoveredSearchResult(input: Readonly<{
     );
   }
   for (const execution of executions) {
-    if (input.includeUsage && execution.modelId) {
-      input.context.usageAttributions.push({
-        modelId: execution.modelId,
-        provider: execution.provider,
-        usage: execution.usage
-      });
-    }
+    // A reported engine cost settles the call, as in the live run.
+    if (input.includeUsage && execution.modelId) input.context.usageAttributions.push(searchUsageAttribution(execution));
     await persistRecoveredPlanSearchExecution({
       execution,
       modelRunId: input.context.run.id,
@@ -1895,6 +1893,8 @@ async function executePersistedToolCallInContext(
   let result: ToolExecutionResult;
   let fatalToolError: ToolLoopRecoveryError | null = null;
   let resultSettled = false;
+  // A thrown Knowledge operation bills its paid calls through its failure result.
+  let knowledgeExecutionThrew = false;
   const finishResult = async (result: ToolExecutionResult): Promise<ToolExecutionResult> => {
     if (resultSettled) return result;
     result = context.skillResultBudget.accept(result);
@@ -2271,6 +2271,7 @@ async function executePersistedToolCallInContext(
       fatalToolError = new ToolLoopRecoveryError(error.code, error.message);
       result = toolExecutionErrorResult(call, error);
     } else {
+      knowledgeExecutionThrew = isRecoveredKnowledgeCall(context, call.name);
       result = toolExecutionErrorResult(
         call,
         error,
@@ -2287,8 +2288,10 @@ async function executePersistedToolCallInContext(
 
   result = await finishResult(result);
   if (isRecoveredKnowledgeCall(context, call.name) && result.status === "error") {
+    // A returned result was accounted when it arrived; a thrown operation's
+    // failure result bills the paid calls it made, as in the live run.
     recordRecoveredKnowledgeResult({
-      callId: call.id, context, includeUsage: false, modelRunToolCallId: persisted.id, result
+      callId: call.id, context, includeUsage: knowledgeExecutionThrew, modelRunToolCallId: persisted.id, result
     });
   }
   if (fatalToolError) throw fatalToolError;
@@ -2419,15 +2422,7 @@ async function recoverCheckpointedToolLoop(
   };
 
   function allUsageAttributions(): RunUsageAttribution[] {
-    return [
-      ...usageAttributions,
-      ...answerRoundUsage.map((entry) => ({
-        operationCount: 1,
-        modelId: run.modelId,
-        provider: run.provider,
-        usage: entry.usage
-      }))
-    ];
+    return [...usageAttributions, ...answerRoundUsage.map((entry) => answerRoundAttribution(run, entry))];
   }
 
   try {
@@ -2942,9 +2937,10 @@ async function recoverCheckpointedToolLoop(
       return {
         claim: attempt => write({ attempt }),
         dispatch: attempt => write({ attempt }),
-        async settle(attempt, usage, summary) {
+        async settle(attempt, usage, summary, costUsd) {
           // A call refused before dispatch reported nothing and counts no operation.
-          if (usage) context.usageAttributions.push({ modelId: request.modelId, operationCount: 1, provider: request.provider, usage });
+          if (usage) context.usageAttributions.push({ ...reportedAnswerCost(costUsd), modelId: request.modelId, operationCount: 1,
+            provider: request.provider, purpose: "chat_answer", usage });
           await write({ attempt, ...(summary ? { summary } : {}) });
         }
       };
@@ -2955,7 +2951,7 @@ async function recoverCheckpointedToolLoop(
       // invented usage, durably with the receipt so a later pass cannot count
       // it again. A claim that was never sent accounts nothing.
       if (settledSummaryClaim.state === "unknown") {
-        usageAttributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider,
+        usageAttributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider, purpose: "chat_answer",
           usage: normalizeTokenUsage({ completeness: "unavailable" }) });
       }
       await persistCumulativeUsage(undefined, {
@@ -2969,7 +2965,8 @@ async function recoverCheckpointedToolLoop(
       usage: ModelRunUsage,
       request: Readonly<{ modelId: string; provider: string }>,
       completeness: PersistedAnswerRoundUsage["completeness"],
-      round: number
+      round: number,
+      costUsd?: number
     ): Promise<void> {
       if (request.modelId !== run.modelId || request.provider !== run.provider) {
         throw new ToolLoopRecoveryError(
@@ -2977,8 +2974,10 @@ async function recoverCheckpointedToolLoop(
           "Recovered provider-round usage does not match the saved answer model."
         );
       }
+      const { estimatedCostMicros: reportedCostMicros } = reportedAnswerCost(costUsd);
       const entry: PersistedAnswerRoundUsage = {
         completeness,
+        ...(reportedCostMicros != null ? { reportedCostMicros } : {}),
         roundIndex: round,
         usage: normalizeTokenUsage({ ...usage, ...(completeness === "partial" ? { completeness: "partial" } : {}) })
       };
@@ -3521,7 +3520,8 @@ async function recoverCheckpointedToolLoop(
         refreshed.result.usage,
         run,
         "terminal",
-        run.checkpoint.roundIndex
+        run.checkpoint.roundIndex,
+        refreshed.result.costUsd
       );
       if (refreshed.result.synthesisToolCallForbidden ||
         roundRequest.toolChoice === "none" && (refreshed.result.toolCalls?.length ?? 0) > 0) {
@@ -3642,7 +3642,8 @@ async function recoverCheckpointedToolLoop(
           currentRound.result.usage,
           run,
           "terminal",
-          run.checkpoint.roundIndex
+          run.checkpoint.roundIndex,
+          currentRound.result.costUsd
         );
       }
     }
@@ -3818,7 +3819,8 @@ async function recoverCheckpointedToolLoop(
           usage,
           request,
           usageContext.completeness,
-          usageContext.round
+          usageContext.round,
+          usageContext.costUsd
         );
       },
       parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
@@ -4857,7 +4859,7 @@ async function recoverKnowledgeAnswerGrounding(
         const attributions = await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
           ...persisted,
           ...[...observedOperationUsage.values()].map((usage) => ({
-            operationCount: 1, modelId: input.control.modelId, provider: input.control.provider, usage
+            operationCount: 1, modelId: input.control.modelId, provider: input.control.provider, purpose: "chat_answer" as const, usage
           }))
         ]));
         await deps.repository.recordRunUsageEvents({ chatId: input.control.chatId, runId: input.runId,
@@ -4891,6 +4893,7 @@ async function recoverKnowledgeAnswerGrounding(
     ...operationResult.operations.map((operation) => ({
       modelId: latest.modelId,
       provider: latest.provider,
+      purpose: "chat_answer" as const,
       usage: operation.usage
     }))
   ]);
@@ -4947,13 +4950,14 @@ async function accountLostExecutorCheckpoint(deps: RunRecoveryDeps, runId: strin
     runId,
     usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
       ...attributions,
-      ...answerRounds.map((entry) => ({ modelId: run.modelId, operationCount: 1, provider: run.provider, usage: entry.usage }))
+      ...answerRounds.map((entry) => answerRoundAttribution(run, entry))
     ])),
     userId
   });
   if (summary.settled && checkpoint.contextCompaction) {
     if (summary.settled.state === "unknown") {
-      attributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider, usage: unknownUsage });
+      attributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider, purpose: "chat_answer",
+        usage: unknownUsage });
     }
     if (!(await record({ contextSummaryReceipt: { attempt: summary.settled,
       compaction: checkpoint.contextCompaction, roundIndex: checkpoint.roundIndex } }))) return;
@@ -4998,7 +5002,7 @@ async function failRetiredContextPolicyRun(
     runId,
     usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
       ...persisted.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
-      { modelId: control.modelId, operationCount: 1, provider: control.provider,
+      { modelId: control.modelId, operationCount: 1, provider: control.provider, purpose: "chat_answer",
         usage: normalizeTokenUsage({ completeness: "unavailable" }) }
     ])),
     userId
@@ -5879,7 +5883,8 @@ async function refreshProviderRunOnceRegistered(
     const usageAttributions = await recoveredUsageAttributions(
       deps,
       latestBeforeFinalize,
-      reportedUsage(refreshed)
+      reportedUsage(refreshed),
+      refreshed.result?.costUsd
     );
     await settleRecoveredError(deps.repository, {
       error: payload,
@@ -5898,7 +5903,8 @@ async function refreshProviderRunOnceRegistered(
     const usageAttributions = await recoveredUsageAttributions(
       deps,
       latestBeforeFinalize,
-      reportedUsage(refreshed)
+      reportedUsage(refreshed),
+      refreshed.result?.costUsd
     );
     let completion: Awaited<ReturnType<typeof finalizeRunCompletion>>;
     try {
@@ -5950,7 +5956,8 @@ async function refreshProviderRunOnceRegistered(
   const usageAttributions = await recoveredUsageAttributions(
     deps,
     latestBeforeFinalize,
-    reportedUsage(refreshed)
+    reportedUsage(refreshed),
+    refreshed.result?.costUsd
   );
   await settleRecoveredError(deps.repository, {
     error: payload,

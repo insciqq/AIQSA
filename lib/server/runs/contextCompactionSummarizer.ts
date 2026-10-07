@@ -84,7 +84,8 @@ type RawSummary = Readonly<{ notes: string }>;
 export type ContextSummaryReceipts = Readonly<{
   claim(attempt: ContextSummaryAttempt): Promise<void>;
   dispatch(attempt: ContextSummaryAttempt): Promise<void>;
-  settle(attempt: ContextSummaryAttempt, usage: NormalizedTokenUsage | null, summary?: ContextSummary): Promise<void>;
+  /** `costUsd`: what the provider reported the dispatched call cost, when it did. */
+  settle(attempt: ContextSummaryAttempt, usage: NormalizedTokenUsage | null, summary?: ContextSummary, costUsd?: number): Promise<void>;
 }>;
 
 export type ContextSummaryCallOptions = Readonly<{
@@ -869,6 +870,7 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
         request: input.request, system, text
       });
       let reported: ModelRunUsage = {};
+      let costUsd: number | undefined;
       let output = "";
       let dispatched = false;
       const dispatch = async () => {
@@ -885,7 +887,8 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
         const usage = dispatched ? normalizeTokenUsage({ ...reported, ...(completeness ? { completeness } : {}) }) : null;
         const settled = receipt({ bindingDigest, ...(errorCode ? { errorCode } : {}), number, sourceDigest: source.digest, state,
           ...(usage ? { usage } : {}) });
-        await input.receipts?.settle(settled, usage, summary);
+        await (usage && costUsd !== undefined ? input.receipts?.settle(settled, usage, summary, costUsd)
+          : input.receipts?.settle(settled, usage, summary));
         record(settled);
       };
       try {
@@ -902,6 +905,7 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
           next = await stream.next();
         }
         reported = { ...reported, ...next.value.usage };
+        costUsd = next.value.costUsd;
       } catch (error) {
         if (!dispatched) {
           // Refused before the provider request (authority, model, egress

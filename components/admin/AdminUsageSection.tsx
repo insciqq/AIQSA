@@ -1,362 +1,297 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { costCoverageNote, formatEstimatedCostMicros } from "@/lib/domain/formatEstimatedCost";
-import { AdminTableRegion } from "@/components/admin/adminPrimitives";
+import { Download } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { focusRing, quietButton, touchTarget } from "@/components/admin/adminPrimitives";
 import { useAdminSectionTopbar } from "@/components/admin/AdminShell";
-import { cardClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
+import { cardClass, compactSelectClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
+import { adminUsageErrorMessage, adminUsageExportHref } from "@/components/admin/usage/adminUsageApi";
+import { categoryRecord, UsageByModel, UsageBySource } from "@/components/admin/usage/UsageBreakdowns";
+import { UsageGroupsTable, UsageUsersTable } from "@/components/admin/usage/UsagePeopleTables";
+import { UsageSpendChart } from "@/components/admin/usage/UsageSpendChart";
+import { UsageSystemPanel } from "@/components/admin/usage/UsageSystemPanel";
 import {
-  formatDate,
-  formatNumber,
-  providerModelDisplayName
-} from "@/components/admin/adminViewUtils";
-import type {
-  AdminCatalog,
-  AdminUsageDashboard,
-  AdminUsageProviderModelRecord,
-  AdminUsageTokenTotals
-} from "@/lib/contracts/admin";
-
-type AdminUsageCatalog = Pick<AdminCatalog, "models" | "providers">;
+  browserTimeZone,
+  formatBucketDate,
+  formatCount,
+  formatShare,
+  formatUsageDelta,
+  shareOf,
+  USAGE_PERIOD_LABELS,
+  type UsageChartMetric
+} from "@/components/admin/usage/usageFormat";
+import { useAdminUsageAnalytics } from "@/components/admin/usage/useAdminUsageAnalytics";
+import {
+  ADMIN_USAGE_PERIODS,
+  DEFAULT_ADMIN_USAGE_PERIOD,
+  isAdminUsagePeriod,
+  type AdminUsageAnalytics,
+  type AdminUsagePeriod
+} from "@/lib/contracts/adminUsageAnalytics";
+import { costCoverageNote, formatEstimatedCostMicros } from "@/lib/domain/formatEstimatedCost";
 
 const topbar = { title: "Usage" };
 
 export type AdminUsageSectionProps = Readonly<{
-  catalog: AdminUsageCatalog;
-  usage: AdminUsageDashboard;
+  /** Raw `?filter=` value of the section; anything but a known period means the default. */
+  period: string | null;
+  onPeriodChange(period: AdminUsagePeriod): void;
 }>;
 
-function usageProviderModelLabel(catalog: AdminUsageCatalog, usage: AdminUsageProviderModelRecord): string {
-  return providerModelDisplayName(catalog, usage);
+function windowRange(usage: AdminUsageAnalytics): string {
+  const { from, timeZone, to } = usage.window;
+  // `to` is exclusive: name the last included day.
+  const last = formatBucketDate(new Date(Date.parse(to) - 1).toISOString(), timeZone, "day", true);
+  return from ? `${formatBucketDate(from, timeZone, "day", true)} – ${last}` : `Until ${last}`;
 }
 
-function countLabel(count: number, singular: string, plural = `${singular}s`): string {
-  return `${formatNumber(count)} ${count === 1 ? singular : plural}`;
-}
+/**
+ * Five tiles: the cost tile spans both columns on phones and tablets, the
+ * money pair and the volume trio share two rows from 1024 px, and one row
+ * holds all five from 1280 px.
+ */
+const KPI_SPANS = {
+  cost: "col-span-2 xl:col-span-1",
+  system: "lg:col-span-2 xl:col-span-1",
+  tokens: "lg:col-span-2 xl:col-span-1",
+  runs: "lg:col-span-3 xl:col-span-1",
+  users: "lg:col-span-3 xl:col-span-1"
+} as const;
+const KPI_GRID = "grid min-w-0 grid-cols-2 gap-3 lg:grid-cols-6 xl:grid-cols-5";
 
-function hasReportedUsage(usage: AdminUsageTokenTotals): boolean {
-  return usage.recordCount > 0 || usage.lastUsedAt !== null || usage.runCount > 0 || [
-    usage.cachedInputTokens,
-    usage.cacheWriteInputTokens,
-    usage.inputTokens,
-    usage.outputTokens,
-    usage.reasoningTokens,
-    usage.totalTokens
-  ].some((value) => value !== null && value > 0);
-}
-
-function UsageCost({ usage }: Readonly<{ usage: AdminUsageTokenTotals }>) {
-  const note = costCoverageNote(usage.knownCostRecordCount, usage.recordCount);
+function KpiTile({ className, delta, label, note, testId, value }: Readonly<{
+  className: string;
+  delta: string;
+  label: string;
+  note?: ReactNode;
+  testId: string;
+  value: ReactNode;
+}>) {
   return (
-    <>
-      <span className="font-mono tabular-nums">{formatEstimatedCostMicros(usage.estimatedCostMicros)}</span>
-      {note ? <span className="mt-1 block font-sans text-xs font-normal text-ink-muted">{note}</span> : null}
-    </>
-  );
-}
-
-function UsageFact({ label, value }: Readonly<{ label: string; value: string }>) {
-  return (
-    <div className="min-w-0 px-3 py-3 sm:px-4">
+    <div className={`min-w-0 rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 ${className}`} data-testid={testId}>
       <dt className="text-xs font-medium text-ink-muted">{label}</dt>
-      <dd className="mt-1 break-words font-mono text-sm font-medium tabular-nums text-ink [overflow-wrap:anywhere]">
-        {value}
+      <dd className="mt-1.5 min-w-0">
+        <span className="block break-words text-xl font-semibold text-ink [overflow-wrap:anywhere] sm:text-2xl">{value}</span>
+        {note ? <span className="mt-0.5 block text-xs leading-5 text-ink-muted">{note}</span> : null}
+        <span className="mt-1.5 block text-xs leading-5 text-ink-secondary" data-testid={`${testId}-delta`}>{delta}</span>
       </dd>
     </div>
   );
 }
 
-function MobileUsageFacts({
-  facts
-}: Readonly<{ facts: readonly Readonly<{ label: string; value: ReactNode }>[] }>) {
+function costNote(amounts: Readonly<{ knownCostRecordCount: number; recordCount: number }>): string | null {
+  return costCoverageNote(amounts.knownCostRecordCount, amounts.recordCount) ??
+    (amounts.recordCount > 0 && amounts.knownCostRecordCount === 0 ? "prices unknown for this usage" : null);
+}
+
+/** The System tile's notes: its share of the known total and how much of it has a known cost. */
+function systemNote(usage: AdminUsageAnalytics): ReactNode {
+  const system = categoryRecord(usage.byCategory, "system");
+  if (system.recordCount === 0) return "no system usage in this period";
+  const total = usage.totals.estimatedCostMicros;
+  const notes = [
+    system.estimatedCostMicros !== null && total !== null && total > 0
+      ? `${formatShare(shareOf(system.estimatedCostMicros, total))} of the estimated cost`
+      : null,
+    costNote(system)
+  ].filter((note): note is string => note !== null);
+  return notes.length ? notes.map((note) => <span className="block" key={note}>{note}</span>) : null;
+}
+
+function UsageKpis({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
+  const { previous, totals, window } = usage;
+  const system = categoryRecord(usage.byCategory, "system");
   return (
-    <dl className="mt-3 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3">
-      {facts.map((fact) => (
-        <div className="min-w-0" key={fact.label}>
-          <dt className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">{fact.label}</dt>
-          <dd className="mt-1 break-words font-mono text-xs tabular-nums text-ink-secondary [overflow-wrap:anywhere]">
-            {fact.value}
-          </dd>
-        </div>
-      ))}
+    <dl aria-label="Usage summary" className={KPI_GRID}>
+      <KpiTile
+        className={KPI_SPANS.cost}
+        delta={formatUsageDelta(totals.estimatedCostMicros, previous?.estimatedCostMicros ?? null, window, previous)}
+        label="Estimated cost"
+        note={costNote(totals)}
+        testId="usage-kpi-cost"
+        value={formatEstimatedCostMicros(totals.estimatedCostMicros)}
+      />
+      <KpiTile
+        className={KPI_SPANS.system}
+        delta={formatUsageDelta(system.estimatedCostMicros, previous?.systemEstimatedCostMicros ?? null, window, previous)}
+        label="System cost"
+        note={systemNote(usage)}
+        testId="usage-kpi-system"
+        value={formatEstimatedCostMicros(system.estimatedCostMicros)}
+      />
+      <KpiTile
+        className={KPI_SPANS.tokens}
+        delta={formatUsageDelta(totals.totalTokens, previous?.totalTokens ?? null, window, previous)}
+        label="Tokens"
+        testId="usage-kpi-tokens"
+        value={formatCount(totals.totalTokens)}
+      />
+      <KpiTile
+        className={KPI_SPANS.runs}
+        delta={formatUsageDelta(totals.runCount, previous?.runCount ?? null, window, previous)}
+        label="Runs"
+        testId="usage-kpi-runs"
+        value={formatCount(totals.runCount)}
+      />
+      <KpiTile
+        className={KPI_SPANS.users}
+        delta={formatUsageDelta(totals.activeUserCount, previous?.activeUserCount ?? null, window, previous)}
+        label="Active users"
+        testId="usage-kpi-users"
+        value={<>{formatCount(totals.activeUserCount)}<span className="text-sm font-normal text-ink-secondary"> of {formatCount(usage.userCount)} users</span></>}
+      />
     </dl>
   );
 }
 
-export function AdminUsageSection({ catalog, usage }: AdminUsageSectionProps) {
+function MetricToggle({ metric, onChange }: Readonly<{ metric: UsageChartMetric; onChange(metric: UsageChartMetric): void }>) {
+  const option = (value: UsageChartMetric, label: string) => (
+    <button
+      aria-pressed={metric === value}
+      className={`min-h-control-sm rounded-[8px] px-3 text-xs font-medium ${focusRing} ${touchTarget} ${
+        metric === value ? "bg-answer-paper text-ink shadow-sm" : "text-ink-secondary hover:text-ink"
+      }`}
+      onClick={() => onChange(value)}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div aria-label="Chart metric" className="inline-flex shrink-0 gap-0.5 rounded-control bg-control-surface p-0.5" role="group">
+      {option("cost", "Cost")}
+      {option("tokens", "Tokens")}
+    </div>
+  );
+}
+
+function SpendOverTime({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
+  const [metric, setMetric] = useState<UsageChartMetric>("cost");
+  const empty = usage.totals.recordCount === 0;
+  const metricEmpty = !empty && usage.series.every((point) => Object.values(point.categories).every((value) =>
+    (metric === "cost" ? value.estimatedCostMicros ?? 0 : value.totalTokens) === 0));
+  return (
+    <section aria-label="Spend over time" className={`${cardClass} min-w-0 p-4 sm:p-5`} data-testid="admin-usage-spend">
+      <div className="mb-4 flex min-w-0 flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className={sectionHeadingClass}>Spend over time</h3>
+          <p className="mt-1 text-xs text-ink-muted">
+            {metric === "cost" ? "Known estimated cost" : "Provider-reported tokens"} per {usage.window.bucket} by source.
+          </p>
+        </div>
+        <MetricToggle metric={metric} onChange={setMetric} />
+      </div>
+      {empty ? (
+        <div className="py-12 text-center" role="status">
+          <p className="text-sm font-semibold text-ink-secondary">No usage in this period</p>
+          <p className="mt-1 text-sm text-ink-muted">Choose a longer period to see earlier usage.</p>
+        </div>
+      ) : metricEmpty ? (
+        <div className="py-12 text-center" role="status">
+          <p className="text-sm font-semibold text-ink-secondary">No known cost in this period</p>
+          <p className="mt-1 text-sm text-ink-muted">Prices are unknown for this usage. Switch to Tokens to see it.</p>
+        </div>
+      ) : (
+        <UsageSpendChart bucket={usage.window.bucket} metric={metric} series={usage.series} timeZone={usage.window.timeZone} />
+      )}
+    </section>
+  );
+}
+
+function UsageSkeleton() {
+  const block = "rounded-[12px] border border-trace-subtle bg-control-surface/60";
+  return (
+    <div aria-busy="true" data-testid="admin-usage-loading">
+      <p className="sr-only" role="status">Loading usage</p>
+      <div aria-hidden="true" className={KPI_GRID}>
+        {Object.entries(KPI_SPANS).map(([tile, span]) => <div className={`${block} h-[104px] ${span}`} key={tile} />)}
+      </div>
+      <div aria-hidden="true" className={`${block} mt-6 h-[320px]`} />
+    </div>
+  );
+}
+
+function UsageContent({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
+  return (
+    <>
+      <UsageKpis usage={usage} />
+      <div className="mt-6"><SpendOverTime usage={usage} /></div>
+      <div className="mt-8 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-2">
+        <UsageByModel usage={usage} />
+        <UsageBySource usage={usage} />
+      </div>
+      <div className="mt-9"><UsageSystemPanel usage={usage} /></div>
+      <div className="mt-9 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-9">
+        <UsageUsersTable usage={usage} />
+        <UsageGroupsTable usage={usage} />
+      </div>
+      <div className="mt-8 max-w-5xl text-xs leading-5 text-ink-muted">
+        <p className="font-medium text-ink-secondary">How to read these numbers</p>
+        <p className="mt-1">
+          Amounts are estimates from provider-reported usage, including usage kept after a failure or cancellation.
+          Usage with unknown prices is left out of cost and counted in tokens. System is work done by system models
+          for people, such as chat titles and summaries, Memory and Knowledge; By model lists only the models people
+          chose. Other is earlier usage whose purpose could not be recovered. Group totals follow current membership,
+          so a user in several groups counts in each and group sums can overlap. Days and months follow the
+          {" "}{usage.window.timeZone} time zone.
+        </p>
+      </div>
+    </>
+  );
+}
+
+export function AdminUsageSection({ onPeriodChange, period: requestedPeriod }: AdminUsageSectionProps) {
   useAdminSectionTopbar(topbar);
-  const usersWithUsage = usage.byUser.filter(hasReportedUsage);
-  const groupsWithUsage = usage.byGroup.filter(hasReportedUsage);
+  const [timeZone] = useState(browserTimeZone);
+  const period = isAdminUsagePeriod(requestedPeriod) ? requestedPeriod : DEFAULT_ADMIN_USAGE_PERIOD;
+  const { data, error, pending, retry } = useAdminUsageAnalytics(period, timeZone);
+  const updating = pending && data !== null;
 
   return (
     <div className="max-w-[1440px] min-w-0 px-4 py-6 sm:px-6 lg:px-8">
-      <section
-        aria-label="Usage summary"
-        className={`${cardClass} min-w-0 p-5`}
-      >
-        <div className="grid min-w-0 lg:grid-cols-[minmax(15rem,0.78fr)_minmax(0,2.22fr)]">
-          <div className="min-w-0 border-b border-trace-subtle py-5 lg:border-b-0 lg:border-r lg:px-1 lg:pr-8">
-            <p className={sectionHeadingClass}>
-              Provider-reported · all recorded usage
-            </p>
-            <p
-              className="mt-2 break-words font-mono text-2xl font-semibold tabular-nums text-ink [overflow-wrap:anywhere]"
-              data-testid="usage-total-tokens"
+      <div className="mb-5 flex min-w-0 flex-wrap items-end justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-end gap-3">
+          <label className="w-48 min-w-0 max-w-full">
+            <span className="block text-xs font-medium text-ink-secondary">Period</span>
+            <select
+              className={`${compactSelectClass} mt-1`}
+              onChange={(event) => {
+                if (isAdminUsagePeriod(event.currentTarget.value)) onPeriodChange(event.currentTarget.value);
+              }}
+              value={period}
             >
-              {formatNumber(usage.totals.totalTokens)}
+              {ADMIN_USAGE_PERIODS.map((value) => <option key={value} value={value}>{USAGE_PERIOD_LABELS[value]}</option>)}
+            </select>
+          </label>
+          {data && !error ? (
+            <p className="pb-1.5 text-xs text-ink-muted" data-testid="admin-usage-window">
+              {updating ? <span role="status">Updating…</span> : windowRange(data)}
             </p>
-            <p className="mt-1 text-sm text-ink-secondary">Reported tokens</p>
-            <dl className="mt-4">
-              <dt className="text-xs font-medium text-ink-muted">Estimated cost</dt>
-              <dd className="mt-1 text-base font-medium text-ink" data-testid="usage-total-cost">
-                <UsageCost usage={usage.totals} />
-              </dd>
-            </dl>
-            <p className="mt-4 max-w-sm text-xs leading-5 text-ink-muted">
-              {countLabel(usage.totals.runCount, "retained run")} with usage records across{" "}
-              {countLabel(usersWithUsage.length, "user")} and {countLabel(groupsWithUsage.length, "group")}.
-            </p>
-          </div>
-
-          <dl className="grid min-w-0 grid-cols-2 sm:grid-cols-3">
-            {usage.totals.incompleteUsageCount > 0 && <p className="col-span-full px-3 py-2 text-xs text-ink-muted" role="status">
-              Known totals; {countLabel(usage.totals.incompleteUsageCount, "usage record")} incomplete or unavailable.
-            </p>}
-            <UsageFact label="Input tokens" value={formatNumber(usage.totals.inputTokens)} />
-            <UsageFact label="Cached input" value={formatNumber(usage.totals.cachedInputTokens)} />
-            <UsageFact label="Cache write" value={formatNumber(usage.totals.cacheWriteInputTokens)} />
-            <UsageFact label="Output tokens" value={formatNumber(usage.totals.outputTokens)} />
-            <UsageFact label="Reasoning tokens" value={formatNumber(usage.totals.reasoningTokens)} />
-            <UsageFact
-              label="Last usage"
-              value={usage.totals.lastUsedAt ? formatDate(usage.totals.lastUsedAt) : "Never"}
-            />
-          </dl>
+          ) : null}
         </div>
-      </section>
-
-      <div className="mt-4 max-w-5xl text-xs leading-5 text-ink-muted">
-        <p className="font-medium text-ink-secondary">How to read these numbers</p>
-        <p className="mt-1">
-          This view sums provider-reported counts, including usage retained before failure or cancellation.
-          Missing counts and costs remain unavailable. Costs are approximate. Run counts cover retained run records;
-          token and cost totals can also include older detached usage. Group totals follow current membership:
-          a user in multiple groups is counted once in each group, so group sums may overlap.
-        </p>
+        <a className={`${quietButton} no-underline`} download href={adminUsageExportHref(period, timeZone)}>
+          <Download aria-hidden="true" className="size-3.5" />
+          Download CSV
+        </a>
       </div>
 
-      <div className="mt-8 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-9">
-        <section className="min-w-0" data-testid="admin-usage-groups">
-          <div className="flex min-w-0 flex-col gap-1 border-b border-trace-subtle pb-3 sm:flex-row sm:items-end sm:justify-between">
-            <div className="min-w-0">
-              <h3 className={sectionHeadingClass}>Group attribution</h3>
-              <p className="mt-1 text-xs leading-5 text-ink-muted">
-                Current memberships with provider-reported token totals and estimated cost.
-              </p>
-            </div>
-            <p className="shrink-0 font-mono text-xs tabular-nums text-ink-muted">
-              {countLabel(usage.byGroup.length, "group")}
-            </p>
-          </div>
-          <div className="divide-y divide-trace-subtle lg:hidden" data-testid="admin-usage-groups-mobile">
-            {usage.byGroup.length ? (
-              usage.byGroup.map((group) => (
-                <article className="min-w-0 py-4" key={group.groupId}>
-                  <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{group.name}</p>
-                  <p className="mt-1 text-xs text-ink-muted">{group.archivedAt ? "Archived group" : "Active group"}</p>
-                  <MobileUsageFacts
-                    facts={[
-                      {
-                        label: "Users",
-                        value: `${formatNumber(group.contributingUsers)} active / ${formatNumber(group.userCount)} total`
-                      },
-                      { label: "Runs", value: formatNumber(group.runCount) },
-                      { label: "Tokens", value: formatNumber(group.totalTokens) },
-                      { label: "Estimated cost", value: <UsageCost usage={group} /> },
-                      { label: "Last usage", value: formatDate(group.lastUsedAt) }
-                    ]}
-                  />
-                </article>
-              ))
-            ) : (
-              <p className="py-7 text-sm text-ink-muted">No groups in this installation</p>
-            )}
-          </div>
-          <div className={`${cardClass} mt-3 hidden lg:block`}>
-            <AdminTableRegion label="Group usage table">
-              <table className="w-full min-w-[680px] border-collapse text-left text-xs">
-              <thead className="bg-control-surface/45 text-ink-muted">
-                <tr className="border-b border-trace-subtle">
-                  <th className="px-3 py-2 font-medium">Group</th>
-                  <th className="px-3 py-2 font-medium">Users</th>
-                  <th className="px-3 py-2 font-medium">Runs</th>
-                  <th className="px-3 py-2 font-medium">Tokens</th>
-                  <th className="px-3 py-2 font-medium">Estimated cost</th>
-                  <th className="px-3 py-2 font-medium">Last usage</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usage.byGroup.length ? (
-                  usage.byGroup.map((group) => (
-                    <tr className="border-b border-trace-subtle align-top last:border-b-0" key={group.groupId}>
-                      <td className="px-3 py-3">
-                        <div className="break-words font-medium text-ink [overflow-wrap:anywhere]">{group.name}</div>
-                        <div className="mt-1 text-ink-muted">{group.archivedAt ? "Archived group" : "Active group"}</div>
-                      </td>
-                      <td className="px-3 py-3 text-ink-secondary">
-                        <span className="font-mono tabular-nums">{formatNumber(group.contributingUsers)}</span> active /{" "}
-                        <span className="font-mono tabular-nums">{formatNumber(group.userCount)}</span> total
-                      </td>
-                      <td className="px-3 py-3 font-mono tabular-nums text-ink-secondary">{formatNumber(group.runCount)}</td>
-                      <td className="px-3 py-3 font-mono font-medium tabular-nums text-ink">{formatNumber(group.totalTokens)}</td>
-                      <td className="px-3 py-3 text-ink"><UsageCost usage={group} /></td>
-                      <td className="px-3 py-3 text-ink-secondary">{formatDate(group.lastUsedAt)}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td className="px-3 py-8 text-center text-ink-muted" colSpan={6}>
-                      No groups in this installation
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-              </table>
-            </AdminTableRegion>
-          </div>
-        </section>
-
-        <section className="min-w-0" data-testid="admin-usage-users">
-          <div className="flex min-w-0 flex-col gap-1 border-b border-trace-subtle pb-3 sm:flex-row sm:items-end sm:justify-between">
-            <div className="min-w-0">
-              <h3 className={sectionHeadingClass}>Usage by user</h3>
-              <p className="mt-1 text-xs leading-5 text-ink-muted">
-                Retained runs with usage records, ordered by reported tokens.
-              </p>
-            </div>
-            <p className="shrink-0 font-mono text-xs tabular-nums text-ink-muted">
-              {countLabel(usage.byUser.length, "user")}
-            </p>
-          </div>
-          <div className="divide-y divide-trace-subtle lg:hidden" data-testid="admin-usage-users-mobile">
-            {usage.byUser.length ? (
-              usage.byUser.map((user) => {
-                const topModel = user.providerModels[0] ?? null;
-                const groups = user.groups.length ? user.groups.map((group) => group.name).join(", ") : "No groups";
-
-                return (
-                  <article className="min-w-0 py-4" key={user.userId}>
-                    <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]">{user.displayName}</p>
-                    <p className="mt-1 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">{user.email ?? "No email"}</p>
-                    <p className="mt-2 break-words text-xs text-ink-secondary [overflow-wrap:anywhere]">{groups}</p>
-                    <MobileUsageFacts
-                      facts={[
-                        { label: "Runs", value: formatNumber(user.runCount) },
-                        { label: "Tokens", value: formatNumber(user.totalTokens) },
-                        { label: "Estimated cost", value: <UsageCost usage={user} /> },
-                        {
-                          label: "Input / output",
-                          value: `${formatNumber(user.inputTokens)} / ${formatNumber(user.outputTokens)}`
-                        },
-                        {
-                          label: "Top model",
-                          value: topModel ? (
-                            <>
-                              {usageProviderModelLabel(catalog, topModel)} · {formatNumber(topModel.totalTokens)} tokens
-                              <span className="mt-1 block">Estimated cost <UsageCost usage={topModel} /></span>
-                            </>
-                          ) : "No reported usage"
-                        },
-                        { label: "Last usage", value: formatDate(user.lastUsedAt) }
-                      ]}
-                    />
-                  </article>
-                );
-              })
-            ) : (
-              <p className="py-7 text-sm text-ink-muted">No users in this installation</p>
-            )}
-          </div>
-          <div className={`${cardClass} mt-3 hidden lg:block`}>
-            <AdminTableRegion label="User usage table">
-              <table className="w-full min-w-[820px] border-collapse text-left text-xs">
-              <thead className="bg-control-surface/45 text-ink-muted">
-                <tr className="border-b border-trace-subtle">
-                  <th className="px-3 py-2 font-medium">User</th>
-                  <th className="px-3 py-2 font-medium">Groups</th>
-                  <th className="px-3 py-2 font-medium">Runs</th>
-                  <th className="px-3 py-2 font-medium">Tokens</th>
-                  <th className="px-3 py-2 font-medium">Estimated cost</th>
-                  <th className="px-3 py-2 font-medium">Input / output</th>
-                  <th className="px-3 py-2 font-medium">Top model</th>
-                  <th className="px-3 py-2 font-medium">Last usage</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usage.byUser.length ? (
-                  usage.byUser.map((user) => {
-                    const topModel = user.providerModels[0] ?? null;
-
-                    return (
-                      <tr className="border-b border-trace-subtle align-top last:border-b-0" key={user.userId}>
-                        <td className="px-3 py-3">
-                          <div className="break-words font-medium text-ink [overflow-wrap:anywhere]">{user.displayName}</div>
-                          <div className="mt-1 break-words text-ink-muted [overflow-wrap:anywhere]">{user.email ?? "No email"}</div>
-                        </td>
-                        <td className="px-3 py-3 text-ink-secondary">
-                          {user.groups.length ? (
-                            user.groups.map((group, index) => (
-                              <span className="break-words [overflow-wrap:anywhere]" key={group.groupId}>
-                                {index > 0 ? ", " : null}
-                                {group.name}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-ink-muted">No groups</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-3 font-mono tabular-nums text-ink-secondary">{formatNumber(user.runCount)}</td>
-                        <td className="px-3 py-3 font-mono font-medium tabular-nums text-ink">{formatNumber(user.totalTokens)}</td>
-                        <td className="px-3 py-3 text-ink"><UsageCost usage={user} /></td>
-                        <td className="px-3 py-3 text-ink-secondary">
-                          <span className="font-mono tabular-nums">{formatNumber(user.inputTokens)}</span>
-                          {" / "}
-                          <span className="font-mono tabular-nums">{formatNumber(user.outputTokens)}</span>
-                        </td>
-                        <td className="px-3 py-3">
-                          {topModel ? (
-                            <>
-                              <div className="break-words text-ink-secondary [overflow-wrap:anywhere]">
-                                {usageProviderModelLabel(catalog, topModel)}
-                              </div>
-                              <div className="mt-1 font-mono text-xs tabular-nums text-ink-muted">
-                                {formatNumber(topModel.totalTokens)} tokens
-                              </div>
-                              <div className="mt-1 text-xs text-ink-muted">
-                                Estimated cost <UsageCost usage={topModel} />
-                              </div>
-                            </>
-                          ) : (
-                            <span className="text-ink-muted">No reported usage</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-3 text-ink-secondary">{formatDate(user.lastUsedAt)}</td>
-                      </tr>
-                    );
-                  })
-                ) : (
-                  <tr>
-                    <td className="px-3 py-8 text-center text-ink-muted" colSpan={8}>
-                      No users in this installation
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-              </table>
-            </AdminTableRegion>
-          </div>
-        </section>
-      </div>
+      {error ? (
+        <div className={`${cardClass} px-4 py-8 text-center`} role="alert">
+          <p className="text-sm font-semibold text-ink-secondary">Usage could not be loaded</p>
+          <p className="mx-auto mt-1 max-w-xl text-sm text-ink-muted">{adminUsageErrorMessage(error)}</p>
+          <button className={`${quietButton} mt-4`} onClick={retry} type="button">Retry</button>
+        </div>
+      ) : data ? (
+        <div
+          aria-busy={updating || undefined}
+          className={`min-w-0 transition-opacity motion-reduce:transition-none ${updating ? "opacity-60" : ""}`}
+          data-testid="admin-usage-content"
+        >
+          <UsageContent usage={data} />
+        </div>
+      ) : (
+        <UsageSkeleton />
+      )}
     </div>
   );
 }

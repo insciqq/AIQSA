@@ -259,6 +259,7 @@ describe("Knowledge result contract versioning", () => {
     });
     const result = JSON.parse(JSON.stringify(executionResult(evidence))) as ToolExecutionResult;
     expect(knowledgeUsageAttributionsFromToolResult(result)).toHaveLength(2);
+    expect(knowledgeUsageAttributionsFromToolResult(result).every((entry) => entry.purpose === "knowledge_retrieval")).toBe(true);
     expect(knowledgeUsageAttributionsFromToolResult(result)[1]?.usage).toEqual({
       inputTokens: null, totalTokens: null
     });

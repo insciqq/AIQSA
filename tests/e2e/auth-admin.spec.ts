@@ -32,6 +32,7 @@ const adminSections = [
   { id: "retrieval", label: "Knowledge & Memory" },
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups" },
+  { id: "limits", label: "Budgets & limits" },
   { id: "access-rules", label: "Sign-up rules" },
   { id: "announcements", label: "Announcements" },
   { id: "mcp", label: "MCP servers" },
@@ -1304,11 +1305,11 @@ test("admin compact usage and empty access-rule states stay in the visible workf
 
     await openAdminSection(page, adminSection("usage"));
     const usage = page.getByTestId("admin-section-usage");
-    const summary = usage.getByRole("region", { name: "Usage summary" });
+    const summary = usage.getByLabel("Usage summary");
     await expect(summary).toBeVisible();
     await summary.scrollIntoViewIfNeeded();
-    await expect(summary.getByText("Input tokens", { exact: true })).toBeInViewport();
-    await expect(summary.getByText("Last usage", { exact: true })).toBeInViewport();
+    await expect(summary.getByText("Estimated cost", { exact: true })).toBeInViewport();
+    await expect(summary.getByText("Active users", { exact: true })).toBeInViewport();
     await expect
       .poll(() =>
         summary.evaluate((element) => element.scrollWidth <= element.clientWidth)
@@ -1454,7 +1455,7 @@ test("Control Center uses the compact section-index task model at tablet width",
     await expect(page.getByTestId("admin-section-column")).toBeHidden();
     const usage = page.getByTestId("admin-section-usage");
     await expect(usage).toBeVisible();
-    await expect(usage.getByRole("region", { name: "Usage summary" })).toBeVisible();
+    await expect(usage.getByLabel("Usage summary")).toBeVisible();
     await expect(usage.getByTestId("admin-usage-groups-mobile")).toBeVisible();
     await expect(usage.getByTestId("admin-usage-users-mobile")).toBeVisible();
     await expectNoPageOverflow(page);

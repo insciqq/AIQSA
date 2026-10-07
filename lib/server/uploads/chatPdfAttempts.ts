@@ -89,6 +89,7 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
           chatId: attempt.preparation.modelRun.chatId,
           chatPdfPageAttemptId: attemptId,
           chatPdfPreparation: true,
+          purpose: "chat_pdf",
           modelId: String(model.upstreamModelId), modelRunId: claim.runId,
           projectId: attempt.preparation.modelRun.chat.projectId,
           provider: String(snapshot.providerFamily),

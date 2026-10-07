@@ -101,11 +101,6 @@ function dashboardFixture(): AdminDashboard {
       attention: { activeUsersWithoutModelAccess: 1, openInvites: 4, pendingUsers: 1 },
       teamConfigured: true
     },
-    usage: {
-      byGroup: [],
-      byUser: [],
-      totals: { estimatedCostMicros: null, recordCount: 0, knownCostRecordCount: 0, incompleteUsageCount: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 0, lastUsedAt: null, outputTokens: 0, reasoningTokens: 0, runCount: 0, totalTokens: 0 }
-    },
     users
   };
 }
