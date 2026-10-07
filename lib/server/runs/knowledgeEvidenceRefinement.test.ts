@@ -177,8 +177,8 @@ describe("review-driven Knowledge retrieval", () => {
     expect(toolLoopKnowledgeEvidenceDispatchDraft).toHaveBeenLastCalledWith(
       expect.objectContaining({ results: [expect.any(Object), receipt] }));
     expect(knowledgeRefinementUsageAfter([...f.calls.values()], [])).toEqual([{
-      provider: "test", modelId: "embedding-model",
-      usage: { inputTokens: 2, totalTokens: 2 }
+      provider: "test", modelId: "embedding-model", providerModelId: "embedding-upstream",
+      purpose: "knowledge_retrieval", usage: { inputTokens: 2, totalTokens: 2 }
     }]);
 
     await refineKnowledgeEvidence(recovered);

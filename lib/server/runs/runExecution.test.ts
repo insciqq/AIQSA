@@ -1118,6 +1118,9 @@ function createRepository(options: RepositoryOptions = {}) {
     async loadModelPricing() {
       return null;
     },
+    async loadProviderModelCostBasis() {
+      return null;
+    },
     async persistToolLoopCallBatch(input) {
       const calls = input.calls.map((call) => {
         const existing = [...toolCalls.values()].find((entry) =>

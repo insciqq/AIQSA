@@ -1725,6 +1725,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           }
           embeddingExecutions.push({
             bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
+            costUsd: result.usage.costUsd ?? null,
             durationMs: elapsedSince(embeddingStartedAt),
             inputTokens: result.usage.inputTokens ?? null,
             modelId: runtime.configuration.upstreamModelId,
@@ -1756,6 +1757,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
             semanticUnavailable = true;
             embeddingExecutions.push({
               bindingOrdinals: group.bindings.map((binding) => binding.ordinal),
+              costUsd: null,
               durationMs: elapsedSince(embeddingStartedAt),
               inputTokens: null,
               modelId: runtime?.configuration.upstreamModelId ??

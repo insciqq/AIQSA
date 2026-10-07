@@ -46,7 +46,6 @@ import {
   subtractTokenUsage,
   sumTokenUsage
 } from "../../domain/usage";
-import type { RunUsageAttributionPurpose } from "../../domain/usagePurpose";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import type {
   McpDiscoveryState,
@@ -191,6 +190,7 @@ import { normalizeWorkspaceProviderToolName } from "../workspace/toolCatalog";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
   finalizeRunCompletion,
+  groupedUsageAttributions,
   usageAttributionsWithEstimatedCost
 } from "./runFinalization";
 import {
@@ -344,6 +344,7 @@ export type RunRecoveryRepository = Pick<
   | "loadFocusedKnowledgeCall"
   | "loadFocusedKnowledgeScopeExclusions"
   | "loadModelPricing"
+  | "loadProviderModelCostBasis"
   | "loadPublishedRunAnswer"
   | "loadRunUsageAttributions"
   | "persistToolLoopCallBatch"
@@ -776,44 +777,6 @@ async function recoveredUsageAttributions(
       usage: usage ?? normalizeTokenUsage({})
     }
   ]);
-}
-
-function groupedUsageAttributions(
-  attributions: readonly RunUsageAttribution[]
-): RunUsageAttribution[] {
-  const grouped = new Map<string, {
-    providerModelId?: string;
-    operationCount: number | null;
-    modelId: string;
-    provider: string;
-    purpose: RunUsageAttributionPurpose;
-    usages: ModelRunUsage[];
-  }>();
-  for (const attribution of attributions) {
-    const key = `${attribution.purpose}\u0000${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
-    const existing = grouped.get(key);
-    if (existing) {
-      existing.usages.push(attribution.usage);
-      existing.operationCount = existing.operationCount === null || attribution.operationCount == null
-        ? null : existing.operationCount + attribution.operationCount;
-    }
-    else grouped.set(key, {
-      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
-      operationCount: attribution.operationCount ?? null,
-      modelId: attribution.modelId,
-      provider: attribution.provider,
-      purpose: attribution.purpose,
-      usages: [attribution.usage]
-    });
-  }
-  return [...grouped.values()].map((entry) => ({
-    ...(entry.providerModelId ? { providerModelId: entry.providerModelId } : {}),
-    operationCount: entry.operationCount,
-    modelId: entry.modelId,
-    provider: entry.provider,
-    purpose: entry.purpose,
-    usage: sumTokenUsage(entry.usages)
-  }));
 }
 
 function hasTokenUsage(usage: ModelRunUsage): boolean {
