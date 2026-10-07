@@ -189,10 +189,23 @@ export type WorkspaceCodeAuthority =
   | Readonly<{ kind: "catalog"; catalog: McpCapabilityCatalog }>
   | Readonly<{ kind: "plan"; snapshot: McpRunPlanSnapshot }>;
 
+/**
+ * A Project run's accepted Project revisions. As for the model, a change of
+ * any of them (access, policy including linked servers, instructions, memory)
+ * ends the run's Project authority, here its code's MCP calls too.
+ */
+export type WorkspaceCodeProjectAuthority = Readonly<{
+  accessRevision: number;
+  instructionsRevision: number;
+  memoryRevision: number;
+  policyRevision: number;
+  projectId: string;
+}>;
+
 export type WorkspaceCodeGatewayGrant = Readonly<{
   authority: WorkspaceCodeAuthority;
   budgets: NormalizedWorkspaceCodeMcp;
-  projectId: string | null;
+  project: WorkspaceCodeProjectAuthority | null;
   runId: string;
   sessionId: string;
   tokenHash: string;
@@ -254,10 +267,16 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
   return {
     async load(tokenHash) {
       const [row] = await prisma.$queryRaw<Array<{
+        accessRevision: number | null;
         agent: boolean;
         catalog: Prisma.JsonValue | null;
+        initiatorUserId: string | null;
+        instructionsRevision: number | null;
         mcp: Prisma.JsonValue | null;
+        memoryRevision: number | null;
+        policyRevision: number | null;
         projectId: string | null;
+        projectRunProjectId: string | null;
         runId: string;
         sessionId: string;
         status: string;
@@ -269,10 +288,14 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
           (run."normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof(run."normalizedRequest" -> 'agent') <> 'null' AS "agent",
           run."normalizedRequest" -> 'workspace' AS "workspace",
           run."normalizedRequest" -> 'mcp' AS "mcp",
-          run."normalizedRequest" #> '{mcpDiscovery,catalog}' AS "catalog"
+          run."normalizedRequest" #> '{mcpDiscovery,catalog}' AS "catalog",
+          project_run."projectId" AS "projectRunProjectId", project_run."initiatorUserId",
+          project_run."accessRevision", project_run."instructionsRevision",
+          project_run."memoryRevision", project_run."policyRevision"
         FROM "WorkspaceCodeGrant" AS code_grant
         JOIN "ModelRun" AS run ON run."id" = code_grant."modelRunId"
         JOIN "Chat" AS chat ON chat."id" = run."chatId"
+        LEFT JOIN "ProjectRunBinding" AS project_run ON project_run."modelRunId" = run."id"
         WHERE code_grant."tokenHash" = ${tokenHash} AND code_grant."revokedAt" IS NULL
       `);
       if (!row || !(ACTIVE_RUN_STATUSES as readonly string[]).includes(row.status)) return null;
@@ -282,7 +305,16 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         mcp: authority?.kind === "plan" ? authority.snapshot : null,
         mcpDiscovery: authority?.kind === "catalog" ? { catalog: authority.catalog } : null });
       if (eligibility.kind !== "eligible" || !authority) return null;
-      return { authority, budgets: eligibility.budgets, projectId: row.projectId, runId: row.runId,
+      let project: WorkspaceCodeProjectAuthority | null = null;
+      if (row.projectId !== null) {
+        // A Project run without its accepted Project binding has no authority to keep.
+        const revisions = [row.accessRevision, row.instructionsRevision, row.memoryRevision, row.policyRevision];
+        if (row.projectRunProjectId !== row.projectId || row.initiatorUserId !== row.userId ||
+          revisions.some((revision) => revision === null || !Number.isSafeInteger(revision))) return null;
+        project = { accessRevision: row.accessRevision!, instructionsRevision: row.instructionsRevision!,
+          memoryRevision: row.memoryRevision!, policyRevision: row.policyRevision!, projectId: row.projectId };
+      }
+      return { authority, budgets: eligibility.budgets, project, runId: row.runId,
         sessionId: row.sessionId, tokenHash, userId: row.userId };
     },
 
@@ -293,7 +325,7 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
             workspaceSessionId: grant.sessionId,
             workspaceSession: { operationOwner: workspaceRunOperationOwner(grant.runId), state: { not: "DELETING" } },
             modelRun: { userId: grant.userId, status: { in: [...ACTIVE_RUN_STATUSES] },
-              chat: grant.projectId ? { projectId: grant.projectId } : { userId: grant.userId, user: { status: "active" } } }
+              chat: grant.project ? { projectId: grant.project.projectId } : { userId: grant.userId, user: { status: "active" } } }
           } },
         select: { invocations: { where: { id: invocationId }, select: { state: true } } }
       });

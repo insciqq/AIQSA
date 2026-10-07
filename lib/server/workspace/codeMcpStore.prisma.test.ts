@@ -6,6 +6,7 @@ import { prisma } from "../prisma";
 import { textMessageContent } from "@/lib/domain/content";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { agentTokenHash } from "../agents/store";
+import { defaultWorkspaceCodeMcpDependencies } from "./codeMcpGateway";
 import {
   createPrismaWorkspaceCodeGatewayStore,
   createPrismaWorkspaceCodeGrantRepository,
@@ -27,6 +28,9 @@ async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unkn
   const user = await prisma.user.create({ data: { displayName: "Code MCP fixture", id: userId, status: "active" } });
   const project = input.project ? await prisma.project.create({ data: { createdByDisplayName: user.displayName,
     createdByUserId: userId, grants: { create: { role: "OWNER", userId } }, name: "Code MCP project" } }) : null;
+  // The run's accepted Project revisions, as admission freezes them (the grant above already moved accessRevision).
+  const accepted = project ? await prisma.project.findUniqueOrThrow({ where: { id: project.id }, select: { accessRevision: true,
+    instructionsRevision: true, memoryRevision: true, policyRevision: true } }) : null;
   const chat = await prisma.chat.create({ data: { title: "Code MCP", workspaceEnabled: true,
     ...(project ? { createdByDisplayName: user.displayName, createdByUserId: userId, memoryMode: "EXCLUDED" as const,
       projectId: project.id } : { userId }) } });
@@ -38,10 +42,13 @@ async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unkn
   const session = await prisma.workspaceSession.create({ data: { chatId: chat.id, expiresAt: new Date(Date.now() + 600_000),
     imageRef: "aiqsa-workspace:0.1.32", internetEnabled: true, operationOwner: `run:${runId}`, policyRevision: 1,
     runtimeSandboxId: "runtime-fixture", sandboxName: `code-mcp-${randomUUID()}`, state: "RUNNING" } });
+  // A Project chat's run must carry its Project binding in the same transaction (owner boundary trigger).
   await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, id: runId, modelId: "fake", provider: "fake",
     status: "in_progress", userId, userMessageId: message.id,
     normalizedRequest: (input.normalizedRequest ?? { mcpDiscovery: { catalog, epochs: [], version: 2 },
-      workspace: { codeMcp: budgets, enabled: true, internetEnabled: true } }) as Prisma.InputJsonValue } });
+      workspace: { codeMcp: budgets, enabled: true, internetEnabled: true } }) as Prisma.InputJsonValue,
+    ...(project && accepted ? { projectRunBinding: { create: { ...accepted, acceptedRole: "OWNER", initiatorUserId: userId,
+      personalMemoryDisabled: true, projectId: project.id } } } : {}) } });
   await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: true, mcpVersion: "0.6.16",
     modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
     toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id } });
@@ -50,7 +57,8 @@ async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unkn
     ordinal: ordinal++, providerCallId: randomUUID(), roundIndex: 0, toolName: "workspace__sandbox_shell",
     workspaceRunBindingId: runId } })).id;
   const binding = { operationGeneration: session.version, operationOwner: `run:${runId}`, runId, sessionId: session.id, userId };
-  return { binding, chat, command, projectId: project?.id ?? null, runId, session, userId };
+  return { binding, chat, command, project: project && accepted ? { ...accepted, projectId: project.id } : null, runId, session,
+    userId };
 }
 
 const grants = createPrismaWorkspaceCodeGrantRepository(prisma);
@@ -84,7 +92,7 @@ describe("Workspace code MCP grants", () => {
     const row = await prisma.workspaceCodeGrant.findUniqueOrThrow({ where: { modelRunId: f.runId } });
     expect(row).toMatchObject({ revokedAt: null, tokenHash: workspaceCodeTokenHash(first.token!), workspaceSessionId: f.session.id });
     expect(JSON.stringify(row)).not.toContain(first.token);
-    expect(await grantFor(first.token!)).toMatchObject({ budgets, projectId: null, runId: f.runId, userId: f.userId,
+    expect(await grantFor(first.token!)).toMatchObject({ budgets, project: null, runId: f.runId, userId: f.userId,
       authority: { kind: "catalog" } });
     // Recovery takeover or guest recreation: the previous bearer dies.
     const second = await grants.issueCodeGrant(f.binding);
@@ -230,7 +238,7 @@ describe("Workspace code MCP invocations and receipts", () => {
     await expect(gateway.assertActive(grant, invocationId)).rejects.toMatchObject({ reason: "authority" });
   });
 
-  it("serves a Project run's frozen shared plan to its initiator", async () => {
+  it("serves a Project run's frozen shared plan to its initiator only at the accepted Project revisions", async () => {
     const snapshot = { servers: [{ fingerprint: "f".repeat(64), revisionId: "revision-1", serverId: "server-shared",
       serverName: "Shared" }], tools: [], version: 1 };
     const f = await fixture({ project: true, normalizedRequest: { mcp: { ...snapshot, tools: [{ definitionHash: "d".repeat(64),
@@ -238,10 +246,15 @@ describe("Workspace code MCP invocations and receipts", () => {
       originalName: "search", serverId: "server-shared", serverName: "Shared" }] },
     workspace: { codeMcp: budgets, enabled: true, internetEnabled: true } } });
     const grant = await grantFor((await grants.issueCodeGrant(f.binding)).token!);
-    expect(grant).toMatchObject({ authority: { kind: "plan" }, projectId: f.projectId, userId: f.userId });
+    expect(grant).toMatchObject({ authority: { kind: "plan" }, project: f.project, userId: f.userId });
     const invocationId = (await grants.openCodeInvocation({ kind: "command", modelRunToolCallId: await f.command(),
       runId: f.runId, sessionId: f.session.id }))!;
     await gateway.assertActive(grant, invocationId);
+    // The gateway's Project check is the model's: linking or unlinking a server bumps the policy revision.
+    const { projectAccess } = defaultWorkspaceCodeMcpDependencies();
+    expect(await projectAccess({ ...grant.project!, userId: f.userId })).toBe(true);
+    await prisma.project.update({ where: { id: f.project!.projectId }, data: { policyRevision: { increment: 1 } } });
+    expect(await projectAccess({ ...grant.project!, userId: f.userId })).toBe(false);
   });
 
   it("deletes grants, invocations and receipts with their run", async () => {
