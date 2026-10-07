@@ -752,7 +752,7 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "workspace_secret_limit": return "Your saved Workspace secrets exceed the limit. Remove some in Settings or turn Workspace off, then resume.";
     case "workspace_carryover_unavailable":
       return "The Workspace files of the task's previous chat could not be carried into its new chat, so nothing ran. " +
-        "Open the task's chat to check its Workspace; the next run tries again.";
+        "The next run tries again; to go on without them, turn Workspace off for this task.";
     case "skill_unavailable": return "A pinned Skill is no longer available. Edit the task's Skills, then resume.";
     case "source_unavailable":
       return `Paused after ${SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD} runs in a row could not reach a source the task uses. Reconnect it and resume.`;

@@ -189,14 +189,14 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   /** Release an unused run's authority without changing the guest or its activity window. */
   retireUnusedRun(binding: WorkspaceExecutionBinding): Promise<boolean>;
   /**
-   * `required`: a scheduled task's rotation carried this seed and the run
-   * restoring it is that task's scheduled run, which never goes on with an
-   * empty project instead (`workspace_carryover_unavailable`).
+   * `required`: a scheduled task's rotation carried this seed, so no run of
+   * the chat, scheduled or the owner's, goes on with an empty project instead
+   * (`workspace_carryover_unavailable`) until a restore succeeds.
    */
-  claimContinuationSeed?(input: Readonly<{ chatId: string; operation: WorkspaceOperation; runId?: string; sessionId: string }>): Promise<Readonly<{
+  claimContinuationSeed?(input: Readonly<{ chatId: string; operation: WorkspaceOperation; sessionId: string }>): Promise<Readonly<{
     id: string; storageKey: string; checksum: string; byteSize: number; token: string; required?: boolean;
   }> | null>;
-  /** `TRANSFERRED` releases a required seed's claim, keeping its archive for a later run. */
+  /** `TRANSFERRED` releases a required seed's claim, keeping its archive for a later attempt. */
   settleContinuationSeed?(input: Readonly<{
     id: string; token: string; status: "RESTORED" | "FAILED" | "TRANSFERRED"; failureCode?: string;
   }>): Promise<boolean>;
@@ -487,7 +487,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         return true;
       });
     },
-    async claimContinuationSeed({ chatId, operation, runId, sessionId }) {
+    async claimContinuationSeed({ chatId, operation, sessionId }) {
       return prisma.$transaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, sessionId);
         if (!session || session.chatId !== chatId || session.version !== operation.generation || session.operationOwner !== operation.owner) {
@@ -495,9 +495,10 @@ export function createPrismaWorkspaceCoordinatorRepository(
         }
         const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { newChatId: chatId } });
         if (!seed || !["TRANSFERRED", "RESTORING"].includes(seed.status)) return null;
-        // A scheduled run of the task whose rotation carried the seed needs its files.
-        const required = seed.scheduledTaskId !== null && runId !== undefined &&
-          await tx.modelRun.count({ where: { id: runId, scheduledTaskId: seed.scheduledTaskId } }) === 1;
+        // A scheduled task's rotation carried it: whichever run starts the chat's Workspace
+        // first restores it or runs nothing, the owner's own runs included. Deleting the
+        // task leaves an ordinary continuation seed; a Workspace reset of the chat abandons it.
+        const required = seed.scheduledTaskId !== null;
         if (!seed.storageKey || !seed.checksum || !seed.byteSize) {
           throw new WorkspaceRuntimeError(required ? "workspace_carryover_unavailable" : "workspace_archive_invalid");
         }
@@ -1633,7 +1634,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           signal
         });
         const continuationSeed = await input.repository.claimContinuationSeed?.({
-          chatId: binding.chatId, operation: ownedOperation(binding), runId: binding.runId, sessionId: binding.sessionId
+          chatId: binding.chatId, operation: ownedOperation(binding), sessionId: binding.sessionId
         });
         if (continuationSeed) {
           // A scheduled task's carried files never give way to an empty project:

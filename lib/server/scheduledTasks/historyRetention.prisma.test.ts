@@ -139,6 +139,32 @@ describe("persisted scheduled task history retention", () => {
     expect(await retention(now)).toBe(0);
   });
 
+  it("keeps a chat the owner wrote in while a run answered, or started a run in, however old", async () => {
+    const now = new Date();
+    const userId = await owner();
+    const created = await task(userId, 30);
+    const followedUp = await taskChat(userId, created.id, 40, now);
+    const regenerated = await taskChat(userId, created.id, 40, now);
+    const untouched = await taskChat(userId, created.id, 40, now);
+    await taskChat(userId, created.id, 1, now);
+    // A follow-up the owner sent while the scheduled run was answering: owner text outside any user message.
+    const answered = await prisma.modelRun.findFirstOrThrow({ where: { chatId: followedUp } });
+    await prisma.runFollowup.create({ data: { authorName: "Synthetic owner", authorUserId: userId, chatId: followedUp,
+      deliveredAt: new Date(now.getTime() - 40 * DAY_MS), modelRunId: answered.id, nonce: randomUUID(), ordinal: 1,
+      text: "Show it as a table" } });
+    // A Regenerate the owner asked for: a run of their own that posts no message of theirs.
+    const prompt = await prisma.message.findFirstOrThrow({ where: { chatId: regenerated, role: "user" } });
+    const answer = await prisma.message.create({ data: { chatId: regenerated, content: textMessageContent("Regenerated digest"),
+      parentMessageId: prompt.id, role: "assistant" } });
+    await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: regenerated, modelId: "fake-qsa",
+      normalizedRequest: {}, provider: "fake", status: "complete", updatedAt: new Date(now.getTime() - 40 * DAY_MS), userId,
+      userMessageId: prompt.id } });
+
+    expect(await retention(now)).toBe(1);
+    expect(await fenced(untouched)).toBe(true);
+    for (const kept of [followedUp, regenerated]) expect(await fenced(kept)).toBe(false);
+  });
+
   it("never deletes a chat of a task kept forever, a chat without a task or one whose task is gone", async () => {
     const now = new Date();
     const userId = await owner();

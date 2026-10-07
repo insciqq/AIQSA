@@ -470,6 +470,6 @@ describe("scheduled task history", () => {
     expect(scheduledTaskRunRow({ chatId: null, finishedAt: "2026-11-01T06:31:00.000Z", id: "run-1", reasonCode: "workspace_carryover_unavailable",
       scheduledFor: "2026-11-01T06:00:00.000Z", skills: [], startedAt: "2026-11-01T06:00:00.000Z", state: "failed",
       trigger: "schedule", unavailableSources: [], unseen: false }, "UTC", now))
-      .toMatchObject({ outcome: expect.stringContaining("open the task's chat"), tone: "attention" });
+      .toMatchObject({ outcome: expect.stringContaining("turn Workspace off for the task"), tone: "attention" });
   });
 });
