@@ -393,20 +393,30 @@ export function createKnowledgeModelPdfParser(
             const signal = input.signal ?? new AbortController().signal;
             result = await executeWithProviderRetry({
               operation: async () => {
-                const candidate = await execute(snapshot, sharedPage?.request ?? providerRequest({
-                  batch: prepared,
-                  mode: input.mode,
-                  prompt,
-                  snapshot,
-                  supplement,
-                  visionDetail
-                }), {
-                  signal,
-                  timeoutMs: effectiveProviderResponseTimeoutMs(
-                    snapshot.connection,
-                    snapshot.model.adapterKind === "fake" ? null : snapshot.model
-                  )
-                });
+                // Cumulative usage this physical attempt reported, kept when the
+                // response later fails (an incomplete or rejected answer was paid for).
+                let reported: ModelRunUsage | null = null;
+                let candidate: ProviderRunResult;
+                try {
+                  candidate = await execute(snapshot, sharedPage?.request ?? providerRequest({
+                    batch: prepared,
+                    mode: input.mode,
+                    prompt,
+                    snapshot,
+                    supplement,
+                    visionDetail
+                  }), {
+                    onUsage: (usage) => { reported = usage; },
+                    signal,
+                    timeoutMs: effectiveProviderResponseTimeoutMs(
+                      snapshot.connection,
+                      snapshot.model.adapterKind === "fake" ? null : snapshot.model
+                    )
+                  });
+                } catch (error) {
+                  if (reported) acceptedUsages.push(reported);
+                  throw error;
+                }
                 try {
                   if (sharedOcr) decodePdfOcrPage(pageStart, candidate.finalText);
                   else decodeModelPdfBatchOutput({

@@ -1157,6 +1157,46 @@ describe("Knowledge System Model PDF parser", () => {
     expect(markAmbiguous).toHaveBeenCalledWith("attempt-rejected", expect.any(Date));
   });
 
+  it("accounts the usage a response reported before the executor rejected it", async () => {
+    const markAmbiguous = vi.fn(async () => undefined);
+    const recordUnsettledUsage = vi.fn(async () => undefined);
+    const execute = vi.fn(async (_snapshot: unknown, _request: unknown, options: { onUsage?(usage: unknown): void }) => {
+      options.onUsage?.({ inputTokens: 100, outputTokens: 20, reasoningTokens: 0, totalTokens: 120 });
+      throw new Error("openai_response_incomplete");
+    });
+    const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
+      attemptRepository: {
+        markAmbiguous,
+        markDispatched: vi.fn(async () => true),
+        recordUnsettledUsage,
+        reserve: vi.fn(async () => ({ attemptId: "attempt-incomplete", kind: "dispatch" as const })),
+        settle: vi.fn()
+      } as never,
+      execute: execute as never,
+      inspect: vi.fn(async () => ({ pageCount: 2 })),
+      prepare: vi.fn(async (input) => ({
+        bytes: Buffer.from("%PDF-bounded-range"), kind: "pdf" as const, pageEnd: input.pageEnd, pageStart: input.pageStart
+      })),
+      retry: { random: () => 0, sleep: async () => undefined }
+    });
+
+    await expect(parser.parse({
+      artifactId: "artifact-incomplete", bytes: Buffer.from("%PDF-source"), maxBlocks: 100, maxCharacters: 10_000,
+      maxPages: 10, mode: "system_model_direct_pdf", ownerUserId: "owner-1",
+      parserProfileVersion: KNOWLEDGE_PDF_PARSER_PROFILE_VERSION, processingGeneration: 0,
+      profileRevisionId: "profile-incomplete", sourceVersionId: "source-version-incomplete",
+      systemModelPolicyVersion: 3, systemModelSnapshot: snapshot()
+    })).rejects.toMatchObject({ code: "pdf_processing_ambiguous" });
+    const attempts = execute.mock.calls.length;
+    expect(attempts).toBeGreaterThan(0);
+    expect(recordUnsettledUsage).toHaveBeenCalledOnce();
+    expect(recordUnsettledUsage).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: "attempt-incomplete",
+      usage: expect.objectContaining({ inputTokens: 100 * attempts, outputTokens: 20 * attempts, totalTokens: 120 * attempts })
+    }));
+    expect(markAmbiguous).toHaveBeenCalledWith("attempt-incomplete", expect.any(Date));
+  });
+
   it("keeps gap filling in profile 10 and adds bounded native corrections in profile 11", async () => {
     const parseAtProfile = async (parserProfileVersion: number) => {
       const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
