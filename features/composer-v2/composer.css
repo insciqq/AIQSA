@@ -550,6 +550,32 @@
   mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
 }
 
+/* Where scroll timelines exist, the fade hints at more items only while the
+   list overflows and lifts at its end, so a list that fits keeps no empty
+   band under its last row. */
+@supports (animation-timeline: scroll()) {
+  .v2-composer-layer-scroll {
+    padding-bottom: 0.25rem;
+    -webkit-mask-image: none;
+    mask-image: none;
+    animation: v2-composer-layer-fade linear both;
+    animation-timeline: scroll(self block);
+  }
+}
+
+@keyframes v2-composer-layer-fade {
+  from,
+  96% {
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
+    mask-image: linear-gradient(to bottom, black calc(100% - 1.75rem), transparent);
+  }
+
+  to {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
 .v2-composer-knowledge-inherited {
   display: grid;
   grid-template-columns: 1rem minmax(0, 1fr);

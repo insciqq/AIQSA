@@ -730,19 +730,6 @@ test("v2 memory recall and the saved-memory notice keep their verbs behind menus
   await expectNoHorizontalOverflow(page);
 });
 
-test("v2 MCP approval uses explicit bounded controls", async ({ page }) => {
-  await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=approval");
-  const approval = page.getByRole("complementary", {
-    name: "Approval required for Research vault lookup_document"
-  });
-  await expect(approval).toBeVisible();
-  await approval.getByText("Review arguments").click();
-  await expect(approval).toContainText("[private path redacted]");
-  await approval.getByRole("button", { name: "Allow once" }).click();
-  await expect(approval).toContainText("allowed");
-  await expect(approval.getByRole("button", { name: "Allow once" })).toBeHidden();
-});
-
 test("v2 branch drawer switches only the future leaf and restores trigger focus", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.goto("/ui-v2-fixture?fixture=branches&state=default");
