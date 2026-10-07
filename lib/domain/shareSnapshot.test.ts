@@ -91,6 +91,19 @@ describe("share snapshots", () => {
     }
   });
 
+  it("never carries a failed answer's run id or error reference", () => {
+    const runId = "3f2a9c1e-7b4d-4e8a-9c21-5d6e7f809a1b";
+    const failed = [messages[0]!, {
+      ...messages[1]!, errorMessage: "Provider failed", modelRunId: runId, runId, status: "error"
+    } as ShareSnapshotMessageInput];
+    const snapshot = buildPublicShareSnapshot({ activeLeafMessageId: "a1", messages: failed, title: "Shared" });
+    const reread = projectPublicShareSnapshot({ ...snapshot, messages: snapshot.messages.map((item) => ({ ...item, runId })) });
+    for (const serialized of [JSON.stringify(snapshot), JSON.stringify(reread)]) {
+      expect(serialized).not.toContain(runId.slice(0, 8));
+      expect(serialized).not.toMatch(/Provider failed|"status"/u);
+    }
+  });
+
   it("shares grounded answer text while dropping every structured artifact", () => {
     const groundedMessages = messages.map((message) => message.id === "a1"
       ? { ...message, content: { blocks: [{ type: "text", text: "Retained grounded answer" }] },

@@ -128,7 +128,7 @@ export type AdminHealthIncidentFilters = {
   cursor: string | null;
   event: string | null;
   level: "error" | "fatal" | null;
-  /** An exact run id or trace id. */
+  /** A run id, a trace id, or an error reference (a run-id prefix of at least eight characters). */
   q: string | null;
   range: AdminHealthRange;
 };
@@ -165,7 +165,7 @@ export function isAdminHealthRange(value: unknown): value is AdminHealthRange {
   return typeof value === "string" && (adminHealthRanges as readonly string[]).includes(value);
 }
 
-/** Whether a search box value can be looked up: an exact run id or trace id. */
+/** Whether a search box value can be looked up: a run id or error reference, or a trace id. */
 export function isAdminHealthReference(value: string): boolean {
   return ADMIN_HEALTH_TRACE_PATTERN.test(value) || ADMIN_HEALTH_RUN_PATTERN.test(value);
 }
