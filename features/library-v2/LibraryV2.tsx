@@ -919,7 +919,7 @@ export function MemoryPanelV2({
         </form>
       </div>
 
-      {notice ? <p className="v2-memory-notice" role="status">{notice}</p> : null}
+      {notice ? <p className="v2-memory-manager-notice" role="status">{notice}</p> : null}
       {mutationError ? <p className="v2-memory-error" role="alert">{mutationError}</p> : null}
       {rowMode === "create" ? (
         <ul className="v2-memory-list v2-memory-create" aria-label="New memory">

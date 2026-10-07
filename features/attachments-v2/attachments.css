@@ -6,6 +6,14 @@
   border-bottom: 1px solid var(--v2-color-border);
 }
 
+/* Touch phones drop the composer's top padding for the input; the tray
+   brings its own so its head row clears the composer edge. */
+@media (max-width: 767px) and (pointer: coarse) {
+  .v2-composer .v2-attachment-tray {
+    padding-top: 0.5rem;
+  }
+}
+
 .v2-attachment-capacity {
   display: flex;
   min-width: 0;
@@ -165,14 +173,34 @@
   background: color-mix(in srgb, var(--v2-color-warn) 10%, transparent);
 }
 
+/* Capacity on the left, the privacy note on the right: one quiet head row. */
+.v2-attachment-tray-head {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.v2-attachment-tray-head > .v2-attachment-capacity {
+  flex: 1 1 auto;
+}
+
 .v2-attachment-privacy {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
-  margin: 0;
+  gap: 0.25rem;
+  margin: 0 0 0 auto;
   padding: 0 0.25rem;
   color: var(--v2-color-text3);
   font-size: 0.6875rem;
   line-height: 1.4;
+}
+
+.v2-attachment-privacy .v2-icon {
+  width: 0.75rem;
+  height: 0.75rem;
 }
 
 /* The sent-file line answers "what went with this message" — text2 floor,
@@ -189,22 +217,56 @@
   list-style: none;
 }
 
+/* One line per file: the name shrinks before the icon or "⋯" wraps away. */
 .v2-sent-attachments li {
   display: inline-flex;
   min-width: 0;
   align-items: center;
   gap: 0.3125rem;
   max-width: 100%;
-  flex-wrap: wrap;
 }
 
-.v2-file-save {
-  display: inline-grid;
+.v2-sent-attachments li > .v2-icon {
+  flex: 0 0 auto;
+}
+
+.v2-file-actions-menu {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
   gap: 0.25rem;
 }
 
-.v2-file-save [role="alert"] {
+.v2-file-actions-menu small {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.v2-file-actions-menu small .v2-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  color: var(--v2-color-ok);
+}
+
+.v2-file-actions-menu [role="alert"] {
   color: var(--v2-color-danger);
+}
+
+.v2-file-actions-menu .v2-icon-button {
+  width: 2rem;
+  height: 2rem;
+  color: var(--v2-color-text3);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-file-actions-menu .v2-icon-button {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
 }
 
 .v2-saved-file-picker > input {
@@ -243,6 +305,7 @@
 }
 
 .v2-sent-attachments li a {
+  min-width: 0;
   max-width: 18rem;
   overflow: hidden;
   color: inherit;
