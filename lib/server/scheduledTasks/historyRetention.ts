@@ -15,7 +15,8 @@ import { databaseFailureCode } from "../observability/databaseFailure";
  * `historyRetentionDays` ago, through the same deletion service and
  * obligations as the owner's own permanent deletion. Kept are the task's
  * current chat, chats of a task without retention (null: forever), and every
- * chat the owner touched: one with an owner-written message, pinned, in a
+ * chat the owner touched: one with an owner-written message or in-run
+ * follow-up, a run the owner started (a Regenerate included), pinned, in a
  * folder, with an active share, renamed or restored from the archive
  * (`Chat.ownerKeptAt`). So is a chat a rotation still carries from (its
  * copied result or its Workspace seed not yet restored) and one with a run in
@@ -40,6 +41,8 @@ function eligibleSql(now: Date): Prisma.Sql {
     AND NOT EXISTS (
       SELECT 1 FROM "Message" AS message
       WHERE message."chatId" = chat."id" AND message."role" = 'user' AND NOT message."scheduledTaskPrompt")
+    -- Follow-ups the owner sent while a run was answering are owner text outside any user message.
+    AND NOT EXISTS (SELECT 1 FROM "RunFollowup" AS followup WHERE followup."chatId" = chat."id")
     AND NOT EXISTS (
       SELECT 1 FROM "SharedChatSnapshot" AS share
       WHERE share."chatId" = chat."id" AND share."revokedAt" IS NULL
@@ -50,10 +53,11 @@ function eligibleSql(now: Date): Prisma.Sql {
       WHERE seed."sourceChatId" = chat."id" AND seed."scheduledTaskId" IS NOT NULL
         AND seed."status" IN ('CAPTURING'::"ChatContinuationWorkspaceSeedStatus", 'READY'::"ChatContinuationWorkspaceSeedStatus",
           'TRANSFERRED'::"ChatContinuationWorkspaceSeedStatus", 'RESTORING'::"ChatContinuationWorkspaceSeedStatus"))
+    -- A run in progress, or one the owner started (a Regenerate needs no new message): only scheduled runs settled.
     AND NOT EXISTS (
-      SELECT 1 FROM "ModelRun" AS active
-      WHERE active."chatId" = chat."id" AND active."status" IN ('preparing'::"ModelRunStatus", 'queued'::"ModelRunStatus",
-        'streaming'::"ModelRunStatus", 'in_progress'::"ModelRunStatus"))
+      SELECT 1 FROM "ModelRun" AS kept
+      WHERE kept."chatId" = chat."id" AND (kept."scheduledTaskId" IS NULL OR kept."status" IN ('preparing'::"ModelRunStatus",
+        'queued'::"ModelRunStatus", 'streaming'::"ModelRunStatus", 'in_progress'::"ModelRunStatus")))
   `;
 }
 
