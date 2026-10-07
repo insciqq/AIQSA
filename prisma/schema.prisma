@@ -22,6 +22,18 @@ enum AuthIdentityProvider {
   password
   google
   yandex
+  oidc
+  ldap
+  saml
+  trusted_header
+}
+
+/// The external sign-in methods whose group or role values map to AIQSA groups.
+enum GroupExternalNameSource {
+  oidc
+  ldap
+  saml
+  trusted_header
 }
 
 enum UserRole {
@@ -857,7 +869,14 @@ model User {
   email                               String?                            @unique
   displayName                         String
   role                                UserRole                           @default(user)
+  /// The external sign-in source (`<provider>:<source>`) that granted the admin role; null
+  /// when the role is manual. Only that source demotes, and a manual role change clears it.
+  roleManagedBy                       String?
   status                              UserStatus                         @default(pending)
+  scimExternalId                      String?                            @unique
+  /// When SCIM last asked to deactivate the account. With status `active` the deactivation
+  /// waits for a Project ownership transfer; with `disabled`, SCIM may reactivate it.
+  scimDeactivatedAt                   DateTime?
   createdAt                           DateTime                           @default(now())
   updatedAt                           DateTime                           @updatedAt
   accessGrants                        AccessGrant[]
@@ -867,8 +886,13 @@ model User {
   authIdentities                      AuthIdentity[]
   authInvitesAccepted                 AuthInvite[]                       @relation("AuthInviteAcceptedUser")
   authInvitesCreated                  AuthInvite[]                       @relation("AuthInviteCreator")
+  authScimTokensCreated               AuthScimToken[]                    @relation("AuthScimTokenCreator")
   authSessions                        AuthSession[]
   authSessionsRevoked                 AuthSession[]                      @relation("AuthSessionRevoker")
+  authSignInMethodActivations         AuthSignInMethodSetting[]          @relation("AuthSignInMethodSettingActivator")
+  authSignInMethodEdits               AuthSignInMethodSetting[]          @relation("AuthSignInMethodSettingUpdater")
+  authSignInPolicyUpdates             AuthSignInPolicy[]                 @relation("AuthSignInPolicyUpdater")
+  authTotpFactor                      AuthTotpFactor?
   browserPushSubscriptions            BrowserPushSubscription[]
   assistantDefinitions                AssistantDefinition[]              @relation("AssistantDefinitionOwner")
   assistantListingRequests            AssistantListingRequest[]          @relation("AssistantListingRequester")
@@ -1159,14 +1183,72 @@ model SmtpControl {
   configurationUpdatedBy       User?     @relation("SmtpControlUpdater", fields: [configurationUpdatedByUserId], references: [id], onDelete: SetNull)
 }
 
+/// One administrator-configured sign-in method (`AUTH_SIGN_IN_METHODS`), with the SMTP
+/// control's draft, test, activation, write-only secret and health semantics. A missing row
+/// means the method was never configured in the admin panel.
+model AuthSignInMethodSetting {
+  method                       String    @id
+  draftConfig                  Json?
+  draftSecretEnvelope          String?
+  draftSecretGeneration        Int?
+  draftVersion                 Int       @default(0)
+  testedDraftVersion           Int?
+  draftTestVersion             Int?
+  draftTestAt                  DateTime?
+  draftTestCode                String?
+  activeConfig                 Json?
+  activeSecretEnvelope         String?
+  activeSecretGeneration       Int?
+  activeVersion                Int       @default(0)
+  enabled                      Boolean   @default(false)
+  secretGenerationCounter      Int       @default(0)
+  healthActiveVersion          Int?
+  lastAttemptAt                DateTime?
+  lastAcceptedAt               DateTime?
+  lastFailureAt                DateTime?
+  lastFailureCode              String?
+  configurationUpdatedAt       DateTime?
+  configurationUpdatedByUserId String?
+  activatedAt                  DateTime?
+  activatedByUserId            String?
+  createdAt                    DateTime  @default(now())
+  activatedBy                  User?     @relation("AuthSignInMethodSettingActivator", fields: [activatedByUserId], references: [id], onDelete: SetNull)
+  configurationUpdatedBy       User?     @relation("AuthSignInMethodSettingUpdater", fields: [configurationUpdatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([activatedByUserId])
+  @@index([configurationUpdatedByUserId])
+}
+
+/// Installation sign-in switches (singleton `installation`); a missing row means both on.
+model AuthSignInPolicy {
+  id                   String   @id
+  passwordLoginEnabled Boolean  @default(true)
+  registrationEnabled  Boolean  @default(true)
+  version              Int      @default(1)
+  updatedByUserId      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  updatedBy            User?    @relation("AuthSignInPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
 model AuthIdentity {
   id                String               @id @default(uuid())
   userId            String
   provider          AuthIdentityProvider
   providerAccountId String
+  /// The configured source of an external identity: OIDC issuer, LDAP server and base,
+  /// SAML IdP entity id or `trusted-header`; null for password, Google and Yandex. A sign-in
+  /// whose source differs never matches the identity.
+  source            String?
   normalizedEmail   String
   emailVerifiedAt   DateTime?
   passwordHash      String?
+  /// When a sign-in last applied this source's groups or admin role, and the content-free
+  /// warning it returned (null when clean).
+  lastSyncedAt      DateTime?
+  lastSyncWarning   String?              @db.VarChar(64)
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
   flowTokens        AuthFlowToken[]
@@ -1188,6 +1270,8 @@ model AuthSession {
   revokedReason      String?
   createdByIp        String?
   createdByUserAgent String?
+  /// How the sign-in was proven (`AUTH_SESSION_SIGN_IN_METHODS`); null before it was recorded.
+  signInMethod       String?   @db.VarChar(32)
   lastSeenAt         DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -1296,10 +1380,52 @@ model AuthFlowToken {
   @@index([userId])
 }
 
+/// A user's TOTP second factor: the confirmed secret and an enrolment awaiting confirmation,
+/// both as secret envelopes. `lastUsedStep` refuses a code from an already used time step.
+model AuthTotpFactor {
+  userId                String             @id
+  secretEnvelope        String?
+  confirmedAt           DateTime?
+  pendingSecretEnvelope String?
+  pendingCreatedAt      DateTime?
+  lastUsedStep          BigInt?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  recoveryCodes         AuthRecoveryCode[]
+  user                  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// A one-use TOTP recovery code, stored only as a hash; it leaves with its factor.
+model AuthRecoveryCode {
+  id        String         @id @default(uuid())
+  userId    String
+  codeHash  String         @unique
+  usedAt    DateTime?
+  createdAt DateTime       @default(now())
+  factor    AuthTotpFactor @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// A SCIM bearer token, stored only as a hash; the prefix identifies it to administrators.
+model AuthScimToken {
+  id              String    @id @default(uuid())
+  tokenHash       String    @unique
+  displayPrefix   String    @db.VarChar(32)
+  createdAt       DateTime  @default(now())
+  createdByUserId String?
+  revokedAt       DateTime?
+  lastUsedAt      DateTime?
+  createdBy       User?     @relation("AuthScimTokenCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([createdByUserId])
+}
+
 model Group {
   id                            String                              @id @default(uuid())
   name                          String                              @unique
   systemRole                    GroupSystemRole?                    @unique
+  scimExternalId                String?                             @unique
   archivedAt                    DateTime?
   createdAt                     DateTime                            @default(now())
   updatedAt                     DateTime                            @updatedAt
@@ -1307,6 +1433,7 @@ model Group {
   assistantPublications         AssistantPublication[]
   authAccessRuleDefaults        AuthAccessRuleGroup[]
   authInviteDefaults            AuthInviteGroup[]
+  externalNames                 GroupExternalName[]
   knowledgeBasePublications     KnowledgeBasePublication[]
   mcpGrants                     McpGrant[]
   mcpToolGrants                 McpToolGroupGrant[]
@@ -1317,6 +1444,20 @@ model Group {
   users                         UserGroup[]
 
   @@index([archivedAt])
+}
+
+/// An exact group or role value one external source asserts for members of this group.
+/// Sign-in group sync manages only groups that have a name for that source.
+model GroupExternalName {
+  id        String                  @id @default(uuid())
+  groupId   String
+  source    GroupExternalNameSource
+  value     String                  @db.VarChar(512)
+  createdAt DateTime                @default(now())
+  group     Group                   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, source, value])
+  @@index([source, value])
 }
 
 enum GroupSystemRole {
