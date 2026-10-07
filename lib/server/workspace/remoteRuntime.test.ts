@@ -325,6 +325,9 @@ describe("remote Workspace runner protocol", () => {
     const runEnvironment = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
     await remote.syncPersonalSecrets({ ...identity, runEnvironment, secrets: [] });
     expect(syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment }));
+    expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.not.objectContaining({ boundUvCache: expect.anything() }));
+    await remote.syncPersonalSecrets({ ...identity, boundUvCache: true, secrets: [] });
+    expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ boundUvCache: true }));
     await remote.callBoundTool({ ...identity, arguments: { command: "python3 report.py" }, invocationId: "a".repeat(32),
       modelRunToolCallId: "call_fixture", originalName: "sandbox_shell" });
     expect(callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ invocationId: "a".repeat(32) }));

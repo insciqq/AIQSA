@@ -107,6 +107,8 @@ export type WorkspaceExecutionBinding = Readonly<{
   runtimeSandboxId: string | null;
   runtimeVersion: string;
   sandboxName: string;
+  /** The run belongs to a scheduled task (its schedule or Run now); absent means interactive. */
+  scheduled?: boolean;
   sessionId: string;
   sessionErrorCode: string | null;
   sessionState: string;
@@ -344,6 +346,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         chat: { select: { projectId: true, userId: true } },
         chatId: true,
         id: true,
+        scheduledTaskId: true,
         userId: true,
         workspaceRunBinding: {
           select: {
@@ -410,6 +413,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       runtimeSandboxId: session.runtimeSandboxId,
       runtimeVersion: run.workspaceRunBinding.runtimeVersion,
       sandboxName: session.sandboxName,
+      scheduled: run.scheduledTaskId !== null,
       sessionId: session.id,
       sessionErrorCode: session.lastErrorCode,
       sessionState: session.state,
@@ -1705,6 +1709,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
           await input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId,
             ...(code && Object.keys(code.environment).length > 0 ? { runEnvironment: code.environment } : {}),
+            // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
+            ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
           });
         } catch (error) {
