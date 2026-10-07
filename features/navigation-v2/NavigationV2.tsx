@@ -21,6 +21,7 @@ import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell"
 import { useAnnouncements } from "@/components/announcements/AnnouncementsProvider";
 import { chatMenuActionsV2, flattenFolderTree, type FlattenedFolder } from "./chatMenuActions";
 import { RailV2, type RailSectionV2 } from "./RailV2";
+import { adminAttentionIndicator, useAdminAttentionSummary } from "./useAdminAttentionSummary";
 import {
   clearChatNavigationSearch,
   loadChatMessageMatches,
@@ -1460,6 +1461,8 @@ export function ReadingRoomShellV2({
 }: ReadingRoomShellV2Props) {
   const announcements = useAnnouncements();
   const announcementHintId = useId();
+  const adminAttention = adminAttentionIndicator(useAdminAttentionSummary(navigationOwnerProps.adminEntryVisible === true));
+  const adminAttentionHintId = useId();
   const { onNewChat } = navigationOwnerProps;
   const [composition, setComposition] = useState<SidebarCompositionV2>("desktop");
   const [compactExpanded, setCompactExpanded] = useState(false);
@@ -1828,6 +1831,9 @@ export function ReadingRoomShellV2({
   const resolvedSection: RailSectionV2 = section === "library"
     ? "library"
     : projectsView || navigationOwnerProps.projectContextActive ? "projects" : "chats";
+  // On phones the rail is hidden: the drawer toggle carries the hints of the entries inside it.
+  const unreadAnnouncementsHint = composition === "mobile" && Boolean(announcements && announcements.unreadCount > 0);
+  const mobileAdminAttention = composition === "mobile" ? adminAttention : null;
 
   return (
     <div
@@ -1875,12 +1881,21 @@ export function ReadingRoomShellV2({
         aria-label="Navigation"
         inert={drawerOpen ? true : undefined}
       >
-        {composition === "mobile" && announcements && announcements.unreadCount > 0 ? <span id={announcementHintId} className="sr-only">Unread announcements</span> : null}
+        {unreadAnnouncementsHint ? <span id={announcementHintId} className="sr-only">Unread announcements</span> : null}
+        {mobileAdminAttention ? <span id={adminAttentionHintId} className="sr-only">Control Center: {mobileAdminAttention.label}</span> : null}
         <UiV2IconButton
           ref={openButtonRef}
-          className={composition === "mobile" && announcements && announcements.unreadCount > 0 ? "relative before:absolute before:right-1 before:top-1 before:size-2 before:rounded-full before:bg-proof before:ring-2 before:ring-answer-paper before:content-['']" : undefined}
-          aria-describedby={composition === "mobile" && announcements && announcements.unreadCount > 0 ? announcementHintId : undefined}
-          data-announcements-unread={composition === "mobile" && announcements && announcements.unreadCount > 0 || undefined}
+          className={mobileAdminAttention || unreadAnnouncementsHint
+            ? `relative before:absolute before:right-1 before:top-1 before:size-2 before:rounded-full before:ring-2 before:ring-answer-paper before:content-[''] ${
+              mobileAdminAttention?.severity === "bad" ? "before:bg-critical" : mobileAdminAttention ? "before:bg-caution" : "before:bg-proof"
+            }`
+            : undefined}
+          aria-describedby={[
+            ...(unreadAnnouncementsHint ? [announcementHintId] : []),
+            ...(mobileAdminAttention ? [adminAttentionHintId] : [])
+          ].join(" ") || undefined}
+          data-admin-attention={mobileAdminAttention?.severity}
+          data-announcements-unread={unreadAnnouncementsHint || undefined}
           icon={composition === "mobile" ? "menu" : "panel"}
           label="Open sidebar"
           tooltip={composition === "mobile" ? "Open navigation" : "Show chat list"}
