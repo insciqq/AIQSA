@@ -1,25 +1,34 @@
 import { PrismaClient, type UsagePurpose } from "@prisma/client";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Response } from "@playwright/test";
 import { decodeUserUsageLimitStatusResponse } from "../../lib/contracts/usageLimits";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
+import { snapshotComposerDefaults, turnComposerToolsOff } from "./support/composerToolsOff";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { runAccountMenuAction } from "./shell/page";
+import { assistantContentWithText } from "./shell/thread";
 
 /**
  * What a user with limits sees: the composer warning near and at a limit,
  * the Settings block, and refused sends that keep the draft. The signed-in
  * test account gets an override; synthetic spend is tagged by model id and
- * removed afterwards. The answer model is the stand's fake provider.
+ * removed afterwards. The answer model is the stand's fake provider; every
+ * send first turns the composer's tools off (Workspace, MCP, Skills, Search,
+ * Memory recall), so the turn fits its 8k window. The account's chat defaults
+ * those chips save are restored afterwards.
  */
 const prisma = new PrismaClient();
 test.describe.configure({ mode: "serial" });
 
 const FIXTURE_MODEL = "usage-limits-e2e";
+const MESSAGES_PATH = /^\/api\/chats\/([^/]+)\/messages$/u;
 let userId = "";
+let restoreComposerDefaults: (() => Promise<void>) | null = null;
 
 async function signIn(page: Page, theme: "dark" | "light", baseURL: string): Promise<void> {
   await page.context().addCookies([{ name: "aiqsa.theme", url: baseURL, value: theme }]);
   await authenticateWithLocalToken(page.request);
   userId = (await (await page.request.get("/api/me")).json()).user.id as string;
+  restoreComposerDefaults ??= await snapshotComposerDefaults(prisma, userId);
 }
 
 async function setOverride(page: Page, limits: Readonly<{ budget: number | null; hour: number | null }>): Promise<void> {
@@ -43,6 +52,18 @@ async function setSpend(micros: number, purpose: UsagePurpose = "chat_answer"): 
   }
 }
 
+/** The composer's next send request. */
+function nextSend(page: Page): Promise<Response> {
+  return page.waitForResponse((response) => MESSAGES_PATH.test(new URL(response.url()).pathname) &&
+    response.request().method() === "POST");
+}
+
+/** Removes the chat an admitted send created. */
+async function deleteSentChat(page: Page, response: Response): Promise<void> {
+  const chatId = MESSAGES_PATH.exec(new URL(response.url()).pathname)?.[1];
+  if (chatId) await deleteOwnedChatPermanently(page.request, chatId, { timeout: 30_000 });
+}
+
 async function expectNoPageOverflow(page: Page): Promise<void> {
   const overflowing = await page.evaluate(() => {
     const limit = document.documentElement.clientWidth + 0.5;
@@ -63,6 +84,7 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
 }
 
 test.afterAll(async () => {
+  await restoreComposerDefaults?.();
   if (userId) {
     await prisma.usageEvent.deleteMany({ where: { modelId: FIXTURE_MODEL, userId } });
     await prisma.usageLimit.deleteMany({ where: { userId } });
@@ -111,10 +133,10 @@ test("a reached budget refuses the send, explains the reset and keeps the draft"
   await setOverride(page, { budget: 1_000_000, hour: null });
   await setSpend(1_050_000);
   await page.goto("/");
+  await turnComposerToolsOff(page);
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
   await composer.fill("Summarise yesterday's notes, please.");
-  const refused = page.waitForResponse((response) => /\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname) &&
-    response.request().method() === "POST");
+  const refused = nextSend(page);
   await composer.press("Enter");
   const response = await refused;
   expect(response.status()).toBe(429);
@@ -137,21 +159,25 @@ test("system usage above the budget neither warns nor refuses the user", async (
   await page.goto("/");
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.getByTestId("composer-usage-limit")).toHaveCount(0);
+  await turnComposerToolsOff(page);
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
-  await composer.fill("A question while Memory work is expensive.");
-  const accepted = page.waitForResponse((response) => /\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname) &&
-    response.request().method() === "POST");
+  const question = "A question while Memory work is expensive.";
+  await composer.fill(question);
+  const accepted = nextSend(page);
   await composer.press("Enter");
-  // Usage limits are checked before preparation, so any outcome other than a
-  // usage-limit refusal means the budget let the send through.
   const response = await accepted;
-  const body = await response.text();
-  await testInfo.attach("system-usage-send.json", { body: JSON.stringify({ body: body.slice(0, 400), status: response.status() }),
-    contentType: "application/json" });
-  expect(response.status(), body).not.toBe(429);
-  expect(body).not.toMatch(/usage_budget_exhausted|installation_budget_exhausted|message_rate_limited/u);
-  await expect(page.getByTestId("composer-usage-limit")).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("system-usage-admitted.png") });
+  try {
+    const body = await response.text();
+    await testInfo.attach("system-usage-send.json", { body: JSON.stringify({ body: body.slice(0, 400), status: response.status() }),
+      contentType: "application/json" });
+    expect(response.ok(), `the send is admitted and accepted (${response.status()}): ${body.slice(0, 400)}`).toBe(true);
+    await expect(assistantContentWithText(page, `Fake answer: ${question}`)).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
+    await expect(page.getByTestId("composer-usage-limit")).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath("system-usage-admitted.png") });
+  } finally {
+    await deleteSentChat(page, response);
+  }
 });
 
 test("a message limit admits up to the limit, then refuses with the time it frees", async ({ page }, testInfo) => {
@@ -159,21 +185,30 @@ test("a message limit admits up to the limit, then refuses with the time it free
   await setSpend(0);
   await prisma.usageMessageAdmission.deleteMany({ where: { userId } });
   await setOverride(page, { budget: null, hour: 1 });
-  // One message admitted this hour. Real runs counting toward the limit are
-  // covered by the stateful admission tests and the paid budgets scenario; the
-  // stand's fake model cannot fit a composer turn with tools in its context.
-  await prisma.usageMessageAdmission.create({ data: { createdAt: new Date(Date.now() - 60_000), userId } });
   await page.goto("/");
+  await turnComposerToolsOff(page);
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
-  await expect(page.getByTestId("composer-usage-limit")).toHaveAttribute("data-tone", "critical", { timeout: 30_000 });
-  await page.screenshot({ path: testInfo.outputPath("rate-after-first.png") });
-  await composer.fill("Second question.");
-  const refused = page.waitForResponse((response) => /\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname) &&
-    response.request().method() === "POST");
+  await composer.fill("First question.");
+  const admitted = nextSend(page);
   await composer.press("Enter");
-  const response = await refused;
-  expect(response.status()).toBe(429);
-  expect(await response.json()).toMatchObject({ error: "message_rate_limited", usageLimit: { limit: 1, used: 1, window: "hour" } });
-  await expect(composer).toHaveValue("Second question.");
-  await page.screenshot({ path: testInfo.outputPath("rate-refusal.png") });
+  const first = await admitted;
+  try {
+    expect(first.ok(), `the first send is admitted and accepted (${first.status()})`).toBe(true);
+    await expect(assistantContentWithText(page, "Fake answer: First question.")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
+    expect(await prisma.usageMessageAdmission.count({ where: { userId } }), "the real send is counted").toBe(1);
+    await expect(page.getByTestId("composer-usage-limit")).toHaveAttribute("data-tone", "critical", { timeout: 30_000 });
+    await page.screenshot({ path: testInfo.outputPath("rate-after-first.png") });
+    await composer.fill("Second question.");
+    const refused = nextSend(page);
+    await composer.press("Enter");
+    const response = await refused;
+    expect(response.status()).toBe(429);
+    expect(await response.json()).toMatchObject({ error: "message_rate_limited", usageLimit: { limit: 1, used: 1, window: "hour" } });
+    await expect(page.getByText(/reached your limit of 1 message per hour/iu).first()).toBeVisible();
+    await expect(composer).toHaveValue("Second question.");
+    await page.screenshot({ path: testInfo.outputPath("rate-refusal.png") });
+  } finally {
+    await deleteSentChat(page, first);
+  }
 });
