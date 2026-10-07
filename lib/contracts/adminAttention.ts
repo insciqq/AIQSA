@@ -4,9 +4,10 @@ import type { ErrorResponse } from "./http";
  * Control Center "Needs attention" list: the server aggregates every item that
  * needs an administrator decision or action from data it already serves
  * (dashboard, providers, Search, system roles, Knowledge operations, Memory
- * status, MCP servers, email health) and from thresholds over the content-free
- * health telemetry counters. Nothing is persisted; every item carries human
- * copy plus one jump target inside the Control Center.
+ * status, MCP servers, email health), from thresholds over the content-free
+ * health telemetry counters and from background queue ages. Nothing is
+ * persisted; every item carries human copy plus one jump target inside the
+ * Control Center.
  */
 export type AdminAttentionSeverity = "bad" | "neutral" | "warn";
 
@@ -31,6 +32,7 @@ export type AdminAttentionCode =
   | "provider_runtime_failing"
   | "provider_runtime_key_rejected"
   | "provider_runtime_quota_exhausted"
+  | "queue_stalled"
   | "search_source_model_off"
   | "server_errors_rising"
   | "skills_pending_approval"
@@ -84,6 +86,7 @@ export const adminAttentionSources = [
   "mcp",
   "memory",
   "providers",
+  "queues",
   "search",
   "skills",
   "system_roles"
@@ -108,12 +111,13 @@ export type AdminAttentionErrorResponse = ErrorResponse<
 
 /**
  * The app-wide administrator badge: severity counts from the cheap sources only
- * (health telemetry rules and provider key checks), never items or copy.
+ * (health telemetry rules, provider key checks and stalled background queues),
+ * never items or copy.
  */
 export type AdminAttentionSummary = {
   bad: number;
   checkedAt: string;
-  /** Active health telemetry items (the Health section count); `null` while health is unavailable. */
+  /** Active items that jump to Health (telemetry rules and stalled queues); `null` while telemetry is unavailable. */
   health: number | null;
   /** Sources that could not be read this time; their counts are missing. */
   unavailable: AdminAttentionSource[];
@@ -152,6 +156,7 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "provider_key_check_failed",
   "provider_catalog_models_available",
   "provider_key_rejected",
+  "queue_stalled",
   "search_source_model_off",
   ...adminHealthAttentionCodes,
   "skills_pending_approval",
@@ -167,6 +172,7 @@ const MAX_ITEMS = 200;
 /** The source owns freshness even when an item jumps to a different section. */
 export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttentionSource {
   if (HEALTH_CODES.has(item.code)) return "health";
+  if (item.code === "queue_stalled") return "queues";
   if (item.code.startsWith("memory_")) return "memory";
   if (item.code.startsWith("system_role_")) return "system_roles";
   if (item.code.startsWith("provider_")) return "providers";

@@ -8,6 +8,7 @@ import {
   type AdminHealthIncidentFilterState
 } from "@/components/admin/health/AdminHealthIncidents";
 import { AdminHealthProviders } from "@/components/admin/health/AdminHealthProviders";
+import { AdminHealthQueues } from "@/components/admin/health/AdminHealthQueues";
 import type { AdminHealthIncidentsResult, AdminHealthResult } from "@/components/admin/health/adminHealthApi";
 import {
   healthCount,
@@ -17,6 +18,7 @@ import {
   healthTime
 } from "@/components/admin/health/healthFormat";
 import { useAdminHealth, useAdminHealthIncidents } from "@/components/admin/health/useAdminHealth";
+import { useAdminHealthQueues, type AdminHealthQueuesResult } from "@/components/admin/health/useAdminHealthQueues";
 import { SettingsSegmentV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { UiV2Button } from "@/components/ui-v2";
 import {
@@ -103,15 +105,18 @@ export type AdminHealthSectionProps = Readonly<{
   onSelectFilter(filter: string | null): void;
   requestHealth?: (range: AdminHealthRange, signal?: AbortSignal) => Promise<AdminHealthResult>;
   requestIncidents?: (filters: AdminHealthIncidentFilters, signal?: AbortSignal) => Promise<AdminHealthIncidentsResult>;
+  requestQueues?: (signal?: AbortSignal) => Promise<AdminHealthQueuesResult>;
 }>;
 
-export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requestIncidents }: AdminHealthSectionProps) {
+export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requestIncidents, requestQueues }: AdminHealthSectionProps) {
   const range: AdminHealthRange = isAdminHealthRange(filter) ? filter : defaultAdminHealthRange;
   const controller = useAdminHealth(range, requestHealth);
   const [incidentFilters, setIncidentFilters] = useState<AdminHealthIncidentFilterState>(emptyIncidentFilters);
   const incidents = useAdminHealthIncidents({ ...incidentFilters, event: null, range }, requestIncidents);
   const { refresh } = controller;
   const refreshIncidents = incidents.refresh;
+  const queues = useAdminHealthQueues(requestQueues);
+  const refreshQueues = queues.refresh;
 
   const topbar = useMemo(() => ({
     actions: (
@@ -122,13 +127,14 @@ export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requ
         onClick={() => {
           refresh();
           refreshIncidents();
+          refreshQueues();
         }}
       >
         Refresh
       </UiV2Button>
     ),
     title: "Health"
-  }), [controller.loading, controller.refreshing, refresh, refreshIncidents]);
+  }), [controller.loading, controller.refreshing, refresh, refreshIncidents, refreshQueues]);
   useAdminSectionTopbar(topbar);
 
   const { health } = controller;
@@ -186,6 +192,16 @@ export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requ
             </>
           )}
         </>
+      )}
+
+      {controller.error === "forbidden" || controller.error === "unauthorized" ? null : (
+        <section aria-labelledby="admin-health-queues-heading" className="min-w-0">
+          <div className="mb-2 flex min-w-0 flex-col gap-0.5">
+            <h2 className={headingClass} id="admin-health-queues-heading">Background queues</h2>
+            <p className="text-xs text-ink-muted">Unfinished jobs right now; the oldest counts from when its job became due.</p>
+          </div>
+          <AdminHealthQueues controller={queues} />
+        </section>
       )}
 
       {controller.error === "forbidden" || controller.error === "unauthorized" ? null : (
