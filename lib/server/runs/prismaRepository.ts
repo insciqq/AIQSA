@@ -1,4 +1,5 @@
 import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
+import { loadProviderModelCostBasis } from "../usage";
 import { loadWorkspaceInboxFacts } from "../workspace/inboxFacts";
 import { decodeSearchPlan } from "../../domain/search";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
@@ -1891,6 +1892,8 @@ export function createPrismaRunRepository(
         ? modelTokenPricing(models[0])
         : null;
     },
+    loadProviderModelCostBasis: (providerModelId) =>
+      loadProviderModelCostBasis(prismaClient, providerModelId).catch(retainRunPrismaCode),
     loadRunUsageAttributions: async (input) => {
       const rows = await prismaClient.usageEvent.findMany({
         orderBy: { createdAt: "asc" },
@@ -1904,6 +1907,7 @@ export function createPrismaRunRepository(
           operationCount: true,
           outputTokens: true,
           provider: true,
+          providerModelId: true,
           purpose: true,
           reasoningTokens: true,
           totalTokens: true,
@@ -1916,6 +1920,7 @@ export function createPrismaRunRepository(
         modelId: row.modelId,
         operationCount: row.operationCount,
         provider: row.provider,
+        ...(row.providerModelId ? { providerModelId: row.providerModelId } : {}),
         purpose: storedRunAttributionPurpose(row.purpose),
         recordedAt: row.createdAt.toISOString(),
         usage: {

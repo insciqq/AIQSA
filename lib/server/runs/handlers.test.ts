@@ -782,6 +782,7 @@ function createMemoryRepository(
       })),
     loadEntitlements: async () => entitlements,
     loadModelPricing: async () => modelPricing,
+    loadProviderModelCostBasis: async () => null,
     loadRunUsageAttributions: async () => [],
     loadCheckpointedToolLoopRun: async () => null,
     persistToolLoopCallBatch: async (input) => {

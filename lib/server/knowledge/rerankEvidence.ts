@@ -16,6 +16,11 @@ export type KnowledgeRerankerEvidenceStatus =
   | "partial";
 
 export type KnowledgeRerankerUsageEvidence = Readonly<{
+  /** USD the provider reported for the call; null when it reported none.
+   * Recorded, with `inputTokens`, only for a provider call since reranking is
+   * accounted; absent on older receipts and on evidence without a call. */
+  costUsd?: number | null;
+  inputTokens?: number | null;
   searchUnits: number | null;
   totalTokens: number | null;
 }>;
@@ -92,6 +97,56 @@ function boundedFailureCode(value: unknown): boolean {
     typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/u.test(value);
 }
 
+const USAGE_KEYS = Object.freeze(["searchUnits", "totalTokens"] as const);
+const CALL_USAGE_KEYS = Object.freeze(["costUsd", "inputTokens", "searchUnits", "totalTokens"] as const);
+
+function decodeUsage(value: unknown): KnowledgeRerankerUsageEvidence | null {
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value).sort().join(",");
+  const call = keys === CALL_USAGE_KEYS.join(",");
+  if (!call && keys !== USAGE_KEYS.join(",") ||
+    !nullableNonNegativeInteger(value.searchUnits) ||
+    !nullableNonNegativeInteger(value.totalTokens) ||
+    call && (!nullableNonNegativeInteger(value.inputTokens) || value.costUsd !== null &&
+      (typeof value.costUsd !== "number" || !Number.isFinite(value.costUsd) || value.costUsd < 0))) return null;
+  return Object.freeze({
+    ...(call ? { costUsd: value.costUsd as number | null, inputTokens: value.inputTokens as number | null } : {}),
+    searchUnits: value.searchUnits as number | null,
+    totalTokens: value.totalTokens as number | null
+  });
+}
+
+/** OpenRouter rerank contracts (`openrouter-rerank-v1`, `-v2`): the only
+ * adapters Knowledge reranking has used. */
+const OPENROUTER_RERANK_ADAPTER = /^openrouter-rerank-v\d+$/u;
+
+/**
+ * The reranker call a receipt bills, if any: a complete or partial ranking the
+ * provider returned. A disabled role, a skipped pool of at most one candidate
+ * and a degraded fallback record no billed response. Its row names the billing
+ * family like every other usage row of an OpenRouter deployment; the
+ * receipt's `provider` is the routed upstream provider.
+ */
+export function knowledgeRerankerBilledCall(evidence: KnowledgeRerankerBindingEvidenceV2): Readonly<{
+  costUsd: number | null;
+  inputTokens: number | null;
+  modelId: string;
+  provider: string;
+  providerModelId: string;
+  totalTokens: number | null;
+}> | null {
+  if (evidence.status !== "complete" && evidence.status !== "partial" || evidence.provider === null ||
+    evidence.providerModelId === null || evidence.upstreamModelId === null) return null;
+  return {
+    costUsd: evidence.usage.costUsd ?? null,
+    inputTokens: evidence.usage.inputTokens ?? null,
+    modelId: evidence.upstreamModelId,
+    provider: OPENROUTER_RERANK_ADAPTER.test(evidence.adapterVersion ?? "") ? "openrouter" : evidence.provider,
+    providerModelId: evidence.providerModelId,
+    totalTokens: evidence.usage.totalTokens
+  };
+}
+
 export function isKnowledgeRerankerBindingEvidenceV2(
   value: unknown
 ): value is KnowledgeRerankerBindingEvidenceV2 {
@@ -107,11 +162,9 @@ export function decodeKnowledgeRerankerBindingEvidenceV2(
   const status = value.status;
   if (status !== "complete" && status !== "degraded" && status !== "disabled" &&
     status !== "partial") return null;
-  const usage = value.usage;
+  const usage = decodeUsage(value.usage);
   if (
-    !isRecord(usage) || Object.keys(usage).length !== 2 ||
-    !nullableNonNegativeInteger(usage.searchUnits) ||
-    !nullableNonNegativeInteger(usage.totalTokens) ||
+    !usage ||
     !Number.isSafeInteger(value.durationMs) || Number(value.durationMs) < 0 ||
     Number(value.durationMs) > MAX_DURATION_MS ||
     !Number.isSafeInteger(value.inputCandidateCount) ||
@@ -206,10 +259,7 @@ export function decodeKnowledgeRerankerBindingEvidenceV2(
     status,
     timedOut,
     upstreamModelId: value.upstreamModelId as string | null,
-    usage: Object.freeze({
-      searchUnits: usage.searchUnits as number | null,
-      totalTokens: usage.totalTokens as number | null
-    }),
+    usage,
     version: KNOWLEDGE_RERANKER_EVIDENCE_VERSION
   });
 }

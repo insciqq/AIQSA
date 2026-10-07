@@ -20,6 +20,7 @@ import type { ImageFailureEvidence } from "../images/errors";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelTokenPricing } from "../../domain/usage";
 import type { RunUsageAttributionPurpose } from "../../domain/usagePurpose";
+import type { ProviderModelCostBasis } from "../usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type {
   McpDiscoveryState,
@@ -510,10 +511,16 @@ export type CancelRunResult =
     };
 
 export type RunUsageAttribution = {
-  /** Exact admitted catalogue identity when an external harness reports usage. */
+  /** Exact admitted catalogue identity: of an external harness's usage, and of
+   * every Knowledge retrieval call (its prices cost the row). */
   providerModelId?: string;
   /** Retained contribution count for subtracting saved answer rounds during recovery. */
   operationCount?: number | null;
+  /** The row's cost. Knowledge retrieval calls settle it per call
+   * (`settlesRunUsageCostPerCall`): a provider-reported cost, or the cost an
+   * earlier write of the row recorded, is kept by every rewrite, and an absent
+   * cost is priced from the deployment when the row is written. Answer and
+   * Search usage is always priced from token prices when written. */
   estimatedCostMicros?: number | null;
   modelId: string;
   provider: string;
@@ -961,6 +968,9 @@ export type RunRepository = {
   }): Promise<KnowledgeFullContextDispatchRecovery | null>;
   loadEntitlements(userId: string): Promise<ResolvedEntitlements>;
   loadModelPricing(provider: string, modelId: string, providerModelId?: string): Promise<ModelTokenPricing | null>;
+  /** A deployment's own class and stored token prices, which price system
+   * attributions it reported no cost for; null when the model no longer exists. */
+  loadProviderModelCostBasis(providerModelId: string): Promise<ProviderModelCostBasis | null>;
   interruptExpiredAgentRun?(input: { runId: string; userId: string; now: Date }): Promise<
     { kind: "not_agent" } | { kind: "active" } | { kind: "interrupted"; failureCode: import("../agents/failures").AgentFailureCode; usage: RunUsageAttribution[] }>;
   loadRunUsageAttributions(input: {
