@@ -5,6 +5,7 @@ import { createImageGenerationAdapter, validateGeneratedImage } from "./imageGen
 import { normalizeProviderModelConfiguration, type ProviderConnectionConfiguration, type ProviderModelConfiguration } from "./providerConfiguration";
 import { normalizeImageGenerationParameters, type ImageProviderProfile } from "../../contracts/imageGeneration";
 import { imageParametersFromCatalog } from "./imageModelDiscovery";
+import { captureRunObservation } from "@/tests/support/runObservation";
 
 let png: Buffer;
 let jpeg: Buffer;
@@ -153,6 +154,26 @@ describe("image adapters", () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response("private upstream detail fixture-secret", { status: 503 }));
     await expect(createImageGenerationAdapter({ connection, model: model("openai"), secret: "fixture-secret", fetchFn }).generate({ prompt: "A square" })).rejects.toMatchObject({ message: "image_provider_http_error", httpStatus: 503 });
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+  it("reports each paid request as one content-free image provider operation", async () => {
+    const observation = await captureRunObservation();
+    const identity = { adapterKind: "openai_images_native", connectionId: "connection-1", providerFamily: "openai", providerModelId: "model-1" };
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response())
+      .mockResolvedValueOnce(new Response("PRIVATE upstream detail fixture-secret", { status: 401 }));
+    const adapter = createImageGenerationAdapter({ connection, model: model("openai"), secret: "fixture-secret", fetchFn,
+      observationIdentity: identity });
+    await adapter.generate({ prompt: "PRIVATE prompt" });
+    await expect(adapter.generate({ prompt: "PRIVATE prompt" })).rejects.toMatchObject({ httpStatus: 401 });
+
+    const operations = observation.records().filter((record) => record.event === "provider_operation" && record.outcome !== "started");
+    expect(operations).toEqual([
+      expect.objectContaining({ ...identity, stage: "image", outcome: "completed", level: "info", duration_ms: expect.any(Number) }),
+      expect.objectContaining({ ...identity, stage: "image", outcome: "failed", level: "error", httpStatus: 401,
+        code: "image_provider_http_error", reason: "http", duration_ms: expect.any(Number) })
+    ]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "provider_request", stage: "image", httpStatus: 401 }));
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|fixture-secret|provider\.example/);
   });
   it("keeps a valid image when provider token counts cannot be stored", async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(Response.json({

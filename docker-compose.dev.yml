@@ -164,6 +164,7 @@ services:
     # the administrator allows local network access; AIQSA's ports stay denied.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    logging: *default-logging
     # Bound the long-lived compiler and any one-shot tool process so a stale
     # dev cache cannot pressure the host into swap/OOM or monopolize every CPU.
     # Production defaults to 2 GiB; development gets limited extra headroom.
@@ -455,6 +456,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    logging: *default-logging
     ports:
       - "127.0.0.1:${AIQSA_DEV_POSTGRES_PORT:-5432}:5432"
     volumes:

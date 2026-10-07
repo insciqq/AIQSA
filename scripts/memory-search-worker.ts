@@ -16,6 +16,7 @@ import { OpenSearchTransportError } from
   "../lib/server/search/opensearch/coreTransport";
 import { createMemoryOpenSearchClient } from
   "../lib/server/search/opensearch/memoryClient";
+import { startTelemetryRecorder } from "../lib/server/telemetry/recorder";
 
 const allowedArguments = new Set([
   "--drain", "--integrity", "--once", "--rebuild", "--retry-blocked"
@@ -35,6 +36,9 @@ if ([rebuild, integrityOnly, retryBlocked].filter(Boolean).length > 1 ||
 }
 
 const prisma = new PrismaClient();
+// Only the long-running projection loop records telemetry.
+const telemetry = once || drain || rebuild || integrityOnly || retryBlocked
+  ? null : startTelemetryRecorder({ prisma });
 const store = createPrismaMemoryLexicalProjectionStore(prisma);
 const search = createMemoryOpenSearchClient();
 const configuration = memoryLexicalProjectionRuntimeConfigurationFromEnv();
@@ -148,7 +152,7 @@ async function main(): Promise<void> {
       if (pass.claimed > 0) continue;
     } catch (error) {
       const code = safeErrorCode(error);
-      reportSubsystemFailure({ subsystem: "memory_search", stage: "projection", code, action: once || drain ? "stop" : "retry" });
+      reportSubsystemFailure({ error, subsystem: "memory_search", stage: "projection", code, action: once || drain ? "stop" : "retry" });
       if (once || drain) throw error;
     }
     await wait(configuration.worker.intervalMs);
@@ -161,5 +165,6 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    await telemetry?.stop();
     await prisma.$disconnect();
   });

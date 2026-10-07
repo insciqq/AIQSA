@@ -6,11 +6,14 @@ import { runWorkspaceMaintenance } from "@/lib/server/workspace/cleanup";
 import { runProjectDeletionMaintenance } from "@/lib/server/projects/deletion";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
 import { createWorkspaceRuntime } from "@/lib/server/workspace/defaultRuntime";
+import { startTelemetryRecorder } from "@/lib/server/telemetry/recorder";
 
 const once = process.argv.includes("--once");
 const config = getWorkspaceConfig();
 const runtime = createWorkspaceRuntime(config);
 const intervalMs = 30_000;
+// The maintenance service records telemetry; a one-shot pass does not.
+const telemetry = once ? null : startTelemetryRecorder({ prisma });
 
 async function main(): Promise<void> {
   do {
@@ -31,10 +34,11 @@ async function main(): Promise<void> {
 }
 
 main()
-  .catch(() => {
-    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "cleanup", outcome: "failed", code: "workspace_maintenance_failed", action: "stop" });
+  .catch((error: unknown) => {
+    logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "cleanup", outcome: "failed", code: "workspace_maintenance_failed", action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {
+    await telemetry?.stop();
     await prisma.$disconnect();
   });

@@ -125,7 +125,7 @@ describe("maintenance related memories", () => {
     const { repository } = vectors({ S1: ["explicit"] });
     expect(await loadMemoryMaintenanceRelatedMemories(client, "owner", sources, { ...owner, vectors: repository })).toEqual(new Map());
     expect(vi.mocked(logEvent).mock.calls).toEqual([["service_operation", { subsystem: "memory", stage: "prepare", outcome: "degraded",
-      code: "memory_maintenance_related_context_unavailable", job_id: "job-1" }]]);
+      code: "memory_maintenance_related_context_unavailable", job_id: "job-1", error: expect.anything() }]]);
     // A cancelled job ends with its cancellation instead.
     const aborted = new AbortController();
     aborted.abort();

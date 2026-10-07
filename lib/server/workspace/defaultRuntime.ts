@@ -49,7 +49,7 @@ export function createWorkspaceRuntime(
       : config.runtimeMode === "remote" ? new RemoteWorkspaceRuntime(config) : new UnavailableWorkspaceRuntime();
     reportSubsystemHealthy("workspace", "initialize");
   } catch (error) {
-    reportSubsystemFailure({ subsystem: "workspace", stage: "initialize", ...workspaceLifecycleFailure(error), action: "stop" });
+    reportSubsystemFailure({ error, subsystem: "workspace", stage: "initialize", ...workspaceLifecycleFailure(error), action: "stop" });
     throw error;
   }
   const health = runtime.health.bind(runtime);
@@ -59,7 +59,7 @@ export function createWorkspaceRuntime(
       observeWorkspaceHealth(result, "app");
       return result;
     } catch (error) {
-      reportSubsystemFailure({ subsystem: "workspace", stage: "health", scope_id: "app", ...workspaceLifecycleFailure(error), action: "wait" });
+      reportSubsystemFailure({ error, subsystem: "workspace", stage: "health", scope_id: "app", ...workspaceLifecycleFailure(error), action: "wait" });
       throw error;
     }
   };

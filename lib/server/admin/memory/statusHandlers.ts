@@ -4,6 +4,8 @@ import {
 } from "../../../contracts/adminMemory";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
+import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import {
   AdminMemoryStatusServiceError,
   type AdminMemoryStatusService
@@ -35,7 +37,8 @@ function failure(error: unknown): Response {
   if (error instanceof AdminMemoryStatusServiceError) {
     return json({ error: error.code }, 409);
   }
-  console.error("memory_admin_status_failed");
+  logEvent("service_operation", { subsystem: "admin", stage: "process", outcome: "failed",
+    code: "memory_admin_status_failed", prisma_code: databaseFailureCode(error) });
   return json({ error: "memory_admin_status_failed" }, 500);
 }
 

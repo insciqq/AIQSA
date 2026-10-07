@@ -14,6 +14,7 @@ import type { ProviderRunRequest } from "../providers/types";
 import { visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 import { ConversationImageError, type ConversationImageSource, type ConversationVisionImage } from "./conversationImages";
 import { authorizeVisionPlan, lockVisionRun, recordVisionUsage, VisionAnalysisError, visionRunAccess } from "./store";
+import { observeVisionAttempt } from "./attemptObservation";
 
 /** What a Knowledge run may do with its one image description. */
 export type KnowledgeImageObservationOutcome =
@@ -168,6 +169,9 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
       requestHash: knowledgeImageObservationRequestHash(input.plan, input.question) };
     const existing = await store.load(c);
     if (existing) return existing;
+    const startedAt = performance.now();
+    let snapshot: AvailableVisionAnalysisPlan["snapshot"] | undefined;
+    const observe = (code: string | undefined) => observeVisionAttempt({ stage: "grounding", startedAt, code, snapshot });
     // System Vision waits by its frozen reasoning effort, like analyze_image.
     const timeoutMs = Math.min(Math.max(input.timeoutMs ?? (input.plan.route === "system_vision"
       ? visionAnalysisTimeoutMs(input.plan.vision) : LIMITS.timeoutMs), 1_000), 600_000);
@@ -184,6 +188,7 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
       try {
         bounded.throwIfAborted();
         const destination = await store.destination(c, input.plan);
+        snapshot = destination?.snapshot;
         if (!destination || !await input.authorize()) throw new VisionAnalysisError("vision_model_unavailable");
         if (!options.conversationImages) throw new VisionAnalysisError("vision_model_unavailable");
         const prepared = await options.conversationImages.prepare({ runId: c.runId, userId: c.userId, chatId: c.chatId,
@@ -218,18 +223,28 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
           : KNOWN_FAILURES.has(observed) ? observed : sent ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
         result = { kind: "failed", code };
       }
+      const failureCode = result.kind === "failed" ? result.code : undefined;
       // Nothing was claimed: the run fails visibly and nothing needs settling.
-      if (!dispatched) return result;
+      if (!dispatched) {
+        observe(failureCode);
+        return result;
+      }
       // A claim that never reached the provider settles as a definite failure.
       const unknown = sent && !completed;
       await finish?.(result.kind === "observed", result.kind === "failed" ? result.code : null).catch(() => undefined);
       // The settlement is keyed by the run and has one winner; retry only this identical local write.
       // Only Stop withholds a completed description; a deadline passing during settlement does not.
-      try { return await store.settle(c, result, usage, unknown, input.signal); }
+      let settled: KnowledgeImageObservationOutcome;
+      try { settled = await store.settle(c, result, usage, unknown, input.signal); }
       catch {
-        try { return await store.settle(c, result, usage, unknown, input.signal); }
-        catch { return { kind: "unknown" }; }
+        try { settled = await store.settle(c, result, usage, unknown, input.signal); }
+        catch {
+          observe("vision_analysis_settlement_failed");
+          return { kind: "unknown" };
+        }
       }
+      observe(failureCode);
+      return settled;
     } finally {
       for (const image of images) image.dispose();
     }

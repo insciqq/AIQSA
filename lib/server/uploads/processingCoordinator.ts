@@ -175,7 +175,7 @@ export class AttachmentProcessingCoordinator {
           staleBefore: new Date(now.getTime() - this.#leaseMs)
         });
       } catch (error) {
-        reportSubsystemFailure({ subsystem: "attachments", stage: "claim", prisma_code: databaseFailureCode(error), action: "retry" });
+        reportSubsystemFailure({ error, subsystem: "attachments", stage: "claim", prisma_code: databaseFailureCode(error), action: "retry" });
         return;
       }
       reportSubsystemHealthy("attachments", "claim");

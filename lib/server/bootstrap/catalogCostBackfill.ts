@@ -154,7 +154,7 @@ export async function runCatalogCostBackfill(db: PrismaClient, dependencies: Rea
       });
     } catch (error) {
       const delay = RETRY_DELAYS_MS[failures];
-      logEvent("service_operation", { subsystem: "database", stage: "startup", outcome: lastAttempt ? "degraded" : "failed",
+      logEvent("service_operation", { error, subsystem: "database", stage: "startup", outcome: lastAttempt ? "degraded" : "failed",
         action: lastAttempt ? "stop" : "retry", code: "catalog_cost_backfill_failed", attempt: failures + 1,
         prisma_code: prismaCode(error), ...(delay === undefined ? {} : { delay_ms: delay }) });
       if (delay === undefined) return;
@@ -174,7 +174,7 @@ export async function runCatalogCostBackfill(db: PrismaClient, dependencies: Rea
 let running: Promise<void> | undefined;
 export function startCatalogCostBackfill(): void {
   // Never replays providers: it only prices persisted, provider-reported usage.
-  running ??= import("../prisma").then(({ prisma }) => runCatalogCostBackfill(prisma)).catch(() => {
-    logEvent("service_operation", { subsystem: "database", stage: "startup", outcome: "degraded", code: "catalog_cost_backfill_failed" });
+  running ??= import("../prisma").then(({ prisma }) => runCatalogCostBackfill(prisma)).catch((error: unknown) => {
+    logEvent("service_operation", { error, subsystem: "database", stage: "startup", outcome: "degraded", code: "catalog_cost_backfill_failed" });
   });
 }

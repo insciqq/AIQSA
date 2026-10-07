@@ -53,7 +53,7 @@ readonly DISK_WARN_KIB=48828125                              # 50 GB
 readonly REPOSITORY_URL=https://github.com/insciqq/AIQSA
 readonly LEGACY_RUNBOOK_URL=$REPOSITORY_URL/blob/v0.2.34/UPGRADING_FROM_MINIO.md
 readonly RUNNER_URL_DEFAULT=http://workspace-runner:4310
-readonly LOG_TAIL_LINES=60
+readonly LOG_TAIL_LINES=60 LOGS_DEFAULT_TAIL=200
 
 PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly PROJECT_DIR
@@ -73,6 +73,9 @@ ENV_FILE="" BASE_URL="" ADMIN_EMAIL="" WORKSPACE_MODE=""
 HOST_ONLY=0 STACK_ONLY=0 NO_START=0 SKIP_PREFLIGHT=0 HELP=0
 TARGET_TAG="" BACKUP_CONFIRMED=0 BACKUP_NOW=0 ADD_MISSING_KEYS=0 PREVIOUS_REF=""
 OUTPUT_DIR="" RESTORE_DIR=""
+LOGS_ERRORS=0 LOGS_WARNINGS=0 LOGS_FOLLOW=0 LOGS_TAIL="" LOG_SERVICES=()
+# --since: a log window for logs, a Health range for health.
+SINCE="" HEALTH_JSON=0 HEALTH_RUN=""
 declare -A GIVEN=()
 
 # State.
@@ -801,19 +804,19 @@ doctor_stack() {
     [[ $service == migrate-bootstrap || $service == storage-init ]] && one_shot=1
     if (( one_shot )) && [[ $state == exited ]]; then
       if [[ $code == 0 ]]; then check PASS "$service" "completed"; else
-        check FAIL "$service" "exited with code $code" "docker compose logs --tail $LOG_TAIL_LINES $service"
+        check FAIL "$service" "exited with code $code" "./aiqsa.sh logs --tail $LOG_TAIL_LINES $service"
       fi
       continue
     fi
     restarts=$(run docker inspect --format '{{.RestartCount}}' "$id" 2>/dev/null) || restarts=0
     if [[ $state != running ]]; then
-      check FAIL "$service" "$state${code:+ (exit code $code)}" "docker compose logs --tail $LOG_TAIL_LINES $service"
+      check FAIL "$service" "$state${code:+ (exit code $code)}" "./aiqsa.sh logs --tail $LOG_TAIL_LINES $service"
     elif [[ $health == unhealthy ]]; then
-      check FAIL "$service" "unhealthy" "docker compose logs --tail $LOG_TAIL_LINES $service"
+      check FAIL "$service" "unhealthy" "./aiqsa.sh logs --tail $LOG_TAIL_LINES $service"
     elif [[ $health == starting ]]; then
       check WARN "$service" "still starting"
     elif [[ $restarts =~ ^[0-9]+$ ]] && (( restarts > 0 )); then
-      check WARN "$service" "${health:-running}, restarted $restarts time(s)" "docker compose logs --tail $LOG_TAIL_LINES $service"
+      check WARN "$service" "${health:-running}, restarted $restarts time(s)" "./aiqsa.sh logs --tail $LOG_TAIL_LINES $service"
     else
       check PASS "$service" "${health:-running}"
     fi
@@ -821,7 +824,7 @@ doctor_stack() {
   if app_ready; then
     check PASS readiness "/api/health/ready answered 200"
   else
-    check FAIL readiness "/api/health/ready answered $APP_STATUS" "docker compose logs --tail $LOG_TAIL_LINES app"
+    check FAIL readiness "/api/health/ready answered $APP_STATUS" "./aiqsa.sh logs --tail $LOG_TAIL_LINES app"
   fi
   if (( runner )) && profile_enabled workspace; then doctor_runner; fi
   doctor_storage
@@ -866,7 +869,7 @@ doctor_runner() {
     check PASS workspace-runner "runtime ready"
   else
     check WARN workspace-runner "runtime ${state:-$status}${reason:+ ($reason)}; Workspace is unavailable, everything else works" \
-      "docker compose logs --tail $LOG_TAIL_LINES workspace-runner; check $KVM_DEVICE access and AIQSA_KVM_GID."
+      "./aiqsa.sh logs --tail $LOG_TAIL_LINES workspace-runner; check $KVM_DEVICE access and AIQSA_KVM_GID."
   fi
 }
 
@@ -881,7 +884,7 @@ doctor_storage() {
     refused=$(sed -n 's/^storage-init: refused \([A-Za-z0-9_]*\).*$/\1/p' "$output" | head -n 1)
     case $refused in
       ECONNREFUSED | ENOTFOUND | EAI_AGAIN | ETIMEDOUT | EHOSTUNREACH | ENETUNREACH | ECONNRESET)
-        check FAIL storage "object storage is unreachable ($refused)" "docker compose logs --tail $LOG_TAIL_LINES seaweedfs" ;;
+        check FAIL storage "object storage is unreachable ($refused)" "./aiqsa.sh logs --tail $LOG_TAIL_LINES seaweedfs" ;;
       *)
         tail -n 20 "$output" | mask_stream | sed 's/^/  /'
         check FAIL storage "storage-init status failed (see the output above)" \
@@ -2055,6 +2058,90 @@ cmd_restore() {
   say "Restore complete."
 }
 
+# ---------------------------------------------------------------- logs
+
+# logs_filter LEVELS: keeps only AIQSA JSON lines whose level matches LEVELS
+# (for example error|fatal) and drops every other line, plain text included.
+# Compose prefixes each line with "<container>  | ".
+logs_filter() {
+  local pattern="^($1)\$" line payload level
+  while IFS= read -r line || [[ -n $line ]]; do
+    payload=${line#* | }
+    [[ $payload =~ ^[[:space:]]*\{ ]] || continue
+    level=${payload#*\"level\":}
+    [[ $level != "$payload" ]] || continue
+    level=${level#"${level%%[![:space:]]*}"}
+    [[ $level == \"* ]] || continue
+    level=${level#\"}
+    level=${level%%\"*}
+    if [[ $level =~ $pattern ]]; then printf '%s\n' "$line"; fi
+  done
+}
+
+cmd_logs() {
+  local args=(logs --no-color) levels="" errors failed=0
+  env_load
+  docker_ready || die "$EXIT_FAILURE" "Cannot read logs: Docker is not usable ($DOCKER_STATE)${DOCKER_ERROR:+: $DOCKER_ERROR}."
+  if [[ -n $SINCE ]]; then args+=(--since "$SINCE"); fi
+  if [[ -n $LOGS_TAIL ]]; then
+    args+=(--tail "$LOGS_TAIL")
+  elif [[ -z $SINCE ]]; then
+    args+=(--tail "$LOGS_DEFAULT_TAIL")
+  fi
+  if (( LOGS_FOLLOW )); then args+=(--follow); fi
+  args+=(${LOG_SERVICES[@]+"${LOG_SERVICES[@]}"})
+  if (( LOGS_ERRORS )); then levels="error|fatal"; elif (( LOGS_WARNINGS )); then levels="warn|error|fatal"; fi
+  ensure_temp_dir
+  errors=$TEMP_DIR/logs.err
+  if [[ -n $levels ]]; then
+    if (( ! QUIET )); then
+      note "Showing AIQSA JSON lines at level ${levels//|/, } only; plain-text lines (PostgreSQL, OpenSearch, Tika, Docling, SeaweedFS) are hidden."
+    fi
+    dc "${args[@]}" 2>"$errors" | logs_filter "$levels" | mask_stream || failed=1
+  else
+    dc "${args[@]}" 2>"$errors" | mask_stream || failed=1
+  fi
+  mask_stream < "$errors" >&2
+  (( ! failed )) || die "$EXIT_FAILURE" "docker compose logs failed; ./aiqsa.sh doctor shows the state of the stack."
+}
+
+# ---------------------------------------------------------------- health
+
+# Whether a Compose service has a running container.
+service_running() {
+  local rows
+  rows=$(stack_containers) || rows=""
+  [[ $'\n'$rows == *$'\n'"$1|running|"* ]]
+}
+
+# The read-only telemetry report of scripts/health-report.ts, run in the
+# running app container or, when the app is down, in a one-off app container
+# without dependencies. Exit 1 and 2 are the report's own (read failure, usage).
+cmd_health() {
+  local args=(node --import tsx scripts/health-report.ts) errors status=0 where
+  env_load
+  docker_ready || die "$EXIT_FAILURE" "Cannot read health: Docker is not usable ($DOCKER_STATE)${DOCKER_ERROR:+: $DOCKER_ERROR}."
+  if [[ -n $SINCE ]]; then args+=(--since "$SINCE"); fi
+  if [[ -n $HEALTH_RUN ]]; then args+=(--run "$HEALTH_RUN"); fi
+  if (( HEALTH_JSON )); then args+=(--json); fi
+  ensure_temp_dir
+  errors=$TEMP_DIR/health.err
+  if service_running app; then
+    where="docker compose exec app"
+    dc exec -T app "${args[@]}" </dev/null 2>"$errors" | mask_stream || status=$?
+  else
+    (( QUIET )) || note "The app container is not running; reading health from a one-off app container."
+    where="docker compose run app"
+    dc run --rm --no-deps -T app "${args[@]}" </dev/null 2>"$errors" | mask_stream || status=$?
+  fi
+  mask_stream < "$errors" >&2
+  case $status in
+    0) ;;
+    1 | 2) exit "$status" ;;
+    *) die "$EXIT_FAILURE" "$where failed (exit $status); ./aiqsa.sh doctor shows the state of the stack." ;;
+  esac
+}
+
 # ---------------------------------------------------------------- version and help
 
 cmd_version() {
@@ -2078,6 +2165,12 @@ Commands:
   restore <backup-dir>
              Restore a backup into an empty installation of the same version;
              backups made with external object storage are refused (restore those by hand).
+  logs [service...]
+             Print the stack's container logs with .env secrets masked
+             (default: the last 200 lines per container, all services).
+  health     Read-only report of recent problems from the persisted telemetry: what needs
+             attention, error totals, failing providers, restarts, stuck queues and the
+             latest incidents (works while the app container is down).
   version    Print the checkout version.
   help       Print this help.
 
@@ -2103,6 +2196,19 @@ Options:
   --output <dir>         backup: new or empty target directory
                          (default backups/<UTC time>-v<version> in the checkout).
   --add-missing-keys     upgrade: append keys new in .env.example to .env.
+  --errors               logs: keep only AIQSA JSON lines at level error or fatal.
+  --warnings             logs: keep only AIQSA JSON lines at level warn, error or fatal.
+                         Both filters drop plain-text lines, which includes every line
+                         of PostgreSQL, OpenSearch, Tika, Docling and SeaweedFS.
+  --since <duration>     logs: only lines newer than a duration (30m, 2h, 1h30m)
+                         or an RFC 3339 time (2026-01-31T08:00:00Z); without
+                         --tail every line in that window is printed.
+  --tail <n|all>         logs: last lines per container (default 200 without --since).
+  --follow, -f           logs: keep streaming new lines until interrupted.
+  --since 24h|7d|30d     health: report range (default 24h).
+  --json                 health: machine-readable JSON instead of text.
+  --run <reference>      health: look up the runs and incidents of an error reference
+                         (the first 8 or more characters of a run id).
 
 Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight or doctor
 check failed (before any container change), 5 stack not ready after a start,
@@ -2162,12 +2268,21 @@ parse_args() {
       --backup-confirmed) BACKUP_CONFIRMED=1 ;;
       --output) option_value "$argument" "$@"; OUTPUT_DIR=$1; shift ;;
       --add-missing-keys) ADD_MISSING_KEYS=1 ;;
+      --errors) LOGS_ERRORS=1 ;;
+      --warnings) LOGS_WARNINGS=1 ;;
+      --since) option_value "$argument" "$@"; SINCE=$1; shift ;;
+      --json) HEALTH_JSON=1 ;;
+      --run) option_value "$argument" "$@"; HEALTH_RUN=$1; shift ;;
+      --tail) option_value "$argument" "$@"; LOGS_TAIL=$1; shift ;;
+      -f | --follow) LOGS_FOLLOW=1 ;;
       -*) usage_error "Unknown option: $argument" ;;
       *)
         if [[ -z $COMMAND ]]; then
           COMMAND=$argument
         elif [[ $COMMAND == restore && -z $RESTORE_DIR ]]; then
           RESTORE_DIR=$argument
+        elif [[ $COMMAND == logs ]]; then
+          LOG_SERVICES+=("$argument")
         else
           usage_error "Unexpected argument: $argument"
         fi
@@ -2187,6 +2302,8 @@ validate_args() {
     upgrade) allowed=" --to --backup --backup-confirmed --add-missing-keys --skip-preflight " ;;
     backup) allowed=" --output " ;;
     restore) allowed=" --skip-preflight " ;;
+    logs) allowed=" --errors --warnings --since --tail -f --follow " ;;
+    health) allowed=" --since --json --run " ;;
     __upgrade-apply) allowed=" --previous-ref --add-missing-keys --skip-preflight " ;;
     version | help) allowed=" " ;;
     "") usage_error "Missing command." ;;
@@ -2199,6 +2316,21 @@ validate_args() {
   if (( QUIET && VERBOSE )); then usage_error "--quiet and --verbose are mutually exclusive."; fi
   if (( HOST_ONLY && STACK_ONLY )); then usage_error "--host-only and --stack-only are mutually exclusive."; fi
   if (( BACKUP_NOW && BACKUP_CONFIRMED )); then usage_error "--backup and --backup-confirmed are mutually exclusive."; fi
+  if (( LOGS_ERRORS && LOGS_WARNINGS )); then usage_error "--errors and --warnings are mutually exclusive."; fi
+  if [[ -n $LOGS_TAIL && ! $LOGS_TAIL =~ ^(all|0|[1-9][0-9]{0,6})$ ]]; then usage_error "--tail must be a line count or all."; fi
+  if [[ $COMMAND == health ]]; then
+    if [[ -n $SINCE && ! $SINCE =~ ^(24h|7d|30d)$ ]]; then usage_error "--since must be 24h, 7d or 30d for health."; fi
+    if [[ -n $SINCE && -n $HEALTH_RUN ]]; then usage_error "--run and --since are mutually exclusive."; fi
+    if [[ -n $HEALTH_RUN && ! $HEALTH_RUN =~ ^[0-9A-Fa-f][0-9A-Fa-f-]{7,35}$ ]]; then
+      usage_error "--run needs an error reference: at least the first 8 characters of a run id."
+    fi
+  elif [[ -n $SINCE && ! $SINCE =~ ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$ \
+    && ! $SINCE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$ ]]; then
+    usage_error "--since must be a duration like 30m, 2h or 1h30m, or an RFC 3339 time like 2026-01-31T08:00:00Z."
+  fi
+  for option in ${LOG_SERVICES[@]+"${LOG_SERVICES[@]}"}; do
+    [[ $option =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || usage_error "Not a Compose service name: $option"
+  done
   if [[ $COMMAND == restore && -z $RESTORE_DIR ]]; then usage_error "restore needs the backup directory: ./aiqsa.sh restore <backup-dir>"; fi
   [[ $TIMEOUT =~ ^[1-9][0-9]{0,4}$ ]] || usage_error "--timeout must be a number of seconds (1-99999)."
   if [[ -n $BASE_URL ]] && ! valid_base_url "$BASE_URL"; then
@@ -2233,6 +2365,8 @@ main() {
     __upgrade-apply) cmd_upgrade_apply ;;
     backup) cmd_backup ;;
     restore) cmd_restore ;;
+    logs) cmd_logs ;;
+    health) cmd_health ;;
     version) cmd_version ;;
     help) cmd_help ;;
   esac

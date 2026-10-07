@@ -333,6 +333,7 @@ export async function executeCreateScheduledTask(
     return refused(call, outcome.code);
   } catch (error) {
     logEvent("service_operation", {
+      error,
       subsystem: "configuration", stage: "write", outcome: "failed", code: "scheduled_tasks_unavailable",
       prisma_code: databaseFailureCode(error)
     });

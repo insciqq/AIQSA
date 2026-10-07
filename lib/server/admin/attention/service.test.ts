@@ -1,7 +1,7 @@
 import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "../../../contracts/admin";
-import { adminAttentionItemSource } from "../../../contracts/adminAttention";
+import { adminAttentionItemSource, decodeAdminAttentionResponse } from "../../../contracts/adminAttention";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import type { AdminProviderConnection, AdminProviderModel } from "../../../contracts/adminProviders";
 import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
@@ -817,6 +817,27 @@ describe("createAdminAttentionService", () => {
     });
     usageLimitsSource.mockRejectedValueOnce(new Error("relation does not exist"));
     expect(await service.list("admin-1")).toEqual({ checkedAt: at, items: [], unavailable: ["usage_limits"] });
+  });
+
+  it("projects health findings with the provider's name, owned by the health source", async () => {
+    const health = vi.fn().mockResolvedValue([
+      { code: "provider_runtime_key_rejected", connectionId: "conn-deepseek", failures: 2 },
+      { code: "server_errors_rising", errors: 14 }
+    ]);
+    const service = createAdminAttentionService({ now: () => new Date(at), sources: sources({ health }) });
+    const result = await service.list("admin-1");
+    expect(result.items).toEqual([
+      expect.objectContaining({ code: "provider_runtime_key_rejected", count: 2, severity: "bad",
+        detail: "DeepSeek rejected its key 2 times in the last hour, after its last successful request — check the key",
+        target: { resource: "conn-deepseek", section: "providers" } }),
+      expect.objectContaining({ code: "server_errors_rising", count: 14, target: { section: "health" } })
+    ]);
+    expect(result.items.map(adminAttentionItemSource)).toEqual(["health", "health"]);
+    // The wire decoder accepts the new codes and the Health jump target.
+    expect(decodeAdminAttentionResponse(JSON.parse(JSON.stringify({ attention: result })))).toEqual({ attention: result });
+
+    health.mockRejectedValueOnce(new Error("telemetry table missing"));
+    expect(await service.list("admin-1")).toMatchObject({ items: [], unavailable: ["health"] });
   });
 
   it("links reviewable Assistant listing requests to the Assistants request filter", async () => {

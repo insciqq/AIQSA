@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import { prisma } from "../prisma";
 import { drainKnowledgeDeletionJobs } from "./deletionProcessor";
 
@@ -180,8 +182,9 @@ export function kickDefaultKnowledgeDeletionWorker(): void {
         deletionWorkerRerun = false;
         await drainKnowledgeDeletionJobs({ client: prisma });
       } while (deletionWorkerRerun);
-    } catch {
-      console.error("Knowledge deletion worker could not drain queued work.");
+    } catch (error) {
+      logEvent("runtime_lifecycle", { error, subsystem: "knowledge", stage: "drain", outcome: "failed",
+        code: "knowledge_deletion_drain_failed", prisma_code: databaseFailureCode(error) });
     } finally {
       deletionWorkerRunning = false;
     }

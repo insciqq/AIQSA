@@ -10,7 +10,7 @@ import { ProviderStreamSafetyError } from "./streamSafety";
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
 type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
-type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions";
+type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
 type ProviderStatus = "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
 type ProviderCause = "max_output_tokens" | "content_filter";
 type ProviderObservation = Readonly<{
@@ -282,9 +282,22 @@ export function providerHttpFailureMessage(value: unknown): string | null {
   const failure = geminiHttpFailure(value);
   if (failure) return `The model provider rejected the request (Gemini HTTP ${failure.httpStatus}: ${failure.identity}).`;
   const observed = observedFailure(value);
-  return observed.code === "provider_http_invalid_request" && observed.httpStatus === 400
-    ? "The model provider rejected the request (HTTP 400: invalid_request)."
-    : null;
+  if (observed.code === "provider_http_invalid_request" && observed.httpStatus === 400) {
+    return "The model provider rejected the request (HTTP 400: invalid_request).";
+  }
+  const status = `HTTP ${observed.httpStatus}`;
+  switch (observed.code) {
+    case "provider_auth_rejected":
+      return `The model provider rejected the configured credentials (${status}). Ask an administrator to check the provider key.`;
+    case "provider_quota_exhausted":
+      return `The model provider reports that the account has no remaining quota or balance (${status}). Ask an administrator to check the provider account.`;
+    case "provider_rate_limited":
+      return `The model provider is limiting requests (${status}) and the retries did not succeed. Wait a minute before trying again.`;
+    case "provider_server_error":
+      return `The model provider returned a server error (${status}) and the retries did not succeed. Try again later.`;
+    default:
+      return null;
+  }
 }
 
 export function observedFailureCode(value: unknown): ObservedFailureCode {
@@ -305,7 +318,7 @@ const deadlineCodes = new Set([
   "embedding_request_timed_out", "rerank_request_timed_out", "decision_request_timed_out"
 ]);
 
-export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<{
+type ObservedFailure = Readonly<{
   code: ObservedFailureCode;
   httpStatus?: number;
   reason: FailureReason;
@@ -313,7 +326,45 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
   timeout_ms?: number;
   provider_status?: ProviderStatus;
   cause?: ProviderCause;
-}> {
+}>;
+
+const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]);
+type ProviderHttpFailureClass = "provider_auth_rejected" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_server_error";
+
+export function isProviderHttpFailureClass(code: string): code is ProviderHttpFailureClass {
+  return providerHttpFailureClasses.has(code);
+}
+
+/** The class of a provider HTTP failure no more specific code describes. It
+ * comes from the numeric status alone, or from a reviewed body identity a
+ * transport retained (`quotaExhausted`, or `keyRejected` for Google's 400 key
+ * rejection); never from body text. A generic non-retryable body rejection
+ * keeps its code except for quota. */
+function providerHttpFailureClass(code: ObservedFailureCode, status: number | undefined,
+  quotaExhausted: boolean, keyRejected: boolean): ProviderHttpFailureClass | null {
+  if (status === undefined) return null;
+  if (code === "provider_response_not_retryable") return quotaExhausted || status === 402 ? "provider_quota_exhausted" : null;
+  if (code !== "unknown") return null;
+  return keyRejected || status === 401 || status === 403 ? "provider_auth_rejected"
+    : status === 402 ? "provider_quota_exhausted"
+    : status === 429 ? "provider_rate_limited"
+    : status >= 500 && status <= 599 ? "provider_server_error" : null;
+}
+
+/** The content-free failure identity. A provider HTTP failure without a more
+ * specific code is named by its class; the reason is unchanged (`http`). */
+export function observedFailure(value: unknown, signal?: AbortSignal): ObservedFailure {
+  return classifyFailure(value, signal, true);
+}
+
+/** The identity as it was before provider HTTP classes existed. Consumers
+ * whose decisions branch on an unclassified (`unknown`) code use it, so a
+ * class never changes their decision. */
+export function observedFailureWithoutHttpClass(value: unknown, signal?: AbortSignal): ObservedFailure {
+  return classifyFailure(value, signal, false);
+}
+
+function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpClass: boolean): ObservedFailure {
   try {
     const deadline = isProviderDeadlineExceededError(value) ? value
       : signal?.aborted && isProviderDeadlineExceededError(signal.reason) ? signal.reason : null;
@@ -367,7 +418,9 @@ export function observedFailure(value: unknown, signal?: AbortSignal): Readonly<
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
         ? "policy" : "unknown";
-    return { code, reason, ...(status === undefined ? {} : { httpStatus: status }),
+    const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,
+      value instanceof GeminiHttpError && ownValue(value, "keyRejected") === true) : null;
+    return { code: classified ?? code, reason, ...(status === undefined ? {} : { httpStatus: status }),
       ...(providerStatus === undefined ? {} : { provider_status: providerStatus }),
       ...(cause === undefined ? {} : { cause }) };
   } catch { return { code: "unknown", reason: "unknown" }; }

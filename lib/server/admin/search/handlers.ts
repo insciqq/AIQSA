@@ -3,6 +3,8 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../../http/requestBody";
+import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import { SearchConfigurationError } from "../../search/configuration";
 import {
   AdminSearchServiceError,
@@ -63,7 +65,8 @@ async function safely(operation: () => Promise<Response>): Promise<Response> {
     if (error instanceof SearchConfigurationError) {
       return Response.json({ error: error.code }, { status: 400 });
     }
-    console.error("search_admin_action_failed");
+    logEvent("service_operation", { subsystem: "admin", stage: "process", outcome: "failed",
+      code: "search_admin_action_failed", prisma_code: databaseFailureCode(error) });
     return Response.json({ error: "search_admin_action_failed" }, { status: 500 });
   }
 }

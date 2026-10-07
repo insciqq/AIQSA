@@ -26,7 +26,8 @@ export function beginStorageOperation(stage: LifecycleStage) {
       duration_ms: performance.now() - started,
       ...(outcome === "failed" ? {
         code: typeof code === "string" ? code : "unknown",
-        httpStatus: typeof httpStatus === "number" ? httpStatus : undefined
+        httpStatus: typeof httpStatus === "number" ? httpStatus : undefined,
+        error
       } : {})
     });
   });

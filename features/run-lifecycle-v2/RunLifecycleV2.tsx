@@ -3,6 +3,8 @@
 import { chatPdfRouteDescription, CHAT_PDF_LOCAL_TEXT_MULTIPLE_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, CHAT_PDF_LONG_DOCUMENT_NOTICE,
   type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
+import { runReferenceLabel } from "@/lib/contracts/runReference";
 import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/contracts/runs";
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MarkdownCitationRenderer, MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
@@ -111,6 +113,53 @@ function RunCancelledV2({ onRegenerate }: { onRegenerate?(): void }) {
   );
 }
 
+/**
+ * The failed answer's error reference: the first characters of its run id,
+ * with a copy action for the whole id that an administrator looks up in
+ * Health. Only this authenticated view renders it; shares and exports carry
+ * no run identity.
+ */
+function RunErrorReferenceV2({ runId }: { runId: string }) {
+  const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
+  const resetRef = useRef<number | null>(null);
+  const sequenceRef = useRef(0);
+
+  useEffect(() => () => {
+    sequenceRef.current += 1;
+    if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+  }, []);
+
+  async function copyReference() {
+    const sequence = ++sequenceRef.current;
+    if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+    try {
+      await writeClipboardText(runId);
+      if (sequence !== sequenceRef.current) return;
+      setCopy("copied");
+      resetRef.current = window.setTimeout(() => setCopy("idle"), 2_000);
+    } catch {
+      if (sequence === sequenceRef.current) setCopy("failed");
+    }
+  }
+
+  return (
+    <span className="v2-run-error-run-reference" data-testid="run-error-reference">
+      <span>Reference: <code>{runReferenceLabel(runId)}</code></span>
+      <UiV2IconButton
+        icon={copy === "copied" ? "check" : "copy"}
+        label="Copy error reference"
+        onClick={() => void copyReference()}
+      />
+      <span className="v2-sr-only" role="status">{copy === "copied" ? "Error reference copied" : ""}</span>
+      {copy === "failed" ? (
+        <span className="v2-run-error-copy-failed" role="alert">
+          Could not copy. Full reference: <code>{runId}</code>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function RunErrorV2({
   onRegenerate,
   onRetry,
@@ -140,7 +189,7 @@ function RunErrorV2({
     isMcpAutoDiscoveryFailureCode(presentation.failure.code);
   // The card is a neutral surface: an alert glyph plus a plain-language
   // heading and explanation; the primary recovery action comes first and the
-  // safe error code sits quietly on the right as the support reference.
+  // safe error code and the copyable error reference sit quietly on the right.
   return (
     <section
       className="v2-run-error-card"
@@ -174,9 +223,10 @@ function RunErrorV2({
         {!pdfFailed && !autoDiscoveryUnavailable && !synthesisFailed && !recoverable && onSelectModel ? (
           <UiV2Button onClick={onSelectModel}>Choose model…</UiV2Button>
         ) : null}
-        {presentation.failure.code ? (
+        {presentation.failure.code || presentation.runId ? (
           <span className="v2-run-error-reference">
-            Support reference <code>{presentation.failure.code}</code>
+            {presentation.failure.code ? <span>Code <code>{presentation.failure.code}</code></span> : null}
+            {presentation.runId ? <RunErrorReferenceV2 key={presentation.runId} runId={presentation.runId} /> : null}
           </span>
         ) : null}
       </div>

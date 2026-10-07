@@ -217,6 +217,7 @@ export function createImportChatsHandler(deps: ImportChatsHandlerDeps) {
         results.push(await deps.importChat(auth.userId, decoded.value));
       } catch (error) {
         logEvent("service_operation", {
+          error,
           code: "chat_import_failed",
           outcome: "failed",
           prisma_code: databaseFailureCode(error),

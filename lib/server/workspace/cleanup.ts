@@ -168,7 +168,7 @@ export async function runWorkspaceMaintenance(input: Parameters<typeof runWorksp
       reportSubsystemHealthy("workspace", "cleanup");
       return result;
     } catch (error) {
-      reportSubsystemFailure({ subsystem: "workspace", stage: "cleanup", ...workspaceLifecycleFailure(error), action: "retry" });
+      reportSubsystemFailure({ error, subsystem: "workspace", stage: "cleanup", ...workspaceLifecycleFailure(error), action: "retry" });
       throw error;
     }
   });
@@ -272,7 +272,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       }
       await input.runtime.retireSessionOperation(runtimeInput);
     } catch (error) {
-      logEvent("job_attempt", { subsystem: "workspace", stage: "recovery", ...workspaceLifecycleFailure(error), action: "wait" });
+      logEvent("job_attempt", { error, subsystem: "workspace", stage: "recovery", ...workspaceLifecycleFailure(error), action: "wait" });
       continue;
     }
     const stoppedVm = session.runtimeSandboxId !== null;
@@ -522,7 +522,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       }).catch(retainDatabaseFailure));
       if (settled) idleStopped += 1;
     } catch (error) {
-      logEvent("job_attempt", { subsystem: "workspace", stage: "quiesce", ...workspaceLifecycleFailure(error), action: "fail" });
+      logEvent("job_attempt", { error, subsystem: "workspace", stage: "quiesce", ...workspaceLifecycleFailure(error), action: "fail" });
       await persistWorkspaceGuard("fail", async () => (await input.prisma.workspaceSession.updateMany({
         data: {
           lastErrorCode: "workspace_idle_stop_failed",
@@ -648,7 +648,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
         }).catch(retainDatabaseFailure));
         if (completed) cleanupCompleted += 1;
       } catch (error) {
-        logEvent("job_attempt", { subsystem: "workspace", stage: "cleanup", ...workspaceLifecycleFailure(error), action: "retry" });
+        logEvent("job_attempt", { error, subsystem: "workspace", stage: "cleanup", ...workspaceLifecycleFailure(error), action: "retry" });
         try {
           const retryAt = await input.prisma.$transaction(async (tx) => {
             const session = await lockWorkspaceSession(tx, claim.workspaceSessionId);

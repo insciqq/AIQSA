@@ -24,7 +24,8 @@ export type AuthMailer = {
 
 export type AuthMailDelivery =
   | { kind: "accepted" }
-  | { kind: "failed"; error: Error }
+  /** A closed dispatcher code; never a thrown error, message or recipient. */
+  | { kind: "failed"; code: string }
   | { kind: "unavailable" };
 
 export function createDispatcherAuthMailer(dispatcher: EmailDispatcher): AuthMailer {
@@ -54,11 +55,8 @@ export async function deliverAuthEmail(
     const code = result.kind === "ambiguous_after_data"
       ? "ambiguous_after_data"
       : result.code;
-    return { error: new Error(code), kind: "failed" };
-  } catch (error) {
-    return {
-      error: error instanceof Error ? error : new Error("email_delivery_failed"),
-      kind: "failed"
-    };
+    return { code, kind: "failed" };
+  } catch {
+    return { code: "email_delivery_failed", kind: "failed" };
   }
 }

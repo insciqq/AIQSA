@@ -207,8 +207,8 @@ async function main() {
 }
 
 main()
-  .catch(() => {
-    logEvent("runtime_lifecycle", { subsystem: "database", stage: "cleanup", outcome: "failed", code: "maintenance_failed", action: "stop" });
+  .catch((error: unknown) => {
+    logEvent("runtime_lifecycle", { error, subsystem: "database", stage: "cleanup", outcome: "failed", code: "maintenance_failed", action: "stop" });
     process.exitCode = 1;
   })
   .finally(async () => {

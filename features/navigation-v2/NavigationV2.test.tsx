@@ -17,6 +17,14 @@ import {
   ReadingRoomShellV2
 } from "./NavigationV2";
 
+const attentionSummary = vi.hoisted(() => ({
+  current: null as null | { bad: number; checkedAt: string; health: number | null; unavailable: []; warn: number }
+}));
+vi.mock("./useAdminAttentionSummary", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./useAdminAttentionSummary")>(),
+  useAdminAttentionSummary: (enabled: boolean) => enabled ? attentionSummary.current : null
+}));
+
 const now = new Date("2026-08-13T12:00:00.000Z");
 const chats: ChatNavigationSummaryWire[] = [
   {
@@ -93,6 +101,24 @@ describe("Navigation v2", () => {
     resetWorkspaceStoreForTest();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    attentionSummary.current = null;
+  });
+
+  it("puts an administrator's attention dot on the closed mobile drawer trigger", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
+    attentionSummary.current = { bad: 2, checkedAt: "2026-10-07T12:00:00.000Z", health: 2, unavailable: [], warn: 0 };
+    const view = render(<ReadingRoomShellV2 adminEntryVisible onNewChat={vi.fn()} onSelectChat={vi.fn()}>
+      <main>Conversation</main>
+    </ReadingRoomShellV2>);
+    const trigger = screen.getByRole("button", { name: "Open sidebar" });
+    expect(trigger).toHaveAttribute("data-admin-attention", "bad");
+    expect(trigger).toHaveAccessibleDescription("Control Center: 2 items need attention");
+    view.unmount();
+
+    render(<ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}><main>Conversation</main></ReadingRoomShellV2>);
+    const viewer = screen.getByRole("button", { name: "Open sidebar" });
+    expect(viewer).not.toHaveAttribute("data-admin-attention");
+    expect(viewer).not.toHaveAttribute("aria-describedby");
   });
 
   it.each(["Chats", "New chat", "Projects", "shortcut", "chat"])("defers the entire %s exit until Studio releases it", (destination) => {

@@ -12,9 +12,10 @@ import {
 } from "./adminSections";
 
 describe("adminSections", () => {
-  it("lists Overview first and groups the other destinations as Models, People and Platform", () => {
+  it("lists Overview and Health first and groups the other destinations as Models, People and Platform", () => {
     expect(adminSections.map(({ group, id, label }) => ({ group, id, label }))).toEqual([
       { group: null, id: "overview", label: "Overview" },
+      { group: null, id: "health", label: "Health" },
       { group: "models", id: "providers", label: "Providers" },
       { group: "models", id: "roles", label: "Defaults & roles" },
       { group: "models", id: "search", label: "Search" },

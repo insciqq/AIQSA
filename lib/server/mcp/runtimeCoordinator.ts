@@ -379,7 +379,7 @@ export class McpRuntimeCoordinator {
   async #close(generationId: string, operation: () => Promise<void>): Promise<void> {
     try { await operation(); }
     catch (error) {
-      logEvent("runtime_lifecycle", { subsystem: "mcp", generation_id: generationId, stage: "release", outcome: "failed",
+      logEvent("runtime_lifecycle", { error, subsystem: "mcp", generation_id: generationId, stage: "release", outcome: "failed",
         code: observedFailure(error).code, action: "wait" });
     }
   }
@@ -764,7 +764,7 @@ export class McpRuntimeCoordinator {
       }
       reportSubsystemHealthy("mcp", "reconcile");
     } catch (error) {
-      reportSubsystemFailure({ subsystem: "mcp", stage: "reconcile", code: observedFailure(error).code,
+      reportSubsystemFailure({ error, subsystem: "mcp", stage: "reconcile", code: observedFailure(error).code,
         prisma_code: databaseFailureCode(error), action: "retry" });
       throw error;
     }

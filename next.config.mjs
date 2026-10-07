@@ -30,7 +30,11 @@ const nextConfig = {
     // content inspection, and lower operator limits remain authoritative.
     proxyClientMaxBodySize: 67_108_864 + 8_388_608,
     // Turbopack can evict compiler memory after persisting it to disk.
-    turbopackFileSystemCacheForDev: true
+    turbopackFileSystemCacheForDev: true,
+    // Server chunk maps let error sites name application lines; the build
+    // packs them beside the standalone chunks (scripts/pack-server-source-maps.cjs).
+    // Node does not apply them at runtime, so stacks cost nothing extra.
+    serverSourceMaps: true
   },
   output: "standalone",
   // Native sharp loads libvips through the dynamic linker. JS tracing retains

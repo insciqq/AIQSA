@@ -15,6 +15,7 @@ import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCaptu
 import { ConversationImageError, conversationImageInput, type ConversationImageSource, type ConversationVisionImage } from "./conversationImages";
 import { createKnowledgeImageObservation, type KnowledgeImageObservationStore } from "./knowledgeObservation";
 import { authorizeVisionPlan, createVisionAnalysisStore, VisionAnalysisError, visionFailure, type VisionExecutionHooks } from "./store";
+import { observeVisionAttempt } from "./attemptObservation";
 
 const VISION_ERRORS = new Set([
   "vision_model_absent", "vision_model_unavailable", "vision_analysis_input_invalid", "vision_analysis_access_denied",
@@ -158,7 +159,13 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
       const workspace = context.request.workspace;
       if (call.name !== ANALYZE_IMAGE_TOOL_NAME || !context.runId || !context.userId || !context.persistedToolCallId)
         return visionFailure(call, "vision_analysis_access_denied");
-      if (!plan?.available) return visionFailure(call, plan?.code ?? "vision_model_unavailable");
+      const startedAt = performance.now();
+      if (!plan?.available) {
+        const code = plan?.code ?? "vision_model_unavailable";
+        observeVisionAttempt({ stage: "execution", startedAt, code });
+        return visionFailure(call, code);
+      }
+      const observe = (code: string | undefined) => observeVisionAttempt({ stage: "execution", startedAt, code, snapshot: plan.snapshot });
       const c = { runId: context.runId, userId: context.userId, toolCallId: context.persistedToolCallId,
         chatId: context.request.chatId, call, requestHash: hashCanonicalMcpValue(call.arguments) };
       let images: readonly (WorkspaceCapturedImage | ConversationVisionImage)[] = [];
@@ -175,6 +182,7 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
       try {
         let result: ToolExecutionResult;
         let unknown = false;
+        let failureCode: string | undefined;
         try {
           bounded.throwIfAborted();
           const restored = await store.restore(c);
@@ -235,18 +243,28 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           const code = signal?.aborted ? "vision_analysis_cancelled" : bounded.aborted ? "vision_analysis_timeout" :
             VISION_ERRORS.has(observed) ? observed : dispatched ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
           unknown = dispatched && !providerCompleted;
+          failureCode = code;
           result = visionFailure(call, code, unknown, error instanceof VisionContextLimitError && code === error.code ? { ...error.detail,
             hint: "The estimated input exceeds the Vision model context window. Use fewer images, or crop or resize them, before retrying." }
             : CHAT_IMAGE_HINTS[code] ? { hint: CHAT_IMAGE_HINTS[code] } : undefined);
         }
-        if (!dispatched) return result;
+        if (!dispatched) {
+          observe(failureCode);
+          return result;
+        }
         // This transaction is keyed by the durable attempt and has one winner.
         // Retry only the identical local settlement, including received usage.
-        try { return await store.settle(c, result, usage, unknown, hooks, bounded); }
+        let settled: ToolExecutionResult;
+        try { settled = await store.settle(c, result, usage, unknown, hooks, bounded); }
         catch {
-          try { return await store.settle(c, result, usage, unknown, hooks, bounded); }
-          catch { throw new VisionAnalysisError("vision_analysis_settlement_failed"); }
+          try { settled = await store.settle(c, result, usage, unknown, hooks, bounded); }
+          catch {
+            observe("vision_analysis_settlement_failed");
+            throw new VisionAnalysisError("vision_analysis_settlement_failed");
+          }
         }
+        observe(failureCode);
+        return settled;
       } finally {
         for (const image of images) image.dispose();
         if (reference) await captures.release(reference).catch(() => undefined);

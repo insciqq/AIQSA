@@ -1,4 +1,4 @@
-import { observedFailure } from "../providers/providerObservability";
+import { observedFailureWithoutHttpClass } from "../providers/providerObservability";
 import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
 
 const failures = {
@@ -22,9 +22,10 @@ export function runSettlementFailure(error: unknown): { code: RunSettlementError
   return error instanceof RunSettlementError ? { code: error.code, message: failures[error.stage].message } : null;
 }
 
-/** Preserve already typed authority/cancellation causes at a local callback. */
+/** Preserve already typed authority/cancellation causes at a local callback.
+ * A status-only provider HTTP class is not a typed cause here. */
 export function localSettlementError(stage: RunSettlementError["stage"], cause: unknown): unknown {
-  const failure = observedFailure(cause);
+  const failure = observedFailureWithoutHttpClass(cause);
   return cause instanceof RunSettlementError || failure.reason === "cancelled" ||
     failure.code !== "unknown" && failure.reason !== "deadline" && failure.reason !== "network"
     ? cause : new RunSettlementError(stage, cause);

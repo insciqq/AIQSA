@@ -14,6 +14,7 @@ import {
 } from
   "../lib/server/knowledge/searchWorkerHeartbeat";
 import { createKnowledgeOpenSearchTransport } from "../lib/server/search/opensearch/transport";
+import { startTelemetryRecorder } from "../lib/server/telemetry/recorder";
 
 const prisma = new PrismaClient();
 const once = process.argv.includes("--once");
@@ -34,6 +35,8 @@ if (rebuild && retryFailed || !Number.isSafeInteger(limit) || limit < 1 || limit
   !Number.isSafeInteger(intervalMs) || intervalMs < 250 || intervalMs > 60_000) {
   throw new Error("knowledge_search_worker_configuration_invalid");
 }
+// Only the long-running projection loop records telemetry.
+const telemetry = once || drain || rebuild || retryFailed ? null : startTelemetryRecorder({ prisma });
 
 let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -93,5 +96,6 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    await telemetry?.stop();
     await prisma.$disconnect();
   });

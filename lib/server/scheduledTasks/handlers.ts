@@ -63,6 +63,7 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
     } catch (error) {
       if (error instanceof ScheduledTaskError) return failure(error.code);
       logEvent("service_operation", {
+        error,
         subsystem: "configuration", stage, outcome: "failed", code: "scheduled_tasks_unavailable", prisma_code: databaseFailureCode(error)
       });
       return failure("scheduled_tasks_unavailable");

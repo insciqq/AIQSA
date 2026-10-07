@@ -364,6 +364,24 @@ div.v2-answer-process[data-live],
 .v2-run-error-reference code {
   font-family: var(--font-mono), monospace;
   font-size: 0.75rem;
+  user-select: text;
+}
+
+.v2-run-error-reference,
+.v2-run-error-run-reference {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+}
+
+.v2-run-error-run-reference {
+  gap: 0.25rem;
+}
+
+.v2-run-error-copy-failed {
+  flex-basis: 100%;
+  color: var(--v2-color-text2);
 }
 
 .v2-sr-only {
