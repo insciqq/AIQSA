@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Image, Sandbox, isInstalled } from "microsandbox";
 import { DeterministicWorkspaceRuntime } from "@/lib/server/workspace/deterministicRuntime";
 import { getWorkspaceConfig } from "@/lib/server/workspace/config";
+import { createMicrosandboxImageStore, evictUnusedWorkspaceImages } from "@/lib/server/workspace/guestImageCache";
 import { ensureBundledMicrosandboxRuntime } from "@/lib/server/workspace/microsandboxInstall";
 import { MicrosandboxWorkspaceRuntime } from "@/lib/server/workspace/microsandboxRuntime";
 import { createWorkspaceRunnerServer } from "@/lib/server/workspace/runnerServer";
@@ -25,6 +26,9 @@ async function main(): Promise<void> {
     await ensureBundledMicrosandboxRuntime();
     if (!isInstalled()) throw new Error("workspace_runtime_unavailable");
     await Sandbox.list();
+    // No request is served yet, so no guest is being created. Evicting first
+    // also frees space a newly configured guest version needs to load.
+    await evictUnusedWorkspaceImages({ imageRef: config.imageRef, store: createMicrosandboxImageStore() });
     try {
       await Image.get(config.imageRef);
     } catch {

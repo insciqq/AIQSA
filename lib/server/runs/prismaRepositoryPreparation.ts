@@ -248,10 +248,14 @@ async function reserveAcceptedWorkspaceSession(
     where: { chatId: plan.chatId }
   });
   if (existing) {
+    // A session without a guest disk adopts the admitted image, as admission
+    // chose it; a disk keeps the image it was created from. Busy states stay
+    // refused below.
+    const adoptsImage = existing.imageRef !== plan.normalized.imageRef && existing.runtimeSandboxId === null;
     if (
       existing.id !== plan.sessionId ||
       existing.sandboxName !== plan.sandboxName ||
-      existing.imageRef !== plan.normalized.imageRef ||
+      (existing.imageRef !== plan.normalized.imageRef && !adoptsImage) ||
       existing.internetEnabled !== plan.normalized.internetEnabled ||
       existing.operationOwner !== null ||
       existing.state === "FAILED" ||
@@ -282,6 +286,7 @@ async function reserveAcceptedWorkspaceSession(
     if (liveExports > 0) throw new WorkspaceRunConflictError("workspace_busy");
     await tx.workspaceSession.update({
       data: {
+        ...(adoptsImage ? { imageRef: plan.normalized.imageRef } : {}),
         operationOwner: workspaceRunOperationOwner(plan.runId),
         operationExpiresAt: null, version: { increment: 1 }
       },
