@@ -35,6 +35,8 @@ import {
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
 import { UsageLimitNoticeV2 } from "./UsageLimitNoticeV2";
+import { useComposerDictationV2 } from "./dictation/ComposerDictationV2";
+import type { CatalogDictation } from "@/lib/contracts/speechToText";
 import { SavedFilePickerV2 } from "@/features/attachments-v2/SavedFilePickerV2";
 import {
   attachmentItemBlocksSend,
@@ -341,6 +343,8 @@ export type ComposerV2Props = Readonly<{
   config: ComposerConfig | null;
   configError?: boolean;
   disabledReason?: string | null;
+  /** Voice dictation from the account catalog; absent or not configured shows no microphone. */
+  dictation?: CatalogDictation | null;
   draft: string;
   comments?: readonly PendingComposerComment[];
   /** The latest text and comments exceed the browser record bound; a reload restores the last stored copy. */
@@ -591,6 +595,7 @@ export function ComposerV2({
   config,
   configError = false,
   disabledReason = null,
+  dictation = null,
   draft,
   comments = [],
   draftTooLargeToKeep = false,
@@ -746,6 +751,7 @@ export function ComposerV2({
      edit, a disabled hint) rather than a bare "Unavailable" or the row's
      ordinary description. The "+" button itself is off while a response runs. */
   const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
+  const dictationUi = useComposerDictationV2({ blockedReason: inputBlockedReason, dictation, draft, onDraftChange, sessionKey, textareaRef });
   const artifactMenuReason = artifactReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
   const workspaceToggleReason = workspace?.loading
     ? "Checking Workspace availability…"
@@ -1463,6 +1469,7 @@ export function ComposerV2({
           </div>
         ) : null}
         {agentStatus ? <p className="v2-composer-status" role="status">{agentStatus}</p> : null}
+        {dictationUi.status}
         <div className="v2-composer-entry">
           <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
             Message
@@ -1601,6 +1608,7 @@ export function ComposerV2({
 
             <span className="v2-composer-spacer" />
             <span className="v2-composer-run-action" data-followup={followupMode || undefined}>
+              {dictationUi.control}
               <RunComposerActionV2
                 active={activeRun}
                 followup={followupMode}
