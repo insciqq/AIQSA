@@ -148,6 +148,9 @@ describe("provider diagnostics", () => {
 
   it("keeps unreviewed or look-alike HTTP failures without a transport identity", () => {
     expect(observedFailure(new GeminiHttpError(400))).toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
+    // Only the Gemini transport's own key-rejection mark counts, never a look-alike property on another error.
+    expect(observedFailure(Object.assign(new Error("x"), { httpStatus: 400, keyRejected: true })))
+      .toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
     expect(providerHttpFailureMessage(new GeminiHttpError(400))).toBeNull();
     const lookalike = Object.assign(new Error("PRIVATE_MESSAGE_CANARY"), { code: "invalid_request", httpStatus: 400 });
     expect(observedFailure(lookalike)).toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
@@ -190,7 +193,13 @@ describe("provider diagnostics", () => {
     { name: "Gemini permission", send: gemini, status: 403, code: "provider_auth_rejected", message: authMessage(403),
       body: { error: { code: 403, status: "PERMISSION_DENIED", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
     { name: "Gemini outage", send: gemini, status: 500, code: "provider_server_error", message: unavailableMessage(500),
-      body: { error: { code: 500, status: "INTERNAL", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } }
+      body: { error: { code: 500, status: "INTERNAL", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    // Google's real answer to an invalid key on the Interactions endpoint (2026-10-07): HTTP 400 with an ErrorInfo reason.
+    { name: "Gemini invalid key", send: gemini, status: 400, code: "provider_auth_rejected", message: authMessage(400),
+      body: [{ error: { code: 400, message: "API key not valid. PRIVATE_PROVIDER_MESSAGE_CANARY", status: "INVALID_ARGUMENT",
+        details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "API_KEY_INVALID", domain: "googleapis.com",
+          metadata: { service: "generativelanguage.googleapis.com" } },
+        { "@type": "type.googleapis.com/google.rpc.LocalizedMessage", locale: "en-US", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" }] } }] }
   ])("classifies a real-shaped $name response by its status, never its body text", async ({ send, status, code, message, body }) => {
     const records = capture();
     const fetchFn = observeProviderFetch(async () => Response.json(body, { status }));

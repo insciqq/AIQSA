@@ -336,15 +336,16 @@ export function isProviderHttpFailureClass(code: string): code is ProviderHttpFa
 }
 
 /** The class of a provider HTTP failure no more specific code describes. It
- * comes from the numeric status alone, or from the reviewed quota body
- * identity a transport retained (`quotaExhausted`); never from body text.
- * A generic non-retryable body rejection keeps its code except for quota. */
+ * comes from the numeric status alone, or from a reviewed body identity a
+ * transport retained (`quotaExhausted`, or `keyRejected` for Google's 400 key
+ * rejection); never from body text. A generic non-retryable body rejection
+ * keeps its code except for quota. */
 function providerHttpFailureClass(code: ObservedFailureCode, status: number | undefined,
-  quotaExhausted: boolean): ProviderHttpFailureClass | null {
+  quotaExhausted: boolean, keyRejected: boolean): ProviderHttpFailureClass | null {
   if (status === undefined) return null;
   if (code === "provider_response_not_retryable") return quotaExhausted || status === 402 ? "provider_quota_exhausted" : null;
   if (code !== "unknown") return null;
-  return status === 401 || status === 403 ? "provider_auth_rejected"
+  return keyRejected || status === 401 || status === 403 ? "provider_auth_rejected"
     : status === 402 ? "provider_quota_exhausted"
     : status === 429 ? "provider_rate_limited"
     : status >= 500 && status <= 599 ? "provider_server_error" : null;
@@ -417,7 +418,8 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
         ? "policy" : "unknown";
-    const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true) : null;
+    const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,
+      value instanceof GeminiHttpError && ownValue(value, "keyRejected") === true) : null;
     return { code: classified ?? code, reason, ...(status === undefined ? {} : { httpStatus: status }),
       ...(providerStatus === undefined ? {} : { provider_status: providerStatus }),
       ...(cause === undefined ? {} : { cause }) };
