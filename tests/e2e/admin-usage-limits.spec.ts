@@ -37,7 +37,14 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
   const overflowing = await page.evaluate(() => {
     const limit = document.documentElement.clientWidth + 0.5;
     return [...document.querySelectorAll<HTMLElement>("body *")]
-      .filter((element) => !element.closest(".sr-only") && element.getBoundingClientRect().right > limit)
+      // Content inside a visually hidden clip or a local horizontal scroller cannot widen the page.
+      .filter((element) => {
+        if (element.closest(".sr-only") || element.getBoundingClientRect().right <= limit) return false;
+        for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+          if (getComputedStyle(parent).overflowX !== "visible" && parent.getBoundingClientRect().right <= limit) return false;
+        }
+        return true;
+      })
       .slice(0, 12)
       .map((element) => `${element.tagName.toLowerCase()}${element.dataset.testid ? `[${element.dataset.testid}]` : ""}` +
         ` .${String(element.className).slice(0, 80)} right=${Math.round(element.getBoundingClientRect().right)}`);
