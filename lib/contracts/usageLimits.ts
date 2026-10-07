@@ -76,7 +76,7 @@ export type AdminUsageLimitUserRow = {
   email: string | null;
   messagesLastDay: number;
   messagesLastHour: number;
-  /** Known estimated cost in the current UTC month. */
+  /** Known estimated cost of the user's personal usage in the current UTC month (system usage excluded). */
   monthSpentMicros: number;
   override: AdminUsageUserOverride | null;
   status: string;
@@ -86,7 +86,7 @@ export type AdminUsageLimitUserRow = {
 export type AdminUsageLimits = UsageMonthPeriod & {
   groups: AdminUsageLimitGroupRow[];
   installation: UsageInstallationLimits;
-  /** Known estimated cost of every user in the current UTC month. */
+  /** Known estimated cost of every user in the current UTC month, system usage included. */
   installationSpentMicros: number;
   users: AdminUsageLimitUserRow[];
 };
@@ -128,6 +128,7 @@ export type UserUsageLimitStatus = UsageMonthPeriod & {
     perHour: number | null;
   };
   monthlyBudgetMicros: number | null;
+  /** Known estimated cost of the user's personal usage in the current UTC month. */
   monthSpentMicros: number;
 };
 
