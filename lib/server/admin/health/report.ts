@@ -288,7 +288,14 @@ function incidentLines(incident: AdminHealthIncident): string[] {
   const head = [second(incident.occurredAt), incident.level, incident.role, incident.event];
   if (incident.runId !== null) head.push(`ref ${runReferenceLabel(incident.runId)}`);
   const where = [incident.subsystem, incident.stage].filter((part): part is string => part !== null).join("/");
+  const detailText = (key: string) => {
+    const value = incident.details.find((item) => item.key === key)?.value;
+    return typeof value === "string" ? value : null;
+  };
+  const errorClass = detailText("error_class");
+  const errorSite = detailText("error_site");
   const detail = [
+    errorClass === null ? null : errorSite === null ? errorClass : `${errorClass} at ${errorSite}`,
     incident.code === null ? null : `code ${incident.code}`,
     where || null,
     incident.connectionName,
