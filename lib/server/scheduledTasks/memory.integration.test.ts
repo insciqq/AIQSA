@@ -7,7 +7,6 @@ import { MEMORY_DECAY_POLICY_VERSION } from "../../domain/memory/retrieval";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import type { AuthenticatedSession } from "../auth/requestAuth";
-import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { createPrismaMemoryFactRepository } from "../memory/persistence/facts";
 import { memorySha256 } from "../memory/persistence/lexical";
@@ -36,7 +35,6 @@ import { scheduledTaskScheduleColumns } from "./store";
  * creation itself for the frozen contract.
  */
 const users: string[] = [];
-const chats = createPrismaChatRepository();
 const sendDeps = () => ({ ...createDefaultSendMessageDeps(), allowFakeProvider: true });
 const FACT = "My preferred editor is Vim.";
 const suppressionKeyring = MemorySuppressionKeyring.parse(
@@ -49,7 +47,6 @@ function runner() {
     appBaseUrl: "http://localhost:3000",
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
     loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
-    async renameChat(input) { await chats.updateChat(input); },
     send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: deps }),
     stopRun: ({ code, message, runId, userId }) => stopModelRun(deps, { payload: { code, message }, runId, userId }),
     store: createPrismaScheduledTaskRunnerStore(prisma)

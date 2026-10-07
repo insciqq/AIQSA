@@ -192,7 +192,9 @@ describe("persisted Workspace carry-over of a scheduled task's rotation", () => 
     await prisma.scheduledTask.update({ data: { chatId: november.id }, where: { id: f.task.id } });
     await prisma.chatContinuationWorkspaceSeed.update({ data: { leaseExpiresAt: null, newChatId: november.id, status: "TRANSFERRED" },
       where: { id: result.seedId } });
-    await prisma.workspaceSession.update({ data: { expiresAt: new Date(Date.now() - 60_000) }, where: { id: f.session.id } });
+    // The old chat's disk is past its expiry; a session never expires before its last activity.
+    const expired = new Date(Date.now() - 60_000);
+    await prisma.workspaceSession.update({ data: { expiresAt: expired, lastActiveAt: expired }, where: { id: f.session.id } });
     const removeSession = vi.spyOn(f.runtime, "removeSession");
     const removed = () => removeSession.mock.calls.some(([call]) => call.sessionId === f.session.id);
 
