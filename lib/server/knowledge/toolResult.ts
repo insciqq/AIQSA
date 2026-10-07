@@ -1640,6 +1640,7 @@ export function knowledgeUsageAttributionsFromToolResult(
   return evidence.embeddingExecutions.map((execution) => ({
     modelId: execution.modelId,
     provider: execution.provider,
+    purpose: "knowledge_retrieval" as const,
     usage: {
       inputTokens: execution.inputTokens,
       totalTokens: execution.totalTokens

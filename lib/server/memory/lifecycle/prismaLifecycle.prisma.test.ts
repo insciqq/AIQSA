@@ -2491,6 +2491,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
           outputTokens: 3,
           provider: "memory-lifecycle-fixture",
           providerModelId: usageAuthority.providerModelId,
+          purpose: "memory_processing",
           totalTokens: 14,
           userId
         }

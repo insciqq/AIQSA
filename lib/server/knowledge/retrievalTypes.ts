@@ -479,5 +479,7 @@ export type KnowledgeSourceDiscoveryResult = Readonly<{
 export type KnowledgeRetrievalUsageAttribution = Readonly<{
   modelId: string;
   provider: string;
+  /** Query embeddings retrieve for the run's answer. */
+  purpose: "knowledge_retrieval";
   usage: ModelRunUsage;
 }>;

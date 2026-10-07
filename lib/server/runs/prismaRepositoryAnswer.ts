@@ -2,12 +2,14 @@ import { Prisma, type ModelRunStatus, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { normalizeTokenUsage, reportedTokenCount } from "../../domain/usage";
+import { isRunUsageAttributionPurpose } from "../../domain/usagePurpose";
 import { settleKnowledgeGrounding } from "../knowledge/evidenceRepository";
 import type { RunCompletionInput, RunRepository } from "./runRepositoryContract";
 import { activeMessageStatuses, dispatchableModelRunStatuses, isRecord, json, lockRunSettlementScope } from "./prismaRepositoryShared";
 import { appendRunOutputEvents } from "./prismaRepositoryToolLoop";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
+import { runAttributionUsageRows, runAttributionUsageWhere } from "./prismaRepositoryUsage";
 
 /** The caller owns the run lock and invokes this only for the first answer
  * publication (or ordinary terminal completion without earlier publication). */
@@ -17,25 +19,13 @@ export async function persistCompletedAnswerUsage(
   const usage = normalizeTokenUsage(input.usage);
   const attributions = input.usageAttributions?.length ? input.usageAttributions : [{
     operationCount: 1, estimatedCostMicros: input.estimatedCostMicros,
-    modelId: input.modelId, provider: input.provider, usage
+    modelId: input.modelId, provider: input.provider, purpose: "chat_answer" as const, usage
   }];
-  await tx.usageEvent.deleteMany({ where: {
-    chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, visionAnalysis: false,
-    knowledgeRelevance: false, optionalDecision: false, modelRunId: input.runId
-  } });
-  await tx.usageEvent.createMany({ data: attributions.map((attribution) => {
-    const reported = normalizeTokenUsage(attribution.usage);
-    return {
-      chatId: input.chatId, operationCount: attribution.operationCount ?? null,
-      cachedInputTokens: reported.cachedInputTokens, cacheWriteInputTokens: reported.cacheWriteInputTokens,
-      estimatedCostMicros: attribution.estimatedCostMicros ?? null, inputTokens: reported.inputTokens,
-      modelId: attribution.modelId, modelRunId: input.runId, outputTokens: reported.outputTokens,
-      provider: attribution.provider, reasoningTokens: reported.reasoningTokens, totalTokens: reported.totalTokens,
-      usageCompleteness: reported.completeness === "complete" ? "COMPLETE" as const :
-        reported.completeness === "partial" ? "PARTIAL" as const : "UNAVAILABLE" as const,
-      ...(projectId ? { projectId } : {}), userId: input.userId
-    };
-  }) });
+  // Only the run's own attribution rows are rewritten; every other purpose
+  // linked to the run keeps its receipt.
+  await tx.usageEvent.deleteMany({ where: runAttributionUsageWhere(input.runId) });
+  await tx.usageEvent.createMany({ data: runAttributionUsageRows({ chatId: input.chatId, projectId,
+    runId: input.runId, userId: input.userId }, attributions) });
   await tx.chat.update({ where: { id: input.chatId }, data: {
     totalInputTokens: { increment: usage.inputTokens ?? 0 },
     totalOutputTokens: { increment: usage.outputTokens ?? 0 },
@@ -115,8 +105,12 @@ export function createPrismaRunAnswerOperations(prismaClient: PrismaClient): Pic
         !isRecord(message.content)) throw new Error("run_answer_publication_invalid");
       const usageAttributions = snapshot.usageAttributions.map((value) => {
         if (!isRecord(value) || typeof value.provider !== "string" || typeof value.modelId !== "string" ||
-          !isRecord(value.usage)) throw new Error("run_answer_publication_invalid");
+          !isRecord(value.usage) || (value.purpose !== undefined && !isRunUsageAttributionPurpose(value.purpose))) {
+          throw new Error("run_answer_publication_invalid");
+        }
+        // Snapshots published before attributions carried a purpose hold answer usage.
         return { provider: value.provider, modelId: value.modelId,
+          purpose: isRunUsageAttributionPurpose(value.purpose) ? value.purpose : "chat_answer" as const,
           estimatedCostMicros: reportedTokenCount(value.estimatedCostMicros),
           ...(value.operationCount !== undefined ? { operationCount: reportedTokenCount(value.operationCount) } : {}),
           usage: normalizeTokenUsage(value.usage) };

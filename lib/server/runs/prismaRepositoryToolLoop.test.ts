@@ -7,6 +7,7 @@ import type { NormalizedRunRequest } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { appendRunOutputEvents, createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import { runAttributionUsageWhere } from "./prismaRepositoryUsage";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT } from "./workspaceActivityPersistence";
 import { summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository";
@@ -1501,7 +1502,7 @@ describe("Prisma context summary receipts", () => {
       $transaction: async (consume: (client: typeof tx) => Promise<unknown>) => consume(tx)
     } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const record = (receipt: Readonly<{ attempt: ContextSummaryAttempt; summary?: ContextSummary; roundIndex?: number }>,
-      attributions = [] as { modelId: string; operationCount: number; provider: string; usage: typeof usage }[]) =>
+      attributions = [] as { modelId: string; operationCount: number; provider: string; purpose: "chat_answer"; usage: typeof usage }[]) =>
       operations.recordRunUsageEvents({ chatId: "chat-1", runId: "run-1", userId: "user-1", usageAttributions: attributions,
         contextSummaryReceipt: { attempt: receipt.attempt, compaction, roundIndex: receipt.roundIndex === undefined ? 1 : receipt.roundIndex,
           ...(receipt.summary ? { summary: receipt.summary } : {}) } });
@@ -1533,10 +1534,12 @@ describe("Prisma context summary receipts", () => {
     expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ phase: "provider_running", roundIndex: 1,
       providerContinuation: INITIAL_PROVIDER_CONTINUATION, contextCompaction: { summaryAttempts: [attempt("claim")] } });
     await expect(store.record({ attempt: attempt("committed"), summary },
-      [{ modelId: "answer-model", operationCount: 1, provider: "openai", usage }])).resolves.toBe(true);
+      [{ modelId: "answer-model", operationCount: 1, provider: "openai", purpose: "chat_answer", usage }])).resolves.toBe(true);
     expect(parseToolLoopCheckpoint(store.run.toolLoopState)?.contextCompaction)
       .toMatchObject({ summary, summaryAttempts: [attempt("committed")] });
-    expect(store.usageRows).toEqual([expect.objectContaining({ inputTokens: 900, modelId: "answer-model", totalTokens: 940 })]);
+    expect(store.usageRows).toEqual([expect.objectContaining({ inputTokens: 900, modelId: "answer-model", purpose: "chat_answer",
+      totalTokens: 940 })]);
+    expect(store.tx.usageEvent.deleteMany).toHaveBeenCalledWith({ where: runAttributionUsageWhere("run-1") });
     // The round's begin adopts the receipts instead of conflicting with them.
     await expect(store.operations.beginToolLoopProviderRound({
       contextCompaction: { ...compaction, measurement: { ...compaction.measurement, outcome: "already_fits" }, summary,
@@ -1553,7 +1556,7 @@ describe("Prisma context summary receipts", () => {
     store.run.status = "cancelled";
     await expect(store.record({ attempt: { ...attempt("claim"), attempt: 2, id: `csa1_${"2".repeat(32)}` } })).resolves.toBe(false);
     await expect(store.record({ attempt: attempt("unknown") },
-      [{ modelId: "answer-model", operationCount: 1, provider: "openai", usage }])).resolves.toBe(true);
+      [{ modelId: "answer-model", operationCount: 1, provider: "openai", purpose: "chat_answer", usage }])).resolves.toBe(true);
     expect(parseToolLoopCheckpoint(store.run.toolLoopState)?.contextCompaction?.summaryAttempts).toEqual([attempt("unknown")]);
   });
 
@@ -1574,7 +1577,7 @@ describe("Prisma context summary receipts", () => {
     expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ phase: "provider_running", providerContinuation: null,
       roundIndex: 0, contextCompaction: { summaryAttempts: [attempt("claim")] } });
     await expect(store.record({ attempt: attempt("committed"), roundIndex: 0, summary },
-      [{ modelId: "answer-model", operationCount: 1, provider: "openai", usage }])).resolves.toBe(true);
+      [{ modelId: "answer-model", operationCount: 1, provider: "openai", purpose: "chat_answer", usage }])).resolves.toBe(true);
     expect(parseToolLoopCheckpoint(store.run.toolLoopState)?.contextCompaction).toMatchObject({ summary,
       summaryAttempts: [attempt("committed")] });
   });

@@ -56,8 +56,8 @@ describe.each(nonRunPurposes)("optional decision durable receipt: %s", purpose =
       const restarted = createOptionalDecisionRepository(prisma);
       expect(await restarted.start(owner, hash, snapshot)).toEqual({ kind: "replay", answers: null });
       expect(await prisma.usageEvent.findFirstOrThrow({ where: { userId: owner.userId } })).toMatchObject({
-        optionalDecision: true, usageCompleteness: "UNAVAILABLE", totalTokens: null, estimatedCostMicros: null,
-        modelRunId: null, chatId: null, providerModelId: "fixture-model"
+        optionalDecision: true, purpose: "skill_selection", usageCompleteness: "UNAVAILABLE", totalTokens: null,
+        estimatedCostMicros: null, modelRunId: null, chatId: null, providerModelId: "fixture-model"
       });
       expect(await prisma.chat.count({ where: { userId: owner.userId } })).toBe(0);
       expect(await prisma.modelRun.count({ where: { userId: owner.userId } })).toBe(0);
@@ -78,7 +78,7 @@ describe.each(nonRunPurposes)("optional decision durable receipt: %s", purpose =
       expect(await repo.start(owner, "b".repeat(64), snapshot)).toEqual({ kind: "replay", answers: null });
       expect(await prisma.usageEvent.count({ where: { userId: owner.userId } })).toBe(1);
       expect(await prisma.usageEvent.findFirstOrThrow({ where: { userId: owner.userId } })).toMatchObject({
-        inputTokens: 20, outputTokens: 4, totalTokens: 24, estimatedCostMicros: 10, usageCompleteness: "COMPLETE"
+        purpose: "skill_selection", inputTokens: 20, outputTokens: 4, totalTokens: 24, estimatedCostMicros: 10, usageCompleteness: "COMPLETE"
       });
       await expect(prisma.optionalDecisionAttempt.update({ where: { id: claim.id }, data: { inputHash: "c".repeat(64) } })).rejects.toThrow();
       await expect(prisma.optionalDecisionAttempt.update({ where: { id: claim.id }, data: { answers: {} } })).rejects.toThrow();

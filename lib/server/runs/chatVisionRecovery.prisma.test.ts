@@ -113,7 +113,8 @@ async function createChatVisionRun() {
   const roundUsage = normalizeTokenUsage({ inputTokens: 5, outputTokens: 3, totalTokens: 8 });
   await expect(repository.recordRunUsageEvents({ chatId: chat.id, runId, userId,
     answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage: roundUsage },
-    usageAttributions: [{ modelId: "chat-vision-text-model", provider: "openai", usage: roundUsage }] })).resolves.toBe(true);
+    usageAttributions: [{ modelId: "chat-vision-text-model", provider: "openai", purpose: "chat_answer", usage: roundUsage }] }))
+    .resolves.toBe(true);
   const batch = await repository.persistToolLoopCallBatch({
     calls: [{ arguments: callArguments, ordinal: 0, providerCallId: callId, toolName: "analyze_image" }],
     providerContinuation: { providerResponseId: "response-chat-vision-1", providerToolMessages: [{

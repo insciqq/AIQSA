@@ -61,7 +61,7 @@ test.beforeAll(async () => {
     await prisma.usageEvent.create({ data: {
       chatId: randomUUID(), createdAt: new Date(Math.max(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1), now.getTime() - 60_000)),
       estimatedCostMicros: person.spend, inputTokens: 1_000, modelId: "gpt-5.5", outputTokens: 100, provider: "openai",
-      totalTokens: 1_100, usageCompleteness: "COMPLETE", userId: person.id
+      purpose: "chat_answer", totalTokens: 1_100, usageCompleteness: "COMPLETE", userId: person.id
     } });
   }
 });

@@ -603,7 +603,8 @@ describe("durable Agent authority and accounting", () => {
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       const admitted = results.find((result) => result.status === "fulfilled") as PromiseFulfilledResult<string>;
       await run.store.settleProvider(admitted.value, "COMPLETE", { inputTokens: 7, outputTokens: 2, totalTokens: 9 });
-      expect((await run.store.usage())[0]).toMatchObject({ modelId: "search-fixture", operationCount: 1, usage: { totalTokens: 9 } });
+      expect((await run.store.usage())[0]).toMatchObject({ modelId: "search-fixture", operationCount: 1, purpose: "web_search",
+        usage: { totalTokens: 9 } });
       const continuation = await run.store.reserveProvider(100, { kind: "aiqsa_search", optionId: "source",
         invocationId: results[0]!.status === "fulfilled" ? "a" : "b", maxCalls: 1 });
       await run.store.revoke(false);
@@ -632,6 +633,8 @@ describe("durable Agent authority and accounting", () => {
       await run.store.settleProvider(generation, "COMPLETE", { inputTokens: 10, outputTokens: 2, totalTokens: 12 });
       await expect(run.store.reserveProvider(200)).resolves.toEqual(expect.any(String));
       expect((await run.store.usage()).reduce((sum, item) => sum + (item.operationCount ?? 0), 0)).toBe(3);
+      // Generation is answer usage; the native Search it made is Search usage.
+      expect((await run.store.usage()).map((item) => item.purpose).sort()).toEqual(["chat_answer", "chat_answer", "web_search"]);
     } finally { await f.dispose(); }
   });
 
@@ -645,7 +648,7 @@ describe("durable Agent authority and accounting", () => {
         await lockRunSettlementScope(tx, run.id);
         const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
         checkpoint = repository.recordRunUsageEvents({ runId: run.id, chatId: run.chatId, userId: f.userId,
-          usageAttributions: [{ provider: "fake", modelId: "fixture", operationCount: 1,
+          usageAttributions: [{ provider: "fake", modelId: "fixture", operationCount: 1, purpose: "chat_answer",
             usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 } }] });
         void checkpoint.catch(() => undefined);
         // Wait for the real competing writer to reach this transaction's lock,

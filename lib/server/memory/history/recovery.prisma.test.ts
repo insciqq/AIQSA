@@ -461,7 +461,7 @@ describe("history calls left unsettled by an earlier release", () => {
     const { call, f } = await orphan("RUNNING", guard === "role" ? { role: "MEMORY_STATEMENT_CLASSIFY" }
       : guard === "leased" ? { end: "CLAIMED" } : {});
     if (guard === "receipt") await prisma.usageEvent.create({ data: {
-      memoryExecutionBindingId: call.id, modelId: providerAuthority.providerModelId,
+      memoryExecutionBindingId: call.id, modelId: providerAuthority.providerModelId, purpose: "memory_processing",
       provider: "openai_compatible", providerModelId: providerAuthority.providerModelId, userId: f.userId
     } });
     if (guard === "response" || guard === "output") await prisma.memoryExecutionBinding.update({
