@@ -356,4 +356,18 @@ describe("durable conversational images", () => {
     expect(await f.db.usageEvent.count({ where })).toBe(0);
     expect(await f.db.attachment.count({ where })).toBe(0);
   }));
+
+  it("accounts a completed response whose image is rejected once and never re-dispatches it", async () => fixture(async (f) => {
+    const { call, context } = await f.call();
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ data: [],
+      usage: { input_tokens: 3, output_tokens: 11, total_tokens: 14, cost: 0.04 } }));
+    const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    await expect(service.execute(call, context)).rejects.toThrow("image_output_missing");
+    const where = { imageToolCallId: context.persistedToolCallId! };
+    expect(await f.db.usageEvent.findMany({ where })).toEqual([expect.objectContaining({ imageGeneration: true, modelRunId: f.runId,
+      purpose: "image_generation", inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: 40_000 })]);
+    await expect(service.execute(call, context)).rejects.toThrow("image_dispatch_claimed");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(await f.db.attachment.count({ where })).toBe(0);
+  }));
 });

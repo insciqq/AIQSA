@@ -84,11 +84,21 @@ export type EmbeddingErrorCode =
   | "embedding_response_too_large"
   | "embedding_response_vector_invalid";
 
+/** True when a usage object holds anything the provider reported. */
+function embeddingUsageReported(usage: EmbeddingUsage | null | undefined): usage is EmbeddingUsage {
+  return Boolean(usage) && (usage!.inputTokens !== null || usage!.totalTokens !== null ||
+    usage!.costUsd !== null && usage!.costUsd !== undefined);
+}
+
 export class EmbeddingAdapterError extends Error {
   readonly httpStatus: number | null;
   readonly providerRequestCount: number | null;
   readonly providerRequestRoutes: readonly (string | null)[] | null;
   readonly retryAfterMs: number | null;
+  /** What a response the adapter then rejected (invalid vectors, a wrong
+   * model) reported, so the caller can account the paid call; null when no
+   * response reported usage. Never use its vectors. */
+  readonly usage: EmbeddingUsage | null;
 
   constructor(
     readonly code: EmbeddingErrorCode,
@@ -97,10 +107,12 @@ export class EmbeddingAdapterError extends Error {
       providerRequestCount?: number;
       providerRequestRoutes?: readonly (string | null)[];
       retryAfterMs?: number | null;
+      usage?: EmbeddingUsage | null;
     }> = {}
   ) {
     super(code);
     this.name = "EmbeddingAdapterError";
+    this.usage = embeddingUsageReported(options.usage) ? Object.freeze({ ...options.usage }) : null;
     this.httpStatus = Number.isSafeInteger(options.httpStatus) &&
       Number(options.httpStatus) >= 100 && Number(options.httpStatus) <= 599
       ? Number(options.httpStatus)
@@ -273,6 +285,27 @@ function responseVectors(
 }
 
 function responseBody(
+  value: unknown,
+  expectedCount: number,
+  model: ProviderModelConfiguration,
+  requestId: string | null
+): EmbeddingResult {
+  // A rejected response keeps the usage it reported for accounting.
+  let reported: EmbeddingUsage | null = null;
+  try {
+    reported = isRecord(value) ? responseUsage(value.usage) : null;
+  } catch { /* Malformed usage is no accounting evidence. */ }
+  try {
+    return acceptedResponseBody(value, expectedCount, model, requestId);
+  } catch (error) {
+    if (error instanceof EmbeddingAdapterError && embeddingUsageReported(reported)) {
+      throw new EmbeddingAdapterError(error.code, { usage: reported });
+    }
+    throw error;
+  }
+}
+
+function acceptedResponseBody(
   value: unknown,
   expectedCount: number,
   model: ProviderModelConfiguration,
@@ -534,7 +567,8 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
               ...(error.httpStatus !== null ? { httpStatus: error.httpStatus } : {}),
               providerRequestCount: providerRequestRoutes.length,
               providerRequestRoutes,
-              retryAfterMs: error.retryAfterMs
+              retryAfterMs: error.retryAfterMs,
+              usage: error.usage
             });
           }
           if (error instanceof ProviderResponseTooLargeError) {

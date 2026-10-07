@@ -163,6 +163,17 @@ describe("image adapters", () => {
     expect(result.bytes).toEqual(png);
     expect(result.usage).toEqual({ inputTokens: null, outputTokens: null, totalTokens: null, costUsd: null });
   });
+  it("carries the usage of a completed response whose image it rejects, never of a failed request", async () => {
+    const generate = (body: Response) => createImageGenerationAdapter({ connection, model: model("openrouter"), secret: "fixture-secret",
+      fetchFn: vi.fn<typeof fetch>().mockResolvedValue(body) }).generate({ prompt: "A square" }).catch((error: unknown) => error);
+    expect(await generate(Response.json({ data: [], usage: { input_tokens: 12, output_tokens: 20, total_tokens: 32, cost: 0.04 } })))
+      .toMatchObject({ code: "image_output_missing", usage: { inputTokens: 12, outputTokens: 20, totalTokens: 32, costUsd: 0.04 } });
+    expect(await generate(Response.json({ data: [{ b64_json: "AAAA" }], usage: { cost: 0.04 } })))
+      .toMatchObject({ code: "image_response_invalid", usage: { inputTokens: null, costUsd: 0.04 } });
+    expect(await generate(Response.json({ data: [] }))).toMatchObject({ code: "image_output_missing", usage: null });
+    expect(await generate(Response.json({ usage: { cost: 0.04 } }, { status: 500 })))
+      .toMatchObject({ code: "image_provider_http_error", usage: null });
+  });
   it("validates outputs and refuses remote URLs, forged MIME or a corrupt raster", async () => {
     await expect(validateGeneratedImage(png, "image/jpeg")).rejects.toThrow("image_response_invalid");
     await expect(validateGeneratedImage(png.subarray(0, 32))).rejects.toThrow("image_response_invalid");

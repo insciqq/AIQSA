@@ -12,6 +12,7 @@ import {
 import type { StoredKnowledgeNormalizedDocument } from "./normalizedDocument";
 import type {
   KnowledgeEmbeddingBatchWrite,
+  KnowledgeEmbeddingUsageWrite,
   KnowledgeSourceArtifactPinRecord,
   KnowledgeIngestionFailureCode,
   KnowledgeIngestionWarningCode,
@@ -453,9 +454,43 @@ async function generationMemberships(
   `);
 }
 
+/**
+ * The one `knowledge_indexing` row of a paid ingestion embedding response,
+ * whatever became of its vectors. Its id is the response's usage id, so
+ * writing the same response again (a retried write, an ambiguous commit) is a
+ * no-op, while every other response is its own paid call.
+ */
+async function writeEmbeddingUsage(
+  db: Pick<Prisma.TransactionClient, "providerModel" | "usageEvent">,
+  ownerUserId: string,
+  write: KnowledgeEmbeddingUsageWrite
+): Promise<void> {
+  await db.usageEvent.createMany({
+    data: [{
+      id: write.usageEventId,
+      ...storedTokenUsage(write.usage),
+      estimatedCostMicros: providerModelUsageCostMicros({
+        basis: await loadProviderModelCostBasis(db, write.providerModelId),
+        reportedCostUsd: write.usage.costUsd ?? null,
+        usage: write.usage
+      }),
+      modelId: write.modelId,
+      provider: write.provider,
+      providerModelId: write.providerModelId,
+      purpose: "knowledge_indexing",
+      userId: ownerUserId
+    }],
+    skipDuplicates: true
+  });
+}
+
 export function createPrismaKnowledgeSourceIngestionRepository(
   client: PrismaClient = prisma
 ) {
+  // Accounting of a response whose vectors were not persisted never turns the
+  // caller's outcome into another failure.
+  const writeRejectedEmbeddingUsage = (ownerUserId: string, write: KnowledgeEmbeddingUsageWrite) =>
+    writeEmbeddingUsage(client, ownerUserId, write).catch(() => undefined);
   return {
     async activateSourceVersion(input: KnowledgeWorkIdentity & {
       expectedChunkCount: number;
@@ -771,9 +806,14 @@ export function createPrismaKnowledgeSourceIngestionRepository(
         input.batch.chunks.length < 1 ||
         ![1_024, 1_536].includes(input.targetDimension) ||
         input.batch.chunks.some((chunk) => !validChunk(chunk, input.targetDimension))
-      ) return false;
+      ) {
+        await writeRejectedEmbeddingUsage(input.ownerUserId, input.batch);
+        return false;
+      }
 
-      return client.$transaction(async (tx) => {
+      // The response is paid whether or not its vectors land: a lost lease, a
+      // concurrent writer or a mismatch still writes its usage exactly once.
+      const persisted = await client.$transaction(async (tx) => {
         const artifact = await lockedArtifact(tx, identity, "embedding");
         if (!artifact || artifact.ownerUserId !== input.ownerUserId) return false;
         let inserted = 0;
@@ -820,23 +860,9 @@ export function createPrismaKnowledgeSourceIngestionRepository(
         `);
         if (accepted[0]?.acceptedCount !== input.batch.chunks.length) return false;
 
-        if (inserted > 0) {
-          await tx.usageEvent.create({
-            data: {
-              ...storedTokenUsage(input.batch.usage),
-              estimatedCostMicros: providerModelUsageCostMicros({
-                basis: await loadProviderModelCostBasis(tx, input.batch.providerModelId),
-                reportedCostUsd: input.batch.usage.costUsd ?? null,
-                usage: input.batch.usage
-              }),
-              modelId: input.batch.modelId,
-              provider: input.batch.provider,
-              providerModelId: input.batch.providerModelId,
-              purpose: "knowledge_indexing",
-              userId: input.ownerUserId
-            }
-          });
-        }
+        // Also when nothing was inserted: the passages already held vectors,
+        // yet this response was a separate paid call.
+        await writeEmbeddingUsage(tx, input.ownerUserId, input.batch);
         const totals = await tx.$queryRaw<Array<{ embeddedCount: number }>>`
           SELECT count(embedding."passageId")::integer AS "embeddedCount"
           FROM "KnowledgeHierarchicalIndexArtifact" AS hierarchy
@@ -853,7 +879,19 @@ export function createPrismaKnowledgeSourceIngestionRepository(
           where: { id: identity.artifactId }
         });
         return true;
-      }).catch(retainDatabaseFailure);
+      }).catch(async (error: unknown) => {
+        await writeRejectedEmbeddingUsage(input.ownerUserId, input.batch);
+        return retainDatabaseFailure(error);
+      });
+      if (!persisted) await writeRejectedEmbeddingUsage(input.ownerUserId, input.batch);
+      return persisted;
+    },
+
+    async recordEmbeddingUsage(input: Readonly<{
+      ownerUserId: string;
+      usage: KnowledgeEmbeddingUsageWrite;
+    }>): Promise<void> {
+      await writeEmbeddingUsage(client, input.ownerUserId, input.usage).catch(retainDatabaseFailure);
     },
 
     async persistHierarchicalIndex(input: KnowledgeWorkIdentity & {
