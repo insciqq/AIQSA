@@ -16,15 +16,21 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { decodeAdminUsageAnalyticsResponse } from "../../lib/contracts/adminUsageAnalytics";
 import { decodeCatalogResponse } from "../../lib/contracts/catalog";
 import { decodeUserUsageLimitStatusResponse } from "../../lib/contracts/usageLimits";
+import { PERSONAL_USAGE_PURPOSES } from "../../lib/domain/usagePurpose";
 import { codexLbSetupBody, journeyRunParams, modelInConnection, readConnections } from "../../scripts/context-compaction-journey-support";
 import { authenticateWithLocalToken } from "./support/localAuth";
 
 const prisma = new PrismaClient();
 const enabled = process.env.AIQSA_BUDGETS_PAID_E2E === "DISPOSABLE";
+/** Tags the synthetic system usage row; it is removed afterwards. */
+const SYSTEM_FIXTURE_MODEL = "budgets-paid-system-fixture";
 
 test.skip(!enabled, "paid: requires AIQSA_BUDGETS_PAID_E2E=DISPOSABLE on a disposable stand");
 test.describe.configure({ mode: "serial" });
-test.afterAll(() => prisma.$disconnect());
+test.afterAll(async () => {
+  await prisma.usageEvent.deleteMany({ where: { modelId: SYSTEM_FIXTURE_MODEL } });
+  await prisma.$disconnect();
+});
 
 const SETUP_TIMEOUT_MS = 600_000;
 const TURN_TIMEOUT_MS = 300_000;
@@ -104,8 +110,11 @@ async function completedTurn(request: APIRequestContext, chatId: string, model: 
   return settled;
 }
 
+/** The user's known personal spend: what their budget counts. System usage (titles, Memory) is left out. */
 async function knownSpend(userId: string): Promise<number> {
-  const sum = await prisma.usageEvent.aggregate({ _sum: { estimatedCostMicros: true }, where: { userId } });
+  const sum = await prisma.usageEvent.aggregate({
+    _sum: { estimatedCostMicros: true }, where: { purpose: { in: [...PERSONAL_USAGE_PURPOSES] }, userId }
+  });
   return sum._sum.estimatedCostMicros ?? 0;
 }
 
@@ -155,8 +164,16 @@ test("real usage is accounted, budgets and message limits refuse before provider
   summary.budgetRefusal = refused.status();
 
   await override(request, userId, { budget: spent + 5_000_000, hour: null });
+  // System usage far above the raised budget counts toward the pooled cap only: the next send is admitted.
+  await prisma.usageEvent.create({ data: {
+    estimatedCostMicros: spent + 10_000_000, inputTokens: 1_000, modelId: SYSTEM_FIXTURE_MODEL, outputTokens: 100, provider: "fake",
+    purpose: "memory_processing", totalTokens: 1_100, usageCompleteness: "COMPLETE", userId
+  } });
+  const withSystem = decodeUserUsageLimitStatusResponse(await (await request.get("/api/me/usage-limits")).json());
+  expect(withSystem?.usageLimits.monthSpentMicros, "system usage is not personal spend").toBe(spent);
   const second = await completedTurn(request, chatId, model);
   summary.secondRunComplete = second.status === "complete";
+  summary.systemUsageAdmitted = true;
   const spentAfterSecond = await knownSpend(userId);
   expect(spentAfterSecond).toBeGreaterThan(spent);
 
