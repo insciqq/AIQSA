@@ -1115,6 +1115,48 @@ describe("Knowledge System Model PDF parser", () => {
     expect(document.blocks.map(({ text }) => text)).toEqual(["Page 1", "Page 2"]);
   });
 
+  it("accounts every rejected response once when no output is usable", async () => {
+    const markAmbiguous = vi.fn(async () => undefined);
+    const recordUnsettledUsage = vi.fn(async () => undefined);
+    const settle = vi.fn();
+    const execute = vi.fn(async () => ({
+      finalProviderResponsePreview: {},
+      finalText: "invalid page envelope",
+      usage: { inputTokens: 100, outputTokens: 20, reasoningTokens: 0, totalTokens: 120 }
+    }));
+    const parser = createKnowledgeModelPdfParser({} as PrismaClient, {
+      attemptRepository: {
+        markAmbiguous,
+        markDispatched: vi.fn(async () => true),
+        recordUnsettledUsage,
+        reserve: vi.fn(async () => ({ attemptId: "attempt-rejected", kind: "dispatch" as const })),
+        settle
+      } as never,
+      execute: execute as never,
+      inspect: vi.fn(async () => ({ pageCount: 2 })),
+      prepare: vi.fn(async (input) => ({
+        bytes: Buffer.from("%PDF-bounded-range"), kind: "pdf" as const, pageEnd: input.pageEnd, pageStart: input.pageStart
+      })),
+      retry: { random: () => 0, sleep: async () => undefined }
+    });
+
+    await expect(parser.parse({
+      artifactId: "artifact-rejected", bytes: Buffer.from("%PDF-source"), maxBlocks: 100, maxCharacters: 10_000,
+      maxPages: 10, mode: "system_model_direct_pdf", ownerUserId: "owner-1",
+      parserProfileVersion: KNOWLEDGE_PDF_PARSER_PROFILE_VERSION, processingGeneration: 0,
+      profileRevisionId: "profile-rejected", sourceVersionId: "source-version-rejected",
+      systemModelPolicyVersion: 3, systemModelSnapshot: snapshot()
+    })).rejects.toMatchObject({ code: "pdf_processing_ambiguous" });
+    expect(execute).toHaveBeenCalledTimes(KNOWLEDGE_MODEL_PDF_PROVIDER_MAX_ATTEMPTS);
+    expect(settle).not.toHaveBeenCalled();
+    expect(recordUnsettledUsage).toHaveBeenCalledOnce();
+    expect(recordUnsettledUsage).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: "attempt-rejected", ownerUserId: "owner-1", snapshot: expect.objectContaining({ providerModelId: "deployment-1" }),
+      usage: expect.objectContaining({ inputTokens: 300, outputTokens: 60, totalTokens: 360 })
+    }));
+    expect(markAmbiguous).toHaveBeenCalledWith("attempt-rejected", expect.any(Date));
+  });
+
   it("keeps gap filling in profile 10 and adds bounded native corrections in profile 11", async () => {
     const parseAtProfile = async (parserProfileVersion: number) => {
       const parser = createKnowledgeModelPdfParser({} as PrismaClient, {

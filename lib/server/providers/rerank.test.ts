@@ -594,7 +594,21 @@ describe("OpenRouter reranker adapter", () => {
     await expect(adapter(fetchFn).rerank({
       documents: [{ handle: "c0", text: "first" }],
       query: "query"
-    })).rejects.toMatchObject({ code: "rerank_response_invalid" });
+    })).rejects.toMatchObject({ code: "rerank_response_invalid", usage: null });
+  });
+
+  it("keeps the reported usage of a ranking it rejects so the paid call can be accounted", async () => {
+    const rejected = (body: Response) => adapter(vi.fn<typeof fetch>(async () => body)).rerank({
+      documents: [{ handle: "c0", text: "first" }],
+      query: "query"
+    }).catch((error: unknown) => error);
+    expect(await rejected(response({ results: [], usage: { prompt_tokens: 23, total_tokens: 23, cost: 0.00002 } })))
+      .toMatchObject({ code: "rerank_response_invalid",
+        usage: { inputTokens: 23, searchUnits: null, totalTokens: 23, costUsd: 0.00002 } });
+    expect(await rejected(response({ model: "other/reranker" })))
+      .toMatchObject({ code: "rerank_response_model_mismatch", usage: { inputTokens: 23, searchUnits: 1 } });
+    expect(await rejected(response({ results: [], usage: {} })))
+      .toMatchObject({ code: "rerank_response_invalid", usage: null });
   });
 
   it("carries the provider-reported cost and rejects a malformed one in either validation mode", async () => {

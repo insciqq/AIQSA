@@ -430,6 +430,16 @@ export function createKnowledgeModelPdfParser(
               signal
             });
           } catch (error) {
+            if (acceptedUsages.length) {
+              // Responses whose output was rejected were still paid for.
+              await attemptRepository.recordUnsettledUsage({
+                ...identity,
+                attemptId: reservation.attemptId,
+                ownerUserId: input.ownerUserId,
+                snapshot,
+                usage: sumTokenUsage(acceptedUsages)
+              }).catch(() => undefined);
+            }
             await attemptRepository.markAmbiguous(reservation.attemptId, now()).catch(() => undefined);
             if (input.signal?.aborted) throw abortReason(input.signal);
             throw new KnowledgeModelPdfParsingError("pdf_processing_ambiguous");

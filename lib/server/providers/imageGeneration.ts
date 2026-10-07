@@ -40,11 +40,20 @@ export type ImageGenerationErrorCode = "image_input_invalid" | "image_parameters
   "image_response_too_large" | "image_provider_http_error" | "image_provider_request_failed" | "image_request_timed_out" |
   "image_request_cancelled" | "image_output_missing";
 export class ImageGenerationError extends Error {
+  /** What a completed response the adapter then rejected (no image, an
+   * invalid image) reported, so the paid call can be accounted; null when no
+   * response reported usage. */
+  usage: ImageGenerationUsage | null = null;
+
   constructor(readonly code: ImageGenerationErrorCode, readonly httpStatus: number | null = null,
     readonly diagnostic?: ImageFailureDiagnostic) {
     super(code);
     this.name = "ImageGenerationError";
   }
+}
+
+function usageReported(usage: ImageGenerationUsage): boolean {
+  return usage.inputTokens !== null || usage.outputTokens !== null || usage.totalTokens !== null || usage.costUsd !== null;
 }
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -182,23 +191,14 @@ export function createImageGenerationAdapter(input: {
         let parsed: unknown;
         try { parsed = JSON.parse(text) as unknown; } catch { throw new ImageGenerationError("image_response_invalid"); }
         if (!record(parsed)) throw new ImageGenerationError("image_response_invalid");
-        let encoded: unknown;
-        let mimeType: unknown;
-        if (gemini) {
-          if (parsed.status !== "completed" || !Array.isArray(parsed.steps) || parsed.steps.length > 1000) throw new ImageGenerationError("image_response_invalid");
-          const outputs = parsed.steps.flatMap((step: unknown) => record(step) && step.type === "model_output" && Array.isArray(step.content)
-            ? step.content.filter((part: unknown) => record(part) && part.type === "image" && part.thought !== true) : []);
-          if (outputs.length !== 1 || !record(outputs[0])) throw new ImageGenerationError("image_output_missing");
-          encoded = outputs[0].data;
-          mimeType = outputs[0].mime_type;
-        } else {
-          if (!Array.isArray(parsed.data) || parsed.data.length !== 1 || !record(parsed.data[0])) throw new ImageGenerationError("image_output_missing");
-          encoded = parsed.data[0].b64_json;
-          mimeType = parsed.data[0].media_type;
+        const usage = responseUsage(parsed.usage, gemini);
+        try {
+          return { ...await decodedImage(parsed, gemini), usage };
+        } catch (error) {
+          // The response completed and is paid even though its image is rejected.
+          if (error instanceof ImageGenerationError && usageReported(usage)) error.usage = usage;
+          throw error;
         }
-        const bytes = imageBytes(encoded);
-        const metadata = await validateGeneratedImage(bytes, mimeType);
-        return { bytes, ...metadata, usage: responseUsage(parsed.usage, gemini) };
       } catch (error) {
         if (error instanceof ImageGenerationError) throw error;
         if (request.signal?.aborted) throw new ImageGenerationError("image_request_cancelled");
@@ -208,4 +208,26 @@ export function createImageGenerationAdapter(input: {
       } finally { timeout.clear(); }
     }
   };
+}
+
+async function decodedImage(parsed: Record<string, unknown>, gemini: boolean): Promise<{
+  bytes: Uint8Array; mimeType: GeneratedImageMimeType; width: number; height: number;
+}> {
+  let encoded: unknown;
+  let mimeType: unknown;
+  if (gemini) {
+    if (parsed.status !== "completed" || !Array.isArray(parsed.steps) || parsed.steps.length > 1000) throw new ImageGenerationError("image_response_invalid");
+    const outputs = parsed.steps.flatMap((step: unknown) => record(step) && step.type === "model_output" && Array.isArray(step.content)
+      ? step.content.filter((part: unknown) => record(part) && part.type === "image" && part.thought !== true) : []);
+    if (outputs.length !== 1 || !record(outputs[0])) throw new ImageGenerationError("image_output_missing");
+    encoded = outputs[0].data;
+    mimeType = outputs[0].mime_type;
+  } else {
+    if (!Array.isArray(parsed.data) || parsed.data.length !== 1 || !record(parsed.data[0])) throw new ImageGenerationError("image_output_missing");
+    encoded = parsed.data[0].b64_json;
+    mimeType = parsed.data[0].media_type;
+  }
+  const bytes = imageBytes(encoded);
+  const metadata = await validateGeneratedImage(bytes, mimeType);
+  return { bytes, ...metadata };
 }
