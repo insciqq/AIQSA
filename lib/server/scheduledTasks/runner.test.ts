@@ -497,6 +497,33 @@ describe("scheduled task runner", () => {
     expect(task).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
   });
 
+  it("retries a used-up budget within the window, then skips it with its reason and keeps the task active", async () => {
+    const h = harness();
+    const task = h.addTask({ consecutiveFailures: 2 });
+    h.setReply(() => ({ error: "usage_budget_exhausted", status: 429 }));
+    await h.tick();
+    const [occurrence] = h.forTask(task);
+    expect(occurrence).toMatchObject({ leaseExpiresAt: null, reasonCode: "usage_budget_exhausted", runId: null, state: "PENDING" });
+    h.advance(15 * MINUTE);
+    await h.tick();
+    expect(h.sent).toHaveLength(2);
+    h.advance(16 * MINUTE);
+    await h.tick();
+    expect(h.sent).toHaveLength(2);
+    expect(occurrence).toMatchObject({ reasonCode: "usage_budget_exhausted", state: "SKIPPED", unseenAt: null });
+    expect(task).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
+
+    // An administrator raising the pooled cap within the window lets a retry admit it.
+    const raised = h.addTask({ userId: "owner-2" });
+    h.setReply(() => ({ error: "installation_budget_exhausted", status: 429 }));
+    await h.tick();
+    expect(h.forTask(raised)).toMatchObject([{ reasonCode: "installation_budget_exhausted", state: "PENDING" }]);
+    h.setReply(() => ({ runStatus: "complete" }));
+    h.advance(MINUTE);
+    await h.tick();
+    expect(h.forTask(raised)).toMatchObject([{ state: "COMPLETED" }]);
+  });
+
   it("retries a server error before any run within the window without counting a failure", async () => {
     const h = harness();
     const task = h.addTask({ consecutiveFailures: 2 });

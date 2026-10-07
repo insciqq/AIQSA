@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { UsageLimitValues } from "../../contracts/usageLimits";
 import { decideUsageAdmission, USAGE_DAY_MS, USAGE_HOUR_MS } from "../../domain/usageLimits";
 import { prisma } from "../prisma";
-import { createUsageLimitsRepository } from "./repository";
+import { createUsageLimitsRepository, recordUsageMessageAdmission, USAGE_MESSAGE_ADMISSION_RETENTION_MS } from "./repository";
 
 const repository = createUsageLimitsRepository(prisma);
 const unset: UsageLimitValues = { messagesPerDay: null, messagesPerHour: null, monthlyBudgetMicros: null };
@@ -68,17 +68,24 @@ async function group(name: string, limits: Partial<UsageLimitValues> | null, arc
   return row;
 }
 
+/** Admitted interactive runs, as run creation logs them. Rows go with their user. */
+async function admissions(userId: string, offsets: readonly number[]) {
+  await prisma.usageMessageAdmission.createMany({ data: offsets.map((offset) => ({ createdAt: at(offset), userId })) });
+}
+
+/** A chat with runs; `remove` deletes it with its runs, as chat deletion does. */
 async function runs(userId: string, offsets: readonly number[], scheduled = false) {
   const chat = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Usage limit fixture", userId } });
   const question = await prisma.message.create({
     data: { chatId: chat.id, content: "Synthetic question", role: "user", status: "complete" }
   });
-  cleanups.push(async () => {
+  const remove = async () => {
     await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
     await prisma.message.deleteMany({ where: { chatId: chat.id } });
     await prisma.chat.deleteMany({ where: { id: chat.id } });
     await prisma.memoryDeletionOutbox.deleteMany({ where: { targetId: chat.id, userId } });
-  });
+  };
+  cleanups.push(remove);
   await prisma.modelRun.createMany({ data: offsets.map((offset) => ({
     chatId: chat.id,
     createdAt: at(offset),
@@ -90,6 +97,7 @@ async function runs(userId: string, offsets: readonly number[], scheduled = fals
     userMessageId: question.id,
     ...(scheduled ? { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() } : {})
   })) });
+  return { remove };
 }
 
 function usage(userId: string, createdAt: string, estimatedCostMicros: number | null) {
@@ -153,7 +161,7 @@ describe("usage limit persistence", () => {
     ]);
   });
 
-  it("counts known cost of the UTC month and interactive runs of the trailing windows", async () => {
+  it("counts known cost of the UTC month and logged interactive admissions of the trailing windows", async () => {
     const [admin, member, other] = await people(3) as [string, string, string];
     await setPolicy({ monthlyCapMicros: 100_000_000 });
     await repository.putUserLimits({
@@ -168,15 +176,17 @@ describe("usage limit persistence", () => {
       usage(member, "2033-03-15T11:00:00.000Z", 2_500_000),
       usage(other, "2033-03-02T00:00:00.000Z", 3_000_000)
     ] });
-    await runs(member, [
+    await admissions(member, [
       -USAGE_DAY_MS - minutes(60), -USAGE_DAY_MS, -USAGE_DAY_MS + minutes(1),
       -minutes(120), -minutes(50), -minutes(40), -minutes(10), 0, minutes(1)
     ]);
+    // Runs count nothing by themselves: only their admission log does, and scheduled runs are never logged.
     await runs(member, [-minutes(5), -minutes(180)], true);
+    await runs(member, [-minutes(15)]);
 
     const status = await repository.loadUsageLimitStatus(member, now);
     expect(status).toMatchObject({ installationCapMicros: 100_000_000, installationSpentMicros: 7_000_000, userSpentMicros: 4_000_000 });
-    // (now - 1h, now]: four interactive runs; the second oldest leaves the window first under a limit of 3.
+    // (now - 1h, now]: four admissions; the second oldest leaves the window first under a limit of 3.
     expect(status.lastHour).toEqual({ count: 4, freesAt: at(-minutes(40) + USAGE_HOUR_MS) });
     expect(status.lastDay).toEqual({ count: 6, freesAt: at(-minutes(120) + USAGE_DAY_MS) });
     expect(decideUsageAdmission({ ...status, interactive: true, now })).toMatchObject({
@@ -206,6 +216,34 @@ describe("usage limit persistence", () => {
     const capless = await repository.loadUsageLimitStatus(member, now);
     expect(capless).toMatchObject({ installationCapMicros: null, installationSpentMicros: 0, lastHour: { count: 4, freesAt: null } });
     expect(capless.lastDay).toEqual({ count: 6, freesAt: null });
+  });
+
+  it("records an admission at its run's time and prunes only that user's rows no window counts", async () => {
+    const [member, other] = await people(2) as [string, string];
+    const oldest = -USAGE_MESSAGE_ADMISSION_RETENTION_MS;
+    await admissions(member, [oldest - 1, oldest, -minutes(5)]);
+    await admissions(other, [oldest - 1]);
+    await recordUsageMessageAdmission(prisma, { at: now, userId: member });
+    expect(await prisma.usageMessageAdmission.findMany({
+      orderBy: { createdAt: "asc" }, select: { createdAt: true }, where: { userId: member }
+    })).toEqual([{ createdAt: at(oldest) }, { createdAt: at(-minutes(5)) }, { createdAt: now }]);
+    expect(await prisma.usageMessageAdmission.count({ where: { userId: other } })).toBe(1);
+  });
+
+  it("keeps message counts when the chats and runs they came from are deleted", async () => {
+    const [admin, member] = await people(2) as [string, string];
+    await repository.putUserLimits({ limits: { ...unset, exempt: false, messagesPerHour: 2 }, targetUserId: member, userId: admin });
+    const chat = await runs(member, [-minutes(30), -minutes(20)]);
+    await admissions(member, [-minutes(30), -minutes(20)]);
+    const before = await repository.loadUsageLimitStatus(member, now);
+    expect(before.lastHour).toEqual({ count: 2, freesAt: at(-minutes(30) + USAGE_HOUR_MS) });
+    expect(decideUsageAdmission({ ...before, interactive: true, now })).toMatchObject({ code: "message_rate_limited" });
+
+    await chat.remove();
+    expect(await prisma.modelRun.count({ where: { userId: member } })).toBe(0);
+    expect(await repository.loadUsageLimitStatus(member, now)).toEqual(before);
+    expect((await repository.readAdminUsageLimits(now)).users.find(({ userId }) => userId === member))
+      .toMatchObject({ messagesLastDay: 2, messagesLastHour: 2 });
   });
 
   it("stores one row per target, removes rows that set nothing and guards the installation version", async () => {
@@ -258,10 +296,12 @@ describe("usage limit persistence", () => {
     await expect(prisma.usageLimitPolicy.create({ data: { id: "other" } })).rejects.toThrow(/UsageLimitPolicy_singleton_check/u);
     await expect(prisma.usageLimitPolicy.update({ data: { messagesPerDay: -1 }, where: { id: "installation" } }))
       .rejects.toThrow(/UsageLimitPolicy_values_check/u);
-    // Group and user deletion take their limit rows along.
+    // Group and user deletion take their limit rows and the user's admission log along.
     await prisma.usageLimit.create({ data: { ...unset, exempt: true, userId: user } });
+    await admissions(user, [-minutes(1)]);
     await prisma.group.delete({ where: { id: team.id } });
     await prisma.user.delete({ where: { id: user } });
     expect(await prisma.usageLimit.count({ where: { OR: [{ groupId: team.id }, { userId: user }] } })).toBe(0);
+    expect(await prisma.usageMessageAdmission.count({ where: { userId: user } })).toBe(0);
   });
 });

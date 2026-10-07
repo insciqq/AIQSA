@@ -17,6 +17,7 @@ import {
   type ScheduledTaskOpenOccurrence,
   type ScheduledTaskOutcome,
   type ScheduledTaskSettledState,
+  type ScheduledTaskSkipReason,
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
 import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
@@ -99,8 +100,8 @@ export interface ScheduledTaskRunnerStore {
   /** A pending, unlinked occurrence with its current task, owner and chat. */
   loadExecution(occurrenceId: string): Promise<ScheduledTaskExecution | null>;
   readOccurrence(occurrenceId: string): Promise<Readonly<{ runId: string | null; state: string }> | null>;
-  /** Releases a still pending occurrence for a later attempt; a busy chat is remembered for the window's end. */
-  retryLater(occurrenceId: string, reasonCode: "chat_busy" | null): Promise<void>;
+  /** Releases a still pending occurrence for a later attempt; a skip reason (busy chat, used-up budget) is remembered for the window's end. */
+  retryLater(occurrenceId: string, reasonCode: ScheduledTaskSkipReason | null): Promise<void>;
   /** Settles a pending occurrence that has no run; pauses are decided against `observedRevision`. */
   settlePending(occurrenceId: string, outcome: ScheduledTaskOutcome, now: Date, observedRevision?: number):
     Promise<ScheduledTaskSettlement | null>;

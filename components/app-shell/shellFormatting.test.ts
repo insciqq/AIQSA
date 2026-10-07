@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { UsageLimitRefusalCode, UsageLimitRefusalFacts, UsageLimitRefusalResponse } from "@/lib/contracts/usageLimits";
 import type { CatalogModel } from "./types";
-import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, responseErrorMessage, responseErrorMessageDetails } from "./shellFormatting";
+import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, responseErrorMessage, responseErrorMessageDetails, usageLimitRefusalMessage } from "./shellFormatting";
 
 describe("shell error formatting", () => {
   it.each([
@@ -178,6 +179,64 @@ describe("shell error formatting", () => {
         "send_failed_503"
       )
     ).resolves.toBe("Provider is unavailable. Try again (provider_unavailable)");
+  });
+});
+
+describe("usage limit refusals", () => {
+  const now = new Date("2026-10-31T14:05:00.000Z");
+  const viewer = { locale: "en-US", now, timeZone: "Europe/Moscow" } as const;
+  const refusal = (error: UsageLimitRefusalCode, usageLimit: Partial<UsageLimitRefusalFacts>): UsageLimitRefusalResponse => ({
+    error,
+    usageLimit: { limit: null, resetsAt: "2026-11-01T00:00:00.000Z", scope: "user", used: null, window: "month", ...usageLimit }
+  });
+
+  it("names the user's budget in USD and when it resets, in the viewer's locale and zone", () => {
+    expect(usageLimitRefusalMessage(refusal("usage_budget_exhausted", { limit: 12_500_000, used: 12_730_000 }), viewer)).toBe(
+      "Your monthly budget of $12.50 is used up. You can send messages again after it resets on Nov 1, 2026, 3:00 AM."
+    );
+    // West of UTC the month turns over later the same local day.
+    expect(usageLimitRefusalMessage(refusal("usage_budget_exhausted", { limit: 250_000 }),
+      { ...viewer, timeZone: "America/New_York" })).toBe(
+      "Your monthly budget of $0.25 is used up. You can send messages again after it resets at 8:00 PM."
+    );
+    // A zero budget blocks on purpose and never resets by itself.
+    expect(usageLimitRefusalMessage(refusal("usage_budget_exhausted", { limit: 0, used: 0 }), viewer))
+      .toBe("Your monthly budget is $0.00, so you can't send messages. An administrator can raise it.");
+  });
+
+  it("explains the shared budget without amounts and that an administrator can raise it", () => {
+    const message = usageLimitRefusalMessage(refusal("installation_budget_exhausted", { scope: "installation" }), viewer);
+    expect(message).toBe("The monthly budget shared by everyone is used up. You can send messages again after it resets " +
+      "on Nov 1, 2026, 3:00 AM, or sooner if an administrator raises it.");
+    expect(message).not.toMatch(/\$/u);
+  });
+
+  it("names the message limit and its window and when sending is possible again", () => {
+    expect(usageLimitRefusalMessage(refusal("message_rate_limited",
+      { limit: 20, resetsAt: "2026-10-31T14:35:00.000Z", used: 20, window: "hour" }), viewer))
+      .toBe("You've reached your limit of 20 messages per hour. You can send again at 5:35 PM.");
+    expect(usageLimitRefusalMessage(refusal("message_rate_limited",
+      { limit: 1, resetsAt: "2026-11-01T09:12:00.000Z", used: 1, window: "day" }), viewer))
+      .toBe("You've reached your limit of 1 message per day. You can send again on Nov 1, 2026, 12:12 PM.");
+    expect(usageLimitRefusalMessage(refusal("message_rate_limited",
+      { limit: 0, resetsAt: "2026-10-31T15:05:00.000Z", used: 0, window: "hour" }), viewer))
+      .toBe("Your limit is 0 messages per hour, so you can't send messages. An administrator can raise it.");
+  });
+
+  it("keeps the draft with the reason for every limit code and falls back to plain copy without facts", async () => {
+    for (const code of ["installation_budget_exhausted", "message_rate_limited", "usage_budget_exhausted"] as const) {
+      const body = refusal(code, code === "message_rate_limited" ? { limit: 3, used: 3, window: "hour" } : { limit: 1_000_000 });
+      const details = await responseErrorMessageDetails(Response.json(body, { headers: { "retry-after": "60" }, status: 429 }),
+        "send_failed_429");
+      expect(details).toMatchObject({ code, preserveForComposer: true });
+      expect(details.message).not.toContain(code);
+      expect(details.message).toContain(code === "message_rate_limited" ? "3 messages per hour" : "after it resets");
+    }
+    expect(await responseErrorMessageDetails(Response.json({ error: "usage_budget_exhausted" }, { status: 429 }), "send_failed_429"))
+      .toEqual({ code: "usage_budget_exhausted", message: "Your monthly budget is used up. Send again after it resets (usage_budget_exhausted)",
+        preserveForComposer: true });
+    expect(await responseErrorMessage(Response.json({ error: "usage_limits_unavailable" }, { status: 503 }), "send_failed_503"))
+      .toBe("Usage limits could not be checked. Try again in a moment (usage_limits_unavailable)");
   });
 });
 
