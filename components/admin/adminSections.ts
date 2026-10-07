@@ -1,4 +1,5 @@
 import {
+  Activity,
   BarChart3,
   BookOpenText,
   Bot,
@@ -22,6 +23,7 @@ export type AdminSectionId =
   | "access-rules"
   | "email"
   | "groups"
+  | "health"
   | "mcp"
   | "overview"
   | "providers"
@@ -52,6 +54,7 @@ export const adminSectionGroups = [
 
 export const adminSections = [
   { Icon: Home, group: null, id: "overview", label: "Overview" },
+  { Icon: Activity, group: null, id: "health", label: "Health" },
   { Icon: Boxes, group: "models", id: "providers", label: "Providers" },
   { Icon: Sparkles, group: "models", id: "roles", label: "Defaults & roles" },
   { Icon: Search, group: "models", id: "search", label: "Search" },
