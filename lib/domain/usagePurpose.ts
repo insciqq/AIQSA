@@ -1,12 +1,13 @@
 /**
  * What a usage record paid for, fixed when the record is written. Personal
  * purposes are the work of models a user chose (answers, the Search they
- * enabled, images they asked for) and count toward that user's budget. System
+ * enabled, images they asked for) or asked for directly (dictation
+ * transcriptions) and count toward that user's budget. System
  * purposes are the work of administrator-assigned system models and count
  * only toward the installation's pooled cap. `other` marks only legacy records
  * whose purpose could not be recovered.
  */
-export const PERSONAL_USAGE_PURPOSES = ["chat_answer", "web_search", "image_generation"] as const;
+export const PERSONAL_USAGE_PURPOSES = ["chat_answer", "web_search", "image_generation", "speech_to_text"] as const;
 export type PersonalUsagePurpose = (typeof PERSONAL_USAGE_PURPOSES)[number];
 
 export const SYSTEM_USAGE_PURPOSES = [
