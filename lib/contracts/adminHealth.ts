@@ -76,6 +76,28 @@ export type AdminHealthProviderRow = {
   lastFailureAt: string | null;
 };
 
+/**
+ * One failure grouped by its fingerprint: the error class and the first
+ * application code site of failed records, never a message or stack.
+ */
+export type AdminHealthErrorGroup = {
+  fingerprint: string;
+  errorClass: string;
+  /** Application-relative `path:line` of the latest occurrence; `null` when no frame was in application code. */
+  site: string | null;
+  /** Error and fatal records in the range. */
+  count: number;
+  /** Events, process roles and codes the failure appeared under (bounded). */
+  events: string[];
+  roles: string[];
+  codes: string[];
+  lastSeenAt: string;
+  /** First occurrence within counter retention. */
+  firstSeenAt: string;
+  /** First seen within the last day. */
+  isNew: boolean;
+};
+
 export type AdminHealth = {
   range: AdminHealthRange;
   interval: "hour" | "day";
@@ -89,6 +111,9 @@ export type AdminHealth = {
   providers: AdminHealthProviderRow[];
   /** True when the provider grouping hit its row bound and some rows may be missing. */
   providersTruncated: boolean;
+  /** New failures first, then the most frequent. */
+  errorGroups: AdminHealthErrorGroup[];
+  errorGroupsTruncated: boolean;
 };
 
 export type AdminHealthResponse = { health: AdminHealth };
@@ -290,6 +315,25 @@ function decodeProvider(value: unknown): AdminHealthProviderRow | null {
   };
 }
 
+export const ADMIN_HEALTH_ERROR_GROUP_LIMIT = 50;
+const FINGERPRINT_PATTERN = /^[0-9a-f]{12}$/u;
+
+function textList(value: unknown, max: number, maxLength: number): value is string[] {
+  return Array.isArray(value) && value.length <= max && value.every((item) => text(item, maxLength));
+}
+
+function decodeErrorGroup(value: unknown): AdminHealthErrorGroup | null {
+  if (!isRecord(value) || typeof value.fingerprint !== "string" || !FINGERPRINT_PATTERN.test(value.fingerprint) ||
+    !text(value.errorClass, 64) || !nullableText(value.site, 160) || !count(value.count) ||
+    !textList(value.events, 8, 64) || !textList(value.roles, 8, 32) || !textList(value.codes, 8, 128) ||
+    !time(value.lastSeenAt) || !time(value.firstSeenAt) || typeof value.isNew !== "boolean") return null;
+  return {
+    fingerprint: value.fingerprint, errorClass: value.errorClass, site: value.site, count: value.count,
+    events: value.events, roles: value.roles, codes: value.codes, lastSeenAt: value.lastSeenAt,
+    firstSeenAt: value.firstSeenAt, isNew: value.isNew
+  };
+}
+
 function decodeList<T>(value: unknown, max: number, decode: (item: unknown) => T | null): T[] | null {
   if (!Array.isArray(value) || value.length > max) return null;
   const items = value.map(decode);
@@ -301,16 +345,17 @@ export function decodeAdminHealthResponse(value: unknown): AdminHealthResponse |
   const health = value.health;
   if (!isAdminHealthRange(health.range) || !(health.interval === "hour" || health.interval === "day") ||
     !time(health.from) || !time(health.to) || !time(health.generatedAt) || typeof health.hasTelemetry !== "boolean" ||
-    typeof health.providersTruncated !== "boolean") return null;
+    typeof health.providersTruncated !== "boolean" || typeof health.errorGroupsTruncated !== "boolean") return null;
   const summary = decodeSummary(health.summary);
   const series = decodeList(health.series, 64, decodeBucket);
   const providers = decodeList(health.providers, 2_000, decodeProvider);
-  if (!summary || !series || !providers) return null;
+  const errorGroups = decodeList(health.errorGroups, ADMIN_HEALTH_ERROR_GROUP_LIMIT, decodeErrorGroup);
+  if (!summary || !series || !providers || !errorGroups) return null;
   return {
     health: {
       range: health.range, interval: health.interval, from: health.from, to: health.to,
       generatedAt: health.generatedAt, hasTelemetry: health.hasTelemetry, summary, series, providers,
-      providersTruncated: health.providersTruncated
+      providersTruncated: health.providersTruncated, errorGroups, errorGroupsTruncated: health.errorGroupsTruncated
     }
   };
 }

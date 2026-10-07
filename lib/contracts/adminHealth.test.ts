@@ -17,7 +17,11 @@ const health: AdminHealth = {
   providers: [{ key: "k", connectionId: "c", connectionName: "OpenAI", connectionState: "known", providerModelId: "m",
     modelName: "GPT", stage: "answer", operations: 10, failures: 1, failureRate: 0.1,
     failuresByClass: { key_rejected: 1, quota: 0, provider_error: 0, timeout: 0, network: 0, other: 0 },
-    p95Ms: 2_500, lastFailureAt: "2026-10-07T11:00:00.000Z" }]
+    p95Ms: 2_500, lastFailureAt: "2026-10-07T11:00:00.000Z" }],
+  errorGroups: [{ fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/runs/x.ts:42", count: 2,
+    events: ["job_attempt"], roles: ["memory_coordinator"], codes: ["memory_job_failed"],
+    lastSeenAt: "2026-10-07T12:00:00.000Z", firstSeenAt: "2026-10-07T11:00:00.000Z", isNew: true }],
+  errorGroupsTruncated: false
 };
 
 describe("admin health contract", () => {
@@ -27,6 +31,9 @@ describe("admin health contract", () => {
     expect(decodeAdminHealthResponse({ health: { ...health, summary: { ...health.summary, errors: -1 } } })).toBeNull();
     expect(decodeAdminHealthResponse({ health: { ...health, series: [{ ...health.series[0], counts: { providers: 1 } }] } })).toBeNull();
     expect(decodeAdminHealthResponse({ health: { ...health, providers: [{ ...health.providers[0], failureRate: 2 }] } })).toBeNull();
+    expect(decodeAdminHealthResponse({ health: { ...health, errorGroups: [{ ...health.errorGroups[0], fingerprint: "nothex" }] } })).toBeNull();
+    expect(decodeAdminHealthResponse({ health: { ...health, errorGroups: [{ ...health.errorGroups[0], site: "x\ny" }] } })).toBeNull();
+    expect(decodeAdminHealthResponse({ health: { ...health, errorGroupsTruncated: undefined } })).toBeNull();
   });
 
   it("decodes incidents with bounded scalar details only", () => {

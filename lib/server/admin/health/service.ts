@@ -1,5 +1,6 @@
 import {
   ADMIN_HEALTH_CATEGORY_EVENTS,
+  ADMIN_HEALTH_ERROR_GROUP_LIMIT,
   adminHealthCategories,
   adminHealthEventCategory,
   adminHealthFailureClasses,
@@ -22,7 +23,9 @@ import {
   adminHealthFailureClass,
   adminHealthIncidentFrom,
   adminHealthP95,
-  adminHealthWindow
+  adminHealthRetentionWindow,
+  adminHealthWindow,
+  foldAdminHealthErrorGroups
 } from "./projection";
 
 /** Display names of the provider connections and models still present; a missing id was deleted. */
@@ -171,7 +174,8 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
       const generatedAt = now();
       const window = adminHealthWindow(range, generatedAt);
       const base = { from: window.from, to: window.to, limit: ROW_LIMIT };
-      const [totals, previous, series, providerRows, visionRows] = await Promise.all([
+      const failed = ["error", "fatal"] as const;
+      const [totals, previous, series, providerRows, visionRows, errorRows, errorFirstSeen] = await Promise.all([
         store.readCounters({ ...base, groupBy: ["event", "level", "role"] }),
         window.previous
           ? store.readCounters({ ...window.previous, levels: ["error", "fatal"] })
@@ -184,10 +188,15 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
         store.readCounters({
           ...base, events: ["tool_execution"], dimensions: { tool_kind: "vision" },
           groupBy: ["connectionId", "providerModelId", "outcome", "action", "code", "reason", "httpStatus"]
-        })
+        }),
+        store.readCounters({
+          ...base, levels: failed, groupBy: ["error_fingerprint", "error_class", "error_site", "event", "role", "code"]
+        }),
+        store.readCounters({ ...adminHealthRetentionWindow(generatedAt), limit: ROW_LIMIT, levels: failed, groupBy: ["error_fingerprint"] })
       ]);
 
-      const errorRows = totals.filter((row) => row.group.level === "error" || row.group.level === "fatal");
+      const errorTotals = totals.filter((row) => row.group.level === "error" || row.group.level === "fatal");
+      const errorGroups = foldAdminHealthErrorGroups(errorRows, errorFirstSeen, generatedAt, ADMIN_HEALTH_ERROR_GROUP_LIMIT);
       const ofEvent = (event: string) => totals.filter((row) => row.group.event === event);
       const starts = new Map<string, number>();
       for (const row of ofEvent("process.started")) {
@@ -243,12 +252,12 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
         generatedAt: generatedAt.toISOString(),
         hasTelemetry: totals.length > 0,
         summary: {
-          errors: sum(errorRows, (row) => row.count),
+          errors: sum(errorTotals, (row) => row.count),
           previousErrors: previous === null ? null : sum(previous, (row) => row.count),
           providerOperations,
           providerFailures,
           providerFailureRate: providerOperations > 0 ? providerFailures / providerOperations : null,
-          http5xx: sum(errorRows.filter((row) => row.group.event === "http.request_completed" ||
+          http5xx: sum(errorTotals.filter((row) => row.group.event === "http.request_completed" ||
             row.group.event === "http.request_failed"), (row) => row.count),
           restarts: roleStarts.reduce((total, item) => total + item.restarts, 0),
           roleStarts,
@@ -261,7 +270,9 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
           total: adminHealthCategories.reduce((total, category) => total + bucket.counts[category], 0)
         })),
         providers,
-        providersTruncated: providerRows.length >= ROW_LIMIT || visionRows.length >= ROW_LIMIT
+        providersTruncated: providerRows.length >= ROW_LIMIT || visionRows.length >= ROW_LIMIT,
+        errorGroups: errorGroups.groups,
+        errorGroupsTruncated: errorGroups.truncated || errorRows.length >= ROW_LIMIT
       };
     },
 

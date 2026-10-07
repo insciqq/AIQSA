@@ -58,10 +58,29 @@ const vision = [
   group({ group: { connectionId: CONNECTION, providerModelId: MODEL, outcome: "completed", action: null, code: null, reason: null, httpStatus: null }, count: 5 })
 ];
 
-function store(overrides: Partial<Record<"totals" | "previous" | "series" | "providers" | "vision", TelemetryCounterGroup[]>> = {}) {
+const failure = (fingerprint: string, fields: Record<string, string>) => ({ error_fingerprint: fingerprint, error_class: "TypeError", ...fields });
+const errors = [
+  group({ group: failure("aaaaaaaaaaaa", { error_site: "lib/server/memory/a.ts:10", event: "job_attempt", role: "memory_coordinator", code: "memory_job_failed" }),
+    count: 4, firstSeenAt: new Date("2026-10-07T09:00:00.000Z"), lastSeenAt: new Date("2026-10-07T09:30:00.000Z") }),
+  // The same failure after a release moved its line: the latest site wins.
+  group({ group: failure("aaaaaaaaaaaa", { error_site: "lib/server/memory/a.ts:12", event: "job_attempt", role: "memory_coordinator", code: "memory_job_failed" }),
+    count: 1, firstSeenAt: new Date("2026-10-07T11:00:00.000Z"), lastSeenAt: new Date("2026-10-07T11:40:00.000Z") }),
+  group({ group: failure("bbbbbbbbbbbb", { error_class: "Error", event: "http.request_failed", role: "app" }), count: 9 }),
+  // Records without a fingerprint never form a group.
+  group({ group: { event: "provider_operation", role: "app", code: "provider_auth_rejected" }, count: 3 })
+];
+const firstSeen = [
+  group({ group: { error_fingerprint: "bbbbbbbbbbbb" }, count: 30, firstSeenAt: new Date("2026-09-20T00:00:00.000Z") }),
+  group({ group: { error_fingerprint: "aaaaaaaaaaaa" }, count: 5, firstSeenAt: new Date("2026-10-07T09:00:00.000Z") })
+];
+
+function store(overrides: Partial<Record<"totals" | "previous" | "series" | "providers" | "vision" | "errors" | "firstSeen", TelemetryCounterGroup[]>> = {}) {
   const queries: TelemetryCounterQuery[] = [];
   const readCounters = vi.fn(async (query: TelemetryCounterQuery) => {
     queries.push(query);
+    if (query.groupBy?.includes("error_fingerprint")) {
+      return query.groupBy.length === 1 ? overrides.firstSeen ?? firstSeen : overrides.errors ?? errors;
+    }
     if (query.events?.includes("provider_operation")) return overrides.providers ?? providers;
     if (query.events?.includes("tool_execution")) return overrides.vision ?? vision;
     if (query.groupBy?.includes("bucket")) return overrides.series ?? series;
@@ -112,6 +131,17 @@ describe("admin health service", () => {
     expect(health.providers[1]!.failuresByClass.timeout).toBe(3);
     expect(health.providers[2]).toMatchObject({ connectionState: "deleted", failureRate: 0, p95Ms: null, lastFailureAt: null });
     expect(health.providersTruncated).toBe(false);
+
+    expect(health.errorGroups).toEqual([
+      { fingerprint: "aaaaaaaaaaaa", errorClass: "TypeError", site: "lib/server/memory/a.ts:12", count: 5, events: ["job_attempt"],
+        roles: ["memory_coordinator"], codes: ["memory_job_failed"], lastSeenAt: "2026-10-07T11:40:00.000Z",
+        firstSeenAt: "2026-10-07T09:00:00.000Z", isNew: true },
+      { fingerprint: "bbbbbbbbbbbb", errorClass: "Error", site: null, count: 9, events: ["http.request_failed"], roles: ["app"], codes: [],
+        lastSeenAt: "2026-10-07T10:30:00.000Z", firstSeenAt: "2026-09-20T00:00:00.000Z", isNew: false }
+    ]);
+    expect(health.errorGroupsTruncated).toBe(false);
+    const retention = telemetry.queries.find((query) => query.groupBy?.length === 1 && query.groupBy[0] === "error_fingerprint");
+    expect(retention).toMatchObject({ from: new Date("2026-09-07T13:00:00.000Z"), to: new Date("2026-10-07T13:00:00.000Z"), levels: ["error", "fatal"] });
 
     const providerQuery = telemetry.queries.find((query) => query.events?.includes("provider_operation"));
     expect(providerQuery?.groupBy).toHaveLength(8);

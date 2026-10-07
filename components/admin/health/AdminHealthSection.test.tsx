@@ -9,7 +9,7 @@ const zero = { providers: 0, requests: 0, runs: 0, background: 0, tools: 0, othe
 function health(overrides: Partial<AdminHealth> = {}): AdminHealth {
   return {
     range: "24h", interval: "hour", from: "2026-10-06T13:00:00.000Z", to: "2026-10-07T13:00:00.000Z",
-    generatedAt: "2026-10-07T12:30:00.000Z", hasTelemetry: true, providersTruncated: false,
+    generatedAt: "2026-10-07T12:30:00.000Z", hasTelemetry: true, providersTruncated: false, errorGroups: [], errorGroupsTruncated: false,
     summary: { errors: 9, previousErrors: 4, providerOperations: 200, providerFailures: 6, providerFailureRate: 0.03,
       http5xx: 2, restarts: 1, roleStarts: [{ role: "memory_search", starts: 2, restarts: 1 }], droppedLogRecords: 0, clientErrors: 1 },
     series: [

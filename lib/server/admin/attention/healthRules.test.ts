@@ -30,6 +30,8 @@ function rows(overrides: Partial<HealthCounterRows> = {}): HealthCounterRows {
   return {
     backgroundErrors: [],
     droppedRecords: [],
+    errorFingerprints: [],
+    errorFirstSeen: [],
     jobOutcomes: [],
     processStarts: [],
     providerOperations: [],
@@ -152,18 +154,60 @@ describe("evaluateHealthRules", () => {
   });
 });
 
+describe("new errors", () => {
+  const failure = (fingerprint: string, fields: Record<string, string | null>, count: number, ago = 5) =>
+    row({ error_fingerprint: fingerprint, error_class: "Error", error_site: "lib/server/x.ts:10", code: null, ...fields }, count, ago);
+
+  it("raises unclassified failures and programming errors first seen within a day, never classified ones", () => {
+    const findings = evaluateHealthRules(rows({
+      errorFingerprints: [
+        failure("aaaaaaaaaaaa", { code: "unknown" }, 4),
+        failure("bbbbbbbbbbbb", { error_class: "TypeError", code: "memory_job_failed", error_site: "lib/server/memory/a.ts:3" }, 2),
+        failure("cccccccccccc", { error_class: "ProviderHttpError", code: "provider_auth_rejected" }, 9),
+        failure("dddddddddddd", { code: null }, 1),
+        // Seen before the window started: an old failure, not a new one.
+        failure("eeeeeeeeeeee", { code: "unknown" }, 7)
+      ],
+      errorFirstSeen: [row({ error_fingerprint: "eeeeeeeeeeee" }, 50, 60 * 24 * 3)]
+    }), now);
+    expect(findings).toEqual([
+      { code: "new_error", fingerprint: "aaaaaaaaaaaa", errorClass: "Error", site: "lib/server/x.ts:10", count: 4 },
+      { code: "new_error", fingerprint: "bbbbbbbbbbbb", errorClass: "TypeError", site: "lib/server/memory/a.ts:3", count: 2 },
+      { code: "new_error", fingerprint: "dddddddddddd", errorClass: "Error", site: "lib/server/x.ts:10", count: 1 }
+    ]);
+  });
+
+  it("names the most frequent new failures and sums the rest in one item", () => {
+    const many = ["111111111111", "222222222222", "333333333333", "444444444444", "555555555555"]
+      .map((fingerprint, index) => failure(fingerprint, { code: "unexpected" }, 10 - index));
+    const findings = evaluateHealthRules(rows({ errorFingerprints: many }), now);
+    expect(findings.map((finding) => finding.code === "new_error" ? finding.fingerprint : null))
+      .toEqual(["111111111111", "222222222222", "333333333333", null]);
+    const items = healthAttentionItems(findings, null);
+    expect(items[0]).toMatchObject({ code: "new_error", id: "new_error:111111111111", severity: "warn", count: 10,
+      title: "A new error appeared", detail: "Error at lib/server/x.ts:10 · 10 times since it first appeared in the last 24 hours",
+      target: { section: "health" } });
+    expect(items[3]).toMatchObject({ id: "new_error:more", count: 2, detail: "2 more new failures first appeared in the last 24 hours" });
+  });
+});
+
 describe("readHealthCounterRows", () => {
   it("reads the current and previous hourly buckets for the hour rules and a day of buckets for timeouts", async () => {
     const readCounters = vi.fn().mockResolvedValue([]);
     await readHealthCounterRows({ readCounters }, now);
-    expect(readCounters).toHaveBeenCalledTimes(7);
+    expect(readCounters).toHaveBeenCalledTimes(9);
     const hour = { from: new Date("2026-10-07T11:00:00.000Z"), to: new Date("2026-10-07T13:00:00.000Z") };
     const day = { from: new Date("2026-10-06T12:00:00.000Z"), to: new Date("2026-10-07T13:00:00.000Z") };
     expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ ...hour, events: ["provider_operation"] }));
     expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ ...hour, events: ["process.started"], groupBy: ["bucket", "role"] }));
     expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ ...day, events: ["tool_execution"] }));
+    // Failure fingerprints: the new-error window, and their first occurrence over retention.
+    expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ ...day, levels: ["error", "fatal"],
+      groupBy: ["error_fingerprint", "error_class", "error_site", "code"] }));
+    expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ from: new Date("2026-09-07T12:00:00.000Z"),
+      to: new Date("2026-10-07T13:00:00.000Z"), levels: ["error", "fatal"], groupBy: ["error_fingerprint"] }));
     for (const [query] of readCounters.mock.calls) {
-      expect(query.groupBy).toContain("bucket");
+      if (!query.groupBy.includes("error_fingerprint")) expect(query.groupBy).toContain("bucket");
     }
   });
 

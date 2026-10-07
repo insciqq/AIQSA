@@ -1,4 +1,4 @@
-import type { AdminHealthFailureClass, AdminHealthRange } from "../../../contracts/adminHealth";
+import type { AdminHealthErrorGroup, AdminHealthFailureClass, AdminHealthRange } from "../../../contracts/adminHealth";
 import { TELEMETRY_DURATION_BOUNDS_MS } from "../../telemetry/aggregator";
 
 const HOUR_MS = 3_600_000;
@@ -92,9 +92,106 @@ export function adminHealthP95(buckets: readonly number[], maxMs: number | null)
 export const ADMIN_HEALTH_INCIDENT_DETAIL_KEYS: ReadonlySet<string> = new Set([
   "abort_source", "action", "adapterKind", "attempt", "category", "cause", "claimed_count", "completed_count",
   "configured_timeout_ms", "count", "deadline_kind", "delay_ms", "duration_ms", "durationMs", "effective_timeout_ms",
-  "engine_index", "error_category", "failed_count", "headers_ms", "issue_count", "kind", "layer", "limit", "method",
+  "engine_index", "error_category", "error_class", "error_fingerprint", "error_site", "failed_count", "headers_ms", "issue_count", "kind", "layer", "limit", "method",
   "mode", "node_version", "observed", "operation", "operation_index", "operation_stage", "outcome", "pending_count",
   "prisma_code", "providerFamily", "provider_code", "provider_status", "reason", "repeat_count", "retry_at",
   "routePath", "route_source", "state", "status", "stream", "termination", "timeout_ms", "tool_kind",
   "totalStreamBytes", "transport", "unit", "work_stage"
 ]);
+
+/** A failure first seen within this period is new (Health marks it, Needs attention may raise it). */
+export const ADMIN_HEALTH_NEW_ERROR_MS = DAY_MS;
+
+/** The retention window every first occurrence is searched in. */
+export function adminHealthRetentionWindow(now: Date): Readonly<{ from: Date; to: Date }> {
+  const end = Math.floor(now.getTime() / HOUR_MS) * HOUR_MS + HOUR_MS;
+  return { from: new Date(end - COUNTER_RETENTION_MS), to: new Date(end) };
+}
+
+type ErrorGroupRow = Readonly<{
+  group: Readonly<Record<string, unknown>>;
+  count: number;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+}>;
+
+type ErrorGroupFold = {
+  fingerprint: string;
+  classes: Map<string, number>;
+  site: string | null;
+  siteSeenAt: number;
+  count: number;
+  events: Set<string>;
+  roles: Set<string>;
+  codes: Set<string>;
+  firstSeenAt: number;
+  lastSeenAt: number;
+};
+
+const LIST_LIMIT = 8;
+
+function groupText(row: ErrorGroupRow, key: string): string | null {
+  const value = row.group[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function addBounded(set: Set<string>, value: string | null): void {
+  if (value !== null && set.size < LIST_LIMIT) set.add(value);
+}
+
+/**
+ * Failures grouped by fingerprint from counter rows of the range (grouped by
+ * fingerprint, class, site, event, role and code) and the first occurrence of
+ * each fingerprint over retention. The site is the one most recently seen,
+ * since a fingerprint deliberately survives line shifts between versions.
+ */
+export function foldAdminHealthErrorGroups(
+  rows: readonly ErrorGroupRow[],
+  firstSeen: readonly ErrorGroupRow[],
+  now: Date,
+  limit: number
+): Readonly<{ groups: AdminHealthErrorGroup[]; truncated: boolean }> {
+  const folds = new Map<string, ErrorGroupFold>();
+  for (const row of rows) {
+    const fingerprint = groupText(row, "error_fingerprint");
+    if (fingerprint === null) continue;
+    let fold = folds.get(fingerprint);
+    if (!fold) {
+      fold = { fingerprint, classes: new Map(), site: null, siteSeenAt: -1, count: 0, events: new Set(), roles: new Set(),
+        codes: new Set(), firstSeenAt: row.firstSeenAt.getTime(), lastSeenAt: row.lastSeenAt.getTime() };
+      folds.set(fingerprint, fold);
+    }
+    const errorClass = groupText(row, "error_class") ?? "Error";
+    fold.classes.set(errorClass, (fold.classes.get(errorClass) ?? 0) + row.count);
+    const site = groupText(row, "error_site");
+    if (site !== null && row.lastSeenAt.getTime() > fold.siteSeenAt) {
+      fold.site = site;
+      fold.siteSeenAt = row.lastSeenAt.getTime();
+    }
+    fold.count += row.count;
+    addBounded(fold.events, groupText(row, "event"));
+    addBounded(fold.roles, groupText(row, "role"));
+    addBounded(fold.codes, groupText(row, "code"));
+    fold.firstSeenAt = Math.min(fold.firstSeenAt, row.firstSeenAt.getTime());
+    fold.lastSeenAt = Math.max(fold.lastSeenAt, row.lastSeenAt.getTime());
+  }
+  for (const row of firstSeen) {
+    const fold = folds.get(groupText(row, "error_fingerprint") ?? "");
+    if (fold) fold.firstSeenAt = Math.min(fold.firstSeenAt, row.firstSeenAt.getTime());
+  }
+  const newSince = now.getTime() - ADMIN_HEALTH_NEW_ERROR_MS;
+  const groups = [...folds.values()].map((fold): AdminHealthErrorGroup => ({
+    fingerprint: fold.fingerprint,
+    errorClass: [...fold.classes.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]![0],
+    site: fold.site,
+    count: fold.count,
+    events: [...fold.events].sort(),
+    roles: [...fold.roles].sort(),
+    codes: [...fold.codes].sort(),
+    lastSeenAt: new Date(fold.lastSeenAt).toISOString(),
+    firstSeenAt: new Date(fold.firstSeenAt).toISOString(),
+    isNew: fold.firstSeenAt >= newSince
+  })).sort((left, right) => Number(right.isNew) - Number(left.isNew) || right.count - left.count ||
+    right.lastSeenAt.localeCompare(left.lastSeenAt) || left.fingerprint.localeCompare(right.fingerprint));
+  return { groups: groups.slice(0, limit), truncated: groups.length > limit };
+}

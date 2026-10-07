@@ -31,13 +31,23 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
   /** Finished operations of one tool or subsystem in the timeout window. */
   timeoutMinOutcomes: 5,
   /** ...and the share of them that ran out of time. */
-  timeoutMinShare: 0.2
+  timeoutMinShare: 0.2,
+  /** A failure fingerprint first seen within this window is new. */
+  newErrorWindowMs: 24 * 3_600_000,
+  /** New failures named one by one; the rest are summed in one more item. */
+  newErrorItemsMax: 3
 });
 
 export type HealthThresholds = typeof HEALTH_ATTENTION_THRESHOLDS;
 
 const HOUR_MS = 3_600_000;
 const ROW_LIMIT = 5_000;
+/** Counter retention (Persistence): the oldest a first occurrence can be. */
+const COUNTER_RETENTION_MS = 30 * 24 * HOUR_MS;
+/** Classes that almost always mean a defect in AIQSA's own code, whatever the record's code. */
+const PROGRAMMING_ERRORS = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError"]);
+/** Codes that say only that nobody classified the failure. */
+const UNCLASSIFIED_CODES = new Set(["unknown", "unexpected"]);
 
 export type HealthCounterRows = Readonly<{
   /** `provider_operation` grouped by bucket, connectionId, outcome, code, httpStatus, reason, action. */
@@ -54,6 +64,10 @@ export type HealthCounterRows = Readonly<{
   toolOutcomes: readonly TelemetryCounterGroup[];
   /** `job_attempt` over the timeout window grouped by bucket, subsystem, outcome, code. */
   jobOutcomes: readonly TelemetryCounterGroup[];
+  /** Error and fatal records over the new-error window grouped by fingerprint, class, site and code. */
+  errorFingerprints: readonly TelemetryCounterGroup[];
+  /** Error and fatal records over counter retention grouped by fingerprint (their first occurrence). */
+  errorFirstSeen: readonly TelemetryCounterGroup[];
 }>;
 
 export type HealthFinding =
@@ -65,7 +79,9 @@ export type HealthFinding =
   | Readonly<{ code: "process_restarting"; role: HealthRole; starts: number }>
   | Readonly<{ code: "logs_dropped"; lines: number }>
   | Readonly<{ code: "background_failures"; subsystem: HealthSubsystem; errors: number }>
-  | Readonly<{ code: "operation_timeouts_rising"; operation: HealthTimedOperation; timeouts: number; total: number }>;
+  | Readonly<{ code: "operation_timeouts_rising"; operation: HealthTimedOperation; timeouts: number; total: number }>
+  | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; count: number }>
+  | Readonly<{ code: "new_error"; fingerprint: null; more: number }>;
 
 export type ProviderFailureKind = "network" | "other" | "rate_limited" | "server_error" | "timeout";
 
@@ -136,7 +152,10 @@ export async function readHealthCounterRows(
 ): Promise<HealthCounterRows> {
   const recent = windowQuery(now, thresholds.windowMs);
   const day = windowQuery(now, thresholds.timeoutWindowMs);
-  const [providerOperations, serverErrors, processStarts, droppedRecords, backgroundErrors, toolOutcomes, jobOutcomes] =
+  const fresh = windowQuery(now, thresholds.newErrorWindowMs);
+  const retained = windowQuery(now, COUNTER_RETENTION_MS);
+  const [providerOperations, serverErrors, processStarts, droppedRecords, backgroundErrors, toolOutcomes, jobOutcomes,
+    errorFingerprints, errorFirstSeen] =
     await Promise.all([
       reader.readCounters({ ...recent, events: ["provider_operation"], limit: ROW_LIMIT,
         groupBy: ["bucket", "connectionId", "outcome", "code", "httpStatus", "reason", "action"] }),
@@ -145,9 +164,12 @@ export async function readHealthCounterRows(
       reader.readCounters({ ...recent, events: ["logging.dropped_records"], groupBy: ["bucket"], limit: ROW_LIMIT }),
       reader.readCounters({ ...recent, events: BACKGROUND_EVENTS, levels: ["error", "fatal"], groupBy: ["bucket", "subsystem"], limit: ROW_LIMIT }),
       reader.readCounters({ ...day, events: ["tool_execution"], groupBy: ["bucket", "tool_kind", "stage", "outcome", "reason"], limit: ROW_LIMIT }),
-      reader.readCounters({ ...day, events: ["job_attempt"], groupBy: ["bucket", "subsystem", "outcome", "code"], limit: ROW_LIMIT })
+      reader.readCounters({ ...day, events: ["job_attempt"], groupBy: ["bucket", "subsystem", "outcome", "code"], limit: ROW_LIMIT }),
+      reader.readCounters({ ...fresh, levels: ["error", "fatal"], groupBy: ["error_fingerprint", "error_class", "error_site", "code"], limit: ROW_LIMIT }),
+      reader.readCounters({ ...retained, levels: ["error", "fatal"], groupBy: ["error_fingerprint"], limit: ROW_LIMIT })
     ]);
-  return { providerOperations, serverErrors, processStarts, droppedRecords, backgroundErrors, toolOutcomes, jobOutcomes };
+  return { providerOperations, serverErrors, processStarts, droppedRecords, backgroundErrors, toolOutcomes, jobOutcomes,
+    errorFingerprints, errorFirstSeen };
 }
 
 function text(row: TelemetryCounterGroup, key: string): string | null {
@@ -322,7 +344,46 @@ export function evaluateHealthRules(
     })
   ];
   findings.push(...timeoutFindings(timed, thresholds));
+  findings.push(...newErrorFindings(rows, now, thresholds));
   return findings;
+}
+
+/**
+ * A failure is new when its fingerprint first appears within the window. Only
+ * unclassified failures and programming errors count: a classified failure
+ * (a rejected key, a timeout) already has its own rule and copy.
+ */
+function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: HealthThresholds): HealthFinding[] {
+  const since = now.getTime() - thresholds.newErrorWindowMs;
+  const firstSeen = new Map<string, number>();
+  for (const row of rows.errorFirstSeen) {
+    const fingerprint = text(row, "error_fingerprint");
+    if (fingerprint !== null) firstSeen.set(fingerprint, Math.min(firstSeen.get(fingerprint) ?? Infinity, row.firstSeenAt.getTime()));
+  }
+  const candidates = new Map<string, { errorClass: string; site: string | null; siteSeenAt: number; count: number; first: number }>();
+  for (const row of within(rows.errorFingerprints, since)) {
+    const fingerprint = text(row, "error_fingerprint");
+    const errorClass = text(row, "error_class") ?? "Error";
+    const code = text(row, "code");
+    if (fingerprint === null || !(code === null || UNCLASSIFIED_CODES.has(code) || PROGRAMMING_ERRORS.has(errorClass))) continue;
+    const entry = candidates.get(fingerprint) ?? { errorClass, site: null, siteSeenAt: -1, count: 0, first: Infinity };
+    const site = text(row, "error_site");
+    if (site !== null && row.lastSeenAt.getTime() > entry.siteSeenAt) {
+      entry.site = site;
+      entry.siteSeenAt = row.lastSeenAt.getTime();
+    }
+    entry.count += row.count;
+    entry.first = Math.min(entry.first, row.firstSeenAt.getTime(), firstSeen.get(fingerprint) ?? Infinity);
+    candidates.set(fingerprint, entry);
+  }
+  const fresh = [...candidates.entries()]
+    .filter(([, entry]) => entry.first >= since)
+    .sort(([leftKey, left], [rightKey, right]) => right.count - left.count || leftKey.localeCompare(rightKey));
+  const named: HealthFinding[] = fresh.slice(0, thresholds.newErrorItemsMax).map(([fingerprint, entry]) => ({
+    code: "new_error", fingerprint, errorClass: entry.errorClass, site: entry.site, count: entry.count
+  }));
+  const more = fresh.length - named.length;
+  return more > 0 ? [...named, { code: "new_error", fingerprint: null, more }] : named;
 }
 
 function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
@@ -407,6 +468,18 @@ export function healthAttentionItems(
           severity: "warn",
           detail: `${finding.subsystem === "other" ? "Other background work" : subsystemLabels[finding.subsystem]} · ${plural(finding.errors, "error")} in the last hour`,
           target: { section: "health" }, title: "Background work is failing" });
+        break;
+      case "new_error":
+        if (finding.fingerprint === null) {
+          items.push({ action: "Open Health", code: finding.code, count: finding.more, id: `${finding.code}:more`, severity: "warn",
+            detail: `${plural(finding.more, "more new failure")} first appeared in the last 24 hours`,
+            target: { section: "health" }, title: "More new errors" });
+        } else {
+          items.push({ action: "Open Health", code: finding.code, count: finding.count, id: `${finding.code}:${finding.fingerprint}`,
+            severity: "warn",
+            detail: `${finding.errorClass} ${finding.site ? `at ${finding.site}` : "outside application code"} · ${plural(finding.count, "time")} since it first appeared in the last 24 hours`,
+            target: { section: "health" }, title: "A new error appeared" });
+        }
         break;
       case "operation_timeouts_rising":
         items.push({ action: "Open Health", code: finding.code, count: finding.timeouts,
