@@ -30,6 +30,12 @@ const fixtures: readonly Fixture[] = [
     fields: { ...answerModel, ...tokens(1000, 200), knowledgePdfProcessingAttemptId: "'purpose-pdf-attempt'" } },
   { id: "purpose-decision", purpose: "skill_selection", fields: { ...run, ...answerModel, optionalDecision: "true", operationCount: "1" } },
   { id: "purpose-relevance", purpose: "knowledge_retrieval", fields: { ...run, ...answerModel, ...tokens(40, 2), knowledgeRelevance: "true" } },
+  // Receipts linked to their attempts carry deferred ownership checks that a
+  // backfill update must not leave pending before the column becomes required.
+  { id: "purpose-decision-linked", purpose: "skill_selection", fields: { ...answerModel, ...tokens(20, 4),
+    optionalDecision: "true", optionalDecisionAttemptId: "'purpose-decision-attempt'", operationCount: "1" } },
+  { id: "purpose-relevance-linked", purpose: "knowledge_retrieval", fields: { ...run, ...answerModel, ...tokens(40, 2),
+    knowledgeRelevance: "true", knowledgeRelevanceAttemptId: "'purpose-relevance-attempt'" } },
   { id: "purpose-hub", purpose: "other", fields: { ...answerModel, ...tokens(12, 3), mcpHubDiscovery: "true" } },
   { id: "purpose-memory-index", purpose: "memory_indexing", fields: { ...raw("openai", "purpose-embedding-upstream"),
     providerModelId: "'purpose-embedding'", memoryExecutionBindingId: "'purpose-binding-index'", ...tokens(40, null) } },
@@ -103,6 +109,10 @@ INSERT INTO "KnowledgePdfProcessingAttempt" (id, "sourceArtifactId", "sourceVers
   "pageEnd", "requestDigest", "updatedAt")
 VALUES ('purpose-pdf-attempt', 'purpose-source-artifact', 'purpose-source-version', 0, 'system_model_direct_pdf', 1, 1,
   '${"b".repeat(64)}', now());
+INSERT INTO "OptionalDecisionAttempt" (id, "userId", "modelRunId", purpose, "operationKey", "inputHash", "executionSnapshot")
+VALUES ('purpose-decision-attempt', 'purpose-user', NULL, 'skill_catalog_relevance', 'purpose-operation', '${"e".repeat(64)}', '{}');
+INSERT INTO "KnowledgeRelevanceAttempt" (id, "reservationId", ordinal, "executionSnapshot", "inputHash")
+VALUES ('purpose-relevance-attempt', 'purpose-reservation', 1, '{}', '${"f".repeat(64)}');
 INSERT INTO "MemoryJob" (id, "userId", kind, state, "pipelineVersion", "memoryGenerationSnapshot", "memoryRevisionSnapshot",
   "idempotencyFingerprint", "completedAt")
 VALUES ('purpose-memory-job', 'purpose-user', 'EMBED_ITEMS', 'SUCCEEDED', 'synthetic-pipeline', 0, 0, 'purpose-memory-job', now());
@@ -127,6 +137,9 @@ DO $proof$ DECLARE mismatch TEXT; BEGIN
   IF (SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder) FROM pg_enum WHERE enumtypid = '"UsagePurpose"'::regtype)
     IS DISTINCT FROM '${USAGE_PURPOSES.join(",")}'
     THEN RAISE EXCEPTION 'usage_purpose_vocabulary_mismatch'; END IF;
+  IF (SELECT count(*) FROM pg_trigger WHERE tgrelid = '"UsageEvent"'::regclass AND tgenabled = 'O'
+      AND tgname IN ('UsageEvent_optional_decision_owner_check', 'UsageEvent_knowledge_relevance_owner_check')) <> 2
+    THEN RAISE EXCEPTION 'usage_purpose_owner_checks_not_restored'; END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
       AND table_name = 'UsageEvent' AND column_name = 'purpose' AND is_nullable = 'NO' AND column_default IS NULL)
     THEN RAISE EXCEPTION 'usage_purpose_not_required'; END IF;

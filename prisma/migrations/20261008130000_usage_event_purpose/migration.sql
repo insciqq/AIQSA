@@ -69,6 +69,13 @@ RETURNS "UsagePurpose" LANGUAGE sql IMMUTABLE AS $$
   END)::"UsagePurpose"
 $$;
 
+-- The backfill writes only `purpose`, so receipt ownership cannot change. Its
+-- row updates would still queue the deferred ownership checks of decision and
+-- relevance receipts, and pending trigger events forbid the ALTER TABLE below
+-- in this transaction (55006); those two checks pause for the backfill only.
+ALTER TABLE "UsageEvent" DISABLE TRIGGER "UsageEvent_optional_decision_owner_check";
+ALTER TABLE "UsageEvent" DISABLE TRIGGER "UsageEvent_knowledge_relevance_owner_check";
+
 -- One pass over the table; model classes are resolved once per identity.
 WITH identities AS (
   SELECT DISTINCT "provider", "modelId", "providerModelId" FROM "UsageEvent"
@@ -87,6 +94,8 @@ WHERE resolved."provider" = ue."provider" AND resolved."modelId" = ue."modelId"
   AND resolved."providerModelKey" = COALESCE(ue."providerModelId", '');
 
 ALTER TABLE "UsageEvent" ALTER COLUMN "purpose" SET NOT NULL;
+ALTER TABLE "UsageEvent" ENABLE TRIGGER "UsageEvent_optional_decision_owner_check";
+ALTER TABLE "UsageEvent" ENABLE TRIGGER "UsageEvent_knowledge_relevance_owner_check";
 
 -- Current writers always choose a purpose. The previous release names none
 -- while Compose replaces it; its inserts are classified exactly as the backfill
