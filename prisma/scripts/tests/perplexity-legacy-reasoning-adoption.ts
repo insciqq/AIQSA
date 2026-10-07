@@ -20,7 +20,7 @@ const NEAR_LEGACY = `{"effort":"medium","enabled":false,"exclude":true,"maxToken
 const LEGACY_UPDATED_AT = "2026-09-01 00:00:00";
 // The contract deploys every later migration too. Strip only the independently
 // asserted price expansion when comparing predecessor columns below.
-const priceColumns = "ARRAY['inputTokenPriceUsdPerMillion', 'cachedInputTokenPriceUsdPerMillion', 'cacheWriteInputTokenPriceUsdPerMillion', 'outputTokenPriceUsdPerMillion', 'priceSource']";
+const priceColumns = "ARRAY['inputTokenPriceUsdPerMillion', 'cachedInputTokenPriceUsdPerMillion', 'cacheWriteInputTokenPriceUsdPerMillion', 'outputTokenPriceUsdPerMillion', 'webSearchPriceUsdPerThousand', 'priceSource']";
 
 type Place = "column" | "active" | "draft";
 type Scenario = Readonly<{

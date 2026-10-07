@@ -134,6 +134,37 @@ export function extractGeminiInteractionsUsage(value: unknown): ModelRunUsage {
   });
 }
 
+/**
+ * Gemini 3 bills each distinct non-empty search query an interaction ran; a
+ * search call that lists no queries still ran one. Reads provider or
+ * protected steps, which keep `arguments` on the step itself.
+ */
+export function geminiWebSearchCount(steps: unknown): number {
+  if (!Array.isArray(steps)) return 0;
+  const queries = new Set<string>();
+  let unlisted = 0;
+  for (const step of steps) {
+    if (!isRecord(step) || step.type !== "google_search_call") continue;
+    const listed = isRecord(step.arguments) && Array.isArray(step.arguments.queries) ? step.arguments.queries : null;
+    if (!listed) unlisted += 1;
+    for (const query of listed ?? []) {
+      if (typeof query === "string" && query.trim()) queries.add(query.trim());
+    }
+  }
+  return queries.size + unlisted;
+}
+
+/** The interaction's token usage with the web searches its steps ran. */
+export function withGeminiWebSearchCount(usage: ModelRunUsage, steps: unknown): ModelRunUsage {
+  const webSearchCount = geminiWebSearchCount(steps);
+  return webSearchCount > 0 ? normalizeTokenUsage({ ...usage, webSearchCount }) : usage;
+}
+
+/** Usage of one whole interaction record, for callers without normalized steps. */
+export function extractGeminiInteractionUsage(response: GeminiInteractionRecord): ModelRunUsage {
+  return withGeminiWebSearchCount(extractGeminiInteractionsUsage(response.usage), response.steps);
+}
+
 function interactionFailure(status: string): Error {
   return new Error(`gemini_interaction_${status}`);
 }
@@ -654,7 +685,7 @@ function normalizeInteraction(
     rawFinalText,
     status,
     toolCalls,
-    usage: extractGeminiInteractionsUsage(response.usage)
+    usage: withGeminiWebSearchCount(extractGeminiInteractionsUsage(response.usage), protectedSteps)
   };
 }
 
@@ -771,7 +802,7 @@ export async function* streamGeminiInteractionsJsonResponse(
   } catch (error) {
     // A generated interaction the adapter refuses (for example more citations
     // than one response may carry) was still billed: keep its reported usage.
-    if (isRecord(response.usage)) yield { data: extractGeminiInteractionsUsage(response.usage), type: "usage" };
+    if (isRecord(response.usage)) yield { data: extractGeminiInteractionUsage(response), type: "usage" };
     throw error;
   }
   yield geminiInteractionSummaryEvent({
@@ -1297,7 +1328,7 @@ export async function* parseGeminiInteractionsSse(
         usage = mergeTokenUsage(usage, extractGeminiInteractionsUsage(parsed.usage));
       }
       if (parsed.usage !== undefined || cumulativeUsage !== undefined) {
-        yield { data: usage, type: "usage" };
+        yield { data: withGeminiWebSearchCount(usage, protectedSteps), type: "usage" };
       }
       continue;
     }
@@ -1372,9 +1403,9 @@ export async function* parseGeminiInteractionsSse(
       }
       if (interaction.usage !== undefined) {
         usage = mergeTokenUsage(usage, extractGeminiInteractionsUsage(interaction.usage));
-        yield { data: usage, type: "usage" };
+        yield { data: withGeminiWebSearchCount(usage, protectedSteps), type: "usage" };
       } else if (cumulativeUsage !== undefined) {
-        yield { data: usage, type: "usage" };
+        yield { data: withGeminiWebSearchCount(usage, protectedSteps), type: "usage" };
       }
       terminal = true;
       continue;
@@ -1406,7 +1437,7 @@ export async function* parseGeminiInteractionsSse(
     rawFinalText,
     status: terminalStatus,
     toolCalls,
-    usage
+    usage: withGeminiWebSearchCount(usage, protectedSteps)
   };
   if (normalized.grounding && !finalGroundingEmitted) {
     yield normalized.grounding;

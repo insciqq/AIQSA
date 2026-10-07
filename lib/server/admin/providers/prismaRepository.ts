@@ -1026,6 +1026,7 @@ export function createPrismaAdminProviderRepository(
             cachedInputTokenPriceUsdPerMillion: model.cachedInputTokenPriceUsdPerMillion ?? null,
             cacheWriteInputTokenPriceUsdPerMillion: model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
             outputTokenPriceUsdPerMillion: model.outputTokenPriceUsdPerMillion,
+            webSearchPriceUsdPerThousand: model.webSearchPriceUsdPerThousand ?? null,
             templateKey: model.templateKey, draftConfig: json(model.configuration), draftVersion: 1,
             activeConfig: json(model.configuration), activeVersion: 1, activatedAt: input.now, enabled: true
           } });
@@ -2070,6 +2071,7 @@ export function createPrismaAdminProviderRepository(
               cachedInputTokenPriceUsdPerMillion: model.cachedInputTokenPriceUsdPerMillion ?? null,
               cacheWriteInputTokenPriceUsdPerMillion: model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
               outputTokenPriceUsdPerMillion: model.outputTokenPriceUsdPerMillion,
+              webSearchPriceUsdPerThousand: model.webSearchPriceUsdPerThousand ?? null,
               templateKey: model.templateKey, draftConfig: json(model.configuration), draftVersion: 1,
               activeConfig: json(model.configuration), activeVersion: 1, activatedAt: input.now, enabled: true
             } });

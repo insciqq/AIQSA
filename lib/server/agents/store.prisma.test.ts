@@ -602,9 +602,10 @@ describe("durable Agent authority and accounting", () => {
         { kind: "aiqsa_search", optionId: "source", invocationId, maxCalls: 1 })));
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       const admitted = results.find((result) => result.status === "fulfilled") as PromiseFulfilledResult<string>;
-      await run.store.settleProvider(admitted.value, "COMPLETE", { inputTokens: 7, outputTokens: 2, totalTokens: 9 });
+      // The attempt keeps what the provider reported for its fee: searches run and any reported cost.
+      await run.store.settleProvider(admitted.value, "COMPLETE", { inputTokens: 7, outputTokens: 2, totalTokens: 9, webSearchCount: 1, costUsd: 0.0142 });
       expect((await run.store.usage())[0]).toMatchObject({ modelId: "search-fixture", operationCount: 1, purpose: "web_search",
-        usage: { totalTokens: 9 } });
+        usage: { totalTokens: 9, webSearchCount: 1, costUsd: 0.0142 } });
       const continuation = await run.store.reserveProvider(100, { kind: "aiqsa_search", optionId: "source",
         invocationId: results[0]!.status === "fulfilled" ? "a" : "b", maxCalls: 1 });
       await run.store.revoke(false);

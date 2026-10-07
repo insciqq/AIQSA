@@ -1611,6 +1611,7 @@ async function applyQuickSetupPlan(
           cachedInputTokenPriceUsdPerMillion: candidate.model.cachedInputTokenPriceUsdPerMillion ?? null,
           cacheWriteInputTokenPriceUsdPerMillion: candidate.model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
           outputTokenPriceUsdPerMillion: candidate.model.outputTokenPriceUsdPerMillion,
+          webSearchPriceUsdPerThousand: candidate.model.webSearchPriceUsdPerThousand ?? null,
           provider: policy.provider,
           templateKey: candidate.templateKey,
           ...modelColumns(plan.pendingCapabilityChecks ? initialModelConfiguration(candidate.configuration) : candidate.configuration)
@@ -1884,6 +1885,7 @@ async function applyQuickSetupAdditionalPlan(
         cachedInputTokenPriceUsdPerMillion: model.candidate.model.cachedInputTokenPriceUsdPerMillion ?? null,
         cacheWriteInputTokenPriceUsdPerMillion: model.candidate.model.cacheWriteInputTokenPriceUsdPerMillion ?? null,
         outputTokenPriceUsdPerMillion: model.candidate.model.outputTokenPriceUsdPerMillion,
+        webSearchPriceUsdPerThousand: model.candidate.model.webSearchPriceUsdPerThousand ?? null,
         provider: plan.provider,
         templateKey: null,
         ...modelColumns(plan.pendingCapabilityChecks ? initialModelConfiguration(model.candidate.configuration) : model.candidate.configuration)

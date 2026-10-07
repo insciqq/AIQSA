@@ -5,6 +5,7 @@ import { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "../knowledge/evidenceAns
 import type { RunRepository } from "./runRepositoryContract";
 import {
   finalizeRunCompletion,
+  usageAttributionsWithEstimatedCost,
   usageWithEstimatedCost
 } from "./runFinalization";
 
@@ -437,5 +438,44 @@ describe("run finalization", () => {
       finalText: grounding.finalText,
       knowledgeGrounding: { grounding }
     }));
+  });
+});
+
+describe("web search fees in run attributions", () => {
+  const tokens = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
+  const pricing = { inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10, webSearchPriceUsdPerThousand: 10 };
+
+  it("charges an answer's native searches at the answer model's per-search price and ignores a reported cost", async () => {
+    const loadModelPricing = vi.fn(async () => pricing);
+    const [answer] = await usageAttributionsWithEstimatedCost({ loadModelPricing }, [{ modelId: "claude-opus-5-5",
+      provider: "anthropic", purpose: "chat_answer", usage: { ...tokens, webSearchCount: 2, costUsd: 1 } }]);
+    // Tokens $0.003 plus two searches at one cent each; answer rows keep token prices.
+    expect(answer).toMatchObject({ estimatedCostMicros: 23_000, purpose: "chat_answer", usage: { webSearchCount: 2 } });
+    expect(loadModelPricing).toHaveBeenCalledWith("anthropic", "claude-opus-5-5");
+  });
+
+  it("prefers the cost a Search provider reported, else its tokens plus the per-search fee", async () => {
+    const loadModelPricing = vi.fn(async () => pricing);
+    const attributions = await usageAttributionsWithEstimatedCost({ loadModelPricing }, [
+      { modelId: "perplexity/sonar-pro-search", provider: "openrouter", purpose: "web_search", usage: { ...tokens, costUsd: 0.0142 } },
+      { modelId: "claude-sonnet-5", provider: "anthropic", purpose: "web_search", usage: { ...tokens, webSearchCount: 3 } },
+      { modelId: "deepseek-v4-pro", provider: "deepseek", purpose: "web_search", usage: { ...tokens, webSearchCount: 1 } }
+    ]);
+    expect(attributions.map(({ estimatedCostMicros }) => estimatedCostMicros)).toEqual([14_200, 33_000, 13_000]);
+    // A reported cost needs no configured price; a missing per-search price charges tokens only.
+    const unpriced = await usageAttributionsWithEstimatedCost({ loadModelPricing: async () => null }, [
+      { modelId: "perplexity/sonar-pro-search", provider: "openrouter", purpose: "web_search", usage: { ...tokens, costUsd: 0.0142 } }]);
+    expect(unpriced[0]?.estimatedCostMicros).toBe(14_200);
+    const tokensOnly = await usageWithEstimatedCost({ loadModelPricing: async () => ({ ...pricing, webSearchPriceUsdPerThousand: null }) },
+      { modelId: "custom", provider: "openai_compatible", purpose: "web_search", usage: { ...tokens, webSearchCount: 3 } });
+    expect(tokensOnly.estimatedCostMicros).toBe(3_000);
+  });
+
+  it("keeps a grouped Search row's cost unknown when one of its calls reported no usage", async () => {
+    const attributions = await usageAttributionsWithEstimatedCost({ loadModelPricing: async () => pricing }, [{
+      modelId: "perplexity/sonar-pro-search", provider: "openrouter", purpose: "web_search",
+      usage: { inputTokens: 2_000, outputTokens: 200, totalTokens: 2_200, completeness: "partial" }
+    }]);
+    expect(attributions[0]?.estimatedCostMicros).toBeNull();
   });
 });

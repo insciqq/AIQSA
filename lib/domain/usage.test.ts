@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeTokenUsage,
   estimateCostMicros,
   mergeTokenUsage,
   normalizeTokenUsage,
@@ -252,5 +253,91 @@ describe("usage row cost", () => {
       expect(cost(null, { modelClass: "answer", usage })).toBe(estimateCostMicros(usage, prices));
     }
     expect(cost(null, { modelClass: "answer" })).toBe(15_600);
+  });
+});
+
+describe("provider-reported web searches and cost", () => {
+  const tokens = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
+
+  it("keeps a positive search count and a valid reported cost without changing completeness", () => {
+    expect(normalizeTokenUsage({ ...tokens, webSearchCount: 2, costUsd: 0.0123 })).toEqual({
+      ...normalizeTokenUsage(tokens), webSearchCount: 2, costUsd: 0.0123 });
+    for (const webSearchCount of [0, -1, 1.5, Number.NaN, "2", null]) {
+      expect(normalizeTokenUsage({ ...tokens, webSearchCount })).not.toHaveProperty("webSearchCount");
+    }
+    for (const costUsd of [-0.01, Number.NaN, Number.POSITIVE_INFINITY, "0.01", null]) {
+      expect(normalizeTokenUsage({ ...tokens, costUsd })).not.toHaveProperty("costUsd");
+    }
+    expect(normalizeTokenUsage({ webSearchCount: 1 })).toMatchObject({ completeness: "unavailable", webSearchCount: 1 });
+    expect(normalizeTokenUsage({ ...tokens, costUsd: 0 })).toMatchObject({ completeness: "complete", costUsd: 0 });
+  });
+
+  it("adds searches across operations and knows a cost only when every operation reported one", () => {
+    expect(sumTokenUsage([{ ...tokens, webSearchCount: 2, costUsd: 0.01 }, { ...tokens, webSearchCount: 1, costUsd: 0.02 }]))
+      .toMatchObject({ inputTokens: 2_000, webSearchCount: 3, costUsd: 0.03 });
+    const mixed = sumTokenUsage([{ ...tokens, webSearchCount: 2, costUsd: 0.01 }, tokens]);
+    expect(mixed).toMatchObject({ webSearchCount: 2, completeness: "complete" });
+    expect(mixed).not.toHaveProperty("costUsd");
+    expect(sumTokenUsage([tokens, tokens])).not.toHaveProperty("webSearchCount");
+    expect(sumTokenUsage([])).toEqual({ ...normalizeTokenUsage({}), completeness: "unavailable" });
+  });
+
+  it("replaces cumulative search counts and costs within one operation", () => {
+    const started = mergeTokenUsage({ inputTokens: 10 }, { webSearchCount: 1 });
+    expect(started).toMatchObject({ inputTokens: 10, webSearchCount: 1 });
+    expect(mergeTokenUsage(started, { ...tokens, webSearchCount: 3 })).toMatchObject({ inputTokens: 1_000, webSearchCount: 3 });
+    expect(mergeTokenUsage({ ...tokens, webSearchCount: 3, costUsd: 0.5 }, tokens)).toMatchObject({ webSearchCount: 3, costUsd: 0.5 });
+    expect(mergeTokenUsage({ ...tokens, costUsd: 0.5 }, { costUsd: 0.75 })).toMatchObject({ inputTokens: 1_000, costUsd: 0.75 });
+  });
+
+  it("subtracts search counts exactly and keeps a cost only when both sides reported one", () => {
+    expect(subtractTokenUsage({ ...tokens, webSearchCount: 5 }, { inputTokens: 400, outputTokens: 40, totalTokens: 440, webSearchCount: 2 }))
+      .toMatchObject({ inputTokens: 600, webSearchCount: 3 });
+    expect(subtractTokenUsage({ ...tokens, webSearchCount: 2 }, { ...tokens, webSearchCount: 2 })).not.toHaveProperty("webSearchCount");
+    expect(subtractTokenUsage({ ...tokens, webSearchCount: 1 }, { inputTokens: 1, webSearchCount: 2 })).toBeNull();
+    expect(subtractTokenUsage(tokens, { inputTokens: 1, webSearchCount: 1 })).toBeNull();
+    expect(subtractTokenUsage({ ...tokens, costUsd: 0.05 }, { inputTokens: 1, costUsd: 0.02 })?.costUsd).toBeCloseTo(0.03, 12);
+    expect(subtractTokenUsage({ ...tokens, costUsd: 0.05 }, { inputTokens: 1 })).not.toHaveProperty("costUsd");
+  });
+
+  it("decodes durable search counts and costs strictly", () => {
+    const usage = normalizeTokenUsage({ ...tokens, webSearchCount: 4, costUsd: 0.004 });
+    expect(decodeTokenUsage(JSON.parse(JSON.stringify(usage)))).toEqual(usage);
+    expect(decodeTokenUsage({ ...tokens, webSearchCount: 0 })).not.toHaveProperty("webSearchCount");
+    for (const invalid of [{ webSearchCount: -1 }, { webSearchCount: 1.5 }, { webSearchCount: "1" }, { costUsd: -1 }, { costUsd: "0.1" }]) {
+      expect(decodeTokenUsage({ ...tokens, ...invalid })).toBeNull();
+    }
+  });
+
+  it("charges each reported search at the per-thousand price on top of tokens, exactly", () => {
+    const pricing = { inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10 };
+    const tokenCost = estimateCostMicros(tokens, pricing);
+    expect(tokenCost).toBe(3_000);
+    // $10 per 1,000 searches is one cent each; Gemini's $14 is 1.4 cents.
+    expect(estimateCostMicros({ ...tokens, webSearchCount: 3 }, { ...pricing, webSearchPriceUsdPerThousand: 10 })).toBe(33_000);
+    expect(estimateCostMicros({ ...tokens, webSearchCount: 3 }, { ...pricing, webSearchPriceUsdPerThousand: 14 })).toBe(45_000);
+    // Without a per-search price the searches add nothing; without searches the price adds nothing.
+    expect(estimateCostMicros({ ...tokens, webSearchCount: 3 }, pricing)).toBe(tokenCost);
+    expect(estimateCostMicros({ ...tokens, webSearchCount: 3 }, { ...pricing, webSearchPriceUsdPerThousand: null })).toBe(tokenCost);
+    expect(estimateCostMicros(tokens, { ...pricing, webSearchPriceUsdPerThousand: 10 })).toBe(tokenCost);
+    // Sub-micro fees join the token cost before the single half-up rounding.
+    expect(estimateCostMicros({ inputTokens: 1, outputTokens: 0, webSearchCount: 1 },
+      { inputTokenPriceUsdPerMillion: 0.3, outputTokenPriceUsdPerMillion: 0, webSearchPriceUsdPerThousand: 0.0002 })).toBe(1);
+    // Unknown token cost stays unknown; an invalid search price makes the cost unknown.
+    expect(estimateCostMicros({ inputTokens: 1_000, webSearchCount: 3 }, { ...pricing, webSearchPriceUsdPerThousand: 10 })).toBeNull();
+    expect(estimateCostMicros({ ...tokens, webSearchCount: 3 }, { ...pricing, webSearchPriceUsdPerThousand: Number.NaN })).toBeNull();
+    expect(estimateCostMicros({ ...tokens, webSearchCount: 3 }, { ...pricing, webSearchPriceUsdPerThousand: -1 })).toBeNull();
+    expect(estimateCostMicros({ ...tokens, webSearchCount: 300_000 }, { ...pricing, webSearchPriceUsdPerThousand: 10_000 })).toBeNull();
+  });
+
+  it("applies the per-search price only to answer usage and lets a reported cost win", () => {
+    const pricing = { inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10, webSearchPriceUsdPerThousand: 10 };
+    const usage = { ...tokens, webSearchCount: 2 };
+    expect(usageCostMicros({ reportedCostUsd: null, usage, pricing, modelClass: "answer" })).toBe(23_000);
+    for (const modelClass of ["decision", "image"] as const) {
+      expect(usageCostMicros({ reportedCostUsd: null, usage, pricing, modelClass })).toBe(3_000);
+    }
+    expect(usageCostMicros({ reportedCostUsd: null, usage, pricing, modelClass: "embedding" })).toBe(2_000);
+    expect(usageCostMicros({ reportedCostUsd: 0.0154, usage, pricing, modelClass: "answer" })).toBe(15_400);
   });
 });

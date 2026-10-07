@@ -38,6 +38,8 @@ export function runAttributionUsageRows(
       reasoningTokens: usage.reasoningTokens, totalTokens: usage.totalTokens,
       usageCompleteness: usage.completeness === "complete" ? "COMPLETE" as const :
         usage.completeness === "partial" ? "PARTIAL" as const : "UNAVAILABLE" as const,
+      // The rewrite re-reads its rows: the count keeps the search fee and round subtraction exact.
+      webSearchCount: usage.webSearchCount ?? null,
       ...(scope.projectId ? { projectId: scope.projectId } : {}), userId: scope.userId
     };
   });

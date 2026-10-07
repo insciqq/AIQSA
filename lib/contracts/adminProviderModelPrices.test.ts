@@ -22,6 +22,12 @@ describe("exact admin model prices", () => {
   });
   it("gives each model class only the token prices it can be costed with", () => {
     expect(modelClassPriceFields("answer")).toEqual(ADMIN_MODEL_PRICE_FIELDS);
+    // Only answer models (native search, Search engines) carry the per-search price, which the wire always names.
+    expect(modelClassPriceFields("answer")).toContain("webSearchPriceUsdPerThousand");
+    const { webSearchPriceUsdPerThousand: _omitted, ...withoutSearch } = EMPTY_ADMIN_MODEL_PRICES;
+    expect(decodeAdminModelTokenPrices(withoutSearch)).toBeNull();
+    expect(decodeAdminModelTokenPrices({ ...EMPTY_ADMIN_MODEL_PRICES, webSearchPriceUsdPerThousand: "14.00" }))
+      .toEqual({ ...EMPTY_ADMIN_MODEL_PRICES, webSearchPriceUsdPerThousand: "14" });
     for (const modelClass of ["decision", "image"]) {
       expect(modelClassPriceFields(modelClass)).toEqual(["inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"]);
     }

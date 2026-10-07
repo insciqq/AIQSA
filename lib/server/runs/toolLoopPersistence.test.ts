@@ -222,6 +222,24 @@ describe("tool-loop persistence values", () => {
     }, 2)).toBeNull();
   });
 
+  it("keeps a round's reported web searches through the checkpoint and refuses a malformed count", () => {
+    const usage = { completeness: "complete" as const, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+      inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 };
+    const checkpoint = (roundUsage: unknown) => ({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage: roundUsage }],
+      phase: "provider_running", providerContinuation: null, providerCursor: null, roundIndex: 1, version: 2 });
+    const searched = { ...usage, webSearchCount: 2 };
+    expect(parseToolLoopCheckpoint(JSON.parse(JSON.stringify(checkpoint(searched))))?.answerRoundUsage[0]?.usage).toEqual(searched);
+    const { completeness: _completeness, ...withoutCompleteness } = searched;
+    expect(parseToolLoopCheckpoint(checkpoint(withoutCompleteness))?.answerRoundUsage[0]?.usage).toEqual(withoutCompleteness);
+    for (const webSearchCount of [0, -1, 1.5, "2", null]) {
+      expect(parseToolLoopCheckpoint(checkpoint({ ...usage, webSearchCount }))).toBeNull();
+    }
+    expect(parseToolLoopCheckpoint(checkpoint({ ...usage, costUsd: 0.01 }))).toBeNull();
+    // A terminal round recorded before counts existed stays the same evidence when recovery re-reads one.
+    const legacy = { completeness: "terminal" as const, roundIndex: 1, usage };
+    expect(mergeAnswerRoundUsage([legacy], { ...legacy, usage: searched }, 1)).toEqual([legacy]);
+  });
+
   it("keeps usage evidence for 200 tool rounds plus final synthesis", () => {
     const usage = { completeness: "complete" as const,
       cachedInputTokens: 0,

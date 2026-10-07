@@ -40,6 +40,7 @@ export type ProviderModelCatalogEntry = {
   cachedInputTokenPriceUsdPerMillion?: number | null;
   cacheWriteInputTokenPriceUsdPerMillion?: number | null;
   outputTokenPriceUsdPerMillion: number | null;
+  webSearchPriceUsdPerThousand?: number | null;
   capabilities: {
     backgroundStreaming?: boolean;
     nativePdfInput: boolean;
@@ -85,7 +86,8 @@ export type SearchStrategyCatalogEntry = {
 type ProviderModelTemplate = Omit<
   ProviderModelCatalogEntry,
   "adapterKind" | "providerDisplayName" | "providerFamily" | "upstreamModelId" |
-  "inputTokenPriceUsdPerMillion" | "cachedInputTokenPriceUsdPerMillion" | "cacheWriteInputTokenPriceUsdPerMillion" | "outputTokenPriceUsdPerMillion"
+  "inputTokenPriceUsdPerMillion" | "cachedInputTokenPriceUsdPerMillion" | "cacheWriteInputTokenPriceUsdPerMillion" | "outputTokenPriceUsdPerMillion" |
+  "webSearchPriceUsdPerThousand"
 > & {
   provider: ProviderId;
 };
