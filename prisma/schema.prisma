@@ -917,6 +917,7 @@ model User {
   usageLimit                          UsageLimit?                        @relation("UsageLimitUser")
   usageLimitUpdates                   UsageLimit[]                       @relation("UsageLimitUpdater")
   usageLimitPolicyUpdates             UsageLimitPolicy[]                 @relation("UsageLimitPolicyUpdater")
+  usageMessageAdmissions              UsageMessageAdmission[]
   workspaceSecrets                    WorkspaceSecret[]
   workspaceSecretValues               WorkspaceSecretValue[]
   workspaceBrowserSequence            BigInt                             @default(0)
@@ -3295,6 +3296,19 @@ model UsageLimit {
   updatedBy           User?    @relation("UsageLimitUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([updatedByUserId])
+}
+
+/// One admitted interactive run (a send, edit or regeneration; never a
+/// scheduled run or the continuation of an accepted one), written with the run
+/// and kept 25 hours for the message limits. Unlike ModelRun it survives chat
+/// and branch deletion, so deleting chats cannot reset a limit.
+model UsageMessageAdmission {
+  id        String   @id @default(uuid())
+  userId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model WorkspacePolicy {

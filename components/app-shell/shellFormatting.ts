@@ -5,6 +5,11 @@ import {
   CHAT_PDF_ROUTE_UNAVAILABLE_CODE,
   CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE
 } from "@/lib/contracts/chatPdfPreparation";
+import {
+  decodeUsageLimitRefusal,
+  isUsageLimitRefusalCode,
+  type UsageLimitRefusalResponse
+} from "@/lib/contracts/usageLimits";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { CatalogModel } from "@/components/app-shell/types";
 
@@ -156,6 +161,12 @@ export function humanizeErrorCode(code: string): string {
       "The selected System Model does not have verified structured output",
     unsupported_attachment_type: "Attachment is not supported by this model",
     unsupported_search_strategy: "Search is not supported for this model",
+    // Used only when a limit refusal arrives without readable facts.
+    installation_budget_exhausted:
+      "The monthly budget shared by everyone is used up. Send again after it resets, or ask an administrator to raise it",
+    message_rate_limited: "You've reached your message limit. Send again later",
+    usage_budget_exhausted: "Your monthly budget is used up. Send again after it resets",
+    usage_limits_unavailable: "Usage limits could not be checked. Try again in a moment",
     agent_selection_invalid: "Refresh the Agent selection and try again",
     agent_workspace_required: "Turn on Workspace to use Agent",
     agent_personal_chat_required: "Agent is available in personal chats without an Assistant",
@@ -234,6 +245,53 @@ function isLoadAllToolLimitRefusal(body: Record<string, unknown>): boolean {
     (typeof body.message === "string" && /^Load all can offer at most \d+ MCP tools\b/u.test(body.message)));
 }
 
+/** Configured budgets are exact amounts, unlike estimated spend. */
+const USD_LIMIT = new Intl.NumberFormat("en-US", {
+  currency: "USD", maximumFractionDigits: 6, minimumFractionDigits: 2, style: "currency"
+});
+
+export type UsageLimitCopyOptions = Readonly<{
+  /** The viewer's locale and time zone by default. */
+  locale?: string;
+  now?: Date;
+  timeZone?: string;
+}>;
+
+/** "at 3:20 PM" later the same local day, otherwise "on Nov 1, 2026, 3:00 AM". */
+function whenSendingResumes(at: Date, options: UsageLimitCopyOptions): string {
+  const zone = options.timeZone ? { timeZone: options.timeZone } : {};
+  const day = new Intl.DateTimeFormat(options.locale, { ...zone, day: "numeric", month: "numeric", year: "numeric" });
+  return day.format(at) === day.format(options.now ?? new Date())
+    ? `at ${new Intl.DateTimeFormat(options.locale, { ...zone, timeStyle: "short" }).format(at)}`
+    : `on ${new Intl.DateTimeFormat(options.locale, { ...zone, dateStyle: "medium", timeStyle: "short" }).format(at)}`;
+}
+
+/**
+ * Composer copy for a usage-limit refusal from its facts: the user's budget in
+ * USD (the shared installation budget never discloses amounts) or message
+ * limit, and when sending is possible again. A zero limit is an administrator's
+ * choice, never something that resets.
+ */
+export function usageLimitRefusalMessage(refusal: UsageLimitRefusalResponse, options: UsageLimitCopyOptions = {}): string {
+  const { limit, resetsAt } = refusal.usageLimit;
+  const when = whenSendingResumes(new Date(resetsAt), options);
+  switch (refusal.error) {
+    case "installation_budget_exhausted":
+      return `The monthly budget shared by everyone is used up. You can send messages again after it resets ${when}, ` +
+        "or sooner if an administrator raises it.";
+    case "usage_budget_exhausted":
+      if (limit === 0) return "Your monthly budget is $0.00, so you can't send messages. An administrator can raise it.";
+      return `Your monthly budget${limit === null ? "" : ` of ${USD_LIMIT.format(limit / 1_000_000)}`} is used up. ` +
+        `You can send messages again after it resets ${when}.`;
+    case "message_rate_limited": {
+      const window = refusal.usageLimit.window === "day" ? "day" : "hour";
+      if (limit === 0) return `Your limit is 0 messages per ${window}, so you can't send messages. An administrator can raise it.`;
+      const reached = limit === null ? "your message limit" : `your limit of ${limit} ${limit === 1 ? "message" : "messages"} per ${window}`;
+      return `You've reached ${reached}. You can send again ${when}.`;
+    }
+  }
+}
+
 export type ResponseErrorMessageDetails = {
   code?: string;
   message: string;
@@ -268,6 +326,12 @@ export async function responseErrorMessageDetails(
       }
       if (isLoadAllToolLimitRefusal(body)) {
         return { code: body.error, message: MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, preserveForComposer: true };
+      }
+      if (isUsageLimitRefusalCode(body.error)) {
+        // Never retried automatically: the reason and the time to try again stay with the kept draft.
+        const refusal = decodeUsageLimitRefusal(body);
+        return { code: body.error, preserveForComposer: true,
+          message: refusal ? usageLimitRefusalMessage(refusal) : humanizeErrorCode(body.error) };
       }
       const attachmentLimitErrors = new Set([
         "attachment_count_limit_exceeded",

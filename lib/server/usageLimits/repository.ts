@@ -43,7 +43,7 @@ export type UsageLimitsRepository = Readonly<{
 
 type Database = Pick<
   PrismaClient,
-  "$executeRaw" | "$queryRaw" | "$transaction" | "group" | "modelRun" | "usageLimit" | "usageLimitPolicy" | "user"
+  "$executeRaw" | "$queryRaw" | "$transaction" | "group" | "usageLimit" | "usageLimitPolicy" | "usageMessageAdmission" | "user"
 >;
 type Reader = Pick<Prisma.TransactionClient, "usageLimitPolicy">;
 type Month = ReturnType<typeof utcMonthPeriod>;
@@ -101,9 +101,35 @@ function missingParent(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && (error.code === "P2003" || error.code === "P2025");
 }
 
-/** The user's interactive runs (scheduled ones excluded) in `(now - length, now]`. */
-function interactiveRuns(userId: string, now: Date, length: number): Prisma.ModelRunWhereInput {
-  return { createdAt: { gt: new Date(now.getTime() - length), lte: now }, scheduledTaskId: null, userId };
+/**
+ * Admission log rows are kept this long: the day window plus an hour of slack
+ * for clock differences between the run's creation and a later count.
+ */
+export const USAGE_MESSAGE_ADMISSION_RETENTION_MS = USAGE_DAY_MS + USAGE_HOUR_MS;
+
+/**
+ * Records one admitted interactive run (a send, edit or regeneration; never a
+ * scheduled run or a continuation of an accepted one) for the message limits.
+ * Call it in the transaction that creates the run, with the run's creation
+ * time, so the row commits or rolls back with it. The user's rows that no
+ * window counts anymore are pruned on the way.
+ */
+export async function recordUsageMessageAdmission(
+  tx: Pick<Prisma.TransactionClient, "usageMessageAdmission">,
+  input: Readonly<{ at: Date; userId: string }>
+): Promise<void> {
+  await tx.usageMessageAdmission.deleteMany({
+    where: { createdAt: { lt: new Date(input.at.getTime() - USAGE_MESSAGE_ADMISSION_RETENTION_MS) }, userId: input.userId }
+  });
+  await tx.usageMessageAdmission.create({ data: { createdAt: input.at, userId: input.userId } });
+}
+
+/**
+ * The user's admitted interactive runs in `(now - length, now]`. The log
+ * survives chat and branch deletion, unlike the runs themselves.
+ */
+function admittedMessages(userId: string, now: Date, length: number): Prisma.UsageMessageAdmissionWhereInput {
+  return { createdAt: { gt: new Date(now.getTime() - length), lte: now }, userId };
 }
 
 export function createUsageLimitsRepository(database: Database): UsageLimitsRepository {
@@ -118,17 +144,17 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
   }
 
   /**
-   * When a reached window next has room: the run at ascending offset
+   * When a reached window next has room: the admission at ascending offset
    * `count - limit` ages out. Only for a set limit above zero.
    */
   async function messageWindow(
-    where: Prisma.ModelRunWhereInput,
+    where: Prisma.UsageMessageAdmissionWhereInput,
     count: number,
     limit: number | null,
     length: number
   ): Promise<UsageMessageWindow> {
     if (limit === null || limit <= 0 || count < limit) return { count, freesAt: null };
-    const agingOut = await database.modelRun.findFirst({
+    const agingOut = await database.usageMessageAdmission.findFirst({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       select: { createdAt: true },
       skip: count - limit,
@@ -140,8 +166,8 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
   return {
     async loadUsageLimitStatus(userId, now) {
       const month = utcMonthPeriod(now);
-      const hour = interactiveRuns(userId, now, USAGE_HOUR_MS);
-      const day = interactiveRuns(userId, now, USAGE_DAY_MS);
+      const hour = admittedMessages(userId, now, USAGE_HOUR_MS);
+      const day = admittedMessages(userId, now, USAGE_DAY_MS);
       const [installation, user, userSpentMicros, hourCount, dayCount] = await Promise.all([
         readInstallation(database),
         database.user.findUnique({
@@ -156,8 +182,8 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
           where: { id: userId }
         }),
         knownCost(month, userId),
-        database.modelRun.count({ where: hour }),
-        database.modelRun.count({ where: day })
+        database.usageMessageAdmission.count({ where: hour }),
+        database.usageMessageAdmission.count({ where: day })
       ]);
       const groups: UsageLimitGroupInput[] = (user?.groups ?? []).flatMap(({ group }) =>
         group.usageLimit ? [{ groupId: group.id, limits: limitValues(group.usageLimit), name: group.name }] : []);
@@ -212,18 +238,18 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
           FROM "UsageEvent"
           WHERE "createdAt" >= ${utcTimestamp(periodStart)} AND "createdAt" < ${utcTimestamp(resetsAt)}
           GROUP BY "userId"`,
-        // One indexed (userId, createdAt) range per user instead of a scan of every run.
+        // One indexed (userId, createdAt) range per user instead of a scan of the whole log.
         database.$queryRaw<Array<{ lastDay: number; lastHour: number; userId: string }>>`
-          SELECT account."id" AS "userId", runs."lastHour", runs."lastDay"
+          SELECT account."id" AS "userId", admitted."lastHour", admitted."lastDay"
           FROM "User" AS account
           CROSS JOIN LATERAL (
-            SELECT COUNT(*) FILTER (WHERE run."createdAt" > ${utcTimestamp(hourStart)})::int AS "lastHour",
+            SELECT COUNT(*) FILTER (WHERE admission."createdAt" > ${utcTimestamp(hourStart)})::int AS "lastHour",
               COUNT(*)::int AS "lastDay"
-            FROM "ModelRun" AS run
-            WHERE run."userId" = account."id" AND run."scheduledTaskId" IS NULL
-              AND run."createdAt" > ${utcTimestamp(dayStart)} AND run."createdAt" <= ${utcTimestamp(now)}
-          ) AS runs
-          WHERE runs."lastDay" > 0`
+            FROM "UsageMessageAdmission" AS admission
+            WHERE admission."userId" = account."id"
+              AND admission."createdAt" > ${utcTimestamp(dayStart)} AND admission."createdAt" <= ${utcTimestamp(now)}
+          ) AS admitted
+          WHERE admitted."lastDay" > 0`
       ]);
       const spentByUser = new Map(spendRows.map((row) => [row.userId, spentMicros(row.spent)]));
       const messagesByUser = new Map(messageRows.map((row) => [row.userId, row]));

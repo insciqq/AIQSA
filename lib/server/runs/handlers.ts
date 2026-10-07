@@ -11,6 +11,9 @@ import { acceptedRunSnapshot } from "./acceptedRunSnapshot";
 import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
+import type { UsageLimitRefusalResponse } from "../../contracts/usageLimits";
+import { decideUsageAdmission } from "../../domain/usageLimits";
+import type { UsageLimitStatus, UsageLimitsRepository } from "../usageLimits/repository";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
 import { getAuthConfig, type AuthConfig } from "../auth/config";
 import type {
@@ -68,6 +71,7 @@ import { serializeRunOutcome } from "./runOutcome";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
 import { logEvent, runWithContext, type EventFields } from "../observability";
 import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
+import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { observedFailure } from "../providers/providerObservability";
 import type {
   CreatedRun
@@ -128,6 +132,11 @@ export type RunHandlerDeps = {
   skillCatalogRelevance?: RunPreparationDeps["skillCatalogRelevance"];
   skillTools?: import("../skills/toolService").SkillToolService;
   storage?: StorageAdapter;
+  /**
+   * The usage limits every new run's admission checks (`usageLimitRefusal`).
+   * Required, so no entry point can admit runs without them.
+   */
+  usageLimits: Pick<UsageLimitsRepository, "loadUsageLimitStatus">;
   workspace?: RunPreparationDeps["workspace"];
   workspaceCoordinator?: WorkspaceCoordinator;
 };
@@ -254,6 +263,33 @@ function protectRunHandler<Context>(stage: "send" | "regenerate" | "cancel",
 
 function modelRunErrorJson(data: ModelRunErrorResponse, init?: ResponseInit): Response {
   return privateModelRunJson(data, init);
+}
+
+/**
+ * The usage-limit guard of a new run, checked once per admission after the
+ * request, its chat and the active-run gate are authorized and before any
+ * preparation; continuations of an accepted run never pass here. Budgets apply
+ * to every run, message limits only to interactive ones. Returns the refusal
+ * (429 with the facts and `retry-after`), or null to admit; a status that
+ * cannot be read refuses as unavailable, never admits.
+ */
+async function usageLimitRefusal(
+  deps: Pick<RunHandlerDeps, "usageLimits">,
+  input: Readonly<{ interactive: boolean; stage: "send" | "regenerate"; userId: string }>
+): Promise<Response | null> {
+  const now = new Date();
+  let status: UsageLimitStatus;
+  try {
+    status = await deps.usageLimits.loadUsageLimitStatus(input.userId, now).catch(retainRunPrismaCode);
+  } catch (error) {
+    logEvent("run_http_failed", { stage: input.stage, code: "usage_limits_unavailable",
+      prisma_code: runDatabaseFailureCode(error) });
+    return privateModelRunJson({ error: "usage_limits_unavailable" }, { status: 503 });
+  }
+  const decision = decideUsageAdmission({ ...status, interactive: input.interactive, now });
+  if (decision.ok) return null;
+  const body: UsageLimitRefusalResponse = { error: decision.code, usageLimit: decision.facts };
+  return privateModelRunJson(body, { headers: { "retry-after": String(decision.retryAfterSeconds) }, status: 429 });
 }
 
 function modelRunJson(data: RunOutcomeResponse, init?: ResponseInit): Response {
@@ -630,6 +666,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     if (!expectedActiveLeaf.ok) {
       return Response.json({ error: "expected_active_leaf_invalid" }, { status: 400 });
     }
+    const usageRefusal = await usageLimitRefusal(deps, {
+      interactive: !deps.scheduledOccurrence, stage: "send", userId: auth.userId
+    });
+    if (usageRefusal) return usageRefusal;
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, project: chat.project ?? null, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
       body,
@@ -868,6 +908,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     if (activeRunResponse) {
       return activeRunResponse;
     }
+    // Every regeneration, edit and document retry is a new interactive run.
+    const usageRefusal = await usageLimitRefusal(deps, { interactive: true, stage: "regenerate", userId: auth.userId });
+    if (usageRefusal) return usageRefusal;
 
     const retry = body?.retryPdfPreparation === true && source.assistantMessage
       ? await deps.chatPdf?.loadRetry?.({ assistantMessageId: source.assistantMessage.id,
@@ -1118,7 +1161,7 @@ export function createGetModelRunHandler(
   };
 }
 
-export function createCancelModelRunHandler(deps: RunHandlerDeps) {
+export function createCancelModelRunHandler(deps: Omit<RunHandlerDeps, "usageLimits">) {
   return protectRunHandler("cancel", async function POST(
     request: Request,
     context: { params: Promise<{ runId: string }> | { runId: string } }
