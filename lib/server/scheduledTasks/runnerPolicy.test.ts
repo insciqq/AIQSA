@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { SCHEDULED_TASK_CHECK_OUTCOMES, scheduledTaskReasonMessage, type ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import {
+  SCHEDULED_TASK_DISPATCH_SPREAD_MS,
+  SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_MAX_EXECUTING,
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
   SCHEDULED_TASK_RUN_DEADLINE_CODE,
@@ -14,6 +16,8 @@ import {
   planOccurrenceSettlement,
   planScheduledTaskClaim,
   planTaskSettlement,
+  scheduledDispatchNotBefore,
+  scheduledTaskDispatchOffsetMs,
   settlementBaseline,
   settlementNotifiesOwner,
   type MonitoringVerdict
@@ -196,6 +200,31 @@ describe("settlement bookkeeping", () => {
     expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence: { ...occurrence, userMessageId: null },
       outcome: completed, taskGeneration: 2 })).toBeNull();
   });
+
+  it("fences the baseline by the chat epoch: a late result of a chat the task moved on from writes none", () => {
+    const occurrence = { chatEpoch: 3, runId: "run-1", taskGeneration: 2, userMessageId: "user-1" };
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: completed, taskChatEpoch: 3, taskGeneration: 2 }))
+      .toMatchObject({ runId: "run-1" });
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: completed, taskChatEpoch: 4, taskGeneration: 2 }))
+      .toBeNull();
+    // An occurrence linked before epochs counts as the first one.
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence: { ...occurrence, chatEpoch: null }, outcome: completed,
+      taskChatEpoch: 0, taskGeneration: 2 })).toMatchObject({ runId: "run-1" });
+    expect(planOccurrenceSettlement({ assistantMessageId: "answer-1", check: null, occurrence: { ...occurrence, trigger: "schedule" },
+      outcome: completed, sourcesIncomplete: false, task: { chatEpoch: 4, consecutiveFailures: 0, consecutiveIncompleteRuns: 0,
+        consecutiveMissingVerdicts: 0, generation: 2, revision: 1, status: "ACTIVE" } }).baseline).toBeNull();
+  });
+
+  it("fails a rotation whose Workspace files could not be carried within the window, counting toward the pause", () => {
+    const occurrence = { reasonCode: "workspace_carryover_unavailable", scheduledFor: new Date("2026-11-01T06:00:00.000Z"),
+      startedAt: new Date("2026-11-01T06:00:00.000Z") };
+    expect(expiredPendingOutcome(occurrence, new Date("2026-11-01T06:20:00.000Z"))).toBeNull();
+    expect(expiredPendingOutcome(occurrence, new Date("2026-11-01T06:31:00.000Z")))
+      .toEqual({ reasonCode: "workspace_carryover_unavailable", state: "FAILED" });
+    expect(planTaskSettlement({ outcome: { reasonCode: "workspace_carryover_unavailable", state: "FAILED" },
+      task: { consecutiveFailures: 2, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0, revision: 1, status: "ACTIVE" },
+      trigger: "schedule" })).toMatchObject({ consecutiveFailures: 3, pauseReason: "repeated_failures" });
+  });
 });
 
 describe("monitoring check settlement", () => {
@@ -226,6 +255,19 @@ describe("monitoring check settlement", () => {
     expect(verdicts.map((verdict) => settle(verdict, { firstCheck: true }).outcome))
       .toEqual(["baseline", "baseline", "goal_reached", "unreported"]);
     expect(effects("baseline")).toEqual({ baseline: true, notifies: true });
+  });
+
+  it("compares the first check of a rotated chat with the result carried into it, not as a first check", () => {
+    const occurrence = { taskGeneration: 2, taskRevision: 5, verdict: "no_update" };
+    const task = { baselineGeneration: null, generation: 2, kind: "monitoring", revision: 5 } as const;
+    // The carried copy of this generation is the previous result: nothing changed stays hidden.
+    expect(completedRunCheck({ healthIncomplete: false, occurrence, task: { ...task, carriedGeneration: 2 } }))
+      .toMatchObject({ outcome: "no_update" });
+    // Without a carried result of this question the check is a first one, shown as the starting point.
+    for (const carriedGeneration of [null, 1]) {
+      expect(completedRunCheck({ healthIncomplete: false, occurrence, task: { ...task, carriedGeneration } }))
+        .toMatchObject({ outcome: "baseline" });
+    }
   });
 
   it("never settles an incomplete check as a healthy no update or reached goal", () => {
@@ -364,6 +406,10 @@ describe("send refusals", () => {
     expect(classifySendRefusal(409, "active_run_in_progress")).toEqual({ kind: "retry", reasonCode: "chat_busy" });
     expect(classifySendRefusal(409, "active_leaf_changed")).toEqual({ kind: "retry", reasonCode: "chat_busy" });
     expect(classifySendRefusal(404, "chat_not_found")).toEqual({ kind: "retry", reasonCode: null });
+    // A pinned Skill admission cannot resolve pauses; one whose version moved before acceptance retries.
+    expect(classifySendRefusal(404, "skill_not_available")).toEqual({ kind: "fail",
+      outcome: { pauseReason: "skill_unavailable", reasonCode: "skill_unavailable", state: "FAILED" } });
+    expect(classifySendRefusal(409, "skill_not_available")).toEqual({ kind: "retry", reasonCode: null });
     expect(classifySendRefusal(403, "model_not_available")).toEqual({ kind: "fail",
       outcome: { pauseReason: "model_unavailable", reasonCode: "model_unavailable", state: "FAILED" } });
     expect(classifySendRefusal(403, "search_strategy_not_available")).toMatchObject({ outcome: { pauseReason: "search_unavailable" } });
@@ -407,5 +453,65 @@ describe("send refusals", () => {
       // Each pause has its own human copy, never the generic fallback.
       expect(scheduledTaskReasonMessage(pauseReason)).not.toBe(scheduledTaskReasonMessage("some_future_code"));
     }
+  });
+});
+
+describe("scheduled Workspace capacity and dispatch spread", () => {
+  it("spreads recurring dispatch by a stable whole-second offset of 0 to 180 s per task", () => {
+    const offsets = Array.from({ length: 2_000 }, (_value, index) => scheduledTaskDispatchOffsetMs(`task-${index}`));
+    for (const offset of offsets) {
+      expect(offset).toBeGreaterThanOrEqual(0);
+      expect(offset).toBeLessThanOrEqual(SCHEDULED_TASK_DISPATCH_SPREAD_MS);
+      expect(offset % 1_000).toBe(0);
+    }
+    expect(scheduledTaskDispatchOffsetMs("6f1c2d34-aaaa-4bbb-8ccc-0123456789ab"))
+      .toBe(scheduledTaskDispatchOffsetMs("6f1c2d34-aaaa-4bbb-8ccc-0123456789ab"));
+    // Spread, not clustered: most of the 181 possible seconds are used.
+    expect(new Set(offsets).size).toBeGreaterThan(150);
+  });
+
+  it("delays only a recurring task's scheduled occurrences", () => {
+    const scheduledFor = at("2026-10-05T06:00:00Z");
+    const candidate = { recurring: true, scheduledFor, taskId: "task-a", trigger: "schedule" as const };
+    expect(scheduledDispatchNotBefore(candidate, () => 90_000)).toEqual(at("2026-10-05T06:01:30Z"));
+    expect(scheduledDispatchNotBefore({ ...candidate, trigger: "manual" }, () => 90_000)).toEqual(scheduledFor);
+    expect(scheduledDispatchNotBefore({ ...candidate, recurring: false }, () => 90_000)).toEqual(scheduledFor);
+    expect(scheduledDispatchNotBefore(candidate).getTime() - scheduledFor.getTime()).toBe(scheduledTaskDispatchOffsetMs("task-a"));
+  });
+
+  it("skips an occurrence still waiting for a Workspace slot at its window's end, never failing it", () => {
+    const scheduledFor = at("2026-10-05T06:00:00Z");
+    const waiting = { reasonCode: "waiting_for_workspace", scheduledFor, startedAt: null };
+    // Never attempted: no retry window, only lateness.
+    expect(expiredPendingOutcome(waiting, at("2026-10-05T07:00:00Z"))).toBeNull();
+    expect(expiredPendingOutcome(waiting, new Date(scheduledFor.getTime() + SCHEDULED_TASK_LATENESS_MS + 1)))
+      .toEqual({ reasonCode: "workspace_capacity", state: "SKIPPED" });
+    // Attempted before it waited: the retry window still ends it, as a skip.
+    expect(expiredPendingOutcome({ ...waiting, startedAt: scheduledFor }, at("2026-10-05T06:31:00Z")))
+      .toEqual({ reasonCode: "workspace_capacity", state: "SKIPPED" });
+    // An occurrence no longer waiting fails at the retry window's end as before.
+    expect(expiredPendingOutcome({ reasonCode: null, scheduledFor, startedAt: scheduledFor }, at("2026-10-05T06:31:00Z")))
+      .toEqual({ reasonCode: "admission_failed", state: "FAILED" });
+    const skip = planTaskSettlement({ outcome: { reasonCode: "workspace_capacity", state: "SKIPPED" }, trigger: "schedule",
+      task: { consecutiveFailures: 2, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0, revision: 1, status: "ACTIVE" } });
+    expect(skip).toMatchObject({ consecutiveFailures: 2, pauseReason: null });
+    expect(settlementNotifiesOwner({ reasonCode: "workspace_capacity", state: "SKIPPED", taskPaused: false })).toBe(false);
+  });
+
+  it("skips a waiting occurrence the next instant supersedes as a capacity skip", () => {
+    const now = at("2026-10-05T07:00:00Z");
+    expect(planClaimOverlap({ now, recurring: true, open: [
+      { id: "waiting", leaseExpiresAt: null, reasonCode: "waiting_for_workspace", runId: null, state: "PENDING" },
+      { id: "fresh", leaseExpiresAt: null, reasonCode: null, runId: null, state: "PENDING" }
+    ] })).toEqual({ previousRunning: false, superseded: [
+      { id: "waiting", reasonCode: "workspace_capacity" }, { id: "fresh", reasonCode: "superseded" }
+    ] });
+  });
+
+  it("waits on measured capacity refusals only; an unavailable runtime still retries as an outage", () => {
+    expect(classifySendRefusal(503, "workspace_runtime_unavailable")).toEqual({ kind: "retry", reasonCode: null });
+    expect(classifySendRefusal(503, "workspace_runtime_capacity", new Set(["workspace_runtime_capacity"]))).toEqual({ kind: "wait" });
+    expect(classifySendRefusal(503, "workspace_runtime_capacity")).toEqual({ kind: "retry", reasonCode: null });
+    expect(scheduledTaskReasonMessage("workspace_capacity")).not.toBe(scheduledTaskReasonMessage("some_future_code"));
   });
 });

@@ -40,7 +40,8 @@ for (const theme of ["light", "dark"] as const) {
       const currentPage = Math.min(Number(params.get("page") ?? 1), Math.max(1, Math.ceil(selected.length / 20)));
       const overview: WorkspaceOverviewWire = {
         activeCount: mode === "unavailable" ? null : mode === "empty" ? 0 : 21,
-        filter, observedAt: mode === "unavailable" ? null : observedAt, page: currentPage, pageSize: 20,
+        filter, footprint: mode === "unavailable" ? null : { retainedDisks: 3, scheduledDisks: 1, scheduledWaits: 0, scheduledSkips: 0 },
+        observedAt: mode === "unavailable" ? null : observedAt, page: currentPage, pageSize: 20,
         rows: selected.slice((currentPage - 1) * 20, currentPage * 20).map((row) => mode === "unavailable" ? { ...row, state: "unknown" } : row),
         state: mode === "empty" ? "fresh" : mode,
         stoppedCount: mode === "unavailable" ? null : mode === "empty" ? 0 : 1,

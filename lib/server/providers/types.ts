@@ -111,6 +111,9 @@ export type ProviderImageProvenance = Readonly<
  * and is never accepted from the browser as configuration. */
 export type NormalizedRunWorkspace = Readonly<{
   enabled: true;
+  /** Guest code of this Internet-On, non-Agent run can reach the run gateway,
+   * with these code-call budgets. Absent: no code token (older runs too). */
+  codeMcp?: import("../workspace/codeMcp").NormalizedWorkspaceCodeMcp;
   /** Absent historical turns retain their inline-guide Agent contract. */
   guidanceVersion?: 1;
   imageRef: string;
@@ -300,6 +303,12 @@ export type NormalizedRunRequest = {
     userUrlDigests?: readonly string[];
   }>;
   searchPlan: NormalizedSearchPlan;
+  /** Server-owned admission marker of an interactive personal chat with
+   * Workspace on, or a personal Agent run: the model may save one Workspace
+   * folder per answer as a personal Skill through `save_skill` (never a
+   * scheduled, temporary, Project, Assistant or Knowledge run). Never set
+   * from a request field. */
+  skillSaveTool?: true;
   /** Server-owned admission marker of a tool-calling run that may read pages
    * through `fetch_url`, with its frozen link authority: digests of links in
    * user-authored text on the visible branch, or a scheduled run's task

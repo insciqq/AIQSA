@@ -3,28 +3,29 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { providerTemplateIds } from "../../domain/providerTemplates";
-import { scheduledTaskRunChatTitle } from "../../domain/scheduledTaskSchedule";
-import { createPrismaChatRepository } from "../chats/prismaRepository";
+import { scheduledTaskMonthChatTitle, scheduledTaskRunChatTitle } from "../../domain/scheduledTaskSchedule";
 import { prisma } from "../prisma";
 import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
 import { createSendMessageHandler, stopModelRun } from "../runs/handlers";
 import type { CreateRunInput } from "../runs/runRepositoryContract";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend, scheduledTaskOwnerAuth, scheduledTaskSendBody } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import { planScheduledTaskUpdate } from "./mutations";
 import { createScheduledTaskRunner } from "./runner";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "./store";
 
 const users: string[] = [];
-const chats = createPrismaChatRepository();
 const sendDeps = () => ({ ...createDefaultSendMessageDeps(), allowFakeProvider: true });
 
 function runner(deps: ReturnType<typeof sendDeps> = sendDeps()) {
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
+    // Due tasks start at once here; the spread has its own tests.
+    dispatchOffsetMs: () => 0,
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
-    async renameChat(input) { await chats.updateChat(input); },
+    loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
     // The ordinary send admission, with the fake provider of the disposable stand.
     send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: deps }),
     stopRun: ({ code, message, runId, userId }) => stopModelRun(deps, { payload: { code, message }, runId, userId }),
@@ -57,7 +58,7 @@ async function ownerMessage(userId: string, taskId: string, chatId: string, text
   const response = await createSendMessageHandler({ ...sendDeps(),
     resolveAuth: scheduledTaskOwnerAuth(createPrismaScheduledTaskOwnerLoader(prisma), { taskId, userId }) })(
     new Request(`http://localhost/api/chats/${chatId}/messages`, { body: JSON.stringify(scheduledTaskSendBody({
-      admissionId: randomUUID(), modelId: providerTemplateIds.fakeModel, prompt: text, provider: providerTemplateIds.fakeConnection,
+      admissionId: randomUUID(), modelId: providerTemplateIds.fakeModel, pinnedSkillIds: [], prompt: text, provider: providerTemplateIds.fakeConnection,
       searchPlan: { mode: "all_selected", optionIds: [] }, target: { activeLeafMessageId: chat.activeLeafMessageId, chatId, kind: "existing" },
       timeZone: "Europe/Moscow", toolCalling: true, toolsEnabled: false, workspaceEnabled: false
     })), method: "POST" }), { params: { chatId } });
@@ -89,10 +90,11 @@ describe("scheduled task end to end", () => {
     expect(first.chatId).not.toBeNull();
     expect(first.nextRunAt!.getTime()).toBeGreaterThan(Date.now());
     expect(first).toMatchObject({ consecutiveFailures: 0, generation: 1, revision: 1, status: "ACTIVE" });
-    expect(await prisma.chat.findUniqueOrThrow({ where: { id: first.chatId! } }))
-      .toMatchObject({ memoryMode: "EXCLUDED", projectId: null, title: "Synthetic brief", userId });
     const [occurrence] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
     expect(occurrence).toMatchObject({ chatId: first.chatId, reasonCode: null, state: "COMPLETED", taskGeneration: 1, trigger: "schedule" });
+    // The task's chat is the one of its run's month, titled with that month.
+    expect(await prisma.chat.findUniqueOrThrow({ where: { id: first.chatId! } })).toMatchObject({ memoryMode: "EXCLUDED", projectId: null,
+      title: scheduledTaskMonthChatTitle("Synthetic brief", occurrence!.scheduledFor, "Europe/Moscow"), userId });
     expect(occurrence!.unseenAt).not.toBeNull();
     const firstRun = await prisma.modelRun.findUniqueOrThrow({ where: { id: occurrence!.runId! } });
     expect(firstRun).toMatchObject({ chatId: first.chatId, modelId: "fake-qsa", scheduledOccurrenceId: occurrence!.id,

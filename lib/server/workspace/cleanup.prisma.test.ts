@@ -448,6 +448,7 @@ describe("Prisma Workspace maintenance backstop", () => {
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   });
 
+  // The 257-execution case takes 4–5 s against PostgreSQL on a loaded host, near the default limit.
   it.each([
     { command: "sandbox_exec_start", state: "running", registeredCount: 1 },
     { command: "sandbox_exec_start", state: "error", registeredCount: 257 },
@@ -655,7 +656,7 @@ describe("Prisma Workspace maintenance backstop", () => {
       staleSessionsSettled: 0,
       staleSessionsStopped: 0
     });
-  });
+  }, 20_000);
 });
 
 describe("Prisma Workspace residency and retention of scheduled tasks", () => {

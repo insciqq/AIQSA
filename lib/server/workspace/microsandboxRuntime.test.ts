@@ -20,6 +20,7 @@ import { tarGzipStream } from "../chats/tarArchive";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
+import { BOUND_WORKSPACE_UV_CACHE, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS, WORKSPACE_UV_CACHE_DIRECTORY } from "./guestCache";
 
 const sdk = vi.hoisted(() => ({
   builder: vi.fn(),
@@ -445,7 +446,7 @@ describe("Microsandbox Workspace lifecycle", () => {
         maxOutputTokens: 4096, developerInstructions: "Synthetic instructions", mcpMode: "off", mcpTimeoutSeconds: 90 } });
     if (timeoutSeconds === null) expect(builder.timeout).not.toHaveBeenCalled();
     else expect(builder.timeout).toHaveBeenCalledWith(2000);
-    expect(builder.envs).toHaveBeenCalledWith(expect.objectContaining({ HOME: "/root" }));
+    expect(builder.envs).toHaveBeenCalledWith(expect.objectContaining({ HOME: "/root", UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY }));
   });
 
   it("requires a settled exact native predecessor before resuming and never replays a lost start", async () => {
@@ -610,11 +611,41 @@ describe("Microsandbox Workspace lifecycle", () => {
     sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
     for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
       await value.runtime.callBoundTool({ ...callInput, originalName, arguments: { command: "env", env: { CALL_ONLY: "explicit" } } });
-      expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { SERVICE_TOKEN: token, CALL_ONLY: "explicit" } }) }), undefined, expect.anything());
+      expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, SERVICE_TOKEN: token, CALL_ONLY: "explicit" } }) }), undefined, expect.anything());
     }
     await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "next_run", secrets: [] });
     await value.runtime.callBoundTool({ ...callInput, modelRunId: "next_run" });
-    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toBeUndefined();
+    // Every guest command, with or without saved env, keeps uv's cache on the chat's disk.
+    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY });
+    await value.runtime.callBoundTool({ ...callInput, modelRunId: "next_run", originalName: "sandbox_shell",
+      arguments: { command: "env", env: { UV_CACHE_DIR: "/workspace/project/.uv" } } });
+    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: "/workspace/project/.uv" });
+  });
+
+  it("adds the run's code bearer over saved env, and each command's own invocation id over requested env", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const run = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, runEnvironment: run, secrets: [{
+      id: randomUUID(), versionId: randomUUID(), name: "Shadow", description: "Synthetic fixture",
+      value: { kind: "env", entries: [{ name: "AIQSA_RUN_TOKEN", value: "saved-value-must-not-win" }] }
+    }] });
+    expect(JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()))
+      .toMatchObject({ environment: run });
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
+    const invocationId = "f".repeat(32);
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      await value.runtime.callBoundTool({ ...callInput, invocationId, originalName,
+        arguments: { command: "env", env: { AIQSA_INVOCATION_ID: "spoofed" } } });
+      expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, ...run, AIQSA_INVOCATION_ID: invocationId });
+    }
+    // The id never enters another command or the shared environment file.
+    await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell", arguments: { command: "env" } });
+    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, ...run });
+    await expect(value.runtime.callBoundTool({ ...callInput, invocationId: "../escape", originalName: "sandbox_shell",
+      arguments: { command: "env" } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "foreign", secrets: [],
+      runEnvironment: { ...run, AIQSA_GATEWAY_URL: "https://attacker.example" } })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
   });
 
   it("recovers managed env after receiver restart and fails preparation without dispatching a model command", async () => {
@@ -623,7 +654,7 @@ describe("Microsandbox Workspace lifecycle", () => {
     value.sandbox.execWith.mockResolvedValueOnce({ success: true, stdout: () => environment, stdoutBytes: () => Buffer.from(environment) });
     const restarted = new MicrosandboxWorkspaceRuntime(config);
     await restarted.callBoundTool(callInput);
-    expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { RECOVERED_TOKEN: "synthetic-recovered" } }) }), undefined, expect.anything());
+    expect(sdk.callTool).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: expect.objectContaining({ env: { UV_CACHE_DIR: WORKSPACE_UV_CACHE_DIRECTORY, RECOVERED_TOKEN: "synthetic-recovered" } }) }), undefined, expect.anything());
     sdk.callTool.mockClear();
     value.sandbox.execWith.mockResolvedValue({ success: false, stdout: () => "", stdoutBytes: () => Buffer.from("") });
     value.secretHelper.wait.mockResolvedValue({ code: 1 });
@@ -726,6 +757,56 @@ describe("Microsandbox Workspace lifecycle", () => {
     await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "cancelled", signal: controller.signal,
       secrets: [] })).rejects.toMatchObject({ code: "workspace_execution_cleanup_failed" });
     expect(value.secretPipe.close).not.toHaveBeenCalled();
+  });
+
+  it("runs the fixed uv cache helper only when asked, after delivery, with a bounded timeout", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const cacheCalls = () => value.sandbox.execWith.mock.calls.filter(([command]) => command === "/bin/sh");
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "interactive", secrets: [] });
+    expect(cacheCalls()).toHaveLength(0);
+    const builder = { args: vi.fn().mockReturnThis(), timeout: vi.fn().mockReturnThis() };
+    value.sandbox.execWith.mockImplementationOnce(async (_command, configure) => {
+      (configure as (input: typeof builder) => unknown)(builder);
+      return { success: true, stdout: () => "pruned\n", stdoutBytes: () => Buffer.from("pruned\n") };
+    });
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(line => { lines.push(String(line)); return true; });
+    try {
+      await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "scheduled", secrets: [], boundUvCache: true });
+    } finally { writer.mockRestore(); }
+    expect(cacheCalls()).toHaveLength(1);
+    expect(builder.args).toHaveBeenCalledWith(["-c", BOUND_WORKSPACE_UV_CACHE]);
+    expect(builder.timeout).toHaveBeenCalledWith(WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS);
+    expect(vi.mocked(value.sandbox.execWith).mock.invocationCallOrder.at(-1)).toBeGreaterThan(value.secretHelper.wait.mock.invocationCallOrder.at(-1)!);
+    const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "runtime_lifecycle", subsystem: "workspace", stage: "cleanup",
+      outcome: "completed", code: "workspace_uv_cache_pruned" }));
+    expect(sdk.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "nonzero", "garbled", "within"] as const)("never fails delivery when the uv cache helper does not prune (%s)", async (mode) => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    value.sandbox.execWith.mockImplementationOnce(async () => {
+      if (mode === "rejected") throw new Error("PRIVATE_CACHE_CANARY");
+      const stdout = mode === "within" ? "within\n" : "PRIVATE_CACHE_CANARY";
+      return { success: mode !== "nonzero", stdout: () => stdout, stdoutBytes: () => Buffer.from(stdout) };
+    });
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(line => { lines.push(String(line)); return true; });
+    try {
+      await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "scheduled", secrets: [], boundUvCache: true });
+    } finally { writer.mockRestore(); }
+    const codes = lines.map((line) => (JSON.parse(line) as Record<string, unknown>).code);
+    if (mode === "within") expect(codes).not.toContain("workspace_uv_cache_prune_failed");
+    else expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>)).toContainEqual(expect.objectContaining({
+      event: "runtime_lifecycle", stage: "cleanup", outcome: "degraded", action: "skip", code: "workspace_uv_cache_prune_failed" }));
+    expect(lines.join("\n")).not.toContain("PRIVATE_CACHE_CANARY");
+    // The delivered environment survives: the next command still carries it.
+    await value.runtime.callBoundTool({ ...callInput, modelRunId: "scheduled" });
+    expect(sdk.callTool).toHaveBeenCalledOnce();
+    expect(value.sandbox.stopWithTimeout).not.toHaveBeenCalled();
   });
 
   it("reads labelled inventory pages without connecting, touching or starting stopped environments", async () => {

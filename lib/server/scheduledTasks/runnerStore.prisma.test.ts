@@ -44,10 +44,10 @@ async function personalChat(userId: string, memoryMode: "EXCLUDED" | "NORMAL" = 
 }
 
 /** The scheduled origin the runner passes for an occurrence of `created`, as read before preparation. */
-function origin(occurrenceId: string, created: Readonly<{ generation: number; id: string; revision: number }>,
+function origin(occurrenceId: string, created: Readonly<{ chatEpoch?: number; generation: number; id: string; revision: number }>,
   overrides: Partial<ScheduledOccurrenceAdmission> = {}): ScheduledOccurrenceAdmission {
-  return { occurrenceId, previousResult: null, relevantMcpServerIds: null, taskGeneration: created.generation, taskId: created.id,
-    taskRevision: created.revision, ...overrides };
+  return { occurrenceId, previousResult: null, relevantMcpServerIds: null, taskChatEpoch: created.chatEpoch ?? 0,
+    taskGeneration: created.generation, taskId: created.id, taskRevision: created.revision, ...overrides };
 }
 
 /** A send into an existing chat, as the send handler hands it to run creation. */
@@ -71,8 +71,32 @@ async function runInput(userId: string, chatId: string, scheduledOccurrence?: Sc
   };
 }
 
+/** Content-free receipts of MCP calls the run's Workspace code made, as the code gateway leaves them. */
+async function codeReceipts(runId: string, chatId: string,
+  receipts: readonly Readonly<{ errorCode?: string; serverId: string; state: "complete" | "error" | "unknown" }>[]) {
+  const session = await prisma.workspaceSession.upsert({ where: { chatId }, update: {}, create: { chatId,
+    expiresAt: new Date(Date.now() + 600_000), imageRef: "aiqsa-workspace:0.1.32", internetEnabled: true, policyRevision: 1,
+    sandboxName: `code-${randomUUID()}` } });
+  await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: true, mcpVersion: "0.6.16",
+    modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
+    toolCatalogHash: "a".repeat(64), toolDefinitions: [{ description: "Fixture", inputSchema: { type: "object" },
+      namespacedName: "workspace__sandbox_shell", originalName: "sandbox_shell" }], workspaceSessionId: session.id } });
+  await prisma.workspaceCodeGrant.create({ data: { modelRunId: runId, workspaceSessionId: session.id } });
+  const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: runId, ordinal: 90,
+    providerCallId: `code-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "workspace__sandbox_shell" } });
+  const invocationId = randomUUID().replaceAll("-", "");
+  await prisma.workspaceCodeInvocation.create({ data: { closedAt: new Date(), id: invocationId, kind: "command",
+    modelRunId: runId, state: "closed", toolCallId: call.id } });
+  await prisma.workspaceCodeCall.createMany({ data: receipts.map((receipt, sequence) => ({ argumentHash: "c".repeat(64),
+    errorCode: receipt.errorCode ?? null, invocationId, modelRunId: runId, sequence, serverId: receipt.serverId,
+    settledAt: new Date(), state: receipt.state, toolName: `mcp_${receipt.serverId}_tool` })) });
+}
+
 afterEach(async () => {
   const ids = users.splice(0);
+  const chats = await prisma.chat.findMany({ where: { userId: { in: ids } }, select: { id: true } });
+  await prisma.modelRun.deleteMany({ where: { userId: { in: ids }, workspaceRunBinding: { isNot: null } } });
+  await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chats.map((chat) => chat.id) } } });
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
   // Memory-mode chats run the Memory source lifecycle, which may leave purge obligations.
@@ -363,11 +387,11 @@ describe("persisted scheduled task runner", () => {
     const detail = await owners.detail(userId, created.id);
     expect(detail?.recentRuns[0]?.unavailableSources).toEqual([{ name: "Synthetic Mail", reason: "mcp_reauthorization_required" }]);
     // An owner edit (here resuming) ends the streak.
-    const { chatMode, emailNotify, kind, memoryEnabled, modelId, prompt, provider, revision, schedule, searchEnabled, timeZone, title,
-      toolsEnabled, workspaceEnabled } = detail!.task;
+    const { chatMode, emailNotify, historyRetentionDays, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, revision, schedule, searchEnabled,
+      timeZone, title, toolsEnabled, workspaceEnabled } = detail!.task;
     await owners.update(userId, created.id, {
-      draft: { chatMode, emailNotify, kind, memoryEnabled, modelId, prompt, provider, schedule, searchEnabled, timeZone, title,
-        toolsEnabled, workspaceEnabled },
+      draft: { chatMode, emailNotify, historyRetentionDays, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, schedule, searchEnabled, timeZone,
+        title, toolsEnabled, workspaceEnabled },
       expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active"
     });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
@@ -397,6 +421,10 @@ describe("persisted scheduled task runner", () => {
     const next = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(Date.now() + 1), taskId: created.id,
       trigger: "manual", userId } });
     expect([...(await runner.loadExecution(next.id))!.relevantMcpServerIds!].sort()).toEqual(["server-mail", "server-tracker"]);
+    // Servers the result's Workspace code called are relied on like servers its model called.
+    await codeReceipts(run.runId, chat.id, [{ serverId: "server-gitlab", state: "complete" }]);
+    expect([...(await runner.loadExecution(next.id))!.relevantMcpServerIds!].sort())
+      .toEqual(["server-gitlab", "server-mail", "server-tracker"]);
     // Tools off: no relevance is read. A previous result whose run is gone leaves nothing to judge by.
     await prisma.scheduledTask.update({ data: { toolsEnabled: false }, where: { id: created.id } });
     expect((await runner.loadExecution(next.id))!.relevantMcpServerIds).toBeNull();
@@ -531,6 +559,39 @@ describe("persisted monitoring checks", () => {
     expect(await outcomeOf(plain.run.runId)).toBeNull();
   });
 
+  it("settles a check whose code could not reach a source as could_not_check, never as a hidden no_update", async () => {
+    const userId = await owner();
+    await task(userId, null, { kind: "MONITORING", toolsEnabled: true });
+    const chat = await personalChat(userId);
+    const now = new Date();
+    expect(await finish(await check(userId, chat.id), "no_update", now)).toMatchObject({ reasonCode: "baseline" });
+    const withCatalog = async (runId: string) => {
+      const accepted = await prisma.modelRun.findUniqueOrThrow({ where: { id: runId } });
+      await prisma.modelRun.update({ where: { id: runId }, data: { normalizedRequest: { ...(accepted.normalizedRequest as object),
+        mcpDiscovery: { catalog: { servers: [{ description: "", namespace: "gitlab", revisionId: "revision", serverId: "server-gitlab",
+          serverName: "Synthetic GitLab", tools: [] }], version: 1 }, epochs: [], version: 2 } } } });
+    };
+    // GitLab is reached only through the Skill's code, which found it needing a new sign-in. A scheduled
+    // check's first incomplete result raises the source alert, so it is news rather than a hidden result.
+    const blind = await check(userId, chat.id, "schedule");
+    await withCatalog(blind.run.runId);
+    await codeReceipts(blind.run.runId, chat.id, [{ errorCode: "authorization_required", serverId: "server-gitlab", state: "error" }]);
+    expect(await finish(blind, "no_update", now)).toMatchObject({ reasonCode: "could_not_check", sourcesIncomplete: true,
+      state: "COMPLETED" });
+    expect(await occurrenceOf(blind.occurrence.id)).toMatchObject({ unseenAt: now, unavailableSources: [
+      { name: "Synthetic GitLab", reason: "mcp_reauthorization_required", relied: true, serverId: "server-gitlab" }] });
+    expect(await outcomeOf(blind.run.runId)).toBe("could_not_check");
+    // A transient refusal the code recovered from, or a tool's own error, is no missing source.
+    const recovered = await check(userId, chat.id);
+    await codeReceipts(recovered.run.runId, chat.id, [
+      { errorCode: "upstream_unavailable", serverId: "server-gitlab", state: "error" },
+      { serverId: "server-gitlab", state: "complete" },
+      { errorCode: "upstream_error", serverId: "server-wiki", state: "error" }
+    ]);
+    expect(await finish(recovered, "no_update", now)).toMatchObject({ reasonCode: "no_update", sourcesIncomplete: false });
+    expect((await occurrenceOf(recovered.occurrence.id)).unavailableSources).toBeNull();
+  });
+
   it("pauses after three scheduled checks in a row that never reported", async () => {
     const userId = await owner();
     const created = await task(userId, new Date(Date.now() + 3_600_000), { kind: "MONITORING", consecutiveMissingVerdicts: 2 });
@@ -566,5 +627,103 @@ describe("persisted monitoring checks", () => {
     const resumed = await owners.update(userId, created.id, { draft: { ...completed!, kind: "monitoring" }, expectedRevision: 3,
       nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active" });
     expect(resumed).toMatchObject({ completionReason: null, kind: "monitoring", status: "active" });
+  });
+});
+
+/** A Workspace binding for an accepted run, as Workspace admission creates it with the run. */
+async function bindWorkspace(runId: string, chatId: string): Promise<void> {
+  const session = await prisma.workspaceSession.upsert({ where: { chatId }, update: {}, create: { chatId,
+    expiresAt: new Date(Date.now() + 600_000), imageRef: "aiqsa-workspace:0.1.32", internetEnabled: false, policyRevision: 1,
+    sandboxName: `capacity-${randomUUID()}` } });
+  await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: false, mcpVersion: "0.6.16",
+    modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
+    toolCatalogHash: "a".repeat(64), toolDefinitions: [{ description: "Fixture", inputSchema: { type: "object" },
+      namespacedName: "workspace__sandbox_shell", originalName: "sandbox_shell" }], workspaceSessionId: session.id } });
+}
+
+describe("persisted scheduled Workspace capacity", () => {
+  it("holds a Workspace slot by a scheduled run with a Workspace binding or an admission in flight, never an interactive run", async () => {
+    const userId = await owner();
+    const created = await task(userId, null, { toolsEnabled: true, workspaceEnabled: true });
+    const now = new Date();
+    const base = (await runner.loadDispatch(now, 10)).workspaceExecuting;
+    // An ordinary chat's Workspace run never takes a scheduled slot, and scheduled load never refuses it.
+    const interactiveChat = await personalChat(userId);
+    const interactive = await runs.createRun(await runInput(userId, interactiveChat.id));
+    await bindWorkspace(interactive.runId, interactiveChat.id);
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base);
+    // An admission in flight for a Workspace task holds a slot by its lease.
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: now, taskId: created.id,
+      trigger: "manual", userId } });
+    expect(await runner.acquireLease(occurrence.id, now, new Date(now.getTime() + 60_000))).toBe(true);
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base + 1);
+    // Its accepted run with a Workspace binding holds the slot until it is terminal.
+    const chat = await personalChat(userId);
+    const run = await runs.createRun(await runInput(userId, chat.id, origin(occurrence.id, created)));
+    await bindWorkspace(run.runId, chat.id);
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base + 1);
+    await runs.cancelRun({ payload: { code: "model_run_cancelled", message: "Model run cancelled" }, runId: run.runId, userId });
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base);
+  });
+
+  it("shows a wait for a Workspace slot, ends it at the next attempt and skips one still waiting without counting a failure", async () => {
+    const userId = await owner();
+    const created = await task(userId, new Date(Date.now() + 3_600_000), { consecutiveFailures: 2, toolsEnabled: true,
+      workspaceEnabled: true });
+    const now = new Date();
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+      taskId: created.id, trigger: "schedule", userId } });
+    const candidate = async () => (await runner.loadDispatch(now, 500)).pending.find((row) => row.id === occurrence.id);
+    expect(await candidate()).toEqual({ id: occurrence.id, recurring: true, scheduledFor: occurrence.scheduledFor, taskId: created.id,
+      trigger: "schedule", userId, waiting: false, workspace: true });
+
+    await runner.waitForWorkspace(occurrence.id, now);
+    await runner.waitForWorkspace(occurrence.id, new Date(now.getTime() + 30_000));
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).toMatchObject({
+      leaseExpiresAt: null, reasonCode: "waiting_for_workspace", startedAt: null, state: "PENDING", workspaceWaitStartedAt: now });
+    expect(await candidate()).toMatchObject({ waiting: true });
+    expect(await owners.get(userId, created.id)).toMatchObject({ running: true, waitingForWorkspace: true });
+
+    // The next attempt ends the wait and keeps when it began.
+    const attempt = new Date(now.getTime() + 60_000);
+    expect(await runner.acquireLease(occurrence.id, attempt, new Date(attempt.getTime() + 60_000))).toBe(true);
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).toMatchObject({
+      reasonCode: null, startedAt: attempt, workspaceWaitStartedAt: now });
+    expect(await owners.get(userId, created.id)).not.toHaveProperty("waitingForWorkspace");
+    // A capacity refusal of that attempt waits again and releases the lease.
+    await runner.waitForWorkspace(occurrence.id, attempt);
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).toMatchObject({
+      leaseExpiresAt: null, reasonCode: "waiting_for_workspace", workspaceWaitStartedAt: now });
+
+    // Still waiting when the retry window after its attempt ends: skipped, the task neither failed nor paused.
+    const settled = await runner.expirePending(new Date(attempt.getTime() + 31 * 60_000), 500);
+    expect(settled.find((row) => row.occurrenceId === occurrence.id)).toMatchObject({
+      reasonCode: "workspace_capacity", state: "SKIPPED", taskPaused: false });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
+      .toMatchObject({ consecutiveFailures: 2, pauseReason: null, status: "ACTIVE" });
+
+    // Never attempted, a waiting occurrence lasts until its lateness ends, then skips the same way.
+    const late = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 13 * 3_600_000),
+      taskId: created.id, trigger: "schedule", userId } });
+    await runner.waitForWorkspace(late.id, new Date(now.getTime() - 13 * 3_600_000));
+    expect((await runner.expirePending(now, 500)).find((row) => row.occurrenceId === late.id))
+      .toMatchObject({ reasonCode: "workspace_capacity", state: "SKIPPED" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
+      .toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
+  });
+
+  it("skips a waiting occurrence that the next due instant supersedes as a capacity skip", async () => {
+    const userId = await owner();
+    // A real hourly instant and a fixed claim time: the wall clock crossing an hour must not add a newer instant.
+    const due = new Date(Math.floor((Date.now() - 60_000) / 3_600_000) * 3_600_000);
+    const created = await task(userId, due, { ...scheduledTaskScheduleColumns(hourly), toolsEnabled: true, workspaceEnabled: true });
+    const waiting = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(due.getTime() - 3_600_000),
+      taskId: created.id, trigger: "schedule", userId } });
+    await runner.waitForWorkspace(waiting.id, new Date(due.getTime() - 3_600_000));
+    const claim = await runner.claimDue(new Date(due.getTime() + 60_000), 500);
+    expect(claim.settlements.find((row) => row.occurrenceId === waiting.id))
+      .toMatchObject({ reasonCode: "workspace_capacity", state: "SKIPPED", taskPaused: false });
+    expect(await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: created.id, state: "PENDING" } }))
+      .toMatchObject([{ reasonCode: null, scheduledFor: due }]);
   });
 });

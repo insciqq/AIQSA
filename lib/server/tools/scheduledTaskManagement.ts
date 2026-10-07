@@ -25,7 +25,8 @@ import type {
   ScheduledTaskManagementOutcome
 } from "../runs/runRepositoryContract";
 import { isFetchUrlDigestList } from "./fetchUrlPlan";
-import { localInstant } from "./scheduledTaskCreation";
+import { localInstant, scheduledTaskToolHistoryText } from "./scheduledTaskCreation";
+import { resolveScheduledTaskSkillReferences, scheduledTaskModelSkills } from "./scheduledTaskSkills";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
 /**
@@ -47,7 +48,11 @@ import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type
 export const MANAGE_SCHEDULED_TASK_TOOL_NAME = "manage_scheduled_task";
 
 export type ScheduledTaskManagementSettings = NonNullable<NormalizedRunRequest["scheduledTaskManagementTool"]>;
-type ScheduledTaskManagementRequest = Readonly<{ scheduledTaskManagementTool?: ScheduledTaskManagementSettings }>;
+type ScheduledTaskManagementRequest = Readonly<{
+  scheduledTaskManagementTool?: ScheduledTaskManagementSettings;
+  /** The run's frozen Skill manifest: the only Skills an update may pin. */
+  skills?: unknown;
+}>;
 export type ScheduledTaskCallManager = NonNullable<RunRepository["manageScheduledTaskForCall"]>;
 
 const ACTIONS = ["list", "get", "update", "pause", "resume", "propose_delete"] as const satisfies
@@ -59,8 +64,14 @@ const ACTIONS = ["list", "get", "update", "pause", "resume", "propose_delete"] a
 export const SCHEDULED_TASK_MANAGED_SWITCHES = [
   "searchEnabled", "emailNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled"
 ] as const satisfies readonly (keyof ScheduledTaskDraft & keyof ScheduledTask)[];
-/** Everything `update` may change; the model stays the editor's. */
-const UPDATE_KEYS: readonly string[] = ["title", "prompt", "kind", "chatMode", "timeZone", "schedule", ...SCHEDULED_TASK_MANAGED_SWITCHES];
+/**
+ * Everything `update` may change; the model stays the editor's, and so does
+ * the history retention: a shorter one deletes old chats, which only the
+ * owner decides. `skills` replaces the pinned Skills.
+ */
+const UPDATE_KEYS: readonly string[] = [
+  "title", "prompt", "kind", "chatMode", "timeZone", "schedule", ...SCHEDULED_TASK_MANAGED_SWITCHES, "skills"
+];
 const ARGUMENT_KEYS = ["action", "taskId", ...UPDATE_KEYS];
 const SCHEDULE_FIELDS = {
   once: ["date"], daily: [], weekly: ["days"], monthly: ["dayOfMonth"], hourly: ["everyHours", "until", "days"]
@@ -109,6 +120,7 @@ export function manageScheduledTaskTool(settings: ScheduledTaskManagementSetting
       "user means, ask instead of guessing. list: ids and settings, no prompts. get: one task with its prompt, required",
       "before changing the prompt. update: taskId and only the fields to change; prompt replaces the whole instruction;",
       "schedule fields merge into the current schedule, so set schedule.kind only to change the kind. pause, resume.",
+      "skills: pin the Skill a task runs, by alias.",
       "propose_delete deletes nothing: the answer asks the user to confirm. Changes apply at once without confirmation;",
       `one answer affects at most ${SCHEDULED_TASK_MANAGED_PER_ANSWER} tasks. Times are in the task's time zone. The model`,
       "cannot be changed here; the user can use Edit. If a call fails, explain why; do not retry the same arguments."
@@ -136,7 +148,8 @@ export function manageScheduledTaskTool(settings: ScheduledTaskManagementSetting
           },
           type: "object"
         },
-        ...Object.fromEntries(SCHEDULED_TASK_MANAGED_SWITCHES.map((key) => [key, { type: "boolean" }]))
+        ...Object.fromEntries(SCHEDULED_TASK_MANAGED_SWITCHES.map((key) => [key, { type: "boolean" }])),
+        skills: { items: { type: "string" }, type: "array" }
       },
       required: ["action"],
       type: "object"
@@ -255,6 +268,17 @@ function updateBody(current: ScheduledTask, input: UpdateArguments): Record<stri
   return typeof schedule === "string" ? schedule : { ...input.fields, schedule };
 }
 
+/**
+ * An update's `skills`, resolved against the run's own Skills, as the owner
+ * contract's `pinnedSkillIds`; other calls pass unchanged.
+ */
+function pinnedSkillChange(request: ScheduledTaskManagementRequest, input: ToolArguments): ToolArguments | string {
+  if (input.action !== "update" || !Object.hasOwn(input.fields, "skills")) return input;
+  const { skills: references, ...fields } = input.fields;
+  const skills = resolveScheduledTaskSkillReferences(request, references);
+  return skills.ok ? { ...input, fields: { ...fields, pinnedSkillIds: skills.skillIds } } : skills.message;
+}
+
 function changeFor(input: ToolArguments): Pick<Parameters<ScheduledTaskCallManager>[0], "change"> {
   switch (input.action) {
     case "update": return { change: (current) => updateBody(current, input) };
@@ -269,7 +293,10 @@ function modelTask(task: ScheduledTask) {
   return {
     taskId: task.id, title: task.title, kind: task.kind, status: task.status, schedule: task.schedule, timeZone: task.timeZone,
     nextRun: localInstant(task.nextRunAt, task.timeZone), chatMode: task.chatMode,
-    ...Object.fromEntries(SCHEDULED_TASK_MANAGED_SWITCHES.map((key) => [key, task[key]]))
+    ...Object.fromEntries(SCHEDULED_TASK_MANAGED_SWITCHES.map((key) => [key, task[key]])),
+    skills: scheduledTaskModelSkills(task),
+    // Read only: the owner changes it with Edit.
+    oldChatsKept: scheduledTaskToolHistoryText(task.historyRetentionDays)
   };
 }
 
@@ -325,6 +352,11 @@ function refusalText(code: Refusal, detail?: string): string {
       return "The schedule is invalid or never runs: check its kind, the HH:MM times, the days, the date or the day of the " +
         "month, and that an hourly window ends after it starts.";
     case "scheduled_task_chat_mode_invalid": return `${scheduledTaskErrorMessage(code)} Also set chatMode to "same".`;
+    case "scheduled_task_skills_need_tools":
+      return "Pinned Skills need tools: set toolsEnabled to true, or skills to [] to turn tools off.";
+    case "scheduled_task_skill_unavailable":
+      return `${scheduledTaskErrorMessage(code)} The user can check the Skill in the Library.`;
+
     case "scheduled_task_limit":
     case "scheduled_task_hourly_limit":
       return `${scheduledTaskErrorMessage(code)} The user can pause or delete tasks in Studio > Scheduled.`;
@@ -364,7 +396,9 @@ export async function executeManageScheduledTask(
     return refused(call, "scheduled_task_call_unavailable");
   }
   if (hasInvalidProviderToolArguments(call.arguments)) return refused(call, "scheduled_task_arguments_invalid", "they are not a JSON object.");
-  const decoded = decodeArguments(call.arguments);
+  const parsed = decodeArguments(call.arguments);
+  if (typeof parsed === "string") return refused(call, "scheduled_task_arguments_invalid", parsed);
+  const decoded = pinnedSkillChange(context.request, parsed);
   if (typeof decoded === "string") return refused(call, "scheduled_task_arguments_invalid", decoded);
   try {
     const outcome = await manage({

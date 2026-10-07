@@ -1,6 +1,8 @@
 import {
   SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD,
   SCHEDULED_TASK_RUN_DEADLINE_MINUTES,
+  SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE,
+  SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
   type ScheduledTaskCheckOutcome,
   type ScheduledTaskKind,
   type ScheduledTaskRunTrigger,
@@ -28,6 +30,28 @@ export const SCHEDULED_TASK_OCCURRENCE_RETENTION = 50;
 export const SCHEDULED_TASK_MAX_EXECUTING = 5;
 export const SCHEDULED_TASK_MAX_EXECUTING_PER_USER = 1;
 /**
+ * Default cap of scheduled runs with Workspace on at once, installation-wide
+ * (`AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT`). Interactive Workspace runs
+ * never count toward it and are never refused because of it.
+ */
+export const SCHEDULED_WORKSPACE_MAX_CONCURRENT_DEFAULT = 1;
+/**
+ * The wait for a scheduled Workspace slot and its skip when the window ends
+ * (lateness, the retry window after an attempt, or the next instant
+ * superseding it), shared with the owner's copy.
+ */
+export { SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE, SCHEDULED_TASK_WORKSPACE_WAIT_CODE };
+/**
+ * Send refusal codes that mean the Workspace runner has no room for another
+ * VM, so the occurrence waits like one over the cap instead of retrying as an
+ * outage. Empty until a capacity-specific refusal is measured: today the
+ * runner reports no such code, and `workspace_runtime_unavailable` also means
+ * an outage, which must still fail at the window's end. Add measured codes here.
+ */
+export const SCHEDULED_TASK_WORKSPACE_CAPACITY_REFUSAL_CODES: ReadonlySet<string> = new Set<string>();
+/** Recurring scheduled occurrences start up to this long after their instant, by task. */
+export const SCHEDULED_TASK_DISPATCH_SPREAD_MS = 180_000;
+/**
  * An admitted scheduled run is stopped through the Stop path this long after
  * its admission (the run's creation, not the occurrence's first attempt),
  * whether or not its task and history still exist.
@@ -41,8 +65,8 @@ export type ScheduledTaskSettledState = "COMPLETED" | "FAILED" | "SKIPPED";
 /** Stable codes of automatic pauses. */
 export type ScheduledTaskPauseReason =
   | "account_inactive" | "model_cannot_report" | "model_unavailable" | "provider_unavailable" | "repeated_failures"
-  | "schedule_invalid" | "search_unavailable" | "source_unavailable" | "tools_unavailable" | "verdict_missing"
-  | "workspace_secret_limit" | "workspace_unavailable";
+  | "schedule_invalid" | "search_unavailable" | "skill_unavailable" | "source_unavailable" | "tools_unavailable"
+  | "verdict_missing" | "workspace_secret_limit" | "workspace_unavailable";
 
 export type ScheduledTaskOutcome = Readonly<{
   state: ScheduledTaskSettledState;
@@ -114,6 +138,34 @@ export type ScheduledTaskClaimPlan = Readonly<{
 }>;
 
 const CODE = /^[a-z][a-z0-9_]{0,63}$/u;
+
+/**
+ * A task's stable dispatch offset, whole seconds in 0..180 from a hash of its
+ * id (FNV-1a), so tasks due at the same minute do not all start at once.
+ */
+export function scheduledTaskDispatchOffsetMs(taskId: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < taskId.length; index += 1) {
+    hash ^= taskId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return (hash % (SCHEDULED_TASK_DISPATCH_SPREAD_MS / 1_000 + 1)) * 1_000;
+}
+
+/**
+ * When a pending occurrence may first be admitted. A scheduled occurrence of
+ * a recurring task waits for its task's offset; Run now and a once task's
+ * chosen moment start at once. Only dispatch moves: the occurrence keeps its
+ * instant, which still decides its lateness, its chat's month and the run's
+ * local date.
+ */
+export function scheduledDispatchNotBefore(
+  candidate: Readonly<{ recurring: boolean; scheduledFor: Date; taskId: string; trigger: ScheduledTaskRunTrigger }>,
+  offsetMs: (taskId: string) => number = scheduledTaskDispatchOffsetMs
+): Date {
+  return candidate.trigger === "schedule" && candidate.recurring
+    ? new Date(candidate.scheduledFor.getTime() + offsetMs(candidate.taskId)) : candidate.scheduledFor;
+}
 
 function latestInstantIn(schedule: ScheduledTaskSchedule, timeZone: string, after: Date, until: Date): Date | null {
   let latest: Date | null = null;
@@ -276,19 +328,22 @@ const NOT_A_BASELINE: ReadonlySet<string> = new Set(["could_not_check", "no_upda
 
 /**
  * The baseline a settlement leaves: a completed shown result accepted under
- * the task's current generation; anything else, including a result of an
- * older generation, a monitoring check with no update and one whose sources
- * were unavailable, keeps the stored one.
+ * the task's current generation and chat epoch; anything else, including a
+ * result of an older generation, a late result of a chat the task has moved
+ * on from (a monthly rotation), a monitoring check with no update and one
+ * whose sources were unavailable, keeps the stored one. An occurrence linked
+ * before epochs counts as epoch 0.
  */
 export function settlementBaseline(input: Readonly<{
   assistantMessageId: string | null;
-  occurrence: Readonly<{ runId: string | null; taskGeneration: number | null; userMessageId: string | null }>;
+  occurrence: Readonly<{ chatEpoch?: number | null; runId: string | null; taskGeneration: number | null; userMessageId: string | null }>;
   outcome: Readonly<{ reasonCode: string | null; state: ScheduledTaskSettledState }>;
+  taskChatEpoch?: number;
   taskGeneration: number;
 }>): ScheduledTaskBaseline | null {
   const { occurrence } = input;
   return input.outcome.state === "COMPLETED" && !NOT_A_BASELINE.has(input.outcome.reasonCode ?? "") &&
-    occurrence.taskGeneration === input.taskGeneration &&
+    occurrence.taskGeneration === input.taskGeneration && (occurrence.chatEpoch ?? 0) === (input.taskChatEpoch ?? 0) &&
     occurrence.runId !== null && occurrence.userMessageId !== null && input.assistantMessageId !== null
     ? { assistantMessageId: input.assistantMessageId, generation: input.taskGeneration, runId: occurrence.runId,
       userMessageId: occurrence.userMessageId }
@@ -300,20 +355,26 @@ export function settlementBaseline(input: Readonly<{
  * and occurrence; null for any other run. Only a run that a monitoring task
  * accepted under its current generation is a check (a changed prompt or type
  * bumps the generation, so the kind is still the admitted one); a result of an
- * older generation stays an ordinary shown result. No baseline of the current
- * generation means a first check; the revision the run was accepted under
- * proves that no owner transition happened since.
+ * older generation stays an ordinary shown result. Neither a baseline nor a
+ * result carried into a rotated chat of the current generation means a first
+ * check; the revision the run was accepted under proves that no owner
+ * transition happened since.
  */
 export function completedRunCheck(input: Readonly<{
   /** A relevant source was unavailable during the check (source health of scheduled runs). */
   healthIncomplete: boolean;
   occurrence: Readonly<{ taskGeneration: number | null; taskRevision: number | null; verdict: string | null }>;
-  task: Readonly<{ baselineGeneration: number | null; generation: number; kind: ScheduledTaskKind; revision: number }>;
+  task: Readonly<{
+    baselineGeneration: number | null;
+    /** The generation of the result carried into the task's current chat, if any. */
+    carriedGeneration?: number | null;
+    generation: number; kind: ScheduledTaskKind; revision: number;
+  }>;
 }>): MonitoringCheckSettlement | null {
   const { occurrence, task } = input;
   if (task.kind !== "monitoring" || occurrence.taskGeneration !== task.generation) return null;
   return monitoringCheckSettlement({
-    firstCheck: task.baselineGeneration !== task.generation,
+    firstCheck: task.baselineGeneration !== task.generation && task.carriedGeneration !== task.generation,
     healthIncomplete: input.healthIncomplete,
     ownerUnchanged: occurrence.taskRevision === task.revision,
     verdict: isMonitoringVerdict(occurrence.verdict) ? occurrence.verdict : null
@@ -342,13 +403,14 @@ export function planOccurrenceSettlement(input: Readonly<{
   check: MonitoringCheckSettlement | null;
   observedRevision?: number;
   occurrence: Readonly<{
-    runId: string | null; taskGeneration: number | null; trigger: ScheduledTaskRunTrigger; userMessageId: string | null;
+    chatEpoch?: number | null; runId: string | null; taskGeneration: number | null; trigger: ScheduledTaskRunTrigger;
+    userMessageId: string | null;
   }>;
   outcome: ScheduledTaskOutcome;
   sourcesIncomplete: boolean;
   task: Readonly<{
-    consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; generation: number;
-    revision: number; status: ScheduledTaskStatusColumn;
+    chatEpoch?: number; consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number;
+    generation: number; revision: number; status: ScheduledTaskStatusColumn;
   }>;
 }>): ScheduledTaskSettlementPlan {
   const { check, occurrence, outcome, task } = input;
@@ -359,7 +421,8 @@ export function planOccurrenceSettlement(input: Readonly<{
   const taskPaused = plan.pauseReason !== null;
   return {
     ...plan,
-    baseline: settlementBaseline({ assistantMessageId: input.assistantMessageId, occurrence, outcome, taskGeneration: task.generation }),
+    baseline: settlementBaseline({ assistantMessageId: input.assistantMessageId, occurrence, outcome,
+      ...(task.chatEpoch !== undefined ? { taskChatEpoch: task.chatEpoch } : {}), taskGeneration: task.generation }),
     goalCompletes: check?.completesTask === true && !taskPaused,
     notifies: settlementNotifiesOwner({ reasonCode: outcome.reasonCode, sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused })
   };
@@ -377,7 +440,8 @@ export type ScheduledTaskOpenOccurrence = Readonly<{
 /**
  * How a newly due instant meets its task's open occurrences. A pending one
  * that holds no run and no live admission lease is fresh no longer: it ends
- * skipped (`chat_busy` after busy retries, else `superseded`) and the new
+ * skipped (`chat_busy` after busy retries, `workspace_capacity` while waiting
+ * for a Workspace slot, else `superseded`) and the new
  * instant takes its place. Any other open occurrence of a recurring task is a
  * run still in progress, and the new instant is skipped `previous_running`
  * instead of queuing. A once task's only instant always queues.
@@ -386,29 +450,50 @@ export function planClaimOverlap(input: Readonly<{
   now: Date;
   open: readonly ScheduledTaskOpenOccurrence[];
   recurring: boolean;
-}>): Readonly<{ previousRunning: boolean; superseded: readonly Readonly<{ id: string; reasonCode: "chat_busy" | "superseded" }>[] }> {
+}>): Readonly<{
+  previousRunning: boolean;
+  superseded: readonly Readonly<{ id: string; reasonCode: "chat_busy" | "superseded" | "workspace_capacity" }>[];
+}> {
   const waiting = (occurrence: ScheduledTaskOpenOccurrence) => occurrence.state === "PENDING" && occurrence.runId === null &&
     (occurrence.leaseExpiresAt === null || occurrence.leaseExpiresAt.getTime() <= input.now.getTime());
   return {
     previousRunning: input.recurring && input.open.some((occurrence) => !waiting(occurrence)),
     superseded: input.open.filter(waiting).map((occurrence) => ({
-      id: occurrence.id, reasonCode: occurrence.reasonCode === "chat_busy" ? "chat_busy" as const : "superseded" as const
+      id: occurrence.id,
+      reasonCode: occurrence.reasonCode === "chat_busy" ? "chat_busy" as const
+        : occurrence.reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE ? SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE : "superseded" as const
     }))
   };
 }
 
-/** A pending occurrence that may no longer be admitted, or null. */
+/**
+ * The occurrence reason of a monthly rotation whose Workspace files could not
+ * be carried into the new chat: retried within the window, then a failure
+ * that counts toward the failure pause; never an empty project.
+ */
+export const SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE = "workspace_carryover_unavailable";
+
+/**
+ * A pending occurrence that may no longer be admitted, or null. Waiting for a
+ * Workspace slot starts no window of its own: an occurrence that was never
+ * attempted waits until its lateness ends (or the next instant supersedes
+ * it); one attempted before waits within the retry window. Either way one
+ * still waiting at the end is skipped (`workspace_capacity`), never failed.
+ */
 export function expiredPendingOutcome(
   occurrence: Readonly<{ scheduledFor: Date; startedAt: Date | null; reasonCode: string | null }>,
   now: Date
 ): ScheduledTaskOutcome | null {
+  const waiting = occurrence.reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE;
   if (now.getTime() - occurrence.scheduledFor.getTime() > SCHEDULED_TASK_LATENESS_MS) {
-    return { reasonCode: "missed", state: "SKIPPED" };
+    return { reasonCode: waiting ? SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE : "missed", state: "SKIPPED" };
   }
   if (occurrence.startedAt && now.getTime() - occurrence.startedAt.getTime() > SCHEDULED_TASK_RETRY_WINDOW_MS) {
-    return occurrence.reasonCode === "chat_busy"
-      ? { reasonCode: "chat_busy", state: "SKIPPED" }
-      : { reasonCode: "admission_failed", state: "FAILED" };
+    if (waiting) return { reasonCode: SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE, state: "SKIPPED" };
+    return occurrence.reasonCode === "chat_busy" ? { reasonCode: "chat_busy", state: "SKIPPED" }
+      : occurrence.reasonCode === SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE
+        ? { reasonCode: SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE, state: "FAILED" }
+        : { reasonCode: "admission_failed", state: "FAILED" };
   }
   return null;
 }
@@ -431,6 +516,8 @@ export function linkedRunOutcome(run: Readonly<{ status: string; errorPayload: u
 
 export type ScheduledTaskRefusal =
   | Readonly<{ kind: "retry"; reasonCode: "chat_busy" | null }>
+  /** The Workspace runner had no room: the occurrence waits for a slot (`SCHEDULED_TASK_WORKSPACE_WAIT_CODE`). */
+  | Readonly<{ kind: "wait" }>
   | Readonly<{ kind: "fail"; outcome: ScheduledTaskOutcome }>;
 
 /** The chat is in use: retried, and once the window ends skipped as `chat_busy`. */
@@ -461,6 +548,7 @@ const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([
   ["credential_revoked", "provider_unavailable"],
   ["mcp_plan_too_large", "tools_unavailable"],
   ["mcp_tool_calling_not_supported", "tools_unavailable"],
+  ["skill_not_available", "skill_unavailable"],
   ["skills_count_exceeded", "tools_unavailable"],
   ["workspace_disabled", "workspace_unavailable"],
   ["workspace_model_tools_required", "workspace_unavailable"],
@@ -479,13 +567,24 @@ export function pausingOutcome(reason: ScheduledTaskPauseReason): ScheduledTaskO
  * server errors retry within the window (no run exists, so nothing failed
  * yet); catalog, entitlement, account, tool and Workspace refusals that only
  * the owner or an administrator can lift fail and pause with human copy;
- * anything else fails with its stable code. The runner rechecks the owner
+ * anything else fails with its stable code. A pinned Skill that admission
+ * could not resolve pauses (`skill_unavailable`), while one whose version
+ * changed between preparation and acceptance (the same code as a conflict)
+ * retries and binds the new version. A measured Workspace capacity refusal
+ * (`capacityCodes`) waits for a slot instead. The runner rechecks the owner
  * itself for an unauthenticated refusal.
  */
-export function classifySendRefusal(status: number, errorCode: unknown): ScheduledTaskRefusal {
+export function classifySendRefusal(
+  status: number,
+  errorCode: unknown,
+  capacityCodes: ReadonlySet<string> = SCHEDULED_TASK_WORKSPACE_CAPACITY_REFUSAL_CODES
+): ScheduledTaskRefusal {
   const code = stableCode(errorCode);
+  if (code && capacityCodes.has(code)) return { kind: "wait" };
   if (code && BUSY_CODES.has(code)) return { kind: "retry", reasonCode: "chat_busy" };
   if (code && TRANSIENT_CODES.has(code)) return { kind: "retry", reasonCode: null };
+  if (code === "skill_not_available" && status === 409) return { kind: "retry", reasonCode: null };
+
   const pause = code ? PAUSE_CODES.get(code) : undefined;
   if (pause) return { kind: "fail", outcome: pausingOutcome(pause) };
   if (status >= 500) return { kind: "retry", reasonCode: null };

@@ -8,6 +8,7 @@ import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { createPrismaProjectRepository } from "../projects/prismaRepository";
 import { createPrismaShareRepository } from "../shares/prismaRepository";
+import { scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { createPrismaRunFollowupOperations, messageFollowupSelect } from "./prismaRepositoryFollowups";
 import { projectMessageFollowups } from "./runFollowups";
@@ -166,6 +167,24 @@ describe("durable in-run Follow-up", () => {
     await prisma.modelRun.update({ where: { id: run.runId }, data: { followupBudgetTokens: 1 } });
     expect(await followups.accept(input)).toEqual({ kind: "context_full" });
     expect(await prisma.runFollowup.count({ where: { modelRunId: run.runId } })).toBe(0);
+  }));
+
+  it("keeps a scheduled task's chat from its history retention once the owner sends a follow-up there", async () => fixture(async f => {
+    const task = await prisma.scheduledTask.create({ data: {
+      ...scheduledTaskScheduleColumns({ kind: "daily", time: "09:00" }), chatMode: "SAME", modelId: "fake-qsa", nextRunAt: null,
+      prompt: "Synthetic scheduled prompt", provider: "fake", status: "PAUSED", timeZone: "Europe/Moscow", title: "Synthetic brief",
+      userId: f.userId
+    } });
+    try {
+      await prisma.chat.update({ where: { id: f.chatId }, data: { scheduledTaskId: task.id } });
+      const run = await f.create();
+      expect(await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId } })).toMatchObject({ ownerKeptAt: null });
+      expect(await followups.accept(submission(f, run))).toMatchObject({ kind: "accepted" });
+      expect((await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId } })).ownerKeptAt).toBeInstanceOf(Date);
+      await repository.cancelRun({ runId: run.runId, userId: f.userId, payload: cancelPayload });
+    } finally {
+      await prisma.scheduledTask.deleteMany({ where: { id: task.id } });
+    }
   }));
 
   it("settles outdated pending decisions without dispatch even when the local notification is missed", async () => fixture(async f => {

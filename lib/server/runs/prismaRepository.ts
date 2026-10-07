@@ -89,7 +89,9 @@ import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory
 import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVerdict";
 import { createPrismaScheduledTaskCatalogLoader } from "../scheduledTasks/catalog";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "../scheduledTasks/pinnedSkills";
 import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
+import { saveSkillForToolCall } from "./prismaRepositorySkillSaveCall";
 import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskCall";
 import { loadScheduledTaskManagementAdmission, manageScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskManagement";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
@@ -210,6 +212,7 @@ export function createPrismaRunRepository(
   // A chat's scheduled tasks are created and changed under the owner API's own rules.
   const scheduledTaskCreationDeps = {
     loadCatalog: createPrismaScheduledTaskCatalogLoader(prismaClient),
+    loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prismaClient),
     workspacePolicy: createPrismaWorkspacePolicyRepository(prismaClient)
   };
   async function loadMemoryAdmissionDeadlineMs(request?: { memoryStandingVersion?: 1 }): Promise<number> {
@@ -498,6 +501,7 @@ export function createPrismaRunRepository(
       recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
     createScheduledTaskForCall: (input) => createScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
       .catch(retainRunPrismaCode),
+    saveSkillForCall: (input) => saveSkillForToolCall(prismaClient, input).catch(retainRunPrismaCode),
     loadRunSearchSourceUrls: (input) => fetchUrlOperations.loadRunSearchSourceUrls(input).catch(retainRunPrismaCode),
     loadRunFetchUrlCalls: (input) => fetchUrlOperations.loadRunFetchUrlCalls(input).catch(retainRunPrismaCode),
     loadScheduledPromptMessageIds: (input) =>

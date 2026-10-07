@@ -1,12 +1,15 @@
 import type { ScheduledTaskDraft, ScheduledTaskErrorCode } from "../../contracts/scheduledTasks";
 import { resolveScheduledTaskModel, type ScheduledTaskCatalogLoader } from "./catalog";
 import { firstScheduledTaskRunAt } from "./mutations";
+import type { ScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import { decodeScheduledTaskCreateRequest } from "./requests";
 import { ScheduledTaskError } from "./store";
 
 /** What the owner's create and edit rules read besides the draft itself. */
 export type ScheduledTaskDraftAdmissionDeps = Readonly<{
   loadCatalog: ScheduledTaskCatalogLoader;
+  /** The owner's current view of Skills a task pins; each must be available. */
+  loadPinnedSkills: ScheduledTaskPinnedSkillLoader;
   /** The installation Workspace switch; a task can turn Workspace on only while it is on. */
   workspacePolicy: Readonly<{ read(): Promise<Readonly<{ enabled: boolean }>> }>;
 }>;
@@ -17,9 +20,11 @@ export type ScheduledTaskCreateAdmission =
 
 /**
  * The composer's rules for the saved choices: the exact model with Search
- * when asked, tool calling for tools and Workspace, and Workspace turned on
- * for the installation. A Workspace runtime that is only down for now does
- * not refuse a save; a run then retries. Throws `ScheduledTaskError`.
+ * when asked, tool calling for tools and Workspace, Workspace turned on for
+ * the installation, and every pinned Skill available to the owner now (one
+ * with scripts while Workspace is off is still allowed: its instructions
+ * load, its scripts cannot run). A Workspace runtime that is only down for
+ * now does not refuse a save; a run then retries. Throws `ScheduledTaskError`.
  */
 export async function admitScheduledTaskModel(
   deps: ScheduledTaskDraftAdmissionDeps,
@@ -31,7 +36,12 @@ export async function admitScheduledTaskModel(
   if (draft.workspaceEnabled && !(await deps.workspacePolicy.read()).enabled) {
     throw new ScheduledTaskError("scheduled_task_workspace_unavailable");
   }
+  if (draft.pinnedSkillIds.length > 0 &&
+    (await deps.loadPinnedSkills(userId, draft.pinnedSkillIds)).some((skill) => !skill.available)) {
+    throw new ScheduledTaskError("scheduled_task_skill_unavailable");
+  }
 }
+
 
 /**
  * Every rule `POST /api/me/scheduled-tasks` applies before the store's limits,
