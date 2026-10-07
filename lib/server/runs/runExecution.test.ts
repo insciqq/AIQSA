@@ -1603,6 +1603,54 @@ describe("run execution", () => {
     expect(harness.persistedEvents.some(({ event }) => event.type === "artifact" && event.data.artifactType === "memory_search_activity")).toBe(true);
   });
 
+  it("charges each answer call the cost its provider reported and prices an unreported call from tokens", async () => {
+    const plain = createRepository();
+    plain.repository.loadModelPricing = async () => ({ inputTokenPriceUsdPerMillion: 1_000, outputTokenPriceUsdPerMillion: 1_000 });
+    await createRunExecutionResponse(executionInput({ repository: plain.repository,
+      adapter: createAdapter(async function* () { return providerResult({ costUsd: 0.000123 }); }) })).text();
+    expect(plain.completeRuns[0]).toMatchObject({ estimatedCostMicros: 123,
+      usageAttributions: [{ costReported: true, estimatedCostMicros: 123, operationCount: 1, purpose: "chat_answer" }] });
+
+    const unreported = createRepository();
+    unreported.repository.loadModelPricing = plain.repository.loadModelPricing;
+    await createRunExecutionResponse(executionInput({ repository: unreported.repository,
+      adapter: createAdapter(async function* () { return providerResult(); }) })).text();
+    // Two input and three output tokens at $1,000 per million.
+    expect(unreported.completeRuns[0]?.usageAttributions).toEqual([expect.objectContaining({ estimatedCostMicros: 5_000 })]);
+    expect(unreported.completeRuns[0]?.usageAttributions?.[0]).not.toHaveProperty("costReported");
+  });
+
+  it("checkpoints each tool-loop round's reported charge and completes at their sum", async () => {
+    const prepared = preparedData();
+    const memorySearch = { version: "memory-search-v1" as const, maxCalls: 3 as const,
+      resultTokens: 6000 as const, comparisonResultTokens: 12000 as const, timeoutSeconds: 30,
+      memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
+    prepared.normalizedRequest.memorySearch = memorySearch;
+    prepared.normalizedRequest.memoryStandingVersion = 1;
+    prepared.providerRequest.memorySearch = memorySearch;
+    prepared.providerRequest.memoryStandingVersion = 1;
+    const result = { callId: "memory-call", name: "memory_search", status: "complete" as const,
+      content: [{ type: "json" as const, value: { version: "memory-search-v1", outcome: "results", evidence: "current evidence" } }] };
+    const service = { execute: vi.fn(async () => result), revalidate: vi.fn(async () => result),
+      settleAmbiguous: vi.fn(), markDelivered: vi.fn(async () => undefined) };
+    let round = 0;
+    const adapter = createAdapter(async function* () {
+      round += 1;
+      if (round === 1) return providerResult({ costUsd: 0.000123, finalText: "", toolCalls: [{
+        id: "memory-call", name: "memory_search", arguments: { query: "earlier plan", comparison: false } }] });
+      yield { type: "token", data: { delta: "Answer from recalled evidence." } };
+      return providerResult({ costUsd: 0.0002, finalText: "Answer from recalled evidence." });
+    });
+    const harness = createRepository();
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: harness.repository }),
+      memorySearch: service }).text();
+    expect(harness.recordedRunUsageEvents.flatMap((event) => event.answerRoundUsage ? [event.answerRoundUsage] : []))
+      .toMatchObject([{ completeness: "terminal", reportedCostMicros: 123, roundIndex: 1 },
+        { completeness: "terminal", reportedCostMicros: 200, roundIndex: 2 }]);
+    expect(harness.completeRuns[0]).toMatchObject({ estimatedCostMicros: 323,
+      usageAttributions: [{ costReported: true, estimatedCostMicros: 323, operationCount: 2, purpose: "chat_answer" }] });
+  });
+
   it.each(["followup", "stop"] as const)("keeps %s available during initial context compaction", async mode => {
     const repository = createRepository();
     const followups = followupFixture(repository.repository);
@@ -4389,6 +4437,42 @@ describe("run execution", () => {
       expect.objectContaining({ modelId: "openai-answer-model", provider: "openai", operationCount: 2,
         usage: expect.objectContaining({ completeness: "partial", inputTokens: 12, outputTokens: 3, totalTokens: 15 }) })
     ]));
+  });
+
+  it.each(["provider_neutral_json", "native_strict"] as const)("keeps a Knowledge answer call's reported charge when a later stage fails (%s)", async transport => {
+    const repository = createRepository();
+    const { executor } = focusedKnowledgeExecutor();
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    let calls = 0;
+    const adapter = createAdapter(async function* () {
+      calls += 1;
+      if (calls === 1) return providerResult({ costUsd: 0.00005, finalText: JSON.stringify(plannedDraftOutput("Supported answer")),
+        usage: { inputTokens: 5, outputTokens: 3 } });
+      yield { type: "usage", data: { inputTokens: 4, outputTokens: 0 } };
+      throw new Error("private_provider_failure");
+    });
+    const structuredOutputAdapter: RunExecutionInput["structuredOutputAdapter"] = { async execute(_request, options) {
+      calls += 1;
+      if (calls === 1) {
+        options?.onUsage?.({ inputTokens: 5, outputTokens: 3 });
+        options?.onCostUsd?.(0.00005);
+        return plannedDraftOutput("Supported answer");
+      }
+      options?.onUsage?.({ inputTokens: 4, outputTokens: 0, completeness: "partial" });
+      throw new Error("private_provider_failure");
+    } };
+    await createRunExecutionResponse(executionInput({ adapter, knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle,
+      prepared: focusedKnowledgePreparedData(), repository: repository.repository,
+      ...(transport === "native_strict" ? { structuredOutputAdapter } : {}) })).text();
+    expect(calls).toBe(2);
+    const answers = repository.recordedRunUsageEvents.at(-1)?.usageAttributions.filter(({ purpose }) => purpose === "chat_answer");
+    expect(answers).toEqual([
+      expect.objectContaining({ costReported: true, estimatedCostMicros: 50, operationCount: 1,
+        usage: expect.objectContaining({ inputTokens: 5, outputTokens: 3 }) }),
+      expect.objectContaining({ estimatedCostMicros: null, operationCount: 1,
+        usage: expect.objectContaining({ completeness: "partial", inputTokens: 4 }) })
+    ]);
+    expect(answers?.[1]).not.toHaveProperty("costReported");
   });
 
   it("settles a focused retrieval deadline as a technical retrieval failure", async () => {

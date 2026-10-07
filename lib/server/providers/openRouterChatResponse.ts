@@ -19,6 +19,7 @@ import {
   streamOpenAIChatSseResponse,
   type OpenAIChatCompletionsRecord
 } from "./openaiChatCompletions";
+import { reportedUsageCostUsd } from "./reportedUsageCost";
 import type { ProviderStreamSafetySnapshot } from "./streamSafety";
 import type { ProviderRunRequest, ProviderRunResult } from "./types";
 
@@ -41,6 +42,12 @@ export function assertValidOpenRouterTerminalResponse(
 
 export function extractOpenRouterText(response: OpenRouterResponseRecord): string {
   return openAIChatText(firstOpenAIChatMessage(response)?.content);
+}
+
+/** What OpenRouter charged for one answer call, under the shared BYOK rule; a
+ * missing or malformed amount is no usable cost, so token prices apply. */
+export function openRouterReportedCostUsd(usage: Readonly<Record<string, unknown>>): number | undefined {
+  return reportedUsageCostUsd(usage) ?? undefined;
 }
 
 export function extractOpenRouterUsage(response: OpenRouterResponseRecord): ModelRunUsage {
@@ -409,6 +416,7 @@ const responseProfile = {
   createStreamExtension: createOpenRouterStreamExtension,
   done: (data: string) => data === "[DONE]",
   extractArtifacts: extractOpenRouterArtifacts,
+  extractCostUsd: openRouterReportedCostUsd,
   extractUsage: extractOpenRouterUsage,
   initialResponseId: (response: Response) => response.headers.get("x-generation-id") ?? undefined,
   invalidTerminalError: invalidOpenRouterTerminalResponseError,

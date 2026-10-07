@@ -472,6 +472,38 @@ describe("OpenRouter Chat response normalization", () => {
     );
   });
 
+  // Recorded OpenRouter answer usage shapes (2026-10-07), with synthetic amounts.
+  const reportedUsage = {
+    completion_tokens: 5, completion_tokens_details: { reasoning_tokens: 0 }, cost: 0.000123,
+    cost_details: { upstream_inference_cost: null, upstream_inference_completions_cost: 0.00002, upstream_inference_prompt_cost: 0.000103 },
+    is_byok: false, prompt_tokens: 12, prompt_tokens_details: { cached_tokens: 0 }, total_tokens: 17
+  };
+  it.each([
+    ["the charged cost", reportedUsage, 0.000123],
+    ["a BYOK call's fee plus its upstream cost",
+      { ...reportedUsage, cost: 0.0000062, cost_details: { upstream_inference_cost: 0.000124 }, is_byok: true }, 0.0001302],
+    ["no cost for a BYOK call without its upstream cost", { ...reportedUsage, cost_details: {}, is_byok: true }, undefined],
+    ["no cost when none is reported", { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 }, undefined],
+    ["no cost for a malformed amount", { ...reportedUsage, cost: "0.000123" }, undefined],
+    ["no cost for a negative amount", { ...reportedUsage, cost: -1 }, undefined]
+  ])("reports %s for a JSON and a streamed answer", async (_case, usage, costUsd) => {
+    const message = { content: "Priced answer", role: "assistant" };
+    for (const normalized of [
+      await collect(streamOpenRouterJsonResponse({ choices: [{ finish_reason: "stop", message }], id: "gen-priced", usage },
+        responseContext)),
+      await collect(streamOpenRouterSseResponse(sseResponse([
+        `data: ${JSON.stringify({ choices: [{ delta: message, finish_reason: "stop" }], id: "gen-priced" })}\n\n`,
+        `data: ${JSON.stringify({ choices: [], id: "gen-priced", usage })}\n\n`,
+        "data: [DONE]\n\n"
+      ]), responseContext))
+    ]) {
+      expect(normalized.result.finalText).toBe("Priced answer");
+      expect(normalized.result.costUsd).toBe(costUsd);
+      expect(Object.hasOwn(normalized.result, "costUsd")).toBe(costUsd !== undefined);
+      expect(normalized.result.usage).toMatchObject({ completeness: "complete", inputTokens: 12, outputTokens: 5, totalTokens: 17 });
+    }
+  });
+
   it("accepts a non-streaming content array with usable text", async () => {
     const normalized = await collect(
       streamOpenRouterJsonResponse(

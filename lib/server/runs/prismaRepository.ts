@@ -1899,6 +1899,7 @@ export function createPrismaRunRepository(
         select: {
           cachedInputTokens: true,
           cacheWriteInputTokens: true,
+          costReported: true,
           createdAt: true,
           estimatedCostMicros: true,
           inputTokens: true,
@@ -1916,6 +1917,7 @@ export function createPrismaRunRepository(
         where: { ...runAttributionUsageWhere(input.runId), userId: input.userId }
       }).catch(retainRunPrismaCode);
       return rows.map((row) => ({
+        ...(row.costReported ? { costReported: true as const } : {}),
         estimatedCostMicros: row.estimatedCostMicros,
         modelId: row.modelId,
         operationCount: row.operationCount,

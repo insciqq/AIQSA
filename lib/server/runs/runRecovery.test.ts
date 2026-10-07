@@ -9595,6 +9595,58 @@ describe("run recovery", () => {
     });
   });
 
+  describe("reported answer charges", () => {
+    const roundOne = { completeness: "complete" as const, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+      inputTokens: 7, outputTokens: 1, reasoningTokens: 0, totalTokens: 8 };
+    function chargedRecovery(reportedRowCost: number) {
+      const runtimeCall = vi.fn(async () => ({ isError: false, structuredContent: { stored: true }, text: [], unsupportedContentTypes: [] }));
+      const stream = vi.fn(async function* (): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
+        return { costUsd: 0.0002, finalProviderResponsePreview: {}, finalText: "done", providerResponseId: "response-final",
+          usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0 } };
+      });
+      const harness = createHarness({ mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true },
+        providers: { openai: { buildRequestPreview: () => ({}), refresh: vi.fn(), stream } } });
+      const installed = installCheckpointState(harness, checkpointedRun({
+        answerRoundUsage: [{ completeness: "terminal", reportedCostMicros: 123, roundIndex: 1, usage: roundOne }],
+        calls: [persistedRecoveryCall()],
+        phase: "tools_pending"
+      }), [
+        // Round one and an in-run summary call, both settled at the charge their provider reported.
+        { costReported: true, estimatedCostMicros: reportedRowCost, modelId: "gpt-test", operationCount: 2, provider: "openai",
+          purpose: "chat_answer", recordedAt: "2026-07-12T09:00:00.000Z",
+          usage: { inputTokens: 10, outputTokens: 2, reasoningTokens: 0, totalTokens: 12 } },
+        // A call without a reported charge: its stored cost is priced again from token prices.
+        { estimatedCostMicros: 999, modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer",
+          recordedAt: "2026-07-12T09:00:00.000Z", usage: { inputTokens: 1_000, outputTokens: 100, reasoningTokens: 0, totalTokens: 1_100 } }
+      ]);
+      return { harness, installed, stream };
+    }
+
+    it("keeps every reported charge once and prices only unreported calls from token prices", async () => {
+      const { harness, installed } = chargedRecovery(163);
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(installed.checkpoint().answerRoundUsage).toMatchObject([
+        { reportedCostMicros: 123, roundIndex: 1 }, { completeness: "terminal", reportedCostMicros: 200, roundIndex: 2 }
+      ]);
+      // $10 and $20 per million: 1,000 input and 100 output tokens cost 12,000 micro-dollars.
+      expect(harness.state.completed).toMatchObject({ estimatedCostMicros: 12_363, usageAttributions: [
+        { costReported: true, estimatedCostMicros: 363, operationCount: 3, purpose: "chat_answer",
+          usage: expect.objectContaining({ inputTokens: 12, outputTokens: 5 }) },
+        { estimatedCostMicros: 12_000, operationCount: 1, purpose: "chat_answer", usage: expect.objectContaining({ inputTokens: 1_000 }) }
+      ] });
+      expect(harness.state.completed?.usageAttributions?.[1]).not.toHaveProperty("costReported");
+    });
+
+    it("refuses saved round charges larger than the persisted reported cost", async () => {
+      const { harness, stream } = chargedRecovery(100);
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(harness.state.completed).toBeNull();
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_usage_evidence_invalid" }) })]);
+    });
+  });
+
   it.each(["success", "miss", "wrong", "corrected_miss", "unknown"] as const)("recovers the required Knowledge obligation without replaying ambiguous corrections: %s", async mode => {
     const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
     const requests: ProviderRunRequest[] = [];

@@ -240,6 +240,28 @@ describe("tool-loop persistence values", () => {
     expect(mergeAnswerRoundUsage([legacy], { ...legacy, usage: searched }, 1)).toEqual([legacy]);
   });
 
+  it("keeps a round's reported charge through the checkpoint and refuses a malformed one", () => {
+    const usage = { completeness: "complete" as const, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+      inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 };
+    const checkpoint = (entry: Record<string, unknown>) => ({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage, ...entry }],
+      phase: "provider_running", providerContinuation: null, providerCursor: null, roundIndex: 1, version: 2 });
+    for (const reportedCostMicros of [0, 123, 2_147_483_647]) {
+      expect(parseToolLoopCheckpoint(JSON.parse(JSON.stringify(checkpoint({ reportedCostMicros }))))?.answerRoundUsage[0])
+        .toEqual({ completeness: "terminal", reportedCostMicros, roundIndex: 1, usage });
+    }
+    for (const reportedCostMicros of [-1, 1.5, "123", null, 2_147_483_648]) {
+      expect(parseToolLoopCheckpoint(checkpoint({ reportedCostMicros }))).toBeNull();
+    }
+    expect(parseToolLoopCheckpoint(checkpoint({ reportedCostMicros: 1, extra: true }))).toBeNull();
+    // A partial record of the round adopts the terminal report's charge; a re-read keeps the recorded evidence.
+    const partial = { completeness: "partial" as const, roundIndex: 1, usage: { ...usage, completeness: "partial" as const } };
+    const terminal = { completeness: "terminal" as const, reportedCostMicros: 123, roundIndex: 1, usage };
+    expect(mergeAnswerRoundUsage([partial], terminal, 1)).toEqual([terminal]);
+    expect(mergeAnswerRoundUsage([terminal], { ...terminal, reportedCostMicros: undefined }, 1)).toEqual([terminal]);
+    expect(mergeAnswerRoundUsage([], { ...terminal, reportedCostMicros: -1 }, 1)).toBeNull();
+    expect(mergeAnswerRoundUsage([], { ...terminal, reportedCostMicros: undefined }, 1)).toEqual([{ ...terminal, reportedCostMicros: undefined }]);
+  });
+
   it("keeps usage evidence for 200 tool rounds plus final synthesis", () => {
     const usage = { completeness: "complete" as const,
       cachedInputTokens: 0,

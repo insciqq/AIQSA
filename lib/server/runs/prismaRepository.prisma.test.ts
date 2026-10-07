@@ -3899,6 +3899,32 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("keeps a reported answer charge settled through the run's rewrite and read-back", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Reported answer charges");
+      const answer = { modelId: "deepseek/deepseek-v4.1-flash", provider: "openrouter", purpose: "chat_answer" as const };
+      const usageAttributions = [
+        { ...answer, costReported: true as const, estimatedCostMicros: 323, operationCount: 2,
+          usage: normalizeTokenUsage({ inputTokens: 20, outputTokens: 8 }) },
+        { ...answer, estimatedCostMicros: 41, operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 9, outputTokens: 2 }) }
+      ];
+      const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      const receipts = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
+      expect(receipts.map(({ costReported, estimatedCostMicros, operationCount }) => [costReported, estimatedCostMicros, operationCount])
+        .sort((left, right) => Number(right[1]) - Number(left[1]))).toEqual([[true, 323, 2], [undefined, 41, 1]]);
+      expect(await prisma.usageEvent.findMany({ select: { costReported: true, estimatedCostMicros: true },
+        where: { modelRunId: active.runId }, orderBy: { estimatedCostMicros: "desc" } }))
+        .toEqual([{ costReported: true, estimatedCostMicros: 323 }, { costReported: false, estimatedCostMicros: 41 }]);
+      // Only answer rows carry a reported charge.
+      await expect(prisma.usageEvent.create({ data: { userId, chatId: active.chatId, modelRunId: active.runId, provider: "openrouter",
+        modelId: "sonar", purpose: "web_search", costReported: true, estimatedCostMicros: 1 } }))
+        .rejects.toThrow(/UsageEvent_cost_reported_answer_check/u);
+    });
+  });
+
   it.each(["complete", "partial", "error"] as const)("keeps every non-attribution row of the run through %s accounting", async terminal => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);

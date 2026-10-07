@@ -5271,6 +5271,8 @@ model UsageEvent {
   /// Provider-reported billed web searches this row covers; null when none were reported.
   webSearchCount                  Int?
   estimatedCostMicros             Int?
+  /// A run answer row whose cost is the charge its provider reported for its calls, kept by the run's rewrites.
+  costReported                    Boolean                        @default(false)
   createdAt                       DateTime                       @default(now())
   knowledgeBase                   KnowledgeBase?                 @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)
   knowledgeDocumentVersion        KnowledgeDocumentVersion?      @relation("KnowledgeUsageDocumentVersion", fields: [knowledgeBaseId, knowledgeDocumentVersionId], references: [knowledgeBaseId, id], onDelete: Restrict, onUpdate: Restrict, map: "UsageEvent_knowledgeDocumentVersion_fkey")
