@@ -6,6 +6,7 @@ import {
   defaultAdminHealthRange,
   isAdminHealthRange,
   type AdminHealthCategory,
+  type AdminHealthErrorGroup,
   type AdminHealthIncident,
   type AdminHealthIncidentFilters,
   type AdminHealthProviderRow,
@@ -35,6 +36,7 @@ export const HEALTH_REPORT_VERSION = 1;
 export const HEALTH_REPORT_INCIDENT_LIMIT = 10;
 /** Provider rows the text output lists; `--json` carries every failing row. */
 const TEXT_PROVIDER_ROWS = 10;
+const TEXT_ERROR_GROUPS = 10;
 const WIDTH = 100;
 
 export type HealthReport = {
@@ -51,6 +53,9 @@ export type HealthReport = {
   summary: AdminHealthSummary;
   /** Error and fatal records over the range per chart category. */
   errorsByCategory: Record<AdminHealthCategory, number>;
+  /** Failures by fingerprint: class and application code site, new ones first. */
+  errorGroups: AdminHealthErrorGroup[];
+  errorGroupsTruncated: boolean;
   /** Provider rows with at least one failure, most failures first. */
   providerFailures: AdminHealthProviderRow[];
   /** The provider grouping hit its row bound; some rows may be missing. */
@@ -123,6 +128,8 @@ export async function collectHealthReport(sources: HealthReportSources, range: A
     ],
     summary: health.summary,
     errorsByCategory,
+    errorGroups: health.errorGroups,
+    errorGroupsTruncated: health.errorGroupsTruncated,
     providerFailures: health.providers.filter((row) => row.failures > 0)
       .sort((left, right) => right.failures - left.failures || left.key.localeCompare(right.key)),
     providersTruncated: health.providersTruncated,
@@ -325,6 +332,21 @@ function errorSection(report: HealthReport): string[] {
   ];
 }
 
+function failureSection(report: HealthReport): string[] {
+  if (report.errorGroups.length === 0) return [];
+  const shown = report.errorGroups.slice(0, TEXT_ERROR_GROUPS);
+  const hidden = report.errorGroups.length - shown.length;
+  return [
+    "Failures by location (class · where in AIQSA)",
+    ...shown.flatMap((group) => [
+      `  ${group.isNew ? "NEW " : "    "}  ${group.errorClass} · ${group.site ?? "outside application code"}`,
+      ...wrapParts([plural(group.count, "time"), ...group.events, ...group.codes, ...group.roles, `last ${minute(group.lastSeenAt)}`],
+        "        ", " · ")
+    ]),
+    ...(hidden > 0 || report.errorGroupsTruncated ? [`  and more (--json lists ${report.errorGroupsTruncated ? "the most frequent" : "every"} group)`] : [])
+  ];
+}
+
 function providerSection(report: HealthReport): string[] {
   if (report.providerFailures.length === 0) return [];
   const shown = report.providerFailures.slice(0, TEXT_PROVIDER_ROWS);
@@ -375,7 +397,7 @@ function incidentSection(report: HealthReport): string[] {
 }
 
 /** Report sections in order, attention first; a section without findings prints nothing. */
-const SECTIONS: readonly Section[] = [attentionSection, errorSection, providerSection, restartSection, queueSection, incidentSection];
+const SECTIONS: readonly Section[] = [attentionSection, errorSection, failureSection, providerSection, restartSection, queueSection, incidentSection];
 
 export function formatHealthReport(report: HealthReport): string {
   const header = `AIQSA health · last ${RANGE_COPY[report.range]} · ${minute(report.from)} to ${minute(report.to)} UTC`;

@@ -55,7 +55,11 @@ const health: AdminHealth = {
     provider({ key: "c", failures: 7, failureRate: 7 / 120, failuresByClass: { ...classes, quota: 6, network: 1 },
       lastFailureAt: "2026-10-07T09:58:00.000Z" })
   ],
-  providersTruncated: false
+  providersTruncated: false,
+  errorGroups: [{ fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/memory/coordinator/workerProcess.ts:51",
+    count: 12, events: ["job_attempt"], roles: ["knowledge_search"], codes: ["memory_job_failed"],
+    lastSeenAt: "2026-10-07T09:40:00.000Z", firstSeenAt: "2026-10-07T08:00:00.000Z", isNew: true }],
+  errorGroupsTruncated: false
 };
 
 function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSources {
@@ -92,7 +96,8 @@ describe("health report collection", () => {
     expect(input.health.read).toHaveBeenCalledWith("24h");
     expect(input.health.incidents).toHaveBeenCalledWith({ category: null, code: null, cursor: null, event: null, level: null, q: null, range: "24h" });
     expect(Object.keys(report)).toEqual(["kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry", "attention",
-      "summary", "errorsByCategory", "providerFailures", "providersTruncated", "restarts", "queues", "queuesCheckedAt",
+      "summary", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
+      "queues", "queuesCheckedAt",
       "incidents", "incidentsTruncated"]);
     // A disabled connection has nothing left to fix; only the stalled queue that raises its own item joins.
     expect(report.attention.map((item) => item.id)).toEqual([
@@ -125,12 +130,15 @@ describe("health report text", () => {
     expect(lines.map((line) => line.length).every((length) => length <= 100)).toBe(true);
     const headings = lines.filter((line) => /^[A-Z]/u.test(line));
     expect(headings.slice(1)).toEqual([
-      "Needs attention (3)", "Error totals: 42 (previous 24 hours: 10)", "Provider failures", "Process restarts",
+      "Needs attention (3)", "Error totals: 42 (previous 24 hours: 10)", "Failures by location (class · where in AIQSA)",
+      "Provider failures", "Process restarts",
       "Background queues", "Latest incidents (UTC, newest first; 10 shown, Control Center Health lists the rest)",
       "Look up a reference: ./aiqsa.sh health --run <reference>"
     ]);
     expect(text).toContain("  By area: providers 9 · requests 3 · runs 20 · background 10\n");
     expect(text).toContain("  server errors 3 · provider failures 9 of 240 (3.8%) · browser crashes 1\n");
+    expect(text).toContain("  NEW   TypeError · lib/server/memory/coordinator/workerProcess.ts:51\n" +
+      "        12 times · job_attempt · memory_job_failed · knowledge_search · last 2026-10-07 09:40\n");
     expect(text).toMatch(/\n {2}OpenAI · gpt-5 +answer +7\/120 +5\.8% {2}quota +2026-10-07 09:58\n/u);
     expect(text).toContain("  app: 3 starts (2 restarts)\n");
     expect(text).not.toContain("memory_coordinator");
@@ -144,7 +152,7 @@ describe("health report text", () => {
 
   it("says so when nothing went wrong", async () => {
     const quiet: AdminHealth = {
-      ...health, range: "7d", interval: "day", hasTelemetry: false, providers: [], series: [],
+      ...health, range: "7d", interval: "day", hasTelemetry: false, providers: [], series: [], errorGroups: [],
       summary: { ...health.summary, errors: 0, previousErrors: 0, providerFailures: 0, providerFailureRate: null, http5xx: 0,
         restarts: 0, roleStarts: [{ role: "app", starts: 1, restarts: 0 }], clientErrors: 0 }
     };
