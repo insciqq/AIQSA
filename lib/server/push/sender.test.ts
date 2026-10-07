@@ -148,6 +148,29 @@ describe("browser push sender", () => {
     expect(h.recorded).toEqual([["gone", "gone"], ["missing", "gone"], ["failing", "failed"], ["broken", "failed"], ["fine", "delivered"]]);
   });
 
+  it("sends a ready message to a user's devices now and counts the devices that accepted it", async () => {
+    const phone = device("phone");
+    const statuses = [201, 410, 201];
+    const post: PushPost = vi.fn(async (request: PushPostRequest) => {
+      if (request.endpoint.pathname === "/broken") throw new PushTransportError("push_endpoint_forbidden");
+      return { status: statuses.shift()! };
+    });
+    const h = harness({ post, targets: [phone.target, device("gone").target, device("broken").target, device("laptop").target] });
+    const message = { body: "82% used", tag: "aiqsa-usage-cap", title: "Monthly cap almost used", url: "/admin?section=limits", v: 1 } as const;
+    // A failed health record does not hide the device's delivery.
+    vi.mocked(h.store.recordDelivery).mockRejectedValueOnce(new Error("database down"));
+    await expect(h.sender.sendMessage("admin-1", message, "alert-1")).resolves.toBe(2);
+    expect(h.store.listTargets).toHaveBeenCalledWith("admin-1", expect.any(Date));
+    expect(h.store.claimRun).not.toHaveBeenCalled();
+    expect(phone.open(vi.mocked(post).mock.calls[0]![0].body)).toEqual(message);
+    expect(h.recorded).toEqual([["gone", "gone"], ["broken", "failed"], ["laptop", "delivered"]]);
+
+    h.loadKeys.mockRejectedValueOnce(new Error("secret_encryption_invalid_key"));
+    await expect(h.sender.sendMessage("admin-1", message, "alert-2")).resolves.toBe(0);
+    vi.mocked(h.store.listTargets).mockRejectedValueOnce(new Error("database down"));
+    await expect(h.sender.sendMessage("admin-1", message, "alert-3")).resolves.toBe(0);
+  });
+
   it("claims nothing while the VAPID key is unavailable, so a later report can still notify", async () => {
     const h = harness({ targets: [device("phone").target] });
     h.loadKeys.mockRejectedValueOnce(new Error("secret_encryption_invalid_key"));

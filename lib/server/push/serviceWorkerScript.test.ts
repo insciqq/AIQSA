@@ -87,4 +87,20 @@ describe("push service worker", () => {
     await foreign.click("https://evil.example/");
     expect(foreign.self.clients.openWindow).not.toHaveBeenCalled();
   });
+
+  it("keeps a Control Center section in the link and opens it unless a window shows that section", async () => {
+    const sw = worker();
+    await sw.push({ ...message, tag: "aiqsa-usage-cap", url: "/admin?section=limits" });
+    expect(sw.shown[0]?.options.data).toEqual({ url: "/admin?section=limits" });
+
+    const onLimits = window("https://aiqsa.example/admin?section=limits", false);
+    const focusing = worker([onLimits]);
+    await focusing.click("/admin?section=limits");
+    expect(onLimits.focus).toHaveBeenCalled();
+    expect(focusing.self.clients.openWindow).not.toHaveBeenCalled();
+
+    const opening = worker([window("https://aiqsa.example/admin?section=users")]);
+    await opening.click("/admin?section=limits");
+    expect(opening.self.clients.openWindow).toHaveBeenCalledWith("https://aiqsa.example/admin?section=limits");
+  });
 });
