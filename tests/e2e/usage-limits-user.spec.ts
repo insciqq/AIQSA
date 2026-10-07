@@ -66,6 +66,7 @@ test.afterAll(async () => {
   if (userId) {
     await prisma.usageEvent.deleteMany({ where: { modelId: FIXTURE_MODEL, userId } });
     await prisma.usageLimit.deleteMany({ where: { userId } });
+    await prisma.usageMessageAdmission.deleteMany({ where: { userId } });
   }
   await prisma.$disconnect();
 });
@@ -158,10 +159,12 @@ test("a message limit admits up to the limit, then refuses with the time it free
   await setSpend(0);
   await prisma.usageMessageAdmission.deleteMany({ where: { userId } });
   await setOverride(page, { budget: null, hour: 1 });
+  // One message admitted this hour. Real runs counting toward the limit are
+  // covered by the stateful admission tests and the paid budgets scenario; the
+  // stand's fake model cannot fit a composer turn with tools in its context.
+  await prisma.usageMessageAdmission.create({ data: { createdAt: new Date(Date.now() - 60_000), userId } });
   await page.goto("/");
   const composer = page.getByRole("textbox", { name: "Message", exact: true });
-  await composer.fill("First question.");
-  await composer.press("Enter");
   await expect(page.getByTestId("composer-usage-limit")).toHaveAttribute("data-tone", "critical", { timeout: 30_000 });
   await page.screenshot({ path: testInfo.outputPath("rate-after-first.png") });
   await composer.fill("Second question.");
