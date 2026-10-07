@@ -3,6 +3,7 @@ import {
   WORKSPACE_MCP_VERSION,
   WORKSPACE_TOOL_TRANSPORT_CEILING_BYTES,
   WorkspaceConfigError,
+  getScheduledWorkspaceMaxConcurrent,
   getWorkspaceConfig,
   workspaceToolTransportMaxBytes
 } from "./config";
@@ -37,6 +38,15 @@ describe("Workspace configuration", () => {
     for (const [name, value] of [["AIQSA_WORKSPACE_CODE_MCP_MAX_CALLS", "0"], ["AIQSA_WORKSPACE_CODE_MCP_MAX_CALLS", "5001"],
       ["AIQSA_WORKSPACE_CODE_MCP_CONCURRENCY", "17"], ["AIQSA_WORKSPACE_CODE_MCP_RATE_PER_SECOND", "1.5"]]) {
       expect(() => getWorkspaceConfig({ [name!]: value })).toThrow(WorkspaceConfigError);
+    }
+  });
+
+  it("caps scheduled Workspace runs at one by default and refuses malformed caps", () => {
+    expect(getScheduledWorkspaceMaxConcurrent({})).toBe(1);
+    expect(getScheduledWorkspaceMaxConcurrent({ AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT: "" })).toBe(1);
+    expect(getScheduledWorkspaceMaxConcurrent({ AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT: "3" })).toBe(3);
+    for (const value of ["0", "17", "1.5", "-1", "two"]) {
+      expect(() => getScheduledWorkspaceMaxConcurrent({ AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT: value })).toThrow(WorkspaceConfigError);
     }
   });
 

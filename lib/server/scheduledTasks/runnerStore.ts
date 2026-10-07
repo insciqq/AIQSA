@@ -10,6 +10,7 @@ import {
   SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_RETRY_WINDOW_MS,
   SCHEDULED_TASK_RUN_DEADLINE_MS,
+  SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
   completedRunCheck,
   expiredPendingOutcome,
   linkedRunOutcome,
@@ -97,11 +98,31 @@ export type ScheduledTaskExecution = Readonly<{
 /** An admitted scheduled run past its deadline, by the origin the run carries. */
 export type ScheduledTaskOverdueRun = Readonly<{ runId: string; userId: string }>;
 
+export type ScheduledTaskDispatchCandidate = Readonly<{
+  id: string;
+  /** The task's schedule repeats (not a once task). */
+  recurring: boolean;
+  scheduledFor: Date;
+  taskId: string;
+  trigger: ScheduledTaskRunTrigger;
+  userId: string;
+  /** Already waiting for a scheduled Workspace slot. */
+  waiting: boolean;
+  /** The task has Workspace on as dispatch reads it; admission rereads it. */
+  workspace: boolean;
+}>;
+
 export type ScheduledTaskDispatch = Readonly<{
   /** Scheduled runs not yet terminal and admissions in flight, per owner, installation-wide. */
   executing: ReadonlyMap<string, number>;
   /** Unleased pending occurrences, oldest instant first. */
-  pending: readonly Readonly<{ id: string; userId: string }>[];
+  pending: readonly ScheduledTaskDispatchCandidate[];
+  /**
+   * Of those executing, the ones holding a Workspace slot: runs accepted with
+   * a Workspace binding and admissions in flight for tasks with Workspace on.
+   * Interactive runs never count.
+   */
+  workspaceExecuting: number;
 }>;
 
 /** Persistence of the occurrence lifecycle; every settlement also writes the task's bookkeeping. */
@@ -117,8 +138,14 @@ export interface ScheduledTaskRunnerStore {
   /** Settles unleased pending occurrences past their lateness or retry window. */
   expirePending(now: Date, limit: number): Promise<readonly ScheduledTaskSettlement[]>;
   loadDispatch(now: Date, limit: number): Promise<ScheduledTaskDispatch>;
-  /** Leases an unlinked pending occurrence for one admission attempt. */
+  /** Leases an unlinked pending occurrence for one admission attempt; a Workspace wait ends with it. */
   acquireLease(occurrenceId: string, now: Date, until: Date): Promise<boolean>;
+  /**
+   * Leaves a pending, unlinked occurrence waiting for a scheduled Workspace
+   * slot: released, shown as waiting, its first wait recorded for the
+   * administrator's counts. A later attempt clears the wait.
+   */
+  waitForWorkspace(occurrenceId: string, now: Date): Promise<void>;
   /** A pending, unlinked occurrence with its current task, owner and chat. */
   loadExecution(occurrenceId: string): Promise<ScheduledTaskExecution | null>;
   /**
@@ -476,13 +503,19 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
     },
 
     async loadDispatch(now, limit) {
-      const pending = await prisma.$queryRaw<Array<{ id: string; userId: string }>>(Prisma.sql`
-        SELECT "id", "userId" FROM "ScheduledTaskOccurrence"
-        WHERE "state" = 'PENDING'::"ScheduledTaskOccurrenceState"
-          AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt" <= ${now})
-        ORDER BY "scheduledFor" ASC, "createdAt" ASC, "id" ASC
+      const rows = await prisma.$queryRaw<Array<Omit<ScheduledTaskDispatchCandidate, "trigger"> & { trigger: string }>>(Prisma.sql`
+        SELECT occurrence."id", occurrence."userId", occurrence."taskId", occurrence."trigger", occurrence."scheduledFor",
+          occurrence."reasonCode" IS NOT DISTINCT FROM ${SCHEDULED_TASK_WORKSPACE_WAIT_CODE} AS "waiting",
+          task."workspaceEnabled" AS "workspace",
+          task."scheduleKind" <> 'ONCE'::"ScheduledTaskScheduleKind" AS "recurring"
+        FROM "ScheduledTaskOccurrence" AS occurrence
+        INNER JOIN "ScheduledTask" AS task ON task."id" = occurrence."taskId"
+        WHERE occurrence."state" = 'PENDING'::"ScheduledTaskOccurrenceState"
+          AND (occurrence."leaseExpiresAt" IS NULL OR occurrence."leaseExpiresAt" <= ${now})
+        ORDER BY occurrence."scheduledFor" ASC, occurrence."createdAt" ASC, occurrence."id" ASC
         LIMIT ${limit}
       `);
+      const pending = rows.map((row) => ({ ...row, trigger: trigger(row.trigger) }));
       // A scheduled run counts until it is terminal, by the origin it carries
       // (even when its task and occurrence are gone); an admission in flight
       // counts by its lease until it links its run.
@@ -498,16 +531,45 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         ) AS executing
         GROUP BY "userId"
       `);
-      return { executing: new Map(executing.map((row) => [row.userId, row.count])), pending };
+      // A Workspace slot is held by a scheduled run accepted with a Workspace
+      // binding until it is terminal, and by an admission in flight for a task
+      // with Workspace on; ordinary chats' runs never count.
+      const [workspace] = await prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
+        SELECT ((
+          SELECT count(*) FROM "ModelRun" AS run
+          WHERE run."status" IN ('preparing'::"ModelRunStatus", 'queued'::"ModelRunStatus", 'streaming'::"ModelRunStatus",
+              'in_progress'::"ModelRunStatus")
+            AND run."scheduledTaskId" IS NOT NULL
+            AND EXISTS (SELECT 1 FROM "WorkspaceRunBinding" AS binding WHERE binding."modelRunId" = run."id")
+        ) + (
+          SELECT count(*) FROM "ScheduledTaskOccurrence" AS occurrence
+          INNER JOIN "ScheduledTask" AS task ON task."id" = occurrence."taskId"
+          WHERE occurrence."state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND occurrence."runId" IS NULL
+            AND occurrence."leaseExpiresAt" > ${now} AND task."workspaceEnabled"
+        ))::int AS "count"
+      `);
+      return {
+        executing: new Map(executing.map((row) => [row.userId, row.count])), pending, workspaceExecuting: workspace?.count ?? 0
+      };
     },
 
     async acquireLease(occurrenceId, now, until) {
       return await prisma.$executeRaw(Prisma.sql`
         UPDATE "ScheduledTaskOccurrence"
-        SET "leaseExpiresAt" = ${until}, "startedAt" = COALESCE("startedAt", ${now})
+        SET "leaseExpiresAt" = ${until}, "startedAt" = COALESCE("startedAt", ${now}),
+          "reasonCode" = NULLIF("reasonCode", ${SCHEDULED_TASK_WORKSPACE_WAIT_CODE})
         WHERE "id" = ${occurrenceId} AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
           AND ("leaseExpiresAt" IS NULL OR "leaseExpiresAt" <= ${now})
       `) === 1;
+    },
+
+    async waitForWorkspace(occurrenceId, now) {
+      await prisma.$executeRaw(Prisma.sql`
+        UPDATE "ScheduledTaskOccurrence"
+        SET "leaseExpiresAt" = NULL, "reasonCode" = ${SCHEDULED_TASK_WORKSPACE_WAIT_CODE},
+          "workspaceWaitStartedAt" = COALESCE("workspaceWaitStartedAt", ${now})
+        WHERE "id" = ${occurrenceId} AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
+      `);
     },
 
     async loadExecution(occurrenceId) {

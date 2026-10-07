@@ -96,6 +96,21 @@ describe("scheduled task presentation", () => {
     expect(row("superseded")).toBe("Skipped: a newer scheduled time arrived before it could start");
   });
 
+  it("shows a run waiting for a free Workspace slot as waiting, and its skip with the capacity reason", () => {
+    const run = (overrides: Partial<ScheduledTaskRun>): ScheduledTaskRun => ({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
+      trigger: "schedule", state: "pending", reasonCode: null, startedAt: null, finishedAt: null, chatId: null, unseen: false,
+      unavailableSources: [], skills: [], ...overrides });
+    expect(scheduledTaskRunRow(run({}), "Europe/London", now)).toMatchObject({ outcome: "Starting", tone: "live" });
+    expect(scheduledTaskRunRow(run({ reasonCode: "waiting_for_workspace" }), "Europe/London", now))
+      .toMatchObject({ outcome: "Waiting for a free Workspace slot", tone: "live" });
+    expect(scheduledTaskRunRow(run({ finishedAt: "2026-10-05T20:00:01.000Z", reasonCode: "workspace_capacity", state: "skipped" }),
+      "Europe/London", now)).toMatchObject({
+      outcome: "Skipped: no Workspace slot became free in time; other scheduled runs were using Workspace", tone: "neutral"
+    });
+    expect(scheduledTaskStatusLine(scheduledTaskFixture({ running: true, waitingForWorkspace: true }), now))
+      .toEqual({ text: "Waiting for a free Workspace slot", tone: "live" });
+  });
+
   it("summarizes hourly schedules", () => {
     expect(scheduledTaskScheduleText({ kind: "hourly", everyHours: 1, time: "00:00", until: null,
       days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }, "Europe/London", "Europe/London")).toBe("Every hour");
