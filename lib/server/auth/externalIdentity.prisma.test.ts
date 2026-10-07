@@ -32,6 +32,8 @@ type SettlementFixture = {
   identity(user: { email: string; id: string }, input: { source?: string; subject: string }): Promise<void>;
   input(input: Partial<ExternalIdentityInput> & { email: string; subject: string }): ExternalIdentityInput;
   issuer: string;
+  /** A subject unique to this run; `identity` and `input` apply it to the names they get. */
+  subject(name: string): string;
   user(input: {
     localPart: string;
     role?: "admin" | "user";
@@ -39,6 +41,8 @@ type SettlementFixture = {
     status?: "active" | "disabled" | "pending";
   }): Promise<{ email: string; id: string }>;
   email(localPart: string): string;
+  /** An external group value unique to this run. */
+  value(name: string): string;
 };
 
 class RolledBack extends Error {
@@ -113,7 +117,7 @@ async function withSettlementData<T>(run: (fixture: SettlementFixture) => Promis
             emailVerifiedAt: now,
             normalizedEmail: user.email,
             provider: "oidc",
-            providerAccountId: input.subject,
+            providerAccountId: `${input.subject}-${id}`,
             source: input.source ?? issuer,
             userId: user.id
           }
@@ -128,10 +132,12 @@ async function withSettlementData<T>(run: (fixture: SettlementFixture) => Promis
           policy: openPolicy,
           provider: "oidc",
           source: issuer,
-          ...input
+          ...input,
+          subject: `${input.subject}-${id}`
         };
       },
       issuer,
+      subject: (name) => `${name}-${id}`,
       async user(input) {
         const user = await prisma.user.create({
           data: {
@@ -143,7 +149,8 @@ async function withSettlementData<T>(run: (fixture: SettlementFixture) => Promis
           }
         });
         return { email: user.email!, id: user.id };
-      }
+      },
+      value: (name) => `${name}-${id}`
     });
   } finally {
     // Accounts created from an untrusted email have no email; their identity still names it.
@@ -226,8 +233,18 @@ describe("external identity settlement", () => {
         select: { emailVerifiedAt: true, providerAccountId: true, source: true, userId: true },
         where: { provider: "oidc", userId: { in: [verifiedOwner.id, trustedOwner.id, disabled.id] } }
       })).resolves.toEqual([
-        { emailVerifiedAt: null, providerAccountId: "trusted-claim", source: fixture.issuer, userId: trustedOwner.id },
-        { emailVerifiedAt: now, providerAccountId: "verified-claim", source: fixture.issuer, userId: verifiedOwner.id }
+        {
+          emailVerifiedAt: null,
+          providerAccountId: fixture.subject("trusted-claim"),
+          source: fixture.issuer,
+          userId: trustedOwner.id
+        },
+        {
+          emailVerifiedAt: now,
+          providerAccountId: fixture.subject("verified-claim"),
+          source: fixture.issuer,
+          userId: verifiedOwner.id
+        }
       ]);
     });
   });
@@ -326,7 +343,7 @@ describe("external identity settlement", () => {
       expect(user.authIdentities).toEqual([expect.objectContaining({
         emailVerifiedAt: now,
         provider: "oidc",
-        providerAccountId: "new-subject",
+        providerAccountId: fixture.subject("new-subject"),
         source: fixture.issuer
       })]);
 
@@ -352,7 +369,8 @@ describe("external identity settlement", () => {
       await expect(prisma.user.count({ where: { email } })).resolves.toBe(0);
       await expect(settle(fixture.input({ email: pending.email, policy: accessRules, subject: "access-pending-subject" })))
         .resolves.toEqual({ status: "pending" });
-      await expect(prisma.authIdentity.count({ where: { providerAccountId: "access-pending-subject" } })).resolves.toBe(1);
+      await expect(prisma.authIdentity.count({ where: { providerAccountId: fixture.subject("access-pending-subject") } }))
+        .resolves.toBe(1);
 
       await prisma.authAccessRule.create({
         data: { defaultGroups: { create: { groupId: defaultGroupId } }, kind: "domain", value: email.split("@")[1]! }
@@ -370,10 +388,16 @@ describe("external identity settlement", () => {
 
   it("syncs the source's managed groups at sign-in and records the content-free outcome", async () => {
     await withSettlementData(async (fixture) => {
-      const engineering = await fixture.group("engineering", { names: [{ source: "oidc", value: "/engineering" }] });
-      const operations = await fixture.group("operations", { names: [{ source: "oidc", value: "/operations" }] });
+      const engineering = await fixture.group("engineering", {
+        names: [{ source: "oidc", value: fixture.value("/engineering") }]
+      });
+      const operations = await fixture.group("operations", {
+        names: [{ source: "oidc", value: fixture.value("/operations") }]
+      });
       const manual = await fixture.group("manual");
-      const directory = await fixture.group("directory", { names: [{ source: "ldap", value: "/operations" }] });
+      const directory = await fixture.group("directory", {
+        names: [{ source: "ldap", value: fixture.value("/operations") }]
+      });
       const user = await fixture.user({ localPart: "synced" });
       await fixture.identity(user, { subject: "synced-subject" });
       await prisma.userGroup.createMany({
@@ -383,7 +407,7 @@ describe("external identity settlement", () => {
 
       await expect(settle(fixture.input({
         email: user.email,
-        groups: ["/engineering"],
+        groups: [fixture.value("/engineering")],
         policy: syncing,
         subject: "synced-subject"
       }))).resolves.toEqual({ status: "active", userId: user.id });
@@ -394,7 +418,7 @@ describe("external identity settlement", () => {
       await expect(groupIdsOf(user.id)).resolves.toEqual([directory, engineering, manual].sort());
       await expect(prisma.authIdentity.findFirstOrThrow({
         select: { lastSyncWarning: true, lastSyncedAt: true },
-        where: { providerAccountId: "synced-subject" }
+        where: { providerAccountId: fixture.subject("synced-subject") }
       })).resolves.toEqual({ lastSyncWarning: "groups_claim_missing", lastSyncedAt: now });
     });
   });
@@ -478,7 +502,7 @@ describe("external identity settlement", () => {
         });
         const identity = await tx.authIdentity.findFirstOrThrow({
           select: { lastSyncWarning: true },
-          where: { providerAccountId: "last-admin-subject" }
+          where: { providerAccountId: fixture.subject("last-admin-subject") }
         });
         return { identity, outcome, user };
       });

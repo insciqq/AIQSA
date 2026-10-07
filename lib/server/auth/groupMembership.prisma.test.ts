@@ -12,6 +12,8 @@ type MembershipFixture = {
   /** The user's enabled preference for a server, with a desired runtime generation. */
   mcpPreference(server: { revisionId: string; serverId: string }, userId: string): Promise<string>;
   user(localPart: string): Promise<string>;
+  /** An external group value unique to this run. */
+  value(name: string): string;
 };
 
 async function withMembershipData<T>(run: (fixture: MembershipFixture) => Promise<T>): Promise<T> {
@@ -74,7 +76,8 @@ async function withMembershipData<T>(run: (fixture: MembershipFixture) => Promis
           data: { displayName: `Membership ${localPart}`, email: `${localPart}@${domain}`, status: "active" }
         });
         return user.id;
-      }
+      },
+      value: (name) => `${name}-${id}`
     });
   } finally {
     await prisma.mcpRuntimeGeneration.deleteMany({ where: { revision: { serverId: { in: serverIds } } } });
@@ -105,13 +108,14 @@ describe("external group membership sync", () => {
 
   it("adds and removes only the groups the source manages, and a missing claim changes nothing", async () => {
     await withMembershipData(async (fixture) => {
-      const engineering = await fixture.group("engineering", { names: [{ source: "oidc", value: "/engineering" }] });
-      const stale = await fixture.group("stale", { names: [{ source: "oidc", value: "/stale" }] });
+      const engineeringValue = fixture.value("/engineering");
+      const engineering = await fixture.group("engineering", { names: [{ source: "oidc", value: engineeringValue }] });
+      const stale = await fixture.group("stale", { names: [{ source: "oidc", value: fixture.value("/stale") }] });
       const manual = await fixture.group("manual");
-      const directory = await fixture.group("directory", { names: [{ source: "ldap", value: "/engineering" }] });
+      const directory = await fixture.group("directory", { names: [{ source: "ldap", value: engineeringValue }] });
       const archived = await fixture.group("archived", {
         archived: true,
-        names: [{ source: "oidc", value: "/engineering" }]
+        names: [{ source: "oidc", value: engineeringValue }]
       });
       const userId = await fixture.user("synced");
       await prisma.userGroup.createMany({
@@ -127,12 +131,12 @@ describe("external group membership sync", () => {
         { groupId: manual, role: "owner" }
       ].sort(byGroupId);
 
-      await expect(sync({ source: "oidc", userId, values: ["/engineering", "/unmapped"] }))
+      await expect(sync({ source: "oidc", userId, values: [engineeringValue, fixture.value("/unmapped")] }))
         .resolves.toEqual({ added: 1, removed: 1 });
       await expect(membershipsOf(userId)).resolves.toEqual(expected);
       await expect(sync({ source: "oidc", userId, values: null }))
         .resolves.toEqual({ added: 0, removed: 0, warning: "groups_claim_missing" });
-      await expect(sync({ source: "oidc", userId, values: ["/engineering"] })).resolves.toEqual({ added: 0, removed: 0 });
+      await expect(sync({ source: "oidc", userId, values: [engineeringValue] })).resolves.toEqual({ added: 0, removed: 0 });
       await expect(membershipsOf(userId)).resolves.toEqual(expected);
       await expect(prisma.group.count({ where: { id: archived, users: { some: { userId } } } })).resolves.toBe(0);
     });
@@ -140,8 +144,8 @@ describe("external group membership sync", () => {
 
   it("applies exactly the administrator path's MCP side effects", async () => {
     await withMembershipData(async (fixture) => {
-      const leaving = await fixture.group("leaving", { names: [{ source: "oidc", value: "leaving" }] });
-      const joining = await fixture.group("joining", { names: [{ source: "oidc", value: "joining" }] });
+      const leaving = await fixture.group("leaving", { names: [{ source: "oidc", value: fixture.value("leaving") }] });
+      const joining = await fixture.group("joining", { names: [{ source: "oidc", value: fixture.value("joining") }] });
       const lostServer = await fixture.mcpServer("lost", leaving);
       const gainedServer = await fixture.mcpServer("gained", joining);
       const syncedUser = await fixture.user("synced");
@@ -159,7 +163,7 @@ describe("external group membership sync", () => {
       await preferences(syncedUser);
       await preferences(administeredUser);
 
-      await expect(sync({ source: "oidc", userId: syncedUser, values: ["joining"] }))
+      await expect(sync({ source: "oidc", userId: syncedUser, values: [fixture.value("joining")] }))
         .resolves.toEqual({ added: 1, removed: 1 });
       await expect(createPrismaAdminRepository(prisma).setUserGroups({
         expectedGroupIds: [leaving],
