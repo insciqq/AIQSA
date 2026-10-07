@@ -135,7 +135,9 @@ for (const viewport of [
 
       if (viewport.name === "desktop") {
         await page.goto("/admin?section=overview");
-        await expect(page.getByText(/budget/i).first()).toBeVisible();
+        const items = page.getByTestId("admin-attention-item");
+        await expect(items.filter({ hasText: "The monthly cap for everyone is almost used" })).toBeVisible();
+        await expect(items.filter({ hasText: "A user reached their monthly budget" })).toBeVisible();
         await page.screenshot({ path: testInfo.outputPath("05-attention.png") });
       }
     });
