@@ -145,8 +145,29 @@ describe("OpenAI-compatible embeddings", () => {
     expect(result.vectors[0]).toHaveLength(1_536);
     expect(Math.sqrt(result.vectors[0]!.reduce((sum, value) => sum + value * value, 0)))
       .toBeCloseTo(1, 12);
-    expect(result.usage).toEqual({ inputTokens: 0, totalTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 0, totalTokens: 0, costUsd: null });
     expect(result.requestId).toBe("embedding-request-1");
+  });
+
+  it("carries the provider-reported cost and rejects a malformed one like any usage field", async () => {
+    const embed = (usage: unknown, cost?: string) => createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection, model: embeddingModel(), secret: "openrouter-key",
+      network: { fetchFn: async () => {
+        const response = providerResponse([vector(4_096)], { usage });
+        // JSON.stringify cannot write an overflowing number; the provider's text can.
+        return cost === undefined ? response : new Response((await response.text()).replace("\"COST\"", cost));
+      } }
+    }).embed({ mode: "document", texts: ["first"] });
+    // The usage block OpenRouter returned for qwen/qwen3-embedding-8b, probed 2026-10-07.
+    await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost: 5e-8, is_byok: false,
+      cost_details: { upstream_inference_cost: null, upstream_inference_prompt_cost: 5e-8, upstream_inference_completions_cost: 0 } }))
+      .resolves.toMatchObject({ usage: { inputTokens: 5, totalTokens: 5, costUsd: 5e-8 } });
+    await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost: 0 })).resolves.toMatchObject({ usage: { costUsd: 0 } });
+    await expect(embed({ prompt_tokens: 5 })).resolves.toMatchObject({ usage: { inputTokens: 5, costUsd: null } });
+    for (const cost of [-0.01, "0.0001", null, true, {}]) {
+      await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost }).catch(errorCode)).resolves.toBe("embedding_response_invalid");
+    }
+    await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost: "COST" }, "1e400").catch(errorCode)).resolves.toBe("embedding_response_invalid");
   });
 
   it("pins the ordered Qwen document route and falls back only inside it", async () => {
