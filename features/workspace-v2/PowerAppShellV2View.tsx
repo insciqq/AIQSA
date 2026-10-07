@@ -600,6 +600,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const navigationFolders = useWorkspaceStore((state) => state.navigationFolders);
+  // Dictation is an account feature: the personal catalog decides it, also in Project chats.
+  const dictation = useWorkspaceStore((state) => state.catalog?.dictation ?? null);
   // Server-verified capability gate for the direct "Delete…" entries; the
   // deletion confirm surface and its semantics stay unchanged.
   const permanentChatDeletionAvailable = useMemorySettingsStore(
@@ -1083,6 +1085,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       disabledReason={thread.editingMessageId
         ? "Finish or cancel the inline edit first."
         : composer.composerDisabledHint}
+      dictation={dictation}
       draft={composer.draft}
       comments={composerComments}
       draftTooLargeToKeep={composerDraftTooLarge}
