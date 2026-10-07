@@ -79,6 +79,16 @@ If `docker compose pull` reports `pull access denied for minio/mc`, the checkout
 
 Control Center → Health shows recent provider failures, server errors and background work problems. This telemetry contains no message content and is kept for 30 days inside the instance's PostgreSQL; nothing is sent elsewhere. `./aiqsa.sh doctor` checks the host, `.env` and every container.
 
+To diagnose a problem, read the telemetry first, then the logs around its incidents, then any error reference a user reports:
+
+```bash
+./aiqsa.sh health                          # needs attention, errors, providers, restarts, queues, incidents (24h)
+./aiqsa.sh logs --errors --since 2h        # container logs of that window
+./aiqsa.sh health --run 1a2b3c4d           # one failed answer's run and incidents by its reference
+```
+
+`health` works while the app container is down, takes `--since 7d` or `30d`, and `--json` for scripts and agents. Its output contains no message content, secrets or `.env` values, only codes, counts and provider connection and model names, so it is safe to paste into an issue or give to an agent.
+
 ```bash
 ./aiqsa.sh logs                            # last 200 lines of every service
 ./aiqsa.sh logs --errors --since 1h app    # AIQSA errors of the last hour
