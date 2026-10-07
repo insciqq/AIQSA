@@ -80,6 +80,8 @@ export type UiV2IconName =
   | "stop"
   | "sun"
   | "slides"
+  | "speaker"
+  | "speaker-stop"
   | "table"
   | "terminal"
   | "type"
@@ -337,6 +339,14 @@ export function UiV2IconSprite() {
         <symbol id="v2-icon-slides" viewBox="0 0 24 24">
           <rect x="3" y="5" width="18" height="13" rx="2" />
           <path d="M8 21h8M12 18v3M7 14l3-3 2 2 4-5" />
+        </symbol>
+        <symbol id="v2-icon-speaker" viewBox="0 0 24 24">
+          <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+          <path d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18.5 7a7 7 0 0 1 0 10" />
+        </symbol>
+        <symbol id="v2-icon-speaker-stop" viewBox="0 0 24 24">
+          <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+          <path d="m16 9.5 5 5M21 9.5l-5 5" />
         </symbol>
         <symbol id="v2-icon-table" viewBox="0 0 24 24">
           <rect x="3" y="4" width="18" height="16" rx="2" />
