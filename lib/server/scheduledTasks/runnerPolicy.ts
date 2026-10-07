@@ -249,8 +249,8 @@ export function planTaskSettlement(input: Readonly<{
  * ends a streak, the check that ends a streak without a report) and the
  * health alert that starts a streak of incomplete runs; later incomplete runs
  * of the same streak alert no more. Routine skips (missed, previous_running,
- * superseded, chat_busy, paused) and other failures stay in the run history
- * only.
+ * superseded, chat_busy, paused, a used-up budget) and other failures stay in
+ * the run history only.
  */
 export function settlementNotifiesOwner(outcome: Readonly<{
   reasonCode: string | null;
@@ -375,24 +375,43 @@ export type ScheduledTaskOpenOccurrence = Readonly<{
 }>;
 
 /**
+ * Why a refused admission retries and, still refused when its window ends,
+ * ends skipped instead of failed: the task's chat was busy, or the owner's
+ * monthly budget or the pooled installation cap was used up. A pending
+ * occurrence remembers the latest one.
+ */
+export type ScheduledTaskSkipReason = "chat_busy" | "installation_budget_exhausted" | "usage_budget_exhausted";
+const SKIP_REASONS: ReadonlySet<string> = new Set([
+  "chat_busy", "installation_budget_exhausted", "usage_budget_exhausted"
+] satisfies ScheduledTaskSkipReason[]);
+
+function skipReason(reasonCode: string | null): ScheduledTaskSkipReason | null {
+  return reasonCode !== null && SKIP_REASONS.has(reasonCode) ? reasonCode as ScheduledTaskSkipReason : null;
+}
+
+/**
  * How a newly due instant meets its task's open occurrences. A pending one
  * that holds no run and no live admission lease is fresh no longer: it ends
- * skipped (`chat_busy` after busy retries, else `superseded`) and the new
- * instant takes its place. Any other open occurrence of a recurring task is a
- * run still in progress, and the new instant is skipped `previous_running`
- * instead of queuing. A once task's only instant always queues.
+ * skipped (with its skip reason after such retries, else `superseded`) and
+ * the new instant takes its place. Any other open occurrence of a recurring
+ * task is a run still in progress, and the new instant is skipped
+ * `previous_running` instead of queuing. A once task's only instant always
+ * queues.
  */
 export function planClaimOverlap(input: Readonly<{
   now: Date;
   open: readonly ScheduledTaskOpenOccurrence[];
   recurring: boolean;
-}>): Readonly<{ previousRunning: boolean; superseded: readonly Readonly<{ id: string; reasonCode: "chat_busy" | "superseded" }>[] }> {
+}>): Readonly<{
+  previousRunning: boolean;
+  superseded: readonly Readonly<{ id: string; reasonCode: ScheduledTaskSkipReason | "superseded" }>[];
+}> {
   const waiting = (occurrence: ScheduledTaskOpenOccurrence) => occurrence.state === "PENDING" && occurrence.runId === null &&
     (occurrence.leaseExpiresAt === null || occurrence.leaseExpiresAt.getTime() <= input.now.getTime());
   return {
     previousRunning: input.recurring && input.open.some((occurrence) => !waiting(occurrence)),
     superseded: input.open.filter(waiting).map((occurrence) => ({
-      id: occurrence.id, reasonCode: occurrence.reasonCode === "chat_busy" ? "chat_busy" as const : "superseded" as const
+      id: occurrence.id, reasonCode: skipReason(occurrence.reasonCode) ?? "superseded"
     }))
   };
 }
@@ -406,9 +425,8 @@ export function expiredPendingOutcome(
     return { reasonCode: "missed", state: "SKIPPED" };
   }
   if (occurrence.startedAt && now.getTime() - occurrence.startedAt.getTime() > SCHEDULED_TASK_RETRY_WINDOW_MS) {
-    return occurrence.reasonCode === "chat_busy"
-      ? { reasonCode: "chat_busy", state: "SKIPPED" }
-      : { reasonCode: "admission_failed", state: "FAILED" };
+    const skipped = skipReason(occurrence.reasonCode);
+    return skipped ? { reasonCode: skipped, state: "SKIPPED" } : { reasonCode: "admission_failed", state: "FAILED" };
   }
   return null;
 }
@@ -430,11 +448,17 @@ export function linkedRunOutcome(run: Readonly<{ status: string; errorPayload: u
 }
 
 export type ScheduledTaskRefusal =
-  | Readonly<{ kind: "retry"; reasonCode: "chat_busy" | null }>
+  | Readonly<{ kind: "retry"; reasonCode: ScheduledTaskSkipReason | null }>
   | Readonly<{ kind: "fail"; outcome: ScheduledTaskOutcome }>;
 
 /** The chat is in use: retried, and once the window ends skipped as `chat_busy`. */
 const BUSY_CODES = new Set(["active_run_in_progress", "active_leaf_changed"]);
+/**
+ * A budget is used up: retried in case an administrator raises it, and once
+ * the window ends skipped with its own reason; never a failure, so the task
+ * stays active and resumes by itself when the month resets.
+ */
+const BUDGET_CODES: ReadonlySet<string> = new Set(["installation_budget_exhausted", "usage_budget_exhausted"] satisfies ScheduledTaskSkipReason[]);
 /**
  * Races and outages that may clear within the window; still failing at its
  * end, the run fails once and counts toward the repeated-failure pause, so a
@@ -475,16 +499,17 @@ export function pausingOutcome(reason: ScheduledTaskPauseReason): ScheduledTaskO
 
 /**
  * How a send refusal that created no run affects its occurrence: busy chats
- * and Workspaces, transient races, unavailable runtimes and storage, and
- * server errors retry within the window (no run exists, so nothing failed
- * yet); catalog, entitlement, account, tool and Workspace refusals that only
- * the owner or an administrator can lift fail and pause with human copy;
- * anything else fails with its stable code. The runner rechecks the owner
- * itself for an unauthenticated refusal.
+ * and Workspaces, used-up budgets, transient races, unavailable runtimes and
+ * storage, and server errors retry within the window (no run exists, so
+ * nothing failed yet); catalog, entitlement, account, tool and Workspace
+ * refusals that only the owner or an administrator can lift fail and pause
+ * with human copy; anything else fails with its stable code. The runner
+ * rechecks the owner itself for an unauthenticated refusal.
  */
 export function classifySendRefusal(status: number, errorCode: unknown): ScheduledTaskRefusal {
   const code = stableCode(errorCode);
   if (code && BUSY_CODES.has(code)) return { kind: "retry", reasonCode: "chat_busy" };
+  if (code && BUDGET_CODES.has(code)) return { kind: "retry", reasonCode: code as ScheduledTaskSkipReason };
   if (code && TRANSIENT_CODES.has(code)) return { kind: "retry", reasonCode: null };
   const pause = code ? PAUSE_CODES.get(code) : undefined;
   if (pause) return { kind: "fail", outcome: pausingOutcome(pause) };

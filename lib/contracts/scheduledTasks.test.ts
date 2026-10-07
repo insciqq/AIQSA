@@ -143,6 +143,10 @@ describe("scheduled task wire contract", () => {
     expect(scheduledTaskReasonMessage("previous_running")).toBe("Skipped: the previous run was still in progress.");
     expect(scheduledTaskReasonMessage("superseded")).toContain("newer scheduled time");
     expect(scheduledTaskReasonMessage("some_future_code")).toBe("The run did not complete.");
+    // A used-up budget skips runs until it resets or is raised; the shared one names no amount.
+    expect(scheduledTaskReasonMessage("usage_budget_exhausted")).toBe(
+      "Skipped: your monthly budget was used up. Runs continue after it resets or an administrator raises it.");
+    expect(scheduledTaskReasonMessage("installation_budget_exhausted")).toMatch(/^Skipped: the monthly budget shared by everyone/u);
     // Every tool, Workspace, source and deadline outcome tells the owner what happened, distinctly.
     const tools = ["tools_unavailable", "workspace_unavailable", "workspace_secret_limit", "source_unavailable", "run_deadline"]
       .map(scheduledTaskReasonMessage);
