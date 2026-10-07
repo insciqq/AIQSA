@@ -444,6 +444,7 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
       } });
       const data = {
         userId: source.userId, chatId: source.chatId, projectId: source.projectId, provider, modelId,
+        purpose: "chat_summary" as const,
         ...storedTokenUsage(usage),
         estimatedCostMicros: pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
           ? estimateCostMicros(normalizeTokenUsage(usage), modelTokenPricing(pricing)) : null

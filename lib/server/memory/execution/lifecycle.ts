@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { memoryRoleUsagePurpose } from "../../../domain/usagePurpose";
 import { prisma } from "../../prisma";
 import {
   withLockedMemoryTransaction,
@@ -307,6 +308,7 @@ async function createUsageEvent(
       outputTokens: usage.outputTokens,
       provider: provider.providerFamily,
       providerModelId: provider.providerModelId,
+      purpose: memoryRoleUsagePurpose(binding.logicalRole),
       reasoningTokens: usage.reasoningTokens,
       totalTokens: usage.totalTokens,
       user: { connect: { id: binding.userId } }

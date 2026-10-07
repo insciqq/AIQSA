@@ -126,7 +126,8 @@ describe("durable conversational images", () => {
     expect(await f.db.attachmentDeletionJob.count({ where: { storageKey: attachment.storageKey } })).toBe(0);
     const usage = await f.db.usageEvent.findMany({ where: { modelRunId: f.runId } });
     expect(usage).toHaveLength(2);
-    expect(usage.every((entry) => entry.imageGeneration && entry.estimatedCostMicros === null && entry.totalTokens === 14)).toBe(true);
+    expect(usage.every((entry) => entry.imageGeneration && entry.purpose === "image_generation" &&
+      entry.estimatedCostMicros === null && entry.totalTokens === 14)).toBe(true);
     expect(await createPrismaRunRepository(f.db).loadRunUsageAttributions({ runId: f.runId, userId: f.userId })).toEqual([]);
     await f.db.modelRun.update({ where: { id: f.runId }, data: { status: "error" } });
     await f.db.message.update({ where: { id: f.assistantId }, data: { status: "error" } });
@@ -192,7 +193,7 @@ describe("durable conversational images", () => {
     await expect(failing.execute(call, context)).rejects.toThrow("storage_unavailable");
     const where = { imageToolCallId: context.persistedToolCallId! };
     expect(await f.db.usageEvent.findMany({ where })).toEqual([expect.objectContaining({ imageGeneration: true, modelRunId: f.runId,
-      inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: null })]);
+      purpose: "image_generation", inputTokens: 3, outputTokens: 11, totalTokens: 14, estimatedCostMicros: null })]);
     expect(await f.db.attachment.count({ where })).toBe(0);
     const { storageKey } = put.mock.calls[0]![0];
     expect(f.storage.objects.has(storageKey)).toBe(false);

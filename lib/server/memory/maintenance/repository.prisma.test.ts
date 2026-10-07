@@ -128,7 +128,8 @@ function maintenanceBindings(userId: string, memoryJobId: string, authority: Tes
       promptVersion: MEMORY_MAINTENANCE_VERSIONS.promptVersion, schemaVersion: input.schemaVersion ?? MEMORY_MAINTENANCE_VERSIONS.schemaVersion,
       secretFreeExecutionSnapshot: snapshot as unknown as Prisma.InputJsonValue } }),
     usage: (bindingId: string) => prisma.usageEvent.create({ data: { userId, memoryExecutionBindingId: bindingId,
-      provider: "openai_compatible", modelId: "provider-authority-test-model", providerModelId: authority.providerModelId } }),
+      provider: "openai_compatible", modelId: "provider-authority-test-model", providerModelId: authority.providerModelId,
+      purpose: "memory_processing" } }),
     /** Settles a started attempt with its receipt, as the governed executor commits it. */
     succeed: (bindingId: string, ordinal: number, inputHash: string, acceptedOutputHash: string, acceptedOutput: unknown) =>
       prisma.$transaction(async (tx) => {

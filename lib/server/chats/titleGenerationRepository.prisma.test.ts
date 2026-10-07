@@ -123,7 +123,8 @@ describe("durable optional title work", () => {
         checkedAt: now, id: snapshot.credentialId!, kind: "active", testEvidence: {}, versionId: replacementId
       }] })).toBe("updated");
       expect(await prisma.providerCredentialVersion.findUnique({ where: { id: snapshot.credentialVersionId! } })).toBeNull();
-      expect(await prisma.usageEvent.findUnique({ where: { chatTitleGenerationId: work.runId } })).toMatchObject({ totalTokens: 15 });
+      expect(await prisma.usageEvent.findUnique({ where: { chatTitleGenerationId: work.runId } })).toMatchObject({
+        purpose: "chat_title", totalTokens: 15 });
     });
   });
 
@@ -163,7 +164,7 @@ describe("durable optional title work", () => {
         inputTokens: null, totalTokens: null, estimatedCostMicros: null, provider: "openai_compatible", modelId: "title-test"
       });
       await expect(prisma.usageEvent.create({ data: {
-        chatId: work.chatId, chatTitleGeneration: true, chatTitleGenerationId: work.runId,
+        chatId: work.chatId, chatTitleGeneration: true, chatTitleGenerationId: work.runId, purpose: "chat_title",
         modelRunId: work.runId, userId: work.userId, provider: "openai_compatible", modelId: "title-test",
         providerModelId: "unrelated-model"
       } })).rejects.toThrow("chat_title_usage_scope_invalid");

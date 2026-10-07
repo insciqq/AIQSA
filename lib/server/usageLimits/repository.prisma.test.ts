@@ -101,7 +101,8 @@ async function runs(userId: string, offsets: readonly number[], scheduled = fals
 }
 
 function usage(userId: string, createdAt: string, estimatedCostMicros: number | null) {
-  return { createdAt: new Date(createdAt), estimatedCostMicros, modelId: "usage-limit-fixture", provider: "fake", userId };
+  return { createdAt: new Date(createdAt), estimatedCostMicros, modelId: "usage-limit-fixture", provider: "fake",
+    purpose: "chat_answer" as const, userId };
 }
 
 describe("usage limit persistence", () => {

@@ -82,6 +82,7 @@ export async function usageAttributionsWithEstimatedCost(
       modelId: attribution.modelId,
       ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
       provider: attribution.provider,
+      purpose: attribution.purpose,
       usage: normalizeTokenUsage(attribution.usage)
     }))
   );
@@ -161,6 +162,7 @@ export async function finalizeRunCompletion(input: Readonly<{
           {
             modelId: input.run.modelId,
             provider: input.run.provider,
+            purpose: "chat_answer",
             usage: input.result.usage
           }
         ]

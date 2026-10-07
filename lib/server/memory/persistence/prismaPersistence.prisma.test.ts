@@ -446,6 +446,7 @@ async function createControlAuthorizedSave(
         outputTokens: 1,
         provider: "openai_compatible",
         providerModelId,
+        purpose: "memory_processing",
         reasoningTokens: 0,
         totalTokens: 2,
         userId
@@ -1047,6 +1048,7 @@ describe("Prisma Memory persistence", () => {
           outputTokens: 1,
           provider: admitted.binding.providerId!,
           providerModelId: admitted.binding.providerModelId!,
+          purpose: "memory_processing",
           reasoningTokens: 0,
           totalTokens: 2,
           userId

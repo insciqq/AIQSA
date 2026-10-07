@@ -27,6 +27,19 @@ export function isPersonalUsagePurpose(purpose: UsagePurpose): purpose is Person
   return (PERSONAL_USAGE_PURPOSES as readonly string[]).includes(purpose);
 }
 
+/**
+ * Purposes of a run's own usage attributions: the answer model's work (answer
+ * rounds, Agent generation), its Search, and its Knowledge query embeddings.
+ * The run's accounting rewrites exactly these rows; every other purpose linked
+ * to the run belongs to its own writer.
+ */
+export const RUN_USAGE_ATTRIBUTION_PURPOSES = ["chat_answer", "web_search", "knowledge_retrieval"] as const satisfies readonly UsagePurpose[];
+export type RunUsageAttributionPurpose = (typeof RUN_USAGE_ATTRIBUTION_PURPOSES)[number];
+
+export function isRunUsageAttributionPurpose(value: unknown): value is RunUsageAttributionPurpose {
+  return (RUN_USAGE_ATTRIBUTION_PURPOSES as readonly unknown[]).includes(value);
+}
+
 const MEMORY_INDEXING_ROLES: ReadonlySet<string> = new Set(["MEMORY_DOCUMENT_EMBED"]);
 const MEMORY_RETRIEVAL_ROLES: ReadonlySet<string> = new Set([
   "MEMORY_QUERY_EMBED", "MEMORY_RERANK", "MEMORY_HISTORY_RELEVANCE", "MEMORY_QUERY_RESOLVE"

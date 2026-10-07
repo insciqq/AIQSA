@@ -127,6 +127,7 @@ async function createClassifierReceipt(userId: string): Promise<string> {
         outputTokens: 2,
         provider: "data-002-fixture",
         providerModelId: "data-002-classifier-v1",
+        purpose: "memory_processing",
         reasoningTokens: 0,
         totalTokens: 7,
         userId

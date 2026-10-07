@@ -689,6 +689,7 @@ async function populateReusableMemory(
         modelId: embeddingConfiguration.upstreamModelId,
         provider: "openai_compatible",
         providerModelId: provider.modelId,
+        purpose: "memory_indexing",
         userId
       }
     });
@@ -698,6 +699,7 @@ async function populateReusableMemory(
         modelId: provider.modelId,
         provider: "openai_compatible",
         providerModelId: provider.modelId,
+        purpose: "memory_processing",
         userId
       }
     });
@@ -707,6 +709,7 @@ async function populateReusableMemory(
         modelId: embeddingConfiguration.upstreamModelId,
         provider: "openai_compatible",
         providerModelId: provider.modelId,
+        purpose: "memory_indexing",
         userId
       }
     });
@@ -919,7 +922,7 @@ async function populateMaintenanceArtifacts(
         createdAt: startedAt, startedAt, completedAt: now, recoverableUntil: new Date(now.getTime() - 1)
       } });
       await tx.usageEvent.create({ data: {
-        userId, memoryExecutionBindingId: bindingId, provider: "openai_compatible",
+        userId, memoryExecutionBindingId: bindingId, provider: "openai_compatible", purpose: "memory_indexing",
         providerModelId: provider.modelId, modelId: embeddingConfiguration.upstreamModelId
       } });
       executions.push({ applied, bindingId, inputHash, jobId, outputHash });

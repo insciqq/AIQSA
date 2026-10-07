@@ -405,7 +405,8 @@ it("serves one visible summary from the active branch, preserving source, scope,
   expect(await continuationSourceHref(prisma, result.chatId, userId)).toBe(`/c/${chatId}`);
   expect(await continuationSourceHref(prisma, result.chatId, randomUUID())).toBeNull();
   expect(await prisma.usageEvent.findMany({ where: { chatId } })).toEqual([
-    expect.objectContaining({ userId, inputTokens: 50, outputTokens: 12, reasoningTokens: 0, totalTokens: 62, modelId: "summary-test-model", estimatedCostMicros: null })
+    expect.objectContaining({ userId, purpose: "chat_summary", inputTokens: 50, outputTokens: 12, reasoningTokens: 0, totalTokens: 62,
+      modelId: "summary-test-model", estimatedCostMicros: null })
   ]);
 }));
 

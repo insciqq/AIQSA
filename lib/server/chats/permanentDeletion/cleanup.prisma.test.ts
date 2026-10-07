@@ -247,6 +247,7 @@ async function attachRunOwnedSafetyExecution(input: Readonly<{
         modelId: "permanent-chat-control-v1",
         provider: "permanent-chat-fixture",
         providerModelId: "permanent-chat-control-v1",
+        purpose: "memory_processing",
         userId: input.userId
       }
     });
@@ -651,6 +652,7 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
       modelRunId: source.run.id,
       outputTokens: 8,
       provider: source.run.provider,
+      purpose: "chat_answer",
       totalTokens: 48,
       usageCompleteness: "COMPLETE",
       userId
@@ -681,6 +683,7 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
       chatId: source.chat.id,
       chatTitleGeneration: true,
       chatTitleGenerationId: source.run.id,
+      purpose: "chat_title",
       estimatedCostMicros: 30,
       inputTokens: 20,
       modelId: "permanent-chat-title-model",

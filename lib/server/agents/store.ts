@@ -504,8 +504,13 @@ export async function loadAgentUsage(database: Pick<Prisma.TransactionClient, "a
     include: { providerBinding: { select: { executionSnapshot: true } } }, orderBy: { createdAt: "asc" } });
   return attempts.map((attempt) => {
     const snapshot = normalizeProviderExecutionSnapshot(attempt.providerBinding.executionSnapshot);
+    // Generation is answer usage; the native and AIQSA Search calls the Agent
+    // makes are the Search it was given.
+    const search = attempt.providerBindingKey.startsWith("agent-native_search:") ||
+      attempt.providerBindingKey.startsWith("agent-aiqsa_search:");
     return { providerModelId: snapshot.providerModelId,
       provider: snapshot.providerFamily, modelId: snapshot.model.upstreamModelId, operationCount: 1,
+      purpose: search ? "web_search" as const : "chat_answer" as const,
       usage: decodeTokenUsage(attempt.usage) ?? normalizeTokenUsage({}) };
   });
 }

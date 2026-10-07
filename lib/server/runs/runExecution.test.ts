@@ -5319,7 +5319,7 @@ describe("run execution", () => {
       {
         estimatedCostMicros: null,
         operationCount: 2, modelId: "openai-answer-model",
-        provider: "openai",
+        provider: "openai", purpose: "chat_answer",
         usage: {
           completeness: "complete", cachedInputTokens: null,
           cacheWriteInputTokens: null,
@@ -5332,7 +5332,7 @@ describe("run execution", () => {
       {
         estimatedCostMicros: null,
         operationCount: 1, modelId: "perplexity/sonar-pro-search",
-        provider: "openrouter",
+        provider: "openrouter", purpose: "web_search",
         usage: {
           completeness: "complete", cachedInputTokens: null,
           cacheWriteInputTokens: null,
@@ -7566,6 +7566,7 @@ describe("run execution", () => {
         operationCount: 2,
         modelId: "openai-answer-model",
         provider: "openai",
+        purpose: "chat_answer",
         usage: {
           completeness: "partial", cachedInputTokens: null,
           cacheWriteInputTokens: null,
@@ -7580,6 +7581,7 @@ describe("run execution", () => {
         operationCount: 1,
         modelId: "perplexity/sonar-pro-search",
         provider: "openrouter",
+        purpose: "web_search",
         usage: {
           completeness: "complete", cachedInputTokens: null,
           cacheWriteInputTokens: null,

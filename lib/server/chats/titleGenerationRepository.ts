@@ -68,7 +68,7 @@ export function createChatTitleRepository(client: PrismaClient) {
             dispatchDeadlineAt: job.responseTimeoutMs === null ? null :
               new Date(now.getTime() + job.responseTimeoutMs + 60_000) } });
         await tx.usageEvent.create({ data: {
-          chatId: job.chatId, chatTitleGeneration: true, chatTitleGenerationId: job.runId,
+          chatId: job.chatId, chatTitleGeneration: true, chatTitleGenerationId: job.runId, purpose: "chat_title",
           modelId: snapshot.model.upstreamModelId, modelRunId: job.runId,
           provider: snapshot.providerFamily, providerModelId: snapshot.providerModelId,
           userId: job.userId

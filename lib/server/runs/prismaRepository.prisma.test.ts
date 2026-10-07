@@ -1666,7 +1666,7 @@ describe("Prisma-backed run repository", () => {
       const recordUsage = (completeness: "partial" | "terminal") => repository.recordRunUsageEvents({
         chatId: active.chatId, runId: active.runId, userId,
         answerRoundUsage: { completeness, roundIndex: 1, usage },
-        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }]
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }]
       });
       expect(await recordUsage("partial")).toBe(true);
       expect(await repository.beginToolLoopProviderRound(correction)).toBe("conflict");
@@ -1683,7 +1683,7 @@ describe("Prisma-backed run repository", () => {
         roundIndex: 1, runId: cancelled.runId, userId })).toBe("started");
       expect(await repository.recordRunUsageEvents({ chatId: cancelled.chatId, runId: cancelled.runId, userId,
         answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage },
-        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }] })).toBe(true);
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] })).toBe(true);
       await repository.cancelRun({ payload: cancelPayload, runId: cancelled.runId, userId });
       expect(await repository.beginToolLoopProviderRound({ ...correction, runId: cancelled.runId })).toBe("cancelled");
     });
@@ -1703,7 +1703,7 @@ describe("Prisma-backed run repository", () => {
       const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
       const recordUsage = (runId: string, chatId: string, completeness: "partial" | "terminal") => repository.recordRunUsageEvents({
         chatId, runId, userId, answerRoundUsage: { completeness, roundIndex: 1, usage },
-        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }]
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }]
       });
       expect(await recordUsage(active.runId, active.chatId, "partial")).toBe(true);
       expect(await repository.beginToolLoopProviderRound(synthesis)).toBe("conflict");
@@ -3660,7 +3660,7 @@ describe("Prisma-backed run repository", () => {
       });
       await expect(prisma.usageEvent.count({ where: { modelRunId: created.runId } })).resolves.toBe(1);
       await expect(repository.recordRunUsageEvents({ chatId: created.chatId, runId: created.runId, userId,
-        usageAttributions: [{ provider: "fake", modelId: "fake-qsa", usage: { inputTokens: 999 } }] }))
+        usageAttributions: [{ provider: "fake", modelId: "fake-qsa", purpose: "chat_answer", usage: { inputTokens: 999 } }] }))
         .resolves.toBe(false);
       const recovered = await repository.loadPublishedRunAnswer!({ runId: created.runId, userId });
       expect(recovered).toMatchObject({ finalText: completion.finalText, estimatedCostMicros: 17,
@@ -3817,9 +3817,11 @@ describe("Prisma-backed run repository", () => {
       const repository = createPrismaRunRepository(prisma);
       const active = await createActiveRun(repository, userId, "Incomplete usage");
       const usageAttributions = [
-        { modelId: "unavailable", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({}) },
-        { modelId: "partial", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 7 }) },
-        { modelId: "zero", provider: "fake", operationCount: 1, usage: normalizeTokenUsage({ inputTokens: 0, outputTokens: 0 }) }
+        { modelId: "unavailable", provider: "fake", operationCount: 1, purpose: "chat_answer" as const, usage: normalizeTokenUsage({}) },
+        { modelId: "partial", provider: "fake", operationCount: 1, purpose: "web_search" as const,
+          usage: normalizeTokenUsage({ inputTokens: 7 }) },
+        { modelId: "zero", provider: "fake", operationCount: 1, purpose: "knowledge_retrieval" as const,
+          usage: normalizeTokenUsage({ inputTokens: 0, outputTokens: 0 }) }
       ];
       const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
       expect(await repository.recordRunUsageEvents(input)).toBe(true);
@@ -3848,24 +3850,40 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
-  it.each(["complete", "partial", "error"] as const)("preserves independent decision usage through %s accounting", async terminal => {
+  it.each(["complete", "partial", "error"] as const)("keeps every non-attribution row of the run through %s accounting", async terminal => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);
       const active = await createActiveRun(repository, userId, "Independent utility usage");
+      const run = { userId, chatId: active.chatId, modelRunId: active.runId, providerModelId: providerTemplateIds.fakeModel,
+        provider: "fake", inputTokens: 10, outputTokens: 2, totalTokens: 12, usageCompleteness: "COMPLETE" as const };
       const utility = await prisma.usageEvent.create({ data: {
-        knowledgeRelevance: true, providerModelId: providerTemplateIds.fakeModel,
+        knowledgeRelevance: true, purpose: "knowledge_retrieval", providerModelId: providerTemplateIds.fakeModel,
         userId, chatId: active.chatId, modelRunId: active.runId,
         provider: "fake", modelId: "utility", inputTokens: 80, outputTokens: 20,
         totalTokens: 100, estimatedCostMicros: 17, usageCompleteness: "COMPLETE"
       } });
       const interactiveUtility = await prisma.usageEvent.create({ data: {
-        optionalDecision: true, providerModelId: providerTemplateIds.fakeModel,
+        optionalDecision: true, purpose: "skill_selection", providerModelId: providerTemplateIds.fakeModel,
         userId, chatId: active.chatId, modelRunId: active.runId,
         provider: "fake", modelId: "interactive-utility", inputTokens: 10, outputTokens: 2,
         totalTokens: 12, estimatedCostMicros: 3, usageCompleteness: "COMPLETE"
       } });
+      // Receipts whose dispatch records are gone keep their flag and purpose;
+      // replica mode skips only the dispatch guards that would require those records.
+      const receipts = await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe("SET LOCAL session_replication_role = 'replica'");
+        return Promise.all([
+          tx.usageEvent.create({ data: { ...run, chatTitleGeneration: true, purpose: "chat_title", modelId: "title" } }),
+          tx.usageEvent.create({ data: { ...run, visionAnalysis: true, purpose: "chat_vision", modelId: "vision" } }),
+          tx.usageEvent.create({ data: { ...run, chatPdfPreparation: true, purpose: "chat_pdf", modelId: "pdf-reader" } }),
+          tx.usageEvent.create({ data: { ...run, imageGeneration: true, purpose: "image_generation", modelId: "image" } })
+        ]);
+      });
+      // A run-linked row without a flag belongs to its writer by purpose alone.
+      const unflagged = await prisma.usageEvent.create({ data: { ...run, providerModelId: null, purpose: "chat_summary",
+        modelId: "summary" } });
       const completion = completionInput(active);
-      const usageAttributions = [{ provider: completion.provider, modelId: completion.modelId,
+      const usageAttributions = [{ provider: completion.provider, modelId: completion.modelId, purpose: "chat_answer" as const,
         usage: completion.usage, estimatedCostMicros: completion.estimatedCostMicros }];
       if (terminal === "complete") expect(await repository.completeRun(completion)).toBe(true);
       else if (terminal === "partial") expect(await repository.recordRunUsageEvents({
@@ -3874,11 +3892,14 @@ describe("Prisma-backed run repository", () => {
       else expect(await repository.settleRecoveredRunError({ runId: active.runId, userId,
         error: { code: "provider_failed", message: "Provider unavailable" }, outputEvents: [],
         usageAttributions })).toBe(true);
-      expect(await prisma.usageEvent.findUnique({ where: { id: utility.id } })).toEqual(utility);
-      expect(await prisma.usageEvent.findUnique({ where: { id: interactiveUtility.id } })).toEqual(interactiveUtility);
+      for (const kept of [utility, interactiveUtility, ...receipts, unflagged]) {
+        expect(await prisma.usageEvent.findUnique({ where: { id: kept.id } })).toEqual(kept);
+      }
       const recovered = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
       expect(recovered).toHaveLength(1);
-      expect(recovered[0]?.modelId).toBe(completion.modelId);
+      expect(recovered[0]).toMatchObject({ modelId: completion.modelId, purpose: "chat_answer" });
+      expect(await prisma.usageEvent.findMany({ select: { purpose: true },
+        where: { modelRunId: active.runId, modelId: completion.modelId } })).toEqual([{ purpose: "chat_answer" }]);
     });
   });
 
@@ -3891,6 +3912,7 @@ describe("Prisma-backed run repository", () => {
           estimatedCostMicros: 11,
           modelId: "answer-model",
           provider: "openai",
+          purpose: "chat_answer" as const,
           usage: {
             inputTokens: 2,
             outputTokens: 1,
@@ -3902,6 +3924,7 @@ describe("Prisma-backed run repository", () => {
           estimatedCostMicros: 13,
           modelId: "perplexity/sonar-pro-search",
           provider: "openrouter",
+          purpose: "web_search" as const,
           usage: {
             inputTokens: 3,
             outputTokens: 2,
@@ -3955,6 +3978,7 @@ describe("Prisma-backed run repository", () => {
             modelId: true,
             outputTokens: true,
             provider: true,
+            purpose: true,
             reasoningTokens: true,
             totalTokens: true
           },
@@ -3981,6 +4005,7 @@ describe("Prisma-backed run repository", () => {
           modelId: "answer-model",
           outputTokens: 1,
           provider: "openai",
+          purpose: "chat_answer",
           reasoningTokens: 0,
           totalTokens: 3
         },
@@ -3989,6 +4014,7 @@ describe("Prisma-backed run repository", () => {
           modelId: "perplexity/sonar-pro-search",
           outputTokens: 2,
           provider: "openrouter",
+          purpose: "web_search",
           reasoningTokens: 1,
           totalTokens: 5
         }
@@ -4037,6 +4063,7 @@ describe("Prisma-backed run repository", () => {
       const usageAttributions = [{
         modelId: "tool-model",
         provider: "tool-provider",
+        purpose: "knowledge_retrieval" as const,
         usage: { inputTokens: 3, outputTokens: 0, reasoningTokens: 0, totalTokens: 3 }
       }];
       const usageCheckpoint = {
@@ -4069,6 +4096,7 @@ describe("Prisma-backed run repository", () => {
       })).resolves.toEqual([expect.objectContaining({
         modelId: "tool-model",
         provider: "tool-provider",
+        purpose: "knowledge_retrieval",
         usage: expect.objectContaining({ inputTokens: 3, totalTokens: 3 })
       })]);
 
@@ -4079,6 +4107,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "incorrect-model",
           provider: "tool-provider",
+          purpose: "knowledge_retrieval",
           usage: { inputTokens: 99, outputTokens: 0, reasoningTokens: 0, totalTokens: 99 }
         }],
         userId
@@ -4120,6 +4149,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 6, reasoningTokens: 0, totalTokens: 18 }
         }],
         userId
@@ -4131,6 +4161,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 0, totalTokens: 20 }
         }],
         userId
@@ -4142,6 +4173,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 0, totalTokens: 20 }
         }],
         userId
@@ -4157,6 +4189,7 @@ describe("Prisma-backed run repository", () => {
         usageAttributions: [{
           modelId: "gpt-test",
           provider: "openai",
+          purpose: "chat_answer",
           usage: { inputTokens: 12, outputTokens: 9, reasoningTokens: 0, totalTokens: 21 }
         }],
         userId
@@ -4202,7 +4235,7 @@ describe("Prisma-backed run repository", () => {
       });
       const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Derived notes.",
         sourceDigest: "b".repeat(64), sourceRefs: ["message-old"] };
-      const summaryUsage = [{ modelId: "gpt-test", operationCount: 1, provider: "openai",
+      const summaryUsage = [{ modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer" as const,
         usage: { inputTokens: 900, outputTokens: 40, reasoningTokens: 0, totalTokens: 940 } }];
       const receipt = (entry: ContextSummaryAttempt, extra: Partial<{ summary: ContextSummary; usage: typeof summaryUsage }> = {}) =>
         repository.recordRunUsageEvents({ chatId: active.chatId, runId: active.runId, userId, usageAttributions: extra.usage ?? [],
@@ -4381,6 +4414,7 @@ describe("Prisma-backed run repository", () => {
             estimatedCostMicros: 19,
             modelId: "fake-qsa",
             provider: "fake",
+            purpose: "chat_answer",
             usage: {
               inputTokens: 7,
               outputTokens: 2,

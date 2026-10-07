@@ -24,9 +24,9 @@ for (const viewport of [
         await prisma.group.create({ data: { id: groupId, name: fixtureName } });
         await prisma.userGroup.create({ data: { userId, groupId, role: "member" } });
         await prisma.usageEvent.createMany({ data: [
-          { userId, provider: "cost-fixture", modelId: "cost-fixture", totalTokens: 100,
+          { userId, provider: "cost-fixture", modelId: "cost-fixture", purpose: "chat_answer", totalTokens: 100,
             estimatedCostMicros: 125_000, usageCompleteness: "COMPLETE" },
-          { userId, provider: "cost-fixture", modelId: "cost-fixture", totalTokens: 50,
+          { userId, provider: "cost-fixture", modelId: "cost-fixture", purpose: "chat_answer", totalTokens: 50,
             estimatedCostMicros: null, usageCompleteness: "COMPLETE" }
         ] });
         await page.setViewportSize(viewport);

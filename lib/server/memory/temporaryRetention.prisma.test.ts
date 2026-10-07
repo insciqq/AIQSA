@@ -454,6 +454,7 @@ describe("Temporary chat retention", () => {
           modelRunId: second.runId,
           outputTokens: 6,
           provider: secondRequest.provider,
+          purpose: "chat_answer",
           totalTokens: 36,
           usageCompleteness: "COMPLETE",
           userId
@@ -483,6 +484,7 @@ describe("Temporary chat retention", () => {
           chatId: chat.id,
           chatTitleGeneration: true,
           chatTitleGenerationId: first.runId,
+          purpose: "chat_title",
           estimatedCostMicros: 25,
           inputTokens: 18,
           modelId: "temporary-title-model",
@@ -540,6 +542,7 @@ describe("Temporary chat retention", () => {
           outputTokens: 0,
           provider: "temporary-memory-fixture",
           providerModelId: "temporary-memory-embed-v1",
+          purpose: "memory_indexing",
           totalTokens: 5,
           usageCompleteness: "COMPLETE",
           userId

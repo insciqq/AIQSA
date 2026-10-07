@@ -264,6 +264,7 @@ export function createKnowledgeModelPdfAttemptRepository(prisma: PrismaClient) {
               outputTokens: normalized.outputTokens,
               provider: input.snapshot.providerFamily,
               providerModelId: input.snapshot.providerModelId,
+              purpose: "knowledge_indexing",
               reasoningTokens: normalized.reasoningTokens,
               totalTokens: normalized.totalTokens,
               userId: input.ownerUserId,
