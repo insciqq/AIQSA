@@ -121,8 +121,8 @@ test("OpenAI native search puts its search count and per-search price on the ans
 
   const connectionId = await quickSetupConnection(request, "openai", secret!, /luna/iu);
   const source = await connectionSearchSource(request, connectionId, "web_search", { protocol: "openai_responses_web_search" });
-  const answer = (await waitForCatalogModels(request, connectionId,
-    (candidate) => candidate.searchStrategyIds.includes(source.strategyId)))
+  const answer = [...await waitForCatalogModels(request, connectionId,
+    (candidate) => candidate.searchStrategyIds.includes(source.strategyId))]
     .sort((left, right) => Number(/luna/iu.test(right.displayName)) - Number(/luna/iu.test(left.displayName)))[0]!;
   const model: PaidAnswerModel = {
     connectionId, displayName: answer.displayName, modelId: answer.modelId, params: journeyRunParams(answer, 512),
