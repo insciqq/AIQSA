@@ -146,8 +146,14 @@ async function withSettlementData<T>(run: (fixture: SettlementFixture) => Promis
       }
     });
   } finally {
+    // Accounts created from an untrusted email have no email; their identity still names it.
+    await prisma.user.deleteMany({
+      where: { authIdentities: { some: { normalizedEmail: { endsWith: `@${domain}` } } } }
+    });
     await prisma.user.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
-    await prisma.authAccessRule.deleteMany({ where: { value: domain } });
+    await prisma.authAccessRule.deleteMany({
+      where: { OR: [{ value: domain }, { value: { endsWith: `@${domain}` } }] }
+    });
     await prisma.group.deleteMany({ where: { id: { in: groupIds } } });
   }
 }
@@ -222,6 +228,45 @@ describe("external identity settlement", () => {
       })).resolves.toEqual([
         { emailVerifiedAt: null, providerAccountId: "trusted-claim", source: fixture.issuer, userId: trustedOwner.id },
         { emailVerifiedAt: now, providerAccountId: "verified-claim", source: fixture.issuer, userId: verifiedOwner.id }
+      ]);
+    });
+  });
+
+  it("never lets an untrusted email approve an account or claim its address", async () => {
+    await withSettlementData(async (fixture) => {
+      const email = fixture.email("claimed");
+      const accessRules: ExternalIdentityPolicy = { ...openPolicy, admission: { kind: "access_rules" } };
+      await prisma.authAccessRule.create({ data: { kind: "email", value: email } });
+
+      await expect(settle(fixture.input({
+        email,
+        emailVerified: false,
+        policy: accessRules,
+        subject: "unverified-rule-claim"
+      }))).resolves.toEqual({ status: "not_allowed" });
+
+      const squatter = await settle(fixture.input({ email, emailVerified: false, subject: "unverified-claim" }));
+      if (squatter.status !== "active") throw new Error(`unexpected settlement ${squatter.status}`);
+      await expect(prisma.user.findUniqueOrThrow({ select: { email: true }, where: { id: squatter.userId } }))
+        .resolves.toEqual({ email: null });
+
+      // The address owner's verified sign-in gets an account of its own, never the squatter's.
+      const owner = await settle({
+        ...fixture.input({ email, policy: accessRules, subject: "owner-subject" }),
+        provider: "google",
+        source: null
+      });
+      if (owner.status !== "active") throw new Error(`unexpected settlement ${owner.status}`);
+      expect(owner.userId).not.toBe(squatter.userId);
+      await expect(prisma.user.findUniqueOrThrow({ select: { id: true }, where: { email } }))
+        .resolves.toEqual({ id: owner.userId });
+      await expect(prisma.authIdentity.findMany({
+        orderBy: { provider: "asc" },
+        select: { provider: true, userId: true },
+        where: { normalizedEmail: email }
+      })).resolves.toEqual([
+        { provider: "google", userId: owner.userId },
+        { provider: "oidc", userId: squatter.userId }
       ]);
     });
   });
@@ -452,6 +497,9 @@ describe("external identity settlement", () => {
       const manager = externalRoleManager("oidc", fixture.issuer);
       const contested = await fixture.user({ localPart: "contested" });
       await fixture.identity(contested, { subject: "contested-subject" });
+      // A second admin besides the actor keeps a demotion allowed in either order: a role change
+      // waiting on the admin set does not count an admin promoted while it waited.
+      await fixture.user({ localPart: "second-operator", role: "admin" });
       const managing = { ...openPolicy, adminGroups: [ADMIN_GROUP] };
 
       for (let round = 0; round < 6; round += 1) {
