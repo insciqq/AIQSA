@@ -114,7 +114,7 @@ async function safely(operation: () => Promise<Response>): Promise<Response> {
   } catch (error) {
     if (error instanceof AdminProviderCustomSetupServiceError) {
       const response = serviceError(error);
-      logEvent("service_operation", { subsystem: "admin", stage: "publish", code: error.code,
+      logEvent("service_operation", { error, subsystem: "admin", stage: "publish", code: error.code,
         outcome: response.status === 422 ? "failed" : "skipped", httpStatus: response.status });
       return response;
     }

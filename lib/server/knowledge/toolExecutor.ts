@@ -1710,6 +1710,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         if (classified) {
           const failure = observedFailure(error);
           logEvent("tool_execution", {
+            error,
             ...failure, tool_kind: "knowledge", stage: "execution", operation_stage: "retrieval",
             outcome: "failed", code: failure.code === "unknown" ? classified.failureCode : failure.code
           });
@@ -1798,6 +1799,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
           throwIfAborted(options?.signal);
           const permitted = permitsLexicalQueryDegradation(error);
           logEvent("tool_execution", {
+            error,
             ...observedFailure(error), tool_kind: "knowledge", stage: "execution", operation_stage: "embedding",
             outcome: permitted ? "degraded" : "failed", action: permitted ? "degrade" : "stop"
           });
@@ -1879,6 +1881,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         if (classified) {
           const failure = observedFailure(error);
           logEvent("tool_execution", {
+            error,
             ...failure, tool_kind: "knowledge", stage: "execution", operation_stage: "retrieval",
             outcome: "failed", code: failure.code === "unknown" ? classified.failureCode : failure.code
           });
@@ -2034,6 +2037,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
       } catch (error) {
         const failure = observedFailure(error, options?.signal);
         logEvent("tool_execution", {
+          error,
           ...failure, tool_kind: "knowledge", stage: "execution",
           outcome: failure.reason === "cancelled" ? "cancelled" : "failed",
           ...(preAborted ? {} : { duration_ms: performance.now() - startedAt })
@@ -2054,6 +2058,7 @@ export function createKnowledgeToolExecutor(input: Readonly<{
         return result;
       } catch (error) {
         logEvent("tool_execution", {
+          error,
           ...observedFailure(error), tool_kind: "knowledge", stage: "admission",
           outcome: "failed", duration_ms: performance.now() - startedAt
         });

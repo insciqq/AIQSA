@@ -30,6 +30,14 @@
   --v2-dark-color-warn: #f2c46b;
   --v2-dark-color-ok: #7fd99a;
   --v2-dark-color-scrim: rgb(3 6 12 / 0.55);
+  /* Categorical chart series in fixed order (validated for colour-vision
+   * separation per theme surface); never status and never controls. */
+  --v2-dark-color-chart-1: #3987e5;
+  --v2-dark-color-chart-2: #d95926;
+  --v2-dark-color-chart-3: #199e70;
+  --v2-dark-color-chart-4: #c98500;
+  --v2-dark-color-chart-5: #d55181;
+  --v2-dark-color-chart-6: #9085e9;
   --v2-dark-shadow-float: 0 8px 28px rgb(0 0 0 / 0.35);
   --v2-dark-shadow-overlay: 0 16px 48px rgb(0 0 0 / 0.55);
 
@@ -63,6 +71,12 @@
   --v2-light-color-warn: #8a6a1f;
   --v2-light-color-ok: #2f7d4a;
   --v2-light-color-scrim: rgb(20 30 50 / 0.4);
+  --v2-light-color-chart-1: #2a78d6;
+  --v2-light-color-chart-2: #eb6834;
+  --v2-light-color-chart-3: #1baf7a;
+  --v2-light-color-chart-4: #eda100;
+  --v2-light-color-chart-5: #e87ba4;
+  --v2-light-color-chart-6: #4a3aa7;
   --v2-light-shadow-float: 0 8px 28px rgb(30 40 60 / 0.12);
   --v2-light-shadow-overlay: 0 16px 48px rgb(30 40 60 / 0.2);
 
@@ -153,6 +167,12 @@
   --v2-color-warn: var(--v2-light-color-warn);
   --v2-color-ok: var(--v2-light-color-ok);
   --v2-color-scrim: var(--v2-light-color-scrim);
+  --v2-color-chart-1: var(--v2-light-color-chart-1);
+  --v2-color-chart-2: var(--v2-light-color-chart-2);
+  --v2-color-chart-3: var(--v2-light-color-chart-3);
+  --v2-color-chart-4: var(--v2-light-color-chart-4);
+  --v2-color-chart-5: var(--v2-light-color-chart-5);
+  --v2-color-chart-6: var(--v2-light-color-chart-6);
   --v2-shadow-float: var(--v2-light-shadow-float);
   --v2-shadow-overlay: var(--v2-light-shadow-overlay);
   --v2-chart-1: var(--v2-light-chart-1);
@@ -192,6 +212,12 @@
   --v2-color-warn: var(--v2-dark-color-warn);
   --v2-color-ok: var(--v2-dark-color-ok);
   --v2-color-scrim: var(--v2-dark-color-scrim);
+  --v2-color-chart-1: var(--v2-dark-color-chart-1);
+  --v2-color-chart-2: var(--v2-dark-color-chart-2);
+  --v2-color-chart-3: var(--v2-dark-color-chart-3);
+  --v2-color-chart-4: var(--v2-dark-color-chart-4);
+  --v2-color-chart-5: var(--v2-dark-color-chart-5);
+  --v2-color-chart-6: var(--v2-dark-color-chart-6);
   --v2-shadow-float: var(--v2-dark-shadow-float);
   --v2-shadow-overlay: var(--v2-dark-shadow-overlay);
   --v2-chart-1: var(--v2-dark-chart-1);
@@ -232,6 +258,12 @@
     --v2-color-warn: var(--v2-dark-color-warn);
     --v2-color-ok: var(--v2-dark-color-ok);
     --v2-color-scrim: var(--v2-dark-color-scrim);
+    --v2-color-chart-1: var(--v2-dark-color-chart-1);
+    --v2-color-chart-2: var(--v2-dark-color-chart-2);
+    --v2-color-chart-3: var(--v2-dark-color-chart-3);
+    --v2-color-chart-4: var(--v2-dark-color-chart-4);
+    --v2-color-chart-5: var(--v2-dark-color-chart-5);
+    --v2-color-chart-6: var(--v2-dark-color-chart-6);
     --v2-shadow-float: var(--v2-dark-shadow-float);
     --v2-shadow-overlay: var(--v2-dark-shadow-overlay);
     --v2-chart-1: var(--v2-dark-chart-1);

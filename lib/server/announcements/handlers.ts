@@ -4,6 +4,8 @@ import {
 } from "@/lib/contracts/announcements";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import { AnnouncementRepositoryError, type AnnouncementsRepository } from "./repository";
 
 const reply = (body: unknown, status = 200) => Response.json(body, {
@@ -70,7 +72,8 @@ export function createAnnouncementsHandlers(input: Readonly<{
       return reply(result);
     } catch (error) {
       if (error instanceof AnnouncementRepositoryError) return reply({ error: error.code }, error.code === "announcement_not_found" ? 404 : 409);
-      console.error("announcements_action_failed");
+      logEvent("service_operation", { error, subsystem: "admin", stage: ["list", "detail", "count"].includes(action) ? "read" : "write",
+        outcome: "failed", code: "announcements_action_failed", prisma_code: databaseFailureCode(error) });
       return reply({ error: "announcements_unavailable" }, 503);
     }
   };

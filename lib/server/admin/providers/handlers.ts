@@ -181,7 +181,7 @@ async function safely(operation: () => Promise<Response>, stage: LifecycleStage 
   } catch (error) {
     if (error instanceof AdminProviderServiceError) {
       const response = serviceError(error);
-      logEvent("service_operation", { subsystem: "admin", stage, code: error.code, httpStatus: response.status,
+      logEvent("service_operation", { error, subsystem: "admin", stage, code: error.code, httpStatus: response.status,
         outcome: response.status >= 500 || response.status === 422 || error.code === "provider_test_evidence_invalid" ? "failed" : "skipped", duration_ms: performance.now() - started });
       return response;
     }

@@ -810,7 +810,7 @@ export function createAdminProviderService(input: Readonly<{
       if (value.signal?.aborted) return { kind: "cancelled", ...saved };
       if (error instanceof ActiveCheckpointError) return { kind: error.kind, ...saved };
       const failure = observedFailure(error);
-      logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: "failed", code: failure.code, httpStatus: failure.httpStatus });
+      logEvent("service_operation", { error, subsystem: "admin", stage: "probe", outcome: "failed", code: failure.code, httpStatus: failure.httpStatus });
       if (error instanceof AdminProviderServiceError && error.code === "provider_test_evidence_invalid") throw error;
       const stored = await input.repository.recordActiveRefreshFailureCas({ candidate, failedAt: now() }).catch((error: unknown) => {
         logEvent("job_persistence", { subsystem: "admin", stage: "fail", outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });

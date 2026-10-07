@@ -1,4 +1,6 @@
 import { createAdminAttentionHandler } from "@/lib/server/admin/attention/handlers";
+import { readDefaultHealthFindings } from "@/lib/server/admin/attention/defaultHealth";
+import { adminHealthQueuesService } from "@/lib/server/admin/health/queuesDefault";
 import { createAdminAttentionService } from "@/lib/server/admin/attention/service";
 import { adminKnowledgePolicyService } from "@/lib/server/admin/knowledge/policyDefault";
 import { defaultAdminMemoryStatusService } from "@/lib/server/admin/memory/statusDefault";
@@ -32,7 +34,9 @@ const service = createAdminAttentionService({
     systemRoles: () => adminSystemModelPolicyService.list(),
     skills: () => prisma.skillShareRequest.count({ where: { state: "pending", skill: { archivedAt: null, deletedAt: null } } }),
     assistants: () => countReviewableAssistantListingRequests(prisma),
-    usageLimits: () => usageLimitsRepository.readAdminUsageLimits(new Date())
+    usageLimits: () => usageLimitsRepository.readAdminUsageLimits(new Date()),
+    health: readDefaultHealthFindings,
+    queues: () => adminHealthQueuesService.stalled()
   }
 });
 

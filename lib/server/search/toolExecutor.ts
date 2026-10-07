@@ -776,6 +776,7 @@ export function createSearchPlanToolRouter(input: Readonly<{
         const abortCode = cancelled ? parentAbortCode(options?.signal) : undefined;
         const failure = observedFailure(error);
         logEvent("tool_execution", {
+          error,
           tool_kind: "search", stage, outcome: abortCode === "search_cancelled" ? "cancelled" : "failed",
           code: abortCode ?? thrownCode ?? failure.code,
           reason: abortCode === "search_timeout" ? "deadline" : cancelled ? "cancelled" : failure.reason,

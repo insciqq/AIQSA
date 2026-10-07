@@ -26,6 +26,7 @@ async function listAuthEmails(request: APIRequestContext): Promise<TestEmail[]> 
 
 const adminSections = [
   { id: "overview", label: "Overview" },
+  { id: "health", label: "Health" },
   { id: "providers", label: "Providers" },
   { id: "roles", label: "Defaults & roles" },
   { id: "search", label: "Search" },

@@ -3714,6 +3714,54 @@ describe("run execution", () => {
     }]);
   });
 
+  it.each([
+    [401, "provider_auth_rejected", "The model provider rejected the configured credentials (HTTP 401). Ask an administrator to check the provider key."],
+    [403, "provider_auth_rejected", "The model provider rejected the configured credentials (HTTP 403). Ask an administrator to check the provider key."],
+    [402, "provider_quota_exhausted", "The model provider reports that the account has no remaining quota or balance (HTTP 402). Ask an administrator to check the provider account."],
+    [429, "provider_rate_limited", "The model provider is limiting requests (HTTP 429) and the retries did not succeed. Wait a minute before trying again."],
+    [503, "provider_server_error", "The model provider returned a server error (HTTP 503) and the retries did not succeed. Try again later."]
+  ] as const)("persists the provider failure class of HTTP %i with its identity, never provider text", async (status, code, message) => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield { data: { delta: "partial" }, type: "token" };
+      throw Object.assign(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), { status, retryable: status >= 429 });
+    });
+    const response = await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text();
+    expect(parseSse(response).at(-1)).toEqual({ data: { code, message }, type: "error" });
+    expect(repository.assistantTexts).toEqual(["partial"]);
+    expect(repository.failedRuns).toEqual([{ assistantMessageId: "assistant-1", error: { code, message }, runId: "run-1" }]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed",
+      code, reason: "http", httpStatus: status, connectionId: "fake", providerModelId: "fake-qsa", providerFamily: "fake", adapterKind: "fake" }));
+    expect(JSON.stringify([response, repository.failedRuns, observation.records()])).not.toContain("PRIVATE_");
+  });
+
+  it("persists the provider failure class of a failed tool-loop round", async () => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const base = preparedData();
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    let rounds = 0;
+    const adapter = createAdapter(async function* () {
+      rounds += 1;
+      if (rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }] });
+      throw Object.assign(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), { httpStatus: 401 });
+    });
+    const response = await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text();
+    expect(rounds).toBe(2);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: {
+      code: "provider_auth_rejected",
+      message: "The model provider rejected the configured credentials (HTTP 401). Ask an administrator to check the provider key."
+    } })]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed",
+      code: "provider_auth_rejected", reason: "http", httpStatus: 401, connectionId: "fake", providerModelId: "fake-qsa" }));
+    expect(JSON.stringify([response, observation.records()])).not.toContain("PRIVATE_");
+  });
+
   it("persists an ordinary failed provider draft without executing absent tool calls", async () => {
     const warning = await captureRunObservation();
     let answerRounds = 0;

@@ -439,7 +439,7 @@ async function executeMemoryLexicalProjectionPass(
       } catch (error) {
         integrityFailed += 1;
         const failure = observedFailure(error);
-        reportSubsystemFailure({ subsystem: "memory_search", stage: "integrity", code: failure.code, httpStatus: failure.httpStatus, action: "degrade" });
+        reportSubsystemFailure({ error, subsystem: "memory_search", stage: "integrity", code: failure.code, httpStatus: failure.httpStatus, action: "degrade" });
         await input.store.markVerificationFailure({
           candidate,
           errorCode: projectionErrorCode(error),

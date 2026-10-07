@@ -254,7 +254,7 @@ function protectRunHandler<Context>(stage: "send" | "regenerate" | "cancel",
       return await handler(request, context);
     } catch (error) {
       const failure = observedFailure(error);
-      logEvent("run_http_failed", { stage, code: failure.code, reason: failure.reason,
+      logEvent("run_http_failed", { error, stage, code: failure.code, reason: failure.reason,
         prisma_code: runDatabaseFailureCode(error) });
       return privateModelRunJson({ error: "internal_error" }, { status: 500 });
     }
@@ -455,7 +455,7 @@ async function acceptedRuntimeBinding(
       };
     } catch (error) {
       const failure = observedFailure(error);
-      logEvent("run_execution", { run_id: runId, stage: "dispatch", outcome: "failed",
+      logEvent("run_execution", { error, run_id: runId, stage: "dispatch", outcome: "failed",
         code: failure.code, reason: failure.reason });
       throw error;
     }

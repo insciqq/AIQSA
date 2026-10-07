@@ -164,7 +164,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       return outcome;
     } catch (error) {
       const failure = observedFailure(error);
-      logEvent("service_operation", { subsystem: "admin", stage: "discover", outcome: value.signal?.aborted ? "cancelled" : "failed", code: failure.code, httpStatus: failure.httpStatus });
+      logEvent("service_operation", { error, subsystem: "admin", stage: "discover", outcome: value.signal?.aborted ? "cancelled" : "failed", code: failure.code, httpStatus: failure.httpStatus });
       throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
     }
   }
@@ -213,7 +213,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
           });
         } catch (error) {
           const failure = observedFailure(error);
-          logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: value.signal?.aborted ? "cancelled" : "degraded", code: failure.code, httpStatus: failure.httpStatus });
+          logEvent("service_operation", { error, subsystem: "admin", stage: "probe", outcome: value.signal?.aborted ? "cancelled" : "degraded", code: failure.code, httpStatus: failure.httpStatus });
           if (value.signal?.aborted) {
             throw new AdminProviderQuickSetupServiceError("provider_credential_test_failed");
           }
@@ -640,8 +640,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       try {
         if (!input.finishInitialSetup)
         await input.onCompleted?.({ connectionId: policy.connection.id, credentialId, userId: inputValue.actor.userId });
-      } catch {
-        logEvent("service_operation", { subsystem: "admin", stage: "refresh", outcome: "degraded", code: "provider_background_check_failed" });
+      } catch (error) {
+        logEvent("service_operation", { error, subsystem: "admin", stage: "refresh", outcome: "degraded", code: "provider_background_check_failed" });
         // Background checks are best effort; the setup itself is complete.
       }
       return {

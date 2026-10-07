@@ -136,8 +136,8 @@ export class WorkspaceUploadService {
     if (this.#pending) return;
     this.#pending = runInBackground(async () => {
       do { this.#rerun = false; await this.#drain(); } while (this.#rerun);
-    }).catch(() => {
-      reportSubsystemFailure({ subsystem: "attachments", stage: "process", code: "workspace_upload_recovery_failed", action: "retry" });
+    }).catch((error: unknown) => {
+      reportSubsystemFailure({ error, subsystem: "attachments", stage: "process", code: "workspace_upload_recovery_failed", action: "retry" });
     }).finally(() => { this.#pending = null; if (this.#rerun) this.kick(); });
   }
   async reconcileNow() { this.kick(); await this.#pending; }

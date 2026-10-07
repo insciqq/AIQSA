@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryLaneCandidate } from
   "../../../../domain/memory/retrieval";
 import type { MemoryLexicalLaneEvidence } from "./contract";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import {
   BoundedMemoryLexicalShadowRuntime,
   compareMemoryLexicalShadowRanks,
+  defaultMemoryLexicalShadowSink,
   memoryLexicalShadowLaneReceipt,
   type MemoryLexicalShadowReceipt
 } from "./shadow";
@@ -83,6 +85,39 @@ describe("Memory lexical shadow runtime", () => {
     expect(receipt.openSearch.opaqueIdPresent).toBe(true);
     expect(JSON.stringify(receipt)).not.toContain("secret-entry");
     expect(JSON.stringify(receipt)).not.toContain("aiqsa-memory-search-opaque");
+  });
+
+  it("writes one structured record per lane through the shared logger", async () => {
+    const observation = await captureRunObservation();
+    const lane = memoryLexicalShadowLaneReceipt({
+      candidate: candidates("secret-entry-b", "secret-entry-a"),
+      lane: "FACT_LEXICAL_UNICODE",
+      openSearchCandidates: [{ matchMode: "UNICODE" }, { matchMode: "FOLDED" }],
+      openSearchEvidence: { ...evidence(), failureCode: "memory_opensearch_timeout", timedOut: true },
+      postgresCanonicalAcceptedCount: 2,
+      postgresRawCandidateCount: 3,
+      reference: candidates("secret-entry-a", "secret-entry-b")
+    });
+    defaultMemoryLexicalShadowSink({ durationMs: 15, event: "memory_lexical_shadow", failureCode: null,
+      lanes: [lane], stage: "BASELINE", timedOut: false, version: 1 });
+    defaultMemoryLexicalShadowSink({ durationMs: 0, event: "memory_lexical_shadow",
+      failureCode: "memory_lexical_shadow_capacity", lanes: [], stage: "ENRICHED", timedOut: false, version: 1 });
+
+    const records = observation.records().filter((record) => record.event === "memory_lexical_shadow");
+    expect(records).toEqual([
+      expect.objectContaining({
+        level: "warn", stage: "BASELINE", lane: "FACT_LEXICAL_UNICODE", outcome: "completed", duration_ms: 15,
+        timed_out: false, opensearch_code: "memory_opensearch_timeout", opensearch_timed_out: true,
+        opaque_id_present: true, raw_candidate_count: 2, canonical_accepted_count: 2, projection_caught_up: true,
+        projection_visible_age_ms: 12, folded_count: 1, unicode_count: 1, ngram_count: 0, transliterated_count: 0,
+        postgres_raw_candidate_count: 3, postgres_canonical_accepted_count: 2, reference_top10_count: 2,
+        candidate_top10_count: 2, top10_intersection_count: 2, reference_top10_in_candidate_top50_count: 2,
+        first_reference_rank: 2
+      }),
+      expect.objectContaining({ level: "warn", stage: "ENRICHED", outcome: "failed", code: "memory_lexical_shadow_capacity" })
+    ]);
+    expect(records[1]).not.toHaveProperty("lane");
+    expect(JSON.stringify(records)).not.toMatch(/secret-entry|aiqsa-memory-search-opaque/);
   });
 
   it("drops excess detached work instead of creating a queue", async () => {

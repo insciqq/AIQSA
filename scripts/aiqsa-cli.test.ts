@@ -1155,3 +1155,173 @@ describe("restore", () => {
     expect(existsSync(fixture.file(".env")) ? readFileSync(fixture.file(".env"), "utf8") : null).toBe(before);
   });
 });
+
+describe("logs", () => {
+  const json = (level: string, event: string, extra = "") =>
+    `{"timestamp":"2026-10-07T10:00:00.000Z","level":"${level}","event":"${event}","role":"web"${extra}}`;
+
+  it("keeps only error and fatal JSON lines of the selected service and masks secrets", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    const password = values(body).AIQSA_POSTGRES_PASSWORD;
+    fixture.rules.push({ match: " logs ", stdout: [
+      `app-1  | ${json("info", "run_accepted")}`,
+      `app-1  | ${json("warn", "provider_retry")}`,
+      `app-1  | ${json("error", "run_http_failed", `,"reason":"auth ${password}"`)}`,
+      `app-1  | ${json("fatal", "process_exit")}`,
+      "app-1  | plain text error from a dependency",
+      `app-1  | {"note":"no level here"}`,
+      `app-1  |   {"timestamp":"t", "level": "error", "event":"spaced"}`
+    ].join("\n") + "\n" });
+    const result = fixture.run(["logs", "--errors", "--since", "1h", "app"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(/compose --project-directory \S+ logs --no-color --since 1h app\n/u);
+    expect(fixture.dockerLog).not.toContain("--tail");
+    expect(result.stdout.trimEnd().split("\n")).toEqual([
+      `app-1  | ${json("error", "run_http_failed", ',"reason":"auth ***"')}`,
+      `app-1  | ${json("fatal", "process_exit")}`,
+      `app-1  |   {"timestamp":"t", "level": "error", "event":"spaced"}`
+    ]);
+    expect(result.stderr).toContain("plain-text lines (PostgreSQL, OpenSearch, Tika, Docling, SeaweedFS) are hidden");
+    expectNoSecrets(result.output, body);
+  });
+
+  it("passes plain text through unfiltered and adds warn with --warnings", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    const password = values(body).AIQSA_POSTGRES_PASSWORD;
+    const lines = [`postgres-1  | FATAL:  password authentication failed: ${password}`, `app-1  | ${json("warn", "provider_retry")}`,
+      `app-1  | ${json("info", "run_accepted")}`];
+    fixture.rules.push({ match: " logs ", stdout: lines.join("\n") + "\n" });
+    const all = fixture.run(["logs"]);
+    expect(all.status, all.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(/ logs --no-color --tail 200\n/u);
+    expect(all.stdout).toBe([lines[0].replace(password, "***"), lines[1], lines[2]].join("\n") + "\n");
+    expect(all.stderr).toBe("");
+    const warnings = fixture.run(["logs", "--warnings", "--tail=all", "-f", "app", "postgres"]);
+    expect(warnings.status, warnings.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(/ logs --no-color --tail all --follow app postgres\n/u);
+    expect(warnings.stdout).toBe(`${lines[1]}\n`);
+    expectNoSecrets(all.output + warnings.output, body);
+  });
+
+  it("uses the selected env file and reports a masked Compose failure with exit 1", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    copyFileSync(fixture.file(".env"), fixture.file("other.env"));
+    const password = values(body).AIQSA_POSTGRES_PASSWORD;
+    fixture.rules.push({ match: " logs ", exit: 1, stderr: `no such service: ghost (${password})\n` });
+    const result = fixture.run(["logs", "--env-file", "other.env", "ghost"]);
+    expect(result.status).toBe(1);
+    expect(fixture.dockerLog).toContain(`--env-file ${fixture.file("other.env")} logs --no-color --tail 200 ghost`);
+    expect(result.stderr).toContain("no such service: ghost (***)");
+    expect(result.stderr).toContain("docker compose logs failed");
+    expectNoSecrets(result.output, body);
+  });
+
+  it.each([
+    [["logs", "--bogus"], "Unknown option: --bogus"],
+    [["logs", "--errors", "--warnings"], "mutually exclusive"],
+    [["logs", "--tail", "ten"], "--tail must be a line count or all"],
+    [["logs", "--since", "yesterday"], "--since must be a duration"],
+    [["logs", "--since"], "--since needs a value"],
+    [["logs", "app;id"], "Not a Compose service name"],
+    [["logs", "--output", "x"], "--output is not valid for logs"],
+    [["doctor", "--errors"], "--errors is not valid for doctor"],
+    [["backup", "app"], "Unexpected argument: app"]
+  ])("rejects %j with usage before Docker runs", (args, message) => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    const result = fixture.run(args);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+    expect(result.stderr).toContain("Run ./aiqsa.sh help for usage.");
+    expect(fixture.dockerLog).toBe("");
+    expectNoSecrets(result.output, body);
+  });
+
+  it("is listed in help with its filters", () => {
+    const help = new Fixture().run(["help"]).stdout;
+    expect(help).toContain("logs [service...]");
+    expect(help).toMatch(/--errors +logs: keep only AIQSA JSON lines at level error or fatal/u);
+    expect(help).toContain("Both filters drop plain-text lines");
+  });
+});
+
+describe("health", () => {
+  const report = "AIQSA health · last 24 hours · 2026-10-06 10:00 to 2026-10-07 10:00 UTC\n\nNo problems recorded in the last 24 hours.\n";
+
+  it("runs the read-only report inside the running app container", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    const password = values(body).AIQSA_POSTGRES_PASSWORD;
+    fixture.rules.push({ match: " exec -T app node --import tsx scripts/health-report.ts", stdout: report,
+      stderr: `{"level":"error","event":"service_operation","note":"${password}"}\n` });
+    const result = fixture.run(["health", "--since", "7d", "--json"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(/compose --project-directory \S+ exec -T app node --import tsx scripts\/health-report\.ts --since 7d --json\n/u);
+    expect(fixture.dockerLog).not.toContain(" run ");
+    expect(result.stdout).toBe(report);
+    expect(result.stderr).toBe('{"level":"error","event":"service_operation","note":"***"}\n');
+    expectNoSecrets(result.output, body);
+  });
+
+  it("falls back to a one-off app container without dependencies when the app is down", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    fixture.rules.push({ match: " ps -a --format", stdout: "app|exited||137|c1\npostgres|running|healthy|0|c3\n" },
+      { match: " run --rm --no-deps -T app node --import tsx scripts/health-report.ts", stdout: report });
+    const result = fixture.run(["health", "--run", "1A2B3C4D"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(/compose --project-directory \S+ run --rm --no-deps -T app node --import tsx scripts\/health-report\.ts --run 1A2B3C4D\n/u);
+    expect(fixture.dockerLog).not.toContain(" exec ");
+    expect(result.stdout).toBe(report);
+    expect(result.stderr).toContain("The app container is not running; reading health from a one-off app container.");
+    expectNoSecrets(result.output, body);
+  });
+
+  it("passes the report's read failure through and explains a Compose failure", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    fixture.rules.push({ match: " exec -T app node --import tsx", exit: 1,
+      stderr: "Cannot read health telemetry (health_report_failed: database_unavailable).\n" });
+    const failed = fixture.run(["health"]);
+    expect(failed.status).toBe(1);
+    expect(fixture.dockerLog).toMatch(/ exec -T app node --import tsx scripts\/health-report\.ts\n/u);
+    expect(failed.stdout).toBe("");
+    expect(failed.stderr).toBe("Cannot read health telemetry (health_report_failed: database_unavailable).\n");
+    const broken = new Fixture();
+    broken.writeEnv();
+    broken.rules.push({ match: " ps -a --format", stdout: "" }, { match: " run --rm --no-deps -T app", exit: 125, stderr: "no such image\n" });
+    const result = broken.run(["health", "-q"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe("no such image\ndocker compose run app failed (exit 125); ./aiqsa.sh doctor shows the state of the stack.\n");
+    expectNoSecrets(failed.output + result.output, body);
+  });
+
+  it.each([
+    [["health", "--since", "1h"], "--since must be 24h, 7d or 30d for health."],
+    [["health", "--since", "7d", "--run", "1a2b3c4d"], "--run and --since are mutually exclusive."],
+    [["health", "--run", "1a2b"], "--run needs an error reference"],
+    [["health", "--run", "1a2b3c4d;id"], "--run needs an error reference"],
+    [["health", "--run"], "--run needs a value."],
+    [["health", "--tail", "5"], "--tail is not valid for health"],
+    [["health", "app"], "Unexpected argument: app"],
+    [["logs", "--json"], "--json is not valid for logs"],
+    [["logs", "--since", "7d"], "--since must be a duration"]
+  ])("rejects %j with usage before Docker runs", (args, message) => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    const result = fixture.run(args);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(message);
+    expect(fixture.dockerLog).toBe("");
+  });
+
+  it("is listed in help with its flags", () => {
+    const help = new Fixture().run(["help"]).stdout;
+    expect(help).toMatch(/^ {2}health +Read-only report of recent problems/mu);
+    expect(help).toMatch(/--since 24h\|7d\|30d +health: report range \(default 24h\)/u);
+    expect(help).toMatch(/--run <reference> +health: look up/u);
+  });
+});

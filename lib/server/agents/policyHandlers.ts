@@ -1,6 +1,8 @@
 import { decodeAgentPolicy } from "@/lib/contracts/agentPolicy";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import type { AgentPolicyRepository } from "./policyRepository";
 
 export function createAgentPolicyHandlers(input: Readonly<{
@@ -28,8 +30,9 @@ export function createAgentPolicyHandlers(input: Readonly<{
       const { version, ...settings } = policy;
       const saved = await input.repository.update({ ...settings, expectedVersion: version, userId: auth.userId });
       return saved ? reply({ agent: saved }) : reply({ error: "agent_policy_stale" }, 409);
-    } catch {
-      console.error("agent_policy_action_failed");
+    } catch (error) {
+      logEvent("service_operation", { error, subsystem: "admin", stage: update ? "write" : "read", outcome: "failed",
+        code: "agent_policy_action_failed", prisma_code: databaseFailureCode(error) });
       return reply({ error: "agent_policy_action_failed" }, 503);
     }
   }

@@ -68,6 +68,73 @@ describe("process failure hooks", () => {
     expect(result.combined).toBe("");
   });
 
+  it.each([
+    ["uncaught", `setImmediate(() => { throw new Error(${JSON.stringify(canary)}); });`],
+    ["rejection", `Promise.reject(new Error(${JSON.stringify(canary)}));`]
+  ])("runs the registered final write before the fatal exit: %s", (_kind, trigger) => {
+    const result = child(`
+      const { installProcessFailureHooks, setFatalExitTask } = require(${JSON.stringify(processModule)});
+      installProcessFailureHooks({ standalone: true });
+      setFatalExitTask(() => new Promise((resolve) => setTimeout(() => { process.stdout.write('final-write\\n'); resolve(); }, 50)));
+      setInterval(() => {}, 1000);
+      ${trigger}
+    `);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("final-write\n");
+    expect(events(result.stderr)).toEqual([expect.objectContaining({ event: "process.failure", level: "fatal", outcome: "terminated" })]);
+  });
+
+  it("exits within the bound when the final write hangs or fails, and at once on a second fatal error", () => {
+    const hanging = child(`
+      const { installProcessFailureHooks, setFatalExitTask } = require(${JSON.stringify(processModule)});
+      installProcessFailureHooks({ standalone: true });
+      setFatalExitTask(() => new Promise(() => {}));
+      const started = performance.now();
+      process.on('exit', () => require('node:fs').writeSync(1, String(Math.round(performance.now() - started))));
+      setInterval(() => {}, 1000);
+      setImmediate(() => { throw new Error('first'); });
+    `);
+    expect(hanging.status).toBe(1);
+    expect(Number(hanging.stdout)).toBeGreaterThanOrEqual(1_900);
+    expect(Number(hanging.stdout)).toBeLessThan(5_000);
+
+    const failing = child(`
+      const { installProcessFailureHooks, setFatalExitTask } = require(${JSON.stringify(processModule)});
+      installProcessFailureHooks({ standalone: true });
+      setFatalExitTask(async () => { throw new Error('write-failed'); });
+      setInterval(() => {}, 1000);
+      setImmediate(() => { throw new Error('first'); });
+    `);
+    expect(failing.status).toBe(1);
+
+    const repeated = child(`
+      const { installProcessFailureHooks, setFatalExitTask } = require(${JSON.stringify(processModule)});
+      installProcessFailureHooks({ standalone: true });
+      setFatalExitTask(() => new Promise(() => {}));
+      const started = performance.now();
+      process.on('exit', () => require('node:fs').writeSync(1, String(Math.round(performance.now() - started))));
+      setInterval(() => {}, 1000);
+      setImmediate(() => { throw new Error('first'); });
+      setTimeout(() => { throw new Error('second'); }, 20);
+    `);
+    expect(repeated.status).toBe(1);
+    expect(Number(repeated.stdout)).toBeLessThan(1_000);
+    expect(events(repeated.stderr).map((event) => event.outcome)).toEqual(["terminated", "terminated"]);
+  });
+
+  it("keeps the framework-managed policy: a registered final write never ends a surviving process", () => {
+    const result = child(`
+      const { installProcessFailureHooks, setFatalExitTask } = require(${JSON.stringify(processModule)});
+      installProcessFailureHooks();
+      require('next/dist/server/node-environment-extensions/process-error-handlers').installProcessErrorHandlers(false);
+      setFatalExitTask(async () => { process.stdout.write('final-write\\n'); });
+      setImmediate(() => { throw new Error(${JSON.stringify(canary)}); });
+      setTimeout(() => process.stdout.write('framework-alive\\n'), 25);
+    `);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("framework-alive\n");
+  });
+
   it("covers early target loading without exposing filename or raw error", () => {
     const directory = mkdtempSync(path.join(tmpdir(), "aiqsa-startup-"));
     directories.push(directory);

@@ -410,7 +410,7 @@ describe("Run lifecycle v2", () => {
     const card = screen.getByRole("region", { name: "Run failed" });
     expect(card).toHaveTextContent("Request not completed");
     expect(card).toHaveTextContent("The answer could not be prepared. Try again.");
-    expect(card).toHaveTextContent("Support reference preparation_failed");
+    expect(card).toHaveTextContent("Code preparation_failed");
     expect(card.textContent).not.toMatch(/memory/iu);
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
@@ -439,7 +439,7 @@ describe("Run lifecycle v2", () => {
 
     const interrupted = screen.getByRole("region", { name: "Answer interrupted by an error" });
     expect(interrupted).toHaveTextContent("Answer interrupted by a provider error");
-    expect(interrupted).toHaveTextContent("Support reference provider_stream_reset");
+    expect(interrupted).toHaveTextContent("Code provider_stream_reset");
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
 
@@ -461,11 +461,41 @@ describe("Run lifecycle v2", () => {
     const failed = screen.getByRole("region", { name: "Run failed" });
     expect(failed).toHaveTextContent("Request not completed");
     expect(failed).toHaveTextContent("Choose a model with a larger context.");
-    expect(failed).toHaveTextContent("Support reference context_budget_exceeded");
+    expect(failed).toHaveTextContent("Code context_budget_exceeded");
     fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(selectModel).toHaveBeenCalledOnce();
     expect(regenerate).toHaveBeenCalledOnce();
+  });
+
+  it("shows a failed answer's error reference and copies the whole run id", async () => {
+    const runId = "3f2a9c1e-7b4d-4e8a-9c21-5d6e7f809a1b";
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    try {
+      const failure = { code: "provider_auth_rejected", message: "The provider rejected the key.", recovery: "change_parameters" as const };
+      const { rerender } = render(<RunAnswerV2 content="" presentation={presentation({ failure, kind: "terminal_error", runId })} />);
+      const reference = screen.getByTestId("run-error-reference");
+      expect(reference).toHaveTextContent("Reference: 3f2a9c1e");
+      expect(reference).not.toHaveTextContent(runId);
+      expect(screen.getByRole("region", { name: "Run failed" })).toHaveTextContent("Code provider_auth_rejected");
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy error reference" }));
+      await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Error reference copied"));
+      expect(writeText).toHaveBeenCalledWith(runId);
+
+      writeText.mockRejectedValueOnce(new Error("denied"));
+      fireEvent.click(screen.getByRole("button", { name: "Copy error reference" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(`Could not copy. Full reference: ${runId}`);
+
+      // A failure without a run (and every settled or running answer) shows no reference.
+      rerender(<RunAnswerV2 content="" presentation={presentation({ failure, kind: "terminal_error", runId: null })} />);
+      expect(screen.queryByTestId("run-error-reference")).toBeNull();
+      rerender(<RunAnswerV2 content="Done" presentation={presentation({ kind: "complete", runId })} />);
+      expect(screen.queryByTestId("run-error-reference")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it.each([MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, "mcp_auto_discovery_output_limit", "mcp_auto_discovery_timeout"])("offers Auto retry and Load all for %s", (code) => {

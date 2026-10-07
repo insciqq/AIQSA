@@ -99,6 +99,7 @@ async function throwHttpError(
   let contextLength: ReturnType<typeof providerContextLengthFacts> = null;
   let unsupportedInput = false;
   let capabilityFailureReason: "refusal" | "budget_exhausted" | undefined;
+  let quotaExhausted = false;
   try {
     const text = await readBoundedResponseText(response, { signal });
     try {
@@ -108,6 +109,7 @@ async function throwHttpError(
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
         contextLength = providerContextLengthFacts(failure);
         unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
+        quotaExhausted = "quotaExhausted" in failure && failure.quotaExhausted === true;
         if ("capabilityFailureReason" in failure && (failure.capabilityFailureReason === "refusal" || failure.capabilityFailureReason === "budget_exhausted")) capabilityFailureReason = failure.capabilityFailureReason;
       }
     } catch { /* An undecodable body cannot prove unsupported input. */ }
@@ -122,7 +124,7 @@ async function throwHttpError(
     ? openRouterRoutingFailureMessage(routingCode) : providerHttpErrorMessage(providerName, response.status)),
     { httpStatus: response.status },
     failureCode && response.status !== 401 && response.status !== 403
-      ? { code: failureCode, ...contextLength, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}) } : {});
+      ? { code: failureCode, ...contextLength, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}), ...(quotaExhausted ? { quotaExhausted: true } : {}) } : {});
 }
 
 export function createFetchOpenAIChatCompletionClient(input: Readonly<{

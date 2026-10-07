@@ -156,7 +156,7 @@ export async function adoptDecisionModelOnUpgrade(input: Readonly<{
 
 let running: Promise<unknown> | undefined;
 export function startDecisionModelAdoption(): void {
-  running ??= import("../prisma").then(({ prisma }) => adoptDecisionModelOnUpgrade({ db: prisma })).catch(() => {
-    logEvent("service_operation", { subsystem: "admin", stage: "startup", outcome: "degraded", code: "decision_model_adoption_failed" });
+  running ??= import("../prisma").then(({ prisma }) => adoptDecisionModelOnUpgrade({ db: prisma })).catch((error: unknown) => {
+    logEvent("service_operation", { error, subsystem: "admin", stage: "startup", outcome: "degraded", code: "decision_model_adoption_failed" });
   });
 }

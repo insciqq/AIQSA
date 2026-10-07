@@ -224,6 +224,12 @@ describe("scheduled task wire contract", () => {
       .map(scheduledTaskReasonMessage);
     expect(new Set(tools).size).toBe(tools.length);
     expect(tools).not.toContain("The run did not complete.");
+    // A run's provider HTTP failure class is named, never as the provider_unavailable pause reason.
+    const providerClasses = ["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]
+      .map(scheduledTaskReasonMessage);
+    expect(new Set(providerClasses).size).toBe(providerClasses.length);
+    expect(providerClasses).not.toContain("The run did not complete.");
+    expect(providerClasses).not.toContain(scheduledTaskReasonMessage("provider_unavailable"));
     expect(scheduledTaskReasonMessage("run_deadline")).toBe("Stopped after running for 30 minutes.");
     expect(scheduledTaskReasonMessage("source_unavailable")).toContain("3 runs in a row");
     // Every check outcome and monitoring pause has its own history copy.

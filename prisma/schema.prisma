@@ -7570,3 +7570,52 @@ model BrowserPushDelivery {
   run          ModelRun?                @relation(fields: [runId], references: [id], onDelete: Cascade)
   occurrence   ScheduledTaskOccurrence? @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
 }
+
+/// Operator health telemetry: hourly totals of this installation's validated,
+/// content-free log records per process role, event, level and version.
+/// Dimensions hold only allowlisted bounded record fields (outcomes, codes,
+/// statuses, provider connection and model ids, route templates), never user,
+/// run, job or trace identities, request data or payloads.
+model TelemetryCounter {
+  bucketStart     DateTime
+  role            String   @db.VarChar(32)
+  event           String   @db.VarChar(64)
+  level           String   @db.VarChar(8)
+  appVersion      String   @db.VarChar(64)
+  dimensionHash   String   @db.Char(64)
+  dimensions      Json
+  count           BigInt
+  valueSum        BigInt
+  durationCount   BigInt
+  durationSumMs   BigInt
+  durationMaxMs   BigInt?
+  durationBuckets BigInt[]
+  firstSeenAt     DateTime
+  lastSeenAt      DateTime
+
+  @@id([bucketStart, role, event, level, appVersion, dimensionHash])
+  @@index([event, bucketStart])
+}
+
+/// Operator health telemetry: a rate-limited, retention-bounded sample of
+/// recent error and fatal log records, holding only the validated record's
+/// content-free fields.
+model TelemetryIncident {
+  id           String   @id @default(uuid())
+  occurredAt   DateTime
+  role         String   @db.VarChar(32)
+  event        String   @db.VarChar(64)
+  level        String   @db.VarChar(8)
+  appVersion   String   @db.VarChar(64)
+  instanceId   String   @db.Char(32)
+  code         String?  @db.VarChar(128)
+  subsystem    String?  @db.VarChar(64)
+  connectionId String?  @db.VarChar(128)
+  runId        String?  @db.VarChar(128)
+  traceId      String?  @db.Char(32)
+  details      Json
+
+  @@index([occurredAt, id])
+  @@index([runId])
+  @@index([traceId])
+}

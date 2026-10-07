@@ -333,6 +333,7 @@ export function createKnowledgeRerankStage(input: Readonly<{
       const durationMs = elapsedMilliseconds(startedAt, now());
       if (signal?.aborted) {
         logEvent("tool_execution", {
+          error,
           tool_kind: "knowledge", stage: "execution", operation_stage: "rerank",
           outcome: "cancelled", reason: "cancelled",
           ...(preAborted ? {} : { duration_ms: durationMs })

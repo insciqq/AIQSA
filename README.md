@@ -96,6 +96,7 @@ Open [localhost:3000](http://localhost:3000), sign in with the administrator ema
 ./aiqsa.sh upgrade    # update to the newest release
 ./aiqsa.sh backup     # back up the database, files and .env
 ./aiqsa.sh doctor     # check the host, .env and the running stack
+./aiqsa.sh logs --errors --since 1h   # recent AIQSA errors
 ```
 
 Read the [self-hosting guide](SELF_HOSTING.md) before you update: it covers release tags, one-time steps for older installations, and restoring from a backup. Every release lists its changes in the [release notes](https://github.com/insciqq/AIQSA/releases).
