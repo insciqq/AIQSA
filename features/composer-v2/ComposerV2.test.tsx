@@ -230,6 +230,13 @@ describe("Composer v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.getByRole("menuitem", { name: new RegExp(`Create artifact.*${reason}`) })).toBeDisabled();
   });
+  it("says why creation and attachments wait during an inline edit", () => {
+    const reason = "Finish or cancel the inline edit first.";
+    render(<ComposerV2 {...props({ disabledReason: reason, onCreateArtifact: vi.fn(), onUploadFiles: vi.fn() })} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("menuitem", { name: /Create artifact.*Finish or cancel the inline edit first\./ })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: /Attach files.*Finish or cancel the inline edit first\./ })).toBeDisabled();
+  });
   it("lets Agent select artifact creation and send a create or edit intent", () => {
     const onCreateArtifact = vi.fn(), onSend = vi.fn();
     const value = props({ onCreateArtifact, onSend, selectedKnowledgeBaseIds: [], artifactUnavailableReason: undefined,

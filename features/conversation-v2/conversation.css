@@ -381,7 +381,12 @@ html[data-motion="off"] .v2-conversation-turn[data-search-reveal] > .v2-conversa
   white-space: nowrap;
 }
 
+/* Body cells keep ordinary words whole: an anywhere break would let a long
+   token in one column squeeze its neighbours into mid-word breaks
+   («contain ed»). Links and inline code keep their own anywhere breaks; a
+   plain unbroken token widens the table, whose wrapper scrolls. */
 .v2-conversation-markdown [data-testid="markdown-table-scroll"] td {
+  overflow-wrap: break-word;
   border-color: var(--v2-color-border);
 }
 
