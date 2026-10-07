@@ -141,7 +141,7 @@ describe("persisted Workspace carry-over of a scheduled task's rotation", () => 
     expect(scheduledCarryoverOperationOwner("seed-1")).toBe("scheduled-carryover:seed-1");
   });
 
-  it("makes the restore required for the task's scheduled runs only, and keeps the files when it fails", async () => {
+  it("holds every run of the new chat to the carried files until a restore succeeds, keeping them when one fails", async () => {
     const f = await fixture();
     const result = await f.carry({ sourceChatId: f.october.id, taskId: f.task.id, userId: f.userId });
     if (result.kind !== "ready") throw new Error(`carry-over not ready: ${result.kind}`);
@@ -157,30 +157,55 @@ describe("persisted Workspace carry-over of a scheduled task's rotation", () => 
       operationOwner: "run:destination", policyRevision: 1, sandboxName: `aiqsa-ws-${randomUUID()}`, version: 1
     } });
     const repository = createPrismaWorkspaceCoordinatorRepository(prisma);
-    const claim = (runId: string) => repository.claimContinuationSeed!({ chatId: november.id,
-      operation: { generation: 1, owner: "run:destination" }, runId, sessionId: destination.id });
+    const claim = () => repository.claimContinuationSeed!({ chatId: november.id,
+      operation: { generation: 1, owner: "run:destination" }, sessionId: destination.id });
+    /** A failed restore: the claim is released and the archive kept. */
+    const fail = async (claimed: Awaited<ReturnType<typeof claim>>) => {
+      expect(await repository.settleContinuationSeed!({ id: claimed!.id, status: "TRANSFERRED", token: claimed!.token })).toBe(true);
+      const released = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { id: result.seedId } });
+      expect(released).toMatchObject({ leaseExpiresAt: null, leaseToken: null, status: "TRANSFERRED" });
+      expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: released.storageKey! } })).toBe(0);
+      expect(f.storage.objects.has(released.storageKey!)).toBe(true);
+    };
 
-    // The task's run restores before its first request; the owner's run would not be held to it.
+    // The task's run restores before its first request; the owner's run restores at its first Workspace use.
     expect(await repository.pendingCarryover!({ chatId: november.id, runId: scheduled.id })).toBe(true);
     expect(await repository.pendingCarryover!({ chatId: november.id, runId: own.id })).toBe(false);
-    const first = await claim(scheduled.id);
+    const first = await claim();
     expect(first).toMatchObject({ id: result.seedId, required: true });
-    // While that restore holds the seed, the task's run fails visibly instead of starting empty.
-    await expect(claim(scheduled.id)).rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
-    // A required restore that fails releases its claim and keeps the archive for the next run.
-    expect(await repository.settleContinuationSeed!({ id: first!.id, status: "TRANSFERRED", token: first!.token })).toBe(true);
-    const released = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { id: result.seedId } });
-    expect(released).toMatchObject({ leaseExpiresAt: null, leaseToken: null, status: "TRANSFERRED" });
-    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: released.storageKey! } })).toBe(0);
-    expect(f.storage.objects.has(released.storageKey!)).toBe(true);
+    // While that restore holds the seed, another start fails visibly instead of starting empty.
+    await expect(claim()).rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
+    await fail(first);
+    // The owner's own run is held to the same files: its failed restore discards nothing either.
+    const owners = await claim();
+    expect(owners).toMatchObject({ id: result.seedId, required: true });
+    await fail(owners);
+    expect(await repository.pendingCarryover!({ chatId: november.id, runId: scheduled.id })).toBe(true);
 
-    // The owner's run claims it as an ordinary continuation seed.
-    const ordinary = await claim(own.id);
-    expect(ordinary).toMatchObject({ id: result.seedId });
-    expect(ordinary).not.toHaveProperty("required");
-    expect(await repository.settleContinuationSeed!({ id: ordinary!.id, status: "RESTORED", token: ordinary!.token })).toBe(true);
+    // A successful restore ends the hold.
+    const restored = await claim();
+    expect(await repository.settleContinuationSeed!({ id: restored!.id, status: "RESTORED", token: restored!.token })).toBe(true);
     expect(await repository.pendingCarryover!({ chatId: november.id, runId: scheduled.id })).toBe(false);
-    expect(await claim(scheduled.id)).toBeNull();
+    expect(await claim()).toBeNull();
+  });
+
+  it("leaves an ordinary continuation seed once its task is deleted", async () => {
+    const f = await fixture();
+    const result = await f.carry({ sourceChatId: f.october.id, taskId: f.task.id, userId: f.userId });
+    if (result.kind !== "ready") throw new Error(`carry-over not ready: ${result.kind}`);
+    const november = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Synthetic brief · November 2026",
+      userId: f.userId, workspaceEnabled: true } });
+    await prisma.chatContinuationWorkspaceSeed.update({ data: { leaseExpiresAt: null, newChatId: november.id, status: "TRANSFERRED" },
+      where: { id: result.seedId } });
+    await prisma.scheduledTask.delete({ where: { id: f.task.id } });
+    const destination = await prisma.workspaceSession.create({ data: {
+      chatId: november.id, expiresAt: new Date(Date.now() + 3_600_000), imageRef: config.imageRef, internetEnabled: false,
+      operationOwner: "run:destination", policyRevision: 1, sandboxName: `aiqsa-ws-${randomUUID()}`, version: 1
+    } });
+    const claimed = await createPrismaWorkspaceCoordinatorRepository(prisma).claimContinuationSeed!({ chatId: november.id,
+      operation: { generation: 1, owner: "run:destination" }, sessionId: destination.id });
+    expect(claimed).toMatchObject({ id: result.seedId });
+    expect(claimed).not.toHaveProperty("required");
   });
 
   it("keeps the old chat's disk past its expiry until the new chat restored the carried files", async () => {
