@@ -40,12 +40,14 @@ export type MemorySecretFreeExecutionSnapshot = SnapshotBase & Readonly<{
  * admitted. They are accounting evidence stored beside the execution snapshot,
  * never part of its identity: the parsed snapshot, its hashes and binding
  * replay exclude them, so a later catalog edit neither fences accepted work nor
- * changes the cost its settlement, replay or recovery derives. */
+ * changes the cost its settlement, replay or recovery derives. Embedding and
+ * reranker models carry an input price only; settlement applies the prices of
+ * the executed model's class. */
 export type MemoryCatalogTokenPricing = Readonly<{
   cachedInputTokenPriceUsdPerMillion: number | null;
   cacheWriteInputTokenPriceUsdPerMillion: number | null;
   inputTokenPriceUsdPerMillion: number;
-  outputTokenPriceUsdPerMillion: number;
+  outputTokenPriceUsdPerMillion: number | null;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -76,15 +78,16 @@ function validCatalogTokenPricing(value: unknown): value is MemoryCatalogTokenPr
     "cacheWriteInputTokenPriceUsdPerMillion", "cachedInputTokenPriceUsdPerMillion",
     "inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"
   ]) && validCatalogPrice(value.inputTokenPriceUsdPerMillion) &&
-    validCatalogPrice(value.outputTokenPriceUsdPerMillion) &&
+    (value.outputTokenPriceUsdPerMillion === null ||
+      validCatalogPrice(value.outputTokenPriceUsdPerMillion)) &&
     (value.cachedInputTokenPriceUsdPerMillion === null ||
       validCatalogPrice(value.cachedInputTokenPriceUsdPerMillion)) &&
     (value.cacheWriteInputTokenPriceUsdPerMillion === null ||
       validCatalogPrice(value.cacheWriteInputTokenPriceUsdPerMillion));
 }
 
-/** Like answer runs, only a model with both an input and an output price is
- * priced; anything else leaves the cost unknown. */
+/** A model without an input price has no price to freeze; its cost stays
+ * provider-reported only. */
 export function freezeMemoryCatalogTokenPricing(
   pricing: ModelTokenPricing | null
 ): MemoryCatalogTokenPricing | null {

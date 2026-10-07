@@ -1,5 +1,5 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { sumTokenUsage } from "../../domain/usage";
+import { reportedCostMicros, sumTokenUsage } from "../../domain/usage";
 import { decodeKnowledgeRelevanceEvidence, knowledgeRelevanceKeptChunks } from "./relevancePolicy";
 import { decodeKnowledgeCitationHandle } from "../../contracts/knowledge";
 import type { ToolExecutionResult } from "../tools/types";
@@ -60,6 +60,7 @@ import {
 import {
   decodeKnowledgeRerankerBindingEvidenceV2,
   KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
+  knowledgeRerankerBilledCall,
   type KnowledgeRerankerBindingEvidenceV2
 } from "./rerankEvidence";
 import {
@@ -262,10 +263,16 @@ function decodeBase(value: unknown): KnowledgeBaseRetrievalEvidence | null {
   };
 }
 
+const EMBEDDING_EXECUTION_KEYS =
+  "bindingOrdinals,durationMs,inputTokens,modelId,provider,providerModelId,requestId,status,totalTokens";
+
 function decodeEmbedding(value: unknown): KnowledgeEmbeddingExecutionEvidence | null {
-  if (!isRecord(value) ||
-    Object.keys(value).sort().join(",") !==
-      "bindingOrdinals,durationMs,inputTokens,modelId,provider,providerModelId,requestId,status,totalTokens" ||
+  if (!isRecord(value)) return null;
+  // Receipts accepted before query embedding costs were recorded lack `costUsd`.
+  const hasCost = Object.hasOwn(value, "costUsd");
+  if (Object.keys(value).filter((key) => key !== "costUsd").sort().join(",") !== EMBEDDING_EXECUTION_KEYS ||
+    hasCost && value.costUsd !== null &&
+      (typeof value.costUsd !== "number" || !Number.isFinite(value.costUsd) || value.costUsd < 0) ||
     !Array.isArray(value.bindingOrdinals) ||
     value.bindingOrdinals.length < 1 ||
     value.bindingOrdinals.length > KNOWLEDGE_SCOPE_MAX_BINDINGS) return null;
@@ -288,6 +295,7 @@ function decodeEmbedding(value: unknown): KnowledgeEmbeddingExecutionEvidence | 
   ) return null;
   return {
     bindingOrdinals: bindingOrdinals as number[],
+    ...(hasCost ? { costUsd: value.costUsd as number | null } : {}),
     durationMs,
     inputTokens,
     modelId,
@@ -1632,20 +1640,43 @@ export function knowledgeEvidenceFromToolResult(
   return evidenceFromPreview(result);
 }
 
+function retrievalAttribution(call: Readonly<{
+  costUsd: number | null;
+  inputTokens: number | null;
+  modelId: string;
+  provider: string;
+  providerModelId: string;
+  totalTokens: number | null;
+}>): KnowledgeRetrievalUsageAttribution {
+  return {
+    // Only a reported cost is settled here; the attribution row prices the rest.
+    ...(call.costUsd === null ? {} : { estimatedCostMicros: reportedCostMicros(call.costUsd) }),
+    modelId: call.modelId,
+    provider: call.provider,
+    providerModelId: call.providerModelId,
+    purpose: "knowledge_retrieval",
+    usage: { inputTokens: call.inputTokens, totalTokens: call.totalTokens }
+  };
+}
+
+/** The paid calls one Knowledge operation made, as run usage attributions:
+ * each query embedding and the hosted reranker call, with their deployment,
+ * reported tokens and reported cost. */
 export function knowledgeUsageAttributionsFromToolResult(
   result: ToolExecutionResult
 ): KnowledgeRetrievalUsageAttribution[] {
   const evidence = evidenceFromPreview(result);
   if (!evidence) return [];
-  return evidence.embeddingExecutions.map((execution) => ({
-    modelId: execution.modelId,
-    provider: execution.provider,
-    purpose: "knowledge_retrieval" as const,
-    usage: {
-      inputTokens: execution.inputTokens,
-      totalTokens: execution.totalTokens
-    }
-  }));
+  const rerank = evidence.rerankerBinding?.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
+    ? knowledgeRerankerBilledCall(evidence.rerankerBinding)
+    : null;
+  return [
+    ...evidence.embeddingExecutions.map((execution) => retrievalAttribution({
+      ...execution,
+      costUsd: execution.costUsd ?? null
+    })),
+    ...(rerank ? [retrievalAttribution(rerank)] : [])
+  ];
 }
 
 export function aggregateKnowledgeUsage(

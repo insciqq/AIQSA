@@ -5,6 +5,8 @@ import { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "../knowledge/evidenceAns
 import type { RunRepository } from "./runRepositoryContract";
 import {
   finalizeRunCompletion,
+  groupedUsageAttributions,
+  usageAttributionsWithEstimatedCost,
   usageWithEstimatedCost
 } from "./runFinalization";
 
@@ -16,9 +18,10 @@ const rawUsage: ModelRunUsage = {
   reasoningTokens: 2
 };
 
-function completionInput(repository: Pick<RunRepository, "completeRun" | "loadModelPricing" | "publishRunAnswer">) {
+function completionInput(repository: Pick<RunRepository, "completeRun" | "loadModelPricing" | "publishRunAnswer"> &
+  Partial<Pick<RunRepository, "loadProviderModelCostBasis">>) {
   return {
-    repository,
+    repository: { loadProviderModelCostBasis: async () => null, ...repository },
     result: {
       finalText: "Final answer",
       providerResponseId: "provider-response-1",
@@ -437,5 +440,67 @@ describe("run finalization", () => {
       finalText: grounding.finalText,
       knowledgeGrounding: { grounding }
     }));
+  });
+});
+
+describe("run usage attribution cost", () => {
+  const embedding = { modelId: "qwen/qwen3-embedding-8b", provider: "openrouter",
+    providerModelId: "embedding-deployment", purpose: "knowledge_retrieval" as const };
+  const reranker = { modelId: "voyageai/rerank-2.5", provider: "openrouter",
+    providerModelId: "reranker-deployment", purpose: "knowledge_retrieval" as const };
+  const answer = { modelId: "answer", provider: "openai", purpose: "chat_answer" as const };
+
+  it("keeps settled Knowledge costs apart from calls still to price and never merges known into unknown", () => {
+    const grouped = groupedUsageAttributions([
+      { ...embedding, operationCount: 1, estimatedCostMicros: 3, usage: { inputTokens: 5, totalTokens: 5 } },
+      { ...embedding, operationCount: 1, estimatedCostMicros: 4, usage: { inputTokens: 7, totalTokens: 7 } },
+      { ...embedding, operationCount: 1, usage: { inputTokens: 2, totalTokens: 2 } },
+      { ...embedding, operationCount: 1, estimatedCostMicros: null, usage: { inputTokens: 1, totalTokens: 1 } },
+      { ...reranker, operationCount: 1, estimatedCostMicros: 0, usage: { totalTokens: 2 } },
+      // Answer rows are priced whenever written: a stored cost never splits or settles them.
+      { ...answer, operationCount: 1, estimatedCostMicros: 9, usage: { inputTokens: 1, outputTokens: 1 } },
+      { ...answer, operationCount: 1, usage: { inputTokens: 1, outputTokens: 1 } }
+    ]);
+    expect(grouped.map(({ estimatedCostMicros, modelId, operationCount, usage }) =>
+      [modelId, operationCount, usage.inputTokens ?? usage.totalTokens, estimatedCostMicros]))
+      .toEqual([
+        ["qwen/qwen3-embedding-8b", 2, 12, 7],
+        ["qwen/qwen3-embedding-8b", 1, 2, undefined],
+        ["qwen/qwen3-embedding-8b", 1, 1, null],
+        ["voyageai/rerank-2.5", 1, 2, 0],
+        ["answer", 2, 2, undefined]
+      ]);
+    expect(grouped.every((attribution) => attribution.purpose !== "knowledge_retrieval" ||
+      attribution.providerModelId !== undefined)).toBe(true);
+    // Regrouping persisted rows with nothing new keeps every row and cost.
+    expect(groupedUsageAttributions(grouped)).toEqual(grouped);
+    expect(groupedUsageAttributions([
+      { ...embedding, estimatedCostMicros: 2_147_483_000, usage: { inputTokens: 1 } },
+      { ...embedding, estimatedCostMicros: 1_000, usage: { inputTokens: 1 } }
+    ])[0]!.estimatedCostMicros).toBeNull();
+  });
+
+  it("keeps a settled Knowledge cost, prices the rest from the deployment's class and answers from token prices", async () => {
+    const loadModelPricing = vi.fn(async () => ({ inputTokenPriceUsdPerMillion: 2, outputTokenPriceUsdPerMillion: 10 }));
+    const loadProviderModelCostBasis = vi.fn(async (providerModelId: string) => providerModelId === embedding.providerModelId
+      ? { modelClass: "embedding" as const, pricing: { inputTokenPriceUsdPerMillion: 0.13, outputTokenPriceUsdPerMillion: null } }
+      : null);
+    const priced = await usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis }, [
+      { ...embedding, estimatedCostMicros: 7, usage: { inputTokens: 12 } },
+      { ...embedding, usage: { inputTokens: 1_000_000 } },
+      // A deployment that no longer exists has no prices.
+      { ...reranker, usage: { totalTokens: 2 } },
+      { ...answer, usage: { inputTokens: 1_000, outputTokens: 100 } }
+    ]);
+    expect(priced.map((attribution) => [attribution.providerModelId, attribution.estimatedCostMicros])).toEqual([
+      ["embedding-deployment", 7], ["embedding-deployment", 130_000], ["reranker-deployment", null], [undefined, 3_000]
+    ]);
+    expect(loadProviderModelCostBasis.mock.calls).toEqual([["embedding-deployment"], ["reranker-deployment"]]);
+    expect(loadModelPricing).toHaveBeenCalledExactlyOnceWith("openai", "answer");
+
+    const privateError = new Error("PRIVATE connection detail");
+    await expect(usageAttributionsWithEstimatedCost({ loadModelPricing, loadProviderModelCostBasis: async () => {
+      throw privateError;
+    } }, [{ ...embedding, usage: { inputTokens: 1 } }])).rejects.toMatchObject({ stage: "accounting" });
   });
 });

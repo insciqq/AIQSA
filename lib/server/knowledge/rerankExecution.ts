@@ -15,7 +15,8 @@ import {
 } from "./rerankCandidateFormatter";
 import {
   KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
-  type KnowledgeRerankerBindingEvidenceV2
+  type KnowledgeRerankerBindingEvidenceV2,
+  type KnowledgeRerankerUsageEvidence
 } from "./rerankEvidence";
 import { KNOWLEDGE_RANKING_PROFILE_VERSION } from "./retrievalRanking";
 
@@ -86,11 +87,15 @@ function rerankCancellationError(signal: AbortSignal): Error {
   return error;
 }
 
-function usageEvidence(result: RerankResult | null) {
-  return Object.freeze({
-    searchUnits: result?.usage.searchUnits ?? null,
-    totalTokens: result?.usage.totalTokens ?? null
-  });
+/** A provider call's usage also carries its input tokens and reported cost,
+ * which the run accounts as Knowledge retrieval usage. */
+function usageEvidence(result: RerankResult | null): KnowledgeRerankerUsageEvidence {
+  return Object.freeze(result ? {
+    costUsd: result.usage.costUsd ?? null,
+    inputTokens: result.usage.inputTokens ?? null,
+    searchUnits: result.usage.searchUnits ?? null,
+    totalTokens: result.usage.totalTokens ?? null
+  } : { searchUnits: null, totalTokens: null });
 }
 
 function pinnedEvidenceFields(pin: KnowledgeRerankPin) {

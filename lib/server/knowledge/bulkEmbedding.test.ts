@@ -58,7 +58,8 @@ describe("Knowledge held cross-Source embedding batches", () => {
     )).toThrow("knowledge_bulk_embedding_input_invalid");
   });
 
-  it("records a written batch's usage as Knowledge indexing", async () => {
+  async function persistWrittenBatch(usage: Readonly<{ costUsd?: number | null; inputTokens: number; totalTokens: number }>,
+    inputTokenPriceUsdPerMillion: number | null) {
     const now = new Date("2026-09-04T14:00:00.000Z");
     const written = passage(0);
     const queryRaw = vi.fn()
@@ -72,8 +73,10 @@ describe("Knowledge held cross-Source embedding batches", () => {
         sourceId: "source-1", state: "pending" }])
       .mockResolvedValueOnce([{ passageId: written.passageId }]);
     const create = vi.fn(async () => ({}));
+    const findModel = vi.fn(async () => ({ modelClass: "embedding", inputTokenPriceUsdPerMillion,
+      cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null }));
     const tx = { $executeRaw: vi.fn(async () => 1), $queryRaw: queryRaw,
-      knowledgeBaseSource: { count: vi.fn(async () => 1) },
+      knowledgeBaseSource: { count: vi.fn(async () => 1) }, providerModel: { findUnique: findModel },
       usageEvent: { create, findUnique: vi.fn(async () => null) } };
     const repository = createPrismaKnowledgeBulkEmbeddingRepository({
       $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx)
@@ -84,13 +87,28 @@ describe("Knowledge held cross-Source embedding batches", () => {
       now,
       passages: [{ ...written, vector: Array.from({ length: target.targetDimension }, () => 0.5) }],
       provider: "openrouter",
-      usage: { inputTokens: 3, totalTokens: 3 },
+      usage,
       usageEventId: "55555555-5555-8555-8555-555555555555"
     })).resolves.toBe("created");
+    // Prices come from the target's stored deployment row only.
+    expect(findModel).toHaveBeenCalledWith(expect.objectContaining({ where: { id: target.embeddingProviderModelId } }));
+    return create;
+  }
+
+  it("records a written batch's usage as Knowledge indexing of its deployment with the reported cost", async () => {
+    const create = await persistWrittenBatch({ costUsd: 0.0000123, inputTokens: 3, totalTokens: 3 }, 0.13);
     expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({
       id: "55555555-5555-8555-8555-555555555555", modelId: "qwen/qwen3-embedding-8b", provider: "openrouter",
+      providerModelId: target.embeddingProviderModelId, estimatedCostMicros: 12,
       purpose: "knowledge_indexing", userId: target.ownerUserId
     }) });
+  });
+
+  it("prices a batch without a reported cost from the deployment's input price, else leaves it unknown", async () => {
+    expect(await persistWrittenBatch({ inputTokens: 1_000_000, totalTokens: 1_000_000 }, 0.13))
+      .toHaveBeenCalledWith({ data: expect.objectContaining({ estimatedCostMicros: 130_000 }) });
+    expect(await persistWrittenBatch({ costUsd: null, inputTokens: 1_000_000, totalTokens: 1_000_000 }, null))
+      .toHaveBeenCalledWith({ data: expect.objectContaining({ estimatedCostMicros: null }) });
   });
 
   it("rejects invalid vectors before opening a transaction", async () => {

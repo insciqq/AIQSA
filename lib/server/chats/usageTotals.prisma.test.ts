@@ -120,9 +120,15 @@ describe("authorized all-history chat usage", () => {
     await prisma.usageEvent.createMany({ data: [receipt,
       // A pre-dispatch stage of the answer's own run is not an answer attempt.
       { ...receipt, modelRunId: run.id, optionalDecision: true, purpose: "skill_selection", providerModelId: "synthetic-utility",
-        inputTokens: 10, outputTokens: 0, totalTokens: 10, estimatedCostMicros: 1000 }] });
+        inputTokens: 10, outputTokens: 0, totalTokens: 10, estimatedCostMicros: 1000 },
+      // Nor are the run's own unflagged Search and Knowledge retrieval (reranker) rows.
+      { ...receipt, modelRunId: run.id, purpose: "web_search", modelId: "synthetic-search",
+        inputTokens: 5, outputTokens: 0, totalTokens: 5, estimatedCostMicros: 500 },
+      { ...receipt, modelRunId: run.id, purpose: "knowledge_retrieval", modelId: "synthetic-reranker",
+        providerModelId: "synthetic-reranker", inputTokens: null, outputTokens: null, totalTokens: 2,
+        usageCompleteness: "PARTIAL", estimatedCostMicros: 0 }] });
     const read = async () => (await f.repository.getChat({ chatId: f.chatId, userId: f.ownerId }))!.usageStats;
-    const expected = { recordCount: 2, knownCostRecordCount: 2, incompleteRecordCount: 0, totalTokens: 760, estimatedCostMicros: 26000 };
+    const expected = { recordCount: 4, knownCostRecordCount: 4, incompleteRecordCount: 1, totalTokens: 767, estimatedCostMicros: 26500 };
     for (const status of ["queued", "streaming", "error", "cancelled"] as const) {
       await prisma.message.update({ where: { id: answer.id }, data: { status } });
       expect(await read()).toEqual({ ...expected, hasCompletedAnswer: false });

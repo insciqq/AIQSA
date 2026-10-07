@@ -21,7 +21,8 @@ import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFi
 import type { KnowledgeRerankerRoleResolution } from "./rerankerRuntime";
 import {
   decodeKnowledgeRetrievalEvidence,
-  knowledgeEvidenceFromToolResult
+  knowledgeEvidenceFromToolResult,
+  knowledgeUsageAttributionsFromToolResult
 } from "./toolResult";
 import type { ProviderRunRequest } from "../providers/types";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
@@ -279,6 +280,34 @@ function context(persistedToolCallId = "tool-call-1") {
 }
 
 describe("Knowledge executor hosted rerank wiring", () => {
+  it("attributes the query embedding and the reranker call with their deployments and reported costs", async () => {
+    const reranked = rerankedSearchResult();
+    const { store: retrievalStore } = store(async () => ({ ...reranked, rerankerBinding: { ...reranked.rerankerBinding!,
+      provider: "VoyageAI by MongoDB", usage: { costUsd: 0.0000123, inputTokens: null, searchUnits: null, totalTokens: 80 } } }));
+    const embedding = { resolve: vi.fn(async () => ({
+      adapter: { embed: vi.fn(async () => ({
+        model: "embedding-upstream", requestId: "embedding-request-1",
+        usage: { costUsd: 0.000002, inputTokens: 2, totalTokens: 2 },
+        vectors: [Array.from({ length: 1_024 }, () => 0.03125)]
+      })) },
+      configuration: embeddingConfiguration, provider: "openai_compatible", providerModelId: "embedding-model-1"
+    })) };
+    const runtime = createKnowledgeToolExecutor({ embeddingRuntime: embedding, store: retrievalStore,
+      rerankerRuntime: { resolve: async () => ({ adapter: { rerank: vi.fn() }, kind: "ready", pin }) } });
+    const result = await runtime.execute(call(), context());
+    const stored = parsePersistedToolExecutionResult(call(),
+      snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)!);
+    // The settled receipt, as recovery reads it back, keeps both paid calls.
+    for (const settled of [result, stored!]) {
+      expect(knowledgeUsageAttributionsFromToolResult(settled)).toEqual([
+        { estimatedCostMicros: 2, modelId: "embedding-upstream", provider: "openai_compatible",
+          providerModelId: "embedding-model-1", purpose: "knowledge_retrieval", usage: { inputTokens: 2, totalTokens: 2 } },
+        { estimatedCostMicros: 12, modelId: "qwen/qwen3-reranker-8b", provider: "openrouter",
+          providerModelId: "reranker-deployment-1", purpose: "knowledge_retrieval", usage: { inputTokens: null, totalTokens: 80 } }
+      ]);
+    }
+  });
+
   it.each(["keep", "reject", "unavailable"] as const)("persists and replays an optional %s decision without reranking again", async decision => {
     const { store: retrievalStore, persistReceipt } = store(async () => rerankedSearchResult());
     const estimate = { candidateCount: 96, costMicros: 0, latencyMs: 1000, operationSlots: 1, queryEmbeddingCalls: 1, retrievedTokens: 8192 };

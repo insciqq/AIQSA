@@ -493,7 +493,7 @@ describe("Memory run utility execution", () => {
       return {
         model: "embedding-upstream-1",
         requestId: "embedding-response-1",
-        usage: { inputTokens: 7, totalTokens: 7 },
+        usage: { inputTokens: 7, totalTokens: 7, costUsd: 0.0000123 },
         vectors: [Array.from(
           { length: 1_024 },
           (_, index) => index === 0 ? 1 : 0
@@ -533,9 +533,10 @@ describe("Memory run utility execution", () => {
       "authorize"
     ]);
     expect(bound.lifecycle.settle).toHaveBeenCalledOnce();
+    // The provider-reported cost settles in exact micro-dollars.
     expect(bound.lifecycle.settle.mock.calls[0]?.[2]).toMatchObject({
       state: "SUCCEEDED",
-      usage: { completeness: "COMPLETE", inputTokens: 7, totalTokens: 7 }
+      usage: { completeness: "COMPLETE", estimatedCostMicros: 12, inputTokens: 7, totalTokens: 7 }
     });
     expect(bound.admission.bind).toHaveBeenCalledWith("user-1", expect.objectContaining({
       ordinal,
@@ -2245,7 +2246,7 @@ describe("Memory run utility execution", () => {
         index,
         relevanceScore: 1 - index / 100
       })),
-      usage: { inputTokens: 320, searchUnits: 1, totalTokens: 320 }
+      usage: { inputTokens: 320, searchUnits: 1, totalTokens: 320, costUsd: 0.000004 }
     }));
     const candidates = dedicatedCandidates(60);
 
@@ -2286,6 +2287,7 @@ describe("Memory run utility execution", () => {
         state: "SUCCEEDED",
         usage: expect.objectContaining({
           completeness: "COMPLETE",
+          estimatedCostMicros: 4,
           inputTokens: 320,
           outputTokens: 0,
           totalTokens: 320
