@@ -694,7 +694,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       if (path.startsWith(`${WORKSPACE_SECRETS_PATH}/ssh/`) || path.startsWith(`${WORKSPACE_SECRETS_PATH}/files/`)) session.files.delete(path);
       if (!sameRun && path.startsWith(`${WORKSPACE_BROWSER_SESSIONS_PATH}/`)) session.files.delete(path);
     }
-    session.secretEnvironment = workspaceSecretEnvironment(secrets);
+    session.secretEnvironment = { ...workspaceSecretEnvironment(secrets), ...input.runEnvironment };
     session.secretsRunId = input.modelRunId;
     session.files.set(WORKSPACE_SECRETS_GUIDE_PATH, Buffer.from(workspaceSecretsGuide(secrets)));
     session.directories.add(`${WORKSPACE_SECRETS_PATH}/browser`);

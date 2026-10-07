@@ -35,7 +35,9 @@ describe("WorkspaceActivityTimelineV2", () => {
             { count: 2, durationMs: 800, id: "prep", kind: "attachments_prepare", phase: "succeeded" },
             { file: { displayPath: "package.json" }, id: "read", kind: "file_read", phase: "succeeded" },
             {
-              command: { cwd: "project", exitCode: 0, preview: "npm install", secretMasked: true, stdoutPreview: "added 12 packages" },
+              command: { codeMcp: { calls: 37, failed: 1, tools: [{ calls: 35, failed: 0, serverName: "GitLab", toolName: "list_commits" },
+                { calls: 2, failed: 1, serverName: "GitLab", toolName: "get_job_log" }] },
+              cwd: "project", exitCode: 0, preview: "npm install", secretMasked: true, stdoutPreview: "added 12 packages" },
               durationMs: 8_400,
               id: "install",
               kind: "command",
@@ -84,7 +86,10 @@ describe("WorkspaceActivityTimelineV2", () => {
     expect(install).toHaveTextContent("Working directory");
     expect(install).toHaveTextContent("added 12 packages");
     expect(install).toHaveTextContent("Output contained a secret value; masked");
+    expect(install).toHaveTextContent(
+      "MCP calls from code: 37 · GitLab · list_commits ×35, GitLab · get_job_log ×2 (1 failed) · 1 failed");
     expect(failed).not.toHaveTextContent("secret value");
+    expect(failed).not.toHaveTextContent("MCP calls from code");
     expect(install).toHaveTextContent("Exit code 0 · 8.4 s");
     fireEvent.click(screen.getAllByRole("button", { name: "Copy command" })[0]!);
   });

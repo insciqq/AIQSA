@@ -111,6 +111,9 @@ export type ProviderImageProvenance = Readonly<
  * and is never accepted from the browser as configuration. */
 export type NormalizedRunWorkspace = Readonly<{
   enabled: true;
+  /** Guest code of this Internet-On, non-Agent run can reach the run gateway,
+   * with these code-call budgets. Absent: no code token (older runs too). */
+  codeMcp?: import("../workspace/codeMcp").NormalizedWorkspaceCodeMcp;
   /** Absent historical turns retain their inline-guide Agent contract. */
   guidanceVersion?: 1;
   imageRef: string;

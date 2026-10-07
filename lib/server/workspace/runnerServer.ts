@@ -18,6 +18,8 @@ import {
 import { parseWorkspaceOperation, WorkspaceOperationFence, type WorkspaceOperation } from "./operationFence";
 import { parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseAcceptedWorkspaceSecrets, WORKSPACE_SECRETS_REQUEST_MAX_BYTES } from "./secrets/manifest";
+import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment } from "./codeMcp";
+import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type LifecycleStage } from "../observability";
 import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
 import { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES, renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
@@ -335,8 +337,15 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const secrets = parseAcceptedWorkspaceSecrets(body.secrets);
         const modelRunId = requiredString(body.modelRunId, 128);
         const runtimeSandboxId = requiredString(body.runtimeSandboxId, 256);
+        let runEnvironment: Readonly<Record<string, string>>;
+        try {
+          runEnvironment = parseWorkspaceRunEnvironment(body.runEnvironment, AGENT_GATEWAY_ORIGIN);
+        } catch {
+          throw new Error("field_invalid");
+        }
         await execute(body.operation, (signal) => input.runtime.syncPersonalSecrets({
-          secrets, modelRunId, runtimeSandboxId, sessionId, signal
+          secrets, modelRunId, ...(Object.keys(runEnvironment).length > 0 ? { runEnvironment } : {}),
+          runtimeSandboxId, sessionId, signal
         }));
         sendJson(response, 200, { ok: true });
         return;
@@ -483,11 +492,14 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const body = await readJson(request);
         const toolArguments = body.arguments;
         if (!isRecord(toolArguments)) throw new Error("field_invalid");
+        if (body.invocationId !== undefined && !isWorkspaceCodeInvocationId(body.invocationId)) throw new Error("field_invalid");
+        const invocationId = body.invocationId as string | undefined;
         sendJson(response, 200, await execute(body.operation, (signal) => {
           const modelRunId = requiredString(body.modelRunId, 128);
           const modelRunToolCallId = requiredString(body.modelRunToolCallId, 128);
           return runWithContext({ run_id: modelRunId, tool_call_id: modelRunToolCallId }, () => input.runtime.callBoundTool({
             arguments: toolArguments,
+            ...(invocationId ? { invocationId } : {}),
             modelRunId,
             modelRunToolCallId,
             originalName: toolName,

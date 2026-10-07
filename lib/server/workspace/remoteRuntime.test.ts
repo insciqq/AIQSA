@@ -307,6 +307,29 @@ describe("remote Workspace runner protocol", () => {
     await request;
   });
 
+  it("carries a command's code invocation id and the run's code environment to the runner", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const callBoundTool = vi.spyOn(local, "callBoundTool").mockImplementation(async () => ({ content: [], status: "complete" }));
+    const syncPersonalSecrets = vi.spyOn(local, "syncPersonalSecrets").mockImplementation(async () => undefined);
+    const server = createWorkspaceRunnerServer({ runtime: local, token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const claim = await fetch(new URL("/v1/sessions/session_fixture/operations/claim", runnerUrl), {
+      body: JSON.stringify({ operation, runtimeSandboxId: null }),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, method: "POST"
+    });
+    await claim.arrayBuffer();
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const identity = { modelRunId: "run_fixture", operation, runtimeSandboxId: "runtime_fixture", sessionId: "session_fixture" };
+    const runEnvironment = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
+    await remote.syncPersonalSecrets({ ...identity, runEnvironment, secrets: [] });
+    expect(syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({ runEnvironment }));
+    await remote.callBoundTool({ ...identity, arguments: { command: "python3 report.py" }, invocationId: "a".repeat(32),
+      modelRunToolCallId: "call_fixture", originalName: "sandbox_shell" });
+    expect(callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ invocationId: "a".repeat(32) }));
+  });
+
   it("carries a worst-case escaped tool result at any accepted bound and names a larger one exactly", async () => {
     const local = new DeterministicWorkspaceRuntime(deterministicConfig);
     let text = "";

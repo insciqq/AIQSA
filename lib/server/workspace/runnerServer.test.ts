@@ -86,6 +86,34 @@ describe("Workspace runner lifecycle diagnostics", () => {
     expect(getContext()).toBeUndefined();
   });
 
+  it("passes a code invocation id and run environment only in their exact shapes", async () => {
+    const callBoundTool = vi.fn(async () => ({ content: [], status: "complete" as const }));
+    const syncPersonalSecrets = vi.fn(async () => undefined);
+    const request = fixture({ callBoundTool, syncPersonalSecrets, stopSession: vi.fn(async () => undefined),
+      ensureSession: vi.fn(async () => ({ runtimeSandboxId: "sandbox_fixture", sandboxName: body.sandboxName, state: "ready" as const })) });
+    await request("/v1/sessions/ensure", body);
+    const tool = (invocationId: unknown) => request(`/v1/sessions/${sessionId}/tools/sandbox_shell/call`,
+      { operation: body.operation, arguments: { command: "python3 report.py" }, runtimeSandboxId: "sandbox_fixture",
+        modelRunId: "server_run", modelRunToolCallId: "server_call", ...(invocationId === undefined ? {} : { invocationId }) });
+    expect((await tool("e".repeat(32))).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(callBoundTool).toHaveBeenLastCalledWith(expect.objectContaining({ invocationId: "e".repeat(32) }));
+    expect((await tool(undefined)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(callBoundTool).toHaveBeenLastCalledWith(expect.not.objectContaining({ invocationId: expect.anything() }));
+    for (const invalid of ["E".repeat(32), "e".repeat(31), 1, null]) {
+      expect((await tool(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+    }
+    expect(callBoundTool).toHaveBeenCalledTimes(2);
+    const secrets = (runEnvironment: unknown) => request(`/v1/sessions/${sessionId}/secrets`, { operation: body.operation,
+      secrets: [], modelRunId: "server_run", runtimeSandboxId: "sandbox_fixture", ...(runEnvironment === undefined ? {} : { runEnvironment }) });
+    const bearer = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
+    expect((await secrets(bearer)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ runEnvironment: bearer }));
+    for (const invalid of [{ ...bearer, AIQSA_GATEWAY_URL: "https://attacker.example" }, { PATH: "/tmp" }, "AIQSA_RUN_TOKEN=x"]) {
+      expect((await secrets(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+    }
+    expect(syncPersonalSecrets).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { code: "workspace_session_create_failed" as const, status: 400, level: "error", outcome: "failed" },
     { code: "workspace_operation_stale" as const, status: 409, level: "info", outcome: "stale" },
