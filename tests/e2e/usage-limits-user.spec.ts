@@ -36,7 +36,7 @@ async function setSpend(micros: number): Promise<void> {
   if (micros > 0) {
     await prisma.usageEvent.create({ data: {
       estimatedCostMicros: micros, inputTokens: 1_000, modelId: FIXTURE_MODEL, outputTokens: 100, provider: "openai",
-      totalTokens: 1_100, usageCompleteness: "COMPLETE", userId
+      purpose: "chat_answer", totalTokens: 1_100, usageCompleteness: "COMPLETE", userId
     } });
   }
 }

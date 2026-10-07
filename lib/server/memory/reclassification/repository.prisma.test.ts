@@ -299,6 +299,7 @@ async function createReclassificationExecution(
         outputTokens: 2,
         provider: "fixture-provider",
         providerModelId: "reclass-model-v1",
+        purpose: "memory_processing",
         reasoningTokens: 0,
         totalTokens: 7,
         userId

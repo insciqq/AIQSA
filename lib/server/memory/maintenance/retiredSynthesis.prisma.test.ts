@@ -96,7 +96,7 @@ async function succeededBinding(userId: string, jobId: string): Promise<string> 
     usageCompleteness: "UNAVAILABLE", userId
   } });
   await prisma.usageEvent.create({ data: { memoryExecutionBindingId: id, modelId: "memory-retired-model",
-    provider: "openai_compatible", providerModelId: "memory-retired-model", userId } });
+    provider: "openai_compatible", providerModelId: "memory-retired-model", purpose: "memory_processing", userId } });
   return id;
 }
 

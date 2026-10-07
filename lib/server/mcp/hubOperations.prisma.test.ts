@@ -13,7 +13,7 @@ async function legacyDiscoveryAttempt(authority: { userId: string; clientId: str
     connectionId: "fixture-connection", providerModelId: "fixture-model", credentialVersionId: "fixture-credential-version",
     expiresAt: data.expiresAt, ...(data.state ? { state: data.state } : {}), ...(data.createdAt ? { createdAt: data.createdAt } : {}),
     ...(data.state === "COMPLETE" ? { completedAt: data.createdAt ?? new Date(), revision: 1 } : {}),
-    usageEvent: { create: { mcpHubDiscovery: true, userId: authority.userId, modelId: "fixture-router", provider: "openai",
+    usageEvent: { create: { mcpHubDiscovery: true, purpose: "other", userId: authority.userId, modelId: "fixture-router", provider: "openai",
       providerModelId: "fixture-model", ...(data.totalTokens ? { inputTokens: data.totalTokens - 2, outputTokens: 2, reasoningTokens: 0,
         totalTokens: data.totalTokens, usageCompleteness: "COMPLETE" as const } : {}) } }
   } });

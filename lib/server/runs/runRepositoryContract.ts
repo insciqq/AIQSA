@@ -19,6 +19,7 @@ import type { ModelRunStatus } from "../../contracts/runs";
 import type { ImageFailureEvidence } from "../images/errors";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ModelTokenPricing } from "../../domain/usage";
+import type { RunUsageAttributionPurpose } from "../../domain/usagePurpose";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type {
   McpDiscoveryState,
@@ -516,6 +517,8 @@ export type RunUsageAttribution = {
   estimatedCostMicros?: number | null;
   modelId: string;
   provider: string;
+  /** What the attributed call paid for; set where the attribution is produced. */
+  purpose: RunUsageAttributionPurpose;
   usage: ModelRunUsage;
 };
 

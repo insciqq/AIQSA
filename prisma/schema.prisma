@@ -275,6 +275,25 @@ enum TokenUsageCompleteness {
   UNAVAILABLE
 }
 
+/// What a usage record paid for, chosen by its writer (lib/domain/usagePurpose.ts).
+enum UsagePurpose {
+  chat_answer
+  web_search
+  image_generation
+  chat_title
+  chat_summary
+  chat_vision
+  chat_pdf
+  skill_selection
+  memory_processing
+  memory_indexing
+  memory_retrieval
+  knowledge_indexing
+  knowledge_retrieval
+  model_check
+  other
+}
+
 enum ModelRunToolCallState {
   pending
   running
@@ -5225,6 +5244,8 @@ model UsageEvent {
   chatPdfPageAttempt               ChatPdfPageAttempt?            @relation(fields: [chatPdfPageAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   id                              String                         @id @default(uuid())
   userId                          String
+  /// No default: every writer chooses. Previous-release inserts are classified by a database trigger.
+  purpose                         UsagePurpose
   chatId                          String?
   modelRunId                      String?
   projectId                       String?

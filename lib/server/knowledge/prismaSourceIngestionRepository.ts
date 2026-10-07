@@ -826,6 +826,7 @@ export function createPrismaKnowledgeSourceIngestionRepository(
               ...storedTokenUsage(input.batch.usage),
               modelId: input.batch.modelId,
               provider: input.batch.provider,
+              purpose: "knowledge_indexing",
               userId: input.ownerUserId
             }
           });

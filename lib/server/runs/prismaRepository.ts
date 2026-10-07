@@ -114,6 +114,7 @@ import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { createPrismaRunAnswerOperations, persistCompletedAnswerUsage } from "./prismaRepositoryAnswer";
+import { runAttributionUsageWhere, storedRunAttributionPurpose } from "./prismaRepositoryUsage";
 import { createPrismaRunFollowupOperations, runFollowupSelect, runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
 import { projectRunFollowups } from "./runFollowups";
 import { decodeRunFollowupState } from "../../contracts/runFollowups";
@@ -1903,18 +1904,19 @@ export function createPrismaRunRepository(
           operationCount: true,
           outputTokens: true,
           provider: true,
+          purpose: true,
           reasoningTokens: true,
           totalTokens: true,
           usageCompleteness: true
         },
-        where: { chatPdfPreparation: false, imageGeneration: false, chatTitleGeneration: false, visionAnalysis: false,
-          knowledgeRelevance: false, optionalDecision: false, modelRunId: input.runId, userId: input.userId }
+        where: { ...runAttributionUsageWhere(input.runId), userId: input.userId }
       }).catch(retainRunPrismaCode);
       return rows.map((row) => ({
         estimatedCostMicros: row.estimatedCostMicros,
         modelId: row.modelId,
         operationCount: row.operationCount,
         provider: row.provider,
+        purpose: storedRunAttributionPurpose(row.purpose),
         recordedAt: row.createdAt.toISOString(),
         usage: {
           cachedInputTokens: row.cachedInputTokens,

@@ -90,6 +90,7 @@ import {
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type { RunRepository } from "./runRepositoryContract";
+import { runAttributionUsageRows, runAttributionUsageWhere } from "./prismaRepositoryUsage";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
 import { decodeToolHistorySnapshot } from "./toolHistoryContract";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -2285,30 +2286,10 @@ export function createPrismaRunToolLoopOperations(
           return false;
         }
 
-        await tx.usageEvent.deleteMany({
-          where: {
-            chatPdfPreparation: false, imageGeneration: false, visionAnalysis: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
-            modelRunId: input.runId
-          }
-        });
+        await tx.usageEvent.deleteMany({ where: runAttributionUsageWhere(input.runId) });
         if (usageAttributions.length > 0) {
           await tx.usageEvent.createMany({
-            data: usageAttributions.map((attribution) => ({
-              chatId: input.chatId,
-              operationCount: attribution.operationCount ?? null,
-              cachedInputTokens: attribution.usage.cachedInputTokens,
-              cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
-              estimatedCostMicros: attribution.estimatedCostMicros ?? null,
-              inputTokens: attribution.usage.inputTokens,
-              modelId: attribution.modelId,
-              modelRunId: input.runId,
-              outputTokens: attribution.usage.outputTokens,
-              provider: attribution.provider,
-              reasoningTokens: attribution.usage.reasoningTokens,
-              totalTokens: attribution.usage.totalTokens,
-              usageCompleteness: attribution.usage.completeness === "complete" ? "COMPLETE" : attribution.usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE",
-              userId: input.userId
-            }))
+            data: runAttributionUsageRows({ chatId: input.chatId, runId: input.runId, userId: input.userId }, usageAttributions)
           });
         }
         if (usageAccountedToolCallIds.length > 0) {
@@ -2461,29 +2442,9 @@ export function createPrismaRunToolLoopOperations(
         }, memorySourceHooks);
 
         if (usageAttributions.length > 0) {
-          await tx.usageEvent.deleteMany({
-            where: {
-              chatPdfPreparation: false, imageGeneration: false, visionAnalysis: false, chatTitleGeneration: false, knowledgeRelevance: false, optionalDecision: false,
-              modelRunId: input.runId
-            }
-          });
+          await tx.usageEvent.deleteMany({ where: runAttributionUsageWhere(input.runId) });
           await tx.usageEvent.createMany({
-            data: usageAttributions.map((attribution) => ({
-              chatId: run.chatId,
-              operationCount: attribution.operationCount ?? null,
-              cachedInputTokens: attribution.usage.cachedInputTokens,
-              cacheWriteInputTokens: attribution.usage.cacheWriteInputTokens,
-              estimatedCostMicros: attribution.estimatedCostMicros ?? null,
-              inputTokens: attribution.usage.inputTokens,
-              modelId: attribution.modelId,
-              modelRunId: input.runId,
-              outputTokens: attribution.usage.outputTokens,
-              provider: attribution.provider,
-              reasoningTokens: attribution.usage.reasoningTokens,
-              totalTokens: attribution.usage.totalTokens,
-              usageCompleteness: attribution.usage.completeness === "complete" ? "COMPLETE" : attribution.usage.completeness === "partial" ? "PARTIAL" : "UNAVAILABLE",
-              userId: run.userId
-            }))
+            data: runAttributionUsageRows({ chatId: run.chatId, runId: input.runId, userId: run.userId }, usageAttributions)
           });
         }
 

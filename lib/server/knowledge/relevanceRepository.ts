@@ -62,7 +62,8 @@ export function createKnowledgeRelevanceRepository(db: PrismaClient): KnowledgeR
           estimatedCostMicros: receipt?.usage.costUsd == null ? null : Math.round(receipt.usage.costUsd * 1_000_000),
           usageCompleteness: receipt ? "COMPLETE" as const : "UNAVAILABLE" as const };
         await tx.usageEvent.upsert({ where: { knowledgeRelevanceAttemptId: id }, update: usage,
-          create: { ...usage, knowledgeRelevance: true, knowledgeRelevanceAttemptId: id, userId: owner.userId, modelRunId: owner.runId,
+          create: { ...usage, knowledgeRelevance: true, knowledgeRelevanceAttemptId: id, purpose: "knowledge_retrieval",
+            userId: owner.userId, modelRunId: owner.runId,
             chatId: attempt.reservation.modelRun.chatId, projectId: attempt.reservation.modelRun.chat.projectId,
             provider: snapshot.providerFamily, providerModelId: snapshot.providerModelId, modelId: snapshot.model.upstreamModelId,
             operationCount: 1 } });

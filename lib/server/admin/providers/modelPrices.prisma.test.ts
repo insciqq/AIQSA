@@ -151,7 +151,7 @@ describe("Prisma admin model prices", () => {
         usage: { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 } };
       const earlier = await usageWithEstimatedCost(repository, input);
       expect(earlier.estimatedCostMicros).toBe(450);
-      const receipt = await prisma.usageEvent.create({ data: { userId, provider: input.provider, modelId: input.modelId,
+      const receipt = await prisma.usageEvent.create({ data: { userId, purpose: "chat_answer", provider: input.provider, modelId: input.modelId,
         inputTokens: 1000, outputTokens: 100, totalTokens: 1100, usageCompleteness: "COMPLETE", estimatedCostMicros: earlier.estimatedCostMicros } });
       for (const field of ["inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"] as const) {
         await f.save({ mode: "manual", prices: { ...prices, [field]: null } });

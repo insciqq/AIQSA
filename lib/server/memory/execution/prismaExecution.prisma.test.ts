@@ -457,6 +457,7 @@ describe("Prisma Memory execution", () => {
         outputTokens: null,
         provider: "openai_compatible",
         providerModelId: fixture.modelId,
+        purpose: "memory_indexing",
         reasoningTokens: null,
         totalTokens: fakeResult.usage.totalTokens
       });

@@ -2587,7 +2587,7 @@ describe("run recovery", () => {
       providers: { openai: { buildRequestPreview: () => ({}), stream } }
     });
     harness.repository.loadRunUsageAttributions = async () => [{ operationCount: 1, modelId: "gpt-test", provider: "openai",
-      usage: { inputTokens: 11, outputTokens: 1 }, recordedAt: "2026-07-12T09:00:00.000Z" }];
+      purpose: "chat_answer", usage: { inputTokens: 11, outputTokens: 1 }, recordedAt: "2026-07-12T09:00:00.000Z" }];
 
     await refreshProviderRunIfNeeded(harness.deps, runId, userId);
 
@@ -4334,6 +4334,7 @@ describe("run recovery", () => {
     }, [{
       modelId: "embedding-model",
       provider: "test",
+      purpose: "knowledge_retrieval",
       recordedAt: "2026-07-12T09:02:00.000Z",
       usage: { inputTokens: 2, outputTokens: 0, reasoningTokens: 0 }
     }]);
@@ -5005,6 +5006,7 @@ describe("run recovery", () => {
             operationCount: 1, estimatedCostMicros: 110,
             modelId: "gpt-test",
             provider: "openai",
+            purpose: "chat_answer",
             usage: { completeness: "complete" as const,
               cachedInputTokens: null,
               cacheWriteInputTokens: null,
@@ -5879,8 +5881,8 @@ describe("run recovery", () => {
         compaction: { measurement: measurement("already_fits"), summary, summaryAttempts: [{ attempt: 1,
           bindingDigest: "f".repeat(64), id: "csa1_committed", sourceDigest: summary.sourceDigest, state: "committed",
           usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 } }] },
-        persistedUsage: [{ modelId: "gpt-test", operationCount: 2, provider: "openai", recordedAt: "2026-07-12T09:00:00.000Z",
-          usage: { ...roundOne, inputTokens: 1_000, outputTokens: 50, totalTokens: 1_050 } }],
+        persistedUsage: [{ modelId: "gpt-test", operationCount: 2, provider: "openai", purpose: "chat_answer",
+          recordedAt: "2026-07-12T09:00:00.000Z", usage: { ...roundOne, inputTokens: 1_000, outputTokens: 50, totalTokens: 1_050 } }],
         providerToolMessages: [
           { arguments: "{\"value\":\"alpha\"}", call_id: "provider-call-1", name: recoveryToolName, type: "function_call" },
           openAIResponsesToolBridge.appendToolResult(undefined, toolResult(1)) as ToolLoopJsonValue
@@ -6053,7 +6055,7 @@ describe("run recovery", () => {
       calls: [{ ...persistedRecoveryCall("complete"), result: toolResult(1) as unknown as ToolLoopJsonValue }],
       compaction: { measurement: measurement("needs_summary"), summary, summaryAttempts: [committedSummary] },
       historyChars: 30_000,
-      persistedUsage: [{ modelId: "gpt-test", operationCount: input.operationCount, provider: "openai",
+      persistedUsage: [{ modelId: "gpt-test", operationCount: input.operationCount, provider: "openai", purpose: "chat_answer",
         recordedAt: "2026-07-12T09:00:00.000Z", usage: input.persistedUsage }],
       phase: "provider_running",
       providerToolMessages: [],
@@ -6636,7 +6638,7 @@ describe("run recovery", () => {
       assistantText: "Available ",
       normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
     }, [{
-      modelId: "gpt-test", provider: "openai", recordedAt: "2026-07-12T09:00:00.000Z",
+      modelId: "gpt-test", provider: "openai", purpose: "chat_answer", recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 8, outputTokens: 8, reasoningTokens: 0 }
     }]);
     harness.repository.getRunControlForUser = async () => control(harness.state.run);
@@ -7708,6 +7710,7 @@ describe("run recovery", () => {
     }, [{
       modelId: "search-model-1",
       provider: "openai_compatible",
+      purpose: "web_search",
       recordedAt: "2026-07-12T09:02:00.000Z",
       usage: { inputTokens: 5, outputTokens: 6, reasoningTokens: 0 }
     }]);
@@ -8396,6 +8399,7 @@ describe("run recovery", () => {
     }, [{
       modelId: selected.modelId!,
       provider: selected.provider,
+      purpose: "web_search",
       recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 4, outputTokens: 5, reasoningTokens: 0 }
     }]);
@@ -9366,7 +9370,7 @@ describe("run recovery", () => {
     harness.repository.loadRunUsageAttributions = async (input) => [
       ...await loadUsage(input),
       {
-        modelId: "router-model", provider: "openai", recordedAt: "2026-09-06T10:00:00.000Z",
+        modelId: "router-model", provider: "openai", purpose: "chat_answer", recordedAt: "2026-09-06T10:00:00.000Z",
         usage: { inputTokens: 4, outputTokens: 1, reasoningTokens: 0 }
       }
     ];
@@ -9505,6 +9509,7 @@ describe("run recovery", () => {
       [{
         modelId: "gpt-test",
         provider: "openai",
+        purpose: "chat_answer",
         recordedAt: "2026-07-12T09:00:00.000Z",
         usage: { inputTokens: 7, outputTokens: 1, reasoningTokens: 0 }
       }]
@@ -9632,10 +9637,12 @@ describe("run recovery", () => {
       providerToolMessages: [],
       roundIndex: 2
     }), [{
-      // The grouped row also includes 3 input and 4 output tokens consumed by
-      // a tool which intentionally uses the same provider/model as the answer.
+      // A row recorded before attributions carried a purpose (backfilled as
+      // answer usage) also includes 3 input and 4 output tokens consumed by a
+      // tool which intentionally uses the same provider/model as the answer.
       modelId: "gpt-test",
       provider: "openai",
+      purpose: "chat_answer",
       recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 12, outputTokens: 6, reasoningTokens: 0, totalTokens: 18 }
     }]);
@@ -9664,6 +9671,52 @@ describe("run recovery", () => {
         })
       ],
       version: 2
+    });
+  });
+
+  it("keeps a same-model Search attribution out of the saved answer rounds", async () => {
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
+      events: [],
+      result: {
+        finalProviderResponsePreview: {},
+        finalText: "Recovered after round two",
+        providerResponseId: "response-round-2",
+        usage: { inputTokens: 2, outputTokens: 3, reasoningTokens: 0, totalTokens: 5 }
+      },
+      status: "completed",
+      terminal: true
+    }));
+    const harness = createHarness({ providers: { openai: providerWithRefresh(refresh) } });
+    const round = (roundIndex: number, inputTokens: number, outputTokens: number) => ({
+      completeness: roundIndex === 1 ? "terminal" as const : "partial" as const, roundIndex,
+      usage: { completeness: "complete" as const, cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens, outputTokens,
+        reasoningTokens: 0, totalTokens: inputTokens + outputTokens }
+    });
+    installCheckpointState(harness, checkpointedRun({
+      answerRoundUsage: [round(1, 7, 1), round(2, 2, 1)],
+      phase: "provider_running",
+      providerResponseId: "response-round-2",
+      providerToolMessages: [],
+      roundIndex: 2
+    }), [{
+      modelId: "gpt-test", provider: "openai", purpose: "chat_answer", recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 9, outputTokens: 2, reasoningTokens: 0, totalTokens: 11 }
+    }, {
+      // Search through the answer's own model is its own attribution.
+      modelId: "gpt-test", provider: "openai", purpose: "web_search", recordedAt: "2026-07-12T09:00:00.000Z",
+      usage: { inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 }
+    }]);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(harness.state.completed).toMatchObject({
+      usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+      usageAttributions: [
+        { modelId: "gpt-test", provider: "openai", purpose: "web_search",
+          usage: expect.objectContaining({ inputTokens: 3, outputTokens: 4, totalTokens: 7 }) },
+        { modelId: "gpt-test", provider: "openai", purpose: "chat_answer",
+          usage: expect.objectContaining({ inputTokens: 9, outputTokens: 4, totalTokens: 13 }) }
+      ]
     });
   });
 
@@ -9698,6 +9751,7 @@ describe("run recovery", () => {
     }), [{
       modelId: "gpt-test",
       provider: "openai",
+      purpose: "chat_answer",
       recordedAt: "2026-07-12T09:00:00.000Z",
       usage: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0, totalTokens: 6 }
     }]);

@@ -226,6 +226,7 @@ function createFixtureStatementClassifier(authority: Readonly<{
             outputTokens: 0,
             provider: "openai_compatible",
             providerModelId: authority.modelId,
+            purpose: "memory_indexing",
             reasoningTokens: 0,
             totalTokens: 0,
             userId: execution.userId

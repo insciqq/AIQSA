@@ -300,7 +300,8 @@ describe("Knowledge budget reservation PostgreSQL serialization", () => {
       await Promise.all([relevance.settle(relevanceOwner, decisionId, late), relevance.settle(relevanceOwner, decisionId, late)]);
       const recoveredUsage = await prisma.usageEvent.findUniqueOrThrow({ where: { knowledgeRelevanceAttemptId: decisionId } });
       expect(recoveredUsage).toMatchObject({ id: unavailableUsage.id, inputTokens: 80, outputTokens: 20, totalTokens: 100,
-        estimatedCostMicros: 17, usageCompleteness: "COMPLETE", knowledgeRelevance: true, modelRunId: run.id, userId });
+        estimatedCostMicros: 17, usageCompleteness: "COMPLETE", knowledgeRelevance: true, purpose: "knowledge_retrieval",
+        modelRunId: run.id, userId });
       expect(await prisma.knowledgeRelevanceAttempt.findUnique({ where: { id: decisionId } })).toMatchObject({
         state: "settled", usefulness: null, failureCode: "knowledge_relevance_cancelled" });
       expect(await relevance.start(decisionInput)).toBeNull();

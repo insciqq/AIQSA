@@ -219,6 +219,7 @@ describe("run finalization", () => {
           estimatedCostMicros: 49,
           modelId: "fake-qsa",
           provider: "fake",
+          purpose: "chat_answer",
           usage: {
             completeness: "complete",
       cachedInputTokens: 0,

@@ -447,6 +447,7 @@ export function createPrismaKnowledgeBulkEmbeddingRepository(
             ...storedTokenUsage(input.usage),
             modelId: input.modelId,
             provider: input.provider,
+            purpose: "knowledge_indexing",
             userId: input.ownerUserId
           }
         });

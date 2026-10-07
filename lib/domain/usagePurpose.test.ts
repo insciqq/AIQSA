@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  PERSONAL_USAGE_PURPOSES, SYSTEM_USAGE_PURPOSES, USAGE_PURPOSES,
-  isPersonalUsagePurpose, isUsagePurpose, memoryRoleUsagePurpose
+  PERSONAL_USAGE_PURPOSES, RUN_USAGE_ATTRIBUTION_PURPOSES, SYSTEM_USAGE_PURPOSES, USAGE_PURPOSES,
+  isPersonalUsagePurpose, isRunUsageAttributionPurpose, isUsagePurpose, memoryRoleUsagePurpose
 } from "./usagePurpose";
 
 describe("usage purpose", () => {
@@ -17,6 +17,14 @@ describe("usage purpose", () => {
     expect(isUsagePurpose("knowledge_retrieval")).toBe(true);
     expect(isUsagePurpose("background")).toBe(false);
     expect(isUsagePurpose(null)).toBe(false);
+  });
+
+  it("limits a run's own attributions to its answer, Search and Knowledge query purposes", () => {
+    expect(RUN_USAGE_ATTRIBUTION_PURPOSES.every(isUsagePurpose)).toBe(true);
+    expect(RUN_USAGE_ATTRIBUTION_PURPOSES.filter(isRunUsageAttributionPurpose)).toEqual(["chat_answer", "web_search", "knowledge_retrieval"]);
+    for (const purpose of ["image_generation", "chat_title", "chat_vision", "chat_pdf", "skill_selection", "memory_retrieval", undefined]) {
+      expect(isRunUsageAttributionPurpose(purpose)).toBe(false);
+    }
   });
 
   it("maps Memory roles to indexing, retrieval or processing", () => {

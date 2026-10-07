@@ -57,6 +57,7 @@ import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivation
 import { DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION, dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql } from "./drop-retired-memory-digest-synthesis-storage-adoption";
 import { RETIRE_MEMORY_DIGESTS_MIGRATION, retireMemoryDigestsFixtureSql, retireMemoryDigestsProofSql } from "./retire-memory-digests-adoption";
 import { RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION, retireDreamSynthesisStagingFixtureSql, retireDreamSynthesisStagingProofSql } from "./retire-dream-synthesis-staging-adoption";
+import { USAGE_EVENT_PURPOSE_MIGRATION, usageEventPurposeFixtureSql, usageEventPurposeProofSql } from "./usage-event-purpose-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7745,6 +7746,8 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION,
     dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql,
     dropRetiredMemoryDigestSynthesisStorageProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, USAGE_EVENT_PURPOSE_MIGRATION,
+    usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

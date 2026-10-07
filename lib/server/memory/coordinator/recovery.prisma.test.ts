@@ -113,7 +113,7 @@ describe("Memory terminal recovery persistence", () => {
           recoverableUntil: new Date(f.now.getTime() + 86400_000)
         } });
         if (state === "SUCCEEDED") await prisma.usageEvent.create({ data: {
-          memoryExecutionBindingId: binding.id, modelId: authority.providerModelId,
+          memoryExecutionBindingId: binding.id, modelId: authority.providerModelId, purpose: "memory_processing",
           provider: "openai_compatible", providerModelId: authority.providerModelId, userId: f.userId
         } });
       }
@@ -468,7 +468,7 @@ describe("Memory terminal recovery persistence", () => {
         recoverableUntil: state === "RUNNING" ? null : new Date(f.now.getTime() + 86400_000)
       } });
       if (options.receipt ?? state !== "RUNNING") await prisma.usageEvent.create({ data: {
-        memoryExecutionBindingId: created.id, modelId: authority.providerModelId,
+        memoryExecutionBindingId: created.id, modelId: authority.providerModelId, purpose: "memory_processing",
         provider: "openai_compatible", providerModelId: authority.providerModelId, userId: f.userId
       } });
     };

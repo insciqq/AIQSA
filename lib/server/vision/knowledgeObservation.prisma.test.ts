@@ -81,7 +81,7 @@ describe("Knowledge image observation persistence", () => {
     expect(await f.store.load(f.context)).toEqual({ kind: "unknown" });
     expect(await f.store.dispatch(f.context, destination, json(images))).toEqual({ kind: "unknown" });
     const receipt = await f.db.usageEvent.findUniqueOrThrow({ where: { knowledgeImageObservationRunId: f.context.runId } });
-    expect(receipt).toMatchObject({ visionAnalysis: true, modelRunId: f.context.runId, chatId: f.context.chatId,
+    expect(receipt).toMatchObject({ visionAnalysis: true, purpose: "knowledge_indexing", modelRunId: f.context.runId, chatId: f.context.chatId,
       providerModelId: f.plan.vision.authority.providerModelId, inputTokens: null, usageCompleteness: "UNAVAILABLE" });
     const observation = { text: "A poster whose headline is set in a script typeface.", truncated: false };
     const signal = new AbortController().signal;
