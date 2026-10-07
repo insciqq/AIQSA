@@ -27,7 +27,8 @@ const created: ScheduledTask = {
   id: "task-1", title: "Check mail", prompt: body.prompt, schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1",
   searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [],
-  chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null,
+  chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 0, historyNextDeletionAt: null, status: "active",
+  pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null,
   running: false, chatId: null, unseenResult: false, revision: 1, createdAt: now.toISOString(), updatedAt: now.toISOString()
 };
 const providerCall = { id: "provider-call-1", name: CREATE_SCHEDULED_TASK_TOOL_NAME };
