@@ -39,6 +39,17 @@ describe("run attribution usage rows", () => {
       [{ modelId: "answer", provider: "openai", purpose: "chat_answer", usage }])[0]).not.toHaveProperty("projectId");
   });
 
+  it("records the deployment an attribution names, so a reranker row keeps its model", () => {
+    const [rerank, answer] = runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" }, [
+      { modelId: "voyageai/rerank-2.5", provider: "openrouter", providerModelId: "reranker-deployment",
+        purpose: "knowledge_retrieval", usage: normalizeTokenUsage({ totalTokens: 2 }), estimatedCostMicros: 0 },
+      { modelId: "answer", provider: "openai", purpose: "chat_answer", usage }
+    ]);
+    expect(rerank).toMatchObject({ providerModelId: "reranker-deployment", purpose: "knowledge_retrieval",
+      estimatedCostMicros: 0, totalTokens: 2, usageCompleteness: "PARTIAL" });
+    expect(answer).toMatchObject({ providerModelId: null, purpose: "chat_answer" });
+  });
+
   it("refuses a stored purpose that is not a run attribution", () => {
     expect(storedRunAttributionPurpose("knowledge_retrieval")).toBe("knowledge_retrieval");
     for (const value of ["chat_title", "memory_retrieval", null]) {

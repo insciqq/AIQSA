@@ -1,4 +1,4 @@
-import { storedTokenUsage } from "../usage";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { EmbeddingUsage } from "../providers/embeddings";
 import { KNOWLEDGE_EMBEDDING_BATCH_SIZE } from "./chunking";
@@ -445,8 +445,14 @@ export function createPrismaKnowledgeBulkEmbeddingRepository(
           data: {
             id: input.usageEventId,
             ...storedTokenUsage(input.usage),
+            estimatedCostMicros: providerModelUsageCostMicros({
+              basis: await loadProviderModelCostBasis(tx, input.embeddingProviderModelId),
+              reportedCostUsd: input.usage.costUsd ?? null,
+              usage: input.usage
+            }),
             modelId: input.modelId,
             provider: input.provider,
+            providerModelId: input.embeddingProviderModelId,
             purpose: "knowledge_indexing",
             userId: input.ownerUserId
           }

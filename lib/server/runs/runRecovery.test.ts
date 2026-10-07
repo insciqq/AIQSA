@@ -631,6 +631,7 @@ function createHarness(options: Readonly<{
           }
         : options.pricing;
     },
+    loadProviderModelCostBasis: async () => null,
     loadRunUsageAttributions: async () => [],
     persistToolLoopCallBatch: async () => ({ kind: "not_found" }),
     recordRunUsageEvents: async (input) => {

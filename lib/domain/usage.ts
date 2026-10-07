@@ -148,8 +148,11 @@ export function estimateCostMicros(usage: TokenUsage, pricing: ModelTokenPricing
 }
 
 /** Exact half-up micro-dollars of a reported USD amount, read as the shortest
- * decimal that round-trips the number (the provider's own JSON text). */
-function reportedCostMicros(usd: number): number | null {
+ * decimal that round-trips the number (the provider's own JSON text); null
+ * when the amount is invalid or unrepresentable. Rule 1 of
+ * {@link usageCostMicros}, for writers that price unreported usage later:
+ * Memory settlement and a run's attribution rows. */
+export function reportedCostMicros(usd: number): number | null {
   // Also excludes NaN and Infinity; 2148 USD is beyond the int32 column.
   if (!(usd >= 0 && usd < 2_148)) return null;
   const match = /^(\d+)(?:\.(\d+))?(?:e([+-]\d+))?$/u.exec(String(usd));

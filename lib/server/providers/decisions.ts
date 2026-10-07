@@ -14,6 +14,7 @@ import {
 } from "./providerCredentialSource";
 import { observeJsonParse, observeProviderDeadline, observeProviderFetch, observeProviderOperation } from "./providerObservability";
 import { createProviderSafeFetch } from "./providerSafeFetch";
+import { reportedUsageCostUsd } from "./reportedUsageCost";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 
 // Transport allocation bounds, matching the existing rerank envelope. They
@@ -41,6 +42,8 @@ export type DecisionAnswer = Readonly<{ type: "noul"; noul: number }> | Readonly
 export type DecisionUsage = Readonly<{
   inputTokens: number;
   outputTokens: number;
+  /** USD this decision cost as OpenRouter reported it
+   * (`reportedUsageCostUsd`); null when it reported no usable cost. */
   costUsd: number | null;
 }>;
 export type DecisionReceipt = Readonly<{
@@ -124,17 +127,18 @@ function requestQuestions(value: unknown): Record<string, DecisionQuestion> {
 
 function parseReceipt(body: Record<string, unknown>, headerId: string | null): DecisionReceipt {
   const usage = body.usage;
+  const costUsd = record(usage) ? reportedUsageCostUsd(usage) : null;
   if (!identifier(body.model) || !identifier(body.provider) || !record(usage) ||
     !Number.isSafeInteger(usage.input_tokens) || Number(usage.input_tokens) < 0 ||
     !Number.isSafeInteger(usage.output_tokens) || Number(usage.output_tokens) < 0 ||
-    usage.cost !== undefined && (typeof usage.cost !== "number" || !Number.isFinite(usage.cost) || usage.cost < 0)) {
+    costUsd === null) {
     throw new DecisionAdapterError("decision_response_invalid");
   }
   return {
     model: body.model, provider: body.provider,
     requestId: identifier(body.id) ? body.id : identifier(headerId) ? headerId : null,
     usage: { inputTokens: Number(usage.input_tokens), outputTokens: Number(usage.output_tokens),
-      costUsd: typeof usage.cost === "number" ? usage.cost : null }
+      costUsd: costUsd ?? null }
   };
 }
 

@@ -2761,6 +2761,27 @@ describe("Prisma-backed run repository", () => {
     }
   });
 
+  it("resolves a Knowledge deployment's own class and stored prices by its id", async () => {
+    const connectionId = `repo-cost-basis-${randomUUID()}`;
+    const modelId = `${connectionId}-embedding`;
+    await prisma.providerConnection.create({ data: { displayName: "Cost basis connection", family: "openrouter", id: connectionId } });
+    await prisma.providerModel.create({ data: { capabilities: {}, connectionId, defaultParams: {},
+      displayName: "Cost basis embedding", id: modelId, inputTokenPriceUsdPerMillion: 0.13,
+      modelClass: "embedding", modelId: "qwen/qwen3-embedding-8b", provider: "openrouter" } });
+    try {
+      const repository = createPrismaRunRepository(prisma);
+      await expect(repository.loadProviderModelCostBasis(modelId)).resolves.toEqual({
+        modelClass: "embedding",
+        pricing: { inputTokenPriceUsdPerMillion: 0.13, cachedInputTokenPriceUsdPerMillion: null,
+          cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null }
+      });
+      await expect(repository.loadProviderModelCostBasis(`${modelId}-deleted`)).resolves.toBeNull();
+    } finally {
+      await prisma.providerModel.deleteMany({ where: { id: modelId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    }
+  });
+
   it("reports whether concrete Search routes are enabled", async () => {
     const enabledStrategyId = `repo-test-enabled-${randomUUID()}`;
     const revisionId = `repo-test-revision-${randomUUID()}`;
