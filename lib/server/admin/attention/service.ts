@@ -13,7 +13,9 @@ import type { AdminSearchCatalog } from "../../../contracts/adminSearch";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import type { AdminEmailState } from "../../../contracts/email";
 import { adminMcpAttention, type AdminMcpServer } from "../../../contracts/mcp";
+import type { AdminHealthQueueFinding } from "../health/queues";
 import { healthAttentionItems, type HealthFinding } from "./healthRules";
+import { queueAttentionItems } from "./queueRules";
 
 export type AdminAttentionDashboardInput = Pick<AdminDashboard, "users">;
 
@@ -35,6 +37,8 @@ export type AdminAttentionSources = Readonly<{
   assistants?(actingAdminUserId: string): Promise<number>;
   /** Health telemetry rules evaluated at read time. */
   health?(): Promise<readonly HealthFinding[]>;
+  /** Stalled background queues that no other source watches. */
+  queues?(): Promise<readonly AdminHealthQueueFinding[]>;
 }>;
 
 export type AdminAttentionInputs = Readonly<{
@@ -50,6 +54,7 @@ export type AdminAttentionInputs = Readonly<{
   skills?: number | null;
   assistants?: number | null;
   health?: readonly HealthFinding[] | null;
+  queues?: readonly AdminHealthQueueFinding[] | null;
 }>;
 
 export type AdminAttentionService = Readonly<{
@@ -464,6 +469,7 @@ export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAt
     ...(inputs.dashboard ? dashboardItems(inputs.dashboard, inputs.actingAdminUserId) : []),
     ...(inputs.providers ? providerItems(inputs.providers) : []),
     ...(inputs.health ? healthAttentionItems(inputs.health, inputs.providers) : []),
+    ...(inputs.queues ? queueAttentionItems(inputs.queues) : []),
     ...(inputs.search ? searchItems(inputs.search, inputs.providers) : []),
     ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles).filter((item) =>
       item.target.resource !== "memory" || !inputs.memory?.processing.issues.some((issue) =>
@@ -501,7 +507,7 @@ export function createAdminAttentionService(input: Readonly<{
           return null;
         }
       }
-      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills, assistants, health] = await Promise.all([
+      const [dashboard, providers, search, systemRoles, knowledge, memory, mcp, email, skills, assistants, health, queues] = await Promise.all([
         load("dashboard", () => sources.dashboard(actingAdminUserId)),
         load("providers", () => sources.providers()),
         load("search", () => sources.search(actingAdminUserId)),
@@ -512,7 +518,8 @@ export function createAdminAttentionService(input: Readonly<{
         load("email", () => sources.email()),
         sources.skills ? load("skills", () => sources.skills!(actingAdminUserId)) : Promise.resolve(0),
         sources.assistants ? load("assistants", () => sources.assistants!(actingAdminUserId)) : Promise.resolve(0),
-        sources.health ? load("health", () => sources.health!()) : Promise.resolve(null)
+        sources.health ? load("health", () => sources.health!()) : Promise.resolve(null),
+        sources.queues ? load("queues", () => sources.queues!()) : Promise.resolve(null)
       ]);
       return {
         checkedAt: now().toISOString(),
@@ -528,7 +535,8 @@ export function createAdminAttentionService(input: Readonly<{
           systemRoles,
           skills,
           assistants,
-          health
+          health,
+          queues
         }),
         unavailable
       };

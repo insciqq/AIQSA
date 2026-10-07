@@ -26,6 +26,7 @@ const sourceLabel: Record<AdminAttentionSource, string> = {
   mcp: "MCP servers",
   memory: "Memory",
   providers: "providers",
+  queues: "background queues",
   search: "Search",
   skills: "Skills",
   system_roles: "system roles"
