@@ -271,29 +271,32 @@ export function UsageSpendChart({ bucket, metric, series, timeZone }: UsageSpend
           </li>
         ))}
       </ul>
-      <table className="sr-only">
-        <caption>{metric === "cost" ? "Estimated cost" : "Tokens"} per {unit} by source</caption>
-        <thead>
-          <tr>
-            <th scope="col">{unit === "month" ? "Month" : "Day"}</th>
-            {USAGE_CATEGORY_ORDER.map((category) => (
-              <th key={category} scope="col">{USAGE_CATEGORY_META[category].label}</th>
-            ))}
-            <th scope="col">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {series.map((point, index) => (
-            <tr key={point.start}>
-              <th scope="row">{formatBucketDate(point.start, timeZone, bucket, true)}</th>
+      {/* A table cannot shrink below its content, so the wrapper carries the visually hidden clip. */}
+      <div className="sr-only">
+        <table>
+          <caption>{metric === "cost" ? "Estimated cost" : "Tokens"} per {unit} by source</caption>
+          <thead>
+            <tr>
+              <th scope="col">{unit === "month" ? "Month" : "Day"}</th>
               {USAGE_CATEGORY_ORDER.map((category) => (
-                <td key={category}>{formatMetricValue(metric, pointValue(point, category, metric))}</td>
+                <th key={category} scope="col">{USAGE_CATEGORY_META[category].label}</th>
               ))}
-              <td>{formatMetricValue(metric, totals[index] ?? 0)}</td>
+              <th scope="col">Total</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {series.map((point, index) => (
+              <tr key={point.start}>
+                <th scope="row">{formatBucketDate(point.start, timeZone, bucket, true)}</th>
+                {USAGE_CATEGORY_ORDER.map((category) => (
+                  <td key={category}>{formatMetricValue(metric, pointValue(point, category, metric))}</td>
+                ))}
+                <td>{formatMetricValue(metric, totals[index] ?? 0)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
