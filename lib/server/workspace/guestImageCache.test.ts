@@ -12,11 +12,12 @@ import {
 const sdk = vi.hoisted(() => {
   class ImageInUseError extends Error {}
   class ImageNotFoundError extends Error {}
-  return { ImageInUseError, ImageNotFoundError, get: vi.fn(), list: vi.fn(), remove: vi.fn() };
+  return { ImageInUseError, ImageNotFoundError, get: vi.fn(), list: vi.fn(), listSandboxes: vi.fn(), remove: vi.fn() };
 });
 
 vi.mock("microsandbox", () => ({
   Image: { get: sdk.get, list: sdk.list, remove: sdk.remove },
+  Sandbox: { listWith: sdk.listSandboxes },
   ImageInUseError: sdk.ImageInUseError,
   ImageNotFoundError: sdk.ImageNotFoundError
 }));
@@ -32,7 +33,8 @@ type CachedEntry = Readonly<{ createdAt?: number; digest: string | null; layers?
  * manifests own layer files, and an existing sandbox's root disk pins its
  * manifest so that no reference to it can be removed without force.
  */
-function fakeCache(entries: readonly CachedEntry[], pinnedDigests: readonly string[] = []) {
+function fakeCache(entries: readonly CachedEntry[], pinnedDigests: readonly string[] = [],
+  sandboxImages: readonly Readonly<{ manifestDigest: string | null; reference: string | null }>[] = []) {
   const references = new Map(entries.map((entry) => [entry.reference, entry]));
   const manifests = new Map(entries.flatMap((entry) => entry.digest ? [[entry.digest, entry.layers ?? [`${entry.digest}-layer`]] as const] : []));
   const layerFiles = new Set([...manifests.values()].flat());
@@ -59,7 +61,8 @@ function fakeCache(entries: readonly CachedEntry[], pinnedDigests: readonly stri
         for (const layer of [...layerFiles]) if (!live.has(layer)) layerFiles.delete(layer);
       }
       return "removed" as const;
-    })
+    }),
+    sandboxImages: vi.fn(async () => sandboxImages)
   } satisfies WorkspaceImageStore;
   return { layerFiles, references, store };
 }
@@ -68,6 +71,7 @@ beforeEach(() => {
   vi.mocked(logEvent).mockClear();
   sdk.get.mockReset();
   sdk.list.mockReset();
+  sdk.listSandboxes.mockReset();
   sdk.remove.mockReset();
 });
 
@@ -89,6 +93,32 @@ describe("Workspace guest image eviction", () => {
       ["aiqsa-workspace:0.1.29", "aiqsa-workspace:0.1.30", WORKSPACE_DEFAULT_IMAGE_REF, "python:3.12"]);
     expect([...cache.layerFiles].sort()).toEqual(["sha256:m29-layer", "sha256:m30-layer", "sha256:m31-layer", "sha256:other-layer"]);
     expect(cache.store.remove.mock.calls.map(([reference]) => reference)).toEqual(["aiqsa-workspace:0.1.28", "aiqsa-workspace:0.1.29"]);
+  });
+
+  it("keeps a guest that any sandbox record names, even one whose first boot never bound a disk", async () => {
+    const entries = [
+      { createdAt: 1, digest: "sha256:m27", reference: "aiqsa-workspace:0.1.27" },
+      { createdAt: 2, digest: "sha256:m28", reference: "aiqsa-workspace:0.1.28" },
+      { createdAt: 3, digest: "sha256:m29", reference: "aiqsa-workspace:0.1.29" },
+      { createdAt: 4, digest: "sha256:m30", reference: "aiqsa-workspace:0.1.30" }
+    ];
+    // The runtime would let both go: no disk pins either manifest.
+    const cache = fakeCache(entries, [], [
+      { manifestDigest: null, reference: "aiqsa-workspace:0.1.27" },
+      { manifestDigest: "sha256:m28", reference: "registry.example/guest:renamed" }
+    ]);
+
+    await expect(evictUnusedWorkspaceImages({ imageRef: WORKSPACE_DEFAULT_IMAGE_REF, store: cache.store })).resolves.toEqual({
+      candidates: 3, deferred: 0, failed: 0, inUse: 2, outcome: "completed", removed: 1
+    });
+    expect(cache.store.remove.mock.calls.map(([reference]) => reference)).toEqual(["aiqsa-workspace:0.1.29"]);
+    expect([...cache.references.keys()]).toEqual(["aiqsa-workspace:0.1.27", "aiqsa-workspace:0.1.28", "aiqsa-workspace:0.1.30"]);
+
+    const unlisted = fakeCache(entries);
+    unlisted.store.sandboxImages.mockRejectedValueOnce(new Error("database locked"));
+    await expect(evictUnusedWorkspaceImages({ imageRef: WORKSPACE_DEFAULT_IMAGE_REF, store: unlisted.store }))
+      .resolves.toMatchObject({ outcome: "degraded", removed: 0 });
+    expect(unlisted.store.remove).not.toHaveBeenCalled();
   });
 
   it("keeps aliases of a custom configured image and evicts both repositories' older versions", async () => {
@@ -236,6 +266,37 @@ describe("Microsandbox guest image store", () => {
     await expect(store.remove("aiqsa-workspace:0.1.30")).resolves.toBe("missing");
     await expect(store.remove("aiqsa-workspace:0.1.30")).rejects.toThrow("disk i/o");
     expect(sdk.remove.mock.calls.every(([, options]) => options?.force === false)).toBe(true);
+  });
+
+  it("reads every sandbox record's image across pages and refuses unreadable or unbounded inventories", async () => {
+    const record = (config: unknown) => ({ configJson: typeof config === "string" ? config : JSON.stringify(config) });
+    const pages = [
+      { nextCursor: "page-2", sandboxes: [
+        record({ image: { Oci: { reference: "aiqsa-workspace:0.1.29", rootDisk: { kind: "managed" } } }, manifestDigest: null }),
+        record({ image: { Bind: "/srv/rootfs" }, manifestDigest: null })
+      ] },
+      { sandboxes: [record({ image: { Oci: { reference: "aiqsa-workspace:0.1.30" } }, manifestDigest: "sha256:m30" })] }
+    ];
+    const requests: Record<string, unknown>[] = [];
+    sdk.listSandboxes.mockImplementation(async (configure: (list: unknown) => unknown) => {
+      const options: Record<string, unknown> = {};
+      const list = { cursor: (value: string) => { options.cursor = value; return list; }, limit: (value: number) => { options.limit = value; return list; } };
+      configure(list);
+      requests.push(options);
+      return pages[requests.length - 1];
+    });
+    const store = createMicrosandboxImageStore();
+    await expect(store.sandboxImages()).resolves.toEqual([
+      { manifestDigest: null, reference: "aiqsa-workspace:0.1.29" },
+      { manifestDigest: "sha256:m30", reference: "aiqsa-workspace:0.1.30" }
+    ]);
+    expect(requests).toEqual([{ limit: 100 }, { cursor: "page-2", limit: 100 }]);
+    sdk.listSandboxes.mockReset();
+
+    sdk.listSandboxes.mockResolvedValueOnce({ sandboxes: [record("{not json")] });
+    await expect(store.sandboxImages()).rejects.toThrow();
+    sdk.listSandboxes.mockResolvedValue({ nextCursor: "again", sandboxes: [] });
+    await expect(store.sandboxImages()).rejects.toThrow("workspace_sandbox_inventory_too_large");
   });
 
   it("maps cached handles and treats only a missing image as absent", async () => {
