@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetFileLibraryStoreForTest } from "@/components/app-shell/fileLibraryStore";
 import { SavedFilePickerV2 } from "./SavedFilePickerV2";
-import { SaveFileButtonV2 } from "./SaveFileButtonV2";
+import { FileActionsMenuV2 } from "./FileActionsMenuV2";
 
 const saved = {
   byteSize: 2048, chatId: null, chatTitle: null, createdAt: "2026-09-05T00:00:00.000Z",
@@ -51,11 +51,18 @@ describe("saved file controls", () => {
       .mockResolvedValueOnce(Response.json({ attachment: { fileName: saved.fileName, id: saved.id, kind: "file", status: "ready" } }))
       .mockResolvedValueOnce(Response.json({ nextCursor: null, files: [saved] }));
     vi.stubGlobal("fetch", fetch);
-    render(<SaveFileButtonV2 attachmentId="source-file" />);
-    fireEvent.click(screen.getByRole("button", { name: "Save file" }));
+    render(<FileActionsMenuV2 attachmentId="source-file" fileName="Application.docx" />);
+    const trigger = screen.getByRole("button", { name: "More actions for Application.docx" });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save to Files" }));
+    expect(trigger).toHaveFocus();
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not save");
-    fireEvent.click(screen.getByRole("button", { name: "Save file" }));
-    expect(await screen.findByRole("button", { name: "Saved" })).toBeDisabled();
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save to Files" }));
+    expect(await screen.findByText("Saved")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    expect(screen.getByRole("menuitem", { name: "Saved to Files" })).toBeDisabled();
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
   });
 });

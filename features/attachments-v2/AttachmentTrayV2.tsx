@@ -130,6 +130,7 @@ export function AttachmentTrayV2({
 
   if (items.length === 0) return null;
   const capacity = usage ? attachmentCapacityCopyV2(usage) : null;
+  const privacyNote = sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you.";
   const listStyle = listLayout.maxHeightPx === null
     ? undefined
     : {
@@ -138,16 +139,29 @@ export function AttachmentTrayV2({
 
   return (
     <section className="v2-attachment-tray" aria-label="Attachments">
-      {capacity ? (
-        <div
-          className="v2-attachment-capacity"
-          data-tone={usage?.tone}
-          role={usage?.blocking ? "alert" : usage?.tone === "caution" ? "status" : undefined}
+      <div className="v2-attachment-tray-head">
+        {capacity ? (
+          <div
+            className="v2-attachment-capacity"
+            data-tone={usage?.tone}
+            role={usage?.blocking ? "alert" : usage?.tone === "caution" ? "status" : undefined}
+          >
+            <strong>{capacity.summary}</strong>
+            {capacity.detail ? <span>{capacity.detail}</span> : null}
+          </div>
+        ) : null}
+        {/* Privacy stays a quiet note in the head row: a short visible word for
+            touch, the full sentence as its accessible name and tooltip. */}
+        <p
+          aria-label={privacyNote}
+          className="v2-attachment-privacy"
+          role="note"
+          title={privacyNote}
         >
-          <strong>{capacity.summary}</strong>
-          {capacity.detail ? <span>{capacity.detail}</span> : null}
-        </div>
-      ) : null}
+          <UiV2Icon name="lock" />
+          <span aria-hidden="true">{sharedProject ? "Project members" : "Only you"}</span>
+        </p>
+      </div>
       <ul
         aria-label="Attached files"
         className="v2-attachment-list"
@@ -205,16 +219,6 @@ export function AttachmentTrayV2({
           </li>
         ))}
       </ul>
-      {/* Privacy disclosure stays reachable as a quiet tooltip/AT note instead
-          of a permanent line; the capability menu keeps the full sentence. */}
-      <p
-        aria-label={sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."}
-        className="v2-attachment-privacy"
-        role="note"
-        title={sharedProject ? "Files are visible to Project members." : "Files are private and visible only to you."}
-      >
-        <UiV2Icon name="lock" />
-      </p>
     </section>
   );
 }

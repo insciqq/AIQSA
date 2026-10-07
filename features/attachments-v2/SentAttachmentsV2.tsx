@@ -4,7 +4,7 @@ import { ChatImageV2 } from "./ChatImageV2";
 import type { ThreadAttachmentBlock } from "@/components/app-shell/threadContent";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import { UiV2Icon } from "@/components/ui-v2";
-import { SaveFileButtonV2 } from "./SaveFileButtonV2";
+import { FileActionsMenuV2 } from "./FileActionsMenuV2";
 
 /**
  * Quiet owner-only line of sent attachments under the user-bubble text. It
@@ -34,7 +34,7 @@ export function SentAttachmentsV2({ blocks, canSave = false }: Readonly<{
           >
             {block.label}
           </a>
-          {canSave ? <SaveFileButtonV2 attachmentId={block.attachmentId} /> : null}
+          {canSave ? <FileActionsMenuV2 attachmentId={block.attachmentId} fileName={block.label} /> : null}
           </>}
         </li>
       ))}
