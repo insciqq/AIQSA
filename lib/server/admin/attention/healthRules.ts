@@ -419,7 +419,7 @@ function operationLabel(operation: HealthTimedOperation): string {
  */
 export function healthAttentionItems(
   findings: readonly HealthFinding[],
-  connections: readonly AdminProviderConnection[] | null
+  connections: readonly Pick<AdminProviderConnection, "displayName" | "enabled" | "id">[] | null
 ): AdminAttentionItem[] {
   const items: AdminAttentionItem[] = [];
   for (const finding of findings) {
