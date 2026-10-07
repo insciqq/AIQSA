@@ -97,13 +97,32 @@ describe("Prisma telemetry store", () => {
       { cursor: "not-a-cursor" },
       { cursor: Buffer.from(JSON.stringify(["2026-10-07T10:00:00.000Z", "'; DROP"])).toString("base64url") },
       { runId: "run id" },
+      { runIdPrefix: "3f2a9c1" },
+      { runIdPrefix: "3F2A9C1E" },
+      { runIdPrefix: "3f2a9c1e%" },
       { traceId: "0".repeat(31) },
       { levels: ["warn"] },
       { limit: 201 }
     ]) {
       await expect(store.readIncidents(query as never)).rejects.toBeInstanceOf(TelemetryQueryError);
     }
+    for (const runIds of [[], ["run id"], Array.from({ length: 65 }, (_, index) => `run-${index}`)]) {
+      await expect(store.countIncidentsByRun(runIds)).rejects.toBeInstanceOf(TelemetryQueryError);
+    }
     expect(db.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("matches a run reference through a bounded id range and counts incidents per run", async () => {
+    const prefixed = fakeDatabase([]);
+    await prefixed.store.readIncidents({ runIdPrefix: "3f2a9c1e" });
+    const statement = prefixed.statements[0]!;
+    expect(statement.text).toMatch(/"runId" >= \$1 AND "runId" < \$2 AND starts_with\("runId", \$3\)/u);
+    expect(statement.values.slice(0, 3)).toEqual(["3f2a9c1e", "3f2a9c1eg", "3f2a9c1e"]);
+
+    const counted = fakeDatabase([{ runId: "run-1", count: 3n }, { runId: "run-2", count: 1n }]);
+    await expect(counted.store.countIncidentsByRun(["run-1", "run-2", "run-3"]))
+      .resolves.toEqual(new Map([["run-1", 3], ["run-2", 1]]));
+    expect(counted.statements[0]!.values).toEqual([["run-1", "run-2", "run-3"]]);
   });
 
   it("returns numeric groups for the requested keys and pages incidents newest first", async () => {

@@ -182,6 +182,12 @@ describe("admin health incidents", () => {
     }));
     await service.incidents({ ...filters, event: "run_execution", q: "run-42" });
     expect(telemetry.readIncidents).toHaveBeenLastCalledWith(expect.objectContaining({ events: ["run_execution"], runId: "run-42" }));
+    // An error reference matches every run id starting with it; a whole UUID stays exact.
+    await service.incidents({ ...filters, q: "3F2A9C1E" });
+    expect(telemetry.readIncidents).toHaveBeenLastCalledWith(expect.objectContaining({ runIdPrefix: "3f2a9c1e" }));
+    expect(telemetry.readIncidents.mock.lastCall?.[0]).not.toHaveProperty("runId");
+    await service.incidents({ ...filters, q: "3F2A9C1E-7B4D-4E8A-9C21-5D6E7F809A1B" });
+    expect(telemetry.readIncidents).toHaveBeenLastCalledWith(expect.objectContaining({ runId: "3f2a9c1e-7b4d-4e8a-9c21-5d6e7f809a1b" }));
     telemetry.readIncidents.mockClear();
     await expect(service.incidents({ ...filters, event: "run_execution", category: "tools" })).resolves.toEqual({ incidents: [], nextCursor: null });
     expect(telemetry.readIncidents).not.toHaveBeenCalled();
