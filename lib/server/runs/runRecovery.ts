@@ -1861,6 +1861,8 @@ async function executePersistedToolCallInContext(
   let result: ToolExecutionResult;
   let fatalToolError: ToolLoopRecoveryError | null = null;
   let resultSettled = false;
+  // A thrown Knowledge operation bills its paid calls through its failure result.
+  let knowledgeExecutionThrew = false;
   const finishResult = async (result: ToolExecutionResult): Promise<ToolExecutionResult> => {
     if (resultSettled) return result;
     result = context.skillResultBudget.accept(result);
@@ -2237,6 +2239,7 @@ async function executePersistedToolCallInContext(
       fatalToolError = new ToolLoopRecoveryError(error.code, error.message);
       result = toolExecutionErrorResult(call, error);
     } else {
+      knowledgeExecutionThrew = isRecoveredKnowledgeCall(context, call.name);
       result = toolExecutionErrorResult(
         call,
         error,
@@ -2253,8 +2256,10 @@ async function executePersistedToolCallInContext(
 
   result = await finishResult(result);
   if (isRecoveredKnowledgeCall(context, call.name) && result.status === "error") {
+    // A returned result was accounted when it arrived; a thrown operation's
+    // failure result bills the paid calls it made, as in the live run.
     recordRecoveredKnowledgeResult({
-      callId: call.id, context, includeUsage: false, modelRunToolCallId: persisted.id, result
+      callId: call.id, context, includeUsage: knowledgeExecutionThrew, modelRunToolCallId: persisted.id, result
     });
   }
   if (fatalToolError) throw fatalToolError;

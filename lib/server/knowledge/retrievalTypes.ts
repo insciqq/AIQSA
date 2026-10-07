@@ -479,6 +479,18 @@ export type KnowledgeSourceDiscoveryResult = Readonly<{
   sources: readonly KnowledgeDiscoveredSourceEvidence[];
 }>;
 
+/** One paid call of a Knowledge operation as its usage row needs it: the
+ * deployment, the reported tokens and the provider-reported cost (null when
+ * it reported none). */
+export type KnowledgeBilledCall = Readonly<{
+  costUsd: number | null;
+  inputTokens: number | null;
+  modelId: string;
+  provider: string;
+  providerModelId: string;
+  totalTokens: number | null;
+}>;
+
 export type KnowledgeRetrievalUsageAttribution = Readonly<{
   /** Micro-dollars the provider reported for the call. Absent when it reported
    * none: the run's attribution row is then priced from the deployment. */

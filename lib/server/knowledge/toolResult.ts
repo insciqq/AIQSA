@@ -13,6 +13,7 @@ import {
   KNOWLEDGE_SEARCH_UNAVAILABLE_QUERY,
   KNOWLEDGE_SCOPE_MAX_BINDINGS,
   type KnowledgeBaseRetrievalEvidence,
+  type KnowledgeBilledCall,
   type KnowledgeEvidenceScopeAlias,
   type KnowledgeEmbeddingExecutionEvidence,
   type KnowledgeExactMatchEvidence,
@@ -1640,14 +1641,7 @@ export function knowledgeEvidenceFromToolResult(
   return evidenceFromPreview(result);
 }
 
-function retrievalAttribution(call: Readonly<{
-  costUsd: number | null;
-  inputTokens: number | null;
-  modelId: string;
-  provider: string;
-  providerModelId: string;
-  totalTokens: number | null;
-}>): KnowledgeRetrievalUsageAttribution {
+function retrievalAttribution(call: KnowledgeBilledCall): KnowledgeRetrievalUsageAttribution {
   return {
     // Only a reported cost is settled here; the attribution row prices the rest.
     ...(call.costUsd === null ? {} : { estimatedCostMicros: reportedCostMicros(call.costUsd) }),
@@ -1659,22 +1653,70 @@ function retrievalAttribution(call: Readonly<{
   };
 }
 
+/** A query embedding execution as its usage row bills it. */
+export function knowledgeEmbeddingBilledCall(execution: KnowledgeEmbeddingExecutionEvidence): KnowledgeBilledCall {
+  return {
+    costUsd: execution.costUsd ?? null,
+    inputTokens: execution.inputTokens,
+    modelId: execution.modelId,
+    provider: execution.provider,
+    providerModelId: execution.providerModelId,
+    totalTokens: execution.totalTokens
+  };
+}
+
+const BILLED_CALL_KEYS = "costUsd,inputTokens,modelId,provider,providerModelId,totalTokens";
+/** One query embedding and one reranker call per operation, with headroom. */
+const MAX_FAILURE_BILLED_CALLS = 4;
+
+function decodeBilledCall(value: unknown): KnowledgeBilledCall | null {
+  if (!isRecord(value) || Object.keys(value).sort().join(",") !== BILLED_CALL_KEYS) return null;
+  const count = (field: unknown) => field === null ? null : nonNegativeInteger(field);
+  const inputTokens = count(value.inputTokens);
+  const totalTokens = count(value.totalTokens);
+  const modelId = boundedString(value.modelId, 512);
+  const provider = boundedString(value.provider, 256);
+  const providerModelId = boundedString(value.providerModelId, 512);
+  const costUsd = value.costUsd;
+  if (inputTokens === null && value.inputTokens !== null || totalTokens === null && value.totalTokens !== null ||
+    !modelId || !provider || !providerModelId ||
+    costUsd !== null && (typeof costUsd !== "number" || !Number.isFinite(costUsd) || costUsd < 0)) return null;
+  return { costUsd: costUsd as number | null, inputTokens, modelId, provider, providerModelId, totalTokens };
+}
+
+/**
+ * The paid calls a failed Knowledge operation carries to its failure result,
+ * validated for durable storage: the bounded list, or null when any call is
+ * malformed.
+ */
+export function knowledgeFailureBilledCalls(values: readonly unknown[]): KnowledgeBilledCall[] | null {
+  if (values.length > MAX_FAILURE_BILLED_CALLS) return null;
+  const calls = values.map(decodeBilledCall);
+  return calls.every((call) => call !== null) ? calls as KnowledgeBilledCall[] : null;
+}
+
+/** Paid calls recorded by a Knowledge failure result (`knowledgeFailure`
+ * preview, version 1); empty for any other result. */
+function failureResultBilledCalls(result: ToolExecutionResult): KnowledgeBilledCall[] {
+  const failure = result.status === "error" ? result.rawPreview?.knowledgeFailure : undefined;
+  if (!isRecord(failure) || failure.version !== 1 || !Array.isArray(failure.billedCalls)) return [];
+  return knowledgeFailureBilledCalls(failure.billedCalls) ?? [];
+}
+
 /** The paid calls one Knowledge operation made, as run usage attributions:
  * each query embedding and the hosted reranker call, with their deployment,
- * reported tokens and reported cost. */
+ * reported tokens and reported cost. A failed operation's result carries the
+ * calls that returned a response before it failed. */
 export function knowledgeUsageAttributionsFromToolResult(
   result: ToolExecutionResult
 ): KnowledgeRetrievalUsageAttribution[] {
   const evidence = evidenceFromPreview(result);
-  if (!evidence) return [];
+  if (!evidence) return failureResultBilledCalls(result).map(retrievalAttribution);
   const rerank = evidence.rerankerBinding?.version === KNOWLEDGE_RERANKER_EVIDENCE_VERSION
     ? knowledgeRerankerBilledCall(evidence.rerankerBinding)
     : null;
   return [
-    ...evidence.embeddingExecutions.map((execution) => retrievalAttribution({
-      ...execution,
-      costUsd: execution.costUsd ?? null
-    })),
+    ...evidence.embeddingExecutions.map((execution) => retrievalAttribution(knowledgeEmbeddingBilledCall(execution))),
     ...(rerank ? [retrievalAttribution(rerank)] : [])
   ];
 }

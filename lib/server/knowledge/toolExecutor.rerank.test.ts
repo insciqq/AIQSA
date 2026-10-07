@@ -25,6 +25,9 @@ import {
   knowledgeUsageAttributionsFromToolResult
 } from "./toolResult";
 import type { ProviderRunRequest } from "../providers/types";
+import { EmbeddingAdapterError } from "../providers/embeddings";
+import { RerankAdapterError } from "../providers/rerank";
+import { knowledgeSearchFailureToolResult } from "./searchFailure";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
@@ -661,5 +664,98 @@ describe("Knowledge executor hosted rerank wiring", () => {
         selectedProviderModelId: null
       })
     })).toBeNull();
+  });
+});
+
+describe("Knowledge paid responses the operation rejected", () => {
+  const embeddingCall = { estimatedCostMicros: 2, modelId: "embedding-upstream", provider: "openai_compatible",
+    providerModelId: "embedding-model-1", purpose: "knowledge_retrieval", usage: { inputTokens: 2, totalTokens: 2 } };
+  const rerankCall = { estimatedCostMicros: 4, modelId: "qwen/qwen3-reranker-8b", provider: "openrouter",
+    providerModelId: "reranker-deployment-1", purpose: "knowledge_retrieval", usage: { inputTokens: null, totalTokens: 120 } };
+  const rerankUsage = { costUsd: 0.0000042, inputTokens: null, searchUnits: null, totalTokens: 120 };
+
+  function pricedEmbeddingRuntime(embed: () => Promise<unknown>) {
+    return { resolve: vi.fn(async () => ({ adapter: { embed: vi.fn(embed) }, configuration: embeddingConfiguration,
+      provider: "openai_compatible", providerModelId: "embedding-model-1" })) } as never;
+  }
+  const embedded = async () => ({ model: "embedding-upstream", requestId: "embedding-request-1",
+    usage: { costUsd: 0.000002, inputTokens: 2, totalTokens: 2 }, vectors: [Array.from({ length: 1_024 }, () => 0.03125)] });
+  const pool = [{ chunkId: "chunk-1", headingPath: [], sourceName: "Source", text: "one" },
+    { chunkId: "chunk-2", headingPath: [], sourceName: "Source", text: "two" }];
+
+  /** The failure result runs settle for a thrown operation, as recovery reads it back. */
+  async function failureAttributions(execute: Promise<unknown>) {
+    const error = await execute.then(() => { throw new Error("operation_unexpectedly_succeeded"); }, (caught: unknown) => caught);
+    const failed = knowledgeSearchFailureToolResult(call(), error);
+    const stored = parsePersistedToolExecutionResult(call(),
+      snapshotToolExecutionResult(failed, toolLoopPersistenceLimits.resultBytes)!);
+    expect(stored).toEqual(failed);
+    return knowledgeUsageAttributionsFromToolResult(stored!);
+  }
+
+  it("bills a query embedding response the adapter rejected once, though the operation fails", async () => {
+    const hybridSearch = vi.fn<KnowledgeRetrievalStore["hybridSearch"]>();
+    const { store: retrievalStore } = store(hybridSearch);
+    const embed = vi.fn(async () => {
+      throw new EmbeddingAdapterError("embedding_response_model_mismatch",
+        { usage: { costUsd: 0.000002, inputTokens: 2, totalTokens: 2 } });
+    });
+    const runtime = createKnowledgeToolExecutor({ embeddingRuntime: pricedEmbeddingRuntime(embed), store: retrievalStore });
+    expect(await failureAttributions(runtime.execute(call(), context()))).toEqual([embeddingCall]);
+    expect(embed).toHaveBeenCalledOnce();
+    expect(hybridSearch).not.toHaveBeenCalled();
+    // A failure without a reported response stays unbilled.
+    const unreported = createKnowledgeToolExecutor({ embeddingRuntime: pricedEmbeddingRuntime(async () => {
+      throw new EmbeddingAdapterError("embedding_response_too_large");
+    }), store: retrievalStore });
+    expect(await failureAttributions(unreported.execute(call(), context()))).toEqual([]);
+  });
+
+  it("bills a reranker response the stage rejected and propagated, with the query embedding", async () => {
+    const { store: retrievalStore } = store(async (input) => {
+      await input.rerank!.executor({ candidates: pool });
+      return rerankedSearchResult();
+    });
+    const rerank = vi.fn(async () => {
+      throw new RerankAdapterError("rerank_response_provider_mismatch", { usage: rerankUsage });
+    });
+    const runtime = createKnowledgeToolExecutor({ embeddingRuntime: pricedEmbeddingRuntime(embedded), store: retrievalStore,
+      rerankerRuntime: { resolve: async () => ({ adapter: { rerank }, kind: "ready", pin }) } });
+    expect(await failureAttributions(runtime.execute(call(), context()))).toEqual([embeddingCall, rerankCall]);
+    expect(rerank).toHaveBeenCalledOnce();
+  });
+
+  it("bills a ranking whose operation fails after reranking", async () => {
+    const { store: retrievalStore } = store(async (input) => {
+      await input.rerank!.executor({ candidates: pool });
+      throw new Error("knowledge_canonical_source_provenance_invalid");
+    });
+    const rerank = vi.fn(async () => ({ model: "qwen/qwen3-reranker-8b", provider: "Together", requestId: "rerank-1",
+      scores: [{ handle: "chunk-1", index: 0, relevanceScore: 0.9 }, { handle: "chunk-2", index: 1, relevanceScore: 0.2 }],
+      usage: rerankUsage }));
+    const runtime = createKnowledgeToolExecutor({ embeddingRuntime: pricedEmbeddingRuntime(embedded), store: retrievalStore,
+      rerankerRuntime: { resolve: async () => ({ adapter: { rerank }, kind: "ready", pin }) } });
+    expect(await failureAttributions(runtime.execute(call(), context()))).toEqual([embeddingCall, rerankCall]);
+  });
+
+  it("bills the rejected reranker response of a degraded receipt once", async () => {
+    const base = rerankedSearchResult();
+    const { persistReceipt, store: retrievalStore } = store(async (input) => {
+      const stage = await input.rerank!.executor({ candidates: pool });
+      return { ...base, passages: base.passages.map(({ rerankScore: _rerankScore, ...passage }) => passage),
+        rerankerBinding: stage.evidence };
+    });
+    const runtime = createKnowledgeToolExecutor({ embeddingRuntime: pricedEmbeddingRuntime(embedded), store: retrievalStore,
+      rerankerRuntime: { resolve: async () => ({ adapter: { rerank: vi.fn(async () => {
+        throw new RerankAdapterError("rerank_response_invalid", { usage: rerankUsage });
+      }) }, kind: "ready", pin }) } });
+    const result = await runtime.execute(call(), context());
+    expect(persistReceipt.mock.calls[0]![0].evidence.rerankerBinding).toMatchObject({
+      fallbackReason: "rerank_response_invalid", status: "degraded", usage: rerankUsage });
+    const stored = parsePersistedToolExecutionResult(call(),
+      snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)!);
+    for (const settled of [result, stored!]) {
+      expect(knowledgeUsageAttributionsFromToolResult(settled)).toEqual([embeddingCall, rerankCall]);
+    }
   });
 });
