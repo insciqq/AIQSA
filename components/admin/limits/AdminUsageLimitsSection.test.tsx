@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdminUsageLimits, AdminUsageLimitUserRow, EffectiveUsageLimit, UsageUserLimits } from "@/lib/contracts/usageLimits";
+import type { AdminUsageLimits, AdminUsageLimitUserRow, AdminUsageUserOverride, EffectiveUsageLimit } from "@/lib/contracts/usageLimits";
 import { AdminUsageLimitsSection } from "./AdminUsageLimitsSection";
 
 const api = vi.hoisted(() => ({
@@ -50,13 +50,15 @@ function user(
   };
 }
 
-const cyOverride: UsageUserLimits = { ...unset, exempt: false, messagesPerHour: 3, monthlyBudgetMicros: 2_000_000, userId: "u-cy" };
+const cyOverride: AdminUsageUserOverride = {
+  ...unset, exempt: false, messagesPerHour: 3, monthlyBudgetMicros: 2_000_000, userId: "u-cy", version: 21
+};
 
 const limits: AdminUsageLimits = {
   groups: [
-    { ...unset, archivedAt: null, groupId: "g-interns", memberCount: 1, monthlyBudgetMicros: 0, name: "Interns" },
-    { ...unset, archivedAt: "2026-09-01T00:00:00.000Z", groupId: "g-old", memberCount: 4, messagesPerDay: 5, name: "Old team" },
-    { ...unset, archivedAt: null, groupId: "g-research", memberCount: 2, monthlyBudgetMicros: 20_000_000, name: "Research" }
+    { ...unset, archivedAt: null, groupId: "g-interns", memberCount: 1, monthlyBudgetMicros: 0, name: "Interns", version: 11 },
+    { ...unset, archivedAt: "2026-09-01T00:00:00.000Z", groupId: "g-old", memberCount: 4, messagesPerDay: 5, name: "Old team", version: 12 },
+    { ...unset, archivedAt: null, groupId: "g-research", memberCount: 2, monthlyBudgetMicros: 20_000_000, name: "Research", version: 13 }
   ],
   installation: { ...unset, messagesPerHour: 30, monthlyBudgetMicros: 5_000_000, monthlyCapMicros: 100_000_000, version: 4 },
   installationSpentMicros: 84_500_000,
@@ -70,7 +72,7 @@ const limits: AdminUsageLimits = {
       monthlyBudgetMicros: { source: { kind: "user" }, value: 2_000_000 }
     }, { messagesLastDay: 7, messagesLastHour: 3, override: cyOverride }),
     user("Di", 9_000_000, { exempt: true, messagesPerHour: none, monthlyBudgetMicros: none },
-      { override: { ...unset, exempt: true, userId: "u-di" } }),
+      { override: { ...unset, exempt: true, userId: "u-di", version: 22 } }),
     user("Eve", 0, { monthlyBudgetMicros: { source: { groupId: "g-interns", kind: "group", name: "Interns" }, value: 0 } }),
     user("Ed", 0, {}, { status: "disabled" })
   ]
@@ -190,7 +192,9 @@ describe("AdminUsageLimitsSection", () => {
     fireEvent.change(within(sheet).getByRole("textbox", { name: "Messages per day" }), { target: { value: "40" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Allowance for Research saved."));
-    expect(api.saveGroup).toHaveBeenCalledWith("g-research", { messagesPerDay: 40, messagesPerHour: null, monthlyBudgetMicros: 20_000_000 });
+    expect(api.saveGroup).toHaveBeenCalledWith("g-research", {
+      expectedVersion: 13, messagesPerDay: 40, messagesPerHour: null, monthlyBudgetMicros: 20_000_000
+    });
     expect(screen.queryByTestId("admin-usage-group-limits-sheet")).not.toBeInTheDocument();
   });
 
@@ -208,14 +212,14 @@ describe("AdminUsageLimitsSection", () => {
     fireEvent.click(within(sheet).getByRole("switch", { name: "Exempt from per-user limits" }));
     fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.saveUser).toHaveBeenCalledWith("u-cy", {
-      exempt: true, messagesPerDay: null, messagesPerHour: 3, monthlyBudgetMicros: 2_000_000
+      exempt: true, expectedVersion: 21, messagesPerDay: null, messagesPerHour: 3, monthlyBudgetMicros: 2_000_000
     }));
     expect(reportNotice).toHaveBeenCalledWith("Limits for Cy saved.");
 
     fireEvent.click(screen.getByRole("button", { name: "Edit limits for Cy" }));
     sheet = await screen.findByTestId("admin-usage-user-limits-sheet");
     fireEvent.click(within(sheet).getByRole("button", { name: "Remove override" }));
-    await waitFor(() => expect(api.remove).toHaveBeenCalledWith("u-cy"));
+    await waitFor(() => expect(api.remove).toHaveBeenCalledWith("u-cy", 21));
     expect(reportNotice).toHaveBeenCalledWith("Override removed. Cy now follows group and default limits.");
 
     fireEvent.click(screen.getByRole("button", { name: "Edit limits for Ada" }));
@@ -223,6 +227,63 @@ describe("AdminUsageLimitsSection", () => {
     expect(within(sheet).queryByRole("button", { name: "Remove override" })).not.toBeInTheDocument();
     expect(within(sheet).getByRole("textbox", { name: "Monthly budget" }))
       .toHaveAccessibleDescription("Leave empty to inherit the default, $5.00.");
+  });
+
+  it("saves a group allowance against the version it opened with and shows a newer save as a conflict", async () => {
+    // Another administrator changes Research while this sheet is open.
+    const newer: AdminUsageLimits = {
+      ...limits,
+      groups: limits.groups.map((group) => group.groupId === "g-research"
+        ? { ...group, messagesPerHour: 15, monthlyBudgetMicros: 30_000_000, version: 14 }
+        : group)
+    };
+    api.saveGroup.mockResolvedValueOnce({ error: "usage_limits_stale", ok: false }).mockResolvedValueOnce({ limits: newer, ok: true });
+    await renderSection();
+    fireEvent.click(screen.getByRole("button", { name: "Edit allowance for Research" }));
+    const sheet = await screen.findByTestId("admin-usage-group-limits-sheet");
+    const perDay = within(sheet).getByRole("textbox", { name: "Messages per day" });
+    fireEvent.change(perDay, { target: { value: "40" } });
+    api.request.mockResolvedValue({ limits: newer, ok: true });
+    // The background refresh lands while the administrator is typing.
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(api.request).toHaveBeenCalledTimes(2));
+    expect(perDay).toHaveValue("40");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("Limits changed in another session");
+    expect(api.saveGroup).toHaveBeenLastCalledWith("g-research", expect.objectContaining({ expectedVersion: 13, messagesPerDay: 40 }));
+    expect(perDay).toHaveValue("40");
+    expect(within(sheet).getByRole("textbox", { name: "Monthly budget" })).toHaveAccessibleDescription(/^Saved: \$30\.00\./u);
+    expect(within(sheet).getByRole("textbox", { name: "Messages per hour" })).toHaveAccessibleDescription(/^Saved: 15\./u);
+
+    // Re-applying the reviewed draft saves it over the version now shown.
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Allowance for Research saved."));
+    expect(api.saveGroup).toHaveBeenLastCalledWith("g-research", {
+      expectedVersion: 14, messagesPerDay: 40, messagesPerHour: null, monthlyBudgetMicros: 20_000_000
+    });
+  });
+
+  it("creates a first allowance or override without a version and treats an override created meanwhile as a conflict", async () => {
+    api.saveUser.mockResolvedValueOnce({ error: "usage_limits_stale", ok: false });
+    await renderSection();
+    fireEvent.click(screen.getByRole("button", { name: "Edit limits for Ada" }));
+    const sheet = await screen.findByTestId("admin-usage-user-limits-sheet");
+    fireEvent.change(within(sheet).getByRole("textbox", { name: "Messages per day" }), { target: { value: "12" } });
+    const adaOverride: AdminUsageUserOverride = { ...unset, exempt: true, userId: "u-ada", version: 30 };
+    api.request.mockResolvedValue({
+      limits: { ...limits, users: limits.users.map((user) => user.userId === "u-ada" ? { ...user, override: adaOverride } : user) },
+      ok: true
+    });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("Limits changed in another session");
+    expect(api.saveUser).toHaveBeenCalledWith("u-ada", {
+      exempt: false, expectedVersion: null, messagesPerDay: 12, messagesPerHour: null, monthlyBudgetMicros: null
+    });
+    expect(await within(sheet).findByText(/Saved: exempt\./u)).toBeInTheDocument();
+    // The override saved meanwhile can be reviewed and removed at its own version.
+    api.remove.mockResolvedValueOnce({ limits, ok: true });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Remove override" }));
+    await waitFor(() => expect(api.remove).toHaveBeenCalledWith("u-ada", 30));
   });
 
   it("shows a failed load as an error with a working retry, not as an empty page", async () => {

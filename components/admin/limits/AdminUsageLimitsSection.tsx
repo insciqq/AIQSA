@@ -20,6 +20,7 @@ import { useId, useState } from "react";
 
 const topbar = { title: "Budgets & limits" };
 
+/** The row as opened; an open sheet follows the row in the latest view while it still exists. */
 type OpenSheet =
   | Readonly<{ group: AdminUsageLimitGroupRow; kind: "group" }>
   | Readonly<{ kind: "user"; user: AdminUsageLimitUserRow }>;
@@ -132,6 +133,12 @@ export function AdminUsageLimitsSection({ reportNotice }: Readonly<{ reportNotic
   const [retrying, setRetrying] = useState(false);
   const { limits, loadError, loading } = controller;
   const close = () => setSheet(null);
+  const openGroup = sheet?.kind === "group"
+    ? limits?.groups.find(({ groupId }) => groupId === sheet.group.groupId) ?? sheet.group
+    : null;
+  const openUser = sheet?.kind === "user"
+    ? limits?.users.find(({ userId }) => userId === sheet.user.userId) ?? sheet.user
+    : null;
 
   return (
     <div className="flex max-w-[1120px] min-w-0 flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
@@ -169,22 +176,22 @@ export function AdminUsageLimitsSection({ reportNotice }: Readonly<{ reportNotic
           </UiV2Button>
         </div>
       )}
-      {sheet?.kind === "group" ? (
+      {openGroup ? (
         <AdminUsageGroupLimitsSheet
           controller={controller}
-          group={sheet.group}
-          key={sheet.group.groupId}
+          group={openGroup}
+          key={openGroup.groupId}
           onClose={close}
           reportNotice={reportNotice}
         />
       ) : null}
-      {sheet?.kind === "user" ? (
+      {openUser ? (
         <AdminUsageUserLimitsSheet
           controller={controller}
-          key={sheet.user.userId}
+          key={openUser.userId}
           onClose={close}
           reportNotice={reportNotice}
-          user={sheet.user}
+          user={openUser}
         />
       ) : null}
     </div>

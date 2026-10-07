@@ -25,7 +25,7 @@ export type AdminUsageLimitsController = Readonly<{
   loadError: string | null;
   loading: boolean;
   refresh(): Promise<void>;
-  removeUser(userId: string): Promise<AdminUsageLimitsOutcome>;
+  removeUser(userId: string, expectedVersion: number | null): Promise<AdminUsageLimitsOutcome>;
   saveGroup(groupId: string, input: AdminUsageGroupLimitsInput): Promise<AdminUsageLimitsOutcome>;
   saveInstallation(input: AdminUsageInstallationLimitsInput): Promise<AdminUsageLimitsOutcome>;
   saveUser(userId: string, input: AdminUsageUserLimitsInput): Promise<AdminUsageLimitsOutcome>;
@@ -117,7 +117,7 @@ export function useAdminUsageLimits({ pollMs = 30_000 }: UseAdminUsageLimitsOpti
     loadError,
     loading,
     refresh,
-    removeUser: (userId: string) => mutate(() => removeUserUsageLimits(userId)),
+    removeUser: (userId: string, expectedVersion: number | null) => mutate(() => removeUserUsageLimits(userId, expectedVersion)),
     saveGroup: (groupId: string, input: AdminUsageGroupLimitsInput) => mutate(() => saveGroupUsageLimits(groupId, input)),
     saveInstallation: (input: AdminUsageInstallationLimitsInput) => mutate(() => saveInstallationUsageLimits(input)),
     saveUser: (userId: string, input: AdminUsageUserLimitsInput) => mutate(() => saveUserUsageLimits(userId, input))
