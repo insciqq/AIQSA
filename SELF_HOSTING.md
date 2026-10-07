@@ -77,7 +77,7 @@ If `docker compose pull` reports `pull access denied for minio/mc`, the checkout
 
 ## Health and logs
 
-Control Center → Health shows recent provider failures, server errors and background work problems. This telemetry contains no message content and is kept for 30 days inside the instance's PostgreSQL; nothing is sent elsewhere. `./aiqsa.sh doctor` checks the host, `.env` and every container.
+Control Center → Health shows recent provider failures, server errors and background work problems. This telemetry contains no message content and stays inside the instance's PostgreSQL: counters for 30 days, incidents for 14; nothing is sent elsewhere. `./aiqsa.sh doctor` checks the host, `.env` and every container.
 
 To diagnose a problem, read the telemetry first, then the logs around its incidents, then any error reference a user reports:
 
