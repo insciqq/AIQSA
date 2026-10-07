@@ -47,6 +47,7 @@ import {
 } from "./toolLoopPersistence";
 import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
+import { USAGE_MESSAGE_ADMISSION_RETENTION_MS } from "../usageLimits/repository";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
 const fakeControlKey = `${providerTemplateIds.fakeConnection}:${providerTemplateIds.fakeModel}`;
@@ -558,6 +559,46 @@ describe("Prisma-backed run repository", () => {
         title: "Atomic personal first send",
         workspaceEnabled: false
       });
+    });
+  });
+
+  it("logs every interactive send and regeneration with its run and prunes only that user's rows past 25 hours", async () => {
+    await withRunUser(async ({ userId }) => {
+      const otherUserId = `run-repository-test-${randomUUID()}`;
+      await prisma.user.create({ data: { displayName: "Other admission log user", id: otherUserId, status: "active" } });
+      try {
+        const repository = createPrismaRunRepository(prisma);
+        const log = (owner: string) => prisma.usageMessageAdmission.findMany({
+          orderBy: { createdAt: "asc" }, select: { createdAt: true }, where: { userId: owner }
+        });
+        const runCreatedAt = async (runId: string) =>
+          (await prisma.modelRun.findUniqueOrThrow({ select: { createdAt: true }, where: { id: runId } })).createdAt;
+        const stale = new Date(Date.now() - USAGE_MESSAGE_ADMISSION_RETENTION_MS - 60_000);
+        const kept = new Date(Date.now() - USAGE_MESSAGE_ADMISSION_RETENTION_MS + 60 * 60_000);
+        await prisma.usageMessageAdmission.createMany({ data: [
+          { createdAt: stale, userId }, { createdAt: kept, userId }, { createdAt: stale, userId: otherUserId }
+        ] });
+        const chat = await prisma.chat.create({
+          data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Admission log", userId }
+        });
+        const sendInput = createRunInput({ chatId: chat.id, question: "A counted send", userId });
+        const sent = await repository.createRun(sendInput);
+        // The row carries its run's creation time; only this user's rows past the retention went.
+        expect(await log(userId)).toEqual([{ createdAt: kept }, { createdAt: await runCreatedAt(sent.runId) }]);
+        expect(await log(otherUserId)).toEqual([{ createdAt: stale }]);
+
+        await prisma.modelRun.update({ data: { status: "complete" }, where: { id: sent.runId } });
+        const regenerated = await repository.createRegenerationRun(
+          createRegenerationInput(sendInput, sent.userMessageId, sent.assistantMessageId)
+        );
+        expect(await log(userId)).toEqual([
+          { createdAt: kept }, { createdAt: await runCreatedAt(sent.runId) }, { createdAt: await runCreatedAt(regenerated.runId) }
+        ]);
+      } finally {
+        await prisma.user.deleteMany({ where: { id: otherUserId } });
+      }
+      // The log goes with its account.
+      expect(await prisma.usageMessageAdmission.count({ where: { userId: otherUserId } })).toBe(0);
     });
   });
 
@@ -2406,6 +2447,8 @@ describe("Prisma-backed run repository", () => {
         await expect(prisma.mcpRunBinding.count({
           where: { runtimeGenerationId: fixture.generation.id }
         })).resolves.toBe(0);
+        // The message-limit row written with the run rolls back with it.
+        await expect(prisma.usageMessageAdmission.count({ where: { userId } })).resolves.toBe(0);
         // The failed acceptance must leave previously stored defaults intact.
         await expect(storedDefaults(userId)).resolves.toMatchObject({
           defaultControlValues: priorControlValues

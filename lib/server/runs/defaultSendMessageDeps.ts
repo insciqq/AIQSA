@@ -7,6 +7,7 @@ import { defaultInstructionPresets } from "../instructions/defaultInstructions";
 import { defaultSkillCatalogRelevance, defaultSkillRepository } from "../skills/defaultSkills";
 import { getDefaultChatPdf } from "../uploads/defaultChatPdf";
 import { createS3StorageAdapter } from "../uploads/storage";
+import { usageLimitsRepository } from "../usageLimits/defaultRepository";
 import { workspaceAdmissionService, workspaceCoordinatorForStorage } from "../workspace/defaultServices";
 import { defaultRunServices } from "./defaultRunServices";
 import { getDefaultWorkspaceFollowup } from "./defaultWorkspaceFollowup";
@@ -36,6 +37,7 @@ export function createDefaultSendMessageDeps(): Omit<RunHandlerDeps, "resolveAut
     runPolicy: installationToolBudgetPolicy,
     skills: defaultSkillRepository,
     skillCatalogRelevance: defaultSkillCatalogRelevance,
+    usageLimits: usageLimitsRepository,
     workspace: workspaceAdmissionService,
     workspaceCoordinator: workspaceCoordinatorForStorage(storage)
   };

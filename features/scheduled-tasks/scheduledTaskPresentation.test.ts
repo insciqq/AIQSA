@@ -93,6 +93,18 @@ describe("scheduled task presentation", () => {
     expect(row("superseded")).toBe("Skipped: a newer scheduled time arrived before it could start");
   });
 
+  it("explains a skip for a used-up budget in the history, quietly", () => {
+    const row = (reasonCode: string) => scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
+      trigger: "schedule", state: "skipped", reasonCode, startedAt: "2026-10-05T08:00:00.000Z", finishedAt: "2026-10-05T08:31:00.000Z",
+      chatId: null, unseen: false, unavailableSources: [] }, "Europe/London", now);
+    expect(row("usage_budget_exhausted")).toMatchObject({ outcome: "Skipped: your monthly budget was used up", tone: "neutral" });
+    expect(row("installation_budget_exhausted").outcome).toBe("Skipped: the monthly budget shared by everyone was used up");
+    const notice = scheduledTaskResultNotice(scheduledTaskFixture({ unseenResult: true, lastRun: {
+      scheduledFor: "2026-10-05T08:00:00.000Z", state: "skipped", reasonCode: "usage_budget_exhausted",
+      finishedAt: "2026-10-05T08:31:00.000Z", unseen: true } }));
+    expect(notice).toBeNull();
+  });
+
   it("summarizes hourly schedules", () => {
     expect(scheduledTaskScheduleText({ kind: "hourly", everyHours: 1, time: "00:00", until: null,
       days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }, "Europe/London", "Europe/London")).toBe("Every hour");

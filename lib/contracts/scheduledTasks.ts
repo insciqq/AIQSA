@@ -609,6 +609,10 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "previous_running": return "Skipped: the previous run was still in progress.";
     case "superseded": return "Skipped: a newer scheduled time arrived before this run could start.";
     case "chat_busy": return "Skipped: the task's chat was busy.";
+    case "usage_budget_exhausted":
+      return "Skipped: your monthly budget was used up. Runs continue after it resets or an administrator raises it.";
+    case "installation_budget_exhausted":
+      return "Skipped: the monthly budget shared by everyone was used up. Runs continue after it resets or an administrator raises it.";
     case "paused": return "Skipped: the task was paused.";
     case "admission_failed": return "The run could not start.";
     case "run_unavailable": return "The task's chat was deleted before the run finished.";

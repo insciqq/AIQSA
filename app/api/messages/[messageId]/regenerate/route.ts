@@ -12,6 +12,7 @@ import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { installationToolBudgetPolicy } from "@/lib/server/runs/toolBudgets";
 import { defaultSkillRepository, defaultSkillCatalogRelevance } from "@/lib/server/skills/defaultSkills";
 import { createS3StorageAdapter } from "@/lib/server/uploads/storage";
+import { usageLimitsRepository } from "@/lib/server/usageLimits/defaultRepository";
 import {
   workspaceAdmissionService,
   workspaceCoordinatorForStorage
@@ -36,6 +37,7 @@ export const POST: AsyncRouteHandler<ReturnType<typeof createRegenerateModelRunH
   runPolicy: installationToolBudgetPolicy,
   skills: defaultSkillRepository,
   skillCatalogRelevance: defaultSkillCatalogRelevance,
+  usageLimits: usageLimitsRepository,
   workspace: workspaceAdmissionService,
   workspaceCoordinator: workspaceCoordinatorForStorage(storage)
 });
