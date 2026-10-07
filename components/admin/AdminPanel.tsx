@@ -11,6 +11,7 @@ import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnav
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminGroupsSection } from "@/components/admin/groups/AdminGroupsSection";
+import { AdminHealthSection } from "@/components/admin/health/AdminHealthSection";
 import { AdminMcpSection } from "@/components/admin/mcp/AdminMcpSection";
 import { AdminSkillsSection } from "@/components/admin/skills/AdminSkillsSection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
@@ -125,6 +126,8 @@ function AdminSectionContent({
   switch (activeSection) {
     case "overview":
       return <AdminOverviewSection controller={attention} onJump={onJump} />;
+    case "health":
+      return <AdminHealthSection filter={navigation.activeFilter} onSelectFilter={navigation.selectFilter} />;
     case "assistants":
       return (
         <AdminAssistantsSection
