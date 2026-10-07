@@ -11,7 +11,9 @@ import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
 import { createMemoryStorageAdapter, createPooledStorageAdapter } from "@/tests/support/storage";
 import { WORKSPACE_ATTACHMENT_STORAGE_WAIT_MS } from "./attachmentAcquisition";
 import { getWorkspaceConfig } from "./config";
+import type { PrismaClient } from "@prisma/client";
 import {
+  createPrismaWorkspaceCoordinatorRepository,
   createWorkspaceCoordinator,
   type WorkspaceCoordinatorRepository,
   type WorkspaceExecutionBinding
@@ -497,7 +499,33 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
   });
 
-  it.each(["restore", "unsupported"])("never lets a scheduled run go on with an empty carried project (%s fails)", async (failure) => {
+  it("holds whichever run first restores a scheduled rotation's seed to it, the owner's own run included", async () => {
+    const seed = { byteSize: 11, checksum: "a".repeat(64), id: "seed", leaseExpiresAt: null as Date | null, newChatId: "chat_1",
+      scheduledTaskId: "task_1" as string | null, status: "TRANSFERRED", storageKey: "workspace-continuation/seed.tar.gz" };
+    const session = { chatId: "chat_1", id: "session_1", operationOwner: "run:run_owner", version: 2 };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      chatContinuationWorkspaceSeed: { findUnique: vi.fn(async () => seed), updateMany: vi.fn(async () => ({ count: 1 })) },
+      modelRun: { count: vi.fn(async () => 0) },
+      workspaceSession: { findUnique: vi.fn(async () => session) }
+    };
+    const repository = createPrismaWorkspaceCoordinatorRepository({
+      $transaction: async (work: (client: typeof tx) => Promise<unknown>) => work(tx)
+    } as unknown as PrismaClient);
+    const claim = () => repository.claimContinuationSeed!({ chatId: "chat_1", operation: { generation: 2, owner: "run:run_owner" },
+      sessionId: "session_1" });
+    // An interactive run in the new chat: required by the seed itself, never by which run claims it.
+    await expect(claim()).resolves.toMatchObject({ id: "seed", required: true });
+    expect(tx.modelRun.count).not.toHaveBeenCalled();
+    // While another run restores it, a start fails visibly instead of opening an empty project.
+    Object.assign(seed, { leaseExpiresAt: new Date(Date.now() + 60_000), status: "RESTORING" });
+    await expect(claim()).rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
+    // Deleting the task leaves an ordinary continuation seed.
+    Object.assign(seed, { leaseExpiresAt: null, scheduledTaskId: null, status: "TRANSFERRED" });
+    await expect(claim()).resolves.not.toHaveProperty("required");
+  });
+
+  it.each(["restore", "unsupported"])("never lets a run go on with an empty carried project (%s fails)", async (failure) => {
     const value = fixture();
     Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token",
       storageKey: "user_1/input", byteSize: 11, checksum: createHash("sha256").update("input bytes").digest("hex"), required: true })),

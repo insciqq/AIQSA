@@ -163,7 +163,8 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "source_unavailable": return "a source the task uses was unavailable";
     case "skill_unavailable": return "a pinned Skill was no longer available";
     case "workspace_carryover_unavailable":
-      return "the Workspace files of the previous chat could not be carried over; open the task's chat to check them";
+      return "the Workspace files of the previous chat could not be carried over; the next run tries again, " +
+        "or turn Workspace off for the task to go on without them";
     case "model_cannot_report": return "the model cannot report monitoring results";
     case "run_deadline": return `it was stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes`;
     case "provider_error":
