@@ -1348,7 +1348,9 @@ export async function admitPreparingRunWithClient(
               memoryMode: input.personalChat.memoryMode === "TEMPORARY"
                 ? "NORMAL"
                 : input.personalChat.memoryMode,
-              title: "New Chat",
+              // A scheduled task's chat keeps its task as origin and starts with its final title.
+              ...(input.scheduledOccurrence ? { scheduledTaskId: input.scheduledOccurrence.taskId } : {}),
+              title: input.scheduledOccurrence?.newChat?.title ?? "New Chat",
               userId: input.userId,
               workspaceEnabled: input.workspaceEnabled === true,
               // A first message with an Assistant creates the chat bound.
@@ -1720,8 +1722,11 @@ export async function admitPreparingRunWithClient(
         }
       });
       if (scheduledOccurrence) {
-        await linkScheduledTaskOccurrence(tx, { chatId: input.chatId, now: admissionNow,
-          occurrenceId: scheduledOccurrence.occurrenceId, runId: run.id, taskGeneration: scheduledOccurrence.taskGeneration,
+        await linkScheduledTaskOccurrence(tx, { chatId: input.chatId, chatPeriod: scheduledOccurrence.chatPeriod ?? null,
+          now: admissionNow, occurrenceId: scheduledOccurrence.occurrenceId,
+          ...(scheduledOccurrence.previousResultCopy ? { previousResultCopy: scheduledOccurrence.previousResultCopy } : {}),
+          ...(scheduledOccurrence.rotation ? { rotation: scheduledOccurrence.rotation } : {}),
+          runId: run.id, taskChatEpoch: scheduledOccurrence.taskChatEpoch ?? 0, taskGeneration: scheduledOccurrence.taskGeneration,
           taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision,
           unavailableSources: input.admissionKind === "NORMAL_SEND" ? input.scheduledUnavailableSources ?? [] : [],
           userId: input.userId, userMessageId });

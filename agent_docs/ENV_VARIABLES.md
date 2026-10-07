@@ -31,6 +31,8 @@ Each checkout owns ignored `.env` and private Compose overrides. Preserve projec
 
 `AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES` defaults to 8388608; explicit overrides win. Update the configuration source and recreate consumers: restarting retains old environment. This transport cap leaves separate persistence/context limits; bounded end-to-end retrieval belongs to observation storage.
 
+`AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT` (default 1) caps scheduled runs with Workspace on, installation-wide; over it occurrences wait visibly for a slot. Interactive Workspace runs never count and keep the runner's remaining capacity, so size the cap below what the runner's memory/CPU limits hold.
+
 When `.env` defines `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, use that checkout's ordinary `docker compose`. Explicit `-f` (including package scripts) replaces this selection: reserve it for deliberately selected topologies. `-p` cannot isolate external volumes. Inspect selectors without private values; use disposable state for destructive checks. Stable volume names do not prove isolation.
 
 Memory lexical rollout/rollback/recovery belongs to infrastructure. PostgreSQL is the rollback default; shadow observes only. Canary/primary retain canonical checks and bounded PostgreSQL fallback. Backend/percentage changes require app recreation; projection workers are independent. The coordinator lease governs replay safety, not provider timeout: shorter leases can falsely mark healthy calls outcome-unknown; longer leases delay crash recovery.

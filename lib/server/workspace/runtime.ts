@@ -213,6 +213,14 @@ export interface WorkspaceRuntime {
   syncPersonalSecrets(input: Readonly<{
     secrets: readonly AcceptedWorkspaceSecret[];
     modelRunId: string;
+    /** Server-owned values of this run (guest-code MCP bearer and relay, or why there is none), over the saved environment. */
+    runEnvironment?: Readonly<Record<string, string>>;
+    /**
+     * A scheduled run's execution initialization: after delivery, bound the
+     * guest uv cache with the fixed `BOUND_WORKSPACE_UV_CACHE` helper. Its
+     * failure is logged content-free and never fails this call.
+     */
+    boundUvCache?: boolean;
     runtimeSandboxId: string;
     operation?: WorkspaceOperation;
     sessionId: string;
@@ -226,6 +234,8 @@ export interface WorkspaceRuntime {
   }>): Promise<WorkspaceToolCatalog>;
   callBoundTool(input: Readonly<{
     arguments: Record<string, unknown>;
+    /** Code invocation of this dispatched command; only its own environment carries it. */
+    invocationId?: string;
     modelRunId: string;
     modelRunToolCallId: string;
     originalName: WorkspaceMcpToolName;

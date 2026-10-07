@@ -3209,6 +3209,13 @@ model Chat {
   temporaryRetentionDeadline      DateTime?
   pinned                          Boolean              @default(false)
   archived                        Boolean              @default(false)
+  /// The scheduled task whose run created this chat: only such chats fall
+  /// under that task's history retention. Deleting the task makes it an
+  /// ordinary chat (the migration's column-scoped SET NULL).
+  scheduledTaskId                 String?
+  /// The owner renamed this chat or restored it from the archive; a scheduled
+  /// task's history retention keeps such a chat.
+  ownerKeptAt                     DateTime?
   workspaceEnabled                Boolean              @default(false)
   totalInputTokens                Int                  @default(0)
   totalOutputTokens               Int                  @default(0)
@@ -3230,12 +3237,16 @@ model Chat {
   sharedSnapshots                 SharedChatSnapshot[]
   user                            User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspaceSession                WorkspaceSession?
-  scheduledTasks                  ScheduledTask[]
+  scheduledTasks                  ScheduledTask[]           @relation("ScheduledTaskChat")
   scheduledTaskOccurrences        ScheduledTaskOccurrence[]
+  /// The migration uses column-scoped SET NULL so task deletion never clears userId.
+  scheduledTask                   ScheduledTask?            @relation("ScheduledTaskCreatedChats", fields: [userId, scheduledTaskId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  scheduledTaskCarryovers         ScheduledTaskCarryover[]
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
   @@index([defaultProviderModelId])
+  @@index([scheduledTaskId])
   @@index([memoryMode, temporaryRetentionDeadline])
   @@index([projectId, archived, updatedAt])
   @@index([projectFolderId])
@@ -3406,6 +3417,7 @@ model Message {
   memoryToolEvents       MemoryToolEvent[]
   userModelRuns          ModelRun[]        @relation("UserMessageRun")
   scheduledTaskOccurrences ScheduledTaskOccurrence[]
+  scheduledTaskCarryovers  ScheduledTaskCarryover[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
@@ -3475,15 +3487,22 @@ model ChatContinuationWorkspaceSeed {
   leaseToken       String?                             @db.VarChar(64)
   leaseExpiresAt   DateTime?
   restoreStartedAt DateTime?
+  /// A scheduled task's monthly rotation captured this seed from the task's
+  /// previous chat. Until it is restored the task's scheduled runs in the new
+  /// chat fail closed instead of opening an empty project, and the source disk
+  /// keeps its retention pin. Deleting the task leaves an ordinary seed.
+  scheduledTaskId  String?
   createdAt        DateTime                            @default(now())
   updatedAt        DateTime                            @updatedAt
   continuation     ChatContinuation?                   @relation(fields: [continuationId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   sourceChat       Chat?                               @relation("ContinuationWorkspaceSeedSource", fields: [sourceChatId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   newChat          Chat?                               @relation("ContinuationWorkspaceSeedDestination", fields: [newChatId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  scheduledTask    ScheduledTask?                      @relation(fields: [scheduledTaskId], references: [id], onDelete: SetNull, onUpdate: Restrict)
 
   @@index([status, leaseExpiresAt])
   @@index([sourceChatId, status])
   @@index([newChatId, status])
+  @@index([scheduledTaskId, status])
 }
 
 enum ChatTitleGenerationStatus {
@@ -4153,6 +4172,7 @@ model ModelRunToolCall {
   memoryToolEgressReceipts   MemoryToolEgressReceipt[]
   workspaceExecution         WorkspaceExecution?
   skillBindings              ModelRunSkillBinding[]
+  codeInvocations            WorkspaceCodeInvocation[]
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
@@ -4740,6 +4760,7 @@ model WorkspaceRunBinding {
   secrets              WorkspaceRunSecret[]
   selectedCaptures     WorkspaceSelectedCapture[]
   checkpoints          WorkspaceOutputCheckpoint[]
+  codeGrant            WorkspaceCodeGrant?
 
   @@unique([modelRunId, workspaceSessionId])
   @@index([workspaceSessionId, createdAt])
@@ -4885,6 +4906,78 @@ model AgentMcpTool {
   binding    AgentRunBinding @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "AgentMcpTool_binding_fkey")
 
   @@id([modelRunId, toolId])
+}
+
+/// Run-scoped bearer with which guest code of one non-Agent Workspace run
+/// reaches exactly that run's frozen MCP authority through the runner relay.
+/// Only its hash is stored. Every guest initialization rotates it, every
+/// terminal path revokes it, and it never authorizes model or Search calls.
+model WorkspaceCodeGrant {
+  modelRunId         String              @id
+  workspaceSessionId String
+  tokenHash          String?             @unique @db.Char(64)
+  issuedAt           DateTime?
+  revokedAt          DateTime?
+  /// Admitted code calls: the next receipt's sequence and the run's budget count.
+  callCount          Int                 @default(0)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  binding            WorkspaceRunBinding @relation(fields: [modelRunId, workspaceSessionId], references: [modelRunId, workspaceSessionId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeGrant_binding_fkey")
+  invocations        WorkspaceCodeInvocation[]
+  calls              WorkspaceCodeCall[]
+
+  @@unique([modelRunId, workspaceSessionId])
+}
+
+/// One dispatch of an accepted sandbox command (`command`) or exec session
+/// (`session`). Only that command's environment carries the id; the gateway
+/// accepts code calls of open invocations alone.
+model WorkspaceCodeInvocation {
+  id           String              @id @db.Char(32)
+  modelRunId   String
+  toolCallId   String
+  kind         String              @db.VarChar(16)
+  /// `open`, `closed`, or `unknown` once its command's outcome was lost.
+  state        String              @default("open") @db.VarChar(16)
+  /// Calls refused because the run's code-call budget was exhausted.
+  refusedCalls Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  closedAt     DateTime?
+  grant        WorkspaceCodeGrant  @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeInvocation_grant_fkey")
+  toolCall     ModelRunToolCall    @relation(fields: [modelRunId, toolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeInvocation_toolCall_fkey")
+  calls        WorkspaceCodeCall[]
+
+  @@unique([modelRunId, id])
+  @@index([modelRunId, toolCallId])
+  @@index([modelRunId, state])
+}
+
+/// Content-free receipt of one MCP call made by guest code: persisted before
+/// dispatch, settled after. Never arguments or results: guest code is never
+/// replayed, so nothing would consume them. An unsettled receipt becomes
+/// `unknown` and is never retried.
+model WorkspaceCodeCall {
+  id           String                  @id @default(uuid())
+  modelRunId   String
+  invocationId String                  @db.Char(32)
+  sequence     Int
+  serverId     String                  @db.VarChar(128)
+  toolName     String                  @db.VarChar(128)
+  argumentHash String                  @db.Char(64)
+  /// `dispatching`, `complete`, `error` or `unknown`.
+  state        String                  @default("dispatching") @db.VarChar(16)
+  errorCode    String?                 @db.VarChar(64)
+  resultBytes  Int?
+  durationMs   Int?
+  createdAt    DateTime                @default(now())
+  settledAt    DateTime?
+  grant        WorkspaceCodeGrant      @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeCall_grant_fkey")
+  invocation   WorkspaceCodeInvocation @relation(fields: [modelRunId, invocationId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeCall_invocation_fkey")
+
+  @@unique([modelRunId, sequence])
+  @@index([modelRunId, state])
+  @@index([modelRunId, createdAt])
+  @@index([invocationId])
 }
 
 model WorkspaceSecret {
@@ -7182,7 +7275,8 @@ enum ScheduledTaskOccurrenceState {
 /// `nextRunAt`, which is null unless ACTIVE. Model identity is revalidated at save
 /// and run, never a foreign key. `revision` changes on every owner mutation and on
 /// runner status transitions (auto-pause, once completion, a monitoring goal),
-/// not on bookkeeping (`nextRunAt`, the counters, `chatId`, the baseline).
+/// not on bookkeeping (`nextRunAt`, the counters, `chatId` with its epoch and
+/// period, the baseline and its carried copy).
 model ScheduledTask {
   id                         String                    @id @default(uuid())
   userId                     String
@@ -7218,8 +7312,21 @@ model ScheduledTask {
   /// Runs read the owner's Memory without ever adding to it. New tasks are
   /// created with it on; rows older than the switch stay off.
   memoryEnabled              Boolean                   @default(false)
-  /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY and MONITORING).
+  /// Skill ids every run loads at their current revision besides the Auto
+  /// catalog: at most 4, unique, only with `toolsEnabled`. Plain identifiers,
+  /// rechecked against the owner's available Skills at save and every run; a
+  /// lost one pauses the task (`skill_unavailable`), never a foreign key.
+  pinnedSkillIds             String[]                  @default([])
+  /// NEW starts a chat for every run; SAME continues the task's chat (always for
+  /// HOURLY and MONITORING) and starts a new one each calendar month.
   chatMode                  ScheduledTaskChatMode     @default(NEW)
+  /// Days a chat the task created is kept after its last run once it is no
+  /// longer the task's chat: 30, 90 or 365; null keeps it forever. The owner
+  /// API, the editor and the chat tools give new tasks 90; rows older than the
+  /// field stay null, so nothing that existed before it is deleted.
+  historyRetentionDays       Int?
+  /// Old task chats the history retention deleted; a content-free count.
+  historyDeletedChats        Int                       @default(0)
   /// MONITORING runs are checks that report through a built-in tool whether
   /// anything changed; checks without news stay hidden and silent.
   kind                       ScheduledTaskKind         @default(STANDARD)
@@ -7232,6 +7339,14 @@ model ScheduledTask {
   nextRunAt                  DateTime?
   /// The newest chat a run used; deleting the chat clears only this column.
   chatId                     String?
+  /// Bumped whenever a run's admission moves the task to another chat and
+  /// frozen on the occurrence it links: a link succeeds only under the epoch
+  /// the runner read, and a settlement writes the baseline only under its own.
+  chatEpoch                  Int                       @default(0)
+  /// The calendar month (`YYYY-MM`, task zone) whose runs the current chat
+  /// takes; a same-chat run of a later month starts a new chat. Null until a
+  /// run links (and for chats older than the field, which adopt their month).
+  chatPeriod                 String?                   @db.VarChar(7)
   consecutiveFailures        Int                       @default(0)
   /// Scheduled runs in a row that completed without a relevant source; reset by a complete run or an owner edit.
   consecutiveIncompleteRuns  Int                       @default(0)
@@ -7241,9 +7356,10 @@ model ScheduledTask {
   /// Bumped with the revision when the prompt, the schedule kind or the task
   /// kind changes; frozen on accepted occurrences and runs.
   generation                 Int                       @default(1)
-  /// The newest shown completed result of the current generation: what the
-  /// next same-chat run sees besides the prompt. Plain identifiers, rechecked
-  /// against the run's chat path at every admission; all four or none.
+  /// The newest shown completed result of the current generation in the
+  /// current chat: what the next same-chat run sees besides the prompt. Plain
+  /// identifiers, rechecked against the run's chat path at every admission;
+  /// all four or none. A rotation clears them (its copy carries the result).
   baselineRunId              String?
   baselineUserMessageId      String?
   baselineAssistantMessageId String?
@@ -7252,8 +7368,11 @@ model ScheduledTask {
   updatedAt                  DateTime                  @updatedAt
   user                User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// The migration uses column-scoped SET NULL so chat deletion never clears userId.
-  chat                Chat?                     @relation(fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  chat                Chat?                     @relation("ScheduledTaskChat", fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   occurrences         ScheduledTaskOccurrence[]
+  createdChats        Chat[]                    @relation("ScheduledTaskCreatedChats")
+  carryover           ScheduledTaskCarryover?
+  workspaceSeeds      ChatContinuationWorkspaceSeed[]
 
   @@unique([userId, id])
   @@index([status, nextRunAt])
@@ -7285,6 +7404,8 @@ model ScheduledTaskOccurrence {
   /// The task revision a run accepted this occurrence under; a goal completes
   /// the task only while it is unchanged.
   taskRevision   Int?
+  /// The task's chat epoch after the run's admission linked this occurrence.
+  chatEpoch      Int?
   /// A monitoring check's model-reported outcome (`update`, `no_update` or
   /// `goal_reached`); the last report of the run wins, null when it never reported.
   verdict        String?                      @db.VarChar(16)
@@ -7294,6 +7415,9 @@ model ScheduledTaskOccurrence {
   /// plan could not offer, `[{ serverId, name, reason, relied }]`; null when none was
   /// missing. Such a run is incomplete. Display names only, never tool content.
   unavailableSources Json?
+  /// When the occurrence first waited for a scheduled Workspace slot; kept after
+  /// the wait ends, for the administrator's content-free capacity counts.
+  workspaceWaitStartedAt DateTime?
   createdAt      DateTime                     @default(now())
   task           ScheduledTask                @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
   /// The migration uses column-scoped SET NULL for chat and run references.
@@ -7308,6 +7432,37 @@ model ScheduledTaskOccurrence {
   @@index([chatId])
   @@index([runId])
   @@index([userMessageId])
+}
+
+/// A same-chat task's previous shown result carried into the chat its monthly
+/// rotation started: a bounded frozen copy of the answer text (the prompt is
+/// the task's own for the same generation) with the servers it relied on,
+/// owned by the task's owner. Written in the run creation that starts the new
+/// chat, never as message ids of the old chat; a run sees it only while its
+/// epoch and generation are current and its source answer is still there.
+/// It goes once the new chat has its own shown result, with the task, and
+/// with its source answer or chat.
+model ScheduledTaskCarryover {
+  taskId                   String                 @id
+  userId                   String
+  /// The task's chat epoch the copy was frozen for: the chat that rotation started.
+  chatEpoch                Int
+  /// The generation of the copied result; another generation never sees it.
+  taskGeneration           Int
+  sourceChatId             String
+  sourceAssistantMessageId String
+  answerText               String
+  /// Personal MCP servers the copied result called or relied on, as source
+  /// health judges a previous result; plain identifiers.
+  reliedServerIds          String[]               @default([])
+  createdAt                DateTime               @default(now())
+  task                     ScheduledTask          @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  sourceChat               Chat                   @relation(fields: [userId, sourceChatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  sourceAnswer             Message                @relation(fields: [sourceChatId, sourceAssistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "ScheduledTaskCarryover_source_answer_fkey")
+
+  /// The owner-consistent key of the one-to-one task relation.
+  @@unique([userId, taskId])
+  @@index([sourceChatId, sourceAssistantMessageId], map: "ScheduledTaskCarryover_source_answer_idx")
 }
 
 /// The installation's VAPID key pair for browser push, created on first use.

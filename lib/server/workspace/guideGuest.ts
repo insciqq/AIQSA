@@ -10,7 +10,7 @@ import json, os, secrets, stat, sys
 WORKSPACE_ROOT = '/workspace'
 MAX_INPUT = 65536
 MAX_FILE = 32768
-NAMES = ('office.md', 'browser.md', 'psd.md')
+NAMES = ('office.md', 'browser.md', 'psd.md', 'skills.md')
 STAGING_PREFIX = '.aiqsa-guide-'
 
 def identity(info):

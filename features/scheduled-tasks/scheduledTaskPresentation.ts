@@ -2,13 +2,16 @@ import {
   SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD,
   SCHEDULED_TASK_RUN_DEADLINE_MINUTES,
   SCHEDULED_TASK_WEEKDAYS,
+  SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
   isScheduledTaskCheckOutcome,
   isScheduledTaskRunIncomplete,
   scheduledTaskErrorMessage,
   scheduledTaskReasonMessage,
+  scheduledTaskSkillUnavailableReason,
   scheduledTaskSourceMessage,
   type ScheduledTask,
   type ScheduledTaskCheckOutcome,
+  type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskRun,
   type ScheduledTaskSchedule,
   type ScheduledTaskWeekday
@@ -44,8 +47,20 @@ export function formatScheduledInstant(value: string | Date, timeZone: string, n
   if (Number.isNaN(date.getTime())) return "an unknown time";
   const zone = validScheduledTaskTimeZone(timeZone) ?? "UTC";
   const parts = instantParts(date, zone);
+  return `${dayLabel(parts, zone, now)}, ${parts.hour}:${parts.minute}`;
+}
+
+function dayLabel(parts: Record<string, string>, zone: string, now: Date): string {
   const year = parts.year !== instantParts(now, zone).year ? ` ${parts.year}` : "";
-  return `${parts.weekday} ${Number(parts.day)} ${MONTH_LABELS[Number(parts.month) - 1] ?? parts.month}${year}, ${parts.hour}:${parts.minute}`;
+  return `${parts.weekday} ${Number(parts.day)} ${MONTH_LABELS[Number(parts.month) - 1] ?? parts.month}${year}`;
+}
+
+/** "Tue 6 Oct" in the task's zone, with the year only when it is not the current one. */
+export function formatScheduledDay(value: string | Date, timeZone: string, now: Date = new Date()): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "an unknown day";
+  const zone = validScheduledTaskTimeZone(timeZone) ?? "UTC";
+  return dayLabel(instantParts(date, zone), zone, now);
 }
 
 /** The browser's IANA zone, or UTC when the runtime reports none it can resolve. */
@@ -81,9 +96,14 @@ export function scheduledTaskScheduleText(schedule: ScheduledTaskSchedule, timeZ
 
 type PauseCopy = Readonly<{ reason: string; hint: string }>;
 
-/** Why a task paused itself and how to recover. */
-export function scheduledTaskPauseCopy(reasonCode: string): PauseCopy {
+/**
+ * Why a task paused itself and how to recover. A lost pinned Skill is named
+ * when the task's projection still lets the owner see it.
+ */
+export function scheduledTaskPauseCopy(reasonCode: string, task?: Pick<ScheduledTask, "pinnedSkills">): PauseCopy {
   switch (reasonCode) {
+    case "skill_unavailable":
+      return { reason: scheduledTaskSkillUnavailableReason(task ?? {}), hint: "Edit the task's Skills, then resume." };
     case "model_unavailable":
       return { reason: "the model is no longer available", hint: "Edit to choose another model." };
     case "search_unavailable":
@@ -128,6 +148,7 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "installation_budget_exhausted": return "the monthly budget shared by everyone was used up";
     case "previous_running": return "the previous run was still in progress";
     case "superseded": return "a newer scheduled time arrived before it could start";
+    case "workspace_capacity": return "no Workspace slot became free in time; other scheduled runs were using Workspace";
     case "model_unavailable": return "the model was unavailable";
     case "search_unavailable": return "web search was unavailable with this model";
     case "provider_unavailable": return "the model's provider was unavailable";
@@ -142,6 +163,10 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "workspace_unavailable": return "Workspace could not be used for this task";
     case "workspace_secret_limit": return "the saved Workspace secrets exceed the limit";
     case "source_unavailable": return "a source the task uses was unavailable";
+    case "skill_unavailable": return "a pinned Skill was no longer available";
+    case "workspace_carryover_unavailable":
+      return "the Workspace files of the previous chat could not be carried over; the next run tries again, " +
+        "or turn Workspace off for the task to go on without them";
     case "model_cannot_report": return "the model cannot report monitoring results";
     case "run_deadline": return `it was stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes`;
     case "provider_error":
@@ -150,23 +175,30 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
   }
 }
 
+/** A pending run waiting for a free scheduled Workspace slot, as a row and the status line say it. */
+export const SCHEDULED_TASK_WORKSPACE_WAIT_TEXT = "Waiting for a free Workspace slot";
+
+/** The editor's note on recurring schedules: a run starts shortly after the shown time (the dispatch spread). */
+export const SCHEDULED_TASK_SPREAD_NOTE = "Starts within 3 minutes of the scheduled time.";
+
 export type ScheduledTaskStatusLine = Readonly<{
   text: string;
   tone: "neutral" | "live" | "attention";
 }>;
 
 /**
- * The one status sentence a row shows: next run, running, paused (with
- * reason) or completed, and why when a monitoring check reached its goal.
+ * The one status sentence a row shows: next run, running (or waiting for a
+ * free Workspace slot), paused (with reason) or completed, and why when a
+ * monitoring check reached its goal.
  */
 export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Date()): ScheduledTaskStatusLine {
-  if (task.running) return { text: "Running now", tone: "live" };
+  if (task.running) return { text: task.waitingForWorkspace ? SCHEDULED_TASK_WORKSPACE_WAIT_TEXT : "Running now", tone: "live" };
   if (task.status === "completed") {
     return { text: task.completionReason === "goal_reached" ? "Goal reached — completed" : "Completed", tone: "neutral" };
   }
   if (task.status === "paused") {
     if (!task.pauseReason) return { text: "Paused", tone: "neutral" };
-    const copy = scheduledTaskPauseCopy(task.pauseReason);
+    const copy = scheduledTaskPauseCopy(task.pauseReason, task);
     return { text: `Paused: ${copy.reason}. ${copy.hint}`, tone: "attention" };
   }
   return task.nextRunAt
@@ -195,7 +227,7 @@ function outcomeText(state: ScheduledTaskRun["state"], reasonCode: string | null
     case "failed": return `Failed: ${scheduledTaskRunReasonText("failed", reasonCode)}`;
     case "skipped": return `Skipped: ${scheduledTaskRunReasonText("skipped", reasonCode)}`;
     case "running": return "Running";
-    case "pending": return "Starting";
+    case "pending": return reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE ? SCHEDULED_TASK_WORKSPACE_WAIT_TEXT : "Starting";
   }
 }
 
@@ -246,6 +278,8 @@ export type ScheduledTaskRunRow = Readonly<{
   outcome: string;
   /** One line per source the run could not reach. */
   sources: readonly string[];
+  /** The pinned Skills the run loaded with the version each used, or null without any. */
+  skills: string | null;
   time: string;
   /** `quiet`: a monitoring check with no update, history only. */
   tone: "neutral" | "attention" | "live" | "quiet";
@@ -265,6 +299,9 @@ export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now
   return {
     outcome: check ? clause(check) : outcomeText(run.state, run.reasonCode),
     sources: run.unavailableSources.map(scheduledTaskSourceMessage),
+    skills: run.skills.length > 0
+      ? `Skills: ${run.skills.map((skill) => `${skill.name} v${skill.version}`).join(", ")}` : null,
+
     time: formatScheduledInstant(run.startedAt ?? run.scheduledFor, timeZone, now),
     tone: runTone(run),
     trigger: run.trigger === "manual" ? "Run now" : "Scheduled"
@@ -276,6 +313,40 @@ export const SCHEDULED_TASK_CHAT_MODE_LABELS: Readonly<Record<ScheduledTask["cha
   new: "Each run starts a new chat",
   same: "Continue in this task's chat"
 };
+
+/** The history choices the editor offers, shortest first; null keeps old chats forever. */
+export const SCHEDULED_TASK_HISTORY_OPTIONS: readonly Readonly<{ label: string; value: ScheduledTaskHistoryRetentionDays }>[] = [
+  { label: "30 days", value: 30 },
+  { label: "90 days", value: 90 },
+  { label: "1 year", value: 365 },
+  { label: "Forever", value: null }
+];
+
+/** What the history retention never deletes, for the card and the editor. */
+export const SCHEDULED_TASK_HISTORY_KEPT_TEXT =
+  "The current chat is kept, and so is any chat you wrote in, pinned, put in a folder, shared, renamed or restored.";
+
+function historyLabel(days: ScheduledTaskHistoryRetentionDays): string {
+  return SCHEDULED_TASK_HISTORY_OPTIONS.find((option) => option.value === days)?.label ?? "Forever";
+}
+
+/**
+ * The card's history line: how long old chats of the task are kept, when the
+ * next one goes as things stand, and how many went (a count only).
+ */
+export function scheduledTaskHistoryLine(task: Pick<ScheduledTask, "historyDeletedChats" | "historyNextDeletionAt" |
+  "historyRetentionDays" | "timeZone">, now: Date = new Date()): string {
+  const parts = [task.historyRetentionDays === null ? "History: kept forever" : `History: ${historyLabel(task.historyRetentionDays)}`];
+  if (task.historyRetentionDays !== null && task.historyNextDeletionAt) {
+    const due = new Date(task.historyNextDeletionAt);
+    parts.push(due.getTime() <= now.getTime() ? "next cleanup soon"
+      : `next cleanup ${formatScheduledDay(due, task.timeZone, now)}`);
+  }
+  if (task.historyDeletedChats > 0) {
+    parts.push(`${task.historyDeletedChats} old ${task.historyDeletedChats === 1 ? "chat" : "chats"} deleted`);
+  }
+  return parts.join(" · ");
+}
 
 /** Copy for API failures, including codes the shared contract does not name. */
 export function scheduledTaskFailureMessage(code: string | null): string {

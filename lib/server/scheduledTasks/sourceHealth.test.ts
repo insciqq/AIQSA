@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete } from "./sourceHealth";
+import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, withCodeCallUnavailableSources } from "./sourceHealth";
+
+describe("code-call source health", () => {
+  it("turns a source the run's code could not use into a relied-on missing source", () => {
+    const admitted = [{ name: "Tracker", reason: "mcp_server_unavailable", relied: false, serverId: "server-tracker" }];
+    const merged = withCodeCallUnavailableSources(admitted, [
+      { authorization: true, serverId: "server-gitlab", serverName: "GitLab" },
+      // Already recorded by admission: kept as recorded.
+      { authorization: false, serverId: "server-tracker", serverName: "Tracker" },
+      { authorization: false, serverId: "not an id", serverName: "Broken" },
+      { authorization: false, serverId: "server-wiki", serverName: null }
+    ]);
+    expect(merged).toEqual([
+      ...admitted,
+      { name: "GitLab", reason: "mcp_reauthorization_required", relied: true, serverId: "server-gitlab" },
+      { name: "MCP server", reason: "mcp_server_unavailable", relied: true, serverId: "server-wiki" }
+    ]);
+    // A check that reached its source only through code could not check.
+    expect(occurrenceCheckSourcesMissing(merged)).toBe(true);
+    expect(occurrenceCheckSourcesMissing(withCodeCallUnavailableSources(null, []))).toBe(false);
+  });
+});
 
 describe("scheduled run source health", () => {
   const source = { name: "Tracker", reason: "mcp_server_unavailable", relied: true, serverId: "server-tracker" };

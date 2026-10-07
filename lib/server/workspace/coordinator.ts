@@ -1,6 +1,11 @@
 import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
 import { logEvent } from "../observability";
-import { WorkspaceActivityText, workspaceActivitySecretValues } from "./activityText";
+import { WorkspaceActivityText, workspaceSecretMatches, type WorkspaceSecretMatch } from "./activityText";
+import { WorkspaceSecretOutputMask } from "./secretOutput";
+import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
+import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
+  type WorkspaceCodeRunIdentity } from "./codeMcpStore";
+import { workspaceCodeCallActivity, workspaceCodeCallSummaryLine, type WorkspaceCodeCallSummary } from "./codeMcpSummary";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -102,6 +107,8 @@ export type WorkspaceExecutionBinding = Readonly<{
   runtimeSandboxId: string | null;
   runtimeVersion: string;
   sandboxName: string;
+  /** The run belongs to a scheduled task (its schedule or Run now); absent means interactive. */
+  scheduled?: boolean;
   sessionId: string;
   sessionErrorCode: string | null;
   sessionState: string;
@@ -162,16 +169,39 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   unregisteredCommands(input: Readonly<{ runId: string }>): Promise<number>;
   attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
   personalSecrets(binding: WorkspaceExecutionBinding): Promise<readonly AcceptedWorkspaceSecret[]>;
+  /**
+   * MCP from guest code. Each execution initialization rotates the run's
+   * bearer (fencing the previous incarnation's invocations and receipts);
+   * every terminal path revokes it before guest authority retires.
+   */
+  issueCodeGrant?(binding: WorkspaceCodeRunIdentity): Promise<WorkspaceCodeGrantIssue>;
+  revokeCodeGrant?(input: Readonly<{ runId: string }>): Promise<void>;
+  /** Persisted before dispatch; only that command's environment carries the id. */
+  openCodeInvocation?(input: Readonly<{
+    kind: WorkspaceCodeInvocationKind; modelRunToolCallId: string; runId: string; sessionId: string;
+  }>): Promise<string | null>;
+  closeCodeInvocation?(input: Readonly<{ invocationId: string; runId: string }>): Promise<void>;
+  codeCallSummary?(input: Readonly<{ runId: string; toolCallId: string }>): Promise<WorkspaceCodeCallSummary | null>;
   saveBrowserSessions(input: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveReport | null>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
   /** Persist before guest I/O, including attempts with an ambiguous result. */
   markGuestUsed(binding: WorkspaceExecutionBinding): Promise<boolean>;
   /** Release an unused run's authority without changing the guest or its activity window. */
   retireUnusedRun(binding: WorkspaceExecutionBinding): Promise<boolean>;
+  /**
+   * `required`: a scheduled task's rotation carried this seed, so no run of
+   * the chat, scheduled or the owner's, goes on with an empty project instead
+   * (`workspace_carryover_unavailable`) until a restore succeeds.
+   */
   claimContinuationSeed?(input: Readonly<{ chatId: string; operation: WorkspaceOperation; sessionId: string }>): Promise<Readonly<{
-    id: string; storageKey: string; checksum: string; byteSize: number; token: string;
+    id: string; storageKey: string; checksum: string; byteSize: number; token: string; required?: boolean;
   }> | null>;
-  settleContinuationSeed?(input: Readonly<{ id: string; token: string; status: "RESTORED" | "FAILED"; failureCode?: string }>): Promise<boolean>;
+  /** `TRANSFERRED` releases a required seed's claim, keeping its archive for a later attempt. */
+  settleContinuationSeed?(input: Readonly<{
+    id: string; token: string; status: "RESTORED" | "FAILED" | "TRANSFERRED"; failureCode?: string;
+  }>): Promise<boolean>;
+  /** The run is a scheduled task's run whose chat still awaits the files that task's rotation carried. */
+  pendingCarryover?(input: Readonly<{ chatId: string; runId: string }>): Promise<boolean>;
   claimExport(input: Readonly<{
     handoff?: boolean;
     leaseMs: number;
@@ -316,6 +346,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         chat: { select: { projectId: true, userId: true } },
         chatId: true,
         id: true,
+        scheduledTaskId: true,
         userId: true,
         workspaceRunBinding: {
           select: {
@@ -382,6 +413,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       runtimeSandboxId: session.runtimeSandboxId,
       runtimeVersion: run.workspaceRunBinding.runtimeVersion,
       sandboxName: session.sandboxName,
+      scheduled: run.scheduledTaskId !== null,
       sessionId: session.id,
       sessionErrorCode: session.lastErrorCode,
       sessionState: session.state,
@@ -392,6 +424,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
   }
 
   return {
+    ...createPrismaWorkspaceCodeGrantRepository(prisma),
     saveBrowserSessions: (input) => saveWorkspaceBrowserSessions(prisma, input),
     async personalSecrets(binding) {
       const current = await loadBinding(binding.runId, binding.userId);
@@ -462,10 +495,16 @@ export function createPrismaWorkspaceCoordinatorRepository(
         }
         const seed = await tx.chatContinuationWorkspaceSeed.findUnique({ where: { newChatId: chatId } });
         if (!seed || !["TRANSFERRED", "RESTORING"].includes(seed.status)) return null;
-        if (!seed.storageKey || !seed.checksum || !seed.byteSize) throw new WorkspaceRuntimeError("workspace_archive_invalid");
+        // A scheduled task's rotation carried it: whichever run starts the chat's Workspace
+        // first restores it or runs nothing, the owner's own runs included. Deleting the
+        // task leaves an ordinary continuation seed; a Workspace reset of the chat abandons it.
+        const required = seed.scheduledTaskId !== null;
+        if (!seed.storageKey || !seed.checksum || !seed.byteSize) {
+          throw new WorkspaceRuntimeError(required ? "workspace_carryover_unavailable" : "workspace_archive_invalid");
+        }
         const now = new Date();
         if (seed.status === "RESTORING" && seed.leaseExpiresAt && seed.leaseExpiresAt > now) {
-          throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
+          throw new WorkspaceRuntimeError(required ? "workspace_carryover_unavailable" : "workspace_archive_restore_failed");
         }
         const token = randomUUID();
         const claimed = await tx.chatContinuationWorkspaceSeed.updateMany({
@@ -476,9 +515,24 @@ export function createPrismaWorkspaceCoordinatorRepository(
           data: { status: "RESTORING", leaseToken: token, leaseExpiresAt: new Date(now.getTime() + WORKSPACE_OPERATION_LEASE_MS),
             restoreStartedAt: now, attemptCount: { increment: 1 } }
         });
-        if (claimed.count !== 1) return null;
-        return { id: seed.id, storageKey: seed.storageKey, checksum: seed.checksum, byteSize: seed.byteSize, token };
+        if (claimed.count !== 1) {
+          if (required) throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
+          return null;
+        }
+        return { id: seed.id, storageKey: seed.storageKey, checksum: seed.checksum, byteSize: seed.byteSize, token,
+          ...(required ? { required: true } : {}) };
       });
+    },
+    async pendingCarryover({ chatId, runId }) {
+      const [row] = await prisma.$queryRaw<Array<{ pending: boolean }>>(Prisma.sql`
+        SELECT EXISTS (
+          SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
+          JOIN "ModelRun" AS run ON run."id" = ${runId} AND run."scheduledTaskId" = seed."scheduledTaskId"
+          WHERE seed."newChatId" = ${chatId}
+            AND seed."status" IN ('TRANSFERRED'::"ChatContinuationWorkspaceSeedStatus", 'RESTORING'::"ChatContinuationWorkspaceSeedStatus")
+        ) AS "pending"
+      `);
+      return row?.pending === true;
     },
     async settleContinuationSeed({ id, token, status, failureCode }) {
       return prisma.$transaction(async (tx) => {
@@ -1066,6 +1120,20 @@ export type WorkspaceCoordinator = Readonly<{
     workspace: NormalizedRunWorkspace;
   }>): Promise<"interrupted" | void>;
   accepts(input: Readonly<{ name: string; workspace: NormalizedRunWorkspace }>): boolean;
+  /**
+   * Before a scheduled run's first model request: starts the Workspace and
+   * restores the files its task's monthly rotation carried into the chat,
+   * so no tool or command of the run meets an empty carried project. A
+   * restore that cannot complete throws `workspace_carryover_unavailable`.
+   * Does nothing for any other run.
+   */
+  prepareCarryover?(input: Readonly<{
+    onActivity?: WorkspaceActivityListener;
+    runId: string;
+    signal?: AbortSignal;
+    userId: string;
+    workspace: NormalizedRunWorkspace;
+  }>): Promise<void>;
   execute(input: Readonly<{
     call: ModelToolCall;
     modelRunToolCallId: string;
@@ -1212,7 +1280,7 @@ function withActivity(
     : result);
 }
 
-function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): ToolExecutionResult {
+function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult, secretMasked = false): ToolExecutionResult {
   const content: ToolExecutionResult["content"] = [];
   for (const entry of result.content) {
     if (entry.type === "text" && typeof entry.text === "string") {
@@ -1230,11 +1298,31 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): To
       ...(result.originalByteCount === undefined
         ? {}
         : { originalByteCount: result.originalByteCount }),
+      // Content-free: tells activity that delivered secret values were masked.
+      ...(secretMasked ? { secretMasked: true } : {}),
       truncated: result.truncated === true
     },
     status: result.status
   };
   return result.errorCode ? retainWorkspaceResultCode(projected, result.errorCode) : projected;
+}
+
+/**
+ * One compact, content-free line for the model about the MCP calls the
+ * command's code made, and the same facts for activity. Never arguments,
+ * results or endpoints.
+ */
+function withCodeCallSummary(result: ToolExecutionResult, summary: WorkspaceCodeCallSummary | null): ToolExecutionResult {
+  if (!summary) return result;
+  return inheritWorkspaceResultCode(result, {
+    ...result,
+    content: [...result.content, { text: workspaceCodeCallSummaryLine(summary), type: "text" }],
+    rawPreview: { ...result.rawPreview, codeMcp: workspaceCodeCallActivity(summary) }
+  });
+}
+
+function codeCallSignature(summary: WorkspaceCodeCallSummary): string {
+  return `${summary.calls}:${summary.failed}:${summary.unknown}:${summary.refused}`;
 }
 
 export function createWorkspaceCoordinator(input: Readonly<{
@@ -1253,6 +1341,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
   const inboxNamesByRun = new Map<string, Map<string, string>>();
   const execOutputsByRun = new Map<string, Map<string, ExecOutputBuffer>>();
   const activityTextByRun = new Map<string, WorkspaceActivityText>();
+  const outputMaskByRun = new Map<string, WorkspaceSecretOutputMask>();
+  // Exec sessions report their code calls on the first poll that changes them.
+  const reportedCodeCallsByRun = new Map<string, Map<string, string>>();
   const lifecycleOrdinal = new Map<string, number>();
   let recoveryCursor: WorkspaceExportRecoveryCursor | undefined;
   let recoveryScanBefore: Date | undefined;
@@ -1271,7 +1362,46 @@ export function createWorkspaceCoordinator(input: Readonly<{
     inboxNamesByRun.delete(runId);
     execOutputsByRun.delete(runId);
     activityTextByRun.delete(runId);
+    outputMaskByRun.delete(runId);
+    reportedCodeCallsByRun.delete(runId);
     lifecycleOrdinal.delete(runId);
+  }
+
+  /**
+   * MCP from guest code: the run environment of this initialization (a fresh
+   * bearer with the relay origin, or why there is none). A failure grants
+   * nothing and leaves the Workspace usable; a stale operation still fails.
+   */
+  async function issueCodeGrant(binding: WorkspaceExecutionBinding): Promise<WorkspaceCodeGrantIssue | null> {
+    if (!input.repository.issueCodeGrant) return null;
+    try {
+      return await input.repository.issueCodeGrant(binding);
+    } catch (error) {
+      if (error instanceof WorkspaceRuntimeError) throw error;
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "prepare", outcome: "degraded",
+        code: "workspace_code_grant_unavailable", prisma_code: databaseFailureCode(error), action: "degrade" });
+      return { environment: { [WORKSPACE_CODE_UNAVAILABLE_ENV]: "gateway_unavailable" } };
+    }
+  }
+
+  async function revokeCodeGrant(runId: string): Promise<void> {
+    await input.repository.revokeCodeGrant?.({ runId }).catch((error: unknown) => {
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "release", outcome: "failed",
+        code: "workspace_code_grant_unavailable", prisma_code: databaseFailureCode(error), action: "skip" });
+    });
+  }
+
+  /** Every code call of an accepted sandbox tool call; exec polls report only changes. */
+  async function codeCallSummary(runId: string, toolCallId: string | null, onlyChanges: boolean): Promise<WorkspaceCodeCallSummary | null> {
+    if (!toolCallId || !input.repository.codeCallSummary) return null;
+    const summary = await input.repository.codeCallSummary({ runId, toolCallId }).catch(() => null);
+    if (!summary) return null;
+    const reported = reportedCodeCallsByRun.get(runId) ?? new Map<string, string>();
+    reportedCodeCallsByRun.set(runId, reported);
+    const signature = codeCallSignature(summary);
+    if (onlyChanges && reported.get(toolCallId) === signature) return null;
+    reported.set(toolCallId, signature);
+    return summary;
   }
 
   function activityWindow(): Readonly<{ expiresAt: Date; lastActiveAt: Date }> {
@@ -1507,7 +1637,15 @@ export function createWorkspaceCoordinator(input: Readonly<{
           chatId: binding.chatId, operation: ownedOperation(binding), sessionId: binding.sessionId
         });
         if (continuationSeed) {
+          // A scheduled task's carried files never give way to an empty project:
+          // the claim is released with its archive kept for a later run.
+          const releaseRequired = async () => {
+            if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
+              status: "TRANSFERRED" })) throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
+            throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
+          };
           if (!input.runtime.restoreProjectArchive) {
+            if (continuationSeed.required) await releaseRequired();
             await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
               status: "FAILED", failureCode: "workspace_archive_restore_failed" });
             throw new WorkspaceRuntimeError("workspace_archive_restore_failed");
@@ -1531,6 +1669,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
             // unproven cleanup keeps the claim, so lease expiry retries it;
             // otherwise the original bytes are never retried automatically.
             if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
+            if (continuationSeed.required) await releaseRequired();
             if (!await input.repository.settleContinuationSeed?.({ id: continuationSeed.id, token: continuationSeed.token,
               status: "FAILED", failureCode: error instanceof WorkspaceRuntimeError ? error.code : "workspace_archive_restore_failed" })) {
               throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
@@ -1559,9 +1698,20 @@ export function createWorkspaceCoordinator(input: Readonly<{
         });
         try {
           const secrets = await input.repository.personalSecrets(binding);
-          activityTextByRun.set(binding.runId, new WorkspaceActivityText(workspaceActivitySecretValues(secrets)));
+          // Only an execution initialization of the run itself mints guest-code
+          // MCP authority. It travels in the same run-bound managed environment
+          // (also for Project runs, which receive no personal secrets) and its
+          // exact value is masked like a delivered secret.
+          const code = purpose === "execution" ? await issueCodeGrant(binding) : null;
+          const matches: WorkspaceSecretMatch[] = [...workspaceSecretMatches(secrets),
+            ...(code?.token ? [{ name: WORKSPACE_CODE_TOKEN_ENV, value: code.token }] : [])];
+          activityTextByRun.set(binding.runId, new WorkspaceActivityText(matches));
+          outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
           await input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId,
+            ...(code && Object.keys(code.environment).length > 0 ? { runEnvironment: code.environment } : {}),
+            // Unattended runs keep the chat's package cache bounded; interactive ones are left alone.
+            ...(purpose === "execution" && binding.scheduled ? { boundUvCache: true } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
           });
         } catch (error) {
@@ -1923,6 +2073,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },
     async settle({ onActivity, operation: expectedOperation, outcome, runId, userId, workspace, skipBrowserSave }) {
+      // Every terminal path ends guest-code MCP authority first, before any
+      // quiescence wait. A terminal run's bearer is refused by status anyway.
+      await revokeCodeGrant(runId);
       const receipt = async (closed: boolean, errorCode?: WorkspaceErrorCode) => {
         await onActivity?.(workspaceLifecycleActivity({ kind: "execution_status", runId,
           phase: closed ? "closed" : "unknown", ...(errorCode ? { errorCode } : {}) })).catch(() => undefined);
@@ -2016,7 +2169,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const entry = projectWorkspaceActivity({
             arguments: call.arguments,
             text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(
-              workspaceActivitySecretValues(await input.repository.personalSecrets(initial))),
+              workspaceSecretMatches(await input.repository.personalSecrets(initial))),
             callId: modelRunToolCallId,
             originalName: "sandbox_exec",
             result: rejected,
@@ -2076,6 +2229,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
           timeout_ms: workspace.syncToolTimeoutSeconds * 1_000 });
         if (combined.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "operation", timeout_ms: workspace.syncToolTimeoutSeconds * 1_000 });
         else combined.addEventListener("abort", onAbort, { once: true });
+        // Every dispatched command or exec session is one code invocation:
+        // only its environment carries the id, and its code's MCP calls are
+        // attributed to it. A synchronous command's invocation closes with it.
+        const codeKind: WorkspaceCodeInvocationKind | null = definition.originalName === "sandbox_exec_start" ? "session"
+          : definition.originalName === "sandbox_shell" || definition.originalName === "sandbox_exec" ? "command" : null;
+        let invocationId: string | null = null;
+        const openInvocation = async (active: WorkspaceExecutionBinding) => codeKind && input.repository.openCodeInvocation
+          ? await input.repository.openCodeInvocation({ kind: codeKind, modelRunToolCallId, runId: active.runId,
+            sessionId: active.sessionId }).catch(() => null)
+          : null;
+        const closeInvocation = async () => {
+          if (codeKind !== "command" || !invocationId) return;
+          const closing = invocationId;
+          invocationId = null;
+          await input.repository.closeCodeInvocation?.({ invocationId: closing, runId }).catch(() => undefined);
+        };
         try {
           if (definition.originalName === "sandbox_shell" || definition.originalName === "sandbox_exec") {
             const registered = await input.registry.register({
@@ -2086,9 +2255,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
             }).catch(() => "conflict" as const);
             if (registered !== "registered") throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
           }
+          invocationId = await openInvocation(binding);
           const dispatch = (active: WorkspaceExecutionBinding) =>
             input.runtime.callBoundTool({
               arguments: call.arguments,
+              ...(invocationId ? { invocationId } : {}),
               modelRunId: active.runId,
               modelRunToolCallId,
               originalName: definition.originalName,
@@ -2124,6 +2295,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
               onActivity
             );
             binding = initializedBinding.binding;
+            // Recreation rotated the bearer and fenced the undispatched invocation.
+            invocationId = await openInvocation(binding);
             result = await dispatch(binding);
             initializedBinding = { binding, recreated: true };
           }
@@ -2141,14 +2314,26 @@ export function createWorkspaceCoordinator(input: Readonly<{
               }, "settled"));
             }
           }
+          // The single normalization point for guest output: the persisted
+          // row, provider projection, observation and activity all derive from
+          // this masked result. Cache loss reloads the run's accepted revisions.
+          const mask = outputMaskByRun.get(runId) ??
+            new WorkspaceSecretOutputMask(workspaceSecretMatches(await input.repository.personalSecrets(binding)));
+          const output = mask.result(result, input.config.toolOutputMaxBytes);
+          // A returned command's code can no longer call MCP; then summarize.
+          await closeInvocation();
+          const settled = withCodeCallSummary(resultFromRuntime(call, output.result, output.masked),
+            await codeCallSummary(runId, codeKind ? modelRunToolCallId
+              : definition.originalName === "sandbox_exec_poll" ? execution?.modelRunToolCallId ?? null : null,
+            codeKind === null));
           // MCP close only disposes the observation handle. The durable cleanup
           // obligation survives until terminal process/VM proof.
           const projected = withActivity(
-            resultFromRuntime(call, result),
+            settled,
             projectWorkspaceActivity({
               ...projectionInput,
               durationMs: Date.now() - startedAt.getTime(),
-              result: resultFromRuntime(call, result)
+              result: settled
             }, "settled")
           );
           return initializedBinding.recreated
@@ -2179,11 +2364,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
         } finally {
           clearTimeout(timer);
           combined.removeEventListener("abort", onAbort);
+          await closeInvocation();
         }
       });
     },
     async handoff(request) {
       request.signal?.throwIfAborted();
+      await revokeCodeGrant(request.runId);
       const binding = await input.repository.binding(request);
       if (!binding || !exactBinding(binding, request.workspace)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       const obligation = { runId: request.runId, sessionId: binding.sessionId };
@@ -2497,6 +2684,19 @@ export function createWorkspaceCoordinator(input: Readonly<{
         return { attempted, completed };
       })().finally(() => { recoveryWork = null; });
       return recoveryWork;
+    },
+    async prepareCarryover({ onActivity, runId, signal, userId, workspace }) {
+      const initial = await input.repository.binding({ runId, userId });
+      if (!initial || !exactBinding(initial, workspace) || !input.repository.pendingCarryover ||
+        !await input.repository.pendingCarryover({ chatId: initial.chatId, runId })) return;
+      try {
+        await initializeWithLostSessionRecovery(await requireBinding(runId, userId, workspace), workspace, signal, onActivity);
+      } catch (error) {
+        // A cancellation stays one; any other start failure leaves the carried files unrestored.
+        if (signal?.aborted || (error instanceof WorkspaceRuntimeError &&
+          (error.code === "workspace_tool_cancelled" || error.code === "workspace_carryover_unavailable"))) throw error;
+        throw new WorkspaceRuntimeError("workspace_carryover_unavailable");
+      }
     },
     async tools({ runId, userId, workspace }) {
       // Reading the immutable catalog must also work after a capture handed

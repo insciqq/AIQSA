@@ -12,6 +12,10 @@ import { createEnableAllSkillsHandler, createSetSkillPreferenceHandler } from ".
 import { createPrismaSkillCatalogRelevanceService } from "./catalogRelevanceService";
 import { createRemoteSkillImportService } from "./remoteImportService";
 import { createRemoteSkillImportHandlers } from "./remoteImportHandlers";
+import { createSkillSaveUndoService } from "./skillSave";
+import { createSkillSaveHandlers } from "./skillSaveHandlers";
+import { createSkillVersionService } from "./revisionRestore";
+import { createSkillVersionHandlers } from "./skillVersionHandlers";
 
 export const defaultSkillRepository = createPrismaSkillRepository(prisma);
 export const defaultSkillCatalogRelevance = createPrismaSkillCatalogRelevanceService(prisma);
@@ -39,4 +43,14 @@ export const defaultSkillBundleHandlerDeps: SkillBundleHandlerDeps = {
 export const defaultRemoteSkillImportHandlers = createRemoteSkillImportHandlers({
   resolveAuth: resolveRequestAuth,
   service: () => createRemoteSkillImportService(prisma, createSkillBundleService(prisma, createS3StorageAdapter()))
+});
+
+export const defaultSkillSaveHandlers = createSkillSaveHandlers({
+  resolveAuth: resolveRequestAuth,
+  service: () => createSkillSaveUndoService(prisma)
+});
+
+export const defaultSkillVersionHandlers = createSkillVersionHandlers({
+  resolveAuth: resolveRequestAuth,
+  service: () => createSkillVersionService(prisma)
 });

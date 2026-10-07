@@ -150,13 +150,25 @@ function fixture(options: Readonly<{
   return { loadOwner, send: createScheduledTaskSend({ loadOwner, sendDeps }), sendDeps, state };
 }
 
-function body(target: ScheduledTaskSendTarget, toolCalling = true, tools: Readonly<{ toolsEnabled: boolean; workspaceEnabled: boolean }> =
-  { toolsEnabled: false, workspaceEnabled: false }) {
+function body(target: ScheduledTaskSendTarget, toolCalling = true, tools: Readonly<{
+  pinnedSkillIds?: readonly string[]; toolsEnabled: boolean; workspaceEnabled: boolean;
+}> = { toolsEnabled: false, workspaceEnabled: false }) {
   return scheduledTaskSendBody({
     admissionId: "40000000-0000-4000-8000-000000000004", modelId: "fake-qsa", prompt: "  Summarize the synthetic fixture\n",
-    provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] }, target, timeZone: "Europe/Moscow", toolCalling, ...tools
+    provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] }, target, timeZone: "Europe/Moscow", toolCalling,
+    pinnedSkillIds: [], ...tools
   });
 }
+
+/** The owner's Skills as admission resolves them: "skill-digest" at its current revision, any other unavailable. */
+const ownerSkills: NonNullable<RunHandlerDeps["skills"]> = {
+  listEnabledForRun: async () => [],
+  resolveForRun: async (_userId, skillIds) => skillIds.every((id) => id === "skill-digest")
+    ? { ok: true, skills: skillIds.map((skillId) => ({ description: "Synthetic digest", fileCount: 0, hasExecutables: false,
+      instructions: "Follow the synthetic digest steps.", loadedBefore: false, name: "gitlab-digest", revisionId: "revision-7",
+      skillId })) }
+    : { code: "skill_not_available", ok: false, status: 404 }
+};
 
 /** An available Workspace admission for the run, as the installation's service plans it. */
 const workspaceAdmission: NonNullable<RunHandlerDeps["workspace"]> = { prepare: vi.fn(async ({ signal: _signal, ...input }) => ({
@@ -385,7 +397,30 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(created.normalizedRequest.prompt.system).toContain("\"Synthetic Mail\" (needs the user to sign in again)");
   });
 
+  it("binds the task's pinned Skills at their current revision beside the Auto catalog, or refuses the run", async () => {
+    const f = fixture();
+    const send = createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps: { ...f.sendDeps, skills: ownerSkills } });
+    const response = await send({
+      body: body({ chatId: newChatId, kind: "new" }, true, { pinnedSkillIds: ["skill-digest"], toolsEnabled: true, workspaceEnabled: false }),
+      chatId: newChatId, occurrence, userId: owner.id
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.state.created!.normalizedRequest.skills).toMatchObject({
+      mode: "auto", pinned: [{ name: "gitlab-digest", revisionId: "revision-7", skillId: "skill-digest" }]
+    });
+
+    const lost = fixture();
+    const refused = await createScheduledTaskSend({ loadOwner: lost.loadOwner, sendDeps: { ...lost.sendDeps, skills: ownerSkills } })({
+      body: body({ chatId: newChatId, kind: "new" }, true, { pinnedSkillIds: ["skill-gone"], toolsEnabled: true, workspaceEnabled: false }),
+      chatId: newChatId, occurrence, userId: owner.id
+    });
+    expect([refused.status, await refused.json()]).toEqual([404, { error: "skill_not_available" }]);
+    expect(lost.state.created).toBeNull();
+  });
+
   it("keeps tools and Workspace off for a task that has them off", async () => {
+
     const f = fixture();
     const mcp = ownerMcp();
     const response = await createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps: { ...f.sendDeps, mcp, workspace: workspaceAdmission } })({

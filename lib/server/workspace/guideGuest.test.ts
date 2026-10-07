@@ -159,6 +159,13 @@ os.replace = swapped_replace
     expect((await lstat(value.directory)).isSymbolicLink()).toBe(true);
   });
 
+  it("stages the Skill authoring guide with the other release guides within each bound", () => {
+    expect(WORKSPACE_GUIDE_FILES.map(file => file.name)).toEqual(["office.md", "browser.md", "psd.md", "skills.md"]);
+    expect(INSTALL_WORKSPACE_GUIDES).toContain(`NAMES = (${WORKSPACE_GUIDE_FILES.map(file => `'${file.name}'`).join(", ")})`);
+    for (const file of WORKSPACE_GUIDE_FILES) expect(Buffer.byteLength(file.content)).toBeLessThanOrEqual(32_768);
+    expect(workspaceGuideInput().byteLength).toBeLessThanOrEqual(WORKSPACE_GUIDE_INPUT_MAX_BYTES);
+  });
+
   it("does not authorize guide files as user output capture", () => {
     const producerOperation = { generation: 1, owner: "run:guide-fixture" };
     expect(parseWorkspaceFileSelection({ files: [{ root: "project", relativePath: "result.txt" }], producerOperation }).files)

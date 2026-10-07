@@ -14,6 +14,7 @@ import {
   WORKSPACE_RECREATED_NOTICE_V2,
   aggregateWorkspaceActivityV2,
   workspaceActivityLabelV2,
+  workspaceCodeMcpCopyV2,
   workspaceDurationV2
 } from "./workspaceActivityPresentation";
 
@@ -129,6 +130,8 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
           </div>
         ) : null}
         {streams.map(([name, text]) => text ? <OutputBlockV2 key={name} label={name} text={text} /> : null)}
+        {command.codeMcp ? <p className="v2-workspace-truncated" role="note">{workspaceCodeMcpCopyV2(command.codeMcp)}</p> : null}
+        {command.secretMasked ? <p className="v2-workspace-truncated" role="note">Output contained a secret value; masked</p> : null}
         {command.truncated ? <p className="v2-workspace-truncated" role="note">Output truncated</p> : null}
         {command.exitCode !== undefined && command.exitCode !== null ? (
           <p className="v2-workspace-exit">

@@ -11,7 +11,8 @@ import { nextOccurrenceAfter, sameScheduledTaskSchedule } from "../../domain/sch
 
 export type ScheduledTaskPlanFailure = {
   ok: false;
-  code: "scheduled_task_once_in_past" | "scheduled_task_schedule_invalid" | "scheduled_task_chat_mode_invalid";
+  code: "scheduled_task_once_in_past" | "scheduled_task_schedule_invalid" | "scheduled_task_chat_mode_invalid" |
+    "scheduled_task_skills_need_tools";
 };
 export type ScheduledTaskUpdatePlan = {
   ok: true;
@@ -19,7 +20,10 @@ export type ScheduledTaskUpdatePlan = {
   status: ScheduledTaskStatus;
   /** Undefined keeps the stored due time. */
   nextRunAt: Date | null | undefined;
-  /** The model identity (and its tool calling for monitoring) must be readmitted against the current catalog. */
+  /**
+   * The model identity (and its tool calling for monitoring) and the pinned
+   * Skills must be readmitted against the current catalog and Skills.
+   */
   checkModel: boolean;
 };
 
@@ -45,9 +49,10 @@ export function firstScheduledTaskRunAt(
  * the next occurrence from now; an unchanged active schedule keeps its due time
  * so that an edit never skips a run that is already due. A changed once
  * schedule must lie ahead in any status. The model is readmitted whenever the
- * result is active, its identity, Search or type changed, or tools or
- * Workspace were turned on. An hourly or monitoring result must continue in
- * one chat; the chat mode is never changed silently.
+ * result is active, its identity, Search, type or pinned Skills changed, or
+ * tools or Workspace were turned on. An hourly or monitoring result must
+ * continue in one chat; the chat mode is never changed silently, nor are
+ * pinned Skills dropped when tools turn off.
  */
 export function planScheduledTaskUpdate(
   current: ScheduledTask,
@@ -66,15 +71,22 @@ export function planScheduledTaskUpdate(
     toolsEnabled: patch.toolsEnabled ?? current.toolsEnabled,
     workspaceEnabled: patch.workspaceEnabled ?? current.workspaceEnabled,
     memoryEnabled: patch.memoryEnabled ?? current.memoryEnabled,
+    pinnedSkillIds: patch.pinnedSkillIds ?? current.pinnedSkillIds,
     chatMode: patch.chatMode ?? current.chatMode,
-    kind: patch.kind ?? current.kind
+    kind: patch.kind ?? current.kind,
+    // Null is a choice here (forever), not an omission.
+    historyRetentionDays: patch.historyRetentionDays !== undefined ? patch.historyRetentionDays : current.historyRetentionDays
   };
   if (!scheduledTaskChatModeAllowed(draft, draft.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
+  if (draft.pinnedSkillIds.length > 0 && !draft.toolsEnabled) return { ok: false, code: "scheduled_task_skills_need_tools" };
+  const skillsChanged = draft.pinnedSkillIds.length !== current.pinnedSkillIds.length ||
+    draft.pinnedSkillIds.some((skillId, index) => skillId !== current.pinnedSkillIds[index]);
   const scheduleChanged = draft.timeZone !== current.timeZone || !sameScheduledTaskSchedule(draft.schedule, current.schedule);
   // Turning tools or Workspace on needs the model's tool calling (and Workspace the installation's) again.
   const modelChanged = draft.modelId !== current.modelId || draft.provider !== current.provider ||
     draft.searchEnabled !== current.searchEnabled || draft.kind !== current.kind ||
-    (draft.toolsEnabled && !current.toolsEnabled) || (draft.workspaceEnabled && !current.workspaceEnabled);
+    (draft.toolsEnabled && !current.toolsEnabled) || (draft.workspaceEnabled && !current.workspaceEnabled) || skillsChanged;
+
   const status = patch.status ?? (current.status === "completed" && scheduleChanged ? "active" : current.status);
   // A claimed once task has no due time left to keep; a recurring one always needs one.
   const keepsDueTime = current.status === "active" && !scheduleChanged &&

@@ -22,7 +22,9 @@ import {
 } from "./scheduledTaskDraft";
 import {
   browserTimeZone,
+  SCHEDULED_TASK_HISTORY_KEPT_TEXT,
   scheduledTaskFailureMessage,
+  scheduledTaskHistoryLine,
   scheduledTaskLastRunLine,
   scheduledTaskScheduleText,
   scheduledTaskStatusLine,
@@ -95,7 +97,9 @@ const FIELD_FOR_CODE: Readonly<Record<string, keyof ScheduledTaskFieldErrors>> =
   scheduled_task_model_cannot_report: "kind",
   scheduled_task_search_unavailable: "search",
   scheduled_task_tools_unavailable: "tools",
-  scheduled_task_workspace_unavailable: "workspace"
+  scheduled_task_workspace_unavailable: "workspace",
+  scheduled_task_skills_need_tools: "skills",
+  scheduled_task_skill_unavailable: "skills"
 };
 
 /**
@@ -455,6 +459,7 @@ function ScheduledTaskRow({
 }>) {
   const status = scheduledTaskStatusLine(task);
   const lastRun = scheduledTaskLastRunLine(task);
+  const history = scheduledTaskHistoryLine(task);
   const headingId = `v2-scheduled-task-${task.id}`;
   // A goal a monitoring check reached completes the task; it can still be resumed to keep watching.
   const resumable = task.status !== "completed" || task.completionReason === "goal_reached";
@@ -472,6 +477,10 @@ function ScheduledTaskRow({
           {status.text}
         </p>
         {lastRun ? <p className="v2-scheduled-row-last" data-tone={task.lastRun?.state === "failed" || task.lastRun?.reasonCode === "could_not_check" ? "attention" : undefined}>{lastRun}</p> : null}
+        <p className="v2-scheduled-row-history" data-testid="scheduled-task-history-line">{history}</p>
+        <p className="v2-scheduled-row-history-hint">
+          {task.historyRetentionDays === null ? "Old chats stay until you delete them." : SCHEDULED_TASK_HISTORY_KEPT_TEXT}
+        </p>
         {error ? <p className="v2-scheduled-row-error" role="alert">{error}</p> : null}
       </div>
       <div className="v2-scheduled-row-actions">
