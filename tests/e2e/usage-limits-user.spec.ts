@@ -141,7 +141,15 @@ test("system usage above the budget neither warns nor refuses the user", async (
   const accepted = page.waitForResponse((response) => /\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname) &&
     response.request().method() === "POST");
   await composer.press("Enter");
-  expect((await accepted).status()).toBeLessThan(400);
+  // Usage limits are checked before preparation, so any outcome other than a
+  // usage-limit refusal means the budget let the send through.
+  const response = await accepted;
+  const body = await response.text();
+  await testInfo.attach("system-usage-send.json", { body: JSON.stringify({ body: body.slice(0, 400), status: response.status() }),
+    contentType: "application/json" });
+  expect(response.status(), body).not.toBe(429);
+  expect(body).not.toMatch(/usage_budget_exhausted|installation_budget_exhausted|message_rate_limited/u);
+  await expect(page.getByTestId("composer-usage-limit")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("system-usage-admitted.png") });
 });
 
