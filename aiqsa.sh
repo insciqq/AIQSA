@@ -73,7 +73,9 @@ ENV_FILE="" BASE_URL="" ADMIN_EMAIL="" WORKSPACE_MODE=""
 HOST_ONLY=0 STACK_ONLY=0 NO_START=0 SKIP_PREFLIGHT=0 HELP=0
 TARGET_TAG="" BACKUP_CONFIRMED=0 BACKUP_NOW=0 ADD_MISSING_KEYS=0 PREVIOUS_REF=""
 OUTPUT_DIR="" RESTORE_DIR=""
-LOGS_ERRORS=0 LOGS_WARNINGS=0 LOGS_FOLLOW=0 LOGS_SINCE="" LOGS_TAIL="" LOG_SERVICES=()
+LOGS_ERRORS=0 LOGS_WARNINGS=0 LOGS_FOLLOW=0 LOGS_TAIL="" LOG_SERVICES=()
+# --since: a log window for logs, a Health range for health.
+SINCE="" HEALTH_JSON=0 HEALTH_RUN=""
 declare -A GIVEN=()
 
 # State.
@@ -2080,10 +2082,10 @@ cmd_logs() {
   local args=(logs --no-color) levels="" errors failed=0
   env_load
   docker_ready || die "$EXIT_FAILURE" "Cannot read logs: Docker is not usable ($DOCKER_STATE)${DOCKER_ERROR:+: $DOCKER_ERROR}."
-  if [[ -n $LOGS_SINCE ]]; then args+=(--since "$LOGS_SINCE"); fi
+  if [[ -n $SINCE ]]; then args+=(--since "$SINCE"); fi
   if [[ -n $LOGS_TAIL ]]; then
     args+=(--tail "$LOGS_TAIL")
-  elif [[ -z $LOGS_SINCE ]]; then
+  elif [[ -z $SINCE ]]; then
     args+=(--tail "$LOGS_DEFAULT_TAIL")
   fi
   if (( LOGS_FOLLOW )); then args+=(--follow); fi
@@ -2101,6 +2103,43 @@ cmd_logs() {
   fi
   mask_stream < "$errors" >&2
   (( ! failed )) || die "$EXIT_FAILURE" "docker compose logs failed; ./aiqsa.sh doctor shows the state of the stack."
+}
+
+# ---------------------------------------------------------------- health
+
+# Whether a Compose service has a running container.
+service_running() {
+  local rows
+  rows=$(stack_containers) || rows=""
+  [[ $'\n'$rows == *$'\n'"$1|running|"* ]]
+}
+
+# The read-only telemetry report of scripts/health-report.ts, run in the
+# running app container or, when the app is down, in a one-off app container
+# without dependencies. Exit 1 and 2 are the report's own (read failure, usage).
+cmd_health() {
+  local args=(node --import tsx scripts/health-report.ts) errors status=0 where
+  env_load
+  docker_ready || die "$EXIT_FAILURE" "Cannot read health: Docker is not usable ($DOCKER_STATE)${DOCKER_ERROR:+: $DOCKER_ERROR}."
+  if [[ -n $SINCE ]]; then args+=(--since "$SINCE"); fi
+  if [[ -n $HEALTH_RUN ]]; then args+=(--run "$HEALTH_RUN"); fi
+  if (( HEALTH_JSON )); then args+=(--json); fi
+  ensure_temp_dir
+  errors=$TEMP_DIR/health.err
+  if service_running app; then
+    where="docker compose exec app"
+    dc exec -T app "${args[@]}" </dev/null 2>"$errors" | mask_stream || status=$?
+  else
+    (( QUIET )) || note "The app container is not running; reading health from a one-off app container."
+    where="docker compose run app"
+    dc run --rm --no-deps -T app "${args[@]}" </dev/null 2>"$errors" | mask_stream || status=$?
+  fi
+  mask_stream < "$errors" >&2
+  case $status in
+    0) ;;
+    1 | 2) exit "$status" ;;
+    *) die "$EXIT_FAILURE" "$where failed (exit $status); ./aiqsa.sh doctor shows the state of the stack." ;;
+  esac
 }
 
 # ---------------------------------------------------------------- version and help
@@ -2129,6 +2168,9 @@ Commands:
   logs [service...]
              Print the stack's container logs with .env secrets masked
              (default: the last 200 lines per container, all services).
+  health     Read-only report of recent problems from the persisted telemetry: what needs
+             attention, error totals, failing providers, restarts, stuck queues and the
+             latest incidents (works while the app container is down).
   version    Print the checkout version.
   help       Print this help.
 
@@ -2163,6 +2205,10 @@ Options:
                          --tail every line in that window is printed.
   --tail <n|all>         logs: last lines per container (default 200 without --since).
   --follow, -f           logs: keep streaming new lines until interrupted.
+  --since 24h|7d|30d     health: report range (default 24h).
+  --json                 health: machine-readable JSON instead of text.
+  --run <reference>      health: look up the runs and incidents of an error reference
+                         (the first 8 or more characters of a run id).
 
 Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight or doctor
 check failed (before any container change), 5 stack not ready after a start,
@@ -2224,7 +2270,9 @@ parse_args() {
       --add-missing-keys) ADD_MISSING_KEYS=1 ;;
       --errors) LOGS_ERRORS=1 ;;
       --warnings) LOGS_WARNINGS=1 ;;
-      --since) option_value "$argument" "$@"; LOGS_SINCE=$1; shift ;;
+      --since) option_value "$argument" "$@"; SINCE=$1; shift ;;
+      --json) HEALTH_JSON=1 ;;
+      --run) option_value "$argument" "$@"; HEALTH_RUN=$1; shift ;;
       --tail) option_value "$argument" "$@"; LOGS_TAIL=$1; shift ;;
       -f | --follow) LOGS_FOLLOW=1 ;;
       -*) usage_error "Unknown option: $argument" ;;
@@ -2255,6 +2303,7 @@ validate_args() {
     backup) allowed=" --output " ;;
     restore) allowed=" --skip-preflight " ;;
     logs) allowed=" --errors --warnings --since --tail -f --follow " ;;
+    health) allowed=" --since --json --run " ;;
     __upgrade-apply) allowed=" --previous-ref --add-missing-keys --skip-preflight " ;;
     version | help) allowed=" " ;;
     "") usage_error "Missing command." ;;
@@ -2269,8 +2318,14 @@ validate_args() {
   if (( BACKUP_NOW && BACKUP_CONFIRMED )); then usage_error "--backup and --backup-confirmed are mutually exclusive."; fi
   if (( LOGS_ERRORS && LOGS_WARNINGS )); then usage_error "--errors and --warnings are mutually exclusive."; fi
   if [[ -n $LOGS_TAIL && ! $LOGS_TAIL =~ ^(all|0|[1-9][0-9]{0,6})$ ]]; then usage_error "--tail must be a line count or all."; fi
-  if [[ -n $LOGS_SINCE && ! $LOGS_SINCE =~ ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$ \
-    && ! $LOGS_SINCE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$ ]]; then
+  if [[ $COMMAND == health ]]; then
+    if [[ -n $SINCE && ! $SINCE =~ ^(24h|7d|30d)$ ]]; then usage_error "--since must be 24h, 7d or 30d for health."; fi
+    if [[ -n $SINCE && -n $HEALTH_RUN ]]; then usage_error "--run and --since are mutually exclusive."; fi
+    if [[ -n $HEALTH_RUN && ! $HEALTH_RUN =~ ^[0-9A-Fa-f][0-9A-Fa-f-]{7,35}$ ]]; then
+      usage_error "--run needs an error reference: at least the first 8 characters of a run id."
+    fi
+  elif [[ -n $SINCE && ! $SINCE =~ ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$ \
+    && ! $SINCE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$ ]]; then
     usage_error "--since must be a duration like 30m, 2h or 1h30m, or an RFC 3339 time like 2026-01-31T08:00:00Z."
   fi
   for option in ${LOG_SERVICES[@]+"${LOG_SERVICES[@]}"}; do
@@ -2311,6 +2366,7 @@ main() {
     backup) cmd_backup ;;
     restore) cmd_restore ;;
     logs) cmd_logs ;;
+    health) cmd_health ;;
     version) cmd_version ;;
     help) cmd_help ;;
   esac
