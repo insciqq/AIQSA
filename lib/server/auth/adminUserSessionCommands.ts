@@ -10,7 +10,7 @@ import type {
 } from "./adminRepositoryContract";
 import { adminProvisioningGroupInputs } from "./adminRepositoryInputs";
 import { provisionActiveUser } from "./provisioning";
-import { lockAuthUser } from "./transactionLocks";
+import { lockActiveAdmins, lockAuthUser } from "./transactionLocks";
 import {
   countAccountKnowledgeOwnedData,
   type AccountKnowledgeDeletionHook
@@ -369,9 +369,11 @@ export function createAdminUserSessionCommands(
           return "last_admin_forbidden";
         }
 
+        // A manual change takes the role over from any external sign-in source.
         await tx.user.update({
           data: {
-            role: input.role
+            role: input.role,
+            roleManagedBy: null
           },
           where: {
             id: target.id
@@ -504,16 +506,6 @@ async function countUserOwnedAppData(
     usageEvents
   });
   return { knowledge, memory, nonPurgeable, personalMcp };
-}
-
-async function lockActiveAdmins(tx: Prisma.TransactionClient): Promise<{ id: string }[]> {
-  return tx.$queryRaw<{ id: string }[]>`
-    SELECT "id"
-    FROM "User"
-    WHERE "role" = 'admin' AND "status" = 'active'
-    ORDER BY "id"
-    FOR UPDATE
-  `;
 }
 
 /** Bounds the Projects named in a disable conflict; `projectCount` still reports all of them. */
