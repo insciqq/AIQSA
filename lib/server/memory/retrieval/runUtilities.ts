@@ -1,4 +1,4 @@
-import { memoryReportedUsage as providerUsage } from "../execution/usage";
+import { memoryReportedUsage as providerUsage, memoryVectorCallUsage } from "../execution/usage";
 import type { PrismaClient } from "@prisma/client";
 import {
   createAcceptedEmbeddingRuntime,
@@ -641,39 +641,6 @@ function unavailableReason(error: unknown): string {
   return "memory_run_utility_unavailable";
 }
 
-function embeddingUsage(result: EmbeddingResult): MemoryReportedUsage {
-  const complete = result.usage.inputTokens !== null && result.usage.totalTokens !== null;
-  if (!complete && result.usage.inputTokens === null && result.usage.totalTokens === null) {
-    return unavailableUsage;
-  }
-  return {
-    cachedInputTokens: 0,
-    completeness: complete ? "COMPLETE" : "PARTIAL",
-    estimatedCostMicros: null,
-    inputTokens: result.usage.inputTokens,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens: result.usage.totalTokens
-  };
-}
-
-function rerankerUsage(result: RerankResult): MemoryReportedUsage {
-  const { inputTokens, totalTokens } = result.usage;
-  if (inputTokens === null && totalTokens === null) return unavailableUsage;
-  return {
-    cachedInputTokens: 0,
-    completeness: inputTokens !== null && totalTokens !== null
-      ? "COMPLETE"
-      : "PARTIAL",
-    estimatedCostMicros: null,
-    inputTokens,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens
-  };
-}
-
-
 function boundedResponseId(value: string | null): string | null {
   return value && value.length <= 256 &&
     /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,255}$/u.test(value)
@@ -1231,7 +1198,7 @@ async function runDedicatedRerankBatch(
         errorCode: "memory_run_utility_output_invalid",
         providerResponseId: boundedResponseId(result.requestId),
         state: "FAILED",
-        usage: rerankerUsage(result)
+        usage: memoryVectorCallUsage(result.usage)
       });
     } catch {
       return {
@@ -1255,7 +1222,7 @@ async function runDedicatedRerankBatch(
       errorCode: null,
       providerResponseId: boundedResponseId(result.requestId),
       state: "SUCCEEDED",
-      usage: rerankerUsage(result)
+      usage: memoryVectorCallUsage(result.usage)
     });
   } catch {
     return {
@@ -1439,7 +1406,7 @@ async function runQueryEmbeddingAttempt(
       errorCode: "memory_query_embedding_output_invalid",
       providerResponseId: boundedResponseId(result.requestId),
       state: "FAILED",
-      usage: embeddingUsage(result)
+      usage: memoryVectorCallUsage(result.usage)
     });
     return {
       ...unavailable("memory_query_embedding_output_invalid", started.bindingId),
@@ -1454,7 +1421,7 @@ async function runQueryEmbeddingAttempt(
     errorCode: null,
     providerResponseId: boundedResponseId(result.requestId),
     state: "SUCCEEDED",
-    usage: embeddingUsage(result)
+    usage: memoryVectorCallUsage(result.usage)
   });
   if (!await authorizeAcceptedOutput(
     deps,

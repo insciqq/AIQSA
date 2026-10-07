@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { DecisionReceipt } from "../providers/decisions";
+import { loadProviderModelCostBasis, providerModelUsageCostMicros } from "../usage";
 
 export type KnowledgeRelevanceOwner = Readonly<{
   runId: string; userId: string; reservationId: string; leaseToken: string;
@@ -59,7 +60,11 @@ export function createKnowledgeRelevanceRepository(db: PrismaClient): KnowledgeR
         const receipt = result.receipt;
         const usage = { inputTokens: receipt?.usage.inputTokens ?? null, outputTokens: receipt?.usage.outputTokens ?? null,
           totalTokens: receipt ? receipt.usage.inputTokens + receipt.usage.outputTokens : null,
-          estimatedCostMicros: receipt?.usage.costUsd == null ? null : Math.round(receipt.usage.costUsd * 1_000_000),
+          estimatedCostMicros: receipt ? providerModelUsageCostMicros({
+            basis: await loadProviderModelCostBasis(tx, snapshot.providerModelId),
+            reportedCostUsd: receipt.usage.costUsd ?? null,
+            usage: { inputTokens: receipt.usage.inputTokens, outputTokens: receipt.usage.outputTokens }
+          }) : null,
           usageCompleteness: receipt ? "COMPLETE" as const : "UNAVAILABLE" as const };
         await tx.usageEvent.upsert({ where: { knowledgeRelevanceAttemptId: id }, update: usage,
           create: { ...usage, knowledgeRelevance: true, knowledgeRelevanceAttemptId: id, purpose: "knowledge_retrieval",
