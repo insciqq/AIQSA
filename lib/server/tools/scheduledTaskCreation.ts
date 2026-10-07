@@ -201,8 +201,9 @@ function decodeArguments(value: Record<string, unknown>): ToolArguments | string
   const schedule = contractSchedule(value.schedule);
   if (typeof schedule === "string") return schedule;
   // Left open (or by a run accepted before the field), a new task keeps the default.
-  const history = value.historyRetentionDays === undefined || value.historyRetentionDays === null
-    ? { days: SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS } : scheduledTaskToolHistoryRetention(value.historyRetentionDays);
+  const history: Readonly<{ days: ScheduledTaskHistoryRetentionDays }> | null =
+    value.historyRetentionDays === undefined || value.historyRetentionDays === null
+      ? { days: SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS } : scheduledTaskToolHistoryRetention(value.historyRetentionDays);
   if (!history) {
     return `historyRetentionDays must be ${SCHEDULED_TASK_HISTORY_RETENTION_DAYS.join(", ")}, ` +
       `${SCHEDULED_TASK_TOOL_HISTORY_FOREVER} (forever) or null.`;
