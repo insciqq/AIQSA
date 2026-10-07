@@ -2193,6 +2193,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             "Workspace execution is unavailable"
           );
         }
+        // The Workspace files a scheduled task's monthly rotation carried arrive
+        // before the first request: nothing the run calls meets an empty project.
+        if (workspace && input.workspace?.prepareCarryover) {
+          await input.workspace.prepareCarryover({ onActivity: onWorkspaceActivity, runId, signal, userId: input.userId, workspace });
+        }
         const workspaceTools = clientToolsEnabled && workspace && input.workspace
           ? await input.workspace.tools({
               runId,
