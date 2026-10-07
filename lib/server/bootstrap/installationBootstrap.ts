@@ -385,6 +385,13 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.usageLimitPolicy.upsert({
+    // No limits until an administrator sets them; adoption repairs a missing
+    // singleton but never changes saved limits or their version.
+    create: { id: "installation" },
+    update: {},
+    where: { id: "installation" }
+  });
 
   return catalog;
 }

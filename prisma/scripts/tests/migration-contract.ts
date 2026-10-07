@@ -607,6 +607,11 @@ function bootstrapFoundationDigest(database: string): string {
       'mcp_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, "personalLocalNetworkEnabled", version) ORDER BY id)
         FROM "McpPolicy"
+      ), '[]'::jsonb),
+      'usage_limit_policy', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, "monthlyCapMicros", "monthlyBudgetMicros", "messagesPerHour",
+          "messagesPerDay", version, "updatedByUserId") ORDER BY id)
+        FROM "UsageLimitPolicy"
       ), '[]'::jsonb)
     )::text);`,
   );
@@ -655,6 +660,8 @@ function runBootstrapProof(database: string): void {
       AND s."decayPolicyVersion" = 'memory-decay-v1';`), "1", "initial administrator Memory defaults");
   psqlScalar(database, `UPDATE "UserMemorySettings" SET "learnAutomatically" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);
+  // Adoption recreates a missing usage limits singleton exactly as the migration inserted it.
+  psqlScalar(database, `DELETE FROM "UsageLimitPolicy";`);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /"code":"installation_already_adopted"/u);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "learnAutomatically" OR "decayEnabled";`), "0",
@@ -668,13 +675,14 @@ function runBootstrapProof(database: string): void {
   );
   psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
     UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';
-    UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';`);
+    UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';
+    UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(
     bootstrapFoundationDigest(database),
     disabledDigest,
-    "bootstrap adoption must preserve an administrator's saved Workspace and personal MCP local network Off",
+    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off and usage limits",
   );
   assert.equal(
     psqlScalar(
