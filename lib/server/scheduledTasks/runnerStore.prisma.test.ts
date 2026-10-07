@@ -79,7 +79,8 @@ async function codeReceipts(runId: string, chatId: string,
     sandboxName: `code-${randomUUID()}` } });
   await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: true, mcpVersion: "0.6.16",
     modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
-    toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id } });
+    toolCatalogHash: "a".repeat(64), toolDefinitions: [{ description: "Fixture", inputSchema: { type: "object" },
+      namespacedName: "workspace__sandbox_shell", originalName: "sandbox_shell" }], workspaceSessionId: session.id } });
   await prisma.workspaceCodeGrant.create({ data: { modelRunId: runId, workspaceSessionId: session.id } });
   const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: runId, ordinal: 90,
     providerCallId: `code-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "workspace__sandbox_shell" } });

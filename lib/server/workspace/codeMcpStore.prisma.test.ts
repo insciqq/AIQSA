@@ -20,6 +20,9 @@ const budgets = { version: 1, maxCalls: 3, maxConcurrent: 2, maxPerSecond: 10 };
 const catalog = { version: 1, servers: [{ description: "", namespace: "gitlab", revisionId: "revision-1", serverId: "server-gitlab",
   serverName: "GitLab", tools: [{ description: "List commits", namespacedName: "mcp_gitlab_list_commits_0000000000",
     originalName: "list_commits" }] }] };
+/** The sandbox tools the run's Workspace binding froze: never empty. */
+const toolDefinitions = [{ description: "Fixture", inputSchema: { type: "object" }, namespacedName: "workspace__sandbox_shell",
+  originalName: "sandbox_shell" }];
 
 async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unknown>; project?: boolean }> = {}) {
   const userId = `${PREFIX}${randomUUID()}`;
@@ -50,7 +53,7 @@ async function fixture(input: Readonly<{ normalizedRequest?: Record<string, unkn
       personalMemoryDisabled: true, projectId: project.id } } } : {}) } });
   await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: true, mcpVersion: "0.6.16",
     modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
-    toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id } });
+    toolCatalogHash: "a".repeat(64), toolDefinitions, workspaceSessionId: session.id } });
   let ordinal = 0;
   const command = async () => (await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: runId,
     ordinal: ordinal++, providerCallId: randomUUID(), roundIndex: 0, toolName: "workspace__sandbox_shell",

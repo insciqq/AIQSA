@@ -1007,7 +1007,8 @@ describe("scheduled task cards", () => {
   const created = { data: { artifactType: "scheduled_task" as const, payload: card }, type: "artifact" as const };
   const task: ScheduledTask = {
     ...card, id: "task-1", prompt: "Remind me to check my mail.", modelId: "deployment-1", provider: "connection-1",
-    searchEnabled: false, emailNotify: false, memoryEnabled: false, pinnedSkillIds: [], chatMode: "new", pauseReason: null, completionReason: null,
+    searchEnabled: false, emailNotify: false, memoryEnabled: false, pinnedSkillIds: [], chatMode: "new", historyRetentionDays: 90,
+    historyDeletedChats: 0, historyNextDeletionAt: null, pauseReason: null, completionReason: null,
     lastRun: null, running: false, chatId: null, unseenResult: false, revision: 2, createdAt: "2026-10-04T10:00:00.000Z",
     updatedAt: "2026-10-04T11:00:00.000Z"
   };

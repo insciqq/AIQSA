@@ -1,15 +1,19 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { SkillSaveCard } from "../../contracts/skillSaves";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
 import { saveSkillForToolCall } from "../runs/prismaRepositorySkillSaveCall";
 import { SAVE_SKILL_TOOL_NAME, skillSavedResult } from "../tools/skillSave";
+import { skillBundleDigest } from "./bundle";
 import { createSkillVersionService, SKILL_LIBRARY_RESTORE_CLIENT_ID } from "./revisionRestore";
 import { createSkillSaveUndoService, SKILL_SAVE_CLIENT_ID, type SkillSaveTarget } from "./skillSave";
 
 const users: string[] = [];
+const sha256 = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+/** The bytes of the one binary object every version shares. */
+const BINARY = Buffer.from([0, 1, 2, 3]);
 
 async function owner() {
   const userId = `skill-restore-test-${randomUUID()}`;
@@ -21,30 +25,36 @@ async function owner() {
 /**
  * A Skill with ready revisions v1..vN: each holds a text note and the same
  * settled binary object, so restores can be checked for object reuse.
+ * Checksums and bundle digests are computed as a real bundle has them.
  */
 async function skill(userId: string, notes: readonly string[], input: Readonly<{ published?: boolean; archived?: boolean }> = {}) {
   const definition = await prisma.skillDefinition.create({ data: { ownerUserId: userId } });
   const storageKey = `skills/${definition.id}/synthetic/${randomUUID()}`;
   const revisions: string[] = [];
+  const digests: string[] = [];
   for (const [index, note] of notes.entries()) {
-    const revision = await prisma.skillRevision.create({ data: { skillId: definition.id, revisionNumber: index + 1, schemaVersion: 2,
-      name: "digest", description: "Synthetic digest", instructions: `Version ${index + 1}.`, bundleDigest: `digest-${note}`,
-      fileCount: 2, bundleByteSize: 100 + index, hasExecutables: index % 2 === 0, authorUserId: userId, bundleReady: true } });
-    await prisma.skillRevisionFile.createMany({ data: [
-      { revisionId: revision.id, skillId: definition.id, path: "notes.txt", byteSize: note.length, checksum: `sum-${note}`, kind: "text",
-        executable: false, textContent: note },
-      { revisionId: revision.id, skillId: definition.id, path: "model.bin", byteSize: 4, checksum: "sum-bin", kind: "binary",
-        executable: false, textContent: null, storageKey }
-    ] });
+    const content = { name: "digest", description: "Synthetic digest", instructions: `Version ${index + 1}.` };
+    const files = [
+      { path: "notes.txt", byteSize: Buffer.byteLength(note), checksum: sha256(note), kind: "text", executable: false, textContent: note },
+      { path: "model.bin", byteSize: BINARY.length, checksum: sha256(BINARY), kind: "binary", executable: false, textContent: null,
+        storageKey }
+    ];
+    const bundleDigest = skillBundleDigest({ ...content, files });
+    const revision = await prisma.skillRevision.create({ data: { ...content, skillId: definition.id, revisionNumber: index + 1,
+      schemaVersion: 2, bundleDigest, fileCount: files.length, bundleByteSize: 100 + index, hasExecutables: index % 2 === 0,
+      authorUserId: userId, bundleReady: true } });
+    await prisma.skillRevisionFile.createMany({ data: files.map((file) => ({ ...file, revisionId: revision.id, skillId: definition.id })) });
     revisions.push(revision.id);
+    digests.push(bundleDigest);
   }
   // A staged revision that never settled is not a version.
-  await prisma.skillRevision.create({ data: { skillId: definition.id, revisionNumber: notes.length + 1, schemaVersion: 2, name: "digest",
-    instructions: "Staged.", bundleReady: false, authorUserId: userId } });
+  const staged = { name: "digest", description: "Synthetic digest", instructions: "Staged." };
+  await prisma.skillRevision.create({ data: { ...staged, skillId: definition.id, revisionNumber: notes.length + 1, schemaVersion: 2,
+    bundleDigest: skillBundleDigest({ ...staged, files: [] }), bundleReady: false, authorUserId: userId } });
   await prisma.skillDefinition.update({ where: { id: definition.id }, data: { currentRevisionId: revisions.at(-1)!,
     version: notes.length, ...(input.published ? { sharedRevisionId: revisions[0] } : {}),
     ...(input.archived ? { archivedAt: new Date() } : {}) } });
-  return { skillId: definition.id, revisions, storageKey };
+  return { skillId: definition.id, revisions, digests, storageKey };
 }
 
 async function answer(userId: string) {
@@ -104,7 +114,7 @@ describe("Skill versions in the library", () => {
 
   it("restores a version as a new current one with the same digest and objects, keeping history and the published version", async () => {
     const userId = await owner();
-    const { skillId, revisions, storageKey } = await skill(userId, ["a", "b", "c"], { published: true });
+    const { skillId, revisions, digests, storageKey } = await skill(userId, ["a", "b", "c"], { published: true });
     const service = createSkillVersionService(prisma);
     const result = await service.restore({ userId, skillId, revisionId: revisions[0]!, expectedVersion: 3 });
     // Revision 4 is the staged one that never settled, so the restore is v5.
@@ -112,7 +122,7 @@ describe("Skill versions in the library", () => {
     const definition = await prisma.skillDefinition.findUniqueOrThrow({ where: { id: skillId },
       include: { currentRevision: { include: { files: { orderBy: { path: "asc" } } } } } });
     expect(definition).toMatchObject({ version: 4, sharedRevisionId: revisions[0] });
-    expect(definition.currentRevision).toMatchObject({ revisionNumber: 5, bundleDigest: "digest-a", bundleReady: true, instructions: "Version 1.",
+    expect(definition.currentRevision).toMatchObject({ revisionNumber: 5, bundleDigest: digests[0], bundleReady: true, instructions: "Version 1.",
       hasExecutables: true });
     expect(definition.currentRevision!.files).toEqual([
       expect.objectContaining({ path: "model.bin", storageKey, textContent: null }),
@@ -149,7 +159,7 @@ describe("Skill versions in the library", () => {
 describe("a chat answer's Skill restore", () => {
   it("restores by alias guard with a v2 → v4 (= v1) card and Undo, under the one-save-per-answer limit", async () => {
     const userId = await owner();
-    const { skillId, revisions } = await skill(userId, ["a", "b"], { published: true });
+    const { skillId, revisions, digests } = await skill(userId, ["a", "b"], { published: true });
     const turn = await answer(userId);
     const card = savedCard(await turn.restore({ kind: "restore", skillId, guard: { revisionId: revisions[1]! }, revision: 1 }));
     expect(card).toMatchObject({ outcome: "restored", fromRevision: 2, toRevision: 4, restoredRevision: 1, published: true,
@@ -169,7 +179,7 @@ describe("a chat answer's Skill restore", () => {
     const undo = createSkillSaveUndoService(prisma);
     expect(await undo.undo({ userId, skillId, saveId: card.saveId })).toEqual({ state: "undone", outcome: "restored", revision: 5 });
     const current = await prisma.skillDefinition.findUniqueOrThrow({ where: { id: skillId }, include: { currentRevision: true } });
-    expect(current.currentRevision).toMatchObject({ instructions: "Version 2.", bundleDigest: "digest-b" });
+    expect(current.currentRevision).toMatchObject({ instructions: "Version 2.", bundleDigest: digests[1] });
     const versions = await createSkillVersionService(prisma).list({ userId, skillId });
     expect(versions!.versions.slice(0, 2).map((version) => [version.revisionNumber, version.restoredFrom, version.changeNote]))
       .toEqual([[5, 2, null], [4, 1, "Put the old digest back"]]);

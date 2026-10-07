@@ -653,7 +653,6 @@ describe("scheduled task runner", () => {
       searchStrategies: [] }),
       dispatchOffsetMs: () => 0,
       now: () => new Date("2026-10-05T06:00:05.000Z"),
-      renameChat: async () => undefined,
       stopRun: async () => "not_found",
       // A permanent refusal pauses each task: news the owner hears about.
       send: async () => Response.json({ error: "model_not_available" }, { status: 403 }),
@@ -821,7 +820,7 @@ describe("scheduled task runner", () => {
         modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
         searchStrategies: [] };
       },
-      now: () => new Date("2026-10-05T06:00:05.000Z"), renameChat: async () => undefined, send, stopRun: async () => "not_found",
+      now: () => new Date("2026-10-05T06:00:05.000Z"), send, stopRun: async () => "not_found",
       store: h.store
     });
     await runner.tick();
