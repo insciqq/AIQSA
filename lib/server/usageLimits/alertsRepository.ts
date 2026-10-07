@@ -8,11 +8,13 @@ export type UsageLimitAlertRecipient = Readonly<{ email: string | null; userId: 
 
 export type UsageLimitAlertStore = Readonly<{
   /**
-   * Claims, for the month, every key not claimed yet and every undelivered
-   * one whose retry is due, and returns what this call claimed. Concurrent
-   * calls claim each key once.
+   * Claims, for the month, the first `limit` keys (in key order) that are not
+   * claimed yet or are undelivered with a retry due, and returns what this
+   * call claimed. Keys that cannot be claimed never count toward `limit`.
+   * Concurrent calls claim each key once.
    */
-  claim(input: Readonly<{ keys: readonly UsageLimitAlertKey[]; now: Date; periodStart: Date }>): Promise<readonly UsageLimitAlertClaim[]>;
+  claim(input: Readonly<{ keys: readonly UsageLimitAlertKey[]; limit: number; now: Date; periodStart: Date }>):
+    Promise<readonly UsageLimitAlertClaim[]>;
   /** Settles claimed rows; `undelivered` lets a later check claim them again. */
   settle(ids: readonly string[], state: "delivered" | "undelivered", now: Date): Promise<void>;
   listRecipients(): Promise<readonly UsageLimitAlertRecipient[]>;
@@ -38,26 +40,38 @@ function utcTimestamp(value: Date): Prisma.Sql {
 
 export function createUsageLimitAlertStore(database: Database): UsageLimitAlertStore {
   return {
-    async claim({ keys, now, periodStart }) {
+    async claim({ keys, limit, now, periodStart }) {
       const unique = new Map<string, UsageLimitAlertKey>();
       for (const key of keys) unique.set(`${key.kind}:${key.userId ?? ""}`, key);
       if (unique.size === 0) return [];
       const kinds = [...unique.values()].map((key) => key.kind);
       // An empty string stands for "no user": unnest cannot carry NULL text elements through Prisma.
       const userIds = [...unique.values()].map((key) => key.userId ?? "");
+      const retryDue = utcTimestamp(new Date(now.getTime() - USAGE_LIMIT_ALERT_RETRY_MS));
       const rows = await database.$queryRaw<Array<{ id: string; kind: string; userId: string | null }>>(Prisma.sql`
         INSERT INTO "UsageLimitAlert" ("id", "periodStart", "kind", "userId", "claimedAt")
         SELECT gen_random_uuid()::text, ${utcTimestamp(periodStart)}, key."kind"::"UsageLimitAlertKind",
           NULLIF(key."userId", ''), ${utcTimestamp(now)}
-        FROM unnest(${kinds}::text[], ${userIds}::text[]) AS key("kind", "userId")
+        FROM unnest(${kinds}::text[], ${userIds}::text[]) WITH ORDINALITY AS key("kind", "userId", "position")
         -- A user deleted since the status read has nothing left to alert.
-        WHERE key."userId" = '' OR EXISTS (SELECT 1 FROM "User" AS account WHERE account."id" = key."userId")
+        WHERE (key."userId" = '' OR EXISTS (SELECT 1 FROM "User" AS account WHERE account."id" = key."userId"))
+          -- Keys settled or in flight this month cannot be claimed again, so they never use up the batch.
+          AND NOT EXISTS (
+            SELECT 1 FROM "UsageLimitAlert" AS existing
+            WHERE existing."periodStart" = ${utcTimestamp(periodStart)}
+              AND existing."kind" = key."kind"::"UsageLimitAlertKind"
+              AND existing."userId" IS NOT DISTINCT FROM NULLIF(key."userId", '')
+              AND NOT (existing."state" = 'undelivered' AND existing."attempts" < ${USAGE_LIMIT_ALERT_MAX_ATTEMPTS}
+                AND existing."settledAt" <= ${retryDue})
+          )
+        ORDER BY key."position"
+        LIMIT ${limit}
         ON CONFLICT ("periodStart", "kind", "userId") DO UPDATE
           SET "state" = 'claimed', "attempts" = "UsageLimitAlert"."attempts" + 1,
             "claimedAt" = EXCLUDED."claimedAt", "settledAt" = NULL
           WHERE "UsageLimitAlert"."state" = 'undelivered'
             AND "UsageLimitAlert"."attempts" < ${USAGE_LIMIT_ALERT_MAX_ATTEMPTS}
-            AND "UsageLimitAlert"."settledAt" <= ${utcTimestamp(new Date(now.getTime() - USAGE_LIMIT_ALERT_RETRY_MS))}
+            AND "UsageLimitAlert"."settledAt" <= ${retryDue}
         RETURNING "id", "kind"::text AS "kind", "userId"
       `);
       return rows.flatMap((row) => KINDS.has(row.kind as UsageLimitAlertKind)

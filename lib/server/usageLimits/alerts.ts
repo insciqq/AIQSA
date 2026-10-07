@@ -7,6 +7,7 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 import {
   dueUsageLimitAlerts,
   installationAlertContent,
+  USAGE_LIMIT_ALERT_USERS_PER_CHECK,
   usersAlertContent,
   type UsageLimitAlertContent,
   type UsageLimitAlertKey
@@ -111,7 +112,8 @@ export function createUsageLimitAlertCheck(deps: UsageLimitAlertCheckDeps) {
     // Recipients are read before claiming, so only delivery and settlement follow a claim.
     const recipients = await deps.store.listRecipients();
     if (recipients.length === 0) return { delivered: 0, undelivered: 0 };
-    const claims = await deps.store.claim({ keys, now, periodStart: due.periodStart });
+    // The pooled cap key leads, so a full batch of users never pushes it out.
+    const claims = await deps.store.claim({ keys, limit: USAGE_LIMIT_ALERT_USERS_PER_CHECK + 1, now, periodStart: due.periodStart });
     if (claims.length === 0) return { delivered: 0, undelivered: 0 };
     log({ count: claims.length, job_id: claims[0]!.id, outcome: "completed", stage: "claim" });
 
