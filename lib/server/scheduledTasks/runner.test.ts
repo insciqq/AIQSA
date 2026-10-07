@@ -26,9 +26,13 @@ import {
 } from "./runnerPolicy";
 import type { ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
 import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
+import type { ScheduledWorkspaceCarryoverResult } from "./workspaceCarryover";
 
+type Carryover = { answer: string; chatEpoch: number; reliedServerIds: readonly string[]; sourceAssistantMessageId: string;
+  sourceChatId: string; taskGeneration: number };
 type Task = {
-  baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
+  baseline: ScheduledTaskBaseline | null; carryover: Carryover | null; chatEpoch: number; chatPeriod: string | null;
+  chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
   consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; emailNotify: boolean;
   generation: number; id: string; kind: ScheduledTaskKind; memoryEnabled: boolean; modelId: string; nextRunAt: Date | null;
   pauseReason: string | null; pinnedSkillIds: readonly string[]; prompt: string; promptUrlDigests: readonly string[]; provider: string;
@@ -38,6 +42,7 @@ type Task = {
   status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; userId: string; workspaceEnabled: boolean;
 };
 type Occurrence = {
+  chatEpoch?: number | null;
   chatId: string | null; createdAt: number; finishedAt: Date | null; id: string; leaseExpiresAt: Date | null; notifiedAt: Date | null;
   reasonCode: string | null; runId: string | null; scheduledFor: Date; startedAt: Date | null; state: string; taskGeneration: number | null;
   taskId: string; taskRevision: number | null; trigger: ScheduledTaskRunTrigger; unavailableSources: unknown; unseenAt: Date | null;
@@ -55,11 +60,20 @@ function harness() {
   const occurrences: Occurrence[] = [];
   /** Accepted scheduled runs; each carries its scheduled origin, so it outlives its task. */
   const runs = new Map<string, Run>();
-  const chats = new Map<string, { activeLeafMessageId: string | null; usable: boolean; userId: string }>();
+  const chats = new Map<string, {
+    activeLeafMessageId: string | null; archived?: boolean; pinned?: boolean; title?: string; usable: boolean; userId: string;
+  }>();
+  /** Answer text by assistant message, what a rotation copies. */
+  const answers = new Map<string, string>();
+  /** Workspace seeds a rotation captured, by id: the chat it left and the chat it reached. */
+  const seeds = new Map<string, { newChatId: string | null; sourceChatId: string; status: "READY" | "TRANSFERRED" }>();
+  /** What capturing the old chat's Workspace yields next. */
+  let carry: () => Promise<ScheduledWorkspaceCarryoverResult> = async () => ({ kind: "none" });
+  const carried: string[] = [];
+  const sweeps: Date[] = [];
   const inactiveUsers = new Set<string>();
   const emails: SmtpProductMessage[] = [];
   const pushes: string[] = [];
-  const renamed: Array<{ chatId: string; title: string }> = [];
   const sent: Array<{ body: Record<string, unknown>; chatId: string; occurrence: ScheduledOccurrenceAdmission }> = [];
   const catalog: ScheduledTaskRunCatalog = {
     models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
@@ -75,7 +89,7 @@ function harness() {
    * occurrence; a monitoring check's run may report `verdict`), or refuse.
    */
   let reply: (occurrence: Occurrence) => { error: string; status: number } | {
-    runStatus: string; errorCode?: string; unavailableSources?: unknown; unlinked?: true; verdict?: MonitoringVerdict;
+    answer?: string; runStatus: string; errorCode?: string; unavailableSources?: unknown; unlinked?: true; verdict?: MonitoringVerdict;
   } = () => ({ runStatus: "complete" });
   const stops: Array<{ code: string; runId: string; userId: string }> = [];
   const nextId = (prefix: string) => `${prefix}-${++ids}`;
@@ -92,7 +106,8 @@ function harness() {
       unseenAt: plan.notifies ? clock : null });
     Object.assign(task, { consecutiveFailures: plan.consecutiveFailures, consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns,
       consecutiveMissingVerdicts: plan.consecutiveMissingVerdicts },
-      plan.baseline ? { baseline: plan.baseline } : {},
+      // The rotated chat's own shown result retires the copy carried into it.
+      plan.baseline ? { baseline: plan.baseline, carryover: null } : {},
       plan.pauseReason ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: task.revision + 1, status: "PAUSED" } : {},
       plan.goalCompletes ? { completionReason: "goal_reached", nextRunAt: null, pauseReason: null, revision: task.revision + 1,
         status: "COMPLETED" } : {});
@@ -179,12 +194,19 @@ function harness() {
       if (!row || row.state !== "PENDING" || row.runId) return null;
       const task = tasks.get(row.taskId)!;
       const chat = task.chatId ? chats.get(task.chatId) : undefined;
+      const copy = task.carryover;
       return {
-        chat: chat?.usable ? { activeLeafMessageId: chat.activeLeafMessageId, id: task.chatId! } : null,
+        // Reauthorized like the store does: this epoch's copy of this question.
+        carriedResult: copy && copy.chatEpoch === task.chatEpoch && copy.taskGeneration === task.generation
+          ? { answer: copy.answer, reliedServerIds: copy.reliedServerIds, sourceAssistantMessageId: copy.sourceAssistantMessageId,
+            sourceChatId: copy.sourceChatId }
+          : null,
+        chat: chat?.usable && !chat.archived ? { activeLeafMessageId: chat.activeLeafMessageId, id: task.chatId! } : null,
         occurrence: { id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: row.trigger, userId: row.userId },
         ownerActive: !inactiveUsers.has(row.userId),
         relevantMcpServerIds: task.relevantMcpServerIds,
-        task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, kind: task.kind,
+        task: { baseline: task.baseline, chatEpoch: task.chatEpoch, chatMode: task.chatMode, chatPeriod: task.chatPeriod,
+          generation: task.generation, kind: task.kind,
           memoryEnabled: task.memoryEnabled, modelId: task.modelId, pinnedSkillIds: task.pinnedSkillIds, prompt: task.prompt,
           promptUrlDigests: task.promptUrlDigests,
           provider: task.provider, revision: task.revision,
@@ -195,6 +217,18 @@ function harness() {
     async readOccurrence(id) {
       const row = find(id);
       return row ? { runId: row.runId, state: row.state } : null;
+    },
+    async loadRotationCopy({ baseline, chatId }) {
+      const answer = answers.get(baseline.assistantMessageId);
+      return answer ? { answer, reliedServerIds: ["server-relied"], sourceAssistantMessageId: baseline.assistantMessageId,
+        sourceChatId: chatId } : null;
+    },
+    async archiveRotatedChat({ chatId }) {
+      const chat = chats.get(chatId);
+      // The owner keeps a pinned chat in view.
+      if (!chat || chat.archived || chat.pinned) return false;
+      chat.archived = true;
+      return true;
     },
     async retryLater(id, reasonCode) {
       const row = find(id);
@@ -213,7 +247,8 @@ function harness() {
       // Health first, from the source health its admission froze, as the store judges it.
       const check = outcome.state === "COMPLETED" ? completedRunCheck({
         healthIncomplete: occurrenceCheckSourcesMissing(row.unavailableSources), occurrence: row,
-        task: { ...task, baselineGeneration: task.baseline?.generation ?? null } }) : null;
+        task: { ...task, baselineGeneration: task.baseline?.generation ?? null,
+          carriedGeneration: task.carryover?.chatEpoch === task.chatEpoch ? task.carryover.taskGeneration : null } }) : null;
       return settle(row, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, undefined, check);
     },
     async claimNotification(id, now) {
@@ -242,23 +277,45 @@ function harness() {
     if ("error" in decision) return Response.json({ error: decision.error }, { status: decision.status });
     const stream = () => new Response("event: done\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
     if (decision.unlinked) return stream();
-    // The real link refuses a task paused or edited since the runner read it.
-    if (task.revision !== origin.taskRevision || task.generation !== origin.taskGeneration) {
-      return Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
+    const conflict = () => Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
+    // The real link refuses a task paused or edited, or moved to another chat, since the runner read it.
+    if (task.revision !== origin.taskRevision || task.generation !== origin.taskGeneration ||
+      task.chatEpoch !== (origin.taskChatEpoch ?? 0)) return conflict();
+    const moved = task.chatId !== chatId;
+    if (origin.rotation && (!moved || task.chatId !== origin.rotation.fromChatId)) return conflict();
+    const copy = origin.previousResultCopy;
+    if (copy && (origin.rotation ? task.baseline?.assistantMessageId !== copy.sourceAssistantMessageId
+      : task.carryover?.chatEpoch !== task.chatEpoch || task.carryover.sourceAssistantMessageId !== copy.sourceAssistantMessageId)) {
+      return conflict();
     }
+    const seed = origin.rotation?.seedId ? seeds.get(origin.rotation.seedId) : undefined;
+    if (origin.rotation?.seedId && (seed?.status !== "READY" || seed.sourceChatId !== origin.rotation.fromChatId)) return conflict();
     // The real handler links the occurrence in the run's creating transaction.
     const runId = nextId("run");
     const userMessageId = nextId("user-message");
     const assistantMessageId = nextId("assistant-message");
+    answers.set(assistantMessageId, decision.answer ?? `Answer ${assistantMessageId}`);
     runs.set(runId, { assistantMessageId, createdAt: clock, errorPayload: decision.errorCode ? { code: decision.errorCode } : null,
       status: decision.runStatus, userId: occurrence.userId });
-    chats.set(chatId, { activeLeafMessageId: assistantMessageId, usable: true, userId: occurrence.userId });
-    Object.assign(occurrence, { chatId, leaseExpiresAt: null, reasonCode: null, runId, state: "RUNNING",
+    const title = chats.get(chatId)?.title ?? origin.newChat?.title;
+    chats.set(chatId, { ...chats.get(chatId), activeLeafMessageId: assistantMessageId, ...(title ? { title } : {}), usable: true,
+      userId: occurrence.userId });
+    const epoch = moved ? task.chatEpoch + 1 : task.chatEpoch;
+    Object.assign(occurrence, { chatEpoch: epoch, chatId, leaseExpiresAt: null, reasonCode: null, runId, state: "RUNNING",
       taskGeneration: origin.taskGeneration, taskRevision: origin.taskRevision, unavailableSources: decision.unavailableSources ?? null,
       userMessageId,
       // Only a run admitted for a monitoring occurrence holds the reporting tool.
       verdict: origin.monitoring === true ? decision.verdict ?? null : null });
-    task.chatId = chatId;
+    if (moved) {
+      Object.assign(task, { carryover: null, chatEpoch: epoch, chatId, chatPeriod: origin.chatPeriod ?? null },
+        origin.rotation ? { baseline: null } : {});
+    } else if (task.chatPeriod === null && origin.chatPeriod) {
+      task.chatPeriod = origin.chatPeriod;
+    }
+    if (origin.rotation && copy) {
+      task.carryover = { ...copy, chatEpoch: epoch, taskGeneration: origin.taskGeneration };
+    }
+    if (seed) Object.assign(seed, { newChatId: chatId, status: "TRANSFERRED" });
     return stream();
   };
 
@@ -267,6 +324,13 @@ function harness() {
   const availableSkills = new Set<string>();
   const runner = createScheduledTaskRunner({
     appBaseUrl: "https://aiqsa.example.test",
+    // The rotation's capture of the old chat's project: a ready seed is the one the link transfers.
+    carryWorkspace: async ({ sourceChatId }) => {
+      carried.push(sourceChatId);
+      const result = await carry();
+      if (result.kind === "ready") seeds.set(result.seedId, { newChatId: null, sourceChatId, status: "READY" });
+      return result;
+    },
     kick,
     loadCatalog: async (userId) => catalogFor(userId),
     loadPinnedSkills: async (_userId, skillIds) => skillIds.map((id) => ({
@@ -274,7 +338,7 @@ function harness() {
     })),
     newId: () => nextId("id"),
     now: () => clock,
-    renameChat: async ({ chatId, title }) => { renamed.push({ chatId, title }); },
+    retainHistory: async (now) => { sweeps.push(now); return 0; },
     send,
     sendEmail: async (message) => { emails.push(message); },
     sendPush: (occurrenceId) => { pushes.push(occurrenceId); },
@@ -292,7 +356,8 @@ function harness() {
 
   function addTask(overrides: Partial<Task> = {}): Task {
     const task: Task = {
-      baseline: null, chatId: null, chatMode: "same", completionReason: null, consecutiveFailures: 0, consecutiveIncompleteRuns: 0,
+      baseline: null, carryover: null, chatEpoch: 0, chatPeriod: null,
+      chatId: null, chatMode: "same", completionReason: null, consecutiveFailures: 0, consecutiveIncompleteRuns: 0,
       consecutiveMissingVerdicts: 0, emailNotify: false, generation: 1, id: nextId("task"), kind: "standard", memoryEnabled: false,
       modelId: "model-a", pinnedSkillIds: [],
       nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
@@ -317,9 +382,10 @@ function harness() {
     await runner.idle();
   }
   return {
-    addOccurrence, addTask, availableSkills, chats, emails, inactiveUsers, kick, occurrences, pushes, renamed, runs, sent, settled,
-    stops, store, tasks, tick,
+    addOccurrence, addTask, answers, availableSkills, carried, chats, emails, inactiveUsers, kick, occurrences, pushes, runs, seeds,
+    sent, settled, stops, store, sweeps, tasks, tick,
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
+    setCarry(next: typeof carry) { carry = next; },
     setCatalog(load: typeof catalogFor) { catalogFor = load; },
     setReply(next: typeof reply) { reply = next; },
     forTask: (task: Task) => occurrences.filter((occurrence) => occurrence.taskId === task.id)
@@ -343,10 +409,12 @@ describe("scheduled task runner", () => {
       mcp: { mode: "off" }, modelId: "model-a", personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, provider: "connection-a",
       searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
     });
-    // The first run of a task has no earlier result to see.
-    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, promptUrlDigests: [], relevantMcpServerIds: null,
-      taskGeneration: 1, taskId: task.id, taskRevision: 1 });
-    expect(h.renamed).toEqual([{ chatId: h.sent[0]!.chatId, title: "Synthetic brief" }]);
+    // The first run of a task has no earlier result to see; its chat is created with the month's title and the task as origin.
+    expect(h.sent[0]!.occurrence).toEqual({ chatPeriod: "2026-10", newChat: { title: "Synthetic brief · October 2026" },
+      occurrenceId: h.forTask(task)[0]!.id, previousResult: null, promptUrlDigests: [], relevantMcpServerIds: null,
+      taskChatEpoch: 0, taskGeneration: 1, taskId: task.id, taskRevision: 1 });
+    expect(h.chats.get(h.sent[0]!.chatId)?.title).toBe("Synthetic brief · October 2026");
+    expect(task).toMatchObject({ chatEpoch: 1, chatId: h.sent[0]!.chatId, chatPeriod: "2026-10" });
     expect(h.emails).toHaveLength(1);
     expect(h.emails[0]).toMatchObject({ kind: "scheduled_task_result", subject: "Scheduled task finished", to: "owner@example.test" });
     expect(h.emails[0]!.text).toContain(`https://aiqsa.example.test/c/${h.sent[0]!.chatId}`);
@@ -364,9 +432,11 @@ describe("scheduled task runner", () => {
     expect(h.sent[1]).toMatchObject({ chatId: h.sent[0]!.chatId });
     expect(h.sent[1]!.body).toMatchObject({ expectedActiveLeafId: leaf });
     expect(h.sent[1]!.body).not.toHaveProperty("personalDraft");
-    // Its model sees the previous shown result besides the prompt.
+    // Its model sees the previous shown result besides the prompt; the chat keeps its title and epoch.
     expect(h.sent[1]!.occurrence.previousResult).toEqual({ assistantMessageId: leaf, userMessageId: h.forTask(task)[0]!.userMessageId });
-    expect(h.renamed).toHaveLength(1);
+    expect(h.sent[1]!.occurrence).not.toHaveProperty("newChat");
+    expect(h.sent[1]!.occurrence).toMatchObject({ chatPeriod: "2026-10", taskChatEpoch: 1 });
+    expect(task.chatEpoch).toBe(1);
     expect(h.emails).toHaveLength(2);
   });
 
@@ -384,7 +454,10 @@ describe("scheduled task runner", () => {
       expect(send.body).toMatchObject({ expectedActiveLeafId: null, personalDraft: { folderId: null, memoryMode: "EXCLUDED" } });
       expect(send.occurrence.previousResult).toBeNull();
     }
-    expect(h.renamed.map((entry) => entry.title)).toEqual(["Morning brief · 5 Oct 2026", "Morning brief · 6 Oct 2026",
+    // Each chat is created with its title, never renamed afterwards.
+    expect(h.sent.map((send) => send.occurrence.newChat?.title)).toEqual(["Morning brief · 5 Oct 2026", "Morning brief · 6 Oct 2026",
+      "Morning brief · 6 Oct 2026"]);
+    expect(chatIds.map((chatId) => h.chats.get(chatId)?.title)).toEqual(["Morning brief · 5 Oct 2026", "Morning brief · 6 Oct 2026",
       "Morning brief · 6 Oct 2026"]);
     // The task opens its newest chat; every run keeps its own.
     expect(task.chatId).toBe(chatIds[2]);
@@ -1266,5 +1339,220 @@ describe("scheduled monitoring checks and source health", () => {
     await h.tick();
     expect(h.forTask(task)[1]).toMatchObject({ reasonCode: "no_update", state: "COMPLETED" });
     expect(task).toMatchObject({ consecutiveIncompleteRuns: 0, status: "ACTIVE" });
+  });
+});
+
+describe("scheduled task chat rotation", () => {
+  const DAY = 24 * HOUR;
+  /** From the first run on 5 Oct 09:00 Moscow to 1 Nov 09:00 Moscow, the first run of a new month. */
+  const TO_NOVEMBER = 27 * DAY;
+
+  it("starts the month's chat at the first run of a new month, carrying the previous shown result as a copy", async () => {
+    const h = harness();
+    const task = h.addTask({ toolsEnabled: true, relevantMcpServerIds: ["server-relied"] });
+    h.setReply(() => ({ answer: "October digest", runStatus: "complete" }));
+    await h.tick();
+    const october = h.sent[0]!.chatId;
+    const lastOctober = h.forTask(task)[0]!;
+    expect(task).toMatchObject({ chatEpoch: 1, chatId: october, chatPeriod: "2026-10" });
+
+    h.setReply(() => ({ answer: "November digest", runStatus: "complete" }));
+    h.advance(TO_NOVEMBER);
+    await h.tick();
+    const rotation = h.sent[1]!;
+    const november = rotation.chatId;
+    expect(november).not.toBe(october);
+    // A new Memory-excluded chat titled with the month, its context the copied answer, never the old chat's ids.
+    expect(rotation.body).toMatchObject({ expectedActiveLeafId: null, personalDraft: { folderId: null, memoryMode: "EXCLUDED" } });
+    expect(rotation.occurrence).toMatchObject({
+      chatPeriod: "2026-11", newChat: { title: "Synthetic brief · November 2026" }, previousResult: null,
+      previousResultCopy: { answer: "October digest", reliedServerIds: ["server-relied"],
+        sourceAssistantMessageId: h.runs.get(lastOctober.runId!)!.assistantMessageId, sourceChatId: october },
+      rotation: { fromChatId: october, seedId: null }, taskChatEpoch: 1
+    });
+    // The old chat is archived; the task moved under a new epoch.
+    expect(h.chats.get(october)).toMatchObject({ archived: true });
+    expect(task).toMatchObject({ chatEpoch: 2, chatId: november, chatPeriod: "2026-11" });
+    // The new chat's own shown result retires the copy and becomes the baseline.
+    expect(task.carryover).toBeNull();
+    expect(task.baseline).toMatchObject({ runId: h.forTask(task).at(-1)!.runId });
+
+    // The next run of the month continues the new chat with its own previous result.
+    h.advance(DAY);
+    await h.tick();
+    expect(h.sent[2]!).toMatchObject({ chatId: november });
+    expect(h.sent[2]!.occurrence).not.toHaveProperty("previousResultCopy");
+    expect(h.sent[2]!.occurrence.previousResult).toMatchObject({ userMessageId: h.forTask(task).at(-2)!.userMessageId });
+    expect(h.sent[2]!.occurrence).not.toHaveProperty("rotation");
+  });
+
+  it("keeps carrying the copy into the new chat until it has its own shown result", async () => {
+    const h = harness();
+    const task = h.addTask();
+    h.setReply(() => ({ answer: "October digest", runStatus: "complete" }));
+    await h.tick();
+    // The month's first run fails: its chat exists, but has no result of its own yet.
+    h.setReply(() => ({ errorCode: "provider_error", runStatus: "error" }));
+    h.advance(TO_NOVEMBER);
+    await h.tick();
+    const november = h.sent[1]!.chatId;
+    expect(task).toMatchObject({ baseline: null, chatId: november, carryover: { answer: "October digest", chatEpoch: 2 } });
+    h.setReply(() => ({ runStatus: "complete" }));
+    h.advance(DAY);
+    await h.tick();
+    expect(h.sent[2]!).toMatchObject({ chatId: november });
+    expect(h.sent[2]!.occurrence).toMatchObject({ previousResult: null, previousResultCopy: { answer: "October digest" },
+      taskChatEpoch: 2 });
+    expect(h.sent[2]!.occurrence).not.toHaveProperty("rotation");
+    expect(task.carryover).toBeNull();
+  });
+
+  it("rotates for Run now as well, and keeps a chat the owner pinned in view", async () => {
+    const h = harness();
+    const task = h.addTask();
+    await h.tick();
+    const october = h.sent[0]!.chatId;
+    h.chats.get(october)!.pinned = true;
+    // A manual run on 1 Nov at 12:00 Moscow: its instant is in the new month.
+    h.advance(TO_NOVEMBER + 3 * HOUR);
+    task.nextRunAt = new Date("2026-11-02T06:00:00.000Z");
+    h.addOccurrence(task, { scheduledFor: new Date("2026-11-01T09:00:05.000Z") });
+    await h.tick();
+    expect(h.sent[1]!.occurrence).toMatchObject({ newChat: { title: "Synthetic brief · November 2026" },
+      rotation: { fromChatId: october } });
+    expect(h.chats.get(october)).toMatchObject({ pinned: true });
+    expect(h.chats.get(october)?.archived).toBeUndefined();
+    expect(task.chatId).toBe(h.sent[1]!.chatId);
+  });
+
+  it("adopts the month of a chat older than months instead of rotating it at once", async () => {
+    const h = harness();
+    const task = h.addTask();
+    await h.tick();
+    const chatId = h.sent[0]!.chatId;
+    // A chat from before months were recorded.
+    task.chatPeriod = null;
+    h.advance(TO_NOVEMBER);
+    await h.tick();
+    expect(h.sent[1]!).toMatchObject({ chatId });
+    expect(h.sent[1]!.occurrence).toMatchObject({ chatPeriod: "2026-11" });
+    expect(task).toMatchObject({ chatId, chatPeriod: "2026-11" });
+  });
+
+  it("reports no spurious update for a monitoring check at the month boundary", async () => {
+    const h = harness();
+    const task = h.addTask({ kind: "monitoring" });
+    h.setReply(() => ({ answer: "Version 1.0 is current", runStatus: "complete", verdict: "update" }));
+    await h.tick();
+    expect(h.forTask(task)[0]).toMatchObject({ reasonCode: "baseline" });
+    const pushes = h.pushes.length;
+    // Nothing changed: the check compared with the carried result, so it stays hidden.
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    h.advance(TO_NOVEMBER);
+    await h.tick();
+    const boundary = h.forTask(task).at(-1)!;
+    expect(h.sent.at(-1)!.occurrence).toMatchObject({ monitoring: true, previousResultCopy: { answer: "Version 1.0 is current" } });
+    expect(boundary).toMatchObject({ reasonCode: "no_update", state: "COMPLETED", unseenAt: null });
+    expect(h.pushes).toHaveLength(pushes);
+    // A hidden check is no comparison basis: the copy stays the previous result.
+    expect(task.carryover).toMatchObject({ answer: "Version 1.0 is current" });
+  });
+
+  it("treats the month's first check as a first check when no copy could be carried", async () => {
+    const h = harness();
+    const task = h.addTask({ kind: "monitoring" });
+    h.setReply(() => ({ runStatus: "complete", verdict: "update" }));
+    await h.tick();
+    // The previous answer has no text to copy.
+    h.answers.clear();
+    h.advance(TO_NOVEMBER);
+    await h.tick();
+    expect(h.sent.at(-1)!.occurrence).not.toHaveProperty("previousResultCopy");
+    expect(h.forTask(task).at(-1)).toMatchObject({ reasonCode: "baseline", state: "COMPLETED" });
+  });
+
+  it("keeps a late settlement of the old chat from moving the task back or overwriting the new baseline", async () => {
+    const h = harness();
+    const task = h.addTask();
+    await h.tick();
+    const october = h.sent[0]!.chatId;
+    // An October run still open in the old chat (forced: the runner itself never rotates while one is open).
+    const late = h.addOccurrence(task, { chatEpoch: 1, chatId: october, runId: "run-late",
+      scheduledFor: new Date("2026-10-31T06:00:00.000Z"), startedAt: new Date("2026-10-31T06:00:00.000Z"), state: "RUNNING",
+      taskGeneration: 1, taskRevision: 1, userMessageId: "user-message-late" });
+    h.runs.set("run-late", { assistantMessageId: "assistant-message-late", createdAt: new Date("2026-10-31T06:00:00.000Z"),
+      errorPayload: null, status: "streaming", userId: task.userId });
+    // The task already moved to November's chat, whose baseline is its own.
+    const novemberBaseline = { assistantMessageId: "assistant-november", generation: 1, runId: "run-november",
+      userMessageId: "user-november" };
+    Object.assign(task, { baseline: novemberBaseline, chatEpoch: 2, chatId: "chat-november", chatPeriod: "2026-11" });
+    h.runs.get("run-late")!.status = "complete";
+    await h.store.settleLinked(late.id, new Date());
+    expect(late).toMatchObject({ state: "COMPLETED" });
+    expect(task).toMatchObject({ baseline: novemberBaseline, chatEpoch: 2, chatId: "chat-november" });
+  });
+
+  it("carries the old chat's Workspace project through a seed the run's admission transfers", async () => {
+    const h = harness();
+    const task = h.addTask({ workspaceEnabled: true, toolsEnabled: true });
+    await h.tick();
+    const october = h.sent[0]!.chatId;
+    h.setCarry(async () => ({ kind: "ready", seedId: "seed-1" }));
+    h.advance(TO_NOVEMBER);
+    await h.tick();
+    expect(h.carried).toEqual([october]);
+    expect(h.sent[1]!.occurrence.rotation).toEqual({ fromChatId: october, seedId: "seed-1" });
+    expect(h.seeds.get("seed-1")).toEqual({ newChatId: h.sent[1]!.chatId, sourceChatId: october, status: "TRANSFERRED" });
+    expect(task.chatId).toBe(h.sent[1]!.chatId);
+  });
+
+  it("fails a rotation whose Workspace files cannot be carried, retrying transient trouble first, and never runs without them",
+    async () => {
+      const h = harness();
+      const task = h.addTask({ workspaceEnabled: true, toolsEnabled: true });
+      await h.tick();
+      const october = h.sent[0]!.chatId;
+      // A transient refusal waits within the window; nothing is sent.
+      h.setCarry(async () => ({ kind: "retry" }));
+      h.advance(TO_NOVEMBER);
+      await h.tick();
+      const waiting = h.forTask(task).at(-1)!;
+      expect(waiting).toMatchObject({ reasonCode: "workspace_carryover_unavailable", runId: null, state: "PENDING" });
+      expect(h.sent).toHaveLength(1);
+      // Still failing at the window's end: a visible failure that counts toward the pause.
+      h.advance(31 * MINUTE);
+      await h.tick();
+      expect(waiting).toMatchObject({ reasonCode: "workspace_carryover_unavailable", state: "FAILED" });
+      expect(task).toMatchObject({ chatId: october, consecutiveFailures: 1 });
+      // A project that cannot become a seed fails at once.
+      h.setCarry(async () => ({ kind: "failed" }));
+      h.advance(DAY);
+      await h.tick();
+      expect(h.forTask(task).at(-1)).toMatchObject({ reasonCode: "workspace_carryover_unavailable", state: "FAILED" });
+      expect(task).toMatchObject({ chatId: october, consecutiveFailures: 2 });
+      expect(h.sent).toHaveLength(1);
+      // The owner busy in the old chat is a busy chat.
+      h.setCarry(async () => ({ kind: "busy" }));
+      h.advance(DAY);
+      await h.tick();
+      expect(h.forTask(task).at(-1)).toMatchObject({ reasonCode: "chat_busy", state: "PENDING" });
+      // Without a disk to carry the rotation goes on, the new chat starting empty as a lost disk would.
+      h.setCarry(async () => ({ kind: "none" }));
+      h.advance(5 * MINUTE);
+      await h.tick();
+      expect(h.sent).toHaveLength(2);
+      expect(h.sent[1]!.occurrence.rotation).toEqual({ fromChatId: october, seedId: null });
+    });
+
+  it("sweeps the history retention at most every quarter hour, outside the tick", async () => {
+    const h = harness();
+    await h.tick();
+    expect(h.sweeps).toHaveLength(1);
+    h.advance(5 * MINUTE);
+    await h.tick();
+    expect(h.sweeps).toHaveLength(1);
+    h.advance(11 * MINUTE);
+    await h.tick();
+    expect(h.sweeps).toHaveLength(2);
   });
 });

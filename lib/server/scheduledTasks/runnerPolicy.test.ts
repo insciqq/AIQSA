@@ -196,6 +196,31 @@ describe("settlement bookkeeping", () => {
     expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence: { ...occurrence, userMessageId: null },
       outcome: completed, taskGeneration: 2 })).toBeNull();
   });
+
+  it("fences the baseline by the chat epoch: a late result of a chat the task moved on from writes none", () => {
+    const occurrence = { chatEpoch: 3, runId: "run-1", taskGeneration: 2, userMessageId: "user-1" };
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: completed, taskChatEpoch: 3, taskGeneration: 2 }))
+      .toMatchObject({ runId: "run-1" });
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: completed, taskChatEpoch: 4, taskGeneration: 2 }))
+      .toBeNull();
+    // An occurrence linked before epochs counts as the first one.
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence: { ...occurrence, chatEpoch: null }, outcome: completed,
+      taskChatEpoch: 0, taskGeneration: 2 })).toMatchObject({ runId: "run-1" });
+    expect(planOccurrenceSettlement({ assistantMessageId: "answer-1", check: null, occurrence: { ...occurrence, trigger: "schedule" },
+      outcome: completed, sourcesIncomplete: false, task: { chatEpoch: 4, consecutiveFailures: 0, consecutiveIncompleteRuns: 0,
+        consecutiveMissingVerdicts: 0, generation: 2, revision: 1, status: "ACTIVE" } }).baseline).toBeNull();
+  });
+
+  it("fails a rotation whose Workspace files could not be carried within the window, counting toward the pause", () => {
+    const occurrence = { reasonCode: "workspace_carryover_unavailable", scheduledFor: new Date("2026-11-01T06:00:00.000Z"),
+      startedAt: new Date("2026-11-01T06:00:00.000Z") };
+    expect(expiredPendingOutcome(occurrence, new Date("2026-11-01T06:20:00.000Z"))).toBeNull();
+    expect(expiredPendingOutcome(occurrence, new Date("2026-11-01T06:31:00.000Z")))
+      .toEqual({ reasonCode: "workspace_carryover_unavailable", state: "FAILED" });
+    expect(planTaskSettlement({ outcome: { reasonCode: "workspace_carryover_unavailable", state: "FAILED" },
+      task: { consecutiveFailures: 2, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0, revision: 1, status: "ACTIVE" },
+      trigger: "schedule" })).toMatchObject({ consecutiveFailures: 3, pauseReason: "repeated_failures" });
+  });
 });
 
 describe("monitoring check settlement", () => {
@@ -226,6 +251,19 @@ describe("monitoring check settlement", () => {
     expect(verdicts.map((verdict) => settle(verdict, { firstCheck: true }).outcome))
       .toEqual(["baseline", "baseline", "goal_reached", "unreported"]);
     expect(effects("baseline")).toEqual({ baseline: true, notifies: true });
+  });
+
+  it("compares the first check of a rotated chat with the result carried into it, not as a first check", () => {
+    const occurrence = { taskGeneration: 2, taskRevision: 5, verdict: "no_update" };
+    const task = { baselineGeneration: null, generation: 2, kind: "monitoring", revision: 5 } as const;
+    // The carried copy of this generation is the previous result: nothing changed stays hidden.
+    expect(completedRunCheck({ healthIncomplete: false, occurrence, task: { ...task, carriedGeneration: 2 } }))
+      .toMatchObject({ outcome: "no_update" });
+    // Without a carried result of this question the check is a first one, shown as the starting point.
+    for (const carriedGeneration of [null, 1]) {
+      expect(completedRunCheck({ healthIncomplete: false, occurrence, task: { ...task, carriedGeneration } }))
+        .toMatchObject({ outcome: "baseline" });
+    }
   });
 
   it("never settles an incomplete check as a healthy no update or reached goal", () => {
