@@ -97,6 +97,7 @@ import {
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
+import { recordKnowledgeFailureBilledCalls } from "../knowledge/searchFailure";
 import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import {
   KnowledgeAnswerContractError,
@@ -5054,6 +5055,42 @@ describe("run execution", () => {
     expect(repository.completeRuns).toHaveLength(0);
     expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: persistedFailureCode }) })]);
     expect(JSON.stringify(repository.failedRuns)).not.toContain("bounded private lookup");
+  });
+
+  it("bills the paid response a failed Knowledge operation rejected once, with its tool result", async () => {
+    const repository = createRepository({ groundingResult: structuralGroundingResult("Knowledge retrieval failed.") });
+    const { executor: baseExecutor } = toolLoopKnowledgeExecutor();
+    const execute = vi.fn<KnowledgeToolExecutor["execute"]>(async () => {
+      const failure = new Error("embedding_response_model_mismatch");
+      recordKnowledgeFailureBilledCalls(failure, [{ costUsd: 0.000002, inputTokens: 2, modelId: "embedding-upstream",
+        provider: "openai_compatible", providerModelId: "embedding-model-1", totalTokens: 2 }]);
+      throw failure;
+    });
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      return providerRequests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ arguments: { query: "rejected embedding" },
+            id: "knowledge-rejected-call-1", name: KNOWLEDGE_SEARCH_TOOL_NAME }] })
+        : providerResult({ finalText: "Knowledge retrieval failed." });
+    });
+
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      knowledgeExecutor: { ...baseExecutor, execute },
+      prepared: preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai" }),
+      repository: repository.repository
+    })).text();
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect([...repository.toolCalls.values()]).toEqual([
+      expect.objectContaining({ state: "error", usageAccountedAt: expect.any(String) })
+    ]);
+    expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions
+      .filter((attribution) => attribution.purpose === "knowledge_retrieval")).toEqual([expect.objectContaining({
+      estimatedCostMicros: 2, modelId: "embedding-upstream", provider: "openai_compatible",
+      providerModelId: "embedding-model-1", usage: expect.objectContaining({ inputTokens: 2, totalTokens: 2 })
+    })]);
   });
 
   it.each([

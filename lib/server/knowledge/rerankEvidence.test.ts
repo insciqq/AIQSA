@@ -3,6 +3,7 @@ import {
   decodeKnowledgeRerankerBindingEvidenceV2,
   KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
   knowledgeRerankerBilledCall,
+  knowledgeRerankerRejectedCall,
   type KnowledgeRerankerBindingEvidenceV2
 } from "./rerankEvidence";
 
@@ -199,5 +200,31 @@ describe("Knowledge reranker binding evidence V2", () => {
       expect(decodeKnowledgeRerankerBindingEvidenceV2(evidence)).not.toBeNull();
       expect(knowledgeRerankerBilledCall(evidence)).toBeNull();
     }
+  });
+
+  it("bills the rejected response a degraded fallback records, never a fallback without one", () => {
+    const rejected = completeEvidence({ fallbackReason: "rerank_response_invalid", outputOrder: [], provider: null,
+      providerRequestId: null, relevanceScores: [], status: "degraded",
+      usage: { costUsd: 0.0000042, inputTokens: null, searchUnits: null, totalTokens: 120 } });
+    const stored = decodeKnowledgeRerankerBindingEvidenceV2(JSON.parse(JSON.stringify(rejected)));
+    expect(stored).toEqual(rejected);
+    expect(knowledgeRerankerBilledCall(stored!)).toEqual({ costUsd: 0.0000042, inputTokens: null,
+      modelId: "qwen/qwen3-reranker-8b", provider: "openrouter", providerModelId: "deployment-1", totalTokens: 120 });
+    const unpinned = completeEvidence({ ...rejected, adapterVersion: null, candidateFormatterVersion: null,
+      connectionSnapshotId: null, credentialSnapshotRef: null, policyVersion: null, providerModelId: null,
+      upstreamModelId: null, fallbackReason: "reranker_model_unavailable" });
+    expect(knowledgeRerankerBilledCall(unpinned)).toBeNull();
+  });
+
+  it("names a rejected response that failed its operation under the pinned deployment", () => {
+    // What `RerankAdapterError.usage` carries.
+    const reported = { costUsd: 0.000003, inputTokens: 64, searchUnits: null, totalTokens: 64 };
+    expect(knowledgeRerankerRejectedCall({ adapterVersion: "openrouter-rerank-v2", provider: "openrouter",
+      providerModelId: "deployment-1", upstreamModelId: "qwen/qwen3-reranker-8b" }, reported)).toEqual({
+      costUsd: 0.000003, inputTokens: 64, modelId: "qwen/qwen3-reranker-8b", provider: "openrouter",
+      providerModelId: "deployment-1", totalTokens: 64 });
+    expect(knowledgeRerankerRejectedCall({ adapterVersion: "custom-rerank", provider: "cohere",
+      providerModelId: "deployment-2", upstreamModelId: "rerank-v4" }, { inputTokens: null, totalTokens: 8 }))
+      .toMatchObject({ costUsd: null, provider: "cohere", totalTokens: 8 });
   });
 });

@@ -102,6 +102,7 @@ import {
   type KnowledgeRetrievalEvidence
 } from "../knowledge/retrievalTypes";
 import { knowledgeToolResultContent, knowledgeToolResultText } from "../knowledge/toolResult";
+import { recordKnowledgeFailureBilledCalls } from "../knowledge/searchFailure";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import {
@@ -4555,6 +4556,60 @@ describe("run recovery", () => {
     expect(harness.state.failed).toEqual(failedSearch ? [expect.objectContaining({ error: {
       code: "opensearch_authentication_failed", message: "Knowledge search access is misconfigured. Contact an administrator."
     } })] : []);
+  });
+
+  it("bills the paid response a recovered Knowledge operation rejected once, with its failure result", async () => {
+    const authorization = focusedKnowledgeRecoveryAuthorizationFixture();
+    const execute = vi.fn(async () => {
+      const failure = new Error("embedding_response_model_mismatch");
+      recordKnowledgeFailureBilledCalls(failure, [{ costUsd: 0.000002, inputTokens: 2, modelId: "embedding-upstream",
+        provider: "openai_compatible", providerModelId: "embedding-model-1", totalTokens: 2 }]);
+      throw failure;
+    });
+    const harness = createHarness({
+      focusedKnowledgeRecoveryScope: authorization.scope,
+      knowledgeAdmission: {
+        authorizeSnapshot: vi.fn(async () => true),
+        load: vi.fn(async () => authorization.admitted)
+      },
+      knowledgeExecutor: {
+        accepts: (name) => name === KNOWLEDGE_SEARCH_TOOL_NAME,
+        capability: "knowledge",
+        execute,
+        preflight: vi.fn(async () => ({ kind: "admitted" as const })),
+        tool: knowledgeRetrievalTool,
+        tools: [knowledgeRetrievalTool]
+      },
+      providers: { openai: { buildRequestPreview: () => ({}), stream: vi.fn(async function* () {
+        return providerResult;
+      }) } }
+    });
+    const knowledgeCall: PersistedToolLoopCall = {
+      ...persistedRecoveryCall(),
+      arguments: { query: "rejected embedding", sourceAliases: [] },
+      mcpBinding: null,
+      providerCallId: "knowledge-provider-call-rejected",
+      toolName: KNOWLEDGE_SEARCH_TOOL_NAME
+    };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [knowledgeCall], phase: "tools_pending" }),
+      knowledgeScope: {
+        bindings: authorization.admitted.bindings,
+        budgetPolicy: DEFAULT_KNOWLEDGE_BUDGET_POLICY,
+        exclusions: [],
+        knowledgePlan: authorization.scope.knowledgePlan,
+        resolvedSourceCount: 1
+      },
+      normalizedRequest: normalizedKnowledgeRequest()
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(installed.calls()).toEqual([expect.objectContaining({ state: "error", usageAccountedAt: expect.any(String) })]);
+    expect(harness.state.usageAttributions.at(-1)?.filter((attribution) => attribution.purpose === "knowledge_retrieval"))
+      .toEqual([expect.objectContaining({ estimatedCostMicros: 2, modelId: "embedding-upstream", provider: "openai_compatible",
+        providerModelId: "embedding-model-1", usage: expect.objectContaining({ inputTokens: 2, totalTokens: 2 }) })]);
   });
 
   it("rebuilds and dispatches an expired non-checkpointed RESERVED attempt exactly once", async () => {
