@@ -76,11 +76,13 @@ describe("AttachmentTrayV2", () => {
     expect(screen.getByText("Format not supported")).toBeVisible();
     expect(screen.getByText("Over 25 MB")).toBeVisible();
     expect(screen.getByText("Processing failed")).toBeVisible();
-    // The privacy disclosure is a quiet tooltip/AT note, not a permanent line.
+    // The privacy disclosure is a quiet note in the head row: a short word
+    // for touch, the full sentence as its name and tooltip.
     const privacyNote = screen.getByRole("note", {
       name: "Files are private and visible only to you."
     });
     expect(privacyNote).toHaveAttribute("title", "Files are private and visible only to you.");
+    expect(privacyNote).toHaveTextContent("Only you");
     expect(privacyNote).not.toHaveTextContent("Files are private");
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));

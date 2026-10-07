@@ -8,7 +8,7 @@ import { useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { ChatImageV2 } from "@/features/attachments-v2/ChatImageV2";
-import { SaveFileButtonV2 } from "@/features/attachments-v2/SaveFileButtonV2";
+import { FileActionsMenuV2 } from "@/features/attachments-v2/FileActionsMenuV2";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
@@ -29,6 +29,7 @@ import {
   UiV2MenuSurface,
   UiV2Monogram,
   moveMenuFocusV2,
+  type UiV2IconName,
   type UiV2MenuAction
 } from "@/components/ui-v2";
 import type {
@@ -620,7 +621,6 @@ export function ArtifactGenerationCardsV2({ drafts, savedArtifacts = [], onOpen,
         <button type="button" className="v2-generated-artifact-open v2-focusable" onClick={event => onOpen(draft.draftId, event.currentTarget)} aria-label={`Open artifact code: ${draft.title ?? "Artifact"}`}>
           <span className="v2-generated-artifact-tile" aria-hidden="true">{draft.status === "pending" ? <span className="v2-spinner" /> : <UiV2Icon name="artifact" />}</span>
           <span className="v2-generated-artifact-copy"><strong>{draft.title ?? "Artifact"}</strong><small role="status">{artifactGenerationStatus(draft)}</small></span>
-          <UiV2Icon name="chevron-right" />
         </button>
       </li>)}
     </ul></section> : null}
@@ -671,7 +671,6 @@ function GeneratedArtifactCardV2({ artifact, editing, onOpen, onEdit, onShare }:
       onClick={event => onOpen(event.currentTarget)}>
       <ArtifactThumbnailV2 artifactId={artifact.artifactId} versionId={artifact.versionId} kind={artifact.kind} byteSize={artifact.byteSize} />
       <span className="v2-generated-artifact-copy"><strong title={artifact.title}>{artifact.title}</strong><small>{artifactKindLabel(artifact.kind)} · v{artifact.versionNumber}</small></span>
-      <UiV2Icon name="chevron-right" />
     </button>
     <UiV2IconButton ref={triggerRef} icon="more" label={`Actions for artifact: ${artifact.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)} />
     {menuOpen ? <UiV2ResponsiveMenu anchorRef={triggerRef} menuRef={menuRef} label={`Actions for ${artifact.title}`} onClose={() => setMenuOpen(false)}>
@@ -694,6 +693,20 @@ function generatedFileType(file: ThreadGeneratedFile): string {
   return subtype && subtype.length <= 20 ? subtype.toLocaleUpperCase() : "FILE";
 }
 
+const FILE_TYPE_ICONS: Readonly<Record<string, UiV2IconName>> = {
+  "7Z": "archive", CSV: "table", DOC: "file-text", DOCX: "file-text", GZ: "archive", HTML: "braces",
+  JSON: "braces", KEY: "slides", MD: "file-text", ODP: "slides", ODS: "table", ODT: "file-text",
+  PDF: "file-text", PPT: "slides", PPTX: "slides", RTF: "file-text", "TAR.GZ": "archive", TSV: "table",
+  TXT: "file-text", XLS: "table", XLSX: "table", XML: "braces", YAML: "braces", YML: "braces", ZIP: "archive"
+};
+
+function generatedFileIcon(file: ThreadGeneratedFile, type: string): UiV2IconName {
+  return file.mimeType.startsWith("image/") ? "image" : FILE_TYPE_ICONS[type] ?? "file";
+}
+
+/** Generated files as compact cards: Download is the visible verb, saving a
+ * copy to Files waits behind "⋯". The type tile also keeps the file text
+ * clear of the floating jump control's left lane. */
 export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisabled = false }: Readonly<{
   files: readonly ThreadGeneratedFile[];
   canSave?: boolean;
@@ -703,35 +716,38 @@ export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisable
   if (files.length === 0) return null;
   return (
     <section className="v2-generated-files" aria-label="Generated files">
-      <h3>Generated files</h3>
       <ul>
-        {files.map((file) => (
-          <li key={file.attachmentId}>
-            <UiV2Icon name="file" />
-            <span className="v2-generated-file-copy">
-              <strong title={file.relativePath}>{file.fileName}</strong>
-              <small>{file.checkpoint ? "Saved draft" : "Final export"} · {generatedFileType(file)} · {formatAttachmentBytes(file.byteSize)}</small>
-              {file.checkpoint ? <>
-                <small className="v2-generated-file-description">{file.checkpoint.description}</small>
-                <small><time dateTime={file.checkpoint.createdAt}>{new Intl.DateTimeFormat(undefined, {
-                  dateStyle: "medium", timeStyle: "medium"
-                }).format(new Date(file.checkpoint.createdAt))}</time></small>
-              </> : null}
-            </span>
-            <span className="v2-generated-file-actions">
-            <a
-              className="v2-generated-file-download v2-focusable"
-              download={file.fileName}
-              href={attachmentDownloadHref(file.attachmentId)}
-            >
-              <UiV2Icon name="download" />
-              Download
-            </a>
-            {canSave ? <SaveFileButtonV2 attachmentId={file.attachmentId} /> : null}
-            {onUseFile ? <UiV2Button disabled={useDisabled} onClick={() => onUseFile(file.attachmentId, file.fileName)}>Use file</UiV2Button> : null}
-            </span>
-          </li>
-        ))}
+        {files.map((file) => {
+          const type = generatedFileType(file);
+          return (
+            <li key={file.attachmentId}>
+              <span className="v2-generated-file-tile" aria-hidden="true"><UiV2Icon name={generatedFileIcon(file, type)} /></span>
+              <span className="v2-generated-file-copy">
+                <strong title={file.relativePath}>{file.fileName}</strong>
+                <small>{file.checkpoint ? "Saved draft · " : null}{type} · {formatAttachmentBytes(file.byteSize)}</small>
+                {file.checkpoint ? <>
+                  <small className="v2-generated-file-description">{file.checkpoint.description}</small>
+                  <small><time dateTime={file.checkpoint.createdAt}>{new Intl.DateTimeFormat(undefined, {
+                    dateStyle: "medium", timeStyle: "medium"
+                  }).format(new Date(file.checkpoint.createdAt))}</time></small>
+                </> : null}
+              </span>
+              <span className="v2-generated-file-actions">
+                <a
+                  aria-label="Download"
+                  className="v2-generated-file-download v2-focusable"
+                  data-tooltip="Download"
+                  download={file.fileName}
+                  href={attachmentDownloadHref(file.attachmentId)}
+                >
+                  <UiV2Icon name="download" />
+                </a>
+                {canSave ? <FileActionsMenuV2 attachmentId={file.attachmentId} fileName={file.fileName} /> : null}
+                {onUseFile ? <UiV2Button disabled={useDisabled} onClick={() => onUseFile(file.attachmentId, file.fileName)}>Use file</UiV2Button> : null}
+              </span>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

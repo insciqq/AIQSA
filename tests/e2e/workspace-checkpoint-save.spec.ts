@@ -92,9 +92,10 @@ test("saves, reuses and downloads a Workspace checkpoint draft", async ({ page }
   });
 
   await test.step("save the draft to Files", async () => {
-    await (await reachable(files.getByRole("button", { name: "Save file", exact: true }))).click({ timeout: STEP_TIMEOUT });
-    await expect(files.getByRole("button", { name: "Saved", exact: true })).toBeDisabled({ timeout: STEP_TIMEOUT });
-    await expect(page.getByText("Could not save. Try again.")).toHaveCount(0);
+    await (await reachable(files.getByRole("button", { name: "More actions for draft.txt", exact: true }))).click({ timeout: STEP_TIMEOUT });
+    await page.getByRole("menuitem", { name: "Save to Files", exact: true }).click({ timeout: STEP_TIMEOUT });
+    await expect(files.getByText("Saved", { exact: true })).toBeVisible({ timeout: STEP_TIMEOUT });
+    await expect(files.getByText("Could not save")).toHaveCount(0);
     await expect.poll(() => prisma.attachment.count({ where: { userId, storageKey, savedAt: { not: null } } }),
       { timeout: STEP_TIMEOUT }).toBe(1);
   });

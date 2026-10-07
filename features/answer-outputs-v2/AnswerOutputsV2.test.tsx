@@ -722,7 +722,7 @@ describe("AnswerOutputsV2 Workspace output status", () => {
     );
     expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("still being prepared");
     expect(screen.getByRole("link", { name: /Download/u })).toHaveAttribute("href", "/api/attachments/att-1/content");
-    expect(screen.getByRole("heading", { name: "Generated files" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Generated files" })).toBeVisible();
   });
 
   it("explains a permanent export failure even without generated files", () => {
@@ -749,7 +749,7 @@ it("offers immutable draft downloads before answer text and keeps them after fai
   rerender(<AnswerOutputsV2 artifact={summary} workspaceOutputStatus={{ state: "failed", errorCode: "workspace_session_lost" }} />);
   expect(downloads()).toEqual(["/api/attachments/draft-1/content", "/api/attachments/draft-2/content", "/api/attachments/final/content"]);
   expect(screen.getAllByText("layout.psd")).toHaveLength(3);
-  expect(screen.getByText(/Final export ·/)).toBeVisible();
+  expect(screen.getAllByText(/Saved draft ·/)).toHaveLength(2);
   expect(screen.getByTestId("workspace-output-status")).toHaveTextContent("could not be prepared");
 });
 
