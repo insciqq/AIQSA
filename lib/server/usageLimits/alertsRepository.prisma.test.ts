@@ -55,7 +55,7 @@ async function person(input: Readonly<{ role?: "admin" | "user"; status?: "activ
 
 async function spend(userId: string, estimatedCostMicros: number) {
   await prisma.usageEvent.create({ data: {
-    createdAt: later(-60_000), estimatedCostMicros, modelId: "usage-alert-fixture", provider: "fake", userId
+    createdAt: later(-60_000), estimatedCostMicros, modelId: "usage-alert-fixture", provider: "fake", purpose: "chat_answer", userId
   } });
 }
 
