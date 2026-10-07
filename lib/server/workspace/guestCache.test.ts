@@ -19,6 +19,9 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
  * rewritten: the cache directory into a temporary tree, the threshold to a few
  * bytes, and the guest venv to a stub `uv` that records its arguments.
  */
+/** Far above a directory's own size on any filesystem, which `du -sb` also counts. */
+const TEST_THRESHOLD_BYTES = 1024 * 1024;
+
 function run(options: Readonly<{ cacheBytes?: number; uvExit?: number; symlink?: boolean }>) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "aiqsa-uv-cache-")));
   roots.push(root);
@@ -40,7 +43,7 @@ function run(options: Readonly<{ cacheBytes?: number; uvExit?: number; symlink?:
   }
   const script = BOUND_WORKSPACE_UV_CACHE
     .replaceAll(WORKSPACE_UV_CACHE_DIRECTORY, cache)
-    .replaceAll(String(WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES), "4096")
+    .replaceAll(String(WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES), String(TEST_THRESHOLD_BYTES))
     .replace("/opt/aiqsa-python/bin", bin);
   const stdout = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", env: { NODE_ENV: "test" } });
   return { cache, outside, stdout, uvArgs: existsSync(record) ? readFileSync(record, "utf8").trim() : null };
@@ -57,7 +60,7 @@ describe("uv cache bound helper", () => {
   });
 
   it("prunes only above the threshold and reports one word", () => {
-    const over = run({ cacheBytes: 64 * 1024 });
+    const over = run({ cacheBytes: 2 * TEST_THRESHOLD_BYTES });
     expect(over.stdout.trim()).toBe("pruned");
     expect(over.uvArgs).toBe(`cache prune --cache-dir ${over.cache}`);
     const within = run({ cacheBytes: 16 });
@@ -67,7 +70,7 @@ describe("uv cache bound helper", () => {
   });
 
   it("reports a failed prune and still exits 0", () => {
-    const failed = run({ cacheBytes: 64 * 1024, uvExit: 2 });
+    const failed = run({ cacheBytes: 2 * TEST_THRESHOLD_BYTES, uvExit: 2 });
     expect(failed.stdout.trim()).toBe("failed");
   });
 
