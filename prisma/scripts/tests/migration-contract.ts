@@ -1,4 +1,5 @@
 import { MODEL_PRICES_MIGRATION, modelPricesFixtureSql, modelPricesProofSql, modelPricesGuardProofSql } from "./model-prices-adoption";
+import { EMBEDDING_MODEL_PRICES_MIGRATION, embeddingModelPricesFixtureSql, embeddingModelPricesProofSql } from "./embedding-model-prices-adoption";
 import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
 import { WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION, workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql } from "./workspace-checkpoint-deletion-job-repair-adoption";
 import { TOOL_OBSERVATION_MIGRATION, toolObservationFixtureSql, toolObservationProofSql } from "./tool-observation-adoption";
@@ -7703,6 +7704,8 @@ function main(
      END $$;`);
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_PRICES_MIGRATION,
     modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, EMBEDDING_MODEL_PRICES_MIGRATION,
+    embeddingModelPricesFixtureSql, embeddingModelPricesProofSql, embeddingModelPricesProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION,
     workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
   // Both proofs read the activation token and stages the later drop removes.

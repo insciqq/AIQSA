@@ -62,6 +62,9 @@ export type RerankUsage = Readonly<{
   inputTokens: number | null;
   searchUnits: number | null;
   totalTokens: number | null;
+  /** USD the provider reported for this request (OpenRouter `usage.cost`); null,
+   * or absent outside this adapter, when it reported none. */
+  costUsd?: number | null;
 }>;
 
 export type RerankResult = Readonly<{
@@ -174,6 +177,10 @@ function nonnegativeInteger(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
 }
 
+function nonnegativeAmount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function requestDocuments(documents: readonly RerankDocument[]): RerankDocument[] {
   if (!Array.isArray(documents) || documents.length < 1 ||
     documents.length > MAX_RERANK_DOCUMENTS) {
@@ -196,7 +203,7 @@ function requestDocuments(documents: readonly RerankDocument[]): RerankDocument[
 
 function responseUsage(value: unknown): RerankUsage {
   if (value === undefined) {
-    return { inputTokens: null, searchUnits: null, totalTokens: null };
+    return { inputTokens: null, searchUnits: null, totalTokens: null, costUsd: null };
   }
   if (!isRecord(value)) throw new RerankAdapterError("rerank_response_invalid");
   const inputTokens = value.input_tokens === undefined &&
@@ -209,13 +216,15 @@ function responseUsage(value: unknown): RerankUsage {
   const totalTokens = value.total_tokens === undefined
     ? null
     : nonnegativeInteger(value.total_tokens);
+  const costUsd = value.cost === undefined ? null : nonnegativeAmount(value.cost);
   if (
     (value.input_tokens !== undefined || value.prompt_tokens !== undefined) &&
       inputTokens === null ||
     value.search_units !== undefined && searchUnits === null ||
-    value.total_tokens !== undefined && totalTokens === null
+    value.total_tokens !== undefined && totalTokens === null ||
+    value.cost !== undefined && costUsd === null
   ) throw new RerankAdapterError("rerank_response_invalid");
-  return { inputTokens, searchUnits, totalTokens };
+  return { inputTokens, searchUnits, totalTokens, costUsd };
 }
 
 function responseModelMatches(

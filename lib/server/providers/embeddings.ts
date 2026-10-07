@@ -43,6 +43,9 @@ export type EmbeddingMode = "document" | "query";
 export type EmbeddingUsage = Readonly<{
   inputTokens: number | null;
   totalTokens: number | null;
+  /** USD the provider reported for this request (OpenRouter `usage.cost`); null,
+   * or absent outside this adapter, when it reported none. */
+  costUsd?: number | null;
 }>;
 
 export type EmbeddingResult = Readonly<{
@@ -155,6 +158,10 @@ function nonnegativeInteger(value: unknown): number | null {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
 }
 
+function nonnegativeAmount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function requestInputs(
   texts: readonly string[],
   mode: EmbeddingMode,
@@ -206,7 +213,7 @@ function normalizeVector(
 
 function responseUsage(value: unknown): EmbeddingUsage {
   if (value === undefined) {
-    return { inputTokens: null, totalTokens: null };
+    return { inputTokens: null, totalTokens: null, costUsd: null };
   }
   if (!isRecord(value)) {
     throw new EmbeddingAdapterError("embedding_response_invalid");
@@ -219,13 +226,15 @@ function responseUsage(value: unknown): EmbeddingUsage {
   const totalTokens = value.total_tokens === undefined
     ? null
     : nonnegativeInteger(value.total_tokens);
+  const costUsd = value.cost === undefined ? null : nonnegativeAmount(value.cost);
   if (
     (value.prompt_tokens !== undefined || value.input_tokens !== undefined) && inputTokens === null ||
-    value.total_tokens !== undefined && totalTokens === null
+    value.total_tokens !== undefined && totalTokens === null ||
+    value.cost !== undefined && costUsd === null
   ) {
     throw new EmbeddingAdapterError("embedding_response_invalid");
   }
-  return { inputTokens, totalTokens };
+  return { inputTokens, totalTokens, costUsd };
 }
 
 function responseVectors(

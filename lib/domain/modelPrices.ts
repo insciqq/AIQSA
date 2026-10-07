@@ -1,3 +1,4 @@
+import type { AdminProviderModelClass } from "../contracts/adminProviders";
 import type { ModelTokenPricing } from "./usage";
 
 // Base token tariffs checked 2026-09-30. Runtime never refreshes saved prices.
@@ -6,7 +7,7 @@ import type { ModelTokenPricing } from "./usage";
 // https://ai.google.dev/gemini-api/docs/pricing
 // https://api-docs.deepseek.com/quick_start/pricing/
 // https://openrouter.ai/api/v1/models
-type Tariff = readonly [input: number, read: number | null, write: number | null, output: number];
+type Tariff = readonly [input: number, read: number | null, write: number | null, output: number | null];
 const openai: Record<string, Tariff> = {
   "gpt-6-astra": [10, 1, 12.5, 50],
   "gpt-6-sol": [2, 0.2, 2.5, 10],
@@ -57,16 +58,35 @@ const openrouter: Record<string, Tariff> = {
   "perplexity/sonar-pro-search": [3, null, null, 15]
 };
 
+// Embedding tariffs price input tokens only. The OpenRouter presets report each
+// call's cost, so only deployments that report none need a tariff.
+// https://developers.openai.com/api/docs/pricing ("Specialized models", checked 2026-10-07)
+const openaiEmbeddings: Record<string, Tariff> = {
+  "text-embedding-3-large": [0.13, null, null, null]
+};
+
+const tariffs: ReadonlyArray<readonly [AdminProviderModelClass, Readonly<Record<string, Record<string, Tariff>>>]> = [
+  ["answer", { openai, anthropic, gemini, deepseek, openrouter }],
+  ["embedding", { openai: openaiEmbeddings }]
+];
+const catalog = new Map<string, Readonly<{ modelClass: AdminProviderModelClass; tariff: Tariff }>>(tariffs.flatMap(([modelClass, providers]) =>
+  Object.entries(providers).flatMap(([provider, models]) =>
+    Object.entries(models).map(([modelId, tariff]) => [`${provider}:${modelId}`, { modelClass, tariff }] as const))));
+
 /** Keyed by `<family>:<upstream model>`; codex-lb rows resolve to the `openai:` tariff. */
 export const catalogModelPrices: Readonly<Record<string, ModelTokenPricing>> = Object.fromEntries(
-  Object.entries({ openai, anthropic, gemini, deepseek, openrouter }).flatMap(([provider, models]) =>
-    Object.entries(models).map(([modelId, [input, read, write, output]]) => [`${provider}:${modelId}`, {
-      inputTokenPriceUsdPerMillion: input,
-      cachedInputTokenPriceUsdPerMillion: read,
-      cacheWriteInputTokenPriceUsdPerMillion: write,
-      outputTokenPriceUsdPerMillion: output
-    }]))
+  [...catalog].map(([key, { tariff: [input, read, write, output] }]) => [key, {
+    inputTokenPriceUsdPerMillion: input,
+    cachedInputTokenPriceUsdPerMillion: read,
+    cacheWriteInputTokenPriceUsdPerMillion: write,
+    outputTokenPriceUsdPerMillion: output
+  }])
 );
+
+/** The one model class a catalog tariff prices; rows of any other class never take it. */
+export function catalogModelPriceClass(key: string): AdminProviderModelClass | null {
+  return catalog.get(key)?.modelClass ?? null;
+}
 
 export function catalogModelTokenPricing(templateKey: string): ModelTokenPricing {
   return catalogModelPrices[templateKey] ?? {

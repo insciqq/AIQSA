@@ -1,3 +1,6 @@
+import { modelClassPriceFields, type AdminModelPriceField } from "../contracts/adminProviderModelPrices";
+import type { AdminProviderModelClass } from "../contracts/adminProviders";
+
 export type TokenUsageCompleteness = "complete" | "partial" | "unavailable";
 
 export const TOKEN_USAGE_FIELDS = [
@@ -105,6 +108,25 @@ export function subtractTokenUsage(total: TokenUsage, subtrahend: TokenUsage): N
   };
 }
 
+// Durable cost columns are signed 32-bit integers. Unrepresentable cost is unknown.
+const MAX_COST_MICROS = 2_147_483_647n;
+
+function validPrice(price: number): boolean {
+  return Number.isFinite(price) && price >= 0 && price < 10_000_000_000;
+}
+
+// Decimal(18,8) prices use exact integer arithmetic so binary floats cannot
+// turn a half-micro boundary (for example 50 * 0.29) into a downward round.
+function charge(tokens: number, price: number): bigint {
+  return BigInt(tokens) * BigInt(price.toFixed(8).replace(".", ""));
+}
+
+function chargedMicros(scaledCost: bigint): number | null {
+  // USD per million tokens is numerically micro-dollars per token.
+  const micros = (scaledCost + 50_000_000n) / 100_000_000n;
+  return micros <= MAX_COST_MICROS ? Number(micros) : null;
+}
+
 export function estimateCostMicros(usage: TokenUsage, pricing: ModelTokenPricing): number | null {
   const normalized = normalizeTokenUsage(usage);
   if (normalized.completeness !== "complete" || normalized.inputTokens === null || normalized.outputTokens === null) return null;
@@ -114,21 +136,71 @@ export function estimateCostMicros(usage: TokenUsage, pricing: ModelTokenPricing
   const cachedPrice = pricing.cachedInputTokenPriceUsdPerMillion ?? inputPrice;
   const cacheWritePrice = pricing.cacheWriteInputTokenPriceUsdPerMillion ?? inputPrice;
   const reasoningPrice = pricing.reasoningTokenPriceUsdPerMillion ?? outputPrice;
-  if ([inputPrice, outputPrice, cachedPrice, cacheWritePrice, reasoningPrice]
-    .some((price) => !Number.isFinite(price) || price < 0 || price >= 10_000_000_000)) return null;
+  if (![inputPrice, outputPrice, cachedPrice, cacheWritePrice, reasoningPrice].every(validPrice)) return null;
   if (reasoningPrice !== pricing.outputTokenPriceUsdPerMillion && normalized.reasoningTokens === null) return null;
   const reasoningTokens = Math.min(normalized.reasoningTokens ?? 0, normalized.outputTokens);
   const cachedTokens = normalized.cachedInputTokens ?? 0;
   const cacheWriteTokens = normalized.cacheWriteInputTokens ?? 0;
   const uncachedTokens = Math.max(0, normalized.inputTokens - cachedTokens - cacheWriteTokens);
-  // Decimal(18,8) prices use exact integer arithmetic so binary floats cannot
-  // turn a half-micro boundary (for example 50 * 0.29) into a downward round.
-  const charge = (tokens: number, price: number) => BigInt(tokens) * BigInt(price.toFixed(8).replace(".", ""));
-  const scaledCost = charge(uncachedTokens, inputPrice) + charge(cachedTokens, cachedPrice) +
+  return chargedMicros(charge(uncachedTokens, inputPrice) + charge(cachedTokens, cachedPrice) +
     charge(cacheWriteTokens, cacheWritePrice) + charge(normalized.outputTokens - reasoningTokens, outputPrice) +
-    charge(reasoningTokens, reasoningPrice);
-  // USD per million tokens is numerically micro-dollars per token.
-  const cost = Number((scaledCost + 50_000_000n) / 100_000_000n);
-  // Durable cost columns are signed 32-bit integers. Unrepresentable cost is unknown.
-  return Number.isSafeInteger(cost) && cost >= 0 && cost <= 2_147_483_647 ? cost : null;
+    charge(reasoningTokens, reasoningPrice));
+}
+
+/** Exact half-up micro-dollars of a reported USD amount, read as the shortest
+ * decimal that round-trips the number (the provider's own JSON text). */
+function reportedCostMicros(usd: number): number | null {
+  // Also excludes NaN and Infinity; 2148 USD is beyond the int32 column.
+  if (!(usd >= 0 && usd < 2_148)) return null;
+  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]\d+))?$/u.exec(String(usd));
+  if (!match) return null;
+  const [, whole, fraction = "", exponent = "0"] = match;
+  const digits = BigInt(whole! + fraction);
+  const shift = Number(exponent) - fraction.length + 6;
+  const divisor = 10n ** BigInt(Math.max(0, -shift));
+  const micros = shift >= 0 ? digits * 10n ** BigInt(shift) : (digits * 2n + divisor) / (divisor * 2n);
+  return micros <= MAX_COST_MICROS ? Number(micros) : null;
+}
+
+export type UsageCostInput = Readonly<{
+  /** USD the provider reported for exactly this call (for example OpenRouter
+   * `usage.cost`), or null when it reported none. */
+  reportedCostUsd: number | null;
+  /** The call's provider-reported token usage. */
+  usage: TokenUsage;
+  /** The deployment's configured token prices; any of them may be null (unknown). */
+  pricing: ModelTokenPricing;
+  /** The deployment's model class: it selects the prices that apply. */
+  modelClass: AdminProviderModelClass;
+}>;
+
+/**
+ * The cost of one usage row in whole micro-dollars, or null when unknown; a
+ * known cost always fits the int32 cost column. Pure: the one cost rule usage
+ * writers apply to the rows they write.
+ *
+ * 1. A provider-reported cost wins over configured prices: exact half-up
+ *    micro-dollars, so a sub-micro amount is a known zero. A negative,
+ *    non-finite or unrepresentable amount is unknown and is never replaced by
+ *    an estimate. Writers whose rows keep token prices (answers) pass null.
+ * 2. Otherwise the configured prices of the class (`modelClassPriceFields`):
+ *    answer, decision and image usage needs complete input and output counts
+ *    and both prices, charging cached input as input where the class or the
+ *    model has no cache price; embedding and reranker usage costs its input
+ *    tokens, else its total tokens, times the input price and needs no output.
+ * 3. Otherwise null.
+ */
+export function usageCostMicros({ reportedCostUsd, usage, pricing, modelClass }: UsageCostInput): number | null {
+  if (reportedCostUsd !== null) return reportedCostMicros(reportedCostUsd);
+  const fields = modelClassPriceFields(modelClass);
+  const price = (field: AdminModelPriceField) => fields.includes(field) ? pricing[field] ?? null : null;
+  if (fields.includes("outputTokenPriceUsdPerMillion")) {
+    return estimateCostMicros(usage, { ...pricing,
+      cachedInputTokenPriceUsdPerMillion: price("cachedInputTokenPriceUsdPerMillion"),
+      cacheWriteInputTokenPriceUsdPerMillion: price("cacheWriteInputTokenPriceUsdPerMillion") });
+  }
+  const inputPrice = price("inputTokenPriceUsdPerMillion");
+  const normalized = normalizeTokenUsage(usage);
+  const tokens = normalized.inputTokens ?? normalized.totalTokens;
+  return tokens === null || inputPrice === null || !validPrice(inputPrice) ? null : chargedMicros(charge(tokens, inputPrice));
 }

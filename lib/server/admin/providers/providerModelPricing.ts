@@ -1,8 +1,8 @@
 import { Prisma, type ProviderModel } from "@prisma/client";
-import { ADMIN_MODEL_PRICE_FIELDS, decodeAdminModelPriceChange, modelClassUsesTokenPrices,
+import { ADMIN_MODEL_PRICE_FIELDS, decodeAdminModelPriceChange, modelClassPriceFields,
   normalizeAdminModelPrice, type AdminModelPricing, type AdminModelTokenPrices } from "../../../contracts/adminProviderModelPrices";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
-import { catalogModelPrices, catalogModelTokenPricing } from "../../../domain/modelPrices";
+import { catalogModelPriceClass, catalogModelTokenPricing } from "../../../domain/modelPrices";
 import { codexLbEndpoint } from "./setupModels";
 
 /** Stored connection columns; configurations are raw JSON as persisted. */
@@ -19,20 +19,18 @@ function storedEndpoint(connection: CatalogIdentityConnection): Readonly<Record<
 }
 
 /**
- * The one catalog identity of a stored answer row; only answer usage is costed
- * from token prices. A template key identifies itself. Without one, a row on a
+ * The one catalog identity of a stored row of any model class: a tariff of the
+ * row's own class. A template key identifies itself. Without one, a row on a
  * codex-lb endpoint takes the OpenAI tariff of its upstream model, and a row on
  * any connection of a Quick Setup family takes that family's tariff. Everything
  * else has none. Reads stored columns only; `20260930130000_model_token_prices`
- * mirrors it in SQL.
+ * (answer) and `20261008140000_embedding_model_prices` (embedding) mirror it in SQL.
  */
 export function providerModelCatalogKey(row: CatalogIdentityRow, connection: CatalogIdentityConnection): string | null {
-  if (!modelClassUsesTokenPrices(row.modelClass)) return null;
-  if (row.templateKey !== null) return Object.hasOwn(catalogModelPrices, row.templateKey) ? row.templateKey : null;
   const family = connection.family === "openai_compatible" && codexLbEndpoint(storedEndpoint(connection)) ? "openai"
     : ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId) ? connection.family : null;
-  const key = family && `${family}:${row.modelId}`;
-  return key && Object.hasOwn(catalogModelPrices, key) ? key : null;
+  const key = row.templateKey ?? (family && `${family}:${row.modelId}`);
+  return key && catalogModelPriceClass(key) === row.modelClass ? key : null;
 }
 
 function catalogPrices(key: string | null): AdminModelTokenPrices | null {
@@ -48,10 +46,15 @@ export function projectAdminModelPricing(model: StoredPricing, connection: Catal
     source: model.priceSource, catalogPrices: catalogPrices(providerModelCatalogKey(model, connection)) };
 }
 
-/** Catalog identity comes exclusively from the stored row, never request data. */
+/**
+ * Catalog identity comes exclusively from the stored row, never request data.
+ * A manual price on a field the row's model class does not use is refused.
+ */
 export function resolveAdminModelPricingChange(row: CatalogIdentityRow, connection: CatalogIdentityConnection, value: unknown): AdminModelPricing | null {
   const change = decodeAdminModelPriceChange(value);
-  if (!change || !modelClassUsesTokenPrices(row.modelClass)) return null;
+  const fields = modelClassPriceFields(row.modelClass);
+  if (!change || !fields.length || change.mode === "manual" &&
+    ADMIN_MODEL_PRICE_FIELDS.some(field => change.prices[field] !== null && !fields.includes(field))) return null;
   const catalog = catalogPrices(providerModelCatalogKey(row, connection));
   if (change.mode === "restore_catalog" && !catalog) return null;
   return { prices: change.mode === "manual" ? change.prices : catalog!,
@@ -63,7 +66,6 @@ export function resolveAdminModelPricingChange(row: CatalogIdentityRow, connecti
  * its identity, otherwise an unknown administrator-owned price.
  */
 export function initialAdminModelPricing(row: CatalogIdentityRow, connection: CatalogIdentityConnection): AdminModelPricing | null {
-  if (!modelClassUsesTokenPrices(row.modelClass)) return null;
   const catalog = catalogPrices(providerModelCatalogKey(row, connection));
   return catalog ? { prices: catalog, source: "catalog", catalogPrices: catalog } : null;
 }
