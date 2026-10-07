@@ -33,6 +33,7 @@ import type { AdminSectionId } from "@/components/admin/adminSections";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import { useAdminActionRunner } from "@/components/admin/useAdminActionRunner";
 import { useAdminAttention } from "@/components/admin/useAdminAttention";
+import { useAdminAttentionSummary } from "@/features/navigation-v2/useAdminAttentionSummary";
 import {
   useAdminConfirmationController,
   type AdminConfirmationController
@@ -373,6 +374,8 @@ export function AdminPanel({ accountLabel, adminEmail, adminUserId, returnPath =
   const usersAttention = dashboardAttention
     ? dashboardAttention.pendingUsers + dashboardAttention.activeUsersWithoutModelAccess
     : 0;
+  // The shell's shared summary poller already runs for the account menu's Control Center badge.
+  const healthAttention = useAdminAttentionSummary(true)?.health ?? 0;
   const activeSectionConfig = navigation.activeSectionConfig;
   const isBusy = resource.loading || navigationLocked;
 
@@ -389,7 +392,7 @@ export function AdminPanel({ accountLabel, adminEmail, adminUserId, returnPath =
         <AdminShell
           accountId={adminUserId}
           accountLabel={accountLabel || adminEmail}
-          attentionCounts={{ assistants: assistantsPending.count, users: usersAttention }}
+          attentionCounts={{ assistants: assistantsPending.count, health: healthAttention, users: usersAttention }}
           navigation={navigation}
           navigationBlocked={navigationLocked}
           onReturnToChat={requestReturnToChat}
