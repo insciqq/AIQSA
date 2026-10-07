@@ -27,6 +27,9 @@ for (const viewport of [
           { userId, provider: "cost-fixture", modelId: "cost-fixture", purpose: "chat_answer", totalTokens: 100,
             estimatedCostMicros: 125_000, usageCompleteness: "COMPLETE" },
           { userId, provider: "cost-fixture", modelId: "cost-fixture", purpose: "chat_answer", totalTokens: 50,
+            estimatedCostMicros: null, usageCompleteness: "COMPLETE" },
+          // System work whose price is unknown: shown as unknown, never as $0.
+          { userId, provider: "cost-fixture", modelId: "cost-fixture-embed", purpose: "memory_indexing", inputTokens: 30, totalTokens: 30,
             estimatedCostMicros: null, usageCompleteness: "COMPLETE" }
         ] });
         await page.setViewportSize(viewport);
@@ -37,8 +40,13 @@ for (const viewport of [
         expect(response.ok()).toBe(true);
         const analytics = decodeAdminUsageAnalyticsResponse(await response.json());
         expect(analytics).not.toBeNull();
+        const system = { estimatedCostMicros: null, knownCostRecordCount: 0, recordCount: 1, totalTokens: 30 };
         expect(analytics!.usage.byUser.find((row) => row.userId === userId)).toMatchObject({
-          estimatedCostMicros: 125_000, recordCount: 2, knownCostRecordCount: 1, runCount: 0, totalTokens: 150
+          estimatedCostMicros: 125_000, recordCount: 3, knownCostRecordCount: 1, runCount: 0, system, totalTokens: 180
+        });
+        expect(analytics!.usage.byGroup.find((row) => row.groupId === groupId)).toMatchObject({ estimatedCostMicros: 125_000, system });
+        expect(analytics!.usage.bySystemModel.find((row) => row.modelId === "cost-fixture-embed")).toMatchObject({
+          estimatedCostMicros: null, purposes: ["memory_indexing"], recordCount: 1
         });
         await page.goto("/admin?section=usage");
         const usage = page.getByTestId("admin-section-usage");
@@ -59,7 +67,11 @@ for (const viewport of [
           await row.scrollIntoViewIfNeeded();
           await expect(row).toBeVisible();
           await expect(row.getByText("≈ $0.125", { exact: true })).toHaveCount(1);
-          await expect(row.getByText("cost known for 1 of 2 requests", { exact: true })).toHaveCount(1);
+          await expect(row.getByText("cost known for 1 of 3 requests", { exact: true })).toHaveCount(1);
+          // The System part has no known price: it says so and its tokens, never a dollar amount.
+          await expect(row.getByText("Cost unknown", { exact: true })).toHaveCount(1);
+          await expect(row.getByText("30 tokens", { exact: true })).toHaveCount(1);
+          await expect(row.getByText(/\$0\.00/u)).toHaveCount(0);
           await page.screenshot({ path: testInfo.outputPath(`usage-cost-${label}.png`) });
         }
         await expect.poll(() => page.evaluate(() => ({

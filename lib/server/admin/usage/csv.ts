@@ -1,13 +1,15 @@
 import type { AdminUsageAmounts, AdminUsageCategory, AdminUsagePeriod } from "@/lib/contracts/adminUsageAnalytics";
+import type { UsagePurpose } from "@/lib/domain/usagePurpose";
 import { serializeAdminMemberships, type AdminMembershipSource } from "@/lib/server/auth/adminSerializationPrimitives";
 import { resolvedFromUsageModelKey, type ResolvedUsageModel } from "./models";
 
-/** One CSV line: a bucket × user × canonical model × category slice. */
+/** One CSV line: a bucket × user × canonical model × category × purpose slice. */
 export type UsageExportRow = Readonly<{
   amounts: AdminUsageAmounts;
   bucket: string;
   category: AdminUsageCategory;
   model: string;
+  purpose: UsagePurpose;
   userId: string;
 }>;
 
@@ -21,7 +23,7 @@ export type UsageExportUser = Readonly<{
 export const MAX_USAGE_EXPORT_ROWS = 200_000;
 
 export const USAGE_CSV_HEADER = [
-  "period_start", "user_email", "user_name", "groups", "category", "provider", "model", "runs", "records",
+  "period_start", "user_email", "user_name", "groups", "category", "purpose", "provider", "model", "runs", "records",
   "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_tokens",
   "total_tokens", "estimated_cost_usd", "cost_known_records"
 ] as const;
@@ -64,7 +66,7 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** CRLF-terminated lines, header first, ordered by bucket, user, model and category. */
+/** CRLF-terminated lines, header first, ordered by bucket, user, model, category and purpose. */
 export function* usageCsvLines(input: Readonly<{
   models: ReadonlyMap<string, ResolvedUsageModel>;
   rows: readonly UsageExportRow[];
@@ -74,7 +76,8 @@ export function* usageCsvLines(input: Readonly<{
   const groupsByUser = new Map<string, string>();
   // Zero-padded local keys sort chronologically as text.
   const rows = [...input.rows].sort((left, right) => compareText(left.bucket, right.bucket) || compareText(left.userId, right.userId) ||
-    compareText(left.model, right.model) || compareText(left.category, right.category));
+    compareText(left.model, right.model) || compareText(left.category, right.category) ||
+    compareText(left.purpose, right.purpose));
   for (const row of rows) {
     const user = input.users.get(row.userId);
     let groups = groupsByUser.get(row.userId);
@@ -90,6 +93,7 @@ export function* usageCsvLines(input: Readonly<{
       usageCsvTextCell(user?.displayName ?? row.userId),
       usageCsvTextCell(groups),
       row.category,
+      row.purpose,
       usageCsvTextCell(model.providerLabel),
       usageCsvTextCell(model.modelLabel),
       String(amounts.runCount),

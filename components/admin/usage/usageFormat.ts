@@ -4,6 +4,7 @@ import {
   type AdminUsageBucket,
   type AdminUsageCategory,
   type AdminUsagePeriod,
+  type AdminUsageSystemPurpose,
   type AdminUsageWindow
 } from "@/lib/contracts/adminUsageAnalytics";
 
@@ -26,31 +27,45 @@ export const USAGE_CATEGORY_META: Record<AdminUsageCategory, Readonly<{
   chat: {
     color: "var(--v2-chart-1)",
     label: "Chats",
-    meaning: "Answers, edits and regenerations in personal and Project chats"
+    meaning: "Answers and Search in personal and Project chats"
   },
   scheduled: {
     color: "var(--v2-chart-2)",
     label: "Scheduled tasks",
-    meaning: "Runs started by scheduled tasks"
+    meaning: "Answers and Search in scheduled task runs"
   },
   images: {
     color: "var(--v2-chart-3)",
     label: "Images",
     meaning: "Image generation and editing"
   },
-  memory: {
+  system: {
     color: "var(--v2-chart-4)",
-    label: "Memory",
-    meaning: "Memory extraction and upkeep"
-  },
-  background: {
-    color: "var(--v2-chart-5)",
-    label: "Knowledge & other",
-    meaning: "Background processing and usage whose source was deleted"
+    label: "System",
+    meaning: "Titles, summaries, Memory, Knowledge and checks by system models"
   }
 };
 
 export const USAGE_CATEGORY_ORDER: readonly AdminUsageCategory[] = ADMIN_USAGE_CATEGORIES;
+
+export const USAGE_SYSTEM_PURPOSE_LABELS: Record<AdminUsageSystemPurpose, string> = {
+  chat_title: "Chat titles",
+  chat_summary: "Chat summaries",
+  chat_vision: "Image analysis",
+  chat_pdf: "PDF reading",
+  skill_selection: "Skill selection",
+  memory_processing: "Memory processing",
+  memory_indexing: "Memory indexing",
+  memory_retrieval: "Memory search",
+  knowledge_indexing: "Knowledge indexing",
+  knowledge_retrieval: "Knowledge search",
+  model_check: "Model checks",
+  other: "Other"
+};
+
+export function systemPurposeList(purposes: readonly AdminUsageSystemPurpose[]): string {
+  return purposes.map((purpose) => USAGE_SYSTEM_PURPOSE_LABELS[purpose]).join(", ");
+}
 
 export type UsageChartMetric = "cost" | "tokens";
 
@@ -97,7 +112,9 @@ export function formatUsdTick(micros: number, stepMicros: number): string {
   return formatUsd(micros, micros === 0 ? 0 : digits);
 }
 
-export function formatMetricValue(metric: UsageChartMetric, value: number): string {
+/** A chart reading; a `null` cost is usage whose cost is unknown, never shown as zero. */
+export function formatMetricValue(metric: UsageChartMetric, value: number | null): string {
+  if (value === null) return "Unknown";
   return metric === "cost" ? formatUsdValue(value) : formatCount(value);
 }
 
@@ -165,6 +182,27 @@ export function niceTicks(max: number, target = 4, minimumStep = 1): number[] {
 export function shareOf(value: number | null, total: number | null): number {
   if (value === null || total === null || total <= 0 || value <= 0) return 0;
   return Math.min(1, value / total);
+}
+
+/** Shares follow known cost when the whole has any, otherwise tokens. */
+export type UsageShareBasis = "cost" | "tokens";
+
+type ShareAmounts = Pick<AdminUsageAmounts, "estimatedCostMicros" | "recordCount" | "totalTokens">;
+
+export function usageShareBasis(whole: Pick<AdminUsageAmounts, "estimatedCostMicros">): UsageShareBasis {
+  return (whole.estimatedCostMicros ?? 0) > 0 ? "cost" : "tokens";
+}
+
+/** A part's share of a whole; `null` when the part has usage but its cost is unknown. */
+export function usageShare(part: ShareAmounts, whole: ShareAmounts, basis: UsageShareBasis): number | null {
+  if (basis === "tokens") return shareOf(part.totalTokens, whole.totalTokens);
+  if (part.estimatedCostMicros === null && part.recordCount > 0) return null;
+  return shareOf(part.estimatedCostMicros, whole.estimatedCostMicros);
+}
+
+/** Requests in a slice whose cost is unknown. */
+export function unknownCostCount(amounts: Pick<AdminUsageAmounts, "knownCostRecordCount" | "recordCount">): number {
+  return Math.max(0, amounts.recordCount - amounts.knownCostRecordCount);
 }
 
 export function formatShare(share: number): string {

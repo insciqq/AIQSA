@@ -1,18 +1,40 @@
 "use client";
 
 import { costCoverageNote, formatEstimatedCostMicros } from "@/lib/domain/formatEstimatedCost";
-import type { AdminUsageAmounts } from "@/lib/contracts/adminUsageAnalytics";
+import type { AdminUsageAmounts, AdminUsageSystemAmounts } from "@/lib/contracts/adminUsageAnalytics";
 import type { ReactNode } from "react";
 import { sectionHeadingClass } from "@/components/admin/roles/rolesControls";
-import { formatShare } from "./usageFormat";
+import { formatCount, formatShare, usageShare, type UsageShareBasis } from "./usageFormat";
 
-/** Known estimate plus how much of the usage it covers. */
+/** Known estimate plus how much of the usage it covers; usage without any known cost says so instead of a number. */
 export function UsageCost({ usage }: Readonly<{ usage: Pick<AdminUsageAmounts, "estimatedCostMicros" | "knownCostRecordCount" | "recordCount"> }>) {
+  if (usage.estimatedCostMicros === null && usage.recordCount > 0) return <span className="text-ink-secondary">Cost unknown</span>;
   const note = costCoverageNote(usage.knownCostRecordCount, usage.recordCount);
   return (
     <>
       <span className="font-mono tabular-nums">{formatEstimatedCostMicros(usage.estimatedCostMicros)}</span>
       {note ? <span className="mt-0.5 block font-sans text-xs font-normal text-ink-muted">{note}</span> : null}
+    </>
+  );
+}
+
+/**
+ * The system part of a user's or a group's usage: its cost, its tokens and,
+ * when shares follow cost, its share of the row's own known cost.
+ */
+export function UsageSystemPart({ basis, system, whole }: Readonly<{
+  basis: UsageShareBasis;
+  system: AdminUsageSystemAmounts;
+  whole: AdminUsageAmounts;
+}>) {
+  if (system.recordCount === 0) return <span className="text-ink-muted">None</span>;
+  const share = basis === "cost" ? usageShare(system, whole, basis) : null;
+  return (
+    <>
+      <UsageCost usage={system} />
+      <span className="mt-0.5 block font-sans text-xs font-normal text-ink-muted">
+        {formatCount(system.totalTokens)} tokens{share === null ? "" : ` · ${formatShare(share)} of cost`}
+      </span>
     </>
   );
 }
@@ -29,11 +51,14 @@ export function ShareBar({ color, share }: Readonly<{ color?: string; share: num
   );
 }
 
-export function ShareCell({ color, share }: Readonly<{ color?: string; share: number }>) {
+/** `null`: the part's cost is unknown, so it has no share of a cost whole. */
+export function ShareCell({ color, share }: Readonly<{ color?: string; share: number | null }>) {
   return (
     <span className="mt-1.5 flex min-w-0 items-center gap-2">
-      <ShareBar color={color} share={share} />
-      <span className="w-9 shrink-0 text-right font-mono text-xs tabular-nums text-ink-muted">{formatShare(share)}</span>
+      <ShareBar color={color} share={share ?? 0} />
+      <span className="w-9 shrink-0 text-right font-mono text-xs tabular-nums text-ink-muted">
+        {share === null ? <><span aria-hidden="true">—</span><span className="sr-only">share unknown</span></> : formatShare(share)}
+      </span>
     </span>
   );
 }
