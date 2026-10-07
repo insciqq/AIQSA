@@ -43,10 +43,10 @@ describe("due usage limit alerts", () => {
     expect(due.resetsAt.toISOString()).toBe("2026-11-01T00:00:00.000Z");
   });
 
-  it("bounds the users one check handles", () => {
+  it("lists every user at budget; the claim bounds a check", () => {
     const users = Array.from({ length: USAGE_LIMIT_ALERT_USERS_PER_CHECK + 5 }, (_, index) =>
       usageUserRow({ budget: 1_000_000, spent: 1_000_000, userId: `user-${index}` }));
-    expect(dueUsageLimitAlerts(usageLimitsFixture({ users })).users).toHaveLength(USAGE_LIMIT_ALERT_USERS_PER_CHECK);
+    expect(dueUsageLimitAlerts(usageLimitsFixture({ users })).users).toHaveLength(USAGE_LIMIT_ALERT_USERS_PER_CHECK + 5);
   });
 });
 

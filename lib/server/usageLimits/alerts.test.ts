@@ -4,7 +4,7 @@ import type { AdminUsageLimits } from "../../contracts/usageLimits";
 import type { SmtpProductMessage } from "../email/definitions";
 import type { EmailDispatchResult } from "../email/dispatcher";
 import { createUsageLimitAlertCheck, createUsageLimitAlertWorker, type UsageLimitAlertCheckDeps } from "./alerts";
-import type { UsageLimitAlertKind } from "./alertsPolicy";
+import { USAGE_LIMIT_ALERT_USERS_PER_CHECK, type UsageLimitAlertKind } from "./alertsPolicy";
 import {
   USAGE_LIMIT_ALERT_MAX_ATTEMPTS,
   USAGE_LIMIT_ALERT_RETRY_MS,
@@ -30,9 +30,10 @@ function memoryStore(recipients: readonly UsageLimitAlertRecipient[]) {
   const rows = new Map<string, Row>();
   let sequence = 0;
   const store: UsageLimitAlertStore = {
-    async claim({ keys, now, periodStart }) {
+    async claim({ keys, limit, now, periodStart }) {
       const claimed: UsageLimitAlertClaim[] = [];
       for (const key of keys) {
+        if (claimed.length >= limit) break;
         const id = `${periodStart.toISOString()}:${key.kind}:${key.userId ?? ""}`;
         const row = rows.get(id);
         if (!row) {
@@ -160,6 +161,20 @@ describe("usage limit alert check", () => {
     expect(test.emails[1]!.subject).toBe("AIQSA user reached their monthly budget");
     expect(test.emails[1]!.text).toContain("- Linus: $1.00 of $1.00");
     expect(test.emails[1]!.text).not.toContain("Ada");
+  });
+
+  it("claims users beyond one batch in later checks", async () => {
+    const test = harness({ recipients: [admins[0]!] });
+    const users = Array.from({ length: USAGE_LIMIT_ALERT_USERS_PER_CHECK + 1 }, (_, index) =>
+      usageUserRow({ budget: 1, spent: 1, userId: `user-${String(index).padStart(3, "0")}` }));
+    test.setLimits(usageLimitsFixture({ cap: 10, now: october, spent: 10, users }));
+    await test.check(october);
+    expect(test.memory.rows.size).toBe(USAGE_LIMIT_ALERT_USERS_PER_CHECK + 1);
+    await test.check(later(october, minutes(5)));
+    expect(test.memory.rows.size).toBe(USAGE_LIMIT_ALERT_USERS_PER_CHECK + 2);
+    expect([...test.memory.rows.values()].filter((row) => row.state === "delivered")).toHaveLength(USAGE_LIMIT_ALERT_USERS_PER_CHECK + 2);
+    await test.check(later(october, minutes(10)));
+    expect(test.emails).toHaveLength(3);
   });
 
   it("sends the pooled cap and the users as separate messages from one check", async () => {

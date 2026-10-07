@@ -66,31 +66,31 @@ describe("usage limit alert persistence", () => {
       { kind: "installation_cap_near" as const, userId: null },
       { kind: "user_budget_reached" as const, userId: user.id }
     ];
-    const results = await Promise.all(Array.from({ length: 4 }, () => store.claim({ keys, now, periodStart })));
+    const results = await Promise.all(Array.from({ length: 4 }, () => store.claim({ keys, limit: 10, now, periodStart })));
     const claimed = results.flat();
     expect(claimed.map(({ kind, userId }) => `${kind}:${userId ?? ""}`).sort())
       .toEqual([`installation_cap_near:`, `user_budget_reached:${user.id}`]);
     expect(await prisma.usageLimitAlert.count({ where: { periodStart } })).toBe(2);
     // A later check of the month claims nothing more, while the alerts are in flight or after delivery.
-    await expect(store.claim({ keys, now: later(USAGE_LIMIT_ALERT_RETRY_MS * 10), periodStart })).resolves.toEqual([]);
+    await expect(store.claim({ keys, limit: 10, now: later(USAGE_LIMIT_ALERT_RETRY_MS * 10), periodStart })).resolves.toEqual([]);
     await store.settle(claimed.map(({ id }) => id), "delivered", now);
-    await expect(store.claim({ keys, now: later(USAGE_LIMIT_ALERT_RETRY_MS * 10), periodStart })).resolves.toEqual([]);
+    await expect(store.claim({ keys, limit: 10, now: later(USAGE_LIMIT_ALERT_RETRY_MS * 10), periodStart })).resolves.toEqual([]);
   });
 
   it("claims an undelivered alert again only after the retry delay and a bounded number of times", async () => {
     const keys = [{ kind: "installation_cap_reached" as const, userId: null }];
-    let [claim] = await store.claim({ keys, now, periodStart });
+    let [claim] = await store.claim({ keys, limit: 10, now, periodStart });
     let at = now;
     for (let attempt = 2; attempt <= USAGE_LIMIT_ALERT_MAX_ATTEMPTS; attempt += 1) {
       await store.settle([claim!.id], "undelivered", at);
-      await expect(store.claim({ keys, now: new Date(at.getTime() + USAGE_LIMIT_ALERT_RETRY_MS - 1), periodStart })).resolves.toEqual([]);
+      await expect(store.claim({ keys, limit: 10, now: new Date(at.getTime() + USAGE_LIMIT_ALERT_RETRY_MS - 1), periodStart })).resolves.toEqual([]);
       at = new Date(at.getTime() + USAGE_LIMIT_ALERT_RETRY_MS);
-      const again = await Promise.all([store.claim({ keys, now: at, periodStart }), store.claim({ keys, now: at, periodStart })]);
+      const again = await Promise.all([store.claim({ keys, limit: 10, now: at, periodStart }), store.claim({ keys, limit: 10, now: at, periodStart })]);
       expect(again.flat()).toHaveLength(1);
       [claim] = again.flat();
     }
     await store.settle([claim!.id], "undelivered", at);
-    await expect(store.claim({ keys, now: new Date(at.getTime() + USAGE_LIMIT_ALERT_RETRY_MS), periodStart })).resolves.toEqual([]);
+    await expect(store.claim({ keys, limit: 10, now: new Date(at.getTime() + USAGE_LIMIT_ALERT_RETRY_MS), periodStart })).resolves.toEqual([]);
     expect(await prisma.usageLimitAlert.findFirst({ select: { attempts: true, state: true }, where: { periodStart } }))
       .toEqual({ attempts: USAGE_LIMIT_ALERT_MAX_ATTEMPTS, state: "undelivered" });
   });
@@ -99,12 +99,24 @@ describe("usage limit alert persistence", () => {
     const kept = await person();
     const deleted = await person();
     await prisma.user.delete({ where: { id: deleted.id } });
-    const claimed = await store.claim({ keys: [
+    const claimed = await store.claim({ limit: 10, keys: [
       { kind: "user_budget_reached", userId: kept.id }, { kind: "user_budget_reached", userId: deleted.id }
     ], now, periodStart });
     expect(claimed.map(({ userId }) => userId)).toEqual([kept.id]);
     await prisma.user.delete({ where: { id: kept.id } });
     expect(await prisma.usageLimitAlert.count({ where: { periodStart } })).toBe(0);
+  });
+
+  it("counts only claimable keys toward the batch limit", async () => {
+    const first = await person();
+    const second = await person();
+    const keys = [{ kind: "user_budget_reached" as const, userId: first.id }, { kind: "user_budget_reached" as const, userId: second.id }];
+    const [claimed] = await store.claim({ keys, limit: 1, now, periodStart });
+    expect(claimed?.userId).toBe(first.id);
+    await store.settle([claimed!.id], "delivered", now);
+    const next = await store.claim({ keys, limit: 1, now: later(60_000), periodStart });
+    expect(next.map(({ userId }) => userId)).toEqual([second.id]);
+    await expect(store.claim({ keys, limit: 1, now: later(120_000), periodStart })).resolves.toEqual([]);
   });
 
   it("lists active administrators with their verified address only", async () => {

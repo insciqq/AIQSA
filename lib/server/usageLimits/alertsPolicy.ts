@@ -33,7 +33,10 @@ export type UsageLimitAlertContent = Readonly<{
   push: BrowserPushMessage;
 }>;
 
-/** Users one check claims at most; the rest are claimed by the next checks. */
+/**
+ * Users one check claims at most, counted among those still claimable, so the
+ * rest are claimed by the next checks and settled users never fill a batch.
+ */
 export const USAGE_LIMIT_ALERT_USERS_PER_CHECK = 200;
 /** Users an email names; the rest are counted. */
 const EMAIL_USER_LINES = 50;
@@ -61,7 +64,6 @@ export function dueUsageLimitAlerts(limits: AdminUsageLimits): DueUsageLimitAler
     const budget = user.effective.monthlyBudgetMicros.value;
     if (user.status !== "active" || budget === null || budget <= 0 || user.monthSpentMicros < budget) continue;
     users.push({ budgetMicros: budget, displayName: user.displayName, spentMicros: user.monthSpentMicros, userId: user.userId });
-    if (users.length >= USAGE_LIMIT_ALERT_USERS_PER_CHECK) break;
   }
   return { installation, periodStart: new Date(limits.periodStart), resetsAt: new Date(limits.resetsAt), users };
 }
