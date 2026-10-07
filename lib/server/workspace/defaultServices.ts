@@ -29,7 +29,7 @@ export const workspaceRuntime: WorkspaceRuntime = createWorkspaceRuntime(workspa
 export const workspaceHealthService = createWorkspaceHealthService({ runtime: workspaceRuntime });
 export const workspacePolicyRepository = createPrismaWorkspacePolicyRepository(prisma);
 export const workspaceOverviewService = createWorkspaceOverviewService({
-  repository: createPrismaWorkspaceOverviewRepository(prisma),
+  repository: createPrismaWorkspaceOverviewRepository(prisma, { retentionSeconds: workspaceConfig.retentionSeconds }),
   runtime: workspaceRuntime
 });
 export const workspaceAvailabilityService = createWorkspaceAvailabilityService({

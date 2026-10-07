@@ -7,6 +7,7 @@ import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
 import { stopModelRun } from "../runs/handlers";
 import { RunRecoveryScheduler } from "../runs/recoveryScheduler";
 import { createS3StorageAdapter } from "../uploads/storage";
+import { getScheduledWorkspaceMaxConcurrent } from "../workspace/config";
 import { workspaceRuntime } from "../workspace/defaultServices";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
@@ -57,7 +58,8 @@ export function getDefaultScheduledTaskRunner(): RunRecoveryScheduler {
       sendPush: (occurrenceId) => getDefaultBrowserPush().sender.notifyOccurrence(occurrenceId),
       // The run deadline uses the chat's own Stop path in this process, where the runs execute.
       stopRun: ({ code, message, runId, userId }) => stopModelRun(sendDeps, { payload: { code, message }, runId, userId }),
-      store: createPrismaScheduledTaskRunnerStore(prisma)
+      store: createPrismaScheduledTaskRunnerStore(prisma),
+      workspaceMaxConcurrent: getScheduledWorkspaceMaxConcurrent()
     });
     globalForRunner.__aiqsaScheduledTaskRunner = new RunRecoveryScheduler({
       intervalMs: TICK_INTERVAL_MS,

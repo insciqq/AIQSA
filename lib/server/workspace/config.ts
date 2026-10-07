@@ -291,3 +291,22 @@ export function getWorkspaceConfig(
 
   return Object.freeze(config);
 }
+
+const scheduledMaxConcurrentSetting: IntegerSetting = {
+  defaultValue: 1,
+  maximum: 16,
+  minimum: 1,
+  name: "AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT"
+};
+
+/**
+ * Scheduled task runs with Workspace on at once, installation-wide. Over it,
+ * occurrences wait for a slot; interactive runs keep the runner's remaining
+ * capacity and never count toward it. Malformed values fail like every
+ * Workspace setting.
+ */
+export function getScheduledWorkspaceMaxConcurrent(
+  env: Readonly<Record<string, string | undefined>> = process.env
+): number {
+  return integerValue(env, scheduledMaxConcurrentSetting);
+}

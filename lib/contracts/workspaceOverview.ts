@@ -13,9 +13,23 @@ export type WorkspaceOverviewRow = Readonly<{
   user: string | null;
 }>;
 
+/** Content-free disk and scheduled capacity counts, installation-wide. */
+export type WorkspaceOverviewFootprint = Readonly<{
+  /** Workspace disks kept (every environment created and not being deleted). */
+  retainedDisks: number;
+  /** Of those, disks an active scheduled task keeps until its next run. */
+  scheduledDisks: number;
+  /** Scheduled runs that waited for a free Workspace slot in the last 24 hours. */
+  scheduledWaits: number;
+  /** Scheduled runs skipped because no Workspace slot became free, in the last 24 hours. */
+  scheduledSkips: number;
+}>;
+
 export type WorkspaceOverviewWire = Readonly<{
   activeCount: number | null;
   filter: WorkspaceOverviewFilter;
+  /** Null when the counts could not be read. */
+  footprint: WorkspaceOverviewFootprint | null;
   observedAt: string | null;
   page: number;
   pageSize: number;
@@ -38,9 +52,19 @@ function timestamp(value: unknown): value is string {
   return typeof value === "string" && value.length <= 40 && Number.isFinite(Date.parse(value));
 }
 
+function footprint(value: unknown): WorkspaceOverviewFootprint | null | undefined {
+  if (value === null) return null;
+  if (!record(value) || !count(value.retainedDisks) || !count(value.scheduledDisks) || !count(value.scheduledWaits) ||
+    !count(value.scheduledSkips) || value.scheduledDisks > value.retainedDisks) return undefined;
+  return { retainedDisks: value.retainedDisks, scheduledDisks: value.scheduledDisks, scheduledSkips: value.scheduledSkips,
+    scheduledWaits: value.scheduledWaits };
+}
+
 export function decodeWorkspaceOverviewResponse(value: unknown): WorkspaceOverviewWire | null {
   if (!record(value) || !record(value.overview)) return null;
   const overview = value.overview;
+  const counts = footprint(overview.footprint);
+  if (counts === undefined) return null;
   if (!(overview.filter === "active" || overview.filter === "all") ||
     !(overview.state === "fresh" || overview.state === "stale" || overview.state === "unavailable") ||
     !count(overview.page) || overview.page < 1 || overview.pageSize !== WORKSPACE_OVERVIEW_PAGE_SIZE ||
@@ -64,7 +88,7 @@ export function decodeWorkspaceOverviewResponse(value: unknown): WorkspaceOvervi
   }
   if (new Set(rows.map((row) => row.id)).size !== rows.length) return null;
   return {
-    activeCount: overview.activeCount, filter: overview.filter, observedAt: overview.observedAt,
+    activeCount: overview.activeCount, filter: overview.filter, footprint: counts, observedAt: overview.observedAt,
     page: overview.page, pageSize: overview.pageSize, rows, state: overview.state,
     stoppedCount: overview.stoppedCount, totalCount: overview.totalCount,
     transitioningCount: overview.transitioningCount, unknownCount: overview.unknownCount,

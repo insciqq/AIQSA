@@ -47,6 +47,36 @@ function newestRunIsSettledScheduledSql(sessionColumn: Prisma.Sql): Prisma.Sql {
   )`;
 }
 
+/**
+ * The disk-retention pin of the chat in `chatColumn`: an active same-chat
+ * task with Workspace on keeps its chat's disk, and an active Workspace
+ * task's monthly rotation keeps the disk of the chat it left while the files
+ * carried from it are not restored yet; each until the task's next run
+ * (`pinnedAfter` is now minus the normal retention). Cleanup and the
+ * administrator's counts share it.
+ */
+export function workspaceDiskPinnedByScheduledTaskSql(chatColumn: Prisma.Sql, pinnedAfter: Date): Prisma.Sql {
+  return Prisma.sql`(EXISTS (
+    SELECT 1
+    FROM "ScheduledTask" task
+    WHERE task."chatId" = ${chatColumn}
+      AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
+      AND task."chatMode" = 'SAME'::"ScheduledTaskChatMode"
+      AND task."workspaceEnabled"
+      AND task."nextRunAt" > ${pinnedAfter}
+  ) OR EXISTS (
+    SELECT 1
+    FROM "ChatContinuationWorkspaceSeed" seed
+    INNER JOIN "ScheduledTask" task ON task."id" = seed."scheduledTaskId"
+    WHERE seed."sourceChatId" = ${chatColumn}
+      AND seed."status" IN ('CAPTURING'::"ChatContinuationWorkspaceSeedStatus", 'READY'::"ChatContinuationWorkspaceSeedStatus",
+        'TRANSFERRED'::"ChatContinuationWorkspaceSeedStatus", 'RESTORING'::"ChatContinuationWorkspaceSeedStatus")
+      AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
+      AND task."workspaceEnabled"
+      AND task."nextRunAt" > ${pinnedAfter}
+  ))`;
+}
+
 type IdleCandidate = Readonly<{
   chat: Readonly<{ archived: boolean }>;
   chatId: string;
@@ -348,26 +378,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
               'streaming'::"ModelRunStatus"
             )
         )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "ScheduledTask" task
-          WHERE task."chatId" = ws."chatId"
-            AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
-            AND task."chatMode" = 'SAME'::"ScheduledTaskChatMode"
-            AND task."workspaceEnabled"
-            AND task."nextRunAt" > ${pinnedAfter}
-        )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "ChatContinuationWorkspaceSeed" seed
-          INNER JOIN "ScheduledTask" task ON task."id" = seed."scheduledTaskId"
-          WHERE seed."sourceChatId" = ws."chatId"
-            AND seed."status" IN ('CAPTURING'::"ChatContinuationWorkspaceSeedStatus", 'READY'::"ChatContinuationWorkspaceSeedStatus",
-              'TRANSFERRED'::"ChatContinuationWorkspaceSeedStatus", 'RESTORING'::"ChatContinuationWorkspaceSeedStatus")
-            AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
-            AND task."workspaceEnabled"
-            AND task."nextRunAt" > ${pinnedAfter}
-        )
+        AND NOT ${workspaceDiskPinnedByScheduledTaskSql(Prisma.sql`ws."chatId"`, pinnedAfter)}
       ORDER BY ws."expiresAt" ASC, ws."id" ASC
       FOR UPDATE OF ws SKIP LOCKED
       LIMIT ${limit}

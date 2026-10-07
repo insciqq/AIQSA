@@ -42,6 +42,7 @@ import {
   SCHEDULED_TASK_CHAT_MODE_LABELS,
   SCHEDULED_TASK_HISTORY_KEPT_TEXT,
   SCHEDULED_TASK_HISTORY_OPTIONS,
+  SCHEDULED_TASK_SPREAD_NOTE,
   WEEKDAY_LONG_LABELS,
   WEEKDAY_SHORT_LABELS,
   scheduledTaskRunRow,
@@ -134,7 +135,7 @@ export function ScheduledTaskSheet({
     scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
     chatMode: useId(), chatModeHint: useId(), chatMonthHint: useId(), kind: useId(), kindHint: useId(), tools: useId(),
     toolsHelp: useId(), workspace: useId(), workspaceHelp: useId(), memory: useId(), memoryHelp: useId(), history: useId(),
-    historyHint: useId()
+    historyHint: useId(), spreadHint: useId()
   };
   const titleInput = useRef<HTMLInputElement>(null);
   /** The navigation waiting for a discard answer: closing, or leaving for a run's chat. */
@@ -305,7 +306,7 @@ export function ScheduledTaskSheet({
           </div>
 
           <div className="v2-scheduled-group" role="group" aria-labelledby={ids.scheduleHeading}
-            aria-describedby={describedBy(errors.schedule && ids.schedule)}>
+            aria-describedby={describedBy(draft.repeat !== "once" && ids.spreadHint, errors.schedule && ids.schedule)}>
             <h3 id={ids.scheduleHeading}>Schedule</h3>
             <div className="v2-scheduled-pair">
               <div className="v2-scheduled-control">
@@ -405,6 +406,9 @@ export function ScheduledTaskSheet({
                 />
               </div>
             ) : null}
+            {draft.repeat !== "once"
+              ? <p className="v2-scheduled-hint" id={ids.spreadHint} data-testid="scheduled-task-spread-hint">{SCHEDULED_TASK_SPREAD_NOTE}</p>
+              : null}
             {errors.schedule ? <FieldError id={ids.schedule}>{errors.schedule}</FieldError> : null}
             <div className="v2-scheduled-control">
               <label htmlFor={ids.timeZone}>Time zone</label>

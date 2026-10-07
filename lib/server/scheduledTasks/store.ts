@@ -13,6 +13,7 @@ import {
   SCHEDULED_TASK_MAX_PINNED_SKILLS,
   SCHEDULED_TASK_MAX_TOTAL,
   SCHEDULED_TASK_RECENT_RUNS_LIMIT,
+  SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
   isScheduledTaskHistoryRetentionDays,
   type ScheduledTask,
   type ScheduledTaskChatMode,
@@ -66,6 +67,8 @@ export type ScheduledTaskScheduleColumns = {
 export type ScheduledTaskActivity = {
   lastRun: ScheduledTaskLastRun | null;
   running: boolean;
+  /** A pending run waits for a free scheduled Workspace slot. */
+  waitingForWorkspace?: boolean;
   unseen: boolean;
   /** When the task's history retention deletes its next old chat; absent for projections without history. */
   historyNextDeletionAt?: string | null;
@@ -214,6 +217,7 @@ export function toScheduledTask(
     historyNextDeletionAt: activity.historyNextDeletionAt ?? null, status: STATUS_WIRE[row.status],
     pauseReason: row.pauseReason, completionReason: row.completionReason,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
+    ...(activity.running && activity.waitingForWorkspace ? { waitingForWorkspace: true as const } : {}),
     chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen,
     // A flag only: the snapshot's digests never leave the server.
     ...(scheduledPromptLinksPending(row.prompt, row.promptUrlDigests) ? { promptLinksPending: true as const } : {}),
@@ -247,8 +251,9 @@ type SettledRow = {
 
 /**
  * Per task of the owner: the newest settled occurrence with its own unread
- * flag, whether one is pending or running, whether any result is unread and
- * when its history retention deletes the next old chat.
+ * flag, whether one is pending or running (and waiting for a Workspace slot),
+ * whether any result is unread and when its history retention deletes the
+ * next old chat.
  */
 export async function loadScheduledTaskActivity(
   client: ScheduledTaskClient,
@@ -273,7 +278,7 @@ export async function loadScheduledTaskActivity(
     ) AS latest
   `;
   const open = await client.scheduledTaskOccurrence.findMany({
-    select: { taskId: true },
+    select: { reasonCode: true, state: true, taskId: true },
     where: { state: { in: ["PENDING", "RUNNING"] }, taskId: { in: [...taskIds] }, userId }
   });
   const unseen = await client.scheduledTaskOccurrence.findMany({
@@ -291,7 +296,12 @@ export async function loadScheduledTaskActivity(
       }
     });
   }
-  for (const row of open) activity.set(row.taskId, { ...activity.get(row.taskId)!, running: true });
+  for (const row of open) {
+    const current = activity.get(row.taskId)!;
+    activity.set(row.taskId, { ...current, running: true,
+      waitingForWorkspace: current.waitingForWorkspace === true ||
+        (row.state === "PENDING" && row.reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE) });
+  }
   for (const row of unseen) activity.set(row.taskId, { ...activity.get(row.taskId)!, unseen: true });
   for (const [taskId, dueAt] of await loadScheduledTaskHistoryNextDeletions(client, userId, taskIds, now)) {
     activity.set(taskId, { ...activity.get(taskId)!, historyNextDeletionAt: dueAt.toISOString() });

@@ -627,3 +627,99 @@ describe("persisted monitoring checks", () => {
     expect(resumed).toMatchObject({ completionReason: null, kind: "monitoring", status: "active" });
   });
 });
+
+/** A Workspace binding for an accepted run, as Workspace admission creates it with the run. */
+async function bindWorkspace(runId: string, chatId: string): Promise<void> {
+  const session = await prisma.workspaceSession.upsert({ where: { chatId }, update: {}, create: { chatId,
+    expiresAt: new Date(Date.now() + 600_000), imageRef: "aiqsa-workspace:0.1.32", internetEnabled: false, policyRevision: 1,
+    sandboxName: `capacity-${randomUUID()}` } });
+  await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: false, mcpVersion: "0.6.16",
+    modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
+    toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id } });
+}
+
+describe("persisted scheduled Workspace capacity", () => {
+  it("holds a Workspace slot by a scheduled run with a Workspace binding or an admission in flight, never an interactive run", async () => {
+    const userId = await owner();
+    const created = await task(userId, null, { toolsEnabled: true, workspaceEnabled: true });
+    const now = new Date();
+    const base = (await runner.loadDispatch(now, 10)).workspaceExecuting;
+    // An ordinary chat's Workspace run never takes a scheduled slot, and scheduled load never refuses it.
+    const interactiveChat = await personalChat(userId);
+    const interactive = await runs.createRun(await runInput(userId, interactiveChat.id));
+    await bindWorkspace(interactive.runId, interactiveChat.id);
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base);
+    // An admission in flight for a Workspace task holds a slot by its lease.
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: now, taskId: created.id,
+      trigger: "manual", userId } });
+    expect(await runner.acquireLease(occurrence.id, now, new Date(now.getTime() + 60_000))).toBe(true);
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base + 1);
+    // Its accepted run with a Workspace binding holds the slot until it is terminal.
+    const chat = await personalChat(userId);
+    const run = await runs.createRun(await runInput(userId, chat.id, origin(occurrence.id, created)));
+    await bindWorkspace(run.runId, chat.id);
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base + 1);
+    await runs.cancelRun({ payload: { code: "model_run_cancelled", message: "Model run cancelled" }, runId: run.runId, userId });
+    expect((await runner.loadDispatch(now, 10)).workspaceExecuting).toBe(base);
+  });
+
+  it("shows a wait for a Workspace slot, ends it at the next attempt and skips one still waiting without counting a failure", async () => {
+    const userId = await owner();
+    const created = await task(userId, new Date(Date.now() + 3_600_000), { consecutiveFailures: 2, toolsEnabled: true,
+      workspaceEnabled: true });
+    const now = new Date();
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 60_000),
+      taskId: created.id, trigger: "schedule", userId } });
+    const candidate = async () => (await runner.loadDispatch(now, 500)).pending.find((row) => row.id === occurrence.id);
+    expect(await candidate()).toEqual({ id: occurrence.id, recurring: true, scheduledFor: occurrence.scheduledFor, taskId: created.id,
+      trigger: "schedule", userId, waiting: false, workspace: true });
+
+    await runner.waitForWorkspace(occurrence.id, now);
+    await runner.waitForWorkspace(occurrence.id, new Date(now.getTime() + 30_000));
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).toMatchObject({
+      leaseExpiresAt: null, reasonCode: "waiting_for_workspace", startedAt: null, state: "PENDING", workspaceWaitStartedAt: now });
+    expect(await candidate()).toMatchObject({ waiting: true });
+    expect(await owners.get(userId, created.id)).toMatchObject({ running: true, waitingForWorkspace: true });
+
+    // The next attempt ends the wait and keeps when it began.
+    const attempt = new Date(now.getTime() + 60_000);
+    expect(await runner.acquireLease(occurrence.id, attempt, new Date(attempt.getTime() + 60_000))).toBe(true);
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).toMatchObject({
+      reasonCode: null, startedAt: attempt, workspaceWaitStartedAt: now });
+    expect(await owners.get(userId, created.id)).not.toHaveProperty("waitingForWorkspace");
+    // A capacity refusal of that attempt waits again and releases the lease.
+    await runner.waitForWorkspace(occurrence.id, attempt);
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } })).toMatchObject({
+      leaseExpiresAt: null, reasonCode: "waiting_for_workspace", workspaceWaitStartedAt: now });
+
+    // Still waiting when the retry window after its attempt ends: skipped, the task neither failed nor paused.
+    const settled = await runner.expirePending(new Date(attempt.getTime() + 31 * 60_000), 500);
+    expect(settled.find((row) => row.occurrenceId === occurrence.id)).toMatchObject({
+      reasonCode: "workspace_capacity", state: "SKIPPED", taskPaused: false });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
+      .toMatchObject({ consecutiveFailures: 2, pauseReason: null, status: "ACTIVE" });
+
+    // Never attempted, a waiting occurrence lasts until its lateness ends, then skips the same way.
+    const late = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(now.getTime() - 13 * 3_600_000),
+      taskId: created.id, trigger: "schedule", userId } });
+    await runner.waitForWorkspace(late.id, new Date(now.getTime() - 13 * 3_600_000));
+    expect((await runner.expirePending(now, 500)).find((row) => row.occurrenceId === late.id))
+      .toMatchObject({ reasonCode: "workspace_capacity", state: "SKIPPED" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
+      .toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
+  });
+
+  it("skips a waiting occurrence that the next due instant supersedes as a capacity skip", async () => {
+    const userId = await owner();
+    const due = new Date(Date.now() - 60_000);
+    const created = await task(userId, due, { ...scheduledTaskScheduleColumns(hourly), toolsEnabled: true, workspaceEnabled: true });
+    const waiting = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(due.getTime() - 3_600_000),
+      taskId: created.id, trigger: "schedule", userId } });
+    await runner.waitForWorkspace(waiting.id, new Date(due.getTime() - 3_600_000));
+    const claim = await runner.claimDue(new Date(), 500);
+    expect(claim.settlements.find((row) => row.occurrenceId === waiting.id))
+      .toMatchObject({ reasonCode: "workspace_capacity", state: "SKIPPED", taskPaused: false });
+    expect(await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: created.id, state: "PENDING" } }))
+      .toMatchObject([{ reasonCode: null, scheduledFor: due }]);
+  });
+});
