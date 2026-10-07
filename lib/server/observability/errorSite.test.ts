@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { describeError, resetErrorSiteCaches } from "./errorSite.cjs";
@@ -139,6 +140,12 @@ describe("error site projection", () => {
 
     const devChunk = chunk(".next/dev/server/chunks/dev._.js", mapTo("turbopack:///[project]/app/api/route.ts"), false);
     expect(describeError(caught(devChunk)).error_site).toBe("app/api/route.ts:42");
+
+    // Turbopack dev maps name sources as file URLs.
+    const fileUrlChunk = chunk(".next/dev/server/chunks/url._.js", (column) => mapTo(pathToFileURL(path.join(root, "app/api/obs/route.ts")).href)(column), false);
+    expect(describeError(caught(fileUrlChunk)).error_site).toBe("app/api/obs/route.ts:42");
+    const foreignUrl = chunk(".next/dev/server/chunks/foreign._.js", (column) => mapTo(pathToFileURL(path.join(outside, "private.ts")).href)(column), false);
+    expect(describeError(caught(foreignUrl)).error_site).toMatch(/^\.next\/dev\/server\/chunks\/foreign\._\.js:1:\d+$/u);
 
     const escaping = chunk(".next/server/chunks/escape._.js", mapTo("../../../../../etc/passwd.ts"));
     expect(describeError(caught(escaping)).error_site).toMatch(/^\.next\/server\/chunks\/escape\._\.js:1:\d+$/u);

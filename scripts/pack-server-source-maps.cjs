@@ -9,6 +9,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { fileURLToPath } = require("node:url");
 const zlib = require("node:zlib");
 
 const PROJECT_PREFIXES = ["turbopack:///[project]/", "[project]/"];
@@ -21,6 +22,12 @@ function projectSource(projectRoot, mapDirectory, source) {
   const prefix = PROJECT_PREFIXES.find((candidate) => source.startsWith(candidate));
   if (prefix) {
     relative = path.posix.normalize(source.slice(prefix.length));
+  } else if (source.startsWith("file://")) {
+    try {
+      relative = path.relative(projectRoot, fileURLToPath(source)).split(path.sep).join("/");
+    } catch {
+      relative = null;
+    }
   } else if (!/^[a-z][a-z0-9+.-]*:/iu.test(source) && !path.isAbsolute(source)) {
     relative = path.relative(projectRoot, path.resolve(mapDirectory, source)).split(path.sep).join("/");
   }
@@ -49,11 +56,22 @@ function* mapFiles(directory) {
   }
 }
 
+/** Project files no server code reads. Finding one in the standalone output
+ * means a dynamic filesystem call made Next trace the whole project; the
+ * build prints "Dynamic filesystem access causes tracing of the whole project". */
+const UNTRACED_PROJECT_FILES = ["Dockerfile", "README.md"];
+
 function packServerSourceMaps(projectRoot) {
   const serverDirectory = path.join(projectRoot, ".next", "server");
-  const standaloneServer = path.join(projectRoot, ".next", "standalone", ".next", "server");
+  const standalone = path.join(projectRoot, ".next", "standalone");
+  const standaloneServer = path.join(standalone, ".next", "server");
   if (!fs.existsSync(serverDirectory) || !fs.existsSync(standaloneServer)) {
     throw new Error("pack-server-source-maps: run after `next build` with standalone output");
+  }
+  const traced = UNTRACED_PROJECT_FILES.filter((name) => fs.existsSync(path.join(standalone, name)));
+  if (traced.length > 0) {
+    throw new Error(`pack-server-source-maps: the standalone output holds ${traced.join(", ")}; ` +
+      "a dynamic filesystem call traced the whole project (see the build's tracing warnings)");
   }
   const result = { packed: 0, skipped: 0, bytes: 0 };
   for (const mapPath of mapFiles(serverDirectory)) {

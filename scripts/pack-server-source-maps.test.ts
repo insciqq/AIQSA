@@ -66,6 +66,15 @@ describe("server source map packing", () => {
     expect(projectSource(root, chunks, "../../../../etc/passwd")).toBeNull();
     expect(projectSource(root, chunks, "/home/user/private.ts")).toBeNull();
     expect(projectSource(root, chunks, "file:///home/user/private.ts")).toBeNull();
+    expect(projectSource(root, chunks, "file:///build/app/app/api/route.ts")).toBe("app/api/route.ts");
+    expect(projectSource(root, chunks, "file:///build/app/node_modules/next/dist/x.js")).toBeNull();
+  });
+
+  it("fails the build when tracing copied the whole project into the standalone output", () => {
+    const { root, chunk } = project();
+    chunk("app", { version: 3, sources: ["../../../lib/server/x.ts"], names: [], mappings: "AAAA" });
+    writeFileSync(path.join(root, ".next", "standalone", "Dockerfile"), "FROM node");
+    expect(() => packServerSourceMaps(root)).toThrow(/Dockerfile; a dynamic filesystem call traced the whole project/u);
   });
 
   it("refuses to run without a standalone build", () => {
