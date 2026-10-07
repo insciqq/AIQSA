@@ -1,3 +1,4 @@
+import type { AuthSessionSignInMethod } from "@/lib/contracts/authSignInMethods";
 import { hashToken } from "./token";
 import {
   createSessionSetCookie,
@@ -36,6 +37,8 @@ export type CreateAuthSessionInput = {
   createdByUserAgent?: string | null;
   expiresAt: Date;
   lastSeenAt?: Date | null;
+  /** How the sign-in was proven. Every sign-in names it; only fixtures and tooling omit it. */
+  signInMethod?: AuthSessionSignInMethod;
   tokenHash: string;
   userId: string;
 };
@@ -70,7 +73,7 @@ export type CreatedAuthSession = {
 
 export type PreparedAuthSession = {
   cookie: string;
-  input: Omit<CreateAuthSessionInput, "userId">;
+  input: Omit<CreateAuthSessionInput, "signInMethod" | "userId">;
   token: string;
 };
 
@@ -173,11 +176,13 @@ export async function createAuthSession(input: {
   request?: Request;
   secureCookie: boolean;
   sessions: AuthSessionStore;
+  signInMethod?: AuthSessionSignInMethod;
   userId: string;
 }): Promise<CreatedAuthSession> {
   const prepared = prepareAuthSession(input);
   const session = await input.sessions.createSession({
     ...prepared.input,
+    ...(input.signInMethod ? { signInMethod: input.signInMethod } : {}),
     userId: input.userId
   });
 

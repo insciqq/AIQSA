@@ -364,6 +364,7 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
       request,
       secureCookie: config.cookieSecure,
       sessions: deps.sessions,
+      signInMethod: "bootstrap",
       userId: user.id
     });
     await loginRateLimiter.reset(rateLimitKey);
