@@ -8,10 +8,12 @@
  *   connection (reused, else Quick Setup) and its Perplexity Search source;
  *   one search-enabled turn on an OpenRouter answer model leaves a
  *   `web_search` row on the run whose cost is known (OpenRouter reports it).
- * - codex-lb native search (CODEX_LB_API_KEY, CODEX_LB_BASE_URL): a custom
- *   setup model with native search and its hosted Search source; one turn
- *   that searches leaves its billed search count on the `chat_answer` row,
- *   whose cost is the token cost plus count × the model's per-search price.
+ * - OpenAI native search (OPENAI_API_KEY): the OpenAI connection through
+ *   Quick Setup and its hosted web search source; one turn of the cheapest
+ *   offered model that searches leaves its billed search count on the
+ *   `chat_answer` row, whose cost is the token cost plus count × the model's
+ *   per-search price. (codex-lb rejects the hosted web search check with
+ *   400, so its models get no native search route to measure.)
  *
  * Each case pays for exactly one turn; the prompt asks for exactly one
  * search. Oracles are the stand's database and HTTP status codes, never the
@@ -32,8 +34,7 @@ import {
   newExcludedChat,
   openRouterConnection,
   paidEnv,
-  setupCodexLbAnswerModel,
-  waitForCatalogModel,
+  quickSetupConnection,
   waitForCatalogModels,
   type PaidAnswerModel
 } from "./support/paidProviders";
@@ -109,20 +110,25 @@ test("OpenRouter Perplexity Search leaves a web_search row with a known reported
   }
 });
 
-test("codex-lb native search puts its search count and per-search price on the answer row", async ({ request }, testInfo) => {
-  test.skip(!paidEnv("CODEX_LB_API_KEY") || !paidEnv("CODEX_LB_BASE_URL"),
-    "paid: CODEX_LB_API_KEY and CODEX_LB_BASE_URL are not set; the codex-lb native search case is skipped");
+test("OpenAI native search puts its search count and per-search price on the answer row", async ({ request }, testInfo) => {
+  const secret = paidEnv("OPENAI_API_KEY");
+  test.skip(!secret, "paid: OPENAI_API_KEY is not set; the OpenAI native search case is skipped");
   test.setTimeout(1_800_000);
   await authenticateWithLocalToken(request);
   userId = (await (await request.get("/api/me")).json()).user.id as string;
   await prisma.usageLimit.deleteMany({ where: { userId } });
   const summary: Record<string, unknown> = {};
 
-  const model = await setupCodexLbAnswerModel(request, { label: "Search usage", nativeSearch: true });
+  const connectionId = await quickSetupConnection(request, "openai", secret!, /luna/iu);
+  const source = await connectionSearchSource(request, connectionId, "web_search", { protocol: "openai_responses_web_search" });
+  const answer = (await waitForCatalogModels(request, connectionId,
+    (candidate) => candidate.searchStrategyIds.includes(source.strategyId)))
+    .sort((left, right) => Number(/luna/iu.test(right.displayName)) - Number(/luna/iu.test(left.displayName)))[0]!;
+  const model: PaidAnswerModel = {
+    connectionId, displayName: answer.displayName, modelId: answer.modelId, params: journeyRunParams(answer, 512),
+    upstreamModelId: answer.upstreamModelId ?? answer.modelId
+  };
   summary.answerModel = model.upstreamModelId;
-  const source = await connectionSearchSource(request, model.connectionId, "web_search");
-  await waitForCatalogModel(request, model.connectionId,
-    (candidate) => candidate.modelId === model.modelId && candidate.searchStrategyIds.includes(source.strategyId));
 
   const chatId = await newExcludedChat(request, "Native search usage check");
   try {
@@ -144,7 +150,7 @@ test("codex-lb native search puts its search count and per-search price on the a
     const pricing = modelSearchPricing(deployment);
     const perThousand = pricing.webSearchPriceUsdPerThousand ?? null;
     summary.webSearchPriceUsdPerThousand = perThousand;
-    expect(perThousand, "the codex-lb model carries the catalog per-search price").not.toBeNull();
+    expect(perThousand, "the OpenAI model carries the catalog per-search price").not.toBeNull();
     expect(perThousand!).toBeGreaterThan(0);
     const usage: TokenUsage = {
       cachedInputTokens: row!.cachedInputTokens, cacheWriteInputTokens: row!.cacheWriteInputTokens,
@@ -163,8 +169,8 @@ test("codex-lb native search puts its search count and per-search price on the a
     expect(Math.abs(expected! - tokensOnly! - searchFeeMicros), "the cost includes count × the per-search price").toBeLessThanOrEqual(1);
     expect(row!.estimatedCostMicros!).toBeGreaterThanOrEqual(searchFeeMicros);
   } finally {
-    await testInfo.attach("search-codex-lb-summary.json", { body: JSON.stringify(summary, null, 2), contentType: "application/json" });
-    console.log(`search_codex_lb_paid_summary ${JSON.stringify(summary)}`);
+    await testInfo.attach("search-openai-summary.json", { body: JSON.stringify(summary, null, 2), contentType: "application/json" });
+    console.log(`search_openai_paid_summary ${JSON.stringify(summary)}`);
     await deletePaidChat(request, chatId);
   }
 });

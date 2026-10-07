@@ -121,27 +121,38 @@ type QuickSetupResult = Readonly<{
  * model the installation's default chat model.
  */
 export async function openRouterConnection(request: APIRequestContext, secret: string): Promise<string> {
+  return quickSetupConnection(request, "openrouter", secret, /flash/iu);
+}
+
+/**
+ * The family's canonical connection through Quick Setup with `secret`, reusing
+ * an enabled, checked one; `prefer` picks the cheapest offered answer model
+ * when Quick Setup asks for a choice.
+ */
+export async function quickSetupConnection(
+  request: APIRequestContext, provider: "openai" | "openrouter", secret: string, prefer: RegExp
+): Promise<string> {
   const existing = readConnections(await (await request.get("/api/admin/providers")).json())
-    ?.find((connection) => connection.family === "openrouter" && connection.enabled && connection.active &&
+    ?.find((connection) => connection.family === provider && connection.enabled && connection.active &&
       connection.defaultCredentialVersionId !== null && !connection.checkRunning);
   if (existing) return existing.id;
   const snapshot = await (await request.get("/api/admin/providers/quick-setup")).json() as {
     providers: Array<{ provider: string; stateToken: string }>;
   };
-  const state = snapshot.providers.find((provider) => provider.provider === "openrouter")?.stateToken;
-  expect(state, "the stand offers OpenRouter Quick Setup").toBeTruthy();
+  const state = snapshot.providers.find((entry) => entry.provider === provider)?.stateToken;
+  expect(state, `the stand offers ${provider} Quick Setup`).toBeTruthy();
   let response = await request.post("/api/admin/providers/quick-setup", { timeout: PAID_SETUP_TIMEOUT_MS,
-    data: { expectedState: state, provider: "openrouter", secret } });
-  expect(response.ok(), `OpenRouter Quick Setup is accepted (${response.status()})`).toBe(true);
+    data: { expectedState: state, provider, secret } });
+  expect(response.ok(), `${provider} Quick Setup is accepted (${response.status()})`).toBe(true);
   let result = await response.json() as QuickSetupResult;
   if (result.outcome === "selection_required") {
     // The cheapest offered answer model keeps the paid turn small.
-    const candidate = result.candidates!.find((option) => /flash/iu.test(option.displayName)) ?? result.candidates![0]!;
+    const candidate = result.candidates!.find((option) => prefer.test(option.displayName)) ?? result.candidates![0]!;
     response = await request.post("/api/admin/providers/quick-setup", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
-      expectedState: result.expectedState, provider: "openrouter", secret,
+      expectedState: result.expectedState, provider, secret,
       selectedModel: { candidateId: candidate.candidateId, policyVersion: result.policyVersion }
     } });
-    expect(response.ok(), `OpenRouter Quick Setup with a selected model is accepted (${response.status()})`).toBe(true);
+    expect(response.ok(), `${provider} Quick Setup with a selected model is accepted (${response.status()})`).toBe(true);
     result = await response.json() as QuickSetupResult;
   }
   expect(["ready", "partial"]).toContain(result.outcome);
@@ -150,7 +161,7 @@ export async function openRouterConnection(request: APIRequestContext, secret: s
     const connection = readConnections(await (await request.get("/api/admin/providers")).json())
       ?.find((candidate) => candidate.id === connectionId);
     return connection && !connection.checkRunning ? true : null;
-  }, "openrouter_checks_timeout");
+  }, `${provider}_checks_timeout`);
   return connectionId;
 }
 
