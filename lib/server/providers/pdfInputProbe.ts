@@ -8,6 +8,7 @@ import {
   type ProviderExecutionSnapshot
 } from "./runtimeFactory";
 import type { ProviderAdapter, ProviderRunRequest } from "./types";
+import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import {
   pdfInputVerificationEvidence,
   supportsPdfInputAdapter,
@@ -113,6 +114,8 @@ export type ProviderPdfInputProbeInput = Readonly<{
   secret: ProviderCredentialSource | null;
   signal?: AbortSignal;
   maxOutputTokens?: number;
+  /** The answered request's reported usage, before its answer is judged. */
+  onUsage?(usage: ModelRunUsage): void;
 }>;
 
 export type ProviderPdfInputProbe = Readonly<{
@@ -220,6 +223,7 @@ export function createProviderPdfInputProbe(
       });
       let next = await stream.next();
       while (!next.done) next = await stream.next();
+      input.onUsage?.(next.value.usage);
       input.signal?.throwIfAborted();
       const finishReason = next.value.finalProviderResponsePreview.finishReason;
       if (finishReason === "length" || finishReason === "content_filter" ||

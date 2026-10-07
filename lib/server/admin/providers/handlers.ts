@@ -206,6 +206,7 @@ async function modelSaveResponse(input: {
   signal: AbortSignal;
   onProgress?: (value: AdminProviderSetupProgress) => void;
   status?: number;
+  userId: string;
 }): Promise<Response> {
   let receipt: AdminProviderModelSaveReceipt | null = null;
   const response = await safely(async () => {
@@ -215,7 +216,7 @@ async function modelSaveResponse(input: {
       ...(saved.pricing ? { pricing: saved.pricing } : {}) };
     if (input.activate) {
       const outcome = await input.service.activateModel({ connectionId: input.connectionId, modelId: saved.id,
-        expectedDraftVersion: saved.draftVersion,
+        expectedDraftVersion: saved.draftVersion, userId: input.userId,
         signal: input.signal, onProgress: input.onProgress,
         onActivated: () => { receipt = { ...receipt!, publication: "active", checks: "unknown" }; } });
       receipt = { ...receipt, publication: "active", checks: outcome.check,
@@ -291,8 +292,9 @@ export function createAdminProviderConnectionCreateHandler(deps: AdminProviderHa
 export function createAdminProviderConnectionUpdateHandler(deps: AdminProviderHandlerDeps) {
   return async function PATCH(request: Request, context: ConnectionContext): Promise<Response> {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
+    const auth = await setupActor(request, deps);
+    if (auth.response || !auth.userId) return auth.response!;
+    const userId = auth.userId;
     const [body, bodyError] = await readBody(request);
     if (bodyError) return bodyError;
     const displayName = text(body?.displayName, 160);
@@ -321,7 +323,7 @@ export function createAdminProviderConnectionUpdateHandler(deps: AdminProviderHa
         expectedDraftVersion,
         unassignedPolicy
       };
-      await deps.service.saveConnectionSettings({ ...settings, credentialSecrets, signal: request.signal });
+      await deps.service.saveConnectionSettings({ ...settings, credentialSecrets, signal: request.signal, userId });
       return catalog(deps.service);
     });
   };
@@ -368,7 +370,8 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
           confirmUnavailable: body.confirmUnavailable,
           connectionId,
           enableConnection: body.enableConnection,
-          signal: request.signal
+          signal: request.signal,
+          userId: auth.userId
         });
         return catalog(deps.service);
       }
@@ -452,7 +455,7 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         const expectedCredentialVersionId = text(body.expectedCredentialVersionId, 128);
         if (!credentialId || !expectedCredentialVersionId) return errorJson("provider_action_invalid", 400);
         const result = await deps.service.addCatalogModels({ connectionId, credentialId, expectedConnectionVersion,
-          expectedCredentialVersionId, modelIds, signal: request.signal });
+          expectedCredentialVersionId, modelIds, signal: request.signal, userId: auth.userId });
         return Response.json({ connections: await deps.service.listConnections(), ...result });
       }
       if (action === "check_models") {
@@ -605,8 +608,9 @@ export function createAdminProviderCredentialDeleteHandler(deps: AdminProviderHa
 export function createAdminProviderModelCreateHandler(deps: AdminProviderHandlerDeps) {
   return async function POST(request: Request, context: ConnectionContext): Promise<Response> {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
+    const auth = await setupActor(request, deps);
+    if (auth.response || !auth.userId) return auth.response!;
+    const userId = auth.userId;
     const [body, bodyError] = await readBody(request);
     if (bodyError) return bodyError;
     const displayName = text(body?.displayName, 160);
@@ -619,7 +623,7 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
     if (pricing === null) return pricingInvalid(body.pricing);
     const { connectionId } = await context.params;
     return setupProgressResponse(request, (signal, onProgress) => modelSaveResponse({
-      service: deps.service, connectionId, signal, onProgress, status: 201, activate: body.activate === true,
+      service: deps.service, connectionId, signal, onProgress, status: 201, activate: body.activate === true, userId,
       write: () => deps.service.createModelDraft({ configuration: body.configuration as AdminProviderModelConfiguration,
         connectionId, displayName, ...(pricing ? { pricing } : {}) })
     }));
@@ -629,8 +633,9 @@ export function createAdminProviderModelCreateHandler(deps: AdminProviderHandler
 export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandlerDeps) {
   return async function PATCH(request: Request, context: ModelContext): Promise<Response> {
     if (!hasJsonContentType(request)) return errorJson("json_required", 415);
-    const authError = await requireAdmin(request, deps);
-    if (authError) return authError;
+    const auth = await setupActor(request, deps);
+    if (auth.response || !auth.userId) return auth.response!;
+    const userId = auth.userId;
     const [body, bodyError] = await readBody(request);
     if (bodyError) return bodyError;
     const action = text(body?.action, 64);
@@ -677,7 +682,7 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
         }
         const pricing = body.pricing === undefined ? undefined : decodeAdminModelPriceChange(body.pricing);
         if (pricing === null) return pricingInvalid(body.pricing);
-        return modelSaveResponse({ service: deps.service, connectionId, signal, onProgress, activate: body.activate === true,
+        return modelSaveResponse({ service: deps.service, connectionId, signal, onProgress, activate: body.activate === true, userId,
           write: async () => ({ ...await deps.service.updateModelDraft({ ...guard,
             configuration: body.configuration as AdminProviderModelConfiguration, displayName, modelId,
             ...(pricing ? { pricing } : {}) }), id: modelId }) });

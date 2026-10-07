@@ -70,6 +70,9 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
           ...(capability === "imageEditing" ? { images: [{ bytes: reference, mimeType: "image/png" as const }] } : {}),
           parameters, signal: AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(60_000)])
         });
+        // The returned image is paid whatever its judgement below.
+        input.onProviderUsage?.({ usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens,
+          totalTokens: result.usage.totalTokens }, reportedCostUsd: result.usage.costUsd });
         input.signal?.throwIfAborted();
         if (capability === "imageEditing" && Buffer.from(result.bytes).equals(reference)) {
           attempts[capability] = { attempts: 1, status: "incomplete", reason: "semantic_inconclusive" };
