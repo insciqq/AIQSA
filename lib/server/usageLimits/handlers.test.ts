@@ -8,7 +8,7 @@ const none = { source: null, value: null };
 const now = new Date("2026-10-07T12:00:00.000Z");
 
 const view: AdminUsageLimits = {
-  groups: [{ ...unset, archivedAt: null, groupId: "group-1", memberCount: 2, monthlyBudgetMicros: 5_000_000, name: "Research" }],
+  groups: [{ ...unset, archivedAt: null, groupId: "group-1", memberCount: 2, monthlyBudgetMicros: 5_000_000, name: "Research", version: 12 }],
   installation: { ...unset, monthlyCapMicros: 100_000_000, version: 3 },
   installationSpentMicros: 1_250_000,
   periodStart: "2026-10-01T00:00:00.000Z",
@@ -25,7 +25,7 @@ const view: AdminUsageLimits = {
     messagesLastDay: 4,
     messagesLastHour: 1,
     monthSpentMicros: 1_250_000,
-    override: null,
+    override: { ...unset, exempt: true, userId: "user-1", version: 15 },
     status: "active",
     userId: "user-1"
   }]
@@ -34,10 +34,10 @@ const view: AdminUsageLimits = {
 function fixture() {
   const resolveAuth = vi.fn().mockResolvedValue({ user: { role: "admin", status: "active" }, userId: "admin-1" });
   const repository = {
-    deleteUserLimits: vi.fn().mockResolvedValue(true),
+    deleteUserLimits: vi.fn().mockResolvedValue("written"),
     loadUsageLimitStatus: vi.fn(),
-    putGroupLimits: vi.fn().mockResolvedValue(true),
-    putUserLimits: vi.fn().mockResolvedValue(true),
+    putGroupLimits: vi.fn().mockResolvedValue("written"),
+    putUserLimits: vi.fn().mockResolvedValue("written"),
     readAdminUsageLimits: vi.fn().mockResolvedValue(view),
     updateInstallation: vi.fn().mockResolvedValue({ ...view.installation, version: 4 })
   } satisfies Record<keyof UsageLimitsRepository, unknown>;
@@ -45,8 +45,8 @@ function fixture() {
   return { handlers, repository, resolveAuth };
 }
 
-function request(method: string, body?: unknown, contentType = "application/json") {
-  return new Request("http://local.test/api/admin/usage-limits", {
+function request(method: string, body?: unknown, contentType = "application/json", query = "") {
+  return new Request(`http://local.test/api/admin/usage-limits${query}`, {
     method,
     ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body), headers: { "content-type": contentType } })
   });
@@ -103,39 +103,73 @@ describe("administrator usage limit handlers", () => {
     expect((await handlers.putGroup(request("PUT", { ...unset, exempt: true }), "group-1")).status).toBe(400);
     expect((await handlers.putUser(request("PUT", unset), "user-1")).status).toBe(400);
     expect((await handlers.putUser(request("PUT", { ...unset, exempt: "no" }), "user-1")).status).toBe(400);
+    for (const expectedVersion of [0, -1, 1.5, "3", Number.MAX_SAFE_INTEGER + 1]) {
+      expect((await handlers.putGroup(request("PUT", { ...unset, expectedVersion }), "group-1")).status).toBe(400);
+      expect((await handlers.putUser(request("PUT", { ...unset, exempt: false, expectedVersion }), "user-1")).status).toBe(400);
+    }
+    for (const query of ["?expectedVersion=", "?expectedVersion=0", "?expectedVersion=01", "?expectedVersion=1.5", "?expectedVersion=x",
+      "?expectedVersion=99999999999999999"]) {
+      expect((await handlers.deleteUser(request("DELETE", undefined, undefined, query), "user-1")).status).toBe(400);
+    }
     expect(repository.updateInstallation).not.toHaveBeenCalled();
     expect(repository.putGroupLimits).not.toHaveBeenCalled();
     expect(repository.putUserLimits).not.toHaveBeenCalled();
+    expect(repository.deleteUserLimits).not.toHaveBeenCalled();
   });
 
-  it("replaces a group allowance and names a missing or malformed group", async () => {
+  it("replaces a group allowance at its expected version and names a missing or malformed group", async () => {
     const { handlers, repository } = fixture();
     const limits = { ...unset, messagesPerHour: 20, monthlyBudgetMicros: 7_500_000 };
+    // A first save sends no version: it expects no saved allowance.
     expect((await handlers.putGroup(request("PUT", limits), "group-1")).status).toBe(200);
-    expect(repository.putGroupLimits).toHaveBeenCalledWith({ groupId: "group-1", limits, userId: "admin-1" });
-    repository.putGroupLimits.mockResolvedValueOnce(false);
+    expect(repository.putGroupLimits).toHaveBeenCalledWith({
+      groupId: "group-1", limits: { ...limits, expectedVersion: null }, userId: "admin-1"
+    });
+    expect((await handlers.putGroup(request("PUT", { ...limits, expectedVersion: 12 }), "group-1")).status).toBe(200);
+    expect(repository.putGroupLimits).toHaveBeenLastCalledWith({
+      groupId: "group-1", limits: { ...limits, expectedVersion: 12 }, userId: "admin-1"
+    });
+    repository.putGroupLimits.mockResolvedValueOnce("not_found");
     const missing = await handlers.putGroup(request("PUT", limits), "group-gone");
     expect(missing.status).toBe(404);
     await expect(missing.json()).resolves.toEqual({ error: "group_not_found" });
     expect((await handlers.putGroup(request("PUT", limits), "x".repeat(129))).status).toBe(404);
-    expect(repository.putGroupLimits).toHaveBeenCalledTimes(2);
+    expect(repository.putGroupLimits).toHaveBeenCalledTimes(3);
   });
 
-  it("sets and removes a user override and names a missing user", async () => {
+  it("sets and removes a user override at its expected version and names a missing user", async () => {
     const { handlers, repository } = fixture();
-    const limits = { ...unset, exempt: true };
+    const limits = { ...unset, exempt: true, expectedVersion: 15 };
     expect((await handlers.putUser(request("PUT", limits), "user-1")).status).toBe(200);
     expect(repository.putUserLimits).toHaveBeenCalledWith({ limits, targetUserId: "user-1", userId: "admin-1" });
-    const removed = await handlers.deleteUser(request("DELETE"), "user-1");
+    const removed = await handlers.deleteUser(request("DELETE", undefined, undefined, "?expectedVersion=15"), "user-1");
     expect(removed.status).toBe(200);
     await expect(removed.json()).resolves.toEqual({ limits: view });
-    expect(repository.deleteUserLimits).toHaveBeenCalledWith({ targetUserId: "user-1" });
-    repository.putUserLimits.mockResolvedValueOnce(false);
-    repository.deleteUserLimits.mockResolvedValueOnce(false);
+    expect(repository.deleteUserLimits).toHaveBeenCalledWith({ expectedVersion: 15, targetUserId: "user-1" });
+    // Without a version the removal expects no override.
+    await handlers.deleteUser(request("DELETE"), "user-1");
+    expect(repository.deleteUserLimits).toHaveBeenLastCalledWith({ expectedVersion: null, targetUserId: "user-1" });
+    repository.putUserLimits.mockResolvedValueOnce("not_found");
+    repository.deleteUserLimits.mockResolvedValueOnce("not_found");
     expect((await handlers.putUser(request("PUT", limits), "user-gone")).status).toBe(404);
     const missing = await handlers.deleteUser(request("DELETE"), "user-gone");
     expect(missing.status).toBe(404);
     await expect(missing.json()).resolves.toEqual({ error: "user_not_found" });
+  });
+
+  it("refuses group and user saves made from an outdated version", async () => {
+    const { handlers, repository } = fixture();
+    repository.putGroupLimits.mockResolvedValueOnce("stale");
+    repository.putUserLimits.mockResolvedValueOnce("stale");
+    repository.deleteUserLimits.mockResolvedValueOnce("stale");
+    for (const response of [
+      await handlers.putGroup(request("PUT", { ...unset, expectedVersion: 11, messagesPerDay: 4 }), "group-1"),
+      await handlers.putUser(request("PUT", { ...unset, exempt: false, messagesPerDay: 4 }), "user-1"),
+      await handlers.deleteUser(request("DELETE", undefined, undefined, "?expectedVersion=14"), "user-1")
+    ]) {
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "usage_limits_stale" });
+    }
   });
 
   it("reports storage failures with a stable code and no detail", async () => {

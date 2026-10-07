@@ -8,6 +8,7 @@ import {
   formatLimitValue,
   parseLimitDraft,
   sameDraft,
+  savedLimitText,
   USAGE_LIMIT_FIELDS,
   type UsageLimitDraft,
   type UsageLimitField,
@@ -148,6 +149,28 @@ function LimitFields({
   );
 }
 
+/**
+ * Versioned saves from a sheet. The draft starts from the row as the sheet
+ * opened and keeps that row's version across background refreshes, so a
+ * change saved meanwhile by someone else is a visible conflict, not a silent
+ * overwrite. After a conflict the saved values are shown next to the fields
+ * and become the basis of the next save.
+ */
+function useVersionedDraft(currentVersion: number | null, refresh: () => Promise<void>) {
+  const [draftVersion] = useState(currentVersion);
+  const [conflict, setConflict] = useState(false);
+  return {
+    conflict,
+    expectedVersion: conflict ? currentVersion : draftVersion,
+    /** Marks a stale save as a conflict and rereads the saved values. */
+    noteFailure(error: string) {
+      if (error !== "usage_limits_stale") return;
+      setConflict(true);
+      void refresh();
+    }
+  };
+}
+
 /** A group's per-member allowance; leaving every field empty removes it. */
 export function AdminUsageGroupLimitsSheet({
   controller,
@@ -165,6 +188,7 @@ export function AdminUsageGroupLimitsSheet({
   const [errors, setErrors] = useState<UsageLimitFieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const versioned = useVersionedDraft(group.version, controller.refresh);
   const scope = useRef<HTMLDivElement>(null);
   const focusInvalid = useFocusFirstInvalid(scope);
   const idPrefix = useId();
@@ -179,10 +203,11 @@ export function AdminUsageGroupLimitsSheet({
     }
     setFormError(null);
     setSaving(true);
-    const result = await controller.saveGroup(group.groupId, parsed.values);
+    const result = await controller.saveGroup(group.groupId, { ...parsed.values, expectedVersion: versioned.expectedVersion });
     setSaving(false);
     if (!result.ok) {
       setFormError(usageLimitsErrorMessage(result.error));
+      versioned.noteFailure(result.error);
       return;
     }
     const cleared = USAGE_LIMIT_FIELDS.every((field) => parsed.values![field] === null);
@@ -210,7 +235,12 @@ export function AdminUsageGroupLimitsSheet({
           disabled={busy}
           draft={draft}
           errors={errors}
-          help={(field) => field === "monthlyBudgetMicros" ? "Known cost per member this month, in US dollars." : "Leave empty to let other groups or the default decide."}
+          help={(field) => {
+            const help = field === "monthlyBudgetMicros"
+              ? "Known cost per member this month, in US dollars."
+              : "Leave empty to let other groups or the default decide.";
+            return versioned.conflict ? `${savedLimitText(field, group[field])}. ${help}` : help;
+          }}
           idPrefix={idPrefix}
           onChange={(field, value) => {
             setDraft((previous) => ({ ...previous, [field]: value }));
@@ -254,6 +284,7 @@ export function AdminUsageUserLimitsSheet({
   const [errors, setErrors] = useState<UsageLimitFieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState<"remove" | "save" | null>(null);
+  const versioned = useVersionedDraft(user.override?.version ?? null, controller.refresh);
   const scope = useRef<HTMLDivElement>(null);
   const focusInvalid = useFocusFirstInvalid(scope);
   const idPrefix = useId();
@@ -264,6 +295,7 @@ export function AdminUsageUserLimitsSheet({
     setSaving(null);
     if (!result.ok) {
       setFormError(usageLimitsErrorMessage(result.error));
+      versioned.noteFailure(result.error);
       return;
     }
     reportNotice(notice);
@@ -281,7 +313,7 @@ export function AdminUsageUserLimitsSheet({
     setSaving("save");
     const cleared = !exempt && USAGE_LIMIT_FIELDS.every((field) => parsed.values![field] === null);
     finish(
-      await controller.saveUser(user.userId, { ...parsed.values, exempt }),
+      await controller.saveUser(user.userId, { ...parsed.values, exempt, expectedVersion: versioned.expectedVersion }),
       cleared ? `${name} now follows group and default limits.` : `Limits for ${name} saved.`
     );
   };
@@ -289,7 +321,10 @@ export function AdminUsageUserLimitsSheet({
   const remove = async () => {
     setFormError(null);
     setSaving("remove");
-    finish(await controller.removeUser(user.userId), `Override removed. ${name} now follows group and default limits.`);
+    finish(
+      await controller.removeUser(user.userId, versioned.expectedVersion),
+      `Override removed. ${name} now follows group and default limits.`
+    );
   };
 
   return (
@@ -315,6 +350,7 @@ export function AdminUsageUserLimitsSheet({
           <span className="min-w-0">
             <span className="block text-sm font-medium text-ink">Exempt from per-user limits</span>
             <span className="mt-1 block text-xs leading-5 text-ink-muted">
+              {versioned.conflict ? `Saved: ${user.override?.exempt ? "exempt" : "not exempt"}. ` : ""}
               No budget or message limits for this user. The monthly cap for everyone still applies.
             </span>
           </span>
@@ -330,7 +366,10 @@ export function AdminUsageUserLimitsSheet({
           disabled={busy}
           draft={draft}
           errors={errors}
-          help={(field) => exempt ? "Ignored while the user is exempt; kept for later." : inheritedHelp(user, field)}
+          help={(field) => {
+            const help = exempt ? "Ignored while the user is exempt; kept for later." : inheritedHelp(user, field);
+            return versioned.conflict ? `${savedLimitText(field, user.override?.[field] ?? null)}. ${help}` : help;
+          }}
           idPrefix={idPrefix}
           onChange={(field, value) => {
             setDraft((previous) => ({ ...previous, [field]: value }));

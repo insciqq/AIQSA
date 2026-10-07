@@ -110,8 +110,11 @@ async function knownSpend(userId: string): Promise<number> {
 }
 
 async function override(request: APIRequestContext, userId: string, limits: Readonly<{ budget: number | null; hour: number | null }>) {
+  // Saves name the version they replace; a first save names none.
+  const saved = await prisma.usageLimit.findUnique({ select: { version: true }, where: { userId } });
   const response = await request.put(`/api/admin/usage-limits/users/${userId}`, { data: {
-    exempt: false, messagesPerDay: null, messagesPerHour: limits.hour, monthlyBudgetMicros: limits.budget
+    exempt: false, messagesPerDay: null, messagesPerHour: limits.hour, monthlyBudgetMicros: limits.budget,
+    ...(saved ? { expectedVersion: saved.version } : {})
   } });
   expect(response.ok()).toBe(true);
 }

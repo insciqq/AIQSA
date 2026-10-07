@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import type { Prisma } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { UsageLimitValues } from "../../contracts/usageLimits";
 import { decideUsageAdmission, USAGE_DAY_MS, USAGE_HOUR_MS } from "../../domain/usageLimits";
@@ -68,6 +68,11 @@ async function group(name: string, limits: Partial<UsageLimitValues> | null, arc
   return row;
 }
 
+/** The saved version of a user's override, which the next save must name. */
+async function overrideVersion(userId: string): Promise<number | null> {
+  return (await prisma.usageLimit.findUnique({ select: { version: true }, where: { userId } }))?.version ?? null;
+}
+
 /** Admitted interactive runs, as run creation logs them. Rows go with their user. */
 async function admissions(userId: string, offsets: readonly number[]) {
   await prisma.usageMessageAdmission.createMany({ data: offsets.map((offset) => ({ createdAt: at(offset), userId })) });
@@ -119,9 +124,11 @@ describe("usage limit persistence", () => {
       { groupId: high.id, userId: exempt }
     ] });
     expect(await repository.putUserLimits({
-      limits: { ...unset, exempt: false, monthlyBudgetMicros: 2_000_000 }, targetUserId: overridden, userId: admin
-    })).toBe(true);
-    expect(await repository.putUserLimits({ limits: { ...unset, exempt: true }, targetUserId: exempt, userId: admin })).toBe(true);
+      limits: { ...unset, exempt: false, expectedVersion: null, monthlyBudgetMicros: 2_000_000 }, targetUserId: overridden, userId: admin
+    })).toBe("written");
+    expect(await repository.putUserLimits({
+      limits: { ...unset, exempt: true, expectedVersion: null }, targetUserId: exempt, userId: admin
+    })).toBe("written");
 
     const view = await repository.readAdminUsageLimits(now);
     const row = (userId: string) => view.users.find((user) => user.userId === userId)!;
@@ -139,7 +146,9 @@ describe("usage limit persistence", () => {
       monthlyBudgetMicros: { source: { kind: "installation" }, value: 1_000_000 }
     });
     expect(row(overridden).effective.monthlyBudgetMicros).toEqual({ source: { kind: "user" }, value: 2_000_000 });
-    expect(row(overridden).override).toEqual({ ...unset, exempt: false, monthlyBudgetMicros: 2_000_000, userId: overridden });
+    expect(row(overridden).override).toEqual({
+      ...unset, exempt: false, monthlyBudgetMicros: 2_000_000, userId: overridden, version: await overrideVersion(overridden)
+    });
     expect(row(exempt).effective).toEqual({
       exempt: true,
       messagesPerDay: { source: null, value: null },
@@ -151,13 +160,14 @@ describe("usage limit persistence", () => {
       expect((await repository.loadUsageLimitStatus(userId, now)).effective).toEqual(row(userId).effective);
     }
     const mine = new Set([low.id, high.id, archived.id, plain.id]);
+    const version = expect.any(Number) as unknown as number;
     expect(view.groups.filter(({ groupId }) => mine.has(groupId))).toEqual([
       { archivedAt: now.toISOString(), groupId: archived.id, memberCount: 2, messagesPerDay: 9_000, messagesPerHour: null,
-        monthlyBudgetMicros: 900_000_000, name: archived.name },
-      { ...unset, archivedAt: null, groupId: high.id, memberCount: 3, monthlyBudgetMicros: 20_000_000, name: high.name },
+        monthlyBudgetMicros: 900_000_000, name: archived.name, version },
+      { ...unset, archivedAt: null, groupId: high.id, memberCount: 3, monthlyBudgetMicros: 20_000_000, name: high.name, version },
       { archivedAt: null, groupId: low.id, memberCount: 1, messagesPerDay: null, messagesPerHour: 10,
-        monthlyBudgetMicros: 5_000_000, name: low.name },
-      { ...unset, archivedAt: null, groupId: plain.id, memberCount: 1, name: plain.name }
+        monthlyBudgetMicros: 5_000_000, name: low.name, version },
+      { ...unset, archivedAt: null, groupId: plain.id, memberCount: 1, name: plain.name, version: null }
     ]);
   });
 
@@ -165,7 +175,7 @@ describe("usage limit persistence", () => {
     const [admin, member, other] = await people(3) as [string, string, string];
     await setPolicy({ monthlyCapMicros: 100_000_000 });
     await repository.putUserLimits({
-      limits: { exempt: false, messagesPerDay: 5, messagesPerHour: 3, monthlyBudgetMicros: 10_000_000 },
+      limits: { exempt: false, expectedVersion: null, messagesPerDay: 5, messagesPerHour: 3, monthlyBudgetMicros: 10_000_000 },
       targetUserId: member,
       userId: admin
     });
@@ -212,7 +222,9 @@ describe("usage limit persistence", () => {
     expect((await repository.loadUsageLimitStatus(member, new Date("2033-04-01T00:00:00.000Z"))).userSpentMicros).toBe(0);
     // Without a cap nothing reads the pooled sum; a zero limit never names a time.
     await setPolicy({});
-    await repository.putUserLimits({ limits: { ...unset, exempt: false, messagesPerHour: 0 }, targetUserId: member, userId: admin });
+    expect(await repository.putUserLimits({
+      limits: { ...unset, exempt: false, expectedVersion: await overrideVersion(member), messagesPerHour: 0 }, targetUserId: member, userId: admin
+    })).toBe("written");
     const capless = await repository.loadUsageLimitStatus(member, now);
     expect(capless).toMatchObject({ installationCapMicros: null, installationSpentMicros: 0, lastHour: { count: 4, freesAt: null } });
     expect(capless.lastDay).toEqual({ count: 6, freesAt: null });
@@ -232,7 +244,9 @@ describe("usage limit persistence", () => {
 
   it("keeps message counts when the chats and runs they came from are deleted", async () => {
     const [admin, member] = await people(2) as [string, string];
-    await repository.putUserLimits({ limits: { ...unset, exempt: false, messagesPerHour: 2 }, targetUserId: member, userId: admin });
+    await repository.putUserLimits({
+      limits: { ...unset, exempt: false, expectedVersion: null, messagesPerHour: 2 }, targetUserId: member, userId: admin
+    });
     const chat = await runs(member, [-minutes(30), -minutes(20)]);
     await admissions(member, [-minutes(30), -minutes(20)]);
     const before = await repository.loadUsageLimitStatus(member, now);
@@ -249,23 +263,38 @@ describe("usage limit persistence", () => {
   it("stores one row per target, removes rows that set nothing and guards the installation version", async () => {
     const [admin, target] = await people(2) as [string, string];
     const team = await group("Usage limit team", null);
-    expect(await repository.putGroupLimits({ groupId: team.id, limits: { ...unset, messagesPerHour: 7 }, userId: admin })).toBe(true);
+    const groupVersion = async () => (await prisma.usageLimit.findUnique({ where: { groupId: team.id } }))?.version ?? null;
+    const putGroup = (expectedVersion: number | null, limits: Partial<UsageLimitValues>) =>
+      repository.putGroupLimits({ groupId: team.id, limits: { ...unset, ...limits, expectedVersion }, userId: admin });
+    expect(await putGroup(null, { messagesPerHour: 7 })).toBe("written");
     expect(await prisma.usageLimit.findUnique({ where: { groupId: team.id } }))
       .toMatchObject({ exempt: false, messagesPerHour: 7, updatedByUserId: admin, userId: null });
-    expect(await repository.putGroupLimits({ groupId: team.id, limits: { ...unset, monthlyBudgetMicros: 3 }, userId: admin })).toBe(true);
+    const first = (await groupVersion())!;
+    expect(await putGroup(first, { monthlyBudgetMicros: 3 })).toBe("written");
     expect(await prisma.usageLimit.findUnique({ where: { groupId: team.id } }))
       .toMatchObject({ messagesPerHour: null, monthlyBudgetMicros: 3n });
-    expect(await repository.putGroupLimits({ groupId: team.id, limits: unset, userId: admin })).toBe(true);
+    const second = (await groupVersion())!;
+    expect(second).toBeGreaterThan(first);
+    expect(await putGroup(first, unset)).toBe("stale");
+    expect(await putGroup(second, unset)).toBe("written");
     expect(await prisma.usageLimit.count({ where: { groupId: team.id } })).toBe(0);
-    expect(await repository.putGroupLimits({ groupId: randomUUID(), limits: { ...unset, messagesPerDay: 1 }, userId: admin })).toBe(false);
+    expect(await repository.putGroupLimits({
+      groupId: randomUUID(), limits: { ...unset, expectedVersion: null, messagesPerDay: 1 }, userId: admin
+    })).toBe("not_found");
 
-    expect(await repository.putUserLimits({ limits: { ...unset, exempt: true }, targetUserId: target, userId: admin })).toBe(true);
+    const putUser = (expectedVersion: number | null, limits: Partial<UsageLimitValues> & { exempt: boolean }) =>
+      repository.putUserLimits({ limits: { ...unset, ...limits, expectedVersion }, targetUserId: target, userId: admin });
+    expect(await putUser(null, { exempt: true })).toBe("written");
     expect(await prisma.usageLimit.findUnique({ where: { userId: target } })).toMatchObject({ exempt: true, groupId: null });
-    expect(await repository.putUserLimits({ limits: { ...unset, exempt: false }, targetUserId: target, userId: admin })).toBe(true);
+    expect(await putUser(await overrideVersion(target), { exempt: false })).toBe("written");
     expect(await prisma.usageLimit.count({ where: { userId: target } })).toBe(0);
-    expect(await repository.deleteUserLimits({ targetUserId: target })).toBe(true);
-    expect(await repository.deleteUserLimits({ targetUserId: randomUUID() })).toBe(false);
-    expect(await repository.putUserLimits({ limits: { ...unset, exempt: true }, targetUserId: randomUUID(), userId: admin })).toBe(false);
+    // Clearing or removing what is already gone is a no-op when nothing is expected.
+    expect(await putUser(null, { exempt: false })).toBe("written");
+    expect(await repository.deleteUserLimits({ expectedVersion: null, targetUserId: target })).toBe("written");
+    expect(await repository.deleteUserLimits({ expectedVersion: null, targetUserId: randomUUID() })).toBe("not_found");
+    expect(await repository.putUserLimits({
+      limits: { ...unset, exempt: true, expectedVersion: null }, targetUserId: randomUUID(), userId: admin
+    })).toBe("not_found");
 
     const { version } = (await repository.readAdminUsageLimits(now)).installation;
     const values = { ...unset, monthlyCapMicros: 1_000_000_000_000 };
@@ -276,6 +305,88 @@ describe("usage limit persistence", () => {
     expect(await prisma.usageLimitPolicy.findUniqueOrThrow({ where: { id: "installation" } }))
       .toMatchObject({ monthlyCapMicros: 1_000_000_000_000n, updatedByUserId: admin, version: version + 1 });
     expect(await repository.updateInstallation({ ...values, expectedVersion: version, userId: admin })).toBeNull();
+  });
+
+  it("lets one of two administrators save from the same version and never repeats a version after a removal", async () => {
+    const [admin, other, target] = await people(3) as [string, string, string];
+    const save = (userId: string, expectedVersion: number | null, monthlyBudgetMicros: number | null) =>
+      repository.putUserLimits({ limits: { ...unset, exempt: false, expectedVersion, monthlyBudgetMicros }, targetUserId: target, userId });
+
+    // Two first saves: one creates the override, the other is told it is stale.
+    const created = await Promise.all([save(admin, null, 1_000_000), save(other, null, 2_000_000)]);
+    expect([...created].sort()).toEqual(["stale", "written"]);
+    const opened = (await overrideVersion(target))!;
+    const changed = await Promise.all([save(admin, opened, 3_000_000), save(other, opened, 4_000_000)]);
+    expect([...changed].sort()).toEqual(["stale", "written"]);
+    const winner = await prisma.usageLimit.findUniqueOrThrow({ where: { userId: target } });
+    expect(winner.monthlyBudgetMicros).toBe(changed[0] === "written" ? 3_000_000n : 4_000_000n);
+    expect(await repository.deleteUserLimits({ expectedVersion: opened, targetUserId: target })).toBe("stale");
+
+    // A draft opened before a removal and a new override cannot overwrite the new one.
+    const stale = winner.version;
+    expect(await repository.deleteUserLimits({ expectedVersion: stale, targetUserId: target })).toBe("written");
+    expect(await save(other, null, 5_000_000)).toBe("written");
+    const recreated = (await overrideVersion(target))!;
+    expect(recreated).not.toBe(stale);
+    expect(recreated).not.toBe(opened);
+    expect(await save(admin, stale, 6_000_000)).toBe("stale");
+    expect(await save(admin, opened, 6_000_000)).toBe("stale");
+    expect(await prisma.usageLimit.findUniqueOrThrow({ where: { userId: target } }))
+      .toMatchObject({ monthlyBudgetMicros: 5_000_000n, updatedByUserId: other });
+    const view = await repository.readAdminUsageLimits(now);
+    expect(view.users.find(({ userId }) => userId === target)?.override?.version).toBe(recreated);
+  });
+
+  it("admits without spend sums or message counts when no limit applies, in one statement", async () => {
+    const [admin, member, limitedMember] = await people(3) as [string, string, string];
+    const team = await group("Usage limit fast path", { messagesPerHour: 5 });
+    const archived = await group("Usage limit fast path archived", { messagesPerHour: 5 }, true);
+    await prisma.userGroup.createMany({ data: [
+      { groupId: archived.id, userId: member },
+      { groupId: team.id, userId: limitedMember }
+    ] });
+    await admissions(member, [-minutes(5)]);
+    await prisma.usageEvent.create({ data: usage(member, "2033-03-10T08:00:00.000Z", 1_500_000) });
+    await setPolicy({});
+
+    // Counts every SQL statement, relation loads included.
+    let statements = 0;
+    const counting = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
+    counting.$on("query", () => {
+      statements += 1;
+    });
+    try {
+      const counted = createUsageLimitsRepository(counting);
+      await counting.$connect();
+      statements = 0;
+      const fast = await counted.loadUsageLimitStatus(member, now);
+      // An archived group's allowance does not apply, so nothing can refuse.
+      expect(statements).toBe(1);
+      expect(fast).toMatchObject({ installationCapMicros: null, lastHour: { count: 0 }, userSpentMicros: 0 });
+      expect(decideUsageAdmission({ ...fast, interactive: true, now })).toEqual({ ok: true });
+
+      statements = 0;
+      const limited = await counted.loadUsageLimitStatus(limitedMember, now);
+      expect(statements).toBeGreaterThan(1);
+      expect(limited.effective.messagesPerHour.value).toBe(5);
+
+      // A per-user default or a pooled cap applies to everyone: the full read follows.
+      await setPolicy({ monthlyCapMicros: 1_000_000_000 });
+      statements = 0;
+      expect(await counted.loadUsageLimitStatus(member, now)).toMatchObject({
+        lastHour: { count: 1 }, userSpentMicros: 1_500_000
+      });
+      expect(statements).toBeGreaterThan(1);
+      await setPolicy({});
+      expect(await counted.putUserLimits({
+        limits: { ...unset, exempt: true, expectedVersion: null }, targetUserId: member, userId: admin
+      })).toBe("written");
+      statements = 0;
+      expect((await counted.loadUsageLimitStatus(member, now)).effective.exempt).toBe(true);
+      expect(statements).toBeGreaterThan(1);
+    } finally {
+      await counting.$disconnect();
+    }
   });
 
   it("enforces one target, user-only exemption, non-empty rows and bounds in the database", async () => {

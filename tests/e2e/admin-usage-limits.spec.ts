@@ -99,6 +99,15 @@ test("limits are configured through the admin API", async ({ page }, testInfo) =
   } });
   expect(exempt.ok()).toBe(true);
   const limits = decodeAdminUsageLimitsResponse(await exempt.json())!.limits;
+  // A save that names no version, or an outdated one, never overwrites a saved allowance.
+  const engineering = limits.groups.find((row) => row.groupId === groups[0]!.id)!;
+  for (const version of [{}, { expectedVersion: engineering.version! + 1_000_000 }]) {
+    const stale = await page.request.put(`/api/admin/usage-limits/groups/${groups[0]!.id}`, { data: {
+      messagesPerDay: 1, messagesPerHour: null, monthlyBudgetMicros: null, ...version
+    } });
+    expect(stale.status()).toBe(409);
+    expect(await stale.json()).toEqual({ error: "usage_limits_stale" });
+  }
   const row = (id: string) => limits.users.find((user) => user.userId === id)!;
   expect(row(people[0]!.id).effective.monthlyBudgetMicros).toEqual({ source: { groupId: groups[0]!.id, kind: "group", name: groups[0]!.name }, value: 40_000_000 });
   expect(row(people[1]!.id).effective.monthlyBudgetMicros).toEqual({ source: { kind: "user" }, value: 15_000_000 });
