@@ -714,12 +714,13 @@ describe("persisted scheduled Workspace capacity", () => {
 
   it("skips a waiting occurrence that the next due instant supersedes as a capacity skip", async () => {
     const userId = await owner();
-    const due = new Date(Date.now() - 60_000);
+    // A real hourly instant and a fixed claim time: the wall clock crossing an hour must not add a newer instant.
+    const due = new Date(Math.floor((Date.now() - 60_000) / 3_600_000) * 3_600_000);
     const created = await task(userId, due, { ...scheduledTaskScheduleColumns(hourly), toolsEnabled: true, workspaceEnabled: true });
     const waiting = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(due.getTime() - 3_600_000),
       taskId: created.id, trigger: "schedule", userId } });
     await runner.waitForWorkspace(waiting.id, new Date(due.getTime() - 3_600_000));
-    const claim = await runner.claimDue(new Date(), 500);
+    const claim = await runner.claimDue(new Date(due.getTime() + 60_000), 500);
     expect(claim.settlements.find((row) => row.occurrenceId === waiting.id))
       .toMatchObject({ reasonCode: "workspace_capacity", state: "SKIPPED", taskPaused: false });
     expect(await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: created.id, state: "PENDING" } }))
