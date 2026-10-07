@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { Download, X } from "lucide-react";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
-import { SaveFileButtonV2 } from "./SaveFileButtonV2";
+import { FileActionsMenuV2 } from "./FileActionsMenuV2";
 
 type ImageProps = Readonly<{ attachmentId: string; label: string; canSave?: boolean; onUseInArtifact?(): void | Promise<void>; width?: number; height?: number }>;
 
@@ -47,7 +47,7 @@ export function ChatImageV2({ attachmentId, label, canSave = false, onUseInArtif
     </button>}
     <figcaption><a className="v2-focusable" download href={href}><Download aria-hidden="true" size={14} /> Download</a>
       {onUseInArtifact ? <button className="v2-focusable v2-chat-image-use" disabled={using} onClick={() => void attachToArtifact()} type="button">{using ? "Attaching…" : "Use in artifact"}</button> : null}
-      {canSave ? <SaveFileButtonV2 attachmentId={attachmentId} /> : null}</figcaption>
+      {canSave ? <FileActionsMenuV2 attachmentId={attachmentId} fileName={label} /> : null}</figcaption>
     {useFailed ? <p role="status">Could not attach this image. Try again.</p> : null}
     {open ? <ImageViewer attachmentId={attachmentId} label={label} onClose={() => setOpen(false)} /> : null}
   </figure>;
