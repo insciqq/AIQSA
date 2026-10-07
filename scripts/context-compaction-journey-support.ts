@@ -393,6 +393,23 @@ export function journeyRunParams(model: CatalogModel, maxOutputTokens: number): 
     else delete params.stream;
     return params;
   }
+  if (family === "openrouter") {
+    const usesVerbosityEffort = typeof base.verbosity === "string";
+    const params: Record<string, unknown> = {
+      ...base,
+      maxTokens: tokens,
+      ...(controls.reasoningEffort.supported
+        ? { reasoning: { ...(record(base.reasoning) ? base.reasoning : {}), enabled: effort !== "none",
+          ...(usesVerbosityEffort || effort === "none" ? {} : { effort }) } }
+        : {})
+    };
+    if (controls.stream.supported) params.stream = controls.stream.defaultValue;
+    else delete params.stream;
+    if (usesVerbosityEffort && effort !== "none") params.verbosity = effort;
+    if (controls.temperature.supported) params.temperature = controls.temperature.defaultValue;
+    else delete params.temperature;
+    return params;
+  }
   return fail("catalog", "model_family_unsupported");
 }
 
