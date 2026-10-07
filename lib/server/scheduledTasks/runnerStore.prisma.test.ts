@@ -571,8 +571,9 @@ describe("persisted monitoring checks", () => {
         mcpDiscovery: { catalog: { servers: [{ description: "", namespace: "gitlab", revisionId: "revision", serverId: "server-gitlab",
           serverName: "Synthetic GitLab", tools: [] }], version: 1 }, epochs: [], version: 2 } } } });
     };
-    // GitLab is reached only through the Skill's code, which found it needing a new sign-in.
-    const blind = await check(userId, chat.id);
+    // GitLab is reached only through the Skill's code, which found it needing a new sign-in. A scheduled
+    // check's first incomplete result raises the source alert, so it is news rather than a hidden result.
+    const blind = await check(userId, chat.id, "schedule");
     await withCatalog(blind.run.runId);
     await codeReceipts(blind.run.runId, chat.id, [{ errorCode: "authorization_required", serverId: "server-gitlab", state: "error" }]);
     expect(await finish(blind, "no_update", now)).toMatchObject({ reasonCode: "could_not_check", sourcesIncomplete: true,
@@ -636,7 +637,8 @@ async function bindWorkspace(runId: string, chatId: string): Promise<void> {
     sandboxName: `capacity-${randomUUID()}` } });
   await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: false, mcpVersion: "0.6.16",
     modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
-    toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id } });
+    toolCatalogHash: "a".repeat(64), toolDefinitions: [{ description: "Fixture", inputSchema: { type: "object" },
+      namespacedName: "workspace__sandbox_shell", originalName: "sandbox_shell" }], workspaceSessionId: session.id } });
 }
 
 describe("persisted scheduled Workspace capacity", () => {
