@@ -668,27 +668,31 @@ test("Knowledge and Memory calls are system usage: known cost, System analytics,
     const standing = await prisma.modelRunMemoryBinding.findMany({
       where: { modelRunId: { in: [learningRun.id, recallRun.id] }, userId }, select: { degradationCode: true, outcome: true } });
     summary.memoryStandingOutcomes = standing.map((binding) => `${binding.outcome}:${stableCode(binding.degradationCode) ?? "none"}`);
-    expect(searches.length, "the answer model searched Memory").toBeGreaterThan(0);
-    // Any unexplained DEGRADED Memory result blocks the check (agent_docs/TESTING.md).
-    expect(searches.every((search) => search.state === "COMPLETE" && (search.outcome === "RESULTS" || search.outcome === "EMPTY")),
-      `every Memory search completes without degradation (${String(summary.memorySearchDegradation)})`).toBe(true);
-    expect(searches.some((search) => search.outcome === "RESULTS"), "a Memory search delivers the learned preference").toBe(true);
     expect(standing.every((binding) => binding.outcome !== "DEGRADED" && binding.outcome !== "FAILED_SAFE"),
       `the standing Memory reads are not degraded (${String(summary.memoryStandingOutcomes)})`).toBe(true);
-    const bindings = await prisma.memoryExecutionBinding.findMany({ where: { modelRunId: recallRun.id, userId },
-      select: { id: true, logicalRole: true, state: true } });
-    const succeeded = (role: string) => bindings.filter((binding) => binding.logicalRole === role && binding.state === "SUCCEEDED");
-    expect(succeeded("MEMORY_QUERY_EMBED").length, "the Memory search embedded its query").toBeGreaterThan(0);
-    expect(succeeded("MEMORY_RERANK").length, "the Memory search reranked its candidates").toBeGreaterThan(0);
-    const recallRows = await poll(PREFLIGHT_TIMEOUT_MS, "memory_retrieval_rows", async () => {
-      const rows = await prisma.usageEvent.findMany({ where: { memoryExecutionBindingId: { in: bindings.map((binding) => binding.id) } } });
-      return rows.length >= succeeded("MEMORY_QUERY_EMBED").length + succeeded("MEMORY_RERANK").length ? rows : null;
-    });
-    Object.assign(summary, { memoryRetrievalKnownCost: recallRows.filter(known).length, memoryRetrievalRows: recallRows.length });
-    for (const row of recallRows) {
-      const binding = bindings.find((entry) => entry.id === row.memoryExecutionBindingId);
-      expect({ chatId: row.chatId, modelRunId: row.modelRunId, purpose: row.purpose }).toEqual({ chatId: null, modelRunId: null, purpose: "memory_retrieval" });
-      if (binding?.state === "SUCCEEDED") expect(known(row), "OpenRouter reports the Memory query embedding and rerank cost").toBe(true);
+    // Whether the model calls memory_search is its choice; standing recall may already answer. The
+    // query embedding and rerank are then asserted only when it searched (both are covered by stateful tests).
+    summary.memorySearchUsed = searches.length > 0;
+    if (searches.length > 0) {
+      // Any unexplained DEGRADED Memory result blocks the check (agent_docs/TESTING.md).
+      expect(searches.every((search) => search.state === "COMPLETE" && (search.outcome === "RESULTS" || search.outcome === "EMPTY")),
+        `every Memory search completes without degradation (${String(summary.memorySearchDegradation)})`).toBe(true);
+      expect(searches.some((search) => search.outcome === "RESULTS"), "a Memory search delivers the learned preference").toBe(true);
+      const bindings = await prisma.memoryExecutionBinding.findMany({ where: { modelRunId: recallRun.id, userId },
+        select: { id: true, logicalRole: true, state: true } });
+      const succeeded = (role: string) => bindings.filter((binding) => binding.logicalRole === role && binding.state === "SUCCEEDED");
+      expect(succeeded("MEMORY_QUERY_EMBED").length, "the Memory search embedded its query").toBeGreaterThan(0);
+      expect(succeeded("MEMORY_RERANK").length, "the Memory search reranked its candidates").toBeGreaterThan(0);
+      const recallRows = await poll(PREFLIGHT_TIMEOUT_MS, "memory_retrieval_rows", async () => {
+        const rows = await prisma.usageEvent.findMany({ where: { memoryExecutionBindingId: { in: bindings.map((binding) => binding.id) } } });
+        return rows.length >= succeeded("MEMORY_QUERY_EMBED").length + succeeded("MEMORY_RERANK").length ? rows : null;
+      });
+      Object.assign(summary, { memoryRetrievalKnownCost: recallRows.filter(known).length, memoryRetrievalRows: recallRows.length });
+      for (const row of recallRows) {
+        const binding = bindings.find((entry) => entry.id === row.memoryExecutionBindingId);
+        expect({ chatId: row.chatId, modelRunId: row.modelRunId, purpose: row.purpose }).toEqual({ chatId: null, modelRunId: null, purpose: "memory_retrieval" });
+        if (binding?.state === "SUCCEEDED") expect(known(row), "OpenRouter reports the Memory query embedding and rerank cost").toBe(true);
+      }
     }
 
     // System analytics lists every system row under its function and model; personal models exclude them.
