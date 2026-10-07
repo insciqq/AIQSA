@@ -1,28 +1,25 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type {
   AdminUsageAmounts,
   AdminUsageAnalytics,
+  AdminUsageCategory,
   AdminUsageCategoryRecord,
   AdminUsageModelRecord
 } from "@/lib/contracts/adminUsageAnalytics";
-import { formatCount, shareOf, sumUsageAmounts, USAGE_CATEGORY_META, USAGE_CATEGORY_ORDER } from "./usageFormat";
+import {
+  formatCount,
+  sumUsageAmounts,
+  usageShare,
+  usageShareBasis,
+  USAGE_CATEGORY_META,
+  USAGE_CATEGORY_ORDER,
+  type UsageShareBasis
+} from "./usageFormat";
 import { ShareCell, UsageBlockHeading, UsageCost } from "./usageParts";
 
 export const TOP_MODEL_ROWS = 8;
-
-/** Shares follow known cost when the period has any, otherwise tokens. */
-export type UsageShareBasis = "cost" | "tokens";
-
-export function usageShareBasis(totals: AdminUsageAmounts): UsageShareBasis {
-  return (totals.estimatedCostMicros ?? 0) > 0 ? "cost" : "tokens";
-}
-
-export function usageShare(row: AdminUsageAmounts, totals: AdminUsageAmounts, basis: UsageShareBasis): number {
-  return basis === "cost"
-    ? shareOf(row.estimatedCostMicros, totals.estimatedCostMicros)
-    : shareOf(row.totalTokens, totals.totalTokens);
-}
 
 function rankModels(rows: readonly AdminUsageModelRecord[]): AdminUsageModelRecord[] {
   return [...rows].sort((left, right) =>
@@ -50,22 +47,31 @@ export function foldModelRows(rows: readonly AdminUsageModelRecord[]): ModelRow[
   }];
 }
 
-function BreakdownRow({
+export function categoryRecord(rows: readonly AdminUsageCategoryRecord[], category: AdminUsageCategory): AdminUsageCategoryRecord {
+  return rows.find((row) => row.category === category) ?? { ...sumUsageAmounts([]), category };
+}
+
+/** The usage of models people chose (every category but System), for shares: a run in two categories counts in each. */
+export function personalUsage(usage: AdminUsageAnalytics): AdminUsageAmounts {
+  return sumUsageAmounts(usage.byCategory.filter((row) => row.category !== "system"));
+}
+
+export function BreakdownRow({
   basis,
   color,
   detail,
   label,
   row,
   title,
-  totals
+  whole
 }: Readonly<{
   basis: UsageShareBasis;
   color?: string;
-  detail: string;
+  detail: ReactNode;
   label: string;
   row: AdminUsageAmounts;
   title?: string;
-  totals: AdminUsageAmounts;
+  whole: AdminUsageAmounts;
 }>) {
   return (
     <li className="min-w-0 py-3">
@@ -76,27 +82,28 @@ function BreakdownRow({
           ) : null}
           <div className="min-w-0">
             <p className="break-words text-sm font-medium text-ink [overflow-wrap:anywhere]" title={title}>{label}</p>
-            <p className="mt-0.5 text-xs leading-5 text-ink-muted">{detail}</p>
+            <div className="mt-0.5 text-xs leading-5 text-ink-muted">{detail}</div>
           </div>
         </div>
         <div className="shrink-0 text-right text-sm text-ink"><UsageCost usage={row} /></div>
       </div>
-      <ShareCell color={color} share={usageShare(row, totals, basis)} />
+      <ShareCell color={color} share={usageShare(row, whole, basis)} />
     </li>
   );
 }
 
-function tokensLine(row: AdminUsageAmounts): string {
+export function tokensLine(row: AdminUsageAmounts): string {
   return row.recordCount === 0 ? "no usage in this period" : `${formatCount(row.totalTokens)} tokens`;
 }
 
 export function UsageByModel({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
-  const basis = usageShareBasis(usage.totals);
+  const whole = personalUsage(usage);
+  const basis = usageShareBasis(whole);
   const rows = foldModelRows(usage.byModel);
   return (
     <section aria-label="By model" className="min-w-0" data-testid="admin-usage-by-model">
       <UsageBlockHeading
-        detail={`Share of ${basis === "cost" ? "estimated cost" : "tokens"} in this period.`}
+        detail={`Models people chose for answers, Search and images. Share of their ${basis === "cost" ? "estimated cost" : "tokens"}.`}
         title="By model"
       />
       {rows.length ? (
@@ -111,7 +118,7 @@ export function UsageByModel({ usage }: Readonly<{ usage: AdminUsageAnalytics }>
               label={row.label}
               row={row}
               title={row.modelId ?? undefined}
-              totals={usage.totals}
+              whole={whole}
             />
           ))}
         </ul>
@@ -120,10 +127,6 @@ export function UsageByModel({ usage }: Readonly<{ usage: AdminUsageAnalytics }>
       )}
     </section>
   );
-}
-
-function categoryRecord(rows: readonly AdminUsageCategoryRecord[], category: AdminUsageCategoryRecord["category"]): AdminUsageCategoryRecord {
-  return rows.find((row) => row.category === category) ?? { ...sumUsageAmounts([]), category };
 }
 
 export function UsageBySource({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
@@ -146,7 +149,7 @@ export function UsageBySource({ usage }: Readonly<{ usage: AdminUsageAnalytics }
               key={category}
               label={meta.label}
               row={row}
-              totals={usage.totals}
+              whole={usage.totals}
             />
           );
         })}

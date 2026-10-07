@@ -7,8 +7,8 @@ import {
 import {
   assertValidOpenRouterTerminalResponse,
   extractOpenRouterArtifacts,
-  extractOpenRouterSearchUsage,
   extractOpenRouterText,
+  extractOpenRouterUsage,
   openRouterProviderResponseId,
   openRouterResponseError
 } from "./openRouterChatResponse";
@@ -24,10 +24,21 @@ import type {
 } from "./types";
 import { ProviderSearchExecutionError } from "./types";
 import { firstOpenAIChatChoice, firstOpenAIChatMessage } from "./openaiChatCompletions";
+import { reportedUsageCostUsd } from "./reportedUsageCost";
 
 export type OpenRouterPerplexitySearchAdapterOptions = Readonly<{
   client: OpenRouterChatClient;
 }>;
+
+/** What OpenRouter reported the search cost, with the upstream charge of a
+ * BYOK call (the shared rule; Perplexity's per-request search fee included).
+ * Null when it reported no usable amount: the row is then priced from tokens. */
+function searchCostUsd(response: Readonly<Record<string, unknown>>): number | null {
+  const usage = response.usage;
+  return usage !== null && typeof usage === "object" && !Array.isArray(usage)
+    ? reportedUsageCostUsd(usage as Readonly<Record<string, unknown>>) ?? null
+    : null;
+}
 
 function searchArtifact(
   response: Readonly<Record<string, unknown>>,
@@ -64,13 +75,13 @@ export function createOpenRouterPerplexitySearchAdapter(
           ...(typeof searchOptions.timeoutMs === "number"
             ? { timeoutMs: searchOptions.timeoutMs }
             : {})
-        }), usage: extractOpenRouterSearchUsage
+        }), usage: extractOpenRouterUsage, cost: searchCostUsd
       });
-      // The reported cost includes Perplexity's per-request search fee.
-      const usage = extractOpenRouterSearchUsage(response);
+      const usage = extractOpenRouterUsage(response);
+      const costUsd = searchCostUsd(response);
       const responseError = openRouterResponseError(response);
       if (responseError) {
-        throw new ProviderSearchExecutionError({ artifacts: [], code: responseError, usage });
+        throw new ProviderSearchExecutionError({ artifacts: [], code: responseError, costUsd, usage });
       }
       const finishReason = firstOpenAIChatChoice(response)?.finish_reason;
       const message = firstOpenAIChatMessage(response);
@@ -90,6 +101,7 @@ export function createOpenRouterPerplexitySearchAdapter(
           code: "openrouter_terminal_response_invalid",
           ...(providerStatus ? { providerStatus } : {}),
           ...(finishReason === "length" ? { reason: "max_output_tokens" } : {}),
+          costUsd,
           usage
         });
       }
@@ -108,6 +120,7 @@ export function createOpenRouterPerplexitySearchAdapter(
         throw new ProviderSearchExecutionError({
           artifacts: [operationArtifact],
           code: "openrouter_search_findings_invalid",
+          costUsd,
           usage
         });
       }
@@ -115,11 +128,13 @@ export function createOpenRouterPerplexitySearchAdapter(
         throw new ProviderSearchExecutionError({
           artifacts: [operationArtifact],
           code: "openrouter_search_sources_invalid",
+          costUsd,
           usage
         });
       }
       return {
         artifacts,
+        costUsd,
         finalProviderResponsePreview: {
           findingsCharacters: findings.length,
           model: response.model ?? request.searchPolicy.modelId,

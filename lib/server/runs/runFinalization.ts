@@ -1,6 +1,10 @@
 import { RunSettlementError } from "./settlementFailure";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { normalizeTokenUsage, sumEstimatedCostMicros, usageCostMicros, type ModelTokenPricing } from "../../domain/usage";
+import {
+  normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage, usageCostMicros, type ModelTokenPricing
+} from "../../domain/usage";
+import type { RunUsageAttributionPurpose } from "../../domain/usagePurpose";
+import { providerModelUsageCostMicros } from "../usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { logRunPersistence } from "./runObservability";
@@ -10,7 +14,9 @@ import type { KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 } from "../knowledge/an
 import type { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V1 } from "../knowledge/evidenceAnswerSnapshotV1";
 import type { KNOWLEDGE_EVIDENCE_ANSWER_CONTRACTS_V2 } from "../knowledge/evidenceAnswerSnapshotV2";
 
-type RunCompletionRepository = Pick<RunRepository, "completeRun" | "loadModelPricing" | "publishRunAnswer"> &
+type RunCompletionRepository = Pick<
+  RunRepository, "completeRun" | "loadModelPricing" | "loadProviderModelCostBasis" | "publishRunAnswer"
+> &
   Pick<
     RunRepository,
     "groundKnowledgeAnswer" | "groundKnowledgeAnswerV5" | "groundKnowledgeAnswerV21" | "groundKnowledgeEvidenceAnswer"
@@ -42,10 +48,10 @@ export type RunCompletionFinalizationResult =
 const NO_PRICES: ModelTokenPricing = { inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null };
 
 /**
- * The cost of one run attribution. Answer usage keeps its token prices plus
- * the answer model's per-search fee for native web searches. Search usage
- * (and any other non-answer attribution) prefers the cost its provider
- * reported, else the engine model's token prices plus its per-search fee.
+ * Usage priced from a model's stored answer prices: its tokens, plus each web
+ * search its provider reported at the model's per-search price (native search
+ * in answers, Search engine calls). The repository prices answer-class rows,
+ * which include every Search engine.
  */
 export async function usageWithEstimatedCost(
   repository: Pick<RunRepository, "loadModelPricing">,
@@ -53,7 +59,6 @@ export async function usageWithEstimatedCost(
     providerModelId?: string;
     modelId: string;
     provider: string;
-    purpose?: RunUsageAttribution["purpose"];
     usage: ModelRunUsage;
   }>
 ): Promise<ModelRunUsage> {
@@ -61,9 +66,7 @@ export async function usageWithEstimatedCost(
   const pricing = input.providerModelId
     ? await repository.loadModelPricing(input.provider, input.modelId, input.providerModelId).catch(error => { throw new RunSettlementError("accounting", error); })
     : await repository.loadModelPricing(input.provider, input.modelId).catch(error => { throw new RunSettlementError("accounting", error); });
-  const reportedCostUsd = input.purpose === undefined || input.purpose === "chat_answer" ? null : normalizedUsage.costUsd ?? null;
-  // The repository prices answer-class rows, which include every Search engine.
-  const estimatedCostMicros = usageCostMicros({ reportedCostUsd, usage: normalizedUsage, pricing: pricing ?? NO_PRICES, modelClass: "answer" });
+  const estimatedCostMicros = usageCostMicros({ reportedCostUsd: null, usage: normalizedUsage, pricing: pricing ?? NO_PRICES, modelClass: "answer" });
 
   return {
     ...normalizedUsage,
@@ -71,22 +74,101 @@ export async function usageWithEstimatedCost(
   };
 }
 
+/** Run attributions whose cost settles per call: Knowledge retrieval calls,
+ * charged their reported cost or their deployment's prices (the shared cost
+ * rule), and Search engine calls, charged their reported cost or the engine's
+ * token prices plus its per-search fee. Answer usage is priced from token
+ * prices, plus the answer model's per-search fee, when written. */
+export function settlesRunUsageCostPerCall(purpose: RunUsageAttributionPurpose): boolean {
+  return purpose === "knowledge_retrieval" || purpose === "web_search";
+}
+
+// Durable cost columns are signed 32-bit integers; a larger sum is unknown.
+const MAX_COST_MICROS = 2_147_483_647;
+
+/**
+ * One attribution per purpose, provider, model and deployment, summing usage
+ * and operation counts. Attributions whose cost settles per call keep it:
+ * calls with a known cost, with an unknown cost and calls still to be priced
+ * group apart, so a settled cost is never lost, merged into an unknown one or
+ * priced again.
+ */
+export function groupedUsageAttributions(attributions: readonly RunUsageAttribution[]): RunUsageAttribution[] {
+  const grouped = new Map<string, { attribution: RunUsageAttribution; costs: (number | null)[] | null; usages: ModelRunUsage[] }>();
+  for (const attribution of attributions) {
+    const settled = settlesRunUsageCostPerCall(attribution.purpose) && attribution.estimatedCostMicros !== undefined;
+    const cost = !settled ? "" : attribution.estimatedCostMicros === null ? "unknown" : "known";
+    const key = [attribution.purpose, attribution.provider, attribution.modelId, attribution.providerModelId ?? "", cost].join("\u0000");
+    const current = grouped.get(key);
+    if (current) {
+      current.usages.push(attribution.usage);
+      current.costs?.push(attribution.estimatedCostMicros ?? null);
+      current.attribution.operationCount = current.attribution.operationCount == null || attribution.operationCount == null
+        ? null : current.attribution.operationCount + attribution.operationCount;
+      continue;
+    }
+    grouped.set(key, {
+      attribution: {
+        ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
+        operationCount: attribution.operationCount ?? null,
+        modelId: attribution.modelId,
+        provider: attribution.provider,
+        purpose: attribution.purpose,
+        usage: attribution.usage
+      },
+      costs: settled ? [attribution.estimatedCostMicros ?? null] : null,
+      usages: [attribution.usage]
+    });
+  }
+  return [...grouped.values()].map(({ attribution, costs, usages }) => {
+    const total = costs ? sumEstimatedCostMicros(costs) : null;
+    return {
+      ...attribution,
+      usage: sumTokenUsage(usages),
+      ...(costs ? { estimatedCostMicros: total !== null && total <= MAX_COST_MICROS ? total : null } : {})
+    };
+  });
+}
+
+/** A settled cost stays; an unsettled call is priced with the shared cost rule
+ * from its deployment's stored class prices. A Search call without a reported
+ * cost is priced from its engine's answer prices and per-search fee. */
+async function perCallUsageCost(
+  repository: Pick<RunRepository, "loadModelPricing" | "loadProviderModelCostBasis">,
+  attribution: RunUsageAttribution
+): Promise<number | null> {
+  if (attribution.estimatedCostMicros !== undefined) return attribution.estimatedCostMicros;
+  if (attribution.purpose === "web_search") {
+    return (await usageWithEstimatedCost(repository, {
+      ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
+      modelId: attribution.modelId,
+      provider: attribution.provider,
+      usage: attribution.usage
+    })).estimatedCostMicros ?? null;
+  }
+  if (!attribution.providerModelId) return null;
+  const basis = await repository.loadProviderModelCostBasis(attribution.providerModelId)
+    .catch(error => { throw new RunSettlementError("accounting", error); });
+  return providerModelUsageCostMicros({ basis, reportedCostUsd: null, usage: attribution.usage });
+}
+
 export async function usageAttributionsWithEstimatedCost(
-  repository: Pick<RunRepository, "loadModelPricing">,
+  repository: Pick<RunRepository, "loadModelPricing" | "loadProviderModelCostBasis">,
   attributions: readonly RunUsageAttribution[]
 ): Promise<RunUsageAttribution[]> {
   return Promise.all(
     attributions.map(async (attribution) => ({
       ...(attribution.operationCount !== undefined ? { operationCount: attribution.operationCount } : {}),
-      estimatedCostMicros: (
-        await usageWithEstimatedCost(repository, {
-          ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
-          modelId: attribution.modelId,
-          provider: attribution.provider,
-          purpose: attribution.purpose,
-          usage: attribution.usage
-        })
-      ).estimatedCostMicros,
+      estimatedCostMicros: settlesRunUsageCostPerCall(attribution.purpose)
+        ? await perCallUsageCost(repository, attribution)
+        : (
+          await usageWithEstimatedCost(repository, {
+            ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
+            modelId: attribution.modelId,
+            provider: attribution.provider,
+            usage: attribution.usage
+          })
+        ).estimatedCostMicros,
       modelId: attribution.modelId,
       ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
       provider: attribution.provider,

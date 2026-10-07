@@ -120,6 +120,9 @@ describe("AdminUsageLimitsSection", () => {
     expect(row("Di")).toHaveTextContent("Exempt");
     expect(within(row("Di")).queryByRole("meter")).not.toBeInTheDocument();
     expect(row("Ed")).toHaveTextContent("Disabled");
+    expect(row("Ada")).toHaveTextContent("Personal spend");
+    expect(screen.getByTestId("admin-usage-limit-users"))
+      .toHaveTextContent("system features count only toward the monthly cap");
 
     fireEvent.change(screen.getByRole("searchbox", { name: "Search users" }), { target: { value: "bo@" } });
     expect(screen.getAllByTestId("admin-usage-user-row").map((element) => element.dataset.userId)).toEqual(["u-bo"]);

@@ -138,6 +138,17 @@ describe("image adapters", () => {
     expect(body.provider).toEqual({ data_collection: "deny", allow_fallbacks: false, only: ["fixture"], order: ["fixture"] });
     expect(body.input_references[0].image_url.url).toBe(`data:image/png;base64,${png.toString("base64")}`);
   });
+  it("reports OpenRouter's image cost, adding the upstream charge of a BYOK call", async () => {
+    const generate = async (usage: Record<string, unknown>) => (await createImageGenerationAdapter({ connection,
+      model: model("openrouter"), secret: "fixture-secret", fetchFn: vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+        data: [{ b64_json: png.toString("base64") }], usage: { input_tokens: 12, output_tokens: 20, total_tokens: 32, ...usage }
+      })) }).generate({ prompt: "A square" })).usage.costUsd;
+    await expect(generate({ cost: 0.04 })).resolves.toBe(0.04);
+    await expect(generate({ cost: 0.002, is_byok: true, cost_details: { upstream_inference_cost: 0.04 } })).resolves.toBe(0.042);
+    // A malformed or incomplete report keeps the image and leaves the cost unreported.
+    await expect(generate({ cost: 0.002, is_byok: true })).resolves.toBeNull();
+    await expect(generate({ cost: "0.04" })).resolves.toBeNull();
+  });
   it("does not retry ambiguous paid requests or leak response text", async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response("private upstream detail fixture-secret", { status: 503 }));
     await expect(createImageGenerationAdapter({ connection, model: model("openai"), secret: "fixture-secret", fetchFn }).generate({ prompt: "A square" })).rejects.toMatchObject({ message: "image_provider_http_error", httpStatus: 503 });

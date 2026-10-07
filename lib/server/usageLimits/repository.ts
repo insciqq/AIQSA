@@ -18,6 +18,7 @@ import {
   type UsageLimitGroupInput,
   type UsageMessageWindow
 } from "../../domain/usageLimits";
+import { PERSONAL_USAGE_PURPOSES } from "../../domain/usagePurpose";
 
 const INSTALLATION = "installation";
 
@@ -101,6 +102,15 @@ function spentMicros(value: bigint | number | null | undefined): number {
 function utcTimestamp(value: Date): Prisma.Sql {
   return Prisma.sql`(${value}::timestamptz AT TIME ZONE 'UTC')`;
 }
+
+/**
+ * Usage that counts toward a user's own budget: the work of models they chose.
+ * System work (Memory, Knowledge, titles and the like) counts only toward the
+ * pooled installation cap.
+ */
+const PERSONAL_USAGE = Prisma.sql`"purpose" IN (${Prisma.join(
+  PERSONAL_USAGE_PURPOSES.map((purpose) => Prisma.sql`${purpose}::"UsagePurpose"`)
+)})`;
 
 type InstallationRow = StoredValues & Readonly<{ monthlyCapMicros: bigint | null; version: number }>;
 
@@ -227,13 +237,17 @@ function admittedMessages(userId: string, now: Date, length: number): Prisma.Usa
 }
 
 export function createUsageLimitsRepository(database: Database): UsageLimitsRepository {
-  /** Known estimated cost in the month; usage without a known price adds nothing. */
+  /**
+   * Known estimated cost in the month; usage without a known price adds
+   * nothing. A user's spend counts only personal usage; the installation's
+   * (`userId` null) counts every purpose.
+   */
   async function knownCost(month: Month, userId: string | null): Promise<number> {
     const [row] = await database.$queryRaw<Array<{ spent: bigint | null }>>`
       SELECT COALESCE(SUM("estimatedCostMicros"), 0)::bigint AS "spent"
       FROM "UsageEvent"
       WHERE "createdAt" >= ${utcTimestamp(month.periodStart)} AND "createdAt" < ${utcTimestamp(month.resetsAt)}
-        ${userId === null ? Prisma.empty : Prisma.sql`AND "userId" = ${userId}`}`;
+        ${userId === null ? Prisma.empty : Prisma.sql`AND "userId" = ${userId} AND ${PERSONAL_USAGE}`}`;
     return spentMicros(row?.spent);
   }
 
@@ -338,8 +352,10 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
             usageLimit: { select: { ...valueSelect, exempt: true, version: true } }
           }
         }),
-        database.$queryRaw<Array<{ spent: bigint | null; userId: string }>>`
-          SELECT "userId", COALESCE(SUM("estimatedCostMicros"), 0)::bigint AS "spent"
+        // Every purpose fills the pooled cap; a user's own spend is their personal usage.
+        database.$queryRaw<Array<{ personal: bigint | null; spent: bigint | null; userId: string }>>`
+          SELECT "userId", COALESCE(SUM("estimatedCostMicros"), 0)::bigint AS "spent",
+            COALESCE(SUM("estimatedCostMicros") FILTER (WHERE ${PERSONAL_USAGE}), 0)::bigint AS "personal"
           FROM "UsageEvent"
           WHERE "createdAt" >= ${utcTimestamp(periodStart)} AND "createdAt" < ${utcTimestamp(resetsAt)}
           GROUP BY "userId"`,
@@ -356,7 +372,7 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
           ) AS admitted
           WHERE admitted."lastDay" > 0`
       ]);
-      const spentByUser = new Map(spendRows.map((row) => [row.userId, spentMicros(row.spent)]));
+      const personalByUser = new Map(spendRows.map((row) => [row.userId, spentMicros(row.personal)]));
       const messagesByUser = new Map(messageRows.map((row) => [row.userId, row]));
       const activeGroupLimits = new Map<string, UsageLimitGroupInput>();
       for (const group of groupRows) {
@@ -365,7 +381,7 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
         }
       }
       let installationSpentMicros = 0;
-      for (const spent of spentByUser.values()) installationSpentMicros += spent;
+      for (const row of spendRows) installationSpentMicros += spentMicros(row.spent);
       return {
         groups: groupRows.map((group) => ({
           ...(group.usageLimit ? limitValues(group.usageLimit) : UNSET),
@@ -391,7 +407,7 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
             email: user.email || null,
             messagesLastDay: messages?.lastDay ?? 0,
             messagesLastHour: messages?.lastHour ?? 0,
-            monthSpentMicros: spentByUser.get(user.id) ?? 0,
+            monthSpentMicros: personalByUser.get(user.id) ?? 0,
             override,
             status: user.status,
             userId: user.id

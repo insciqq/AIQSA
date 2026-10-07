@@ -42,11 +42,20 @@ describe("run attribution usage rows", () => {
   it("stores the web searches a row paid for, and none when no search was reported", () => {
     const rows = runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" }, [
       { modelId: "answer", provider: "anthropic", purpose: "chat_answer", usage: { ...usage, webSearchCount: 2 }, estimatedCostMicros: 20_000 },
-      { modelId: "sonar", provider: "openrouter", purpose: "web_search", usage: { ...usage, costUsd: 0.0142 }, estimatedCostMicros: 14_200 }
+      { modelId: "sonar", provider: "openrouter", purpose: "web_search", usage, estimatedCostMicros: 14_200 }
     ]);
     expect(rows.map(({ webSearchCount, estimatedCostMicros }) => [webSearchCount, estimatedCostMicros])).toEqual([[2, 20_000], [null, 14_200]]);
-    // The reported cost is the row's cost; it has no column of its own.
-    expect(rows[1]).not.toHaveProperty("costUsd");
+  });
+
+  it("records the deployment an attribution names, so a reranker row keeps its model", () => {
+    const [rerank, answer] = runAttributionUsageRows({ chatId: "chat-1", runId: "run-1", userId: "user-1" }, [
+      { modelId: "voyageai/rerank-2.5", provider: "openrouter", providerModelId: "reranker-deployment",
+        purpose: "knowledge_retrieval", usage: normalizeTokenUsage({ totalTokens: 2 }), estimatedCostMicros: 0 },
+      { modelId: "answer", provider: "openai", purpose: "chat_answer", usage }
+    ]);
+    expect(rerank).toMatchObject({ providerModelId: "reranker-deployment", purpose: "knowledge_retrieval",
+      estimatedCostMicros: 0, totalTokens: 2, usageCompleteness: "PARTIAL" });
+    expect(answer).toMatchObject({ providerModelId: null, purpose: "chat_answer" });
   });
 
   it("refuses a stored purpose that is not a run attribution", () => {

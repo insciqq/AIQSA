@@ -15,21 +15,16 @@ export type TokenUsage = Partial<Record<TokenUsageField, number | null>> & {
    * it bills them: OpenAI and DeepSeek search calls, Anthropic
    * `web_search_requests`, Gemini search queries. Null or absent when none. */
   webSearchCount?: number | null;
-  /** USD the provider reported for exactly this usage (OpenRouter `usage.cost`);
-   * null or absent when it reported none. */
-  costUsd?: number | null;
 };
 
 /** Null means unreported; zero is a reported count. Completeness covers the
  * input/output/total accounting, while optional breakdowns retain their presence.
- * The provider-reported web search count and cost are present only when known
- * and never affect completeness. */
+ * The provider-reported web search count is present only when positive and
+ * never affects completeness. */
 export type NormalizedTokenUsage = Record<TokenUsageField, number | null> & {
   completeness: TokenUsageCompleteness;
   /** A positive reported count; absent otherwise. */
   webSearchCount?: number;
-  /** A reported finite, non-negative amount; absent otherwise. */
-  costUsd?: number;
 };
 
 export type ModelTokenPricing = {
@@ -52,17 +47,13 @@ function reportedSearchCount(value: unknown): number | null {
   return count !== null && count > 0 ? count : null;
 }
 
-function reportedUsd(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-/** The optional provider-reported search count and cost, each present only when known. */
-function reportedExtras(webSearchCount: number | null, costUsd: number | null): Pick<NormalizedTokenUsage, "webSearchCount" | "costUsd"> {
-  return { ...(webSearchCount !== null ? { webSearchCount } : {}), ...(costUsd !== null ? { costUsd } : {}) };
+/** The optional provider-reported search count, present only when positive. */
+function searchCount(webSearchCount: number | null): Pick<NormalizedTokenUsage, "webSearchCount"> {
+  return webSearchCount !== null ? { webSearchCount } : {};
 }
 
 export function normalizeTokenUsage(
-  usage: Partial<Record<TokenUsageField, unknown>> & { completeness?: unknown; webSearchCount?: unknown; costUsd?: unknown }
+  usage: Partial<Record<TokenUsageField, unknown>> & { completeness?: unknown; webSearchCount?: unknown }
 ): NormalizedTokenUsage {
   const fields = Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) =>
     [field, usage.completeness === "unavailable" ? null : reportedTokenCount(usage[field])])) as Record<TokenUsageField, number | null>;
@@ -73,14 +64,12 @@ export function normalizeTokenUsage(
   const completeness = TOKEN_USAGE_FIELDS.every((field) => fields[field] === null) ? "unavailable"
     : !invalid && usage.completeness !== "partial" && fields.inputTokens !== null &&
       fields.outputTokens !== null && fields.totalTokens !== null ? "complete" : "partial";
-  return { ...fields, completeness,
-    ...reportedExtras(reportedSearchCount(usage.webSearchCount), reportedUsd(usage.costUsd)) };
+  return { ...fields, completeness, ...searchCount(reportedSearchCount(usage.webSearchCount)) };
 }
 
 /** Each input describes a separate physical operation, never another cumulative
  * snapshot of the same operation. Partial sums remain explicitly incomplete.
- * Web search counts add up; a reported cost is known only when every
- * operation reported one. */
+ * Web search counts add up. */
 export function sumTokenUsage(usages: readonly TokenUsage[]): NormalizedTokenUsage {
   const normalized = usages.map(normalizeTokenUsage);
   let overflow = false;
@@ -90,15 +79,11 @@ export function sumTokenUsage(usages: readonly TokenUsage[]): NormalizedTokenUsa
     if (known.length && count === null) overflow = true;
     return [field, count];
   })) as Record<TokenUsageField, number | null>;
-  const costs = normalized.map((usage) => usage.costUsd);
   return {
     ...fields,
     completeness: normalized.length === 0 || normalized.every((usage) => usage.completeness === "unavailable") ? "unavailable"
       : !overflow && normalized.every((usage) => usage.completeness === "complete") ? "complete" : "partial",
-    ...reportedExtras(
-      reportedSearchCount(normalized.reduce((sum, usage) => sum + (usage.webSearchCount ?? 0), 0)),
-      costs.length > 0 && costs.every((cost) => cost !== undefined)
-        ? reportedUsd(costs.reduce<number>((sum, cost) => sum + cost!, 0)) : null)
+    ...searchCount(reportedSearchCount(normalized.reduce((sum, usage) => sum + (usage.webSearchCount ?? 0), 0)))
   };
 }
 
@@ -107,7 +92,7 @@ export function sumTokenUsage(usages: readonly TokenUsage[]): NormalizedTokenUsa
 export function mergeTokenUsage(previous: TokenUsage, update: TokenUsage): NormalizedTokenUsage {
   const left = normalizeTokenUsage(previous);
   const right = normalizeTokenUsage(update);
-  const extras = reportedExtras(right.webSearchCount ?? left.webSearchCount ?? null, right.costUsd ?? left.costUsd ?? null);
+  const extras = searchCount(right.webSearchCount ?? left.webSearchCount ?? null);
   if (right.completeness === "unavailable") return { ...left, ...extras };
   const fields: Partial<Record<TokenUsageField, number | null>> = Object.fromEntries(
     TOKEN_USAGE_FIELDS.map((field) => [field, right[field] ?? left[field]]));
@@ -125,7 +110,6 @@ export function decodeTokenUsage(value: unknown): NormalizedTokenUsage | null {
   if (record.completeness !== undefined && !["complete", "partial", "unavailable"].includes(String(record.completeness))) return null;
   if (TOKEN_USAGE_FIELDS.some((field) => record[field] != null && reportedTokenCount(record[field]) === null)) return null;
   if (record.webSearchCount != null && reportedTokenCount(record.webSearchCount) === null) return null;
-  if (record.costUsd != null && reportedUsd(record.costUsd) === null) return null;
   const usage = normalizeTokenUsage(record);
   return record.completeness !== undefined && usage.completeness !== record.completeness ? null : usage;
 }
@@ -136,8 +120,7 @@ export function sumEstimatedCostMicros(costs: readonly (number | null | undefine
   return Number.isFinite(total) ? total : null;
 }
 
-/** Web search counts subtract exactly like tokens. A reported cost remains only
- * when both sides reported one and the total covers the part. */
+/** Web search counts subtract exactly like tokens. */
 export function subtractTokenUsage(total: TokenUsage, subtrahend: TokenUsage): NormalizedTokenUsage | null {
   const left = normalizeTokenUsage(total);
   const right = normalizeTokenUsage(subtrahend);
@@ -150,8 +133,7 @@ export function subtractTokenUsage(total: TokenUsage, subtrahend: TokenUsage): N
     ...fields,
     completeness: TOKEN_USAGE_FIELDS.every((field) => fields[field] === null) ? "unavailable"
       : left.completeness === "complete" && right.completeness === "complete" ? "complete" : "partial",
-    ...reportedExtras(reportedSearchCount(searches), left.costUsd !== undefined && right.costUsd !== undefined &&
-      left.costUsd >= right.costUsd ? left.costUsd - right.costUsd : null)
+    ...searchCount(reportedSearchCount(searches))
   };
 }
 
@@ -206,8 +188,11 @@ export function estimateCostMicros(usage: TokenUsage, pricing: ModelTokenPricing
 }
 
 /** Exact half-up micro-dollars of a reported USD amount, read as the shortest
- * decimal that round-trips the number (the provider's own JSON text). */
-function reportedCostMicros(usd: number): number | null {
+ * decimal that round-trips the number (the provider's own JSON text); null
+ * when the amount is invalid or unrepresentable. Rule 1 of
+ * {@link usageCostMicros}, for writers that price unreported usage later:
+ * Memory settlement and a run's attribution rows. */
+export function reportedCostMicros(usd: number): number | null {
   // Also excludes NaN and Infinity; 2148 USD is beyond the int32 column.
   if (!(usd >= 0 && usd < 2_148)) return null;
   const match = /^(\d+)(?:\.(\d+))?(?:e([+-]\d+))?$/u.exec(String(usd));

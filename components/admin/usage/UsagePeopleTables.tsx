@@ -5,9 +5,8 @@ import { AdminTableRegion, quietButton } from "@/components/admin/adminPrimitive
 import { formatDate, groupLabel } from "@/components/admin/adminViewUtils";
 import { cardClass } from "@/components/admin/roles/rolesControls";
 import type { AdminUsageAnalytics, AdminUsageUserRecord } from "@/lib/contracts/adminUsageAnalytics";
-import { usageShare, usageShareBasis } from "./UsageBreakdowns";
-import { formatCount } from "./usageFormat";
-import { MobileFacts, ShareCell, UsageBlockHeading, UsageCost } from "./usageParts";
+import { formatCount, usageShare, usageShareBasis } from "./usageFormat";
+import { MobileFacts, ShareCell, UsageBlockHeading, UsageCost, UsageSystemPart } from "./usageParts";
 
 export const INITIAL_USER_ROWS = 25;
 
@@ -29,7 +28,7 @@ export function UsageUsersTable({ usage }: Readonly<{ usage: AdminUsageAnalytics
   return (
     <section aria-label="Users" className="min-w-0" data-testid="admin-usage-users">
       <UsageBlockHeading
-        detail="Users with usage in this period, most expensive first."
+        detail="Users with usage in this period, most expensive first. System is the part spent on system work for them."
         title="Users"
         trailing={<p className="font-mono text-xs tabular-nums text-ink-muted">{countLabel(usage.byUser.length, "user")}</p>}
       />
@@ -46,6 +45,7 @@ export function UsageUsersTable({ usage }: Readonly<{ usage: AdminUsageAnalytics
             <ShareCell share={usageShare(user, usage.totals, basis)} />
             <MobileFacts
               facts={[
+                { label: "System", value: <UsageSystemPart basis={basis} system={user.system} whole={user} /> },
                 { label: "Tokens", value: <span className="font-mono tabular-nums">{formatCount(user.totalTokens)}</span> },
                 { label: "Runs", value: <span className="font-mono tabular-nums">{formatCount(user.runCount)}</span> },
                 { label: "Top model", value: topModelLabel(user) },
@@ -58,12 +58,13 @@ export function UsageUsersTable({ usage }: Readonly<{ usage: AdminUsageAnalytics
       </div>
       <div className={`${cardClass} mt-3 hidden lg:block`}>
         <AdminTableRegion label="User usage table">
-          <table className="w-full min-w-[860px] border-collapse text-left text-xs">
+          <table className="w-full min-w-[980px] border-collapse text-left text-xs">
             <thead className="bg-control-surface/45 text-ink-muted">
               <tr className="border-b border-trace-subtle">
                 <th className="px-3 py-2 font-medium" scope="col">User</th>
                 <th className="px-3 py-2 font-medium" scope="col">Groups</th>
                 <th className="w-48 px-3 py-2 font-medium" scope="col">Estimated cost</th>
+                <th className="w-36 px-3 py-2 font-medium" scope="col">System</th>
                 <th className="px-3 py-2 text-right font-medium" scope="col">Tokens</th>
                 <th className="px-3 py-2 text-right font-medium" scope="col">Runs</th>
                 <th className="px-3 py-2 font-medium" scope="col">Top model</th>
@@ -82,6 +83,7 @@ export function UsageUsersTable({ usage }: Readonly<{ usage: AdminUsageAnalytics
                     <UsageCost usage={user} />
                     <ShareCell share={usageShare(user, usage.totals, basis)} />
                   </td>
+                  <td className="px-3 py-3 text-ink"><UsageSystemPart basis={basis} system={user.system} whole={user} /></td>
                   <td className="px-3 py-3 text-right font-mono tabular-nums text-ink">{formatCount(user.totalTokens)}</td>
                   <td className="px-3 py-3 text-right font-mono tabular-nums text-ink-secondary">{formatCount(user.runCount)}</td>
                   <td className="break-words px-3 py-3 text-ink-secondary [overflow-wrap:anywhere]">{topModelLabel(user)}</td>
@@ -89,7 +91,7 @@ export function UsageUsersTable({ usage }: Readonly<{ usage: AdminUsageAnalytics
                 </tr>
               )) : (
                 <tr>
-                  <td className="px-3 py-8 text-center text-ink-muted" colSpan={7}>No user had usage in this period.</td>
+                  <td className="px-3 py-8 text-center text-ink-muted" colSpan={8}>No user had usage in this period.</td>
                 </tr>
               )}
             </tbody>
@@ -107,6 +109,7 @@ export function UsageUsersTable({ usage }: Readonly<{ usage: AdminUsageAnalytics
 
 export function UsageGroupsTable({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
   const groups = usage.byGroup;
+  const basis = usageShareBasis(usage.totals);
   const empty = <p className="py-7 text-sm text-ink-muted">No groups in this installation.</p>;
   return (
     <section aria-label="Groups" className="min-w-0" data-testid="admin-usage-groups">
@@ -127,6 +130,7 @@ export function UsageGroupsTable({ usage }: Readonly<{ usage: AdminUsageAnalytic
             </div>
             <MobileFacts
               facts={[
+                { label: "System", value: <UsageSystemPart basis={basis} system={group.system} whole={group} /> },
                 { label: "Users", value: `${formatCount(group.contributingUsers)} active of ${formatCount(group.userCount)}` },
                 { label: "Runs", value: <span className="font-mono tabular-nums">{formatCount(group.runCount)}</span> },
                 { label: "Tokens", value: <span className="font-mono tabular-nums">{formatCount(group.totalTokens)}</span> }
@@ -137,7 +141,7 @@ export function UsageGroupsTable({ usage }: Readonly<{ usage: AdminUsageAnalytic
       </div>
       <div className={`${cardClass} mt-3 hidden lg:block`}>
         <AdminTableRegion label="Group usage table">
-          <table className="w-full min-w-[640px] border-collapse text-left text-xs">
+          <table className="w-full min-w-[780px] border-collapse text-left text-xs">
             <thead className="bg-control-surface/45 text-ink-muted">
               <tr className="border-b border-trace-subtle">
                 <th className="px-3 py-2 font-medium" scope="col">Group</th>
@@ -145,6 +149,7 @@ export function UsageGroupsTable({ usage }: Readonly<{ usage: AdminUsageAnalytic
                 <th className="px-3 py-2 text-right font-medium" scope="col">Runs</th>
                 <th className="px-3 py-2 text-right font-medium" scope="col">Tokens</th>
                 <th className="px-3 py-2 font-medium" scope="col">Estimated cost</th>
+                <th className="w-40 px-3 py-2 font-medium" scope="col">System</th>
               </tr>
             </thead>
             <tbody>
@@ -161,10 +166,11 @@ export function UsageGroupsTable({ usage }: Readonly<{ usage: AdminUsageAnalytic
                   <td className="px-3 py-3 text-right font-mono tabular-nums text-ink-secondary">{formatCount(group.runCount)}</td>
                   <td className="px-3 py-3 text-right font-mono tabular-nums text-ink">{formatCount(group.totalTokens)}</td>
                   <td className="px-3 py-3 text-ink"><UsageCost usage={group} /></td>
+                  <td className="px-3 py-3 text-ink"><UsageSystemPart basis={basis} system={group.system} whole={group} /></td>
                 </tr>
               )) : (
                 <tr>
-                  <td className="px-3 py-8 text-center text-ink-muted" colSpan={5}>No groups in this installation.</td>
+                  <td className="px-3 py-8 text-center text-ink-muted" colSpan={6}>No groups in this installation.</td>
                 </tr>
               )}
             </tbody>

@@ -605,6 +605,11 @@ describe("OpenRouter reranker adapter", () => {
     await expect(rerank({ total_tokens: 2, cost: 1e-7 })).resolves.toMatchObject({
       usage: { inputTokens: null, searchUnits: null, totalTokens: 2, costUsd: 1e-7 } });
     await expect(rerank({ total_tokens: 2, cost: 0 }, strictAdapter)).resolves.toMatchObject({ usage: { costUsd: 0 } });
+    // BYOK: OpenRouter's fee plus what the upstream provider billed the installation's key.
+    await expect(rerank({ total_tokens: 2, cost: 5e-9, is_byok: true, cost_details: { upstream_inference_cost: 1e-7 } }))
+      .resolves.toMatchObject({ usage: { costUsd: 1.05e-7 } });
+    await expect(rerank({ total_tokens: 2, cost: 5e-9, is_byok: true }, strictAdapter))
+      .resolves.toMatchObject({ usage: { costUsd: null } });
     for (const create of [adapter, strictAdapter]) {
       for (const cost of [-1e-7, "1e-7", null, false]) {
         await expect(rerank({ total_tokens: 2, cost }, create)).rejects.toMatchObject({ code: "rerank_response_invalid" });

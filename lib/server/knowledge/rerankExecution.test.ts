@@ -118,12 +118,14 @@ describe("Knowledge rerank execution stage", () => {
         index,
         relevanceScore: 1 - index * 0.2
       })),
-      usage: { inputTokens: 40, searchUnits: 1, totalTokens: 40 }
+      usage: { inputTokens: 40, searchUnits: 1, totalTokens: 40, costUsd: 0.0000012 }
     }));
     const stage = createKnowledgeRerankStage({ adapter: fakeAdapter(rerank), pin, query: "q" });
     const result = await stage({
       candidates: [candidate("chunk-a"), candidate("chunk-b"), candidate("chunk-c")]
     });
+    // The call's tokens and reported cost become the run's Knowledge retrieval usage.
+    expect(result.evidence.usage).toEqual({ costUsd: 0.0000012, inputTokens: 40, searchUnits: 1, totalTokens: 40 });
     expect(rerank).toHaveBeenCalledOnce();
     expect(rerank.mock.calls[0]![0].documents.map((document) => document.handle))
       .toEqual(["chunk-a", "chunk-b", "chunk-c"]);

@@ -4,9 +4,10 @@ import type { ChatUsageStats } from "../../contracts/chats";
 /** Call only after authorizing this chat. Usage stays cumulative across every
  * branch and actor; PostgreSQL aggregates without materializing private rows.
  * `hasCompletedAnswer` gates the Spent display: a completed answer, or usage of
- * an answer attempt (the run's own model rounds, also when the answer was
- * stopped or failed). Pre-answer receipts such as PDF preparation or optional
- * decisions alone never open it; they still count in the totals. */
+ * an answer attempt (the run's own answer usage, also when the answer was
+ * stopped or failed). Every other run-linked row, such as PDF preparation,
+ * optional decisions, Search or Knowledge retrieval, alone never opens it; they
+ * still count in the totals. */
 export async function loadChatUsageTotals(tx: Prisma.TransactionClient, chatId: string): Promise<ChatUsageStats> {
   const [row] = await tx.$queryRaw<Array<{
     hasCompletedAnswer: boolean;
@@ -18,9 +19,7 @@ export async function loadChatUsageTotals(tx: Prisma.TransactionClient, chatId: 
       SELECT 1 FROM "Message" WHERE "chatId" = ${chatId} AND "role" = 'assistant' AND "status" = 'complete'
     ) OR EXISTS (
       SELECT 1 FROM "UsageEvent" WHERE "chatId" = ${chatId} AND "modelRunId" IS NOT NULL
-        AND NOT "chatPdfPreparation" AND NOT "imageGeneration" AND NOT "visionAnalysis"
-        AND NOT "chatTitleGeneration" AND NOT "knowledgeRelevance" AND NOT "optionalDecision"
-        AND NOT "mcpHubDiscovery"
+        AND "purpose" = 'chat_answer'::"UsagePurpose"
     )) AS "hasCompletedAnswer",
       EXISTS (SELECT 1 FROM "ChatTitleGeneration" WHERE "chatId" = ${chatId}
         AND "status" IN ('pending', 'dispatched')) AS "titleUsagePending",

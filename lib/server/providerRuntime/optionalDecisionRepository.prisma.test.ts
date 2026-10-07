@@ -129,6 +129,45 @@ describe.each(nonRunPurposes)("optional decision durable receipt: %s", purpose =
   });
 });
 
+describe("optional decision cost", () => {
+  it("prices a decision reported without a cost from the stored decision model, never from the snapshot", async () => {
+    const suffix = randomUUID();
+    const connectionId = `decision-cost-connection-${suffix}`;
+    const providerModelId = `decision-cost-model-${suffix}`;
+    const config = { apiRoot: "https://provider.example.test/v1", authenticationMode: "bearer",
+      allowPrivateNetwork: false, responseTimeoutMs: 30_000 };
+    const model = jevModelConfiguration() as unknown as Prisma.InputJsonObject;
+    await prisma.providerConnection.create({ data: { id: connectionId, displayName: "Decision cost fixture",
+      family: "openrouter", activeConfig: config, draftConfig: config, activeVersion: 1, draftVersion: 1, enabled: true } });
+    await prisma.providerModel.create({ data: { id: providerModelId, connectionId, provider: "openrouter",
+      modelId: jevModelConfiguration().upstreamModelId, displayName: "Decision cost fixture", modelClass: "decision",
+      activeConfig: model, draftConfig: model, activeVersion: 1, draftVersion: 1,
+      capabilities: jevModelConfiguration().capabilities as unknown as Prisma.InputJsonObject, defaultParams: {},
+      inputTokenPriceUsdPerMillion: 0.5, outputTokenPriceUsdPerMillion: 2 } });
+    try {
+      await fixture("skill_suggestions", async (owner, repo) => {
+        const unreported = { ...receipt, usage: { ...receipt.usage, costUsd: null } };
+        const priced = await repo.start(owner, hash, { ...snapshot, providerModelId });
+        if (priced.kind !== "new") throw new Error("fixture_claim_missing");
+        await repo.settle(owner, priced.id, { receipt: unreported, answers, failureCode: null, dispatched: true });
+        // 20 input tokens at $0.50 and 4 output tokens at $2 per million.
+        expect(await prisma.usageEvent.findUniqueOrThrow({ where: { optionalDecisionAttemptId: priced.id } }))
+          .toMatchObject({ estimatedCostMicros: 18, providerModelId, usageCompleteness: "COMPLETE" });
+        // A deployment without a stored row has no prices: the cost stays unknown.
+        const unpriced = await repo.start({ ...owner, operationKey: "unpriced" }, hash, snapshot);
+        if (unpriced.kind !== "new") throw new Error("fixture_claim_missing");
+        await repo.settle({ ...owner, operationKey: "unpriced" }, unpriced.id,
+          { receipt: unreported, answers, failureCode: null, dispatched: true });
+        expect(await prisma.usageEvent.findUniqueOrThrow({ where: { optionalDecisionAttemptId: unpriced.id } }))
+          .toMatchObject({ estimatedCostMicros: null, usageCompleteness: "COMPLETE" });
+      });
+    } finally {
+      await prisma.providerModel.deleteMany({ where: { id: providerModelId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    }
+  });
+});
+
 describe("optional decision purpose isolation", () => {
   it("preserves both existing purposes and their receipts when the same owner/key starts catalog relevance", async () => {
     await fixture("skill_suggestions", async (owner, repo) => {

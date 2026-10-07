@@ -103,6 +103,16 @@ describe("OpenRouter Decisions adapter", () => {
     expect((await adapter(fetchFn).decide(request)).usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: null });
   });
 
+  it("charges a BYOK decision OpenRouter's fee plus the upstream provider's charge", async () => {
+    const decide = async (usage: Record<string, unknown>) => (await adapter(vi.fn<typeof fetch>(async () =>
+      response({ usage: { input_tokens: 45, output_tokens: 21, ...usage } }))).decide(request)).usage.costUsd;
+    await expect(decide({ cost: 9.45e-8, is_byok: true, cost_details: { upstream_inference_cost: 0.00000189 } }))
+      .resolves.toBe(0.0000019845);
+    await expect(decide({ cost: 9.45e-8, is_byok: true })).resolves.toBeNull();
+    await expect(decide({ cost: 9.45e-8, is_byok: true, cost_details: { upstream_inference_cost: "0.00000189" } }))
+      .rejects.toMatchObject({ code: "decision_response_invalid" });
+  });
+
   it("rejects invalid/oversized input before credential resolution and network dispatch", async () => {
     const fetchFn = vi.fn<typeof fetch>();
     const secret = vi.fn(async () => "secret");

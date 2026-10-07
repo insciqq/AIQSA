@@ -7,10 +7,17 @@ import {
   type AdminUsagePeriod
 } from "@/lib/contracts/adminUsageAnalytics";
 import {
+  PERSONAL_USAGE_PURPOSES,
+  isUsagePurpose,
+  type PersonalUsagePurpose,
+  type UsagePurpose
+} from "@/lib/domain/usagePurpose";
+import {
   serializeAdminUsageAnalytics,
   type UsageAggregateRow,
   type UsageAggregateSet,
   type UsageComparisonTotals,
+  type UsageScope,
   type UsageUserSource
 } from "./analytics";
 import { MAX_USAGE_EXPORT_ROWS, type UsageExportRow } from "./csv";
@@ -53,19 +60,54 @@ const TRANSACTION_OPTIONS = {
   timeout: 120_000
 } as const;
 
-/** `GROUPING(bucket, category, model, "userId")`: a bit is set for every column aggregated away. */
-const GROUPING_SETS: ReadonlyMap<number, UsageAggregateSet> = new Map<number, UsageAggregateSet>([
-  [0b1111, "total"], [0b0111, "bucket"], [0b0011, "bucket_category"], [0b1011, "category"],
-  [0b1101, "model"], [0b1110, "user"], [0b1100, "user_model"]
-]);
+type GroupingColumn = "bucket" | "category" | "model" | "purpose" | "scope" | "userId";
 
-/** Categories derived from the row's links when read; usage whose source was deleted reads as `background`. */
+const GROUPING_COLUMNS: readonly GroupingColumn[] = ["bucket", "category", "model", "userId", "purpose", "scope"];
+
+/** Every aggregate slice of one window and the `base` columns it groups by. */
+const AGGREGATE_SETS: ReadonlyArray<readonly [UsageAggregateSet, readonly GroupingColumn[]]> = [
+  ["total", []],
+  ["bucket", ["bucket"]],
+  ["bucket_category", ["bucket", "category"]],
+  ["category", ["category"]],
+  ["purpose", ["purpose"]],
+  ["purpose_model", ["purpose", "model"]],
+  ["scope_model", ["scope", "model"]],
+  ["user", ["userId"]],
+  ["user_scope", ["userId", "scope"]],
+  ["user_scope_model", ["userId", "scope", "model"]]
+];
+
+/** `GROUPING(...)` sets a bit for every column a set aggregates away; the last column is the lowest bit. */
+function groupingMask(columns: readonly GroupingColumn[]): number {
+  return GROUPING_COLUMNS.reduce((mask, column) => mask * 2 + (columns.includes(column) ? 0 : 1), 0);
+}
+
+const SET_BY_GROUPING: ReadonlyMap<number, UsageAggregateSet> = new Map(
+  AGGREGATE_SETS.map(([set, columns]) => [groupingMask(columns), set])
+);
+
+// Identifiers come only from the constant lists above.
+const quoted = (columns: readonly GroupingColumn[]) => columns.map((column) => `"${column}"`).join(", ");
+const GROUPING_SELECT = Prisma.raw(`GROUPING(${quoted(GROUPING_COLUMNS)})::int AS "grouping", ${quoted(GROUPING_COLUMNS)}`);
+const GROUPING_SETS = Prisma.raw(`GROUPING SETS (${AGGREGATE_SETS.map(([, columns]) => `(${quoted(columns)})`).join(", ")})`);
+
+const IMAGE_PURPOSE = "image_generation" satisfies PersonalUsagePurpose;
+const PERSONAL = Prisma.sql`ue."purpose" IN (${Prisma.join(PERSONAL_USAGE_PURPOSES.map((value) =>
+  Prisma.sql`${value}::"UsagePurpose"`))})`;
+
+/**
+ * Categories derive from the purpose when read. Personal usage of a scheduled
+ * run reads as `scheduled` while the run is retained; after a deletion
+ * detaches the run it reads as `chat`.
+ */
 const CATEGORY = Prisma.sql`CASE
-  WHEN ue."imageGeneration" THEN 'images'
+  WHEN NOT (${PERSONAL}) THEN 'system'
+  WHEN ue."purpose" = ${IMAGE_PURPOSE}::"UsagePurpose" THEN 'images'
   WHEN mr."scheduledTaskId" IS NOT NULL THEN 'scheduled'
-  WHEN ue."memoryExecutionBindingId" IS NOT NULL THEN 'memory'
-  WHEN ue."chatId" IS NOT NULL OR ue."modelRunId" IS NOT NULL THEN 'chat'
-  ELSE 'background' END`;
+  ELSE 'chat' END`;
+
+const SCOPE = Prisma.sql`CASE WHEN ${PERSONAL} THEN 'personal' ELSE 'system' END`;
 
 const AMOUNTS = Prisma.sql`
   COUNT(*) AS "recordCount",
@@ -85,7 +127,7 @@ function inRange(range: Range): Prisma.Sql {
     AND ue."createdAt" < (${range.to}::timestamptz AT TIME ZONE 'UTC')`;
 }
 
-/** The `keys` and `base` CTEs: one row per usage record with its category, local bucket and canonical model. */
+/** The `keys` and `base` CTEs: one row per usage record with its purpose, scope, category, local bucket and canonical model. */
 function baseRows(plan: UsageWindowPlan & { from: Date }, keys: readonly KeyRow[]): Prisma.Sql {
   const unit = plan.bucket === "month" ? "month" : "day";
   const format = plan.bucket === "month" ? "YYYY-MM" : "YYYY-MM-DD";
@@ -99,6 +141,8 @@ function baseRows(plan: UsageWindowPlan & { from: Date }, keys: readonly KeyRow[
       SELECT ue."userId", ue."modelRunId", ue."createdAt", ue."estimatedCostMicros", ue."inputTokens",
         ue."cachedInputTokens", ue."cacheWriteInputTokens", ue."outputTokens", ue."reasoningTokens", ue."totalTokens",
         ue."usageCompleteness" <> 'COMPLETE' AS "incomplete",
+        ue."purpose"::text AS "purpose",
+        ${SCOPE} AS "scope",
         ${CATEGORY} AS "category",
         to_char(date_trunc(${unit}::text, (ue."createdAt" AT TIME ZONE 'UTC') AT TIME ZONE ${plan.timeZone}::text),
           ${format}::text) AS "bucket",
@@ -149,6 +193,16 @@ function category(value: unknown): AdminUsageCategory {
   return value as AdminUsageCategory;
 }
 
+function purpose(value: unknown): UsagePurpose {
+  if (!isUsagePurpose(value)) throw new Error("usage_purpose_invalid");
+  return value;
+}
+
+function scope(value: unknown): UsageScope {
+  if (value !== "personal" && value !== "system") throw new Error("usage_scope_invalid");
+  return value;
+}
+
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -197,14 +251,13 @@ async function resolveModelKeys(tx: Tx, range: Range): Promise<Readonly<{ keys: 
 async function aggregateRows(tx: Tx, plan: UsageWindowPlan & { from: Date }, keys: readonly KeyRow[]): Promise<UsageAggregateRow[]> {
   const rows = await tx.$queryRaw<Array<Record<string, unknown>>>`
     WITH ${baseRows(plan, keys)}
-    SELECT GROUPING("bucket", "category", "model", "userId")::int AS "grouping",
-      "bucket", "category", "model", "userId", ${AMOUNTS},
+    SELECT ${GROUPING_SELECT}, ${AMOUNTS},
       COUNT(DISTINCT "userId") AS "userCount",
       MAX("createdAt") AT TIME ZONE 'UTC' AS "lastUsedAt"
     FROM base
-    GROUP BY GROUPING SETS ((), ("bucket"), ("bucket", "category"), ("category"), ("model"), ("userId"), ("userId", "model"))`;
+    GROUP BY ${GROUPING_SETS}`;
   return rows.flatMap((row): UsageAggregateRow[] => {
-    const set = GROUPING_SETS.get(Number(row.grouping));
+    const set = SET_BY_GROUPING.get(Number(row.grouping));
     if (!set) return [];
     return [{
       amounts: amountsOf(row),
@@ -212,6 +265,8 @@ async function aggregateRows(tx: Tx, plan: UsageWindowPlan & { from: Date }, key
       category: row.category === null ? null : category(row.category),
       lastUsedAt: instant(row.lastUsedAt),
       model: text(row.model),
+      purpose: row.purpose === null ? null : purpose(row.purpose),
+      scope: row.scope === null ? null : scope(row.scope),
       set,
       userCount: count(row.userCount),
       userId: text(row.userId)
@@ -222,12 +277,14 @@ async function aggregateRows(tx: Tx, plan: UsageWindowPlan & { from: Date }, key
 async function comparisonTotals(tx: Tx, range: Range): Promise<UsageComparisonTotals> {
   const [row] = await tx.$queryRaw<Array<Record<string, unknown>>>`
     SELECT COUNT(DISTINCT ue."userId") AS "activeUserCount", COUNT(DISTINCT ue."modelRunId") AS "runCount",
-      SUM(ue."estimatedCostMicros") AS "estimatedCostMicros", SUM(ue."totalTokens") AS "totalTokens"
+      SUM(ue."estimatedCostMicros") AS "estimatedCostMicros", SUM(ue."totalTokens") AS "totalTokens",
+      SUM(ue."estimatedCostMicros") FILTER (WHERE NOT (${PERSONAL})) AS "systemEstimatedCostMicros"
     FROM "UsageEvent" ue WHERE ${inRange(range)}`;
   return {
     activeUserCount: count(row?.activeUserCount),
     estimatedCostMicros: nullableCount(row?.estimatedCostMicros),
     runCount: count(row?.runCount),
+    systemEstimatedCostMicros: nullableCount(row?.systemEstimatedCostMicros),
     totalTokens: nullableCount(row?.totalTokens)
   };
 }
@@ -299,9 +356,9 @@ export function createAdminUsageRepository(client: PrismaClient): AdminUsageRepo
       const { keys, models } = await resolveModelKeys(tx, plan);
       const raw = await tx.$queryRaw<Array<Record<string, unknown>>>`
         WITH ${baseRows(plan, keys)}
-        SELECT "bucket", "userId", "model", "category", ${AMOUNTS}
+        SELECT "bucket", "userId", "model", "category", "purpose", ${AMOUNTS}
         FROM base
-        GROUP BY "bucket", "userId", "model", "category"
+        GROUP BY "bucket", "userId", "model", "category", "purpose"
         LIMIT ${MAX_USAGE_EXPORT_ROWS + 1}`;
       if (raw.length > MAX_USAGE_EXPORT_ROWS) return null;
       const rows = raw.map((row): UsageExportRow => ({
@@ -309,6 +366,7 @@ export function createAdminUsageRepository(client: PrismaClient): AdminUsageRepo
         bucket: text(row.bucket) ?? "",
         category: category(row.category),
         model: text(row.model) ?? "",
+        purpose: purpose(row.purpose),
         userId: text(row.userId) ?? ""
       }));
       const users = await usersById(tx, [...new Set(rows.map((row) => row.userId))]);

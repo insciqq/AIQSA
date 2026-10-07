@@ -207,7 +207,7 @@ function UserRow({ busy, onEdit, user }: Readonly<{ busy: boolean; onEdit(user: 
             </>
           )}
         </Fact>
-        <Fact label="Spent this month"><SpendCell user={user} /></Fact>
+        <Fact label="Personal spend"><SpendCell user={user} /></Fact>
         <Fact label="Messages" wide>
           <MessageLine count={user.messagesLastHour} label="Last hour" limit={user.effective.messagesPerHour.value} />
           <MessageLine count={user.messagesLastDay} label="Last day" limit={user.effective.messagesPerDay.value} />
@@ -250,6 +250,9 @@ export function UsageLimitUsersList({
           <p className="mt-1 text-xs leading-5 text-ink-muted">
             Effective limits and use this month, most of their budget used first.
           </p>
+          <p className="text-xs leading-5 text-ink-muted">
+            Personal spend counts the models each user chooses; system features count only toward the monthly cap.
+          </p>
         </div>
         <div className="relative w-full sm:w-72">
           <label className="sr-only" htmlFor={searchId}>Search users</label>
@@ -273,7 +276,7 @@ export function UsageLimitUsersList({
           <div aria-hidden="true" className={`${headerClass} ${userTracks}`}>
             <span>User</span>
             <span>Monthly budget</span>
-            <span>Spent this month</span>
+            <span>Personal spend</span>
             <span>Messages</span>
             <span />
           </div>

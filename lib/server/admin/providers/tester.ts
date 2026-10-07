@@ -22,7 +22,7 @@ import {
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
 import { createOpenAICompatibleEmbeddingAdapter } from "../../providers/embeddings";
 import { createOpenRouterRerankAdapter } from "../../providers/rerank";
-import { createOpenRouterDecisionAdapter } from "../../providers/decisions";
+import { createOpenRouterDecisionAdapter, DecisionAdapterError, type DecisionUsage } from "../../providers/decisions";
 import type {
   ProviderConnectionConfiguration,
   ProviderModelConfiguration
@@ -33,6 +33,13 @@ import {
   type ProviderExecutionSnapshot
 } from "../../providers/runtimeFactory";
 import { ProviderSearchExecutionError, type ProviderRunRequest, type ProviderRunResult } from "../../providers/types";
+import { extractOpenAIUsage } from "../../providers/openaiResponsesResponse";
+import { normalizeTokenUsage, type TokenUsage } from "../../../domain/usage";
+import {
+  createModelCheckUsageRecorder,
+  type ModelCheckProviderCall,
+  type ModelCheckUsageWriter
+} from "./modelCheckUsage";
 import {
   supportsStructuredOutputAdapter,
   type ProviderStructuredOutputAdapter
@@ -87,6 +94,11 @@ export type AdminProviderDraftTesterInput = Readonly<{
   providerModelId: string;
   secret: ProviderCredentialSource | null;
   signal?: AbortSignal;
+  /** The acting administrator charged with one `model_check` usage row per
+   * answered provider call. Startup adoption probes have none and stay unaccounted. */
+  actorUserId?: string;
+  /** Internal: bound by the tester itself from `actorUserId`; callers never set it. */
+  onProviderUsage?(call: ModelCheckProviderCall): void;
 }>;
 
 export type AdminProviderDraftTestOutcome = Readonly<{
@@ -106,6 +118,8 @@ type TesterOptions = Readonly<{
   }) => OpenRouterDiscoveryClient;
   createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
   pdfInputProbe?: ProviderPdfInputProbe;
+  /** Writes the administrator's `model_check` usage rows; absent, checks stay unaccounted. */
+  recordUsage?: ModelCheckUsageWriter;
 }>;
 
 type ResolvedTesterOptions = TesterOptions & Readonly<{
@@ -174,6 +188,25 @@ function probeOutputTokens(input: AdminProviderDraftTesterInput, desired: number
   return Math.min(requested, declaredModelOutputTokenLimit(input.model, input.providerFamily) ?? requested);
 }
 
+/** One answered provider call: its reported usage, recorded before any validation. */
+function recordProviderUsage(input: AdminProviderDraftTesterInput, usage: TokenUsage, reportedCostUsd: number | null = null): void {
+  input.onProviderUsage?.({ usage, reportedCostUsd });
+}
+
+function recordDecisionUsage(input: AdminProviderDraftTesterInput, usage: DecisionUsage): void {
+  recordProviderUsage(input, { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }, usage.costUsd);
+}
+
+async function drainProbeStream(
+  input: AdminProviderDraftTesterInput,
+  stream: AsyncGenerator<unknown, ProviderRunResult>
+): Promise<ProviderRunResult> {
+  let next = await stream.next();
+  while (!next.done) next = await stream.next();
+  recordProviderUsage(input, next.value.usage);
+  return next.value;
+}
+
 function assertProbeTerminal(result: ProviderRunResult): void {
   const finish = result.finalProviderResponsePreview.finishReason;
   if (finish === "length" || finish === "content_filter") throw Object.assign(new Error("capability_probe_inconclusive"), {
@@ -240,6 +273,10 @@ async function runStructuredOutputProbe(
   const adapter: ProviderStructuredOutputAdapter | undefined =
     providerRuntime(input, options).structuredOutputAdapter;
   if (!adapter) throw new Error("structured_output_adapter_unsupported");
+  // A response is answered once its provider response id is observed, even
+  // when it reported no usage; a transport failure before that is never charged.
+  let answered = false;
+  let usage = null as TokenUsage | null;
   const output = await adapter.execute({
     maxOutputTokens: probeOutputTokens(input, input.model.capabilities.reasoning ? 1_024 : 128),
     reasoningEffort: lowestConfiguredReasoningEffort(input.model, input.providerFamily),
@@ -247,7 +284,8 @@ async function runStructuredOutputProbe(
     schema: structuredOutputProbeSchema,
     systemPrompt: "Return only the object required by the supplied strict JSON Schema.",
     userPrompt: "Return ready=true, count=2, a non-empty label, and tool_ids=[alpha,beta]."
-  }, { signal: input.signal });
+  }, { signal: input.signal, onProviderResponseId: () => { answered = true; }, onUsage: (value) => { usage = value; } })
+    .finally(() => { if (answered || usage) recordProviderUsage(input, usage ?? {}); });
   if (!validStructuredOutputProbe(output)) {
     throw new Error("structured_output_probe_invalid");
   }
@@ -333,10 +371,9 @@ async function runForcedToolCallProbe(
       strict: true
     }]
   }, { signal: input.signal });
-    let next = await stream.next();
-    while (!next.done) next = await stream.next();
-    assertProbeTerminal(next.value);
-    const calls = next.value.toolCalls;
+    const result = await drainProbeStream(input, stream);
+    assertProbeTerminal(result);
+    const calls = result.toolCalls;
     const call = calls?.[0];
     if (
       calls?.length !== 1 ||
@@ -584,10 +621,9 @@ async function testToolCalling(
         strict: false
       }]
     }, { signal: input.signal });
-    let next = await stream.next();
-    while (!next.done) next = await stream.next();
-    assertProbeTerminal(next.value);
-    const calls = next.value.toolCalls;
+    const result = await drainProbeStream(input, stream);
+    assertProbeTerminal(result);
+    const calls = result.toolCalls;
     const call = calls?.[0];
     return calls?.length === 1 && call?.name === "aiqsa_tool_call_probe" &&
       Object.keys(call.arguments).length === 1 && call.arguments.city === "Oslo"
@@ -620,6 +656,7 @@ async function testPdfInput(
       providerFamily: input.providerFamily,
       providerModelId: input.providerModelId,
       secret: input.secret,
+      onUsage: (usage) => recordProviderUsage(input, usage),
       ...(input.probeOutputTokenOverride ? { maxOutputTokens: input.probeOutputTokenOverride } : {}),
       ...(input.signal ? { signal: input.signal } : {})
     });
@@ -657,6 +694,7 @@ async function runGenerationProbe(
       if (next.value.type === "usage") usageSeen = true;
       next = await stream.next();
     }
+    recordProviderUsage(input, next.value.usage);
     if (
       !usageSeen &&
       (input.model.adapterKind === "openai_chat_completions_compatible" ||
@@ -690,13 +728,14 @@ async function testEmbedding(
     network: { fetchFn, retry: { maxAttempts: 1 } },
     secret: input.secret
   });
-  const result = await withCapabilityRetries(input, options, () => adapter.embed({
-    latencyClass: "background",
-    mode: "document",
-    signal: input.signal,
-    texts: ["AIQSA provider compatibility check"]
-  }));
-  await withCapabilityRetries(input, options, () => adapter.embed({ latencyClass: "background", mode: "query", signal: input.signal, texts: ["AIQSA provider compatibility query"] }));
+  const embed = (mode: "document" | "query", text: string) => withCapabilityRetries(input, options, async () => {
+    const embedded = await adapter.embed({ latencyClass: "background", mode, signal: input.signal, texts: [text] });
+    recordProviderUsage(input, { inputTokens: embedded.usage.inputTokens, totalTokens: embedded.usage.totalTokens },
+      embedded.usage.costUsd ?? null);
+    return embedded;
+  });
+  const result = await embed("document", "AIQSA provider compatibility check");
+  await embed("query", "AIQSA provider compatibility query");
   const usage = result.usage.inputTokens !== null || result.usage.totalTokens !== null
     ? "verified"
     : "not_supported";
@@ -730,19 +769,24 @@ async function testReranker(
   const fetchFn = options.createFetch?.(input.connection) ?? createProviderSafeFetch({
     configuration: input.connection
   });
-  const result = await withCapabilityRetries(input, options, () => createOpenRouterRerankAdapter({
-    connection: input.connection,
-    model: input.model,
-    network: { fetchFn, retry: { maxAttempts: 1 } },
-    secret: input.secret ?? (() => Promise.reject(new Error("provider_credential_missing")))
-  }).rerank({
-    documents: [
-      { handle: "probe-0", text: "A bounded unrelated provider check." },
-      { handle: "probe-1", text: "AIQSA reranker compatibility check." }
-    ],
-    query: "AIQSA reranker compatibility check",
-    signal: input.signal
-  }));
+  const result = await withCapabilityRetries(input, options, async () => {
+    const reranked = await createOpenRouterRerankAdapter({
+      connection: input.connection,
+      model: input.model,
+      network: { fetchFn, retry: { maxAttempts: 1 } },
+      secret: input.secret ?? (() => Promise.reject(new Error("provider_credential_missing")))
+    }).rerank({
+      documents: [
+        { handle: "probe-0", text: "A bounded unrelated provider check." },
+        { handle: "probe-1", text: "AIQSA reranker compatibility check." }
+      ],
+      query: "AIQSA reranker compatibility check",
+      signal: input.signal
+    });
+    recordProviderUsage(input, { inputTokens: reranked.usage.inputTokens, totalTokens: reranked.usage.totalTokens },
+      reranked.usage.costUsd ?? null);
+    return reranked;
+  });
   const usage = result.usage.inputTokens !== null ||
     result.usage.totalTokens !== null || result.usage.searchUnits !== null
     ? "verified"
@@ -782,7 +826,12 @@ async function testDecisions(
         useful: "Provides the information requested.", unrelated: "Does not help answer the query."
       } }
     }
+  }).catch((error: unknown) => {
+    // An unusable answer still carries the provider's accounting receipt.
+    if (error instanceof DecisionAdapterError && error.receipt) recordDecisionUsage(input, error.receipt.usage);
+    throw error;
   });
+  recordDecisionUsage(input, result.usage);
   if (result.answers.useful?.type !== "noul" || result.answers.useful.noul <= 0.5 ||
     result.answers.relation?.type !== "choice" || result.answers.relation.choice !== "useful") {
     throw new Error("decision_response_invalid");
@@ -801,12 +850,8 @@ async function testVisionInput(input: AdminProviderDraftTesterInput, options: Te
   if (input.model.capabilities.vision === true) {
     try {
       const probe = createProviderVisionInputProbe({
-        execute: async (_snapshot, request, execution) => {
-          const stream = providerRuntime(input, options).adapter.stream(request, execution);
-          let next = await stream.next();
-          while (!next.done) next = await stream.next();
-          return next.value;
-        }
+        execute: (_snapshot, request, execution) =>
+          drainProbeStream(input, providerRuntime(input, options).adapter.stream(request, execution))
       });
       if (await probe.probe(executionSnapshot(input), input.signal, input.probeOutputTokenOverride)) {
         visionInput = decodeVisionInputVerificationEvidence({
@@ -848,10 +893,9 @@ async function testParallelToolCalls(input: AdminProviderDraftTesterInput, optio
       inputSchema: { type: "object", additionalProperties: false, required: ["city"],
         properties: { city: { type: "string", enum: ["Oslo", "Rome"] } } } }]
   }, { signal: input.signal });
-  let next = await stream.next();
-  while (!next.done) next = await stream.next();
-  assertProbeTerminal(next.value);
-  const calls = next.value.toolCalls ?? [];
+  const result = await drainProbeStream(input, stream);
+  assertProbeTerminal(result);
+  const calls = result.toolCalls ?? [];
   if (calls.length !== 2 || calls.some((call) => call.name !== "aiqsa_parallel_probe" ||
     Object.keys(call.arguments).length !== 1) ||
     new Set(calls.map((call) => call.id)).size !== 2 ||
@@ -875,11 +919,16 @@ async function testHostedSearch(input: AdminProviderDraftTesterInput, options: T
         maxOutputTokens: probeOutputTokens(input, 2_048), reasoningPolicy: "lowest_supported" },
       strategyId: "openai-responses-web-search"
     }, { signal: input.signal });
+    recordProviderUsage(input, result.usage);
     return { verified: result.sources.length > 0, proof: {
       adapterKind: "openai_responses_compatible", normalizedSourceCount: result.sources.length,
       probeVersion: 1, upstreamModelId: model.upstreamModelId, verified: true
     } };
   } catch (error) {
+    // A failed search that already reported usage was answered and is charged.
+    if (error instanceof ProviderSearchExecutionError && normalizeTokenUsage(error.usage).completeness !== "unavailable") {
+      recordProviderUsage(input, error.usage);
+    }
     if (error instanceof ProviderSearchExecutionError && (error.reason === "max_output_tokens" || error.reason === "content_filter")) {
       throw Object.assign(new Error("capability_probe_inconclusive"), {
         capabilityFailureReason: error.reason === "max_output_tokens" ? "budget_exhausted" : "refusal"
@@ -900,6 +949,8 @@ async function testCodexWebSearch(input: AdminProviderDraftTesterInput, options:
     commands: { search_query: [{ q: "OpenAI official home page" }], response_length: "short" },
     settings: { allowed_callers: ["direct"], external_web_access: true }, max_output_tokens: probeOutputTokens(input, 2048)
   }, signal), signal);
+  // The search response may omit usage: the call stays recorded with unknown usage.
+  recordProviderUsage(input, extractOpenAIUsage(response));
   const sourceCount = (response.results as unknown[]).filter((item) => {
     if (!item || typeof item !== "object" || !("url" in item) || typeof item.url !== "string") return false;
     try { const url = new URL(item.url); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password; } catch { return false; }
@@ -1166,6 +1217,37 @@ async function testOpenRouterCatalog(
   return testAnswerModel(input, options, "openrouter_account_catalog", selectedProviders);
 }
 
+async function testDraftModel(input: AdminProviderDraftTesterInput, resolvedOptions: ResolvedTesterOptions): Promise<AdminProviderDraftTestOutcome> {
+  if (input.model.modelClass === "image") return testImageCapabilities(input, resolvedOptions);
+  if (input.initialSetup && input.model.modelClass === "answer") return testAnswerCapabilities(input, resolvedOptions);
+  if (input.initialSetup && input.model.modelClass !== "answer") {
+    const previous = reusableCapabilitySetupEvidence(input.reuseSetupEvidence, input.model);
+    const capability = input.model.modelClass === "embedding" ? "embedding" : input.model.modelClass === "decision" ? "decisions" : "reranking";
+    if (previous?.capabilitySetup?.checks[capability] === "verified") return { evidence: previous, status: "available" };
+    const timeout = withTimeoutSignal(input.signal, Math.min(INITIAL_CAPABILITY_MODEL_TIMEOUT_MS,
+      input.model.responseTimeoutMs ?? input.connection.responseTimeoutMs));
+    input.onCapabilityProgress?.({ capability, completed: 0, total: 1 });
+    try {
+      const outcome = await runTinyGeneration({ ...input, signal: timeout.signal }, resolvedOptions);
+      input.signal?.throwIfAborted();
+      return { ...outcome, evidence: { ...outcome.evidence,
+        capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", [capability]: "verified" } } } };
+    } catch {
+      input.signal?.throwIfAborted();
+      return { status: "unavailable", evidence: { detail: "model_missing", method: "tiny_generation",
+        selectedProviders: input.model.openRouterRouting?.providers ?? [], upstreamModelId: input.model.upstreamModelId,
+        capabilitySetup: { policyVersion: 1, checks: { modelAccess: "incomplete", [capability]: "incomplete" } } } };
+    } finally {
+      timeout.clear();
+      input.onCapabilityProgress?.({ capability, completed: 1, total: 1 });
+    }
+  }
+  if (input.capabilityRole) return testSystemRole(input, resolvedOptions);
+  return input.mode === "account_catalog"
+    ? testOpenRouterCatalog(input, resolvedOptions)
+    : runTinyGeneration(input, resolvedOptions);
+}
+
 export function createAdminProviderDraftTester(
   options: TesterOptions = {}
 ): AdminProviderDraftTester {
@@ -1177,35 +1259,17 @@ export function createAdminProviderDraftTester(
     })
   };
   return {
-    async test(input) {
-      if (input.model.modelClass === "image") return testImageCapabilities(input, resolvedOptions);
-      if (input.initialSetup && input.model.modelClass === "answer") return testAnswerCapabilities(input, resolvedOptions);
-      if (input.initialSetup && input.model.modelClass !== "answer") {
-        const previous = reusableCapabilitySetupEvidence(input.reuseSetupEvidence, input.model);
-        const capability = input.model.modelClass === "embedding" ? "embedding" : input.model.modelClass === "decision" ? "decisions" : "reranking";
-        if (previous?.capabilitySetup?.checks[capability] === "verified") return { evidence: previous, status: "available" };
-        const timeout = withTimeoutSignal(input.signal, Math.min(INITIAL_CAPABILITY_MODEL_TIMEOUT_MS,
-          input.model.responseTimeoutMs ?? input.connection.responseTimeoutMs));
-        input.onCapabilityProgress?.({ capability, completed: 0, total: 1 });
-        try {
-          const outcome = await runTinyGeneration({ ...input, signal: timeout.signal }, resolvedOptions);
-          input.signal?.throwIfAborted();
-          return { ...outcome, evidence: { ...outcome.evidence,
-            capabilitySetup: { policyVersion: 1, checks: { modelAccess: "verified", [capability]: "verified" } } } };
-        } catch {
-          input.signal?.throwIfAborted();
-          return { status: "unavailable", evidence: { detail: "model_missing", method: "tiny_generation",
-            selectedProviders: input.model.openRouterRouting?.providers ?? [], upstreamModelId: input.model.upstreamModelId,
-            capabilitySetup: { policyVersion: 1, checks: { modelAccess: "incomplete", [capability]: "incomplete" } } } };
-        } finally {
-          timeout.clear();
-          input.onCapabilityProgress?.({ capability, completed: 1, total: 1 });
-        }
+    async test(original) {
+      const usage = createModelCheckUsageRecorder(options.recordUsage, {
+        userId: original.actorUserId, provider: original.providerFamily, modelId: original.model.upstreamModelId,
+        providerModelId: original.providerModelId, modelClass: original.model.modelClass
+      });
+      try {
+        return await testDraftModel({ ...original, onProviderUsage: usage?.record }, resolvedOptions);
+      } finally {
+        // Rows exist before the check reports; a late timed-out call still writes its own.
+        await usage?.settled();
       }
-      if (input.capabilityRole) return testSystemRole(input, resolvedOptions);
-      return input.mode === "account_catalog"
-        ? testOpenRouterCatalog(input, resolvedOptions)
-        : runTinyGeneration(input, resolvedOptions);
     }
   };
 }

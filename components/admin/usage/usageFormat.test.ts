@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { AdminUsageWindow } from "@/lib/contracts/adminUsageAnalytics";
 import { foldModelRows, TOP_MODEL_ROWS } from "./UsageBreakdowns";
 import {
+  formatMetricValue,
   formatShare,
   formatUsageDelta,
   formatUsdTick,
   formatUsdValue,
   niceTicks,
-  sumUsageAmounts
+  sumUsageAmounts,
+  systemPurposeList,
+  unknownCostCount,
+  usageShare,
+  usageShareBasis
 } from "./usageFormat";
 import { populatedUsageAnalytics, usageAmounts } from "./usageTestFixtures";
 
@@ -66,6 +71,34 @@ describe("usage axis and values", () => {
     expect(formatShare(0)).toBe("0%");
     expect(formatShare(0.004)).toBe("<1%");
     expect(formatShare(0.756)).toBe("76%");
+  });
+
+  it("reads an unknown cost as unknown, never as zero", () => {
+    expect(formatMetricValue("cost", null)).toBe("Unknown");
+    expect(formatMetricValue("cost", 0)).toBe("$0.00");
+    expect(formatMetricValue("tokens", 1_200)).toBe("1,200");
+  });
+});
+
+describe("usage shares", () => {
+  const whole = usageAmounts({ estimatedCostMicros: 4_000, recordCount: 4, totalTokens: 400 });
+
+  it("follow cost when the whole has a known cost, otherwise tokens", () => {
+    expect(usageShareBasis(whole)).toBe("cost");
+    expect(usageShareBasis(usageAmounts({ estimatedCostMicros: null }))).toBe("tokens");
+    expect(usageShare(usageAmounts({ estimatedCostMicros: 1_000, recordCount: 1, totalTokens: 300 }), whole, "cost")).toBe(0.25);
+    expect(usageShare(usageAmounts({ estimatedCostMicros: 1_000, recordCount: 1, totalTokens: 300 }), whole, "tokens")).toBe(0.75);
+  });
+
+  it("have no cost share for usage whose cost is unknown, and none to share for an empty part", () => {
+    expect(usageShare(usageAmounts({ estimatedCostMicros: null, recordCount: 2, totalTokens: 100 }), whole, "cost")).toBeNull();
+    expect(usageShare(usageAmounts({ estimatedCostMicros: null, recordCount: 0 }), whole, "cost")).toBe(0);
+    expect(unknownCostCount(usageAmounts({ knownCostRecordCount: 1, recordCount: 3 }))).toBe(2);
+  });
+
+  it("name system functions in the order the server lists them", () => {
+    expect(systemPurposeList(["chat_title", "memory_retrieval", "knowledge_retrieval", "other"]))
+      .toBe("Chat titles, Memory search, Knowledge search, Other");
   });
 });
 

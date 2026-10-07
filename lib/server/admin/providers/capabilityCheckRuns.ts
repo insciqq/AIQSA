@@ -30,6 +30,8 @@ export type CapabilityCheckRequest = Readonly<{
   credentialId: string;
   providerModelId: string;
   initialSetup?: InitialCapabilityCheck;
+  /** The administrator charged for the check's provider calls. */
+  userId?: string;
   onCapabilityProgress?(value: Omit<NonNullable<AdminProviderCheckRun["capabilityProgress"]>, "providerModelId">): void;
   onResult?(value: NonNullable<AdminProviderCheckRun["results"]>[number]): void;
   signal: AbortSignal;
@@ -47,6 +49,8 @@ export type CapabilityCheckRunStart = Readonly<{
   credentialId: string;
   modelIds: readonly string[];
   reason: AdminProviderCheckRunReason;
+  /** The administrator who started the run; unattributed runs stay unaccounted. */
+  userId?: string;
 }>;
 
 export type CapabilityCheckRunner = Readonly<{
@@ -74,6 +78,7 @@ type Run = {
   results: NonNullable<AdminProviderCheckRun["results"]>;
   capabilityProgress?: AdminProviderCheckRun["capabilityProgress"];
   initialSetup?: CapabilityCheckRunStart["initialSetup"];
+  userId?: string;
   onProgress?: CapabilityCheckRunStart["onProgress"];
   settled?: Promise<void>;
   setup?: AdminProviderCheckRun["setup"];
@@ -184,6 +189,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
         credentialId: run.credentialId,
         providerModelId: modelId,
         initialSetup: run.initialSetup?.[modelId],
+        ...(run.userId ? { userId: run.userId } : {}),
         onCapabilityProgress: (progress) => {
           if (run.state !== "running") return;
           run.capabilityProgress = { ...progress, providerModelId: modelId };
@@ -298,6 +304,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
         catalogModelIds: value.catalogModelIds ? [...value.catalogModelIds] : undefined,
         results: [...reused.values()],
         initialSetup: value.initialSetup,
+        ...(value.userId ? { userId: value.userId } : {}),
         onProgress: value.onProgress,
         setupController: new AbortController(),
         skipped: [],

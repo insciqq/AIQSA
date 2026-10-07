@@ -256,57 +256,47 @@ describe("usage row cost", () => {
   });
 });
 
-describe("provider-reported web searches and cost", () => {
+describe("provider-reported web searches", () => {
   const tokens = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
 
-  it("keeps a positive search count and a valid reported cost without changing completeness", () => {
-    expect(normalizeTokenUsage({ ...tokens, webSearchCount: 2, costUsd: 0.0123 })).toEqual({
-      ...normalizeTokenUsage(tokens), webSearchCount: 2, costUsd: 0.0123 });
+  it("keeps a positive search count without changing completeness", () => {
+    expect(normalizeTokenUsage({ ...tokens, webSearchCount: 2 })).toEqual({ ...normalizeTokenUsage(tokens), webSearchCount: 2 });
     for (const webSearchCount of [0, -1, 1.5, Number.NaN, "2", null]) {
       expect(normalizeTokenUsage({ ...tokens, webSearchCount })).not.toHaveProperty("webSearchCount");
     }
-    for (const costUsd of [-0.01, Number.NaN, Number.POSITIVE_INFINITY, "0.01", null]) {
-      expect(normalizeTokenUsage({ ...tokens, costUsd })).not.toHaveProperty("costUsd");
-    }
     expect(normalizeTokenUsage({ webSearchCount: 1 })).toMatchObject({ completeness: "unavailable", webSearchCount: 1 });
-    expect(normalizeTokenUsage({ ...tokens, costUsd: 0 })).toMatchObject({ completeness: "complete", costUsd: 0 });
+    // A reported cost travels beside usage, never inside it.
+    expect(normalizeTokenUsage({ ...tokens, costUsd: 0.01 } as never)).not.toHaveProperty("costUsd");
   });
 
-  it("adds searches across operations and knows a cost only when every operation reported one", () => {
-    expect(sumTokenUsage([{ ...tokens, webSearchCount: 2, costUsd: 0.01 }, { ...tokens, webSearchCount: 1, costUsd: 0.02 }]))
-      .toMatchObject({ inputTokens: 2_000, webSearchCount: 3, costUsd: 0.03 });
-    const mixed = sumTokenUsage([{ ...tokens, webSearchCount: 2, costUsd: 0.01 }, tokens]);
-    expect(mixed).toMatchObject({ webSearchCount: 2, completeness: "complete" });
-    expect(mixed).not.toHaveProperty("costUsd");
+  it("adds searches across operations", () => {
+    expect(sumTokenUsage([{ ...tokens, webSearchCount: 2 }, { ...tokens, webSearchCount: 1 }]))
+      .toMatchObject({ inputTokens: 2_000, webSearchCount: 3, completeness: "complete" });
+    expect(sumTokenUsage([{ ...tokens, webSearchCount: 2 }, tokens])).toMatchObject({ webSearchCount: 2 });
     expect(sumTokenUsage([tokens, tokens])).not.toHaveProperty("webSearchCount");
     expect(sumTokenUsage([])).toEqual({ ...normalizeTokenUsage({}), completeness: "unavailable" });
   });
 
-  it("replaces cumulative search counts and costs within one operation", () => {
+  it("replaces cumulative search counts within one operation", () => {
     const started = mergeTokenUsage({ inputTokens: 10 }, { webSearchCount: 1 });
     expect(started).toMatchObject({ inputTokens: 10, webSearchCount: 1 });
     expect(mergeTokenUsage(started, { ...tokens, webSearchCount: 3 })).toMatchObject({ inputTokens: 1_000, webSearchCount: 3 });
-    expect(mergeTokenUsage({ ...tokens, webSearchCount: 3, costUsd: 0.5 }, tokens)).toMatchObject({ webSearchCount: 3, costUsd: 0.5 });
-    expect(mergeTokenUsage({ ...tokens, costUsd: 0.5 }, { costUsd: 0.75 })).toMatchObject({ inputTokens: 1_000, costUsd: 0.75 });
+    expect(mergeTokenUsage({ ...tokens, webSearchCount: 3 }, tokens)).toMatchObject({ webSearchCount: 3 });
   });
 
-  it("subtracts search counts exactly and keeps a cost only when both sides reported one", () => {
+  it("subtracts search counts exactly", () => {
     expect(subtractTokenUsage({ ...tokens, webSearchCount: 5 }, { inputTokens: 400, outputTokens: 40, totalTokens: 440, webSearchCount: 2 }))
       .toMatchObject({ inputTokens: 600, webSearchCount: 3 });
     expect(subtractTokenUsage({ ...tokens, webSearchCount: 2 }, { ...tokens, webSearchCount: 2 })).not.toHaveProperty("webSearchCount");
     expect(subtractTokenUsage({ ...tokens, webSearchCount: 1 }, { inputTokens: 1, webSearchCount: 2 })).toBeNull();
     expect(subtractTokenUsage(tokens, { inputTokens: 1, webSearchCount: 1 })).toBeNull();
-    expect(subtractTokenUsage({ ...tokens, costUsd: 0.05 }, { inputTokens: 1, costUsd: 0.02 })?.costUsd).toBeCloseTo(0.03, 12);
-    expect(subtractTokenUsage({ ...tokens, costUsd: 0.05 }, { inputTokens: 1 })).not.toHaveProperty("costUsd");
   });
 
-  it("decodes durable search counts and costs strictly", () => {
-    const usage = normalizeTokenUsage({ ...tokens, webSearchCount: 4, costUsd: 0.004 });
+  it("decodes durable search counts strictly", () => {
+    const usage = normalizeTokenUsage({ ...tokens, webSearchCount: 4 });
     expect(decodeTokenUsage(JSON.parse(JSON.stringify(usage)))).toEqual(usage);
     expect(decodeTokenUsage({ ...tokens, webSearchCount: 0 })).not.toHaveProperty("webSearchCount");
-    for (const invalid of [{ webSearchCount: -1 }, { webSearchCount: 1.5 }, { webSearchCount: "1" }, { costUsd: -1 }, { costUsd: "0.1" }]) {
-      expect(decodeTokenUsage({ ...tokens, ...invalid })).toBeNull();
-    }
+    for (const webSearchCount of [-1, 1.5, "1"]) expect(decodeTokenUsage({ ...tokens, webSearchCount })).toBeNull();
   });
 
   it("charges each reported search at the per-thousand price on top of tokens, exactly", () => {

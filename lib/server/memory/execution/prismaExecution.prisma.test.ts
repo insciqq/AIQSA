@@ -1094,14 +1094,16 @@ describe("Prisma Memory execution", () => {
         owner: { memoryJobId: job.id, type: "JOB" },
         role: "MEMORY_DOCUMENT_EMBED", versions: VERSIONS
       });
-      await setPrices(2.5, 10);
+      // An embedding model carries an input price only, and that price alone
+      // prices its calls.
+      await setPrices(2.5, null);
       const priced = await bind(0);
       const reported = await bind(1);
       const recovered = await bind(2);
       expect((await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: priced.id } }))
         .secretFreeExecutionSnapshot).toMatchObject({ catalogTokenPricing: {
         cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null,
-        inputTokenPriceUsdPerMillion: 2.5, outputTokenPriceUsdPerMillion: 10
+        inputTokenPriceUsdPerMillion: 2.5, outputTokenPriceUsdPerMillion: null
       } });
       // A later catalog edit neither conflicts with a bind replay nor reprices it.
       await setPrices(40, 80);

@@ -2764,6 +2764,27 @@ describe("Prisma-backed run repository", () => {
     }
   });
 
+  it("resolves a Knowledge deployment's own class and stored prices by its id", async () => {
+    const connectionId = `repo-cost-basis-${randomUUID()}`;
+    const modelId = `${connectionId}-embedding`;
+    await prisma.providerConnection.create({ data: { displayName: "Cost basis connection", family: "openrouter", id: connectionId } });
+    await prisma.providerModel.create({ data: { capabilities: {}, connectionId, defaultParams: {},
+      displayName: "Cost basis embedding", id: modelId, inputTokenPriceUsdPerMillion: 0.13,
+      modelClass: "embedding", modelId: "qwen/qwen3-embedding-8b", provider: "openrouter" } });
+    try {
+      const repository = createPrismaRunRepository(prisma);
+      await expect(repository.loadProviderModelCostBasis(modelId)).resolves.toEqual({
+        modelClass: "embedding",
+        pricing: { inputTokenPriceUsdPerMillion: 0.13, cachedInputTokenPriceUsdPerMillion: null,
+          cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null }
+      });
+      await expect(repository.loadProviderModelCostBasis(`${modelId}-deleted`)).resolves.toBeNull();
+    } finally {
+      await prisma.providerModel.deleteMany({ where: { id: modelId } });
+      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    }
+  });
+
   it("reports whether concrete Search routes are enabled", async () => {
     const enabledStrategyId = `repo-test-enabled-${randomUUID()}`;
     const revisionId = `repo-test-revision-${randomUUID()}`;
@@ -3861,7 +3882,7 @@ describe("Prisma-backed run repository", () => {
         { modelId: "answer", provider: "anthropic", operationCount: 1, purpose: "chat_answer" as const, estimatedCostMicros: 23_000,
           usage: normalizeTokenUsage({ inputTokens: 1_000, outputTokens: 100, webSearchCount: 2 }) },
         { modelId: "sonar", provider: "openrouter", operationCount: 1, purpose: "web_search" as const, estimatedCostMicros: 14_200,
-          usage: normalizeTokenUsage({ inputTokens: 11, outputTokens: 5, costUsd: 0.0142 }) }
+          usage: normalizeTokenUsage({ inputTokens: 11, outputTokens: 5 }) }
       ];
       const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
       // Rewriting the run's rows again keeps the same count, never a doubled one.

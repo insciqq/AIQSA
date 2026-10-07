@@ -1,5 +1,7 @@
 // @vitest-environment node
+import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
+import { PERSONAL_USAGE_PURPOSES } from "../../domain/usagePurpose";
 import { createUsageLimitsRepository } from "./repository";
 
 type Gate = Readonly<{
@@ -22,8 +24,10 @@ const NO_LIMITS: Gate = {
  */
 function countingDatabase(gate: Gate) {
   const calls: string[] = [];
+  const statements: Prisma.Sql[] = [];
   const answers: Record<string, (...args: unknown[]) => unknown> = {
-    "$queryRaw": (strings) => {
+    "$queryRaw": (strings, ...values) => {
+      statements.push(Prisma.sql(strings as TemplateStringsArray, ...values));
       const sql = (strings as TemplateStringsArray).join("?");
       if (sql.includes("\"limited\"")) return [gate];
       return [{ spent: 0n }];
@@ -49,7 +53,7 @@ function countingDatabase(gate: Gate) {
   const database = new Proxy({}, {
     get: (_target, key) => String(key).startsWith("$") ? method(String(key)) : model(String(key))
   });
-  return { calls, database: database as Parameters<typeof createUsageLimitsRepository>[0] };
+  return { calls, database: database as Parameters<typeof createUsageLimitsRepository>[0], statements };
 }
 
 const now = new Date("2033-03-15T12:00:00.000Z");
@@ -96,5 +100,16 @@ describe("loadUsageLimitStatus database reads", () => {
     expect(calls.filter((call) => call === "$queryRaw").length).toBeGreaterThanOrEqual(2);
     // The gate's policy read is reused, never repeated.
     expect(calls).not.toContain("usageLimitPolicy.findUnique");
+  });
+
+  it("sums only personal purposes for the user and every purpose for the pooled cap", async () => {
+    const { database, statements } = countingDatabase({ ...NO_LIMITS, limited: true, monthlyCapMicros: 1_000_000n });
+    await createUsageLimitsRepository(database).loadUsageLimitStatus("user-1", now);
+    const sums = statements.filter(({ sql }) => sql.includes("SUM(\"estimatedCostMicros\")"));
+    expect(sums).toHaveLength(2);
+    const [personal, pooled] = [sums.find(({ values }) => values.includes("user-1")), sums.find(({ values }) => !values.includes("user-1"))];
+    expect(personal?.sql).toContain("\"purpose\" IN");
+    expect(personal?.values).toEqual(expect.arrayContaining([...PERSONAL_USAGE_PURPOSES]));
+    expect(pooled?.sql).not.toContain("purpose");
   });
 });

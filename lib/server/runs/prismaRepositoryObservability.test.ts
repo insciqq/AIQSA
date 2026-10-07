@@ -30,13 +30,15 @@ describe("Prisma run failure diagnostics", () => {
     ["run control", (repository) => repository.getRunControlForUser("run-safe", "user-safe")],
     ["attachment admission", (repository) => repository.loadAttachments("user-safe", ["attachment-safe"])],
     ["Search admission", (repository) => repository.isSearchStrategyEnabled("search-safe")],
-    ["completion pricing", (repository) => repository.loadModelPricing("fake", "model-safe")]
+    ["completion pricing", (repository) => repository.loadModelPricing("fake", "model-safe")],
+    ["Knowledge retrieval pricing", (repository) => repository.loadProviderModelCostBasis("model-safe")]
   ])("retains the original read failure across %s", async (_stage, read) => {
     const error = new Prisma.PrismaClientInitializationError("PRIVATE_DB_CONNECTION_CANARY", "test", "P1001");
     const reject = vi.fn(async () => { throw error; });
     const client = {
       chat: { findFirst: reject }, message: { findFirst: reject }, modelRun: { findFirst: reject },
-      attachment: { findMany: reject }, searchOption: { findFirst: reject }, providerModel: { findMany: reject }
+      attachment: { findMany: reject }, searchOption: { findFirst: reject },
+      providerModel: { findMany: reject, findUnique: reject }
     } as unknown as PrismaClient;
     const repository = createPrismaRunRepository(client);
     await expect(read(repository)).rejects.toBe(error);

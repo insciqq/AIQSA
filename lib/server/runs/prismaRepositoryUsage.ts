@@ -34,7 +34,7 @@ export function runAttributionUsageRows(
       cachedInputTokens: usage.cachedInputTokens, cacheWriteInputTokens: usage.cacheWriteInputTokens,
       estimatedCostMicros: attribution.estimatedCostMicros ?? null, inputTokens: usage.inputTokens,
       modelId: attribution.modelId, modelRunId: scope.runId, outputTokens: usage.outputTokens,
-      provider: attribution.provider, purpose: attribution.purpose,
+      provider: attribution.provider, providerModelId: attribution.providerModelId ?? null, purpose: attribution.purpose,
       reasoningTokens: usage.reasoningTokens, totalTokens: usage.totalTokens,
       usageCompleteness: usage.completeness === "complete" ? "COMPLETE" as const :
         usage.completeness === "partial" ? "PARTIAL" as const : "UNAVAILABLE" as const,
