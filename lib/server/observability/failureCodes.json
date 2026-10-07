@@ -1154,5 +1154,20 @@
   "workspace_upload_recovery_failed",
   "workspace_upload_startup_failed",
   "workspace_uv_cache_prune_failed",
-  "workspace_uv_cache_pruned"
+  "workspace_uv_cache_pruned",
+  "speech_to_text_admin_action_failed",
+  "speech_to_text_role_saved",
+  "speech_to_text_test_invalid_response",
+  "speech_to_text_test_rejected",
+  "speech_to_text_test_timed_out",
+  "speech_to_text_test_unauthorized",
+  "speech_to_text_test_unreachable",
+  "speech_to_text_usage_unrecorded",
+  "transcription_failed",
+  "transcription_input_invalid",
+  "transcription_provider_http_error",
+  "transcription_provider_request_failed",
+  "transcription_request_timed_out",
+  "transcription_response_invalid",
+  "transcription_response_too_large"
 ]
