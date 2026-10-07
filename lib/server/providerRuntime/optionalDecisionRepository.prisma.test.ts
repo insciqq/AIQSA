@@ -138,10 +138,11 @@ describe("optional decision cost", () => {
       allowPrivateNetwork: false, responseTimeoutMs: 30_000 };
     const model = jevModelConfiguration() as unknown as Prisma.InputJsonObject;
     await prisma.providerConnection.create({ data: { id: connectionId, displayName: "Decision cost fixture",
-      family: "openrouter", activeConfig: config, draftConfig: config, activeVersion: 1, draftVersion: 1, enabled: true } });
+      family: "openrouter", activeConfig: config, draftConfig: config, activeVersion: 1, draftVersion: 1, activatedAt: new Date(),
+      enabled: true } });
     await prisma.providerModel.create({ data: { id: providerModelId, connectionId, provider: "openrouter",
       modelId: jevModelConfiguration().upstreamModelId, displayName: "Decision cost fixture", modelClass: "decision",
-      activeConfig: model, draftConfig: model, activeVersion: 1, draftVersion: 1,
+      activeConfig: model, draftConfig: model, activeVersion: 1, draftVersion: 1, activatedAt: new Date(),
       capabilities: jevModelConfiguration().capabilities as unknown as Prisma.InputJsonObject, defaultParams: {},
       inputTokenPriceUsdPerMillion: 0.5, outputTokenPriceUsdPerMillion: 2 } });
     try {
