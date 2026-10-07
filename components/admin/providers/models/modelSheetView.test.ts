@@ -36,7 +36,15 @@ describe("model sheet form", () => {
     expect(modelFormPricing(form, model)).toEqual({ ok: true, pricing });
     expect(modelFormBody({ ...form, responseTimeoutSeconds: "120" }, openRouter, model))
       .toMatchObject({ ok: true, body: { pricing, configuration: { responseTimeoutSeconds: 120 } } });
-    expect(modelFormPricing({ ...form, modelClass: "embedding" }, model)).toEqual({ ok: true });
+    // Other classes send only their own prices; the rest is unknown even when the form still holds text.
+    expect(modelFormPricing({ ...form, modelClass: "embedding" }, model)).toEqual({ ok: true, pricing: { mode: "manual",
+      prices: { ...pricing.prices, cachedInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null } } });
+    expect(modelFormPricing({ ...form, modelClass: "image" }, model)).toEqual({ ok: true, pricing: { mode: "manual",
+      prices: { ...pricing.prices, cachedInputTokenPriceUsdPerMillion: null } } });
+    // A field the class is never costed with is neither validated nor compared with the stored row.
+    const hidden = { ...form, modelClass: "reranker" as const, prices: { ...form.prices, inputTokenPriceUsdPerMillion: "", outputTokenPriceUsdPerMillion: "bad" } };
+    expect(modelFormPricing(hidden, model)).toEqual({ ok: true });
+    expect(modelPriceSourceLabel(hidden, null)).toBeNull();
   });
 
   it("treats the stored prices typed again as no change and keeps their source", () => {

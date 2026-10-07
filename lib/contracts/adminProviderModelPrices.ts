@@ -67,12 +67,19 @@ export function invalidAdminModelPriceField(value: unknown): AdminModelPriceFiel
 export function isAdminModelPriceField(value: unknown): value is AdminModelPriceField {
   return ADMIN_MODEL_PRICE_FIELDS.includes(value as AdminModelPriceField);
 }
+
+const INPUT_AND_OUTPUT_PRICES: readonly AdminModelPriceField[] = Object.freeze(["inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"]);
+const INPUT_PRICE: readonly AdminModelPriceField[] = Object.freeze(["inputTokenPriceUsdPerMillion"]);
+
 /**
- * Only answer usage is costed from token prices. Decision (Jev) cost comes
- * from the provider-reported amount, so its rows carry no editable price.
+ * The token prices a model class can carry: answer models all four, decision
+ * and image models input and output, embedding and reranker models input only.
+ * Every other field of the class stays null; an unknown class carries none.
  */
-export function modelClassUsesTokenPrices(modelClass: string): boolean {
-  return modelClass === "answer";
+export function modelClassPriceFields(modelClass: string): readonly AdminModelPriceField[] {
+  if (modelClass === "answer") return ADMIN_MODEL_PRICE_FIELDS;
+  if (modelClass === "decision" || modelClass === "image") return INPUT_AND_OUTPUT_PRICES;
+  return modelClass === "embedding" || modelClass === "reranker" ? INPUT_PRICE : [];
 }
 
 export function adminModelPriceChangeMatches(change: AdminModelPriceChange, pricing: AdminModelPricing): boolean {
