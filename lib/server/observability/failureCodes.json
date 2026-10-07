@@ -41,6 +41,7 @@
   "account_inactive",
   "active_conflict",
   "admin_attention_failed",
+  "admin_health_failed",
   "admission_failed",
   "agent_mcp_outcome_unknown",
   "agent_model_input_invalid",
