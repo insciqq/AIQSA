@@ -99,7 +99,7 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
   const overflowing = await page.evaluate(() => {
     const limit = document.documentElement.clientWidth + 0.5;
     return [...document.querySelectorAll<HTMLElement>("body *")]
-      .filter((element) => element.getBoundingClientRect().right > limit)
+      .filter((element) => !element.closest(".sr-only") && element.getBoundingClientRect().right > limit)
       .slice(0, 12)
       .map((element) => `${element.tagName.toLowerCase()}${element.dataset.testid ? `[${element.dataset.testid}]` : ""}` +
         ` .${String(element.className).slice(0, 80)} right=${Math.round(element.getBoundingClientRect().right)}`);
