@@ -310,8 +310,15 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
     const moved = task.chatId !== chatId;
     if (origin.rotation && (!moved || task.chatId !== origin.rotation.fromChatId)) return conflict();
     const copy = origin.previousResultCopy;
-    if (copy && (origin.rotation ? task.baseline?.assistantMessageId !== copy.sourceAssistantMessageId
-      : task.carryover?.chatEpoch !== task.chatEpoch || task.carryover.sourceAssistantMessageId !== copy.sourceAssistantMessageId)) {
+    // Like the real link: at a rotation from a chat with a shown result, a copy of that answer;
+    // otherwise the copy carried into the task's chat for this epoch and question, which a rotation moves on.
+    const shown = task.baseline !== null && task.baseline.generation === task.generation;
+    const previous = task.carryover;
+    const carriedOn = previous !== null && previous.chatEpoch === task.chatEpoch && previous.taskGeneration === task.generation &&
+      previous.sourceAssistantMessageId === copy?.sourceAssistantMessageId && previous.sourceChatId === copy?.sourceChatId;
+    if (copy && (origin.rotation && shown
+      ? task.baseline?.assistantMessageId !== copy.sourceAssistantMessageId || copy.sourceChatId !== origin.rotation.fromChatId
+      : !carriedOn)) {
       return conflict();
     }
     const seed = origin.rotation?.seedId ? seeds.get(origin.rotation.seedId) : undefined;
@@ -340,7 +347,9 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
       task.chatPeriod = origin.chatPeriod;
     }
     if (origin.rotation && copy) {
-      task.carryover = { ...copy, chatEpoch: epoch, taskGeneration: origin.taskGeneration };
+      // A copy of the old chat's own result, or the stored copy itself moving on to the new epoch.
+      task.carryover = !shown && previous ? { ...previous, chatEpoch: epoch }
+        : { ...copy, chatEpoch: epoch, taskGeneration: origin.taskGeneration };
     }
     if (seed) Object.assign(seed, { newChatId: chatId, status: "TRANSFERRED" });
     return stream();
@@ -1489,6 +1498,30 @@ describe("scheduled task chat rotation", () => {
     expect(h.pushes).toHaveLength(pushes);
     // A hidden check is no comparison basis: the copy stays the previous result.
     expect(task.carryover).toMatchObject({ answer: "Version 1.0 is current" });
+  });
+
+  it("carries the comparison basis on through a month whose checks all had no news", async () => {
+    const h = harness();
+    const task = h.addTask({ kind: "monitoring" });
+    h.setReply(() => ({ answer: "Version 1.0 is current", runStatus: "complete", verdict: "update" }));
+    await h.tick();
+    // November: every check finds nothing new, so its chat never shows a result of its own.
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    h.advance(TO_NOVEMBER);
+    await h.tick();
+    h.advance(DAY);
+    await h.tick();
+    const november = h.sent.at(-1)!.chatId;
+    expect(task).toMatchObject({ baseline: null, carryover: { answer: "Version 1.0 is current", chatEpoch: 2 } });
+    const pushes = h.pushes.length;
+    // 1 December: the month's first check still compares with October's result, never a first check.
+    h.advance(29 * DAY);
+    await h.tick();
+    expect(h.sent.at(-1)!.occurrence).toMatchObject({ newChat: { title: "Synthetic brief · December 2026" },
+      previousResultCopy: { answer: "Version 1.0 is current" }, rotation: { fromChatId: november } });
+    expect(h.forTask(task).at(-1)).toMatchObject({ reasonCode: "no_update", state: "COMPLETED", unseenAt: null });
+    expect(h.pushes).toHaveLength(pushes);
+    expect(task).toMatchObject({ baseline: null, carryover: { answer: "Version 1.0 is current", chatEpoch: 3 } });
   });
 
   it("treats the month's first check as a first check when no copy could be carried", async () => {
