@@ -31,7 +31,7 @@ export function createAgentPolicyHandlers(input: Readonly<{
       const saved = await input.repository.update({ ...settings, expectedVersion: version, userId: auth.userId });
       return saved ? reply({ agent: saved }) : reply({ error: "agent_policy_stale" }, 409);
     } catch (error) {
-      logEvent("service_operation", { subsystem: "admin", stage: update ? "write" : "read", outcome: "failed",
+      logEvent("service_operation", { error, subsystem: "admin", stage: update ? "write" : "read", outcome: "failed",
         code: "agent_policy_action_failed", prisma_code: databaseFailureCode(error) });
       return reply({ error: "agent_policy_action_failed" }, 503);
     }

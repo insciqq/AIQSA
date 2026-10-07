@@ -87,7 +87,7 @@ export function getDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
     reportSubsystemHealthy("mcp", "startup");
     return coordinator;
   } catch (error) {
-    reportSubsystemFailure({ subsystem: "mcp", stage: "startup", code: observedFailureCode(error), action: "retry" });
+    reportSubsystemFailure({ error, subsystem: "mcp", stage: "startup", code: observedFailureCode(error), action: "retry" });
     throw error;
   }
 }

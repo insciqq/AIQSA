@@ -180,10 +180,10 @@ export function tryEnsureDefaultMemoryDeletionComposition(
   try {
     ensureDefaultMemoryDeletionComposition(kick);
     return true;
-  } catch {
+  } catch (error) {
     if (!defaultCompositionFailureLogged) {
       defaultCompositionFailureLogged = true;
-      logEvent("runtime_lifecycle", { subsystem: "memory", stage: "initialize", outcome: "failed", code: "memory_deletion_composition_failed" });
+      logEvent("runtime_lifecycle", { error, subsystem: "memory", stage: "initialize", outcome: "failed", code: "memory_deletion_composition_failed" });
     }
     return false;
   }

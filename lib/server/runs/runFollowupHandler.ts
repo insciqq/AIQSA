@@ -37,7 +37,7 @@ export function createRunFollowupHandler(deps: {
       if (projectId) notifyProjectEvent(projectId);
       return json({ followup: result.entry });
     } catch (error) {
-      logEvent("service_operation", { subsystem: "run_recovery", stage: "continuation", outcome: "failed",
+      logEvent("service_operation", { error, subsystem: "run_recovery", stage: "continuation", outcome: "failed",
         code: "followup_accept_failed", prisma_code: databaseFailureCode(error) });
       return json({ error: "followup_accept_failed", message: "The follow-up could not be confirmed. Retry to check the same submission." }, 503);
     }

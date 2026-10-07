@@ -20,7 +20,7 @@ export function createAdminHealthQueuesHandler(input: Readonly<{ resolveAuth: Re
     try {
       return json({ queues: await input.service.read() });
     } catch (error) {
-      logEvent("service_operation", { subsystem: "admin", stage: "read", outcome: "failed",
+      logEvent("service_operation", { error, subsystem: "admin", stage: "read", outcome: "failed",
         code: "admin_health_failed", prisma_code: databaseFailureCode(error) });
       return json({ error: "admin_health_failed" }, 503);
     }

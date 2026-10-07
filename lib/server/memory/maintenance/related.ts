@@ -122,7 +122,7 @@ export async function loadMemoryMaintenanceRelatedMemories(client: QueryClient, 
     return related;
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    logEvent("service_operation", { subsystem: "memory", stage: "prepare", outcome: "degraded",
+    logEvent("service_operation", { error, subsystem: "memory", stage: "prepare", outcome: "degraded",
       code: "memory_maintenance_related_context_unavailable", job_id: options.jobId });
     return new Map();
   }

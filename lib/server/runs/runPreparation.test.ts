@@ -960,8 +960,9 @@ describe("standing Memory and optional search admission", () => {
     expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
     expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
     expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search") ?? false).toBe(false);
+    // The leaf projects the caught error to class, site and fingerprint only.
     expect(vi.mocked(logEvent)).toHaveBeenCalledWith("service_operation", { subsystem: "memory_search",
-      stage: "preflight", outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped" });
+      stage: "preflight", outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped", error: expect.any(Error) });
     expect(JSON.stringify(vi.mocked(logEvent).mock.calls)).not.toContain("PRIVATE_ADMISSION_FAILURE");
   });
   it("keeps explicit /memory management on its existing synchronous path", async () => {

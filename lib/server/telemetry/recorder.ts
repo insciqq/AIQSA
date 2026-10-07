@@ -74,7 +74,7 @@ export function createTelemetryRecorder(options: TelemetryRecorderOptions): Tele
     } catch (error) {
       const permanent = telemetryWriteIsPermanent(error);
       if (!permanent) aggregator.restore(batch);
-      reportSubsystemFailure({ subsystem: "telemetry", stage: "write", code: "telemetry_write_failed",
+      reportSubsystemFailure({ error, subsystem: "telemetry", stage: "write", code: "telemetry_write_failed",
         prisma_code: databaseFailureCode(error), action: permanent ? "skip" : "retry" });
     }
   };
@@ -90,7 +90,7 @@ export function createTelemetryRecorder(options: TelemetryRecorderOptions): Tele
           completed_count: deleted.counters + deleted.incidents });
       }
     } catch (error) {
-      reportSubsystemFailure({ subsystem: "telemetry", stage: "cleanup", code: "telemetry_retention_failed",
+      reportSubsystemFailure({ error, subsystem: "telemetry", stage: "cleanup", code: "telemetry_retention_failed",
         prisma_code: databaseFailureCode(error), action: "retry" });
     }
   };

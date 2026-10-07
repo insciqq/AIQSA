@@ -72,7 +72,7 @@ export function createAnnouncementsHandlers(input: Readonly<{
       return reply(result);
     } catch (error) {
       if (error instanceof AnnouncementRepositoryError) return reply({ error: error.code }, error.code === "announcement_not_found" ? 404 : 409);
-      logEvent("service_operation", { subsystem: "admin", stage: ["list", "detail", "count"].includes(action) ? "read" : "write",
+      logEvent("service_operation", { error, subsystem: "admin", stage: ["list", "detail", "count"].includes(action) ? "read" : "write",
         outcome: "failed", code: "announcements_action_failed", prisma_code: databaseFailureCode(error) });
       return reply({ error: "announcements_unavailable" }, 503);
     }

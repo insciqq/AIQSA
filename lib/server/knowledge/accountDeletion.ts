@@ -183,7 +183,7 @@ export function kickDefaultKnowledgeDeletionWorker(): void {
         await drainKnowledgeDeletionJobs({ client: prisma });
       } while (deletionWorkerRerun);
     } catch (error) {
-      logEvent("runtime_lifecycle", { subsystem: "knowledge", stage: "drain", outcome: "failed",
+      logEvent("runtime_lifecycle", { error, subsystem: "knowledge", stage: "drain", outcome: "failed",
         code: "knowledge_deletion_drain_failed", prisma_code: databaseFailureCode(error) });
     } finally {
       deletionWorkerRunning = false;

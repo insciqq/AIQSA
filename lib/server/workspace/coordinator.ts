@@ -1760,7 +1760,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       }
     } catch (error) {
       // Cache failure must not fail an otherwise completed task or expose file data.
-      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "write", outcome: "failed",
+      logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "write", outcome: "failed",
         code: "workspace_browser_session_save_failed", prisma_code: databaseFailureCode(error), action: "skip" });
     } finally {
       if (collection) {
@@ -1960,7 +1960,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         quiescence = { proven: true, stoppedVm: current.runtimeSandboxId !== null };
       } catch (error) {
         const failureCode = quiescence.stoppedVm ? "workspace_execution_settlement_failed" : "workspace_execution_stop_failed";
-        logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "release", outcome: "failed",
+        logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "release", outcome: "failed",
           code: failureCode, prisma_code: databaseFailureCode(error), action: "wait" });
         quiescence = { proven: false, stoppedVm: quiescence.stoppedVm, failureCode };
       }

@@ -59,12 +59,12 @@ describe("optional subsystem startup", () => {
     expect(startup.hooks).toHaveBeenCalledOnce();
     expect(startup.announce).toHaveBeenCalledWith(expect.objectContaining({ attachments: "starting", memory: "unknown" }));
     expect(startup.failed.mock.calls.map(([fields]) => fields)).toEqual([
-      { subsystem: "scheduled_tasks", stage: "startup", code: "scheduled_task_runner_startup_failed", action: "degrade" },
-      { subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" },
-      { subsystem: "attachments", stage: "startup", code: "attachment_processing_startup_failed", action: "degrade" },
-      { subsystem: "object_storage", stage: "startup", code: "object_deletion_startup_failed", action: "degrade" },
-      { subsystem: "knowledge", stage: "startup", code: "knowledge_ingestion_startup_failed", action: "degrade" },
-      { subsystem: "mcp", stage: "startup", code: "mcp_runtime_startup_failed", action: "degrade" }
+      { error: expect.any(Error), subsystem: "scheduled_tasks", stage: "startup", code: "scheduled_task_runner_startup_failed", action: "degrade" },
+      { error: expect.any(Error), subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" },
+      { error: expect.any(Error), subsystem: "attachments", stage: "startup", code: "attachment_processing_startup_failed", action: "degrade" },
+      { error: expect.any(Error), subsystem: "object_storage", stage: "startup", code: "object_deletion_startup_failed", action: "degrade" },
+      { error: expect.any(Error), subsystem: "knowledge", stage: "startup", code: "knowledge_ingestion_startup_failed", action: "degrade" },
+      { error: expect.any(Error), subsystem: "mcp", stage: "startup", code: "mcp_runtime_startup_failed", action: "degrade" }
     ]);
     await register();
     expect(startup.objectDeletion).toHaveBeenCalledTimes(2);
@@ -80,7 +80,7 @@ describe("optional subsystem startup", () => {
     await expect(register()).resolves.toBeUndefined();
     expect(startup.attachments).toHaveBeenCalledOnce();
     expect(startup.knowledge).toHaveBeenCalledOnce();
-    expect(startup.failed).toHaveBeenCalledWith({ subsystem: "attachments", stage: "startup", code: "workspace_upload_startup_failed", action: "degrade" });
+    expect(startup.failed).toHaveBeenCalledWith({ error: expect.any(Error), subsystem: "attachments", stage: "startup", code: "workspace_upload_startup_failed", action: "degrade" });
     await register();
     expect(startup.uploads).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(startup.failed.mock.calls)).not.toContain("canary");
@@ -94,7 +94,7 @@ describe("optional subsystem startup", () => {
     expect(startup.healthy).toHaveBeenCalledWith("telemetry", "startup");
     startup.telemetry.mockImplementationOnce(() => { throw new Error("private-telemetry-canary"); });
     await expect(register()).resolves.toBeUndefined();
-    expect(startup.failed).toHaveBeenCalledExactlyOnceWith({ subsystem: "telemetry", stage: "startup", code: "telemetry_startup_failed", action: "degrade" });
+    expect(startup.failed).toHaveBeenCalledExactlyOnceWith({ error: expect.any(Error), subsystem: "telemetry", stage: "startup", code: "telemetry_startup_failed", action: "degrade" });
     expect(startup.recovery).toHaveBeenCalledTimes(2);
     expect(startup.announce).toHaveBeenCalledTimes(2);
   });
@@ -104,15 +104,16 @@ describe("optional subsystem startup", () => {
     const failure = new Error("private-scheduler-canary");
     startup.recovery.mockImplementation(() => { throw failure; });
     await expect(register()).rejects.toBe(failure);
-    expect(startup.failed).toHaveBeenCalledWith({ subsystem: "run_recovery", stage: "startup", code: "run_recovery_startup_failed", action: "stop" });
+    expect(startup.failed).toHaveBeenCalledWith({ error: expect.any(Error), subsystem: "run_recovery", stage: "startup", code: "run_recovery_startup_failed", action: "stop" });
     expect(startup.attachments).not.toHaveBeenCalled();
   });
 });
 
 describe("Next request error boundary", () => {
-  it("passes only method and framework route template, never exception or request data", async () => {
+  it("passes the method, the framework route template and the exception for its content-free projection, never request data", async () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
-    await onRequestError({ get message() { throw new Error("must_not_read_error"); } }, {
+    const exception = { get message(): string { throw new Error("must_not_read_error"); } };
+    await onRequestError(exception, {
       method: "POST",
       get path(): string { throw new Error("must_not_read_path"); },
       get headers(): Record<string, string> { throw new Error("must_not_read_headers"); }
@@ -122,7 +123,7 @@ describe("Next request error boundary", () => {
       routeType: "route",
       revalidateReason: undefined
     });
-    expect(report).toHaveBeenCalledExactlyOnceWith("POST", "/api/public-shares/[shareToken]");
+    expect(report).toHaveBeenCalledExactlyOnceWith("POST", "/api/public-shares/[shareToken]", exception);
   });
 
   it("does not load a Node writer in an edge runtime", async () => {

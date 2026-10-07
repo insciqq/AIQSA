@@ -48,6 +48,7 @@ export function createBrowserPushHandlers(deps: BrowserPushHandlerDeps) {
       return await operation({ sessionId: auth.id, userId: auth.userId });
     } catch (error) {
       logEvent("service_operation", {
+        error,
         code: "push_unavailable", outcome: "failed", prisma_code: databaseFailureCode(error), stage, subsystem: "push"
       });
       return failure("push_unavailable");

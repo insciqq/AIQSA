@@ -150,7 +150,7 @@ export class McpActivationCoordinator {
       try {
         await this.#repository.enqueueLegacyToolRechecks();
       } catch (error) {
-        reportSubsystemFailure({ subsystem: "mcp", stage: "prepare", code: "mcp_activation_failed", prisma_code: databaseFailureCode(error), action: "retry" });
+        reportSubsystemFailure({ error, subsystem: "mcp", stage: "prepare", code: "mcp_activation_failed", prisma_code: databaseFailureCode(error), action: "retry" });
       }
       await Promise.all(Array.from({ length: this.#maxParallel }, () => this.#worker()));
     } while (this.#rerun);
@@ -166,7 +166,7 @@ export class McpActivationCoordinator {
           staleBefore: new Date(now.getTime() - this.#staleLeaseMs)
         });
       } catch (error) {
-        reportSubsystemFailure({ subsystem: "mcp", stage: "claim", code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" });
+        reportSubsystemFailure({ error, subsystem: "mcp", stage: "claim", code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" });
         return;
       }
       reportSubsystemHealthy("mcp", "claim");
@@ -255,12 +255,12 @@ export class McpActivationCoordinator {
         try {
           this.#onPublished?.();
         } catch (error) {
-          logEvent("job_attempt", { subsystem: "mcp", stage: "dispatch", outcome: "failed", code: observedFailureCode(error), action: "wait" });
+          logEvent("job_attempt", { error, subsystem: "mcp", stage: "dispatch", outcome: "failed", code: observedFailureCode(error), action: "wait" });
           // Publication is durable. Periodic runtime reconciliation will catch a missed kick.
         }
       } else logEvent("job_attempt", { subsystem: "mcp", stage: "publish", outcome: "lost_lease", action: "stop" });
     } catch (error) {
-      logEvent("job_attempt", { subsystem: "mcp", stage: "process", outcome: leaseLost ? "lost_lease"
+      logEvent("job_attempt", { error, subsystem: "mcp", stage: "process", outcome: leaseLost ? "lost_lease"
         : error instanceof McpDraftValidationAbortedError ? "cancelled" : "failed",
         code: error instanceof McpDraftValidationUnavailableError ? "mcp_draft_validation_unavailable"
           : error instanceof McpDraftValidationAbortedError ? "mcp_draft_validation_aborted" : observedFailureCode(error),

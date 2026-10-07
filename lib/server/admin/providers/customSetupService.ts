@@ -388,7 +388,7 @@ export function createAdminProviderCustomSetupService(input: Readonly<{
           });
         } catch (error) {
           const failure = observedFailure(error);
-          logEvent("service_operation", { subsystem: "admin", stage: "probe", outcome: inputValue.signal?.aborted ? "cancelled" : "failed", code: failure.code, httpStatus: failure.httpStatus });
+          logEvent("service_operation", { error, subsystem: "admin", stage: "probe", outcome: inputValue.signal?.aborted ? "cancelled" : "failed", code: failure.code, httpStatus: failure.httpStatus });
           throw new AdminProviderCustomSetupServiceError(
             "provider_custom_setup_test_failed"
           );

@@ -58,6 +58,7 @@ export async function restoreAgentMcpTools(input: Readonly<{
       const failure = error instanceof McpHubServiceError ? error : new McpHubServiceError("upstream_unavailable");
       failures.set(candidate.toolId, failure);
       runWithContext({ run_id: input.runId }, () => logEvent("tool_execution", {
+        error,
         tool_kind: "mcp", stage: "admission", outcome: "failed", code: failure.code, duration_ms: Date.now() - started
       }));
     }

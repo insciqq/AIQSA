@@ -687,8 +687,8 @@ export function createWorkspaceRunnerServer(input: Readonly<{
     } catch (error) {
       const failure = workspaceLifecycleFailure(error);
       const httpStatus = errorCode(error) === "workspace_operation_stale" ? 409 : 400;
-      if (stage === "health") reportSubsystemFailure({ subsystem: "workspace", stage, scope_id: "runner", ...failure, httpStatus, action: "wait" });
-      else logEvent("runtime_lifecycle", { subsystem: "workspace", stage, ...failure, httpStatus, action: "stop" });
+      if (stage === "health") reportSubsystemFailure({ error, subsystem: "workspace", stage, scope_id: "runner", ...failure, httpStatus, action: "wait" });
+      else logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage, ...failure, httpStatus, action: "stop" });
       if (!response.headersSent) sendJson(response, errorCode(error) === "workspace_operation_stale" ? 409 : 400, { error: errorCode(error) });
       else response.destroy();
     }
