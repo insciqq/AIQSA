@@ -1052,6 +1052,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerSurface = (
     <ComposerV2
       sessionKey={skillScopeKey}
+      usageLimitsAccountId={session.accountId}
       activeRun={thread.activeChatStreaming && !thread.answerComplete}
       skillsMode={skillsMode}
       onSelectSkillsMode={mode => useComposerControlStore.getState().setSkillsMode(mode)}

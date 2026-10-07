@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { explicitKnowledgeSelection } from "@/lib/contracts/knowledge";
 import { AccountSettingsRowsV2 } from "./AccountSettingsRowsV2";
 import { ChatDefaultsRowsV2 } from "./ChatDefaultsRowsV2";
@@ -152,11 +152,42 @@ describe("DataSettingsRowsV2", () => {
   });
 });
 
+const noUsageLimits = {
+  installationExhausted: false,
+  messages: { dayFreesAt: null, hourFreesAt: null, lastDay: 0, lastHour: 0, perDay: null, perHour: null },
+  monthlyBudgetMicros: null,
+  monthSpentMicros: 0,
+  periodStart: "2026-10-01T00:00:00.000Z",
+  resetsAt: "2026-11-01T00:00:00.000Z"
+};
+
 describe("AccountSettingsRowsV2", () => {
   beforeEach(() => {
     accountApi.loadAccountProfile.mockReset();
     accountApi.updateAccountDisplayName.mockReset();
     accountApi.changeAccountPassword.mockReset();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ usageLimits: noUsageLimits })));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("adds the user's own usage limits only when one applies", async () => {
+    accountApi.loadAccountProfile.mockResolvedValue({
+      displayName: "Ada", email: "ada@example.com", hasPassword: false, role: "user"
+    });
+    const view = render(<AccountSettingsRowsV2 accountEmail="ada@example.com" adminEntryVisible={false} />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/me/usage-limits", expect.objectContaining({ cache: "no-store" })));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue("Ada"));
+    expect(screen.queryByRole("region", { name: "Usage limits" })).toBeNull();
+    view.unmount();
+
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      usageLimits: { ...noUsageLimits, monthlyBudgetMicros: 10_000_000, monthSpentMicros: 3_200_000 }
+    })));
+    render(<AccountSettingsRowsV2 accountEmail="ada@example.com" adminEntryVisible={false} />);
+    expect(await screen.findByRole("region", { name: "Usage limits" })).toHaveTextContent("≈ $3.20 of $10.00");
   });
 
   it("publishes only server-confirmed display names, including normalized saves and empty profiles", async () => {

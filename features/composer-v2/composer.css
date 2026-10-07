@@ -100,6 +100,19 @@
   color: var(--v2-color-danger);
 }
 
+/* Usage limits inform; they never disable Send, so the line stays text. */
+.v2-composer-usage-limit {
+  margin: 0;
+}
+
+.v2-composer-usage-limit[data-tone="caution"] {
+  color: var(--v2-color-warn);
+}
+
+.v2-composer-usage-limit[data-tone="critical"] {
+  color: var(--v2-color-danger);
+}
+
 .v2-composer-controls {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
