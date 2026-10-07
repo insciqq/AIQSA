@@ -7,8 +7,8 @@ import {
 import {
   assertValidOpenRouterTerminalResponse,
   extractOpenRouterArtifacts,
+  extractOpenRouterSearchUsage,
   extractOpenRouterText,
-  extractOpenRouterUsage,
   openRouterProviderResponseId,
   openRouterResponseError
 } from "./openRouterChatResponse";
@@ -64,9 +64,10 @@ export function createOpenRouterPerplexitySearchAdapter(
           ...(typeof searchOptions.timeoutMs === "number"
             ? { timeoutMs: searchOptions.timeoutMs }
             : {})
-        }), usage: extractOpenRouterUsage
+        }), usage: extractOpenRouterSearchUsage
       });
-      const usage = extractOpenRouterUsage(response);
+      // The reported cost includes Perplexity's per-request search fee.
+      const usage = extractOpenRouterSearchUsage(response);
       const responseError = openRouterResponseError(response);
       if (responseError) {
         throw new ProviderSearchExecutionError({ artifacts: [], code: responseError, usage });

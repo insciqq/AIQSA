@@ -158,6 +158,10 @@ export function updateAnthropicMessageUsage(
     tokenValue(usage.thinking_output_tokens) ??
     prior.reasoningTokens;
   const totalTokens = tokenValue(usage.total_tokens);
+  // Anthropic bills each reported web search; message_delta repeats the count cumulatively.
+  const webSearchCount = isRecord(usage.server_tool_use)
+    ? reportedTokenCount(usage.server_tool_use.web_search_requests) ?? prior.webSearchCount
+    : prior.webSearchCount;
 
   const incompleteInput = inputTokens !== null &&
     (uncachedInputTokens === undefined || cachedInputTokens === null || cacheWriteInputTokens === null);
@@ -171,6 +175,7 @@ export function updateAnthropicMessageUsage(
     inputTokens,
     outputTokens,
     reasoningTokens,
+    webSearchCount,
     ...(totalTokens !== undefined ? { totalTokens } : {}),
     ...(incompleteInput || malformed || (prior.completeness === "partial" &&
       [usage.input_tokens ?? usage.uncached_input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens]

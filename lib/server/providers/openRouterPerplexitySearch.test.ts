@@ -180,6 +180,33 @@ describe("OpenRouter Perplexity search adapter", () => {
     ]);
   });
 
+  it("keeps the cost OpenRouter reports, with BYOK upstream charges, in success, failure and dispatch usage", async () => {
+    const search = async (usage: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+      const dispatched: unknown[] = [];
+      const adapter = createOpenRouterPerplexitySearchAdapter({ client: {
+        createChatCompletion: async () => successfulResponse({ usage: { completion_tokens: 5, prompt_tokens: 11, total_tokens: 16, ...usage }, ...overrides })
+      } });
+      const result = await adapter.search(searchRequest(), { dispatch: async (attempt) => {
+        const response = await attempt.execute();
+        dispatched.push(attempt.usage(response));
+        return response;
+      } }).then(value => value.usage, (error: unknown) => isProviderSearchExecutionError(error) ? error.usage : null);
+      expect(dispatched).toEqual([result]);
+      return result;
+    };
+    // `cost` is what the account was charged, Perplexity's request fee included.
+    expect(await search({ cost: 0.0142, is_byok: false })).toMatchObject({ inputTokens: 11, outputTokens: 5, costUsd: 0.0142 });
+    // With the account's own provider key, OpenRouter's fee and the provider's charge add up.
+    expect((await search({ cost: 0.0007, cost_details: { upstream_inference_cost: 0.0135 }, is_byok: true }))?.costUsd)
+      .toBeCloseTo(0.0142, 12);
+    for (const usage of [{ cost: 0.0007, is_byok: true }, { cost: "0.01" }, { cost: -1 }, {}]) {
+      expect(await search(usage)).not.toHaveProperty("costUsd");
+    }
+    // A truncated search was still billed; its failure keeps the reported cost.
+    expect(await search({ cost: 0.009 }, { choices: [{ finish_reason: "length", message: { content: "Partial", role: "assistant" } }] }))
+      .toMatchObject({ inputTokens: 11, costUsd: 0.009 });
+  });
+
   it("keeps the provider's citation number on each source its findings cite", async () => {
     const citations = Array.from({ length: 15 }, (_, index) => `https://example.com/cited/${index + 1}`);
     // An unusable citation keeps the numbers of the ones after it.

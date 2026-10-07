@@ -1,4 +1,5 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import { normalizeTokenUsage } from "../../domain/usage";
 import { normalizeSearchSources } from "../search/evidence";
 import { openRouterChatToolBridge } from "../tools/bridges";
 import type { ModelToolCall } from "../tools/types";
@@ -48,6 +49,31 @@ export function extractOpenRouterUsage(response: OpenRouterResponseRecord): Mode
     includeCacheWrite: true,
     includeTopLevelReasoning: true
   });
+}
+
+function usd(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * What one response cost, as OpenRouter reports it: `usage.cost`, the amount
+ * charged to the account. With the account's own provider key (`is_byok`),
+ * that is OpenRouter's fee and the provider charges
+ * `cost_details.upstream_inference_cost` separately; the spend is their sum,
+ * unknown when either part is missing. Null when nothing valid is reported.
+ */
+export function extractOpenRouterReportedCostUsd(response: OpenRouterResponseRecord): number | null {
+  const usage = isOpenAIChatRecord(response.usage) ? response.usage : null;
+  const cost = usd(usage?.cost);
+  if (!usage || cost === null || usage.is_byok !== true) return cost;
+  const upstream = isOpenAIChatRecord(usage.cost_details) ? usd(usage.cost_details.upstream_inference_cost) : null;
+  return upstream === null ? null : cost + upstream;
+}
+
+/** Search usage keeps the reported cost: it includes OpenRouter's per-request
+ * search fees (Perplexity), which no token price or search count reports. */
+export function extractOpenRouterSearchUsage(response: OpenRouterResponseRecord): ModelRunUsage {
+  return normalizeTokenUsage({ ...extractOpenRouterUsage(response), costUsd: extractOpenRouterReportedCostUsd(response) });
 }
 
 function citationFromValue(

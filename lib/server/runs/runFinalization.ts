@@ -1,6 +1,6 @@
 import { RunSettlementError } from "./settlementFailure";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, type ModelTokenPricing } from "../../domain/usage";
+import { normalizeTokenUsage, sumEstimatedCostMicros, usageCostMicros, type ModelTokenPricing } from "../../domain/usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { logRunPersistence } from "./runObservability";
@@ -39,16 +39,21 @@ export type RunCompletionFinalizationResult =
       status: "not_completed";
     }>;
 
-function hasUsablePricing(pricing: ModelTokenPricing | null): pricing is ModelTokenPricing {
-  return Boolean(pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null));
-}
+const NO_PRICES: ModelTokenPricing = { inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null };
 
+/**
+ * The cost of one run attribution. Answer usage keeps its token prices plus
+ * the answer model's per-search fee for native web searches. Search usage
+ * (and any other non-answer attribution) prefers the cost its provider
+ * reported, else the engine model's token prices plus its per-search fee.
+ */
 export async function usageWithEstimatedCost(
   repository: Pick<RunRepository, "loadModelPricing">,
   input: Readonly<{
     providerModelId?: string;
     modelId: string;
     provider: string;
+    purpose?: RunUsageAttribution["purpose"];
     usage: ModelRunUsage;
   }>
 ): Promise<ModelRunUsage> {
@@ -56,7 +61,9 @@ export async function usageWithEstimatedCost(
   const pricing = input.providerModelId
     ? await repository.loadModelPricing(input.provider, input.modelId, input.providerModelId).catch(error => { throw new RunSettlementError("accounting", error); })
     : await repository.loadModelPricing(input.provider, input.modelId).catch(error => { throw new RunSettlementError("accounting", error); });
-  const estimatedCostMicros = hasUsablePricing(pricing) ? estimateCostMicros(normalizedUsage, pricing) : null;
+  const reportedCostUsd = input.purpose === undefined || input.purpose === "chat_answer" ? null : normalizedUsage.costUsd ?? null;
+  // The repository prices answer-class rows, which include every Search engine.
+  const estimatedCostMicros = usageCostMicros({ reportedCostUsd, usage: normalizedUsage, pricing: pricing ?? NO_PRICES, modelClass: "answer" });
 
   return {
     ...normalizedUsage,
@@ -76,6 +83,7 @@ export async function usageAttributionsWithEstimatedCost(
           ...(attribution.providerModelId ? { providerModelId: attribution.providerModelId } : {}),
           modelId: attribution.modelId,
           provider: attribution.provider,
+          purpose: attribution.purpose,
           usage: attribution.usage
         })
       ).estimatedCostMicros,

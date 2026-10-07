@@ -1,4 +1,4 @@
-import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTokenPricing";
+import { modelSearchPricing, modelSearchPricingSelect } from "../providers/modelTokenPricing";
 import { loadWorkspaceInboxFacts } from "../workspace/inboxFacts";
 import { decodeSearchPlan } from "../../domain/search";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
@@ -1880,15 +1880,14 @@ export function createPrismaRunRepository(
     interruptExpiredAgentRun: (input) => interruptExpiredAgentRun(prismaClient, input),
     loadModelPricing: async (provider, modelId, providerModelId) => {
       const models = await prismaClient.providerModel.findMany({
-        select: {
-          ...modelTokenPricingSelect
-        },
+        // Answers and Search engines can report the web searches they ran.
+        select: modelSearchPricingSelect,
         take: 2,
         where: { modelClass: "answer", ...(providerModelId ? { id: providerModelId } : { modelId, provider }) }
       }).catch(retainRunPrismaCode);
 
       return models.length === 1
-        ? modelTokenPricing(models[0])
+        ? modelSearchPricing(models[0])
         : null;
     },
     loadRunUsageAttributions: async (input) => {
@@ -1907,7 +1906,8 @@ export function createPrismaRunRepository(
           purpose: true,
           reasoningTokens: true,
           totalTokens: true,
-          usageCompleteness: true
+          usageCompleteness: true,
+          webSearchCount: true
         },
         where: { ...runAttributionUsageWhere(input.runId), userId: input.userId }
       }).catch(retainRunPrismaCode);
@@ -1926,7 +1926,8 @@ export function createPrismaRunRepository(
           reasoningTokens: row.reasoningTokens,
           totalTokens: row.totalTokens,
           completeness: row.usageCompleteness === "COMPLETE" ? "complete" :
-            row.usageCompleteness === "PARTIAL" ? "partial" : "unavailable"
+            row.usageCompleteness === "PARTIAL" ? "partial" : "unavailable",
+          ...(row.webSearchCount !== null ? { webSearchCount: row.webSearchCount } : {})
         }
       }));
     },

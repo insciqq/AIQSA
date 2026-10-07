@@ -220,7 +220,9 @@ describe("Anthropic Messages query-only Search adapter", () => {
         inputTokens: 7,
         outputTokens: 5,
         reasoningTokens: 1,
-        totalTokens: 12
+        totalTokens: 12,
+        // Each reported search is billed at the engine model's per-search price.
+        webSearchCount: 1
       }
     });
     expect(result.sources).toEqual([{
@@ -277,6 +279,8 @@ describe("Anthropic Messages query-only Search adapter", () => {
       return response;
     } });
     expect(physicalUsage.map((usage) => usage.totalTokens)).toEqual([3, 7]);
+    // Each physical message reports its own searches; the Agent bills them per request.
+    expect(physicalUsage.map((usage) => usage.webSearchCount)).toEqual([1, undefined]);
 
     expect(createMessage).toHaveBeenCalledTimes(2);
     const continuationBody = createMessage.mock.calls[1]?.[0] as {
@@ -302,7 +306,8 @@ describe("Anthropic Messages query-only Search adapter", () => {
       usage: {
         inputTokens: 6,
         outputTokens: 4,
-        totalTokens: 10
+        totalTokens: 10,
+        webSearchCount: 1
       }
     });
     expect(JSON.stringify(result)).not.toMatch(

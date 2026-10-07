@@ -69,6 +69,23 @@ describe("bounded Search receipt", () => {
     expect(decodeSearchObservationReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
   });
 
+  it("keeps each engine's reported web searches and cost, the evidence its row is priced from", () => {
+    const result = searchResult({ sources: 2, snippet: 10, title: 30, url: 40 });
+    const executions = (result.rawPreview!.searchExecutions as SearchExecutionEvidence[]).map((execution, index) => ({
+      ...execution, usage: index === 0 ? { ...execution.usage, webSearchCount: 2 } : { ...execution.usage, costUsd: 0.0142 } }));
+    const priced: ToolExecutionResult = { ...result, content: searchToolResultContent(executions),
+      rawPreview: { ...result.rawPreview, searchExecutions: executions } };
+    const persisted = searchExecutionsFromToolResult(JSON.parse(JSON.stringify(priced)) as ToolExecutionResult);
+    expect(persisted.map(execution => [execution.usage.webSearchCount, execution.usage.costUsd]))
+      .toEqual([[2, undefined], [undefined, 0.0142], [undefined, 0.0142]]);
+    const receipt = searchObservationReceipt(priced);
+    expect(decodeSearchObservationReceipt(JSON.parse(JSON.stringify(receipt)))?.executions.map(execution => execution.usage))
+      .toEqual(persisted.map(execution => execution.usage));
+    // A malformed reported cost is not usage evidence.
+    expect(decodeSearchObservationReceipt({ version: 1, executions: [{ ...receipt.executions[0], usage: { ...receipt.executions[0]!.usage, costUsd: "1" } }] }))
+      .toBeNull();
+  });
+
   it("never splits a code point when it shortens a snippet", () => {
     const receipt = searchObservationReceipt(searchResult({ sources: 12, snippet: 400, title: 120, url: 400, letter: "😀" }));
     const snippet = receipt.executions[0]!.sources[0]!.snippet!;

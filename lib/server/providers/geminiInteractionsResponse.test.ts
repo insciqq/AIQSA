@@ -217,9 +217,12 @@ describe("Gemini Interactions response normalization", () => {
         inputTokens: 10,
         outputTokens: 12,
         reasoningTokens: 7,
-        totalTokens: 22
+        totalTokens: 22,
+        // The answer's own Google Search query, billed on the answer row.
+        webSearchCount: 1
       }
     });
+    expect(normalized.events).toContainEqual({ data: expect.objectContaining({ inputTokens: 10, webSearchCount: 1 }), type: "usage" });
     const durableShape = JSON.stringify(normalized.result);
     expect(durableShape).not.toContain(suggestionsHtml);
     expect(durableShape).not.toContain(suggestionsProjection);
@@ -596,6 +599,8 @@ describe("Gemini Interactions response normalization", () => {
     expect(validated?.index).toBeGreaterThan(early?.index ?? -1);
     expect(tokenIndex).toBeGreaterThan(validated?.index ?? Number.MAX_SAFE_INTEGER);
     expect(normalized.result.finalText).toBe("Grounded stream");
+    // Without reported tokens the streamed answer still carries the query it ran.
+    expect(normalized.result.usage).toMatchObject({ completeness: "unavailable", webSearchCount: 1 });
     expect(JSON.stringify(normalized.events)).not.toContain("provider-css-canary");
     expect(JSON.stringify(normalized.events)).not.toContain("<style");
   });
