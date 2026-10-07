@@ -19,7 +19,8 @@ import {
   WorkspaceCodeAccessError,
   type WorkspaceCodeClaim,
   type WorkspaceCodeGatewayGrant,
-  type WorkspaceCodeGatewayStore
+  type WorkspaceCodeGatewayStore,
+  type WorkspaceCodeProjectAuthority
 } from "./codeMcpStore";
 
 /** Marks gateway refusals in a tool result, distinct from a tool's own error result. */
@@ -35,8 +36,11 @@ export type WorkspaceCodeMcpDependencies = Readonly<{
   inspectProject(userId: string, tools: SelectedTools): Promise<McpRunPlanResult>;
   materialize(userId: string, tools: SelectedTools, signal?: AbortSignal): Promise<McpRunPlanResult>;
   materializeProject(userId: string, tools: SelectedTools, signal?: AbortSignal): Promise<McpRunPlanResult>;
-  /** The Project run initiator's current role, rechecked for every request. */
-  projectAccess(input: Readonly<{ projectId: string; userId: string }>): Promise<boolean>;
+  /**
+   * Whether the Project run initiator still holds the run's accepted Project
+   * authority: rechecked with the bearer, before each step and every lease tick.
+   */
+  projectAccess(input: WorkspaceCodeProjectAuthority & Readonly<{ userId: string }>): Promise<boolean>;
   store: WorkspaceCodeGatewayStore;
 }>;
 
@@ -48,8 +52,15 @@ export function defaultWorkspaceCodeMcpDependencies(): WorkspaceCodeMcpDependenc
     inspectProject: (userId, tools) => defaultMcpRunPlan.inspectProject(userId, tools),
     materialize: (userId, tools, signal) => defaultMcpRunPlan.materialize(userId, tools, signal),
     materializeProject: (userId, tools, signal) => defaultMcpRunPlan.materializeProject(userId, tools, signal),
-    async projectAccess({ projectId, userId }) {
-      return Boolean(await resolveProjectAccess(prisma, { minimumRole: "CONTRIBUTOR", projectId, requireActive: true, userId }));
+    // The model path's rule (the run repository's `isProjectRunAccessCurrent`):
+    // a current contributor, at exactly the run's accepted Project revisions.
+    async projectAccess({ userId, ...accepted }) {
+      const access = await resolveProjectAccess(prisma, { minimumRole: "CONTRIBUTOR", projectId: accepted.projectId,
+        requireActive: true, userId });
+      return access?.accessRevision === accepted.accessRevision &&
+        access.instructionsRevision === accepted.instructionsRevision &&
+        access.memoryRevision === accepted.memoryRevision &&
+        access.policyRevision === accepted.policyRevision;
     },
     store: createPrismaWorkspaceCodeGatewayStore(prisma)
   };
@@ -175,16 +186,25 @@ export async function handleWorkspaceCodeMcpRequest(
   if (!grant) return refused();
   const invocationId = request.headers.get(WORKSPACE_CODE_INVOCATION_HEADER);
   if (!isWorkspaceCodeInvocationId(invocationId)) return invocationRefused();
-  if (grant.projectId && !(await dependencies.projectAccess({ projectId: grant.projectId, userId: grant.userId }))) {
-    return refused();
-  }
+  // The lease runs this before serving and every second while a request is
+  // open, so lost run, invocation or Project authority also ends a call in flight.
+  const assertActive = async () => {
+    await dependencies.store.assertActive(grant, invocationId);
+    if (grant.project && !(await dependencies.projectAccess({ ...grant.project, userId: grant.userId }))) {
+      throw new WorkspaceCodeAccessError("authority");
+    }
+  };
   try {
-    return await runWithContext({ run_id: grant.runId }, () => withAgentLease(request,
-      () => dependencies.store.assertActive(grant, invocationId),
-      (signal) => serve(request, signal, grant, invocationId, dependencies)));
+    return await runWithContext({ run_id: grant.runId }, () => withAgentLease(request, assertActive,
+      (signal) => serve(request, signal, grant, invocationId, assertActive, dependencies)));
   } catch (error) {
     return error instanceof WorkspaceCodeAccessError && error.reason === "invocation" ? invocationRefused() : refused();
   }
+}
+
+/** A refusal for authority the run lost: never the source's failure. */
+function lostAuthority(error: WorkspaceCodeAccessError): RefusalCode {
+  return error.reason === "invocation" ? "code_invocation_closed" : "code_token_revoked";
 }
 
 async function serve(
@@ -192,6 +212,7 @@ async function serve(
   signal: AbortSignal,
   grant: WorkspaceCodeGatewayGrant,
   invocationId: string,
+  assertGrantActive: () => Promise<void>,
   dependencies: WorkspaceCodeMcpDependencies
 ): Promise<Response> {
   let requestBodyRead = false;
@@ -204,9 +225,9 @@ async function serve(
     type Authority = Readonly<{ userId: string; assertActive(): Promise<void> }>;
     const authority: Authority = { userId: grant.userId, async assertActive() {
       signal.throwIfAborted();
-      await dependencies.store.assertActive(grant, invocationId);
+      await assertGrantActive();
     } };
-    const project = grant.projectId !== null;
+    const project = grant.project !== null;
     const catalog = grant.authority.kind === "catalog" ? grant.authority.catalog : catalogFromSnapshot(grant.authority.snapshot);
     const service = createMcpToolService<Authority>({
       catalog: async () => catalog,
@@ -262,16 +283,22 @@ async function serve(
         observe(result.isError ? "failed" : "completed", "result", result.isError ? "upstream_error" : undefined);
         return output;
       } catch (error) {
-        let code: McpHubServiceErrorCode = error instanceof McpHubServiceError ? error.code
+        let code: RefusalCode = error instanceof McpHubServiceError ? error.code
+          : error instanceof WorkspaceCodeAccessError ? lostAuthority(error)
           : signal.aborted ? "request_cancelled" : "upstream_unavailable";
         const sent = dispatched && !(error instanceof McpHubServiceError && error.refusedBeforeSend);
         if (!sent && code === "upstream_unavailable" && !signal.aborted) {
-          // The shared pipeline reports a lost sign-in as unavailable; tell
-          // the code (and scheduled source health) which one it is.
-          const selection = [{ namespacedName: tool.namespacedName, revisionId: tool.revisionId, serverId: tool.serverId }];
-          const current = await (project ? dependencies.inspectProject(grant.userId, selection)
-            : dependencies.inspect(grant.userId, selection)).catch(() => null);
-          if (current && signInRequired(current)) code = "authorization_required";
+          // The shared pipeline reports lost run authority and a lost sign-in
+          // as unavailable too; tell the code (and scheduled source health)
+          // which one it is, since only an outage or a sign-in is the source's.
+          const lost = await assertGrantActive().then(() => null, (failure: unknown) => failure);
+          if (lost instanceof WorkspaceCodeAccessError) code = lostAuthority(lost);
+          else {
+            const selection = [{ namespacedName: tool.namespacedName, revisionId: tool.revisionId, serverId: tool.serverId }];
+            const current = await (project ? dependencies.inspectProject(grant.userId, selection)
+              : dependencies.inspect(grant.userId, selection)).catch(() => null);
+            if (current && signInRequired(current)) code = "authorization_required";
+          }
         }
         // Sent and unreadable is a known error; anything else sent has an unknown outcome.
         const state = !sent ? "error" : code === "result_unsupported" ? "error" : "unknown";
