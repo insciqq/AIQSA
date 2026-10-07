@@ -498,9 +498,24 @@ describe("OpenAI-compatible embeddings", () => {
       secret: "openrouter-key"
     });
 
+    // The rejected response keeps what it reported, so its paid call can be accounted.
     await expect(adapter.embed({ mode: "document", texts: ["a", "b"] }))
-      .rejects.toMatchObject({ code });
+      .rejects.toMatchObject({ code, usage: { inputTokens: 12, totalTokens: 12, costUsd: null } });
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries no usage for a rejected response that reported none or malformed usage, or for an HTTP failure", async () => {
+    const rejected = async (response: Response) => createOpenAICompatibleEmbeddingAdapter({
+      connection: openRouterConnection, model: embeddingModel(), network: { fetchFn: async () => response }, secret: "openrouter-key"
+    }).embed({ mode: "document", texts: ["a", "b"] }).catch((error: unknown) => error);
+    expect(await rejected(providerResponse([vector(4_096)], { usage: {} })))
+      .toMatchObject({ code: "embedding_response_count_mismatch", usage: null });
+    expect(await rejected(providerResponse([vector(4_096)], { usage: { total_tokens: -1 } })))
+      .toMatchObject({ code: "embedding_response_invalid", usage: null });
+    expect(await rejected(providerResponse([vector(4_096)], { model: "other/model", usage: { cost: 0.0001 } })))
+      .toMatchObject({ code: "embedding_response_model_mismatch", usage: { inputTokens: null, costUsd: 0.0001 } });
+    expect(await rejected(new Response(JSON.stringify({ usage: { prompt_tokens: 12 } }), { status: 400 })))
+      .toMatchObject({ code: "embedding_provider_http_error", usage: null });
   });
 
   it("retries a transient upstream failure with Retry-After on the same route", async () => {
