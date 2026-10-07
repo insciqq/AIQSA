@@ -363,7 +363,8 @@ describe("administrator system model policy handlers", () => {
     expect(service.verifyRole).toHaveBeenCalledWith({
       role: "memory",
       providerModelId: "model-1",
-      signal: expect.any(AbortSignal)
+      signal: expect.any(AbortSignal),
+      userId: "user-1"
     });
     await expect(response.json()).resolves.toEqual({ systemModelPolicy: catalog });
   });

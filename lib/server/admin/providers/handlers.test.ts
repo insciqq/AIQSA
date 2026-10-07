@@ -155,7 +155,8 @@ describe("admin provider HTTP handlers", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ connections: [connection], unavailableModelIds: ["catalog-2"] });
     expect(backend.addCatalogModels).toHaveBeenCalledWith({ connectionId: "connection-1", credentialId: "credential-1",
-      expectedConnectionVersion: 2, expectedCredentialVersionId: "key-version", modelIds: ["catalog-1", "catalog-2"], signal: expect.any(AbortSignal) });
+      expectedConnectionVersion: 2, expectedCredentialVersionId: "key-version", modelIds: ["catalog-1", "catalog-2"], signal: expect.any(AbortSignal),
+      userId: "admin-1" });
     for (const patch of [{ expectedCredentialVersionId: null }, { modelIds: [] }, { expectedConnectionVersion: 0 }]) {
       expect((await handler(jsonRequest("http://localhost/actions", { ...body, ...patch }), { params: { connectionId: "connection-1" } })).status).toBe(400);
     }
@@ -411,7 +412,7 @@ describe("admin provider HTTP handlers", () => {
     expect(checked.status).toBe(201);
     expect(providerService.createModelDraft).toHaveBeenCalledTimes(2);
     expect(providerService.activateModel).toHaveBeenCalledWith({ connectionId: "connection-1", modelId: "model-new", expectedDraftVersion: 1,
-      signal: expect.any(AbortSignal), onProgress: undefined, onActivated: expect.any(Function) });
+      userId: "admin-1", signal: expect.any(AbortSignal), onProgress: undefined, onActivated: expect.any(Function) });
     expect((await create(
       jsonRequest("http://localhost/models", { ...body, activate: "yes" }),
       { params: { connectionId: "connection-1" } }
@@ -426,7 +427,7 @@ describe("admin provider HTTP handlers", () => {
     expect(updated.status).toBe(200);
     expect(providerService.updateModelDraft).toHaveBeenCalledWith(expect.objectContaining({ expectedDraftVersion: 1, modelId: "model-1" }));
     expect(providerService.activateModel).toHaveBeenLastCalledWith({ connectionId: "connection-1", modelId: "model-1", expectedDraftVersion: 2,
-      signal: expect.any(AbortSignal), onProgress: undefined, onActivated: expect.any(Function) });
+      userId: "admin-1", signal: expect.any(AbortSignal), onProgress: undefined, onActivated: expect.any(Function) });
   });
 
   it("starts, reads and cancels background checks without exposing anything but progress", async () => {
@@ -507,7 +508,8 @@ describe("provider settings Test & Save boundary", () => {
     const url = "http://localhost/api/admin/providers/connection-1";
     const response = await handler(jsonRequest(url, body, "PATCH"), { params: { connectionId: "connection-1" } });
     expect(response.status).toBe(200);
-    expect(providerService.saveConnectionSettings).toHaveBeenCalledWith(expect.objectContaining({ credentialSecrets: body.credentialSecrets }));
+    expect(providerService.saveConnectionSettings).toHaveBeenCalledWith(expect.objectContaining({ credentialSecrets: body.credentialSecrets,
+      userId: "admin-1" }));
     expect(await response.text()).not.toContain("replacement-private-value");
     const unauthenticated = createAdminProviderConnectionUpdateHandler({ resolveAuth: resolver(null), service: providerService });
     expect((await unauthenticated(jsonRequest(url, body, "PATCH"), { params: { connectionId: "connection-1" } })).status).toBe(401);
