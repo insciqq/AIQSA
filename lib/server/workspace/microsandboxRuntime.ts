@@ -51,7 +51,8 @@ import { isWorkspaceEnvName, WORKSPACE_SECRET_ENV_MAX_BYTES, WORKSPACE_BROWSER_S
 import { INSTALL_WORKSPACE_SECRETS, READ_WORKSPACE_SECRET_ENV } from "./secrets/guest";
 import { isWorkspaceCodeInvocationId, parseWorkspaceRunEnvironment, WORKSPACE_CODE_INVOCATION_ENV,
   WORKSPACE_RUN_ENVIRONMENT_MAX_BYTES } from "./codeMcp";
-import { WORKSPACE_GUEST_COMMAND_DEFAULTS } from "./guestCache";
+import { BOUND_WORKSPACE_UV_CACHE, parseWorkspaceUvCacheBoundOutcome, WORKSPACE_GUEST_COMMAND_DEFAULTS, WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS,
+  type WorkspaceUvCacheBoundOutcome } from "./guestCache";
 import { INSTALL_WORKSPACE_GUIDES } from "./guideGuest";
 import { workspaceGuideInput } from "./guides";
 import { LIST_WORKSPACE_BROWSER_SESSIONS } from "./secrets/browserGuest";
@@ -1207,10 +1208,41 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       });
       input.signal?.throwIfAborted();
       session.secretEnvironment = { modelRunId: input.modelRunId, values: environment };
+      if (input.boundUvCache) {
+        await this.boundUvCache(session, input.signal);
+        input.signal?.throwIfAborted();
+      }
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
       if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
       throw new WorkspaceRuntimeError("workspace_secrets_prepare_failed");
+    }
+  }
+
+  /**
+   * One bounded run of the fixed cache helper. Every failure is logged
+   * content-free and ignored; only an unproven guest stop after cancellation
+   * propagates, like every other fenced guest operation.
+   */
+  private async boundUvCache(session: LocalSession, signal: AbortSignal | undefined): Promise<void> {
+    const startedAt = Date.now();
+    let outcome: WorkspaceUvCacheBoundOutcome = "failed";
+    try {
+      // The SDK timeout kills the helper but does not bound its native promise.
+      const result = await this.withGuestOperation(session, signal, () => readStreamWithAbort(() => session.sandbox.execWith("/bin/sh",
+        builder => builder.args(["-c", BOUND_WORKSPACE_UV_CACHE]).timeout(WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS)),
+      AbortSignal.timeout(WORKSPACE_UV_CACHE_BOUND_TIMEOUT_MS + 5_000)));
+      if (result.success) outcome = parseWorkspaceUvCacheBoundOutcome(result.stdout());
+    } catch (error) {
+      if (error instanceof WorkspaceRuntimeError && error.code === "workspace_execution_cleanup_failed") throw error;
+      if (signal?.aborted) return;
+    }
+    if (outcome === "pruned") {
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "cleanup", outcome: "completed",
+        code: "workspace_uv_cache_pruned", duration_ms: Date.now() - startedAt });
+    } else if (outcome === "failed") {
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "cleanup", outcome: "degraded", action: "skip",
+        code: "workspace_uv_cache_prune_failed", duration_ms: Date.now() - startedAt });
     }
   }
 
