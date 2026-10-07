@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceRunAdmissionPlan } from "./admission";
 import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "./browserGuidance";
-import { WORKSPACE_GUIDE_FILES } from "./guides";
+import { WORKSPACE_GUIDE_FILES, WORKSPACE_GUIDE_PATHS } from "./guides";
 import { WORKSPACE_NO_REPLAY_SAFETY, workspacePromptContract } from "./promptContract";
 
 const workspace: WorkspaceRunAdmissionPlan = {
@@ -29,6 +29,7 @@ describe("Workspace capability contract", () => {
     expect(text).toContain("Do not claim that a file was created or a check passed until a tool verified it.");
     expect(text).toContain("/workspace/SECRETS.md");
     expect(text).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
+    expect(text).toContain(`Before building, changing or saving a reusable script Skill, read ${WORKSPACE_GUIDE_PATHS.skills}.`);
     for (const file of WORKSPACE_GUIDE_FILES) {
       expect(text.split(file.path)).toHaveLength(2);
       expect(text).not.toContain(file.content);

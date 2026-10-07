@@ -4,6 +4,7 @@ import { decodeSkillSaveCard } from "../../contracts/skillSaves";
 import type { AcceptedWorkspaceSecret } from "../workspace/secrets/store";
 import type { SkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
+import { WORKSPACE_GUIDE_PATHS } from "../workspace/guides";
 import { createSkillBundle, parseSkillMarkdown } from "../skills/bundle";
 import { skillSaveCardChanges } from "../skills/skillSave";
 import {
@@ -13,6 +14,7 @@ import {
   parseSkillSaveFiles,
   parseSkillSaveTarget,
   skillSavedResult,
+  saveSkillTool,
   skillSaveToolsForRequest,
   type SkillSaveCommitter
 } from "./skillSave";
@@ -68,6 +70,10 @@ describe("save_skill admission helpers", () => {
     expect(skillSaveToolsForRequest({ skillSaveTool: true })).toEqual([]);
     expect(isSkillSaveCall(request, "save_skill")).toBe(true);
     expect(isSkillSaveCall({ workspace }, "save_skill")).toBe(false);
+  });
+
+  it("points the model at the Skill authoring guide before it builds a folder", () => {
+    expect(saveSkillTool.description).toContain(`read ${WORKSPACE_GUIDE_PATHS.skills}.`);
   });
 
   it("accepts project and this run's output folders, never managed copies or escapes", () => {
