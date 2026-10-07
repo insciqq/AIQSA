@@ -2776,7 +2776,7 @@ describe("Prisma-backed run repository", () => {
       await expect(repository.loadProviderModelCostBasis(modelId)).resolves.toEqual({
         modelClass: "embedding",
         pricing: { inputTokenPriceUsdPerMillion: 0.13, cachedInputTokenPriceUsdPerMillion: null,
-          cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null }
+          cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null, webSearchPriceUsdPerThousand: null }
       });
       await expect(repository.loadProviderModelCostBasis(`${modelId}-deleted`)).resolves.toBeNull();
     } finally {
