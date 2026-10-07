@@ -12,6 +12,7 @@ import { createProviderSafeFetch } from "./providerSafeFetch";
 import { resolveProviderCredentialSource, type ProviderCredentialSource } from "./providerCredentialSource";
 import { isProviderDeadlineExceededError, ProviderResponseTooLargeError, readBoundedResponseText, withTimeoutSignal } from "./network";
 import { imageFailureDiagnostic } from "./imageFailure";
+import { reportedUsageCostUsd } from "./reportedUsageCost";
 
 export type ImageGenerationInput = { bytes: Uint8Array; mimeType: GeneratedImageMimeType };
 export type ImageGenerationRequest = {
@@ -24,6 +25,8 @@ export type ImageGenerationUsage = {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  /** USD this image cost as the provider reported it (`reportedUsageCostUsd`);
+   * null when it reported none or a malformed amount. */
   costUsd: number | null;
 };
 export type ImageGenerationResult = {
@@ -78,7 +81,7 @@ function responseUsage(value: unknown, gemini: boolean): ImageGenerationUsage {
       ? count(usage.total_output_tokens) === null ? null : count(Number(usage.total_output_tokens) + (count(usage.total_thought_tokens) ?? 0))
       : count(usage.output_tokens ?? usage.completion_tokens),
     totalTokens: count(usage.total_tokens),
-    costUsd: typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0 ? usage.cost : null
+    costUsd: reportedUsageCostUsd(usage) ?? null
   };
 }
 

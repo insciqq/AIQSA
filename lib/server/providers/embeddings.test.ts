@@ -164,6 +164,13 @@ describe("OpenAI-compatible embeddings", () => {
       .resolves.toMatchObject({ usage: { inputTokens: 5, totalTokens: 5, costUsd: 5e-8 } });
     await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost: 0 })).resolves.toMatchObject({ usage: { costUsd: 0 } });
     await expect(embed({ prompt_tokens: 5 })).resolves.toMatchObject({ usage: { inputTokens: 5, costUsd: null } });
+    // BYOK: OpenRouter's fee plus what the upstream provider billed the installation's key.
+    await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost: 2.5e-9, is_byok: true,
+      cost_details: { upstream_inference_cost: 5e-8 } })).resolves.toMatchObject({ usage: { costUsd: 5.25e-8 } });
+    await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost: 2.5e-9, is_byok: true }))
+      .resolves.toMatchObject({ usage: { costUsd: null } });
+    await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost: 2.5e-9, is_byok: true,
+      cost_details: { upstream_inference_cost: -1 } }).catch(errorCode)).resolves.toBe("embedding_response_invalid");
     for (const cost of [-0.01, "0.0001", null, true, {}]) {
       await expect(embed({ prompt_tokens: 5, total_tokens: 5, cost }).catch(errorCode)).resolves.toBe("embedding_response_invalid");
     }
