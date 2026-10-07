@@ -13,7 +13,8 @@ const card: ScheduledTaskCard = {
 const listed: ScheduledTask = {
   id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.", schedule: card.schedule, timeZone: "Europe/Moscow",
   modelId: "model-1", provider: "connection-1", searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: true,
-  memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
+  memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 0,
+  historyNextDeletionAt: null, status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 1,
   createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
 };

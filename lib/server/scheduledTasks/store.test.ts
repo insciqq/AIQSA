@@ -24,7 +24,7 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
     ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }),
     id: "task-1", title: "Morning brief", prompt: "Synthetic prompt", timeZone: "Europe/Moscow", modelId: "model-1",
     provider: "connection-1", searchEnabled: false, emailNotify: true, toolsEnabled: true, workspaceEnabled: false,
-    memoryEnabled: true, pinnedSkillIds: [], chatMode: "NEW",
+    memoryEnabled: true, pinnedSkillIds: [], chatMode: "NEW", historyRetentionDays: 90, historyDeletedChats: 0,
     kind: "STANDARD", status: "ACTIVE", pauseReason: null, completionReason: null,
     nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
     createdAt: new Date("2026-10-01T00:00:00.000Z"), updatedAt: new Date("2026-10-02T06:01:00.000Z"),
@@ -91,15 +91,21 @@ describe("scheduled task storage mapping", () => {
     ];
     const findMany = vi.fn(async ({ where }: { where: { unseenAt?: unknown } }) =>
       where.unseenAt ? [{ taskId: "alert" }, { taskId: "quiet" }] : []);
-    const client = { $queryRaw: vi.fn(async () => settled), scheduledTaskOccurrence: { findMany } };
+    // The settled runs, then the history retention's next deletion per task.
+    const $queryRaw = vi.fn().mockResolvedValueOnce(settled).mockResolvedValueOnce([{ dueAt: at(30), taskId: "alert" }]);
+    const client = { $queryRaw, scheduledTaskOccurrence: { findMany } };
     const activity = await loadScheduledTaskActivity(client as unknown as PrismaClient, "user-1", ["alert", "quiet", "idle"]);
     expect(activity.get("alert")).toEqual({
+      historyNextDeletionAt: at(30).toISOString(),
       lastRun: { scheduledFor: at(0).toISOString(), state: "completed", reasonCode: "could_not_check", finishedAt: at(1).toISOString(),
         unseen: true },
       running: false, unseen: true
     });
-    expect(activity.get("quiet")).toMatchObject({ lastRun: { reasonCode: "no_update", unseen: false }, unseen: true });
-    expect(activity.get("idle")).toEqual({ lastRun: null, running: false, unseen: false });
+    expect(activity.get("quiet")).toMatchObject({ historyNextDeletionAt: null, lastRun: { reasonCode: "no_update", unseen: false },
+      unseen: true });
+    expect(activity.get("idle")).toEqual({ historyNextDeletionAt: null, lastRun: null, running: false, unseen: false });
+    expect(toScheduledTask(row(), activity.get("alert")!)).toMatchObject({ historyDeletedChats: 0,
+      historyNextDeletionAt: at(30).toISOString(), historyRetentionDays: 90 });
     const task = toScheduledTask(row(), activity.get("quiet")!);
     expect(decodeScheduledTask(task)).toEqual(task);
     expect(task).toMatchObject({ lastRun: { unseen: false }, unseenResult: true });

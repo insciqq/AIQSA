@@ -25,7 +25,7 @@ import type {
   ScheduledTaskManagementOutcome
 } from "../runs/runRepositoryContract";
 import { isFetchUrlDigestList } from "./fetchUrlPlan";
-import { localInstant } from "./scheduledTaskCreation";
+import { localInstant, scheduledTaskToolHistoryText } from "./scheduledTaskCreation";
 import { resolveScheduledTaskSkillReferences, scheduledTaskModelSkills } from "./scheduledTaskSkills";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
@@ -64,7 +64,11 @@ const ACTIONS = ["list", "get", "update", "pause", "resume", "propose_delete"] a
 export const SCHEDULED_TASK_MANAGED_SWITCHES = [
   "searchEnabled", "emailNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled"
 ] as const satisfies readonly (keyof ScheduledTaskDraft & keyof ScheduledTask)[];
-/** Everything `update` may change; the model stays the editor's. `skills` replaces the pinned Skills. */
+/**
+ * Everything `update` may change; the model stays the editor's, and so does
+ * the history retention: a shorter one deletes old chats, which only the
+ * owner decides. `skills` replaces the pinned Skills.
+ */
 const UPDATE_KEYS: readonly string[] = [
   "title", "prompt", "kind", "chatMode", "timeZone", "schedule", ...SCHEDULED_TASK_MANAGED_SWITCHES, "skills"
 ];
@@ -290,7 +294,9 @@ function modelTask(task: ScheduledTask) {
     taskId: task.id, title: task.title, kind: task.kind, status: task.status, schedule: task.schedule, timeZone: task.timeZone,
     nextRun: localInstant(task.nextRunAt, task.timeZone), chatMode: task.chatMode,
     ...Object.fromEntries(SCHEDULED_TASK_MANAGED_SWITCHES.map((key) => [key, task[key]])),
-    skills: scheduledTaskModelSkills(task)
+    skills: scheduledTaskModelSkills(task),
+    // Read only: the owner changes it with Edit.
+    oldChatsKept: scheduledTaskToolHistoryText(task.historyRetentionDays)
   };
 }
 

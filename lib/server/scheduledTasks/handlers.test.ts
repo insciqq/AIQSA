@@ -16,13 +16,14 @@ const catalog: ScheduledTaskCatalog = {
 const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
   modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard"
+  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90
 } as const;
 const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
 function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
     ...draft, pinnedSkillIds: [], id: "task-1", schedule: { kind: "daily", time: "09:00" }, status: "active", pauseReason: null,
+    historyDeletedChats: 0, historyNextDeletionAt: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
     unseenResult: false, revision: 2,
     createdAt: "2026-10-01T08:00:00.000Z", updatedAt: "2026-10-01T08:00:00.000Z", ...overrides
@@ -386,6 +387,32 @@ describe("scheduled tasks owner API", () => {
     expect(lastWrite(plain)).toMatchObject({ draft: { memoryEnabled: false, title: "Renamed" } });
     const malformed = await plain.handlers.update(patch({ expectedRevision: 2, memoryEnabled: "off" }), "task-1");
     expect([malformed.status, await malformed.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
+  });
+
+  it("keeps 90 days of a new task's old chats unless the owner chooses, and changes it without a model check", async () => {
+    const f = fixture();
+    const { historyRetentionDays: _omitted, ...withoutHistory } = draft;
+    await f.handlers.create(json("POST", withoutHistory));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ historyRetentionDays: 90 }),
+      expect.any(Date), []);
+    await f.handlers.create(json("POST", { ...draft, historyRetentionDays: null }));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ historyRetentionDays: null }),
+      expect.any(Date), []);
+    for (const historyRetentionDays of [0, 60, "90"]) {
+      const refused = await f.handlers.create(json("POST", { ...draft, historyRetentionDays }));
+      expect([refused.status, await refused.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
+    }
+    // A legacy task keeps everything until its owner chooses; forever is a choice, not an omission.
+    const legacy = fixture(task({ historyRetentionDays: null, modelId: "model-plain", nextRunAt: null, searchEnabled: false,
+      status: "paused", toolsEnabled: false }));
+    expect((await legacy.handlers.update(patch({ expectedRevision: 2, historyRetentionDays: 30 }), "task-1")).status).toBe(200);
+    expect(lastWrite(legacy)).toMatchObject({ draft: { historyRetentionDays: 30 }, status: "paused" });
+    expect(legacy.loadCatalog).not.toHaveBeenCalled();
+    await legacy.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(legacy)).toMatchObject({ draft: { historyRetentionDays: null, title: "Renamed" } });
+    const kept = fixture(task({ historyRetentionDays: 365 }));
+    await kept.handlers.update(patch({ expectedRevision: 2, historyRetentionDays: null }), "task-1");
+    expect(lastWrite(kept)).toMatchObject({ draft: { historyRetentionDays: null } });
   });
 
   it("wakes the runner after create and update", async () => {

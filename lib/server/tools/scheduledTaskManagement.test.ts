@@ -35,7 +35,8 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     id: "task-1", title: "Report reminder", prompt: "Remind me to send the weekly report.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
     modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", status: "active", pauseReason: null,
+    workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: null,
+    historyDeletedChats: 0, historyNextDeletionAt: null, status: "active", pauseReason: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 4,
     createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-01T10:00:00.000Z", ...overrides
   };
@@ -90,6 +91,16 @@ describe("manage_scheduled_task tool", () => {
     const hinted = manageScheduledTaskTool({ chatTask: { taskId: "4f1c2a9e-7b3d-4e8a-9c21-5d6f7a8b9c0d",
       title: "Еженедельный отчёт о продажах и складских остатках для руководства" } });
     expect(size(hinted)).toBeLessThanOrEqual(660);
+  });
+
+  it("leaves the history retention to the owner: a shorter one deletes old chats", async () => {
+    expect(Object.keys((manageScheduledTaskTool(marker).inputSchema as { properties: object }).properties))
+      .not.toContain("historyRetentionDays");
+    const manage = vi.fn<ScheduledTaskCallManager>();
+    const refused = await executeManageScheduledTask(call({ action: "update", taskId: "task-1", historyRetentionDays: 30 }),
+      context(), manage);
+    expect(refused).toMatchObject({ status: "error", content: [{ value: { error: "scheduled_task_arguments_invalid" } }] });
+    expect(manage).not.toHaveBeenCalled();
   });
 
   it("decodes only the exact frozen marker", () => {
@@ -352,8 +363,8 @@ describe("management results", () => {
       { taskId: "task-1", title: "Report reminder", kind: "standard", status: "active",
         schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
         nextRun: "Mon 2026-10-05 09:00", chatMode: "new", searchEnabled: false, emailNotify: false, toolsEnabled: true,
-        workspaceEnabled: false, memoryEnabled: true, skills: [] },
-      expect.objectContaining({ taskId: "task-2", kind: "monitoring", status: "paused", nextRun: null })
+        workspaceEnabled: false, memoryEnabled: true, skills: [], oldChatsKept: "forever" },
+      expect.objectContaining({ taskId: "task-2", kind: "monitoring", status: "paused", nextRun: null, oldChatsKept: "forever" })
     ] } }]);
     expect(JSON.stringify(result.content)).not.toMatch(/weekly report\.|deployment-1|revision/u);
   });

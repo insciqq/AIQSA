@@ -30,7 +30,7 @@ function task(overrides: Partial<ScheduledTask>): ScheduledTask {
     schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
     workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: "standard", status: "active", pauseReason: null,
-    completionReason: null,
+    historyRetentionDays: 90, historyDeletedChats: 0, historyNextDeletionAt: null, completionReason: null,
     nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
     chatId: null, unseenResult: false, revision: 1,
     createdAt: "2026-09-20T08:00:00.000Z", updatedAt: "2026-09-20T08:00:00.000Z",
@@ -350,7 +350,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard"
+    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90
   } }]);
   await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
   await expect(panel.getByText("“Weekly planning” is scheduled.")).toBeVisible();
@@ -545,7 +545,7 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   const workspace = dialog.getByRole("switch", { name: "Workspace", exact: true });
   await expect(tools).toHaveAttribute("aria-checked", "true");
   await expect(workspace).toHaveAttribute("aria-checked", "true");
-  await expect(workspace).toHaveAccessibleDescription("Runs share this task's Workspace, so its files stay from run to run.");
+  await expect(workspace).toHaveAccessibleDescription("Runs share this task's Workspace, so its files stay from run to run and move to each new month's chat.");
   const runs = dialog.getByRole("region", { name: "Recent runs", exact: true });
   const entries = runs.getByRole("listitem");
   await expect(entries).toHaveCount(runsFixture.tickets!.length);
@@ -600,7 +600,7 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
   await expect(create.getByRole("switch", { name: "Tools (MCP and Skills)", exact: true })).toHaveAttribute("aria-checked", "true");
   await expect(create.getByRole("switch", { name: "Workspace", exact: true })).toHaveAttribute("aria-checked", "false");
   await expect(create.getByRole("switch", { name: "Workspace", exact: true }))
-    .toHaveAccessibleDescription("Runs share this task's Workspace, so its files stay from run to run.");
+    .toHaveAccessibleDescription("Runs share this task's Workspace, so its files stay from run to run and move to each new month's chat.");
   // A new task reads Memory; the owner's own Memory settings decide what any run may read.
   await expect(create.getByRole("switch", { name: "Use Memory", exact: true })).toHaveAttribute("aria-checked", "true");
   await create.getByRole("button", { name: "Create task", exact: true }).click();

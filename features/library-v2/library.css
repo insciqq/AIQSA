@@ -1806,6 +1806,8 @@
 .v2-scheduled-row-status[data-tone="live"] { color: var(--v2-color-accent-text); }
 .v2-scheduled-row-status[data-tone="attention"], .v2-scheduled-row-last[data-tone="attention"] { color: var(--v2-color-warn); }
 .v2-scheduled-row-last { color: var(--v2-color-text3); }
+.v2-scheduled-row-history { color: var(--v2-color-text2); }
+.v2-scheduled-row-copy .v2-scheduled-row-history-hint { color: var(--v2-color-text3); font-size: 0.75rem; }
 .v2-scheduled-row-kind { color: var(--v2-color-text2); }
 .v2-scheduled-row-error { color: var(--v2-color-danger); }
 .v2-scheduled-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; padding-top: 0.25rem; }
