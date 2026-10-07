@@ -2,6 +2,7 @@ import {
   SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD,
   SCHEDULED_TASK_RUN_DEADLINE_MINUTES,
   SCHEDULED_TASK_WEEKDAYS,
+  SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
   isScheduledTaskCheckOutcome,
   isScheduledTaskRunIncomplete,
   scheduledTaskErrorMessage,
@@ -145,6 +146,7 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "chat_busy": return "the task's chat was busy with another answer";
     case "previous_running": return "the previous run was still in progress";
     case "superseded": return "a newer scheduled time arrived before it could start";
+    case "workspace_capacity": return "no Workspace slot became free in time; other scheduled runs were using Workspace";
     case "model_unavailable": return "the model was unavailable";
     case "search_unavailable": return "web search was unavailable with this model";
     case "provider_unavailable": return "the model's provider was unavailable";
@@ -170,17 +172,24 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
   }
 }
 
+/** A pending run waiting for a free scheduled Workspace slot, as a row and the status line say it. */
+export const SCHEDULED_TASK_WORKSPACE_WAIT_TEXT = "Waiting for a free Workspace slot";
+
+/** The editor's note on recurring schedules: a run starts shortly after the shown time (the dispatch spread). */
+export const SCHEDULED_TASK_SPREAD_NOTE = "Starts within 3 minutes of the scheduled time.";
+
 export type ScheduledTaskStatusLine = Readonly<{
   text: string;
   tone: "neutral" | "live" | "attention";
 }>;
 
 /**
- * The one status sentence a row shows: next run, running, paused (with
- * reason) or completed, and why when a monitoring check reached its goal.
+ * The one status sentence a row shows: next run, running (or waiting for a
+ * free Workspace slot), paused (with reason) or completed, and why when a
+ * monitoring check reached its goal.
  */
 export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Date()): ScheduledTaskStatusLine {
-  if (task.running) return { text: "Running now", tone: "live" };
+  if (task.running) return { text: task.waitingForWorkspace ? SCHEDULED_TASK_WORKSPACE_WAIT_TEXT : "Running now", tone: "live" };
   if (task.status === "completed") {
     return { text: task.completionReason === "goal_reached" ? "Goal reached — completed" : "Completed", tone: "neutral" };
   }
@@ -215,7 +224,7 @@ function outcomeText(state: ScheduledTaskRun["state"], reasonCode: string | null
     case "failed": return `Failed: ${scheduledTaskRunReasonText("failed", reasonCode)}`;
     case "skipped": return `Skipped: ${scheduledTaskRunReasonText("skipped", reasonCode)}`;
     case "running": return "Running";
-    case "pending": return "Starting";
+    case "pending": return reasonCode === SCHEDULED_TASK_WORKSPACE_WAIT_CODE ? SCHEDULED_TASK_WORKSPACE_WAIT_TEXT : "Starting";
   }
 }
 

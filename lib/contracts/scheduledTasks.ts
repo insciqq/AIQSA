@@ -25,6 +25,17 @@ export const SCHEDULED_TASK_SEEN_RUNS_LIMIT = 50;
 export const SCHEDULED_TASK_RUN_DEADLINE_MINUTES = 30;
 /** Scheduled runs in a row that complete without a relevant source before the task pauses (`source_unavailable`). */
 export const SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD = 3;
+/**
+ * The reason a pending run carries while it waits for a free scheduled
+ * Workspace slot (the installation's cap, or a runner capacity refusal). A
+ * wait, not a failure; the next start attempt clears it.
+ */
+export const SCHEDULED_TASK_WORKSPACE_WAIT_CODE = "waiting_for_workspace";
+/**
+ * The skip of a run still waiting for a Workspace slot when its window ended.
+ * Like every skip it never counts toward the failure pause.
+ */
+export const SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE = "workspace_capacity";
 /** Unavailable sources one run records; at most the enabled MCP servers of one plan. */
 export const SCHEDULED_TASK_UNAVAILABLE_SOURCES_LIMIT = 64;
 /** Code points of a recorded source name; longer display names are shortened with an ellipsis. */
@@ -191,6 +202,11 @@ export type ScheduledTask = {
   lastRun: ScheduledTaskLastRun | null;
   /** A pending or running occurrence exists. */
   running: boolean;
+  /**
+   * A pending run of this task is waiting for a free scheduled Workspace slot
+   * (`SCHEDULED_TASK_WORKSPACE_WAIT_CODE`). Absent otherwise.
+   */
+  waitingForWorkspace?: true;
   /**
    * The newest chat a run used while it is usable: the one to open. Null before
    * the first run or after its deletion. Every run keeps its own `chatId`.
@@ -573,8 +589,9 @@ function pinnedSkills(value: unknown, ids: readonly string[]): ScheduledTaskPinn
 
 export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   if (!record(value)) return null;
-  const { promptLinksPending, pinnedSkills: projectedSkills, ...fields } = value;
-  if (!keys(fields, TASK_KEYS) || (promptLinksPending !== undefined && promptLinksPending !== true)) return null;
+  const { promptLinksPending, pinnedSkills: projectedSkills, waitingForWorkspace, ...fields } = value;
+  if (!keys(fields, TASK_KEYS) || (promptLinksPending !== undefined && promptLinksPending !== true) ||
+    (waitingForWorkspace !== undefined && (waitingForWorkspace !== true || value.running !== true))) return null;
   const pinnedSkillIds = decodeScheduledTaskPinnedSkillIds(value.pinnedSkillIds);
   if (!pinnedSkillIds || (pinnedSkillIds.length > 0 && value.toolsEnabled !== true)) return null;
   const skills = projectedSkills === undefined ? undefined : pinnedSkills(projectedSkills, pinnedSkillIds);
@@ -609,7 +626,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     lastRun: run && {
       scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt, unseen: run.unseen
     },
-    running: value.running, chatId: value.chatId, unseenResult: value.unseenResult,
+    running: value.running, ...(waitingForWorkspace ? { waitingForWorkspace: true as const } : {}), chatId: value.chatId,
+    unseenResult: value.unseenResult,
     ...(promptLinksPending ? { promptLinksPending: true as const } : {}), revision: value.revision,
     createdAt: value.createdAt, updatedAt: value.updatedAt
   };
@@ -753,6 +771,8 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "previous_running": return "Skipped: the previous run was still in progress.";
     case "superseded": return "Skipped: a newer scheduled time arrived before this run could start.";
     case "chat_busy": return "Skipped: the task's chat was busy.";
+    case "waiting_for_workspace": return "Waiting for a free Workspace slot: other scheduled runs are using Workspace.";
+    case "workspace_capacity": return "Skipped: no Workspace slot became free in time; other scheduled runs were using Workspace.";
     case "paused": return "Skipped: the task was paused.";
     case "admission_failed": return "The run could not start.";
     case "run_unavailable": return "The task's chat was deleted before the run finished.";

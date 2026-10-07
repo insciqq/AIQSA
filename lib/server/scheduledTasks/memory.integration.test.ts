@@ -47,6 +47,8 @@ function runner() {
   const deps = sendDeps();
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
+    // Due tasks start at once here; the spread has its own tests.
+    dispatchOffsetMs: () => 0,
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
     loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
     async renameChat(input) { await chats.updateChat(input); },

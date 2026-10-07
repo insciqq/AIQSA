@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
-import type { PrismaClient, WorkspaceSessionState } from "@prisma/client";
+import { Prisma, type PrismaClient, type WorkspaceSessionState } from "@prisma/client";
+import { SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE } from "@/lib/contracts/scheduledTasks";
 import {
   WORKSPACE_OVERVIEW_PAGE_SIZE,
   type WorkspaceOverviewFilter,
+  type WorkspaceOverviewFootprint,
   type WorkspaceOverviewRow,
   type WorkspaceOverviewState,
   type WorkspaceOverviewWire
 } from "@/lib/contracts/workspaceOverview";
+import { workspaceDiskPinnedByScheduledTaskSql } from "./cleanup";
 import { WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE, type WorkspaceRuntime, type WorkspaceRuntimeInventoryPage } from "./runtime";
 
 const MAX_SESSIONS = 10_000;
@@ -21,10 +24,47 @@ export type WorkspaceOverviewRecord = Readonly<{
   state: WorkspaceSessionState;
   user: string | null;
 }>;
-export type WorkspaceOverviewRepository = Readonly<{ read(): Promise<readonly WorkspaceOverviewRecord[]> }>;
+export type WorkspaceOverviewRepository = Readonly<{
+  read(): Promise<readonly WorkspaceOverviewRecord[]>;
+  /** Content-free disk and scheduled capacity counts at `now`; absent where they are not kept. */
+  footprint?(now: Date): Promise<WorkspaceOverviewFootprint>;
+}>;
 
-export function createPrismaWorkspaceOverviewRepository(prisma: Pick<PrismaClient, "workspaceSession">): WorkspaceOverviewRepository {
+/** The window of the scheduled capacity counts. */
+const FOOTPRINT_WINDOW_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * `retentionSeconds` (the Workspace configuration's) adds the footprint
+ * counts: the disk pin they share with cleanup is measured against it.
+ */
+export function createPrismaWorkspaceOverviewRepository(
+  prisma: Pick<PrismaClient, "$queryRaw" | "workspaceSession">,
+  options: Readonly<{ retentionSeconds?: number }> = {}
+): WorkspaceOverviewRepository {
+  const retentionSeconds = options.retentionSeconds;
   return {
+    ...(retentionSeconds !== undefined ? {
+      async footprint(now: Date): Promise<WorkspaceOverviewFootprint> {
+        const pinnedAfter = new Date(now.getTime() - retentionSeconds * 1_000);
+        const since = new Date(now.getTime() - FOOTPRINT_WINDOW_MS);
+        // A disk exists once its environment was created, until deletion starts.
+        const [row] = await prisma.$queryRaw<WorkspaceOverviewFootprint[]>(Prisma.sql`
+          SELECT
+            count(*)::int AS "retainedDisks",
+            count(*) FILTER (WHERE ${workspaceDiskPinnedByScheduledTaskSql(Prisma.sql`ws."chatId"`, pinnedAfter)})::int
+              AS "scheduledDisks",
+            (SELECT count(*) FROM "ScheduledTaskOccurrence" AS occurrence
+              WHERE occurrence."workspaceWaitStartedAt" >= ${since})::int AS "scheduledWaits",
+            (SELECT count(*) FROM "ScheduledTaskOccurrence" AS occurrence
+              WHERE occurrence."state" = 'SKIPPED'::"ScheduledTaskOccurrenceState"
+                AND occurrence."reasonCode" = ${SCHEDULED_TASK_WORKSPACE_CAPACITY_CODE} AND occurrence."finishedAt" >= ${since})::int AS "scheduledSkips"
+          FROM "WorkspaceSession" AS ws
+          WHERE ws."state" <> 'DELETING'::"WorkspaceSessionState"
+            AND (ws."state" <> 'PENDING'::"WorkspaceSessionState" OR ws."runtimeSandboxId" IS NOT NULL)
+        `);
+        return row ?? { retainedDisks: 0, scheduledDisks: 0, scheduledSkips: 0, scheduledWaits: 0 };
+      }
+    } : {}),
     async read() {
       const records = await prisma.workspaceSession.findMany({
         orderBy: { id: "asc" },
@@ -53,6 +93,7 @@ export function createPrismaWorkspaceOverviewRepository(prisma: Pick<PrismaClien
 
 type Snapshot = Readonly<{
   activeCount: number | null;
+  footprint: WorkspaceOverviewFootprint | null;
   observedAt: string | null;
   rows: readonly WorkspaceOverviewRow[];
   state: WorkspaceOverviewWire["state"];
@@ -77,7 +118,12 @@ function rowState(record: WorkspaceOverviewRecord | null, observed: Observation 
   return observed.state === "created" ? "not_started" : "stopped";
 }
 
-function project(records: readonly WorkspaceOverviewRecord[], observations: readonly Observation[] | null, now: number): Snapshot {
+function project(
+  records: readonly WorkspaceOverviewRecord[],
+  observations: readonly Observation[] | null,
+  now: number,
+  footprint: WorkspaceOverviewFootprint | null
+): Snapshot {
   const byId = new Map(observations?.map((entry) => [entry.runtimeSandboxId, entry]));
   const byName = new Map(observations?.map((entry) => [entry.sandboxName, entry]));
   const used = new Set<string>();
@@ -98,6 +144,7 @@ function project(records: readonly WorkspaceOverviewRecord[], observations: read
     // Draining and paused VMs still exist in memory. Transitions are a separate,
     // potentially overlapping count, not an addend to this observation.
     activeCount: observations?.filter((entry) => ["running", "draining", "paused"].includes(entry.state)).length ?? null,
+    footprint,
     observedAt: observations ? new Date(now).toISOString() : null,
     rows,
     state: observations ? "fresh" : "unavailable",
@@ -146,7 +193,7 @@ export function createWorkspaceOverviewService(input: Readonly<{
   function unavailable(): Snapshot {
     return lastGood
       ? { ...lastGood, state: "stale", updatedAt: new Date(now()).toISOString() }
-      : project([], null, now());
+      : project([], null, now(), null);
   }
 
   async function snapshot(): Promise<Snapshot> {
@@ -156,13 +203,16 @@ export function createWorkspaceOverviewService(input: Readonly<{
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       // Retain the shared pending operation until its actual I/O settles, even
       // when a caller times out; a stuck SDK must not create overlapping scans.
-      pending = Promise.allSettled([input.repository.read(), observe(controller.signal)])
-        .then(([database, runtime]) => {
+      pending = Promise.allSettled([input.repository.read(), observe(controller.signal),
+        input.repository.footprint ? input.repository.footprint(new Date(now())) : Promise.resolve(null)])
+        .then(([database, runtime, counts]) => {
           if (database.status === "rejected") throw new Error("workspace_overview_unavailable");
           const records = database.value;
           const observations = runtime.status === "fulfilled" ? runtime.value : null;
+          // The counts are a separate read: their failure leaves them unknown, never the activity.
+          const footprint = counts.status === "fulfilled" ? counts.value : null;
           const value = observations === null && lastGood
-            ? unavailable() : project(records, observations, now());
+            ? unavailable() : project(records, observations, now(), footprint);
           if (value.state === "fresh") lastGood = value;
           cached = { expiresAt: now() + (input.cacheTtlMs ?? 5_000), value };
           return value;
@@ -188,7 +238,7 @@ export function createWorkspaceOverviewService(input: Readonly<{
         : value.rows.filter((row) => row.state !== "stopped" && row.state !== "not_started");
       const page = Math.min(options.page, Math.max(1, Math.ceil(rows.length / WORKSPACE_OVERVIEW_PAGE_SIZE)));
       return {
-        activeCount: value.activeCount, filter: options.filter, observedAt: value.observedAt, page,
+        activeCount: value.activeCount, filter: options.filter, footprint: value.footprint, observedAt: value.observedAt, page,
         pageSize: WORKSPACE_OVERVIEW_PAGE_SIZE,
         rows: rows.slice((page - 1) * WORKSPACE_OVERVIEW_PAGE_SIZE, page * WORKSPACE_OVERVIEW_PAGE_SIZE),
         state: value.state, stoppedCount: value.stoppedCount, totalCount: rows.length,

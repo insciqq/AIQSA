@@ -17,8 +17,12 @@ import {
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
   SCHEDULED_TASK_RUN_DEADLINE_CODE,
   SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE,
+  SCHEDULED_TASK_WORKSPACE_WAIT_CODE,
+  SCHEDULED_WORKSPACE_MAX_CONCURRENT_DEFAULT,
   classifySendRefusal,
   pausingOutcome,
+  scheduledDispatchNotBefore,
+  scheduledTaskDispatchOffsetMs,
   settlementNotifiesOwner,
   type ScheduledTaskOutcome,
   type ScheduledTaskPauseReason
@@ -30,6 +34,8 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   appBaseUrl: string;
   /** Detaches an execution from the tick; defaults to a plain promise. */
   background?: (work: () => Promise<void>) => Promise<void>;
+  /** A task's dispatch offset for recurring schedules; defaults to its stable 0–180 s spread. */
+  dispatchOffsetMs?: (taskId: string) => number;
   /**
    * Captures the `/workspace/project` of the chat a rotation leaves into a
    * seed for the new chat; without it a Workspace task's rotation waits.
@@ -55,6 +61,11 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   stopRun: (input: Readonly<{ code: string; message: string; runId: string; userId: string }>) =>
     Promise<"stopped" | "not_cancelable" | "not_found">;
   store: ScheduledTaskRunnerStore;
+  /**
+   * Scheduled runs with Workspace on at once, installation-wide; occurrences
+   * over it wait for a slot. Interactive runs keep the runner's remaining capacity.
+   */
+  workspaceMaxConcurrent?: number;
 }>;
 
 const BATCH = 50;
@@ -166,6 +177,8 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
   const clock = deps.now ?? (() => new Date());
   const newId = deps.newId ?? randomUUID;
   const background = deps.background ?? ((work) => work());
+  const offsetMs = deps.dispatchOffsetMs ?? scheduledTaskDispatchOffsetMs;
+  const workspaceCap = deps.workspaceMaxConcurrent ?? SCHEDULED_WORKSPACE_MAX_CONCURRENT_DEFAULT;
   const inFlight = new Map<string, Promise<void>>();
   /** Deadline stops in progress, by run, so a later tick does not stop a run twice. */
   const stopping = new Map<string, Promise<void>>();
@@ -347,6 +360,11 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         : { reasonCode: "admission_failed", state: "FAILED" });
     }
     const refusal = classifySendRefusal(response.status, code);
+    if (refusal.kind === "wait") {
+      log({ code: SCHEDULED_TASK_WORKSPACE_WAIT_CODE, job_id: occurrence.id, outcome: "waiting", stage: "retry" });
+      await deps.store.waitForWorkspace(occurrence.id, clock());
+      return "retry";
+    }
     if (refusal.kind === "retry") {
       log({ ...(refusal.reasonCode ? { code: refusal.reasonCode } : {}), job_id: occurrence.id, outcome: "waiting", stage: "retry" });
       await deps.store.retryLater(occurrence.id, refusal.reasonCode);
@@ -410,15 +428,31 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     }).catch(() => undefined).finally(() => { sweeping = null; });
   }
 
+  /**
+   * Starts admissions oldest instant first within the caps: installation-wide,
+   * per owner and, for tasks with Workspace on, the scheduled Workspace cap.
+   * A recurring occurrence waits for its task's spread first; one over the
+   * Workspace cap is shown waiting for a slot and keeps its place.
+   */
   async function dispatch(now: Date): Promise<void> {
-    const { executing, pending } = await deps.store.loadDispatch(now, BATCH * 2);
+    const { executing, pending, workspaceExecuting } = await deps.store.loadDispatch(now, BATCH * 2);
     const perUser = new Map(executing);
     let total = [...perUser.values()].reduce((sum, count) => sum + count, 0);
+    let workspace = workspaceExecuting;
     for (const candidate of pending) {
       if (total >= SCHEDULED_TASK_MAX_EXECUTING) break;
       if (inFlight.has(candidate.id) || (perUser.get(candidate.userId) ?? 0) >= SCHEDULED_TASK_MAX_EXECUTING_PER_USER) continue;
+      if (scheduledDispatchNotBefore(candidate, offsetMs).getTime() > now.getTime()) continue;
+      if (candidate.workspace && workspace >= workspaceCap) {
+        if (!candidate.waiting) {
+          log({ code: SCHEDULED_TASK_WORKSPACE_WAIT_CODE, job_id: candidate.id, outcome: "waiting", stage: "dispatch" });
+          await deps.store.waitForWorkspace(candidate.id, now);
+        }
+        continue;
+      }
       if (!await deps.store.acquireLease(candidate.id, now, new Date(now.getTime() + SCHEDULED_TASK_ADMISSION_LEASE_MS))) continue;
       total += 1;
+      if (candidate.workspace) workspace += 1;
       perUser.set(candidate.userId, (perUser.get(candidate.userId) ?? 0) + 1);
       log({ job_id: candidate.id, outcome: "started", stage: "dispatch" });
       const execution = background(() => execute(candidate.id)).finally(() => inFlight.delete(candidate.id));

@@ -7359,6 +7359,9 @@ model ScheduledTaskOccurrence {
   /// plan could not offer, `[{ serverId, name, reason, relied }]`; null when none was
   /// missing. Such a run is incomplete. Display names only, never tool content.
   unavailableSources Json?
+  /// When the occurrence first waited for a scheduled Workspace slot; kept after
+  /// the wait ends, for the administrator's content-free capacity counts.
+  workspaceWaitStartedAt DateTime?
   createdAt      DateTime                     @default(now())
   task           ScheduledTask                @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
   /// The migration uses column-scoped SET NULL for chat and run references.

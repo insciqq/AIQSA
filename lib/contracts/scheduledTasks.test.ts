@@ -71,7 +71,11 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTask(reached)).toEqual(reached);
     // Instructions whose links runs cannot read yet carry only a flag.
     expect(decodeScheduledTask({ ...task, promptLinksPending: true })).toEqual({ ...task, promptLinksPending: true });
+    // A pending run waiting for a Workspace slot is a flag on a running task only.
+    expect(decodeScheduledTask({ ...task, running: true, waitingForWorkspace: true }))
+      .toEqual({ ...task, running: true, waitingForWorkspace: true });
     for (const candidate of [
+      { ...task, running: false, waitingForWorkspace: true }, { ...task, running: true, waitingForWorkspace: false },
       { ...task, promptLinksPending: false }, { ...task, promptLinksPending: ["a".repeat(64)] },
       { ...task, extra: true }, { ...task, status: "paused" }, { ...task, title: " Morning brief" },
       { ...task, lastRun: { ...task.lastRun, state: "running" } }, { ...task, lastRun: { ...task.lastRun, unseen: undefined } },

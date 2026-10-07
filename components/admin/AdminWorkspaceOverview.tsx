@@ -11,6 +11,10 @@ const statusLabels: Record<WorkspaceOverviewState, string> = {
   running: "Working", starting: "Starting", stopped: "Stopped", stopping: "Stopping", unknown: "Unknown"
 };
 
+function plural(count: number, noun: string) {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
+
 function observedTime(value: string) {
   return <time dateTime={value}>{new Date(value).toLocaleString()}</time>;
 }
@@ -105,6 +109,14 @@ export function AdminWorkspaceOverview() {
           </p>
           <p className="mt-1 text-xs leading-5 text-ink-muted">
             Each chat has its own environment. Active includes idle, paused, and stopping environments while they remain live.
+          </p>
+          <p className="mt-3 text-xs leading-5 text-ink-secondary" data-testid="workspace-footprint">
+            {overview.footprint ? <>
+              {plural(overview.footprint.retainedDisks, "disk")} kept · {overview.footprint.scheduledDisks} kept for scheduled tasks
+              <br />
+              Scheduled runs in the last 24 hours: {overview.footprint.scheduledWaits} waited for a free Workspace slot ·{" "}
+              {overview.footprint.scheduledSkips} skipped because none became free
+            </> : "Disk and scheduled run counts are unavailable."}
           </p>
         </>
       ) : !error ? <p className="mt-3 text-sm text-ink-muted" role="status">Loading Workspace activity…</p> : null}

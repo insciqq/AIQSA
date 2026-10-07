@@ -339,7 +339,10 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "hourly" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
     const error = await within(sheet).findByText(/up to 3 active hourly tasks/u);
-    expect(within(sheet).getByRole("group", { name: "Schedule" })).toHaveAttribute("aria-describedby", error.id);
+    // The group names the recurring start spread and the error.
+    const spread = within(sheet).getByTestId("scheduled-task-spread-hint");
+    expect(spread).toHaveTextContent("Starts within 3 minutes of the scheduled time.");
+    expect(within(sheet).getByRole("group", { name: "Schedule" })).toHaveAttribute("aria-describedby", `${spread.id} ${error.id}`);
     expect(update).toHaveBeenCalledWith(task.id, {
       expectedRevision: 1, chatMode: "same",
       schedule: { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
