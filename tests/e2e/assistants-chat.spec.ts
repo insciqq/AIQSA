@@ -390,7 +390,7 @@ test("the blank chat strip offers pinned then Featured once each and no recents;
     await captureState(page, testInfo, "chat-blank-strip", {
       atEachSize: async ({ size }) => {
         const layout = await stripLayout(strip);
-        expect(layout.rows, sizeLabel(size)).toBeLessThanOrEqual(2);
+        expect(layout.rows, sizeLabel(size)).toBe(1);
         expect(layout.lastLabel, sizeLabel(size)).toBe("All Assistants…");
         expect(layout.right, sizeLabel(size)).toBeLessThanOrEqual(size.width);
         await expectNoHorizontalOverflow(page);
@@ -1262,7 +1262,7 @@ test("chat list rows of bound chats show the 16 px avatar and rows without a usa
   });
 });
 
-test("at 390×844 the strip takes two rows without page scroll, the picker is a bottom sheet that keeps focus, and the composer chips wrap whole · A-22", async ({ browser }, testInfo) => {
+test("at 390×844 the strip takes one row without page scroll, the picker is a bottom sheet that keeps focus, and the composer chips wrap whole · A-22", async ({ browser }, testInfo) => {
   test.setTimeout(300_000);
   await withFixtures(async ({ assistants, people }) => {
     const user = await chatUser(people, "Phone user");
@@ -1277,7 +1277,7 @@ test("at 390×844 the strip takes two rows without page scroll, the picker is a 
     const strip = page.getByTestId("assistant-strip");
     await expect(strip.getByRole("button", { name: "All Assistants…" })).toBeVisible();
     const layout = await stripLayout(strip);
-    expect(layout.rows, "two rows on a phone").toBe(2);
+    expect(layout.rows, "one row on a phone").toBe(1);
     expect(layout.lastLabel).toBe("All Assistants…");
     expect(layout.left).toBeGreaterThanOrEqual(0);
     expect(layout.right).toBeLessThanOrEqual(390);
