@@ -1,3 +1,4 @@
+import type { BrowserPushMessage } from "../../contracts/browserPush";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { browserPushMessage } from "./payload";
@@ -86,12 +87,13 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
     return shown && shown.expiresAt > clock().getTime() ? shown.sessions : new Set();
   }
 
-  async function deliver(event: BrowserPushEvent, target: BrowserPushTarget, keys: VapidKeyPair, jobId: string): Promise<void> {
+  /** Posts one message to one device; the caller records the outcome. */
+  async function post(message: BrowserPushMessage, target: BrowserPushTarget, keys: VapidKeyPair, jobId: string): Promise<BrowserPushDeliveryOutcome> {
     let status: number | undefined;
     let outcome: BrowserPushDeliveryOutcome;
     try {
       const endpoint = new URL(target.endpoint);
-      const body = encryptWebPushPayload(Buffer.from(JSON.stringify(browserPushMessage(event))), {
+      const body = encryptWebPushPayload(Buffer.from(JSON.stringify(message)), {
         auth: Buffer.from(target.auth, "base64url"), p256dh: Buffer.from(target.p256dh, "base64url")
       });
       ({ status } = await deps.post({
@@ -119,7 +121,11 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
         httpStatus: status, job_id: jobId, stage: "dispatch"
       });
     }
-    await deps.store.recordDelivery(target, outcome, clock());
+    return outcome;
+  }
+
+  async function deliver(event: BrowserPushEvent, target: BrowserPushTarget, keys: VapidKeyPair, jobId: string): Promise<void> {
+    await deps.store.recordDelivery(target, await post(browserPushMessage(event), target, keys, jobId), clock());
   }
 
   async function send(queued: QueuedEvent): Promise<void> {
@@ -179,6 +185,41 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
      */
     notifyRun(runId: string): void {
       enqueue({ dueAt: clock().getTime() + RUN_PUSH_GRACE_MS, id: runId, kind: "run" });
+    },
+    /**
+     * Sends a ready message to the user's live devices now, outside the event
+     * queue, and resolves to the number of devices that accepted it (0 when
+     * push is unavailable). The caller owns at-most-once delivery.
+     */
+    async sendMessage(userId: string, message: BrowserPushMessage, jobId: string): Promise<number> {
+      let keys: VapidKeyPair;
+      try {
+        keys = await deps.keys();
+      } catch {
+        log({ action: "skip", code: "push_keys_unavailable", job_id: jobId, outcome: "skipped", stage: "claim" });
+        return 0;
+      }
+      let targets: readonly BrowserPushTarget[];
+      try {
+        targets = await deps.store.listTargets(userId, clock());
+      } catch (error) {
+        log({ action: "skip", code: "push_repository_failed", job_id: jobId, outcome: "failed",
+          prisma_code: databaseFailureCode(error), stage: "claim" });
+        return 0;
+      }
+      let delivered = 0;
+      for (const target of targets) {
+        const outcome = await post(message, target, keys, jobId);
+        if (outcome === "delivered") delivered += 1;
+        try {
+          await deps.store.recordDelivery(target, outcome, clock());
+        } catch (error) {
+          // Subscription health is observational; the device's outcome stands.
+          log({ action: "skip", code: "push_repository_failed", job_id: jobId, outcome: "failed",
+            prisma_code: databaseFailureCode(error), stage: "dispatch" });
+        }
+      }
+      return delivered;
     },
     /** A settled scheduled occurrence that notifies its owner. */
     notifyOccurrence(occurrenceId: string): void {
