@@ -145,18 +145,27 @@ async function activateUser(
 }
 
 /**
+ * Whether an email may stand for its owner: the source verified it, or the operator trusts this
+ * method's unverified emails. Only such an email links to, approves or claims an account email.
+ */
+function emailTrusted(input: ExternalIdentityInput): boolean {
+  return input.emailVerified || input.policy.trustUnverifiedEmail;
+}
+
+/**
  * Activates a pending account when admission vouches for it: an enabled access rule for the
- * account's email, or the source's groups admission (already passed). False keeps it pending.
+ * account's trusted email, or the source's groups admission (already passed). False keeps it
+ * pending.
  */
 async function activatePendingUser(
   tx: Prisma.TransactionClient,
   policy: ExternalIdentityPolicy,
-  input: { normalizedEmail: string; userId: string }
+  input: { emailTrusted: boolean; normalizedEmail: string; userId: string }
 ): Promise<boolean> {
   let groups: ProvisioningGroupInput[] = [];
 
   if (policy.admission.kind === "access_rules") {
-    const approval = await findEnabledAccessRuleMatch(tx, input.normalizedEmail);
+    const approval = input.emailTrusted ? await findEnabledAccessRuleMatch(tx, input.normalizedEmail) : null;
 
     if (!approval) {
       return false;
@@ -314,6 +323,7 @@ async function settleKnownSubject(
   if (
     identity.user.status !== "active" &&
     !(await activatePendingUser(tx, input.policy, {
+      emailTrusted: identity.emailVerifiedAt !== null || input.policy.trustUnverifiedEmail,
       normalizedEmail: identity.normalizedEmail,
       userId: identity.userId
     }))
@@ -370,9 +380,11 @@ async function settleNewIdentity(
     });
   }
 
+  const trusted = emailTrusted(input);
+
   // Linking reaches an existing account only through an email the source verified, or one
   // the operator explicitly trusts for this method.
-  if (user && !input.emailVerified && !input.policy.trustUnverifiedEmail) {
+  if (user && !trusted) {
     return { status: "account_conflict" };
   }
 
@@ -383,7 +395,7 @@ async function settleNewIdentity(
   let approval: ApprovalMatch | null = null;
 
   if (input.policy.admission.kind === "access_rules" && user?.status !== "active") {
-    approval = await findEnabledAccessRuleMatch(tx, normalizedEmail);
+    approval = trusted ? await findEnabledAccessRuleMatch(tx, normalizedEmail) : null;
 
     if (!user && !approval) {
       return { status: "not_allowed" };
@@ -403,10 +415,12 @@ async function settleNewIdentity(
     });
   }
 
+  // An account created from an untrusted email does not claim the address: a later verified
+  // sign-in or registration for it must never link into this subject's account.
   user ??= await tx.user.create({
     data: {
       displayName,
-      email: normalizedEmail,
+      email: trusted ? normalizedEmail : null,
       role: "user",
       status: "pending"
     }
@@ -441,10 +455,10 @@ async function settleNewIdentity(
 
 /**
  * Settles one external sign-in (OIDC, LDAP, SAML, trusted header, Google, Yandex) inside the
- * caller's transaction. The source's subject, never its mutable email, finds a linked identity;
- * a new identity links to an existing account by email only when the source verified the email
- * or the policy trusts unverified ones, and a new account is created only when admission passed
- * and the policy creates users.
+ * caller's transaction. The source's subject, never its mutable email, finds a linked identity.
+ * Only a trusted email (verified by the source, or trusted by the policy) links a new identity
+ * to an existing account, counts for access rules, or becomes a new account's email. A new
+ * account is created only when admission passed and the policy creates users.
  *
  * Lock order, shared by every external sign-in:
  *   1. the normalized email (advisory, `lockAuthRegistrationEmail`);
