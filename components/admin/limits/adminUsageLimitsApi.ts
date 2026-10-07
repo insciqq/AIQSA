@@ -37,6 +37,11 @@ function json(method: "PATCH" | "PUT", body: unknown, signal?: AbortSignal): Req
   return { body: JSON.stringify(body), headers: { "content-type": "application/json" }, method, signal };
 }
 
+/** A first save sends no version: it expects nothing saved yet. */
+function versioned<T extends Readonly<{ expectedVersion: number | null }>>({ expectedVersion, ...rest }: T) {
+  return expectedVersion === null ? rest : { ...rest, expectedVersion };
+}
+
 export function requestAdminUsageLimits(signal?: AbortSignal, fetcher: Fetcher = fetch): Promise<AdminUsageLimitsResult> {
   return send(BASE, { method: "GET", signal }, fetcher);
 }
@@ -53,7 +58,7 @@ export function saveGroupUsageLimits(
   input: AdminUsageGroupLimitsInput,
   fetcher: Fetcher = fetch
 ): Promise<AdminUsageLimitsResult> {
-  return send(`${BASE}/groups/${encodeURIComponent(groupId)}`, json("PUT", input), fetcher);
+  return send(`${BASE}/groups/${encodeURIComponent(groupId)}`, json("PUT", versioned(input)), fetcher);
 }
 
 export function saveUserUsageLimits(
@@ -61,11 +66,17 @@ export function saveUserUsageLimits(
   input: AdminUsageUserLimitsInput,
   fetcher: Fetcher = fetch
 ): Promise<AdminUsageLimitsResult> {
-  return send(`${BASE}/users/${encodeURIComponent(userId)}`, json("PUT", input), fetcher);
+  return send(`${BASE}/users/${encodeURIComponent(userId)}`, json("PUT", versioned(input)), fetcher);
 }
 
-export function removeUserUsageLimits(userId: string, fetcher: Fetcher = fetch): Promise<AdminUsageLimitsResult> {
-  return send(`${BASE}/users/${encodeURIComponent(userId)}`, { method: "DELETE" }, fetcher);
+/** Removes the override saved at `expectedVersion`; a newer one answers `usage_limits_stale`. */
+export function removeUserUsageLimits(
+  userId: string,
+  expectedVersion: number | null,
+  fetcher: Fetcher = fetch
+): Promise<AdminUsageLimitsResult> {
+  const query = expectedVersion === null ? "" : `?expectedVersion=${expectedVersion}`;
+  return send(`${BASE}/users/${encodeURIComponent(userId)}${query}`, { method: "DELETE" }, fetcher);
 }
 
 export function usageLimitsErrorMessage(code: string): string {

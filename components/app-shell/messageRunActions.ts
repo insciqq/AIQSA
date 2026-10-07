@@ -973,7 +973,7 @@ export function useMessageRunActions({
       )
     ];
     let sendOutcome: "cancelled" | "failed" | "succeeded" = "failed";
-    let sendContextTooLarge = false;
+    let sendFailureCode: string | null = null;
     let sendFailureMessage: string | null = null;
     let sendFailureLive = true;
     let sendFailureHandled = false;
@@ -1174,7 +1174,7 @@ export function useMessageRunActions({
       });
       await reconcileBranchConflict(chatIdForSend, result.failureCode);
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
-      sendContextTooLarge = result.failureCode === "context_too_large";
+      sendFailureCode = result.failureCode ?? null;
       sendFailureMessage = result.failureMessage ?? null;
       sendRejectionMessage = assistantChangedRefusal(chatIdForSend, result)
         ? ASSISTANT_CHANGED_SEND_COPY
@@ -1218,7 +1218,7 @@ export function useMessageRunActions({
           : null,
         sendFailureLive,
         sendRunId,
-        sendContextTooLarge
+        sendFailureCode
       );
     }
   }

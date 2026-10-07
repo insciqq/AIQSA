@@ -1,6 +1,7 @@
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { create } from "zustand";
 import { randomUUID } from "@/lib/browser/randomUUID";
+import { isUsageLimitRefusalCode } from "@/lib/contracts/usageLimits";
 import { MAX_PENDING_COMMENTS, type ComposerCommentRefusal, type PendingCommentAnchor, type PendingComposerComment } from "./composerComments";
 import { composerInputFitsStoredRecord } from "./composerDraftStorage";
 
@@ -154,7 +155,8 @@ type ComposerSessionStore = {
     error?: string | null,
     operationErrorLive?: boolean,
     runId?: string | null,
-    contextTooLarge?: boolean
+    /** The refusal's stable code: it marks an oversized context and the refusals Retry cannot fix. */
+    failureCode?: string | null
   ): boolean;
   finishUpload(key: ComposerSessionKey, generation: number, error: string | null): boolean;
   isEditCurrent(token: ComposerEditToken): boolean;
@@ -682,7 +684,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       ...(clearEdit ? { artifactEdit: null } : {}), ...(clearCreate ? { artifactCreate: null } : {}) } } });
     return true;
   },
-  finishSend(token, outcome, error = null, operationErrorLive = true, runId = null, contextTooLarge = false) {
+  finishSend(token, outcome, error = null, operationErrorLive = true, runId = null, failureCode = null) {
     const state = get();
     const sourceSession = state.sessionsByKey[token.sourceKey];
     const key =
@@ -707,6 +709,10 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     // part: the refused text goes back ahead of it, so neither is lost.
     const restore = outcome === "failed" && runId === null;
     const newerInput = inputAddedDuringSend(session);
+    const contextTooLarge = failureCode === "context_too_large";
+    // A usage limit refuses the same draft again until it resets or is raised:
+    // the draft and the reason stay, without a Retry that cannot succeed.
+    const retryable = !isUsageLimitRefusalCode(failureCode);
     const restoredDraft = [pending.draft, newerInput ? session.draft : ""]
       .filter((part) => part.length > 0)
       .join("\n\n");
@@ -738,7 +744,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           contextRejectionGeneration: restore && !newerInput && contextTooLarge ? token.generation : null,
           operationError: restore ? error : null,
           operationErrorLive: restore ? operationErrorLive : true,
-          operationErrorRetryable: restore && !newerInput && Boolean(error),
+          operationErrorRetryable: restore && !newerInput && Boolean(error) && retryable,
           pendingSend: null
         }
       }

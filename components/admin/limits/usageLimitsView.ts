@@ -31,7 +31,12 @@ export function formatLimitValue(field: UsageLimitField, value: number | null): 
   return field === "monthlyBudgetMicros" ? formatUsdLimit(value) : value.toLocaleString("en-US");
 }
 
-export type UsageBudgetState = "near" | "none" | "ok" | "reached" | "zero";
+/** What a conflict shows next to a field: the value saved meanwhile by someone else. */
+export function savedLimitText(field: UsageLimitField, value: number | null): string {
+  return `Saved: ${formatLimitValue(field, value) ?? "not set"}`;
+}
+
+export type UsageBudgetState ="near" | "none" | "ok" | "reached" | "zero";
 
 /** A zero budget blocks on purpose; it is not a budget that ran out. */
 export function usageBudgetState(spent: number, budget: number | null): UsageBudgetState {

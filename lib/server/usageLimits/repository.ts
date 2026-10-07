@@ -4,6 +4,7 @@ import type {
   AdminUsageInstallationLimitsInput,
   AdminUsageLimits,
   AdminUsageUserLimitsInput,
+  AdminUsageUserOverride,
   UsageInstallationLimits,
   UsageLimitValues,
   UsageUserLimits
@@ -22,19 +23,29 @@ const INSTALLATION = "installation";
 
 /**
  * Everything `decideUsageAdmission` reads besides the run itself: add
- * `interactive` and `now`. `installationSpentMicros` is only read against a
- * cap, so it stays 0 without one instead of summing the whole month.
+ * `interactive` and `now`. Spend and message counts are read only when a
+ * limit could refuse: `installationSpentMicros` stays 0 without a pooled cap,
+ * and a user no per-user limit applies to reads 0 spend and empty windows.
  */
 export type UsageLimitStatus = Omit<UsageAdmissionFacts, "interactive" | "now">;
 
+/**
+ * A versioned group or user save: `stale` when the row's version is not the
+ * expected one (`null` expects no row), `not_found` when the group or user
+ * does not exist.
+ */
+export type UsageLimitWriteResult = "not_found" | "stale" | "written";
+
 export type UsageLimitsRepository = Readonly<{
-  /** Removes a user's override; `false` when the user does not exist. */
-  deleteUserLimits(input: Readonly<{ targetUserId: string }>): Promise<boolean>;
+  /** Removes a user's override saved at `expectedVersion` (`null` expects none: nothing to do). */
+  deleteUserLimits(input: Readonly<{ expectedVersion: number | null; targetUserId: string }>): Promise<UsageLimitWriteResult>;
   loadUsageLimitStatus(userId: string, now: Date): Promise<UsageLimitStatus>;
-  /** Replaces a group's allowance (all fields unset removes it); `false` when the group does not exist. */
-  putGroupLimits(input: Readonly<{ groupId: string; limits: AdminUsageGroupLimitsInput; userId: string }>): Promise<boolean>;
-  /** Replaces a user's override (nothing set and not exempt removes it); `false` when the user does not exist. */
-  putUserLimits(input: Readonly<{ limits: AdminUsageUserLimitsInput; targetUserId: string; userId: string }>): Promise<boolean>;
+  /** Replaces a group's allowance (all fields unset removes it). */
+  putGroupLimits(input: Readonly<{ groupId: string; limits: AdminUsageGroupLimitsInput; userId: string }>):
+    Promise<UsageLimitWriteResult>;
+  /** Replaces a user's override (nothing set and not exempt removes it). */
+  putUserLimits(input: Readonly<{ limits: AdminUsageUserLimitsInput; targetUserId: string; userId: string }>):
+    Promise<UsageLimitWriteResult>;
   readAdminUsageLimits(now: Date): Promise<AdminUsageLimits>;
   /** `null` when `expectedVersion` is no longer current. */
   updateInstallation(input: AdminUsageInstallationLimitsInput & Readonly<{ userId: string }>):
@@ -46,7 +57,9 @@ type Database = Pick<
   "$executeRaw" | "$queryRaw" | "$transaction" | "group" | "usageLimit" | "usageLimitPolicy" | "usageMessageAdmission" | "user"
 >;
 type Reader = Pick<Prisma.TransactionClient, "usageLimitPolicy">;
+type Writer = Pick<Prisma.TransactionClient, "$queryRaw" | "usageLimit">;
 type Month = ReturnType<typeof utcMonthPeriod>;
+type Target = Readonly<{ groupId: string }> | Readonly<{ userId: string }>;
 
 type StoredValues = Readonly<{
   messagesPerDay: number | null;
@@ -59,6 +72,8 @@ const UNSET: UsageLimitValues = { messagesPerDay: null, messagesPerHour: null, m
 
 /** What the migration inserts: no limits. A missing singleton reads as this row. */
 const DEFAULT_INSTALLATION: UsageInstallationLimits = { ...UNSET, monthlyCapMicros: null, version: 1 };
+
+const NO_MESSAGES: UsageMessageWindow = { count: 0, freesAt: null };
 
 // BigInt columns are bounded by database checks far below 2^53.
 function micros(value: bigint | null): number | null {
@@ -87,13 +102,92 @@ function utcTimestamp(value: Date): Prisma.Sql {
   return Prisma.sql`(${value}::timestamptz AT TIME ZONE 'UTC')`;
 }
 
-async function readInstallation(db: Reader): Promise<UsageInstallationLimits> {
-  const row = await db.usageLimitPolicy.findUnique({
-    select: { ...valueSelect, monthlyCapMicros: true, version: true },
-    where: { id: INSTALLATION }
-  });
+type InstallationRow = StoredValues & Readonly<{ monthlyCapMicros: bigint | null; version: number }>;
+
+function installationLimits(row: InstallationRow | null): UsageInstallationLimits {
   if (!row) return DEFAULT_INSTALLATION;
   return { ...limitValues(row), monthlyCapMicros: micros(row.monthlyCapMicros), version: row.version };
+}
+
+async function readInstallation(db: Reader): Promise<UsageInstallationLimits> {
+  return installationLimits(await db.usageLimitPolicy.findUnique({
+    select: { ...valueSelect, monthlyCapMicros: true, version: true },
+    where: { id: INSTALLATION }
+  }));
+}
+
+/** Nothing installation-wide can refuse anyone. */
+function installationUnlimited(installation: UsageInstallationLimits): boolean {
+  return installation.monthlyCapMicros === null && nothingSet(installation);
+}
+
+type AdmissionGateRow = Omit<InstallationRow, "version"> & Readonly<{ limited: boolean; version: number | null }>;
+
+/**
+ * Admission's first read, one statement: the installation singleton and
+ * whether any per-user row applies to the user (an override, even an exempt
+ * one, or an allowance of an active group they belong to).
+ */
+async function readAdmissionGate(
+  db: Pick<Prisma.TransactionClient, "$queryRaw">,
+  userId: string
+): Promise<Readonly<{ installation: UsageInstallationLimits; limited: boolean }>> {
+  const [row] = await db.$queryRaw<AdmissionGateRow[]>`
+    SELECT policy."monthlyCapMicros", policy."monthlyBudgetMicros", policy."messagesPerHour", policy."messagesPerDay",
+      policy."version",
+      (EXISTS (SELECT 1 FROM "UsageLimit" AS own WHERE own."userId" = ${userId})
+        OR EXISTS (
+          SELECT 1
+          FROM "UserGroup" AS membership
+          JOIN "Group" AS team ON team."id" = membership."groupId" AND team."archivedAt" IS NULL
+          JOIN "UsageLimit" AS allowance ON allowance."groupId" = team."id"
+          WHERE membership."userId" = ${userId}
+        )) AS "limited"
+    FROM (SELECT 1) AS anchor
+    LEFT JOIN "UsageLimitPolicy" AS policy ON policy."id" = ${INSTALLATION}`;
+  const version = row?.version ?? null;
+  return {
+    installation: row && version !== null ? installationLimits({ ...row, version }) : DEFAULT_INSTALLATION,
+    limited: row?.limited === true
+  };
+}
+
+/**
+ * Applies a versioned save to one group or user row: a row is created only
+ * when none is expected, and changed or removed only at the expected version.
+ * Every insert and change takes the next value of the column's sequence, so
+ * versions never repeat across a removal and a new row.
+ */
+async function writeVersionedLimit(
+  tx: Writer,
+  target: Target,
+  expectedVersion: number | null,
+  values: (UsageLimitValues & { exempt?: boolean }) | null,
+  updatedByUserId: string | null
+): Promise<"stale" | "written"> {
+  if (values === null) {
+    if (expectedVersion === null) {
+      return await tx.usageLimit.findUnique({ select: { id: true }, where: target }) ? "stale" : "written";
+    }
+    const removed = await tx.usageLimit.deleteMany({ where: { ...target, version: expectedVersion } });
+    return removed.count === 1 ? "written" : "stale";
+  }
+  if (expectedVersion === null) {
+    // The target is unique: a row someone else created first is a conflict, not an overwrite.
+    const created = await tx.usageLimit.createMany({
+      data: [{ ...values, ...target, updatedByUserId }],
+      skipDuplicates: true
+    });
+    return created.count === 1 ? "written" : "stale";
+  }
+  const [next] = await tx.$queryRaw<Array<{ version: number }>>`
+    SELECT nextval(pg_get_serial_sequence('"UsageLimit"', 'version'))::int AS "version"`;
+  if (!next) throw new Error("usage_limit_version_unavailable");
+  const updated = await tx.usageLimit.updateMany({
+    data: { ...values, updatedByUserId, version: next.version },
+    where: { ...target, version: expectedVersion }
+  });
+  return updated.count === 1 ? "written" : "stale";
 }
 
 function missingParent(error: unknown): boolean {
@@ -165,11 +259,22 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
 
   return {
     async loadUsageLimitStatus(userId, now) {
+      const { installation, limited } = await readAdmissionGate(database, userId);
+      if (!limited && installationUnlimited(installation)) {
+        // Nothing can refuse this user: no spend sums, no message counts.
+        return {
+          effective: resolveEffectiveUsageLimits({ groups: [], installation, user: null }),
+          installationCapMicros: null,
+          installationSpentMicros: 0,
+          lastDay: NO_MESSAGES,
+          lastHour: NO_MESSAGES,
+          userSpentMicros: 0
+        };
+      }
       const month = utcMonthPeriod(now);
       const hour = admittedMessages(userId, now, USAGE_HOUR_MS);
       const day = admittedMessages(userId, now, USAGE_DAY_MS);
-      const [installation, user, userSpentMicros, hourCount, dayCount] = await Promise.all([
-        readInstallation(database),
+      const [user, userSpentMicros, hourCount, dayCount] = await Promise.all([
         database.user.findUnique({
           select: {
             groups: {
@@ -219,7 +324,7 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
             archivedAt: true,
             id: true,
             name: true,
-            usageLimit: { select: valueSelect }
+            usageLimit: { select: { ...valueSelect, version: true } }
           }
         }),
         database.user.findMany({
@@ -230,7 +335,7 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
             groups: { select: { groupId: true } },
             id: true,
             status: true,
-            usageLimit: { select: { ...valueSelect, exempt: true } }
+            usageLimit: { select: { ...valueSelect, exempt: true, version: true } }
           }
         }),
         database.$queryRaw<Array<{ spent: bigint | null; userId: string }>>`
@@ -267,15 +372,16 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
           archivedAt: group.archivedAt?.toISOString() ?? null,
           groupId: group.id,
           memberCount: group._count.users,
-          name: group.name
+          name: group.name,
+          version: group.usageLimit?.version ?? null
         })),
         installation,
         installationSpentMicros: Math.min(installationSpentMicros, Number.MAX_SAFE_INTEGER),
         periodStart: periodStart.toISOString(),
         resetsAt: resetsAt.toISOString(),
         users: userRows.map((user) => {
-          const override: UsageUserLimits | null = user.usageLimit
-            ? { ...limitValues(user.usageLimit), exempt: user.usageLimit.exempt, userId: user.id }
+          const override: AdminUsageUserOverride | null = user.usageLimit
+            ? { ...limitValues(user.usageLimit), exempt: user.usageLimit.exempt, userId: user.id, version: user.usageLimit.version }
             : null;
           const groups = user.groups.flatMap(({ groupId }) => activeGroupLimits.get(groupId) ?? []);
           const messages = messagesByUser.get(user.id);
@@ -323,20 +429,11 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
       };
       try {
         return await database.$transaction(async (tx) => {
-          if (!await tx.group.findUnique({ select: { id: true }, where: { id: groupId } })) return false;
-          if (nothingSet(values)) {
-            await tx.usageLimit.deleteMany({ where: { groupId } });
-          } else {
-            await tx.usageLimit.upsert({
-              create: { ...values, groupId, updatedByUserId: userId },
-              update: { ...values, updatedByUserId: userId },
-              where: { groupId }
-            });
-          }
-          return true;
+          if (!await tx.group.findUnique({ select: { id: true }, where: { id: groupId } })) return "not_found";
+          return writeVersionedLimit(tx, { groupId }, limits.expectedVersion, nothingSet(values) ? null : values, userId);
         });
       } catch (error) {
-        if (missingParent(error)) return false;
+        if (missingParent(error)) return "not_found";
         throw error;
       }
     },
@@ -348,30 +445,23 @@ export function createUsageLimitsRepository(database: Database): UsageLimitsRepo
         messagesPerHour: limits.messagesPerHour,
         monthlyBudgetMicros: limits.monthlyBudgetMicros
       };
+      const cleared = !values.exempt && nothingSet(values);
       try {
         return await database.$transaction(async (tx) => {
-          if (!await tx.user.findUnique({ select: { id: true }, where: { id: targetUserId } })) return false;
-          if (!values.exempt && nothingSet(values)) {
-            await tx.usageLimit.deleteMany({ where: { userId: targetUserId } });
-          } else {
-            await tx.usageLimit.upsert({
-              create: { ...values, updatedByUserId: userId, userId: targetUserId },
-              update: { ...values, updatedByUserId: userId },
-              where: { userId: targetUserId }
-            });
-          }
-          return true;
+          if (!await tx.user.findUnique({ select: { id: true }, where: { id: targetUserId } })) return "not_found";
+          return writeVersionedLimit(tx, { userId: targetUserId }, limits.expectedVersion, cleared ? null : values, userId);
         });
       } catch (error) {
-        if (missingParent(error)) return false;
+        if (missingParent(error)) return "not_found";
         throw error;
       }
     },
 
-    async deleteUserLimits({ targetUserId }) {
-      if (!await database.user.findUnique({ select: { id: true }, where: { id: targetUserId } })) return false;
-      await database.usageLimit.deleteMany({ where: { userId: targetUserId } });
-      return true;
+    async deleteUserLimits({ expectedVersion, targetUserId }) {
+      return database.$transaction(async (tx) => {
+        if (!await tx.user.findUnique({ select: { id: true }, where: { id: targetUserId } })) return "not_found";
+        return writeVersionedLimit(tx, { userId: targetUserId }, expectedVersion, null, null);
+      });
     }
   };
 }

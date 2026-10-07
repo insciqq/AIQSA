@@ -27,13 +27,21 @@ describe("usage limits client", () => {
   it("sends JSON mutations to their resource paths and decodes the whole view", async () => {
     const send = fetcher({ limits });
     await expect(saveInstallationUsageLimits({ ...unset, expectedVersion: 1, monthlyCapMicros: 5 }, send)).resolves.toEqual({ limits, ok: true });
-    await expect(saveGroupUsageLimits("group/1", { ...unset, messagesPerDay: 3 }, send)).resolves.toEqual({ limits, ok: true });
-    await saveUserUsageLimits("user 1", { ...unset, exempt: true }, send);
-    await removeUserUsageLimits("user 1", send);
+    await expect(saveGroupUsageLimits("group/1", { ...unset, expectedVersion: null, messagesPerDay: 3 }, send))
+      .resolves.toEqual({ limits, ok: true });
+    await saveGroupUsageLimits("group/1", { ...unset, expectedVersion: 8, messagesPerDay: 4 }, send);
+    await saveUserUsageLimits("user 1", { ...unset, exempt: true, expectedVersion: null }, send);
+    await saveUserUsageLimits("user 1", { ...unset, exempt: false, expectedVersion: 9 }, send);
+    await removeUserUsageLimits("user 1", 9, send);
+    await removeUserUsageLimits("user 1", null, send);
+    // A first save names no version; later saves and removals name the one they were edited from.
     expect(send.mock.calls.map(([path, init]) => [path, init?.method, init?.body ?? null])).toEqual([
       ["/api/admin/usage-limits/installation", "PATCH", JSON.stringify({ ...unset, expectedVersion: 1, monthlyCapMicros: 5 })],
       ["/api/admin/usage-limits/groups/group%2F1", "PUT", JSON.stringify({ ...unset, messagesPerDay: 3 })],
+      ["/api/admin/usage-limits/groups/group%2F1", "PUT", JSON.stringify({ ...unset, expectedVersion: 8, messagesPerDay: 4 })],
       ["/api/admin/usage-limits/users/user%201", "PUT", JSON.stringify({ ...unset, exempt: true })],
+      ["/api/admin/usage-limits/users/user%201", "PUT", JSON.stringify({ ...unset, exempt: false, expectedVersion: 9 })],
+      ["/api/admin/usage-limits/users/user%201?expectedVersion=9", "DELETE", null],
       ["/api/admin/usage-limits/users/user%201", "DELETE", null]
     ]);
     expect(send.mock.calls[0]?.[1]).toMatchObject({ cache: "no-store", headers: { "content-type": "application/json" } });
