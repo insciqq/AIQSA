@@ -150,6 +150,17 @@ describe("health report text", () => {
       "      code provider_rate_limited · answer · OpenAI · gpt-5 · HTTP 429\n");
   });
 
+  it("names the class and code site of an incident that has them", async () => {
+    const failure = incident(0, { event: "http.request_failed", code: null, stage: "next_request", connectionName: null,
+      modelName: null, httpStatus: null, runId: null,
+      details: [{ key: "error_class", value: "TypeError" }, { key: "error_site", value: "app/api/x/route.ts:3" }] });
+    const report = await collectHealthReport(sources({
+      health: { read: vi.fn().mockResolvedValue(health), incidents: vi.fn().mockResolvedValue({ incidents: [failure], nextCursor: null }) }
+    }), "24h");
+    expect(formatHealthReport(report)).toContain("  2026-10-07 09:59:12  error  app  http.request_failed\n" +
+      "      TypeError at app/api/x/route.ts:3 · next_request\n");
+  });
+
   it("says so when nothing went wrong", async () => {
     const quiet: AdminHealth = {
       ...health, range: "7d", interval: "day", hasTelemetry: false, providers: [], series: [], errorGroups: [],
