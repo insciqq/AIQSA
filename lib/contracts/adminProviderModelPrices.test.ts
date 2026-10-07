@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { decodeAdminModelPriceChange, decodeAdminModelPricing, decodeAdminModelTokenPrices,
-  EMPTY_ADMIN_MODEL_PRICES, invalidAdminModelPriceField, isAdminModelPriceField, modelClassUsesTokenPrices,
+import { ADMIN_MODEL_PRICE_FIELDS, decodeAdminModelPriceChange, decodeAdminModelPricing, decodeAdminModelTokenPrices,
+  EMPTY_ADMIN_MODEL_PRICES, invalidAdminModelPriceField, isAdminModelPriceField, modelClassPriceFields,
   normalizeAdminModelPrice } from "./adminProviderModelPrices";
 import { decodeAdminProviderModelSaveReceipt } from "./adminProviderModelSave";
 
@@ -20,9 +20,13 @@ describe("exact admin model prices", () => {
     }
     expect(decodeAdminModelPricing({ prices: EMPTY_ADMIN_MODEL_PRICES, source: "admin", catalogPrices: null })).not.toBeNull();
   });
-  it("prices only answer models by tokens; decision cost is provider-reported", () => {
-    expect(modelClassUsesTokenPrices("answer")).toBe(true);
-    for (const modelClass of ["decision", "image", "embedding", "reranker"]) expect(modelClassUsesTokenPrices(modelClass)).toBe(false);
+  it("gives each model class only the token prices it can be costed with", () => {
+    expect(modelClassPriceFields("answer")).toEqual(ADMIN_MODEL_PRICE_FIELDS);
+    for (const modelClass of ["decision", "image"]) {
+      expect(modelClassPriceFields(modelClass)).toEqual(["inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"]);
+    }
+    for (const modelClass of ["embedding", "reranker"]) expect(modelClassPriceFields(modelClass)).toEqual(["inputTokenPriceUsdPerMillion"]);
+    for (const modelClass of ["", "Answer", "search", "constructor"]) expect(modelClassPriceFields(modelClass)).toEqual([]);
   });
   it("names the first rejected price field of a manual change", () => {
     const prices = { ...EMPTY_ADMIN_MODEL_PRICES, inputTokenPriceUsdPerMillion: "0.25" };

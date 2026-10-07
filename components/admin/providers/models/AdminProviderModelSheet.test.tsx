@@ -126,12 +126,39 @@ describe("AdminProviderModelSheet", () => {
       expect.objectContaining({ pricing: { mode: "restore_catalog" } })));
   });
 
-  it.each(["embedding", "reranker", "image"] as const)("does not show token prices for %s", modelClass => {
+  it.each([["embedding", ["Input"]], ["reranker", ["Input"]], ["decision", ["Input", "Output"]], ["image", ["Input", "Output"]]] as const)(
+    "shows only the prices a %s model is costed with", (modelClass, labels) => {
+      const connection = workingConnection(); const model = connection.models[0]!;
+      model.modelClass = modelClass; model.draftConfig = { ...model.draftConfig, modelClass };
+      render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+      const prices = within(screen.getByRole("group", { name: "Prices" }));
+      for (const label of ["Input", "Cached input", "Cache write", "Output"]) {
+        expect(prices.queryAllByLabelText(label, { exact: true })).toHaveLength((labels as readonly string[]).includes(label) ? 1 : 0);
+      }
+      expect(prices.getByLabelText("Input", { exact: true })).toHaveAccessibleDescription(/^Used only when the provider reports no cost for a request\./);
+    });
+
+  it("saves an embedding input price as metadata with every other price unknown, and restores its catalog price", async () => {
     const connection = workingConnection(); const model = connection.models[0]!;
-    model.modelClass = modelClass; model.draftConfig = { ...model.draftConfig, modelClass };
-    render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
-    expect(screen.queryByLabelText("Input", { exact: true })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
+    model.modelClass = "embedding"; model.draftConfig = { ...model.draftConfig, modelClass: "embedding" };
+    const actions = controller(); const onSaved = vi.fn();
+    const view = render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={onSaved} open />);
+    fireEvent.change(screen.getByLabelText("Input", { exact: true }), { target: { value: "0.130" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(actions.actions.saveModelMetadata).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({
+      pricing: { mode: "manual", prices: { inputTokenPriceUsdPerMillion: "0.13", cachedInputTokenPriceUsdPerMillion: null,
+        cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null } } }));
+    view.unmount();
+    const catalog = { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.13" };
+    model.pricing = { source: "admin", prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.2" }, catalogPrices: catalog };
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    expect(screen.getByText("Edited by an administrator")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Use catalog price" }));
+    expect(screen.getByLabelText("Input", { exact: true })).toHaveValue("0.13");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(actions.actions.saveModelMetadata).toHaveBeenLastCalledWith(connection.id, model.id,
+      expect.objectContaining({ pricing: { mode: "restore_catalog" } })));
   });
 
   it("keeps mixed price and configuration edits in a single Test & Save request", async () => {
@@ -146,13 +173,13 @@ describe("AdminProviderModelSheet", () => {
     expect(actions.actions.saveModelMetadata).not.toHaveBeenCalled();
   });
 
-  it("has no price section for a Jev decision model, whose cost is provider-reported", () => {
+  it("offers a Jev decision model, whose cost is provider-reported, fallback prices but no catalog price", () => {
     const connection = workingConnection(); const model = connection.models[0]!;
     model.modelClass = "decision"; model.draftConfig = { ...model.draftConfig, modelClass: "decision" };
-    model.pricing = { ...model.pricing, source: "admin", catalogPrices: { ...model.pricing.prices } };
     render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
-    expect(screen.queryByRole("group", { name: "Prices" })).toBeNull();
-    expect(screen.queryByLabelText("Input", { exact: true })).toBeNull();
+    expect(screen.getByRole("group", { name: "Prices" })).toBeVisible();
+    expect(screen.getByLabelText("Output", { exact: true })).toHaveValue("");
+    expect(screen.queryByText("Catalog price")).toBeNull();
     expect(screen.queryByRole("button", { name: "Use catalog price" })).toBeNull();
   });
 
