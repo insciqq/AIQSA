@@ -60,12 +60,12 @@ CREATE TABLE "ScheduledTaskCarryover" (
   )
 );
 CREATE UNIQUE INDEX "ScheduledTaskCarryover_userId_taskId_key" ON "ScheduledTaskCarryover"("userId", "taskId");
-CREATE INDEX "ScheduledTaskCarryover_sourceChatId_sourceAssistantMessageId_idx"
+CREATE INDEX "ScheduledTaskCarryover_source_answer_idx"
   ON "ScheduledTaskCarryover"("sourceChatId", "sourceAssistantMessageId");
 ALTER TABLE "ScheduledTaskCarryover" ADD CONSTRAINT "ScheduledTaskCarryover_userId_taskId_fkey"
   FOREIGN KEY ("userId", "taskId") REFERENCES "ScheduledTask"("userId", "id") ON DELETE CASCADE ON UPDATE RESTRICT;
 ALTER TABLE "ScheduledTaskCarryover" ADD CONSTRAINT "ScheduledTaskCarryover_userId_sourceChatId_fkey"
   FOREIGN KEY ("userId", "sourceChatId") REFERENCES "Chat"("userId", "id") ON DELETE CASCADE ON UPDATE RESTRICT;
-ALTER TABLE "ScheduledTaskCarryover" ADD CONSTRAINT "ScheduledTaskCarryover_sourceChatId_sourceAssistantMessageId_fkey"
+ALTER TABLE "ScheduledTaskCarryover" ADD CONSTRAINT "ScheduledTaskCarryover_source_answer_fkey"
   FOREIGN KEY ("sourceChatId", "sourceAssistantMessageId") REFERENCES "Message"("chatId", "id")
   ON DELETE CASCADE ON UPDATE RESTRICT;
