@@ -114,7 +114,10 @@ function HowLimitsWork() {
           Message limits count messages, edits and regenerations in the last hour and day. Scheduled tasks don&apos;t
           count toward them; their runs are skipped while a budget or the cap is used up.
         </li>
-        <li>Memory and Knowledge background work counts toward budgets but is never stopped.</li>
+        <li>
+          Budgets count answers, Search and images. System features (Memory, Knowledge, titles) count only toward the
+          monthly cap and are never stopped.
+        </li>
       </ul>
     </section>
   );
