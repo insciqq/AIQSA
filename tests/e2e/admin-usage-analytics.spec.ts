@@ -11,7 +11,7 @@ import { textMessageContent } from "../../lib/domain/content";
  * known price. Screenshots cover every layout and theme.
  */
 const prisma = new PrismaClient();
-test.describe.configure({ mode: "serial" });
+test.describe.configure({ mode: "serial", timeout: 300_000 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const tag = randomUUID().slice(0, 6);
@@ -50,26 +50,28 @@ async function seed(): Promise<void> {
     const chatId = randomUUID();
     await prisma.chat.create({ data: { id: chatId, title: "Synthetic usage", userId: person.id } });
     let parent: string | null = null;
+    const messages: Prisma.MessageCreateManyInput[] = [];
+    const runs: Prisma.ModelRunCreateManyInput[] = [];
     const usage: Prisma.UsageEventCreateManyInput[] = [];
     for (let day = 59; day >= 0; day -= 1) {
-      const runs = Math.max(0, Math.round(person.intensity * (0.4 + next()) * (day < 30 ? 1.25 : 1) - (day % 7 >= 5 ? 3 : 0)));
-      for (let index = 0; index < runs; index += 1) {
+      const count = Math.max(0, Math.round(person.intensity * (0.4 + next()) * (day < 30 ? 1.25 : 1) - (day % 7 >= 5 ? 3 : 0)));
+      for (let index = 0; index < count; index += 1) {
         const createdAt = new Date(now - day * DAY_MS - Math.floor(next() * 8 * 60 * 60 * 1000) - 60_000);
         const scheduled = personIndex < 2 && index === 0;
         const questionId = randomUUID();
         const answerId = randomUUID();
         const runId = randomUUID();
         const model = models[scheduled ? 2 : person.model]!;
-        await prisma.message.create({ data: { chatId, content: textMessageContent("Q"), createdAt, id: questionId,
-          parentMessageId: parent, role: "user", status: "complete" } });
-        await prisma.message.create({ data: { chatId, content: textMessageContent("A"), createdAt, id: answerId,
-          parentMessageId: questionId, role: "assistant", status: "complete" } });
+        messages.push({ chatId, content: textMessageContent("Q"), createdAt, id: questionId, parentMessageId: parent,
+          role: "user", status: "complete" });
+        messages.push({ chatId, content: textMessageContent("A"), createdAt, id: answerId, parentMessageId: questionId,
+          role: "assistant", status: "complete" });
         parent = answerId;
-        await prisma.modelRun.create({ data: {
+        runs.push({
           assistantMessageId: answerId, chatId, createdAt, id: runId, modelId: model.modelId, normalizedRequest: {},
           provider: model.provider, status: "complete", userId: person.id, userMessageId: questionId,
           ...(scheduled ? { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() } : {})
-        } });
+        });
         const inputTokens = Math.round(4_000 + next() * 40_000);
         const cachedInputTokens = Math.round(inputTokens * next() * 0.6);
         const outputTokens = Math.round(300 + next() * 3_000);
@@ -85,6 +87,9 @@ async function seed(): Promise<void> {
           provider: "openai", totalTokens: inputTokens, usageCompleteness: "PARTIAL", userId: person.id });
       }
     }
+    // One statement per table: a message's parent is an earlier row of the same insert.
+    await prisma.message.createMany({ data: messages });
+    await prisma.modelRun.createMany({ data: runs });
     await prisma.usageEvent.createMany({ data: usage });
   }
 }
