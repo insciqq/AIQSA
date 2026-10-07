@@ -6,14 +6,17 @@ import { focusRing, quietButton, touchTarget } from "@/components/admin/adminPri
 import { useAdminSectionTopbar } from "@/components/admin/AdminShell";
 import { cardClass, compactSelectClass, sectionHeadingClass } from "@/components/admin/roles/rolesControls";
 import { adminUsageErrorMessage, adminUsageExportHref } from "@/components/admin/usage/adminUsageApi";
-import { UsageByModel, UsageBySource } from "@/components/admin/usage/UsageBreakdowns";
+import { categoryRecord, UsageByModel, UsageBySource } from "@/components/admin/usage/UsageBreakdowns";
 import { UsageGroupsTable, UsageUsersTable } from "@/components/admin/usage/UsagePeopleTables";
 import { UsageSpendChart } from "@/components/admin/usage/UsageSpendChart";
+import { UsageSystemPanel } from "@/components/admin/usage/UsageSystemPanel";
 import {
   browserTimeZone,
   formatBucketDate,
   formatCount,
+  formatShare,
   formatUsageDelta,
+  shareOf,
   USAGE_PERIOD_LABELS,
   type UsageChartMetric
 } from "@/components/admin/usage/usageFormat";
@@ -42,7 +45,22 @@ function windowRange(usage: AdminUsageAnalytics): string {
   return from ? `${formatBucketDate(from, timeZone, "day", true)} – ${last}` : `Until ${last}`;
 }
 
-function KpiTile({ delta, label, note, testId, value }: Readonly<{
+/**
+ * Five tiles: the cost tile spans both columns on phones and tablets, the
+ * money pair and the volume trio share two rows from 1024 px, and one row
+ * holds all five from 1280 px.
+ */
+const KPI_SPANS = {
+  cost: "col-span-2 xl:col-span-1",
+  system: "lg:col-span-2 xl:col-span-1",
+  tokens: "lg:col-span-2 xl:col-span-1",
+  runs: "lg:col-span-3 xl:col-span-1",
+  users: "lg:col-span-3 xl:col-span-1"
+} as const;
+const KPI_GRID = "grid min-w-0 grid-cols-2 gap-3 lg:grid-cols-6 xl:grid-cols-5";
+
+function KpiTile({ className, delta, label, note, testId, value }: Readonly<{
+  className: string;
   delta: string;
   label: string;
   note?: ReactNode;
@@ -50,7 +68,7 @@ function KpiTile({ delta, label, note, testId, value }: Readonly<{
   value: ReactNode;
 }>) {
   return (
-    <div className="min-w-0 rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5" data-testid={testId}>
+    <div className={`min-w-0 rounded-[12px] border border-trace-subtle bg-answer-paper px-4 py-3.5 ${className}`} data-testid={testId}>
       <dt className="text-xs font-medium text-ink-muted">{label}</dt>
       <dd className="mt-1.5 min-w-0">
         <span className="block break-words text-xl font-semibold text-ink [overflow-wrap:anywhere] sm:text-2xl">{value}</span>
@@ -61,32 +79,62 @@ function KpiTile({ delta, label, note, testId, value }: Readonly<{
   );
 }
 
+function costNote(amounts: Readonly<{ knownCostRecordCount: number; recordCount: number }>): string | null {
+  return costCoverageNote(amounts.knownCostRecordCount, amounts.recordCount) ??
+    (amounts.recordCount > 0 && amounts.knownCostRecordCount === 0 ? "prices unknown for this usage" : null);
+}
+
+/** The System tile's notes: its share of the known total and how much of it has a known cost. */
+function systemNote(usage: AdminUsageAnalytics): ReactNode {
+  const system = categoryRecord(usage.byCategory, "system");
+  if (system.recordCount === 0) return "no system usage in this period";
+  const total = usage.totals.estimatedCostMicros;
+  const notes = [
+    system.estimatedCostMicros !== null && total !== null && total > 0
+      ? `${formatShare(shareOf(system.estimatedCostMicros, total))} of the estimated cost`
+      : null,
+    costNote(system)
+  ].filter((note): note is string => note !== null);
+  return notes.length ? notes.map((note) => <span className="block" key={note}>{note}</span>) : null;
+}
+
 function UsageKpis({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
   const { previous, totals, window } = usage;
-  const coverage = costCoverageNote(totals.knownCostRecordCount, totals.recordCount);
-  const costNote = coverage ?? (totals.recordCount > 0 && totals.knownCostRecordCount === 0 ? "prices unknown for this usage" : null);
+  const system = categoryRecord(usage.byCategory, "system");
   return (
-    <dl aria-label="Usage summary" className="grid min-w-0 grid-cols-2 gap-3 lg:grid-cols-4">
+    <dl aria-label="Usage summary" className={KPI_GRID}>
       <KpiTile
+        className={KPI_SPANS.cost}
         delta={formatUsageDelta(totals.estimatedCostMicros, previous?.estimatedCostMicros ?? null, window, previous)}
         label="Estimated cost"
-        note={costNote}
+        note={costNote(totals)}
         testId="usage-kpi-cost"
         value={formatEstimatedCostMicros(totals.estimatedCostMicros)}
       />
       <KpiTile
+        className={KPI_SPANS.system}
+        delta={formatUsageDelta(system.estimatedCostMicros, previous?.systemEstimatedCostMicros ?? null, window, previous)}
+        label="System cost"
+        note={systemNote(usage)}
+        testId="usage-kpi-system"
+        value={formatEstimatedCostMicros(system.estimatedCostMicros)}
+      />
+      <KpiTile
+        className={KPI_SPANS.tokens}
         delta={formatUsageDelta(totals.totalTokens, previous?.totalTokens ?? null, window, previous)}
         label="Tokens"
         testId="usage-kpi-tokens"
         value={formatCount(totals.totalTokens)}
       />
       <KpiTile
+        className={KPI_SPANS.runs}
         delta={formatUsageDelta(totals.runCount, previous?.runCount ?? null, window, previous)}
         label="Runs"
         testId="usage-kpi-runs"
         value={formatCount(totals.runCount)}
       />
       <KpiTile
+        className={KPI_SPANS.users}
         delta={formatUsageDelta(totals.activeUserCount, previous?.activeUserCount ?? null, window, previous)}
         label="Active users"
         testId="usage-kpi-users"
@@ -121,7 +169,7 @@ function SpendOverTime({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
   const empty = usage.totals.recordCount === 0;
   const metricEmpty = !empty && usage.series.every((point) => Object.values(point.categories).every((value) =>
-    (metric === "cost" ? value.estimatedCostMicros : value.totalTokens) === 0));
+    (metric === "cost" ? value.estimatedCostMicros ?? 0 : value.totalTokens) === 0));
   return (
     <section aria-label="Spend over time" className={`${cardClass} min-w-0 p-4 sm:p-5`} data-testid="admin-usage-spend">
       <div className="mb-4 flex min-w-0 flex-wrap items-center justify-between gap-3">
@@ -155,8 +203,8 @@ function UsageSkeleton() {
   return (
     <div aria-busy="true" data-testid="admin-usage-loading">
       <p className="sr-only" role="status">Loading usage</p>
-      <div aria-hidden="true" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[0, 1, 2, 3].map((tile) => <div className={`${block} h-[104px]`} key={tile} />)}
+      <div aria-hidden="true" className={KPI_GRID}>
+        {Object.entries(KPI_SPANS).map(([tile, span]) => <div className={`${block} h-[104px] ${span}`} key={tile} />)}
       </div>
       <div aria-hidden="true" className={`${block} mt-6 h-[320px]`} />
     </div>
@@ -172,6 +220,7 @@ function UsageContent({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
         <UsageByModel usage={usage} />
         <UsageBySource usage={usage} />
       </div>
+      <div className="mt-9"><UsageSystemPanel usage={usage} /></div>
       <div className="mt-9 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-9">
         <UsageUsersTable usage={usage} />
         <UsageGroupsTable usage={usage} />
@@ -180,7 +229,9 @@ function UsageContent({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {
         <p className="font-medium text-ink-secondary">How to read these numbers</p>
         <p className="mt-1">
           Amounts are estimates from provider-reported usage, including usage kept after a failure or cancellation.
-          Usage with unknown prices is left out of cost and counted in tokens. Group totals follow current membership,
+          Usage with unknown prices is left out of cost and counted in tokens. System is work done by system models
+          for people, such as chat titles and summaries, Memory and Knowledge; By model lists only the models people
+          chose. Other is earlier usage whose purpose could not be recovered. Group totals follow current membership,
           so a user in several groups counts in each and group sums can overlap. Days and months follow the
           {" "}{usage.window.timeZone} time zone.
         </p>

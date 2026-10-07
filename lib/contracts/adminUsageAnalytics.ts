@@ -4,16 +4,29 @@ import type { ErrorResponse } from "./http";
 /**
  * Control Center usage analytics over one period. Amounts sum persisted
  * provider-reported usage; `estimatedCostMicros` sums only known estimates and
- * stays `null` when no record in the slice has one. Category is derived from
- * the record's links when read, so usage whose source was deleted reads as
- * `background`.
+ * stays `null` when no record in the slice has one. Category derives from each
+ * record's purpose when read: system purposes are `system`; the work of models
+ * users chose is `images`, `scheduled` (while the run's scheduled task link is
+ * retained) or `chat`.
  */
 export const ADMIN_USAGE_PERIODS = ["7d", "30d", "90d", "this_month", "last_month", "12m", "all"] as const;
 export type AdminUsagePeriod = (typeof ADMIN_USAGE_PERIODS)[number];
 export const DEFAULT_ADMIN_USAGE_PERIOD: AdminUsagePeriod = "30d";
 
-export const ADMIN_USAGE_CATEGORIES = ["chat", "scheduled", "images", "memory", "background"] as const;
+export const ADMIN_USAGE_CATEGORIES = ["chat", "scheduled", "images", "system"] as const;
 export type AdminUsageCategory = (typeof ADMIN_USAGE_CATEGORIES)[number];
+
+/**
+ * The system purposes of `lib/domain/usagePurpose.ts` in its order: work that
+ * administrator-assigned system models do for users. Contracts stay dependency
+ * leaves, so the list is repeated here; a server test keeps the two equal.
+ */
+export const ADMIN_USAGE_SYSTEM_PURPOSES = [
+  "chat_title", "chat_summary", "chat_vision", "chat_pdf", "skill_selection",
+  "memory_processing", "memory_indexing", "memory_retrieval",
+  "knowledge_indexing", "knowledge_retrieval", "model_check", "other"
+] as const;
+export type AdminUsageSystemPurpose = (typeof ADMIN_USAGE_SYSTEM_PURPOSES)[number];
 
 export type AdminUsageBucket = "day" | "month";
 
@@ -31,6 +44,10 @@ export type AdminUsageAmounts = {
   runCount: number;
   totalTokens: number | null;
 };
+
+/** The system-purpose part of a user's or a group's usage. */
+export type AdminUsageSystemAmounts = Pick<AdminUsageAmounts,
+  "estimatedCostMicros" | "knownCostRecordCount" | "recordCount" | "totalTokens">;
 
 export type AdminUsageWindow = {
   bucket: AdminUsageBucket;
@@ -52,13 +69,15 @@ export type AdminUsageComparison = {
   estimatedCostMicros: number | null;
   from: string;
   runCount: number;
+  /** Known estimated cost of system purposes. */
+  systemEstimatedCostMicros: number | null;
   to: string;
   totalTokens: number | null;
 };
 
 export type AdminUsageSeriesValue = {
-  /** Known estimated cost; zero when none was known. */
-  estimatedCostMicros: number;
+  /** Known estimated cost: zero without usage, `null` when the slice has usage but no known cost. */
+  estimatedCostMicros: number | null;
   totalTokens: number;
 };
 
@@ -71,12 +90,24 @@ export type AdminUsageSeriesPoint = {
 
 export type AdminUsageCategoryRecord = AdminUsageAmounts & { category: AdminUsageCategory };
 
+/** One canonical model's personal-purpose usage. */
 export type AdminUsageModelRecord = AdminUsageAmounts & {
   /** Human label resolved by the server; the raw model id when no catalog row matches. */
   label: string;
   modelId: string;
   provider: string;
   userCount: number;
+};
+
+export type AdminUsageSystemFunctionRecord = AdminUsageAmounts & { purpose: AdminUsageSystemPurpose };
+
+/** One canonical model's system-purpose usage. */
+export type AdminUsageSystemModelRecord = AdminUsageAmounts & {
+  label: string;
+  modelId: string;
+  provider: string;
+  /** The system purposes it served in the period, in vocabulary order. */
+  purposes: AdminUsageSystemPurpose[];
 };
 
 export type AdminUsageTopModel = {
@@ -92,7 +123,8 @@ export type AdminUsageUserRecord = AdminUsageAmounts & {
   email: string | null;
   groups: AdminMembership[];
   lastUsedAt: string | null;
-  /** At most three, most expensive first. */
+  system: AdminUsageSystemAmounts;
+  /** Personal-purpose models, at most three, most expensive first. */
   topModels: AdminUsageTopModel[];
   userId: string;
 };
@@ -103,13 +135,19 @@ export type AdminUsageGroupRecord = AdminUsageAmounts & {
   contributingUsers: number;
   groupId: string;
   name: string;
+  system: AdminUsageSystemAmounts;
   userCount: number;
 };
 
 export type AdminUsageAnalytics = {
   byCategory: AdminUsageCategoryRecord[];
   byGroup: AdminUsageGroupRecord[];
+  /** Models users chose (personal purposes), most expensive first. */
   byModel: AdminUsageModelRecord[];
+  /** System purposes with usage in the period, most expensive first. */
+  bySystemFunction: AdminUsageSystemFunctionRecord[];
+  /** Models that served system purposes, most expensive first. */
+  bySystemModel: AdminUsageSystemModelRecord[];
   /** Users with usage in the period, most expensive first. */
   byUser: AdminUsageUserRecord[];
   /** The preceding comparable window; `null` for `all`. */
@@ -137,6 +175,10 @@ export const MAX_USAGE_TIME_ZONE_LENGTH = 64;
 
 export function isAdminUsagePeriod(value: unknown): value is AdminUsagePeriod {
   return typeof value === "string" && (ADMIN_USAGE_PERIODS as readonly string[]).includes(value);
+}
+
+export function isAdminUsageSystemPurpose(value: unknown): value is AdminUsageSystemPurpose {
+  return (ADMIN_USAGE_SYSTEM_PURPOSES as readonly unknown[]).includes(value);
 }
 
 /** The query string both the dashboard and the CSV export send. */
@@ -179,6 +221,16 @@ function amounts(value: Record<string, unknown>): boolean {
     AMOUNT_NULLABLE.every((key) => nullableCount(value[key]));
 }
 
+function systemAmounts(value: unknown): value is AdminUsageSystemAmounts {
+  return isRecord(value) && count(value.knownCostRecordCount) && count(value.recordCount) &&
+    nullableCount(value.estimatedCostMicros) && nullableCount(value.totalTokens);
+}
+
+function systemPurposes(value: unknown): value is AdminUsageSystemPurpose[] {
+  return Array.isArray(value) && value.length <= ADMIN_USAGE_SYSTEM_PURPOSES.length &&
+    value.every(isAdminUsageSystemPurpose) && new Set(value).size === value.length;
+}
+
 function membership(value: unknown): value is AdminMembership {
   return isRecord(value) && text(value.groupId, 128) && text(value.name, 256) && typeof value.role === "string";
 }
@@ -194,7 +246,7 @@ function seriesPoint(value: unknown): value is AdminUsageSeriesPoint {
   return Object.keys(categories).length === ADMIN_USAGE_CATEGORIES.length &&
     ADMIN_USAGE_CATEGORIES.every((category) => {
       const entry = categories[category];
-      return isRecord(entry) && count(entry.estimatedCostMicros) && count(entry.totalTokens);
+      return isRecord(entry) && nullableCount(entry.estimatedCostMicros) && count(entry.totalTokens);
     });
 }
 
@@ -206,7 +258,8 @@ function window(value: unknown): value is AdminUsageWindow {
 
 function comparison(value: unknown): value is AdminUsageComparison {
   return isRecord(value) && instant(value.from) && instant(value.to) && count(value.activeUserCount) &&
-    count(value.runCount) && nullableCount(value.estimatedCostMicros) && nullableCount(value.totalTokens);
+    count(value.runCount) && nullableCount(value.estimatedCostMicros) && nullableCount(value.totalTokens) &&
+    nullableCount(value.systemEstimatedCostMicros);
 }
 
 const MAX_ROWS = 10_000;
@@ -229,14 +282,17 @@ export function decodeAdminUsageAnalyticsResponse(value: unknown): AdminUsageAna
       (ADMIN_USAGE_CATEGORIES as readonly unknown[]).includes(row.category)) ||
     !rows<AdminUsageModelRecord>(usage.byModel, (row) =>
       text(row.label, 512) && text(row.modelId, 512) && text(row.provider, 256) && count(row.userCount)) ||
+    !rows<AdminUsageSystemFunctionRecord>(usage.bySystemFunction, (row) => isAdminUsageSystemPurpose(row.purpose)) ||
+    !rows<AdminUsageSystemModelRecord>(usage.bySystemModel, (row) =>
+      text(row.label, 512) && text(row.modelId, 512) && text(row.provider, 256) && systemPurposes(row.purposes)) ||
     !rows<AdminUsageUserRecord>(usage.byUser, (row) =>
       text(row.userId, 128) && text(row.displayName, 512) &&
       (row.email === null || text(row.email, 512)) && nullableInstant(row.lastUsedAt) &&
-      Array.isArray(row.groups) && row.groups.every(membership) &&
+      Array.isArray(row.groups) && row.groups.every(membership) && systemAmounts(row.system) &&
       Array.isArray(row.topModels) && row.topModels.length <= 3 && row.topModels.every(topModel)) ||
     !rows<AdminUsageGroupRecord>(usage.byGroup, (row) =>
       text(row.groupId, 128) && text(row.name, 256) && nullableInstant(row.archivedAt) &&
-      count(row.contributingUsers) && count(row.userCount))) {
+      count(row.contributingUsers) && count(row.userCount) && systemAmounts(row.system))) {
     return null;
   }
   return value as AdminUsageAnalyticsResponse;

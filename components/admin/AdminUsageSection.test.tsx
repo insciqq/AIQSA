@@ -49,8 +49,13 @@ describe("AdminUsageSection", () => {
     await screen.findByTestId("usage-kpi-cost");
     const summary = screen.getByLabelText("Usage summary");
     expect(within(summary).getByTestId("usage-kpi-cost")).toHaveTextContent("≈ $4.00");
-    expect(within(summary).getByTestId("usage-kpi-cost")).toHaveTextContent("cost known for 5 of 6 requests");
+    expect(within(summary).getByTestId("usage-kpi-cost")).toHaveTextContent("cost known for 6 of 7 requests");
     expect(screen.getByTestId("usage-kpi-cost-delta")).toHaveTextContent("↑ 100% vs previous 30 days");
+    const system = within(summary).getByTestId("usage-kpi-system");
+    expect(system).toHaveTextContent("System cost≈ $1.00");
+    expect(system).toHaveTextContent("25% of the estimated cost");
+    expect(system).toHaveTextContent("cost known for 2 of 3 requests");
+    expect(screen.getByTestId("usage-kpi-system-delta")).toHaveTextContent("↑ 100% vs previous 30 days");
     expect(screen.getByTestId("usage-kpi-tokens")).toHaveTextContent("10,500");
     expect(screen.getByTestId("usage-kpi-tokens-delta")).toHaveTextContent("—");
     expect(screen.getByTestId("usage-kpi-runs-delta")).toHaveTextContent("↓ 20% vs previous 30 days");
@@ -62,28 +67,60 @@ describe("AdminUsageSection", () => {
     mockUsage(populatedUsageAnalytics());
     render(<Harness />);
 
+    // Shares of the models people chose are of their own three dollars.
     const models = await screen.findByTestId("admin-usage-by-model");
     expect(within(models).getByText("OpenAI / GPT 5.5")).toBeInTheDocument();
-    expect(within(models).getByText("8,000 tokens · 2 users")).toBeInTheDocument();
-    expect(within(models).getByText("88%")).toBeInTheDocument();
+    expect(within(models).getByText("6,000 tokens · 2 users")).toBeInTheDocument();
+    expect(within(models).getByText("83%")).toBeInTheDocument();
+    expect(within(models).queryByText("OpenAI / GPT 5 mini")).not.toBeInTheDocument();
 
     const sources = screen.getByTestId("admin-usage-by-source");
-    expect(within(sources).getAllByRole("listitem")).toHaveLength(5);
-    expect(within(sources).getByText("Knowledge & other")).toBeInTheDocument();
-    expect(within(sources).getByText("Background processing and usage whose source was deleted · 500 tokens")).toBeInTheDocument();
-    expect(within(sources).getByText("75%")).toBeInTheDocument();
+    expect(within(sources).getAllByRole("listitem").map((item) => item.querySelector("p")?.textContent)).toEqual([
+      "Chats", "Scheduled tasks", "Images", "System"
+    ]);
+    expect(within(sources).getByText("Titles, summaries, Memory, Knowledge and checks by system models · 2,500 tokens")).toBeInTheDocument();
+    expect(within(sources).getByText("25%")).toBeInTheDocument();
 
     const users = screen.getByRole("region", { name: "User usage table" });
     const rows = within(users).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("Ada Admin");
     expect(rows[1]).toHaveTextContent("OpenAI / GPT 5.5");
+    expect(rows[1]).toHaveTextContent("1,000 tokens · 33% of cost");
     expect(rows[2]).toHaveTextContent("No email");
+    expect(rows[2]).toHaveTextContent("Cost unknown1,500 tokens");
     expect(within(screen.getByTestId("admin-usage-users-mobile")).getByText("Bo Builder")).toBeInTheDocument();
 
     const groups = screen.getByRole("region", { name: "Group usage table" });
     expect(within(groups).getByText("Operators")).toBeInTheDocument();
+    expect(within(groups).getAllByRole("row")[1]).toHaveTextContent("2,500 tokens · 25% of cost");
     expect(screen.getByTestId("admin-usage-groups")).toHaveTextContent("group totals can overlap");
     expect(screen.getByText(/follow the\s+UTC time zone/u)).toBeInTheDocument();
+  });
+
+  it("breaks system spend down by function and model and keeps unknown cost unknown", async () => {
+    mockUsage(populatedUsageAnalytics());
+    render(<Harness />);
+
+    const functions = await screen.findByTestId("admin-usage-system-functions");
+    const rows = within(functions).getAllByRole("listitem");
+    expect(rows.map((row) => row.querySelector("p")?.textContent)).toEqual(["Memory processing", "Chat titles", "Knowledge indexing"]);
+    expect(rows[0]).toHaveTextContent("≈ $0.800");
+    expect(rows[0]).toHaveTextContent("500 tokens · 1 request");
+    expect(rows[0]).toHaveTextContent("80%");
+    expect(rows[2]).toHaveTextContent("Cost unknown");
+    expect(rows[2]).toHaveTextContent("1,500 tokens · 1 request · 1 with unknown cost");
+    expect(rows[2]).toHaveTextContent("share unknown");
+    expect(rows[2]).not.toHaveTextContent("$");
+
+    const models = screen.getByRole("region", { name: "System model usage table" });
+    const modelRows = within(models).getAllByRole("row");
+    expect(modelRows[1]).toHaveTextContent("OpenAI / GPT 5 mini");
+    expect(modelRows[1]).toHaveTextContent("Chat titles, Memory processing");
+    expect(modelRows[1]).toHaveTextContent("100%");
+    expect(modelRows[2]).toHaveTextContent("OpenAI / Embedding 3 small");
+    expect(modelRows[2]).toHaveTextContent("Knowledge indexing");
+    expect(modelRows[2]).toHaveTextContent("Cost unknown");
+    expect(within(screen.getByTestId("admin-usage-system-models-mobile")).getByText("OpenAI / Embedding 3 small")).toBeInTheDocument();
   });
 
   it("says when the period has no usage instead of drawing an empty chart", async () => {
@@ -94,6 +131,8 @@ describe("AdminUsageSection", () => {
     expect(within(spend).getByRole("status")).toHaveTextContent("No usage in this period");
     expect(screen.queryByTestId("usage-spend-chart")).not.toBeInTheDocument();
     expect(screen.getByTestId("usage-kpi-cost")).toHaveTextContent("—");
+    expect(screen.getByTestId("usage-kpi-system")).toHaveTextContent("no system usage in this period");
+    expect(within(screen.getByTestId("admin-usage-system")).getByText("No system usage in this period.")).toBeInTheDocument();
     expect(screen.getByText("No user had usage in this period.", { selector: "p" })).toBeInTheDocument();
   });
 

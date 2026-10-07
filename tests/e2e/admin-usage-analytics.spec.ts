@@ -7,8 +7,9 @@ import { textMessageContent } from "../../lib/domain/content";
 /**
  * The Usage management view over a realistic synthetic installation: several
  * users and groups, a few models, daily chat and scheduled runs over two
- * months (so the previous window has data) and background usage without a
- * known price. Screenshots cover every layout and theme.
+ * months (so the previous window has data) and system work beside them: chat
+ * titles and Memory processing with known prices, Memory search and Knowledge
+ * indexing embeddings without one. Screenshots cover every layout and theme.
  */
 const prisma = new PrismaClient();
 test.describe.configure({ mode: "serial", timeout: 300_000 });
@@ -21,6 +22,8 @@ const models = [
   { modelId: "claude-sonnet-5-5", provider: "anthropic", inputPrice: 3, outputPrice: 15 },
   { modelId: "gemini-3-flash", provider: "gemini", inputPrice: 0.3, outputPrice: 2.5 }
 ];
+const systemModel = { modelId: "gpt-5-mini", provider: "openai", inputPrice: 0.25, outputPrice: 2 };
+const embeddingModel = { modelId: "text-embedding-3-small", provider: "openai" };
 const people = [
   { name: "Mira Petrova", groups: [0], model: 1, intensity: 9 },
   { name: "Oleg Sokolov", groups: [0], model: 0, intensity: 7 },
@@ -83,8 +86,25 @@ async function seed(): Promise<void> {
       }
       if (day % 2 === 0) {
         const inputTokens = Math.round(2_000 + next() * 20_000);
-        usage.push({ createdAt: new Date(now - day * DAY_MS - 3 * 60 * 60 * 1000), inputTokens, modelId: "text-embedding-3-small",
-          provider: "openai", purpose: "knowledge_indexing", totalTokens: inputTokens, usageCompleteness: "PARTIAL", userId: person.id });
+        usage.push({ createdAt: new Date(now - day * DAY_MS - 3 * 60 * 60 * 1000), inputTokens, modelId: embeddingModel.modelId,
+          provider: embeddingModel.provider, purpose: "knowledge_indexing", totalTokens: inputTokens, usageCompleteness: "PARTIAL",
+          userId: person.id });
+      }
+      // System work beside the answers: Memory search embeddings without a price, priced Memory processing and titles.
+      if (count > 0) {
+        const inputTokens = Math.round(200 + next() * 800);
+        usage.push({ chatId, createdAt: new Date(now - day * DAY_MS - 2 * 60 * 60 * 1000), inputTokens,
+          modelId: embeddingModel.modelId, provider: embeddingModel.provider, purpose: "memory_retrieval", totalTokens: inputTokens,
+          usageCompleteness: "COMPLETE", userId: person.id });
+      }
+      for (const [purpose, every, minutes] of [["memory_processing", 3, 150], ["chat_title", 4, 170]] as const) {
+        if (day % every !== personIndex % every) continue;
+        const inputTokens = Math.round((purpose === "chat_title" ? 300 : 3_000) + next() * 4_000);
+        const outputTokens = Math.round(20 + next() * 600);
+        usage.push({ ...(purpose === "chat_title" ? { chatId } : {}), createdAt: new Date(now - day * DAY_MS - minutes * 60 * 1000),
+          estimatedCostMicros: Math.round(inputTokens * systemModel.inputPrice + outputTokens * systemModel.outputPrice), inputTokens,
+          modelId: systemModel.modelId, outputTokens, provider: systemModel.provider, purpose, totalTokens: inputTokens + outputTokens,
+          usageCompleteness: "COMPLETE", userId: person.id });
       }
     }
     // One statement per table: a message's parent is an earlier row of the same insert.
@@ -138,17 +158,35 @@ test("usage analytics endpoint and CSV describe the seeded period", async ({ pag
   expect(analytics).not.toBeNull();
   const usage = analytics!.usage;
   expect(usage.series).toHaveLength(30);
-  expect(usage.previous).not.toBeNull();
-  expect(usage.byUser.filter((row) => people.some((person) => person.id === row.userId))).toHaveLength(people.length);
-  expect(new Set(usage.byCategory.map((row) => row.category))).toEqual(new Set(["background", "chat", "scheduled"]));
+  expect(usage.previous?.systemEstimatedCostMicros ?? 0).toBeGreaterThan(0);
+  const seeded = usage.byUser.filter((row) => people.some((person) => person.id === row.userId));
+  expect(seeded).toHaveLength(people.length);
+  // Every seeded user has priced system work and unpriced embeddings beside it.
+  for (const row of seeded) {
+    expect(row.system.recordCount).toBeGreaterThan(row.system.knownCostRecordCount);
+    expect(row.system.estimatedCostMicros ?? 0).toBeGreaterThan(0);
+    expect(row.system.estimatedCostMicros ?? 0).toBeLessThan(row.estimatedCostMicros ?? 0);
+  }
+  expect(usage.byCategory.map((row) => row.category)).toEqual(expect.arrayContaining(["chat", "scheduled", "system"]));
+  expect(usage.bySystemFunction.map((row) => row.purpose)).toEqual(
+    expect.arrayContaining(["chat_title", "knowledge_indexing", "memory_processing", "memory_retrieval"]));
+  const embedding = usage.bySystemModel.find((row) => row.purposes.includes("knowledge_indexing") && row.purposes.includes("memory_retrieval"));
+  expect(embedding, "the embedding model serves Knowledge indexing and Memory search").toBeDefined();
+  // System models stay out of the models people chose; the answer models stay in.
+  expect(usage.byModel.some((row) => row.provider === embedding!.provider && row.modelId === embedding!.modelId)).toBe(false);
+  expect(usage.byModel.length).toBeGreaterThanOrEqual(models.length);
+
   const csv = await page.request.get("/api/admin/usage/export?period=30d&tz=Europe/Moscow");
   expect(csv.ok()).toBe(true);
   expect(csv.headers()["content-type"]).toContain("text/csv");
   expect(csv.headers()["content-disposition"]).toMatch(/^attachment; filename="aiqsa-usage-30d-\d{4}-\d{2}-\d{2}\.csv"$/u);
   const lines = (await csv.text()).replace(/^﻿/u, "").trim().split("\r\n");
-  expect(lines[0]).toBe("period_start,user_email,user_name,groups,category,provider,model,runs,records,input_tokens," +
+  expect(lines[0]).toBe("period_start,user_email,user_name,groups,category,purpose,provider,model,runs,records,input_tokens," +
     "cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_tokens,total_tokens,estimated_cost_usd,cost_known_records");
   expect(lines.length).toBeGreaterThan(30);
+  for (const pair of [",chat,chat_answer,", ",scheduled,chat_answer,", ",system,memory_processing,", ",system,memory_retrieval,"]) {
+    expect(lines.some((line) => line.includes(pair)), pair).toBe(true);
+  }
 });
 
 for (const viewport of [
@@ -167,6 +205,8 @@ for (const viewport of [
       const summary = section.getByLabel("Usage summary");
       await expect(summary).toBeVisible();
       await expect(summary.getByTestId("usage-kpi-cost")).toContainText("$");
+      await expect(summary.getByTestId("usage-kpi-system")).toContainText("$");
+      await expect(summary.getByTestId("usage-kpi-system")).toContainText("of the estimated cost");
       await page.screenshot({ path: testInfo.outputPath("01-top.png") });
 
       const chart = section.getByTestId("usage-spend-chart");
@@ -179,17 +219,33 @@ for (const viewport of [
       await section.getByRole("group", { name: "Chart metric" }).getByRole("button", { name: "Tokens" }).click();
       await page.screenshot({ path: testInfo.outputPath("03-chart-tokens.png") });
 
-      const byModel = section.getByText("By model", { exact: true }).first();
+      const byModel = section.getByTestId("admin-usage-by-model");
       await byModel.scrollIntoViewIfNeeded();
+      await expect(section.getByTestId("admin-usage-by-source").getByText("System", { exact: true })).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath("04-breakdowns.png") });
+
+      const system = section.getByTestId("admin-usage-system");
+      const functions = system.getByTestId("admin-usage-system-functions");
+      await functions.scrollIntoViewIfNeeded();
+      for (const label of ["Memory processing", "Chat titles", "Memory search", "Knowledge indexing"]) {
+        await expect(functions.getByText(label, { exact: true })).toBeVisible();
+      }
+      await page.screenshot({ path: testInfo.outputPath("05-system-functions.png") });
+
+      const systemModels = viewport.width >= 1024
+        ? page.getByRole("region", { name: "System model usage table" })
+        : system.getByTestId("admin-usage-system-models-mobile");
+      await systemModels.scrollIntoViewIfNeeded();
+      await expect(systemModels.getByText(/Knowledge indexing/u).first()).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath("06-system-models.png") });
 
       const users = section.getByText("Mira Petrova").locator("visible=true").first();
       await users.scrollIntoViewIfNeeded();
-      await page.screenshot({ path: testInfo.outputPath("05-users.png") });
+      await page.screenshot({ path: testInfo.outputPath("07-users.png") });
 
       const groupsHeading = section.getByText(groups[0]!.name).locator("visible=true").last();
       await groupsHeading.scrollIntoViewIfNeeded();
-      await page.screenshot({ path: testInfo.outputPath("06-groups.png") });
+      await page.screenshot({ path: testInfo.outputPath("08-groups.png") });
       await expectNoPageOverflow(page);
 
       if (viewport.name === "desktop") {
@@ -197,12 +253,12 @@ for (const viewport of [
         await section.getByRole("combobox").first().selectOption("90d");
         await expect(page).toHaveURL(/filter=90d/u);
         await expect(summary.getByTestId("usage-kpi-cost")).toContainText("$");
-        await page.screenshot({ path: testInfo.outputPath("07-90d.png") });
+        await page.screenshot({ path: testInfo.outputPath("09-90d.png") });
         await section.getByRole("combobox").first().selectOption("12m");
         await expect(page).toHaveURL(/filter=12m/u);
         await expect(summary.getByTestId("usage-kpi-cost")).toContainText("$");
         await chart.scrollIntoViewIfNeeded();
-        await page.screenshot({ path: testInfo.outputPath("08-12m.png") });
+        await page.screenshot({ path: testInfo.outputPath("10-12m.png") });
       }
     });
   }
