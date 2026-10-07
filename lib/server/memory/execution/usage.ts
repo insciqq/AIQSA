@@ -1,5 +1,7 @@
 import type { AdminProviderModelClass } from "../../../contracts/adminProviders";
 import { normalizeTokenUsage, reportedCostMicros, usageCostMicros, type ModelTokenPricing } from "../../../domain/usage";
+import { EmbeddingAdapterError } from "../../providers/embeddings";
+import { RerankAdapterError } from "../../providers/rerank";
 import type { MemoryReportedUsage } from "./lifecycle";
 
 export function memoryReportedUsage(
@@ -53,6 +55,17 @@ export function memoryVectorCallUsage(usage: Readonly<{
     reasoningTokens: 0,
     totalTokens
   };
+}
+
+/** Settlement usage of an embedding or reranker call that threw: what the
+ * response the adapter then rejected reported (`usage` on its error), so the
+ * binding accounts that paid response once. Every other failure reported no
+ * usage and settles unavailable. */
+export function memoryVectorCallErrorUsage(error: unknown): MemoryReportedUsage {
+  const usage = error instanceof EmbeddingAdapterError || error instanceof RerankAdapterError
+    ? error.usage
+    : null;
+  return usage ? memoryVectorCallUsage(usage) : UNAVAILABLE_VECTOR_CALL_USAGE;
 }
 
 /** Prices usage the provider reported no cost for with the shared cost rule:

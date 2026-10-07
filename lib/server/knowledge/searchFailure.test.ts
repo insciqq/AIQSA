@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { decodeKnowledgeCoverageLimitationsV1, KnowledgeSearchFailure, knowledgeSearchFailureToolResult } from "./searchFailure";
+import {
+  decodeKnowledgeCoverageLimitationsV1,
+  KnowledgeSearchFailure,
+  knowledgeSearchFailureToolResult,
+  recordKnowledgeFailureBilledCalls
+} from "./searchFailure";
+import { knowledgeUsageAttributionsFromToolResult } from "./toolResult";
 import { OpenSearchTransportError } from "../search/opensearch/coreTransport";
 
 describe("safe Knowledge search failure projection", () => {
@@ -31,6 +37,29 @@ describe("safe Knowledge search failure projection", () => {
     } } });
     expect(JSON.stringify(result)).not.toContain("PRIVATE_DATABASE_QUERY");
   });
+  it("carries only well-formed paid calls a failed operation attached to its error", () => {
+    const call = { id: "call-1", name: "search_knowledge", arguments: {} };
+    const billed = { costUsd: 0.000002, inputTokens: 2, modelId: "embedding-upstream", provider: "openai_compatible",
+      providerModelId: "embedding-model-1", totalTokens: 2 };
+    const failed = new Error("embedding_response_model_mismatch");
+    recordKnowledgeFailureBilledCalls(failed, [billed]);
+    const result = knowledgeSearchFailureToolResult(call, failed);
+    expect(result.rawPreview).toEqual({ knowledgeFailure: expect.objectContaining({ billedCalls: [billed],
+      code: "knowledge_retrieval_failed", version: 1 }) });
+    expect(knowledgeUsageAttributionsFromToolResult(result)).toEqual([{ estimatedCostMicros: 2,
+      modelId: "embedding-upstream", provider: "openai_compatible", providerModelId: "embedding-model-1",
+      purpose: "knowledge_retrieval", usage: { inputTokens: 2, totalTokens: 2 } }]);
+    // An error without paid calls, or with a malformed one, carries none.
+    expect(knowledgeSearchFailureToolResult(call, new Error("other")).rawPreview?.knowledgeFailure)
+      .not.toHaveProperty("billedCalls");
+    const malformed = new Error("embedding_response_model_mismatch");
+    recordKnowledgeFailureBilledCalls(malformed, [billed, { ...billed, costUsd: -1 }]);
+    expect(knowledgeSearchFailureToolResult(call, malformed).rawPreview?.knowledgeFailure)
+      .not.toHaveProperty("billedCalls");
+    // Only a failure result names them.
+    expect(knowledgeUsageAttributionsFromToolResult({ ...result, status: "complete" })).toEqual([]);
+  });
+
   it("rejects malformed or private coverage limitations", () => {
     const valid = { excludedResources: 1, retrievalFailures: ["opensearch_timeout"], version: 1 };
     expect(decodeKnowledgeCoverageLimitationsV1(JSON.parse(JSON.stringify(valid)))).toEqual(valid);

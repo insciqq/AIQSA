@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
 import { MAX_RERANK_QUERY_CHARACTERS, RerankAdapterError, type RerankAdapter } from "../providers/rerank";
-import { decodeKnowledgeRerankerBindingEvidenceV2 } from "./rerankEvidence";
+import { decodeKnowledgeRerankerBindingEvidenceV2, knowledgeRerankerBilledCall } from "./rerankEvidence";
 import {
   createKnowledgeRerankStage,
   KNOWLEDGE_RERANK_ADAPTER_VERSION,
@@ -370,6 +370,28 @@ describe("Knowledge rerank execution stage", () => {
       expect(result.evidence.timedOut).toBe(false);
       expect(decodeKnowledgeRerankerBindingEvidenceV2(result.evidence)).not.toBeNull();
     }
+  });
+
+  it("keeps the usage a rejected response reported in its fallback, which bills the call once", async () => {
+    const usage = { costUsd: 0.0000042, inputTokens: null, searchUnits: null, totalTokens: 120 };
+    for (const code of ["rerank_response_invalid", "rerank_response_model_mismatch"] as const) {
+      const rerank = vi.fn(async () => { throw new RerankAdapterError(code, { usage }); });
+      const stage = createKnowledgeRerankStage({ adapter: fakeAdapter(rerank), pin, query: "q" });
+      const result = await stage({ candidates: [candidate("chunk-a"), candidate("chunk-b")] });
+      expect(result).toMatchObject({ status: "degraded", evidence: { fallbackReason: code, provider: null,
+        relevanceScores: [], usage } });
+      expect(result.scores.size).toBe(0);
+      const stored = decodeKnowledgeRerankerBindingEvidenceV2(JSON.parse(JSON.stringify(result.evidence)));
+      expect(knowledgeRerankerBilledCall(stored!)).toEqual({ costUsd: 0.0000042, inputTokens: null,
+        modelId: pin.upstreamModelId, provider: "openrouter", providerModelId: pin.providerModelId, totalTokens: 120 });
+      expect(rerank).toHaveBeenCalledOnce();
+    }
+    // A failure without a response reported nothing and bills nothing.
+    const timedOut = await createKnowledgeRerankStage({ adapter: fakeAdapter(async () => {
+      throw new RerankAdapterError("rerank_request_timed_out");
+    }), pin, query: "q" })({ candidates: [candidate("chunk-a"), candidate("chunk-b")] });
+    expect(timedOut.evidence.usage).toEqual({ searchUnits: null, totalTokens: null });
+    expect(knowledgeRerankerBilledCall(timedOut.evidence)).toBeNull();
   });
 
   it("records a content-free HTTP failure class without provider response data", async () => {

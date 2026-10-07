@@ -10,7 +10,11 @@ import { KNOWLEDGE_HIERARCHICAL_INDEX_VERSION } from "./hierarchicalIndex";
 import { executeKnowledgeRetrievalCore } from "./prismaRetrievalCore";
 import { knowledgeEvidenceOccurrenceKeyV1 } from "./evidenceOccurrence";
 import { createPrismaKnowledgeRetrievalStore } from "./prismaRetrievalRepository";
-import { decodeKnowledgeRerankerBindingEvidenceV2, KNOWLEDGE_RERANKER_EVIDENCE_VERSION } from "./rerankEvidence";
+import {
+  decodeKnowledgeRerankerBindingEvidenceV2,
+  KNOWLEDGE_RERANKER_EVIDENCE_VERSION,
+  knowledgeRerankerBilledCall
+} from "./rerankEvidence";
 import type { KnowledgeRerankExecutor } from "./rerankExecution";
 import { loadKnowledgeRerankOperationalMetrics } from "./rerankMetrics";
 import { knowledgeLexicalBackendEvidenceFixture } from "./searchRetrieval.testFixtures";
@@ -569,6 +573,29 @@ describe("Prisma Knowledge hosted rerank receipts", () => {
       { costUsd: 0.0000123, inputTokens: 1.5, searchUnits: 1, totalTokens: 64 },
       { costUsd: 0.0000123, inputTokens: 64, searchUnits: 1, totalTokens: 64, query: "secret question" }
     ]) await expect(check(usage)).resolves.toBe(false);
+  });
+
+  it("persists and replays a fallback that bills the rejected response's usage", async () => {
+    const fixture = await createRunFixture("rerank question");
+    const store = createPrismaKnowledgeRetrievalStore(prisma);
+    const toolCallId = await createSearchToolCall(fixture.runId, 0);
+    const binding = { ...rerankerBinding("degraded"), fallbackReason: "rerank_response_invalid", timedOut: false,
+      usage: { costUsd: 0.0000042, inputTokens: null, searchUnits: null, totalTokens: 120 } };
+    const [guard] = await prisma.$queryRaw<Array<{ valid: boolean }>>`
+      SELECT knowledge_reranker_binding_valid_v2(${JSON.stringify(binding)}::jsonb) AS "valid"`;
+    expect(guard!.valid).toBe(true);
+    const { rerankScore: _rerankScore, ...fallbackPassage } = passage(fixture, "Exports are retained for 30 days.");
+    const draft = evidence(fixture, { binding: binding as never, invocationOrdinal: 1, results: [fallbackPassage] });
+    await store.persistReceipt({
+      evidence: { ...draft, providerText: knowledgeToolResultText(draft) },
+      modelRunToolCallId: toolCallId,
+      runId: fixture.runId,
+      userId: fixture.userId
+    });
+    const replayed = await store.loadReceipt!({ modelRunToolCallId: toolCallId, runId: fixture.runId, userId: fixture.userId });
+    expect(replayed?.rerankerBinding).toEqual(binding);
+    expect(knowledgeRerankerBilledCall(decodeKnowledgeRerankerBindingEvidenceV2(replayed?.rerankerBinding)!))
+      .toMatchObject({ costUsd: 0.0000042, provider: "openrouter", providerModelId: "reranker-deployment-1", totalTokens: 120 });
   });
 
   it("persists and replays excerpt-budget omissions beside a truncated top passage", async () => {

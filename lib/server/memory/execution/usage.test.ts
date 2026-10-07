@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { EmbeddingAdapterError } from "../../providers/embeddings";
+import { RerankAdapterError } from "../../providers/rerank";
 import type { MemoryReportedUsage } from "./lifecycle";
-import { memoryUsageWithCatalogCost, memoryVectorCallUsage } from "./usage";
+import { memoryUsageWithCatalogCost, memoryVectorCallErrorUsage, memoryVectorCallUsage } from "./usage";
 
 const pricing = {
   cachedInputTokenPriceUsdPerMillion: 0.2,
@@ -93,5 +95,21 @@ describe("Memory embedding and reranker call usage", () => {
       cachedInputTokens: null, completeness: "UNAVAILABLE", estimatedCostMicros: null,
       inputTokens: null, outputTokens: null, reasoningTokens: null, totalTokens: null
     });
+  });
+
+  it("settles a rejected response with the usage it reported and every other failure unavailable", () => {
+    expect(memoryVectorCallErrorUsage(new EmbeddingAdapterError("embedding_response_vector_invalid", {
+      usage: { costUsd: 0.0000123, inputTokens: 5, totalTokens: 5 }
+    }))).toEqual(memoryVectorCallUsage({ costUsd: 0.0000123, inputTokens: 5, totalTokens: 5 }));
+    expect(memoryVectorCallErrorUsage(new RerankAdapterError("rerank_response_invalid", {
+      usage: { costUsd: null, inputTokens: null, searchUnits: null, totalTokens: 20 }
+    }))).toMatchObject({ completeness: "PARTIAL", estimatedCostMicros: null, totalTokens: 20 });
+    for (const error of [
+      new EmbeddingAdapterError("embedding_request_timed_out"),
+      new RerankAdapterError("rerank_provider_http_error", { httpStatus: 503 }),
+      new Error("embedding_response_vector_invalid")
+    ]) {
+      expect(memoryVectorCallErrorUsage(error)).toMatchObject({ completeness: "UNAVAILABLE", inputTokens: null });
+    }
   });
 });
