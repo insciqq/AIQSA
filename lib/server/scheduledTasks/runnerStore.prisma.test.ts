@@ -44,10 +44,10 @@ async function personalChat(userId: string, memoryMode: "EXCLUDED" | "NORMAL" = 
 }
 
 /** The scheduled origin the runner passes for an occurrence of `created`, as read before preparation. */
-function origin(occurrenceId: string, created: Readonly<{ generation: number; id: string; revision: number }>,
+function origin(occurrenceId: string, created: Readonly<{ chatEpoch?: number; generation: number; id: string; revision: number }>,
   overrides: Partial<ScheduledOccurrenceAdmission> = {}): ScheduledOccurrenceAdmission {
-  return { occurrenceId, previousResult: null, relevantMcpServerIds: null, taskGeneration: created.generation, taskId: created.id,
-    taskRevision: created.revision, ...overrides };
+  return { occurrenceId, previousResult: null, relevantMcpServerIds: null, taskChatEpoch: created.chatEpoch ?? 0,
+    taskGeneration: created.generation, taskId: created.id, taskRevision: created.revision, ...overrides };
 }
 
 /** A send into an existing chat, as the send handler hands it to run creation. */

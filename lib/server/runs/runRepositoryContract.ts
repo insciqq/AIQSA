@@ -287,6 +287,18 @@ export class SkillRunConflictError extends Error {
 }
 
 /**
+ * A same-chat task's previous shown result carried into its rotated chat:
+ * the answer text, bounded, owned by the task's owner, with the personal MCP
+ * servers it relied on and its source in the previous chat.
+ */
+export type ScheduledResultCopy = Readonly<{
+  answer: string;
+  reliedServerIds: readonly string[];
+  sourceAssistantMessageId: string;
+  sourceChatId: string;
+}>;
+
+/**
  * The scheduled task occurrence a send admits; a server dependency, never a
  * request field. The accepted run persists the task, occurrence and generation
  * as its scheduled origin. Memory never applies to such a run.
@@ -303,11 +315,44 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    */
   taskRevision: number;
   /**
+   * The task's chat epoch read with `taskRevision`: run creation links only
+   * while it is current, and a link that moves the task to another chat (this
+   * run's new one) advances it. Absent: an admission prepared before epochs,
+   * read as 0.
+   */
+  taskChatEpoch?: number;
+  /**
+   * The calendar month (task zone) of the occurrence's instant, recorded as
+   * the month the task's chat takes when this run moves the task to a new
+   * chat or the task has none recorded yet.
+   */
+  chatPeriod?: string | null;
+  /**
+   * A chat this run creates: the title it is created with (no later rename)
+   * and, committed with it, the task as its origin for history retention.
+   */
+  newChat?: Readonly<{ title: string }>;
+  /**
+   * The monthly rotation this run starts in a same-chat task: its link moves
+   * the task off `fromChatId` (still the task's chat under the epoch read),
+   * keeps `previousResultCopy` as the new chat's carried result and transfers
+   * the Workspace seed captured from the old chat, all or nothing.
+   */
+  rotation?: Readonly<{ fromChatId: string; seedId: string | null }>;
+  /**
    * The only earlier turn the run's context keeps besides its prompt: the
    * task's previous shown result (same-chat mode), used only while both
    * messages lie on the path the run appends to. Null: the prompt alone.
    */
   previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null;
+  /**
+   * The previous shown result as a frozen copy carried from the task's
+   * previous chat, used when `previousResult` is not on the path: the run
+   * sees the task prompt and this answer. Never message ids of another chat:
+   * the link rechecks that the copy is still the task's for this epoch and
+   * generation and that its source answer is still there.
+   */
+  previousResultCopy?: ScheduledResultCopy;
   /**
    * The personal MCP servers whose absence makes this run incomplete: those
    * the task's previous shown result called, or relied on but already missed.
