@@ -42,8 +42,11 @@ function savedText(installation: UsageInstallationLimits, field: InstallationFie
 
 /**
  * The installation singleton: the pooled cap and the per-user defaults, saved
- * together against the version the page last read. A background refresh
- * never replaces what the administrator is typing.
+ * together against the version the draft started from. A background refresh
+ * never replaces what the administrator is typing, and never advances that
+ * version: a change saved meanwhile by someone else is a visible conflict,
+ * not a silent overwrite. After a conflict the shown saved values are the
+ * basis of the next save.
  */
 export function AdminUsageInstallationForm({
   controller,
@@ -56,6 +59,7 @@ export function AdminUsageInstallationForm({
 }>) {
   const saved = useMemo(() => installationDraft(installation), [installation]);
   const [draft, setDraft] = useState<InstallationDraft | null>(null);
+  const [draftVersion, setDraftVersion] = useState<number | null>(null);
   const [errors, setErrors] = useState<Partial<Record<InstallationField, string>>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
@@ -68,6 +72,7 @@ export function AdminUsageInstallationForm({
   const busy = controller.busy;
 
   const change = (field: InstallationField, value: string) => {
+    if (draft === null) setDraftVersion(installation.version);
     setDraft({ ...current, [field]: value });
     setErrors((previous) => ({ ...previous, [field]: undefined }));
   };
@@ -87,12 +92,13 @@ export function AdminUsageInstallationForm({
     setSaving(true);
     const result = await controller.saveInstallation({
       ...parsed.values,
-      expectedVersion: installation.version,
+      expectedVersion: conflict ? installation.version : draftVersion ?? installation.version,
       monthlyCapMicros: cap.value
     });
     setSaving(false);
     if (result.ok) {
       setDraft(null);
+      setDraftVersion(null);
       setConflict(false);
       reportNotice("Limits saved. They apply to new messages.");
       return;
