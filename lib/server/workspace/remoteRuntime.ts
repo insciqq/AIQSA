@@ -395,6 +395,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/secrets`, {
       body: JSON.stringify({ secrets: input.secrets, modelRunId: input.modelRunId,
         ...(input.runEnvironment ? { runEnvironment: input.runEnvironment } : {}),
+        ...(input.boundUvCache ? { boundUvCache: true } : {}),
         operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId }),
       method: "POST", signal: input.signal
     });

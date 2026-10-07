@@ -23,6 +23,7 @@ import { parseSkillArchive, readSkillArchive, skillOperationSignal, skillPrepara
 import { loadPinnedOfficialWorkspaceToolCatalog } from "./microsandboxRuntime";
 import { WORKSPACE_SECRETS_GUIDE_PATH, WORKSPACE_SECRETS_PATH, WORKSPACE_BROWSER_SESSIONS_PATH, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_MAX_BYTES, isWorkspaceBrowserSessionFilename, workspaceSecretAssetPath, workspaceBrowserSessionPath } from "@/lib/contracts/workspaceSecrets";
 import { parseAcceptedWorkspaceSecrets, workspaceSecretEnvironment, workspaceSecretsGuide } from "./secrets/manifest";
+import { WORKSPACE_UV_CACHE_DIRECTORY, WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES } from "./guestCache";
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
@@ -702,6 +703,15 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       if (value.kind === "file") session.files.set(workspaceSecretAssetPath(id, "file"), Buffer.from(value.base64, "base64"));
       if (value.kind === "browser_session" && !sameRun) session.files.set(workspaceBrowserSessionPath(value.originalName), Buffer.from(value.base64, "base64"));
       if (value.kind === "ssh_key") session.files.set(workspaceSecretAssetPath(id, "ssh_key"), Buffer.from(value.privateKey));
+    }
+    if (input.boundUvCache) {
+      // No process holds a modelled cache entry at initialization, so a
+      // prune over the threshold removes every one, and only those.
+      const prefix = `${WORKSPACE_UV_CACHE_DIRECTORY}/`;
+      const cached = [...session.files].filter(([path]) => path.startsWith(prefix));
+      if (cached.reduce((sum, [, bytes]) => sum + bytes.byteLength, 0) > WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES) {
+        for (const [path] of cached) session.files.delete(path);
+      }
     }
   }
 

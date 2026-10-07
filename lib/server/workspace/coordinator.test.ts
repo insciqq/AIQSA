@@ -726,6 +726,25 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.callBoundTool).not.toHaveBeenCalledWith(expect.objectContaining({ secrets }));
   });
 
+  it.each([[true, true], [false, false], [undefined, false]] as const)(
+    "bounds the uv cache once per execution initialization only for a scheduled run (scheduled %s)", async (scheduled, bounded) => {
+      const value = fixture();
+      const read = value.repository.binding.bind(value.repository);
+      vi.spyOn(value.repository, "binding").mockImplementation(async (input) => {
+        const binding = await read(input);
+        return binding ? { ...binding, ...(scheduled === undefined ? {} : { scheduled }) } : null;
+      });
+      for (const id of ["first", "second"]) await value.coordinator.execute({
+        call: { arguments: { command: "pwd" }, id, name: value.shellToolName },
+        modelRunToolCallId: id, runId: value.runId, userId: "user_1", workspace: value.workspace
+      });
+      expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledOnce();
+      const [delivered] = vi.mocked(value.runtime.syncPersonalSecrets).mock.calls[0]!;
+      expect(delivered.boundUvCache === true).toBe(bounded);
+      // Never a model tool call: the only dispatched tool calls are the two commands.
+      expect(value.runtime.callBoundTool).toHaveBeenCalledTimes(2);
+    });
+
   it("masks delivered secret values before the result is persisted, sent to a provider or shown", async () => {
     const value = fixture();
     const token = "synthetic-token-0123456789";

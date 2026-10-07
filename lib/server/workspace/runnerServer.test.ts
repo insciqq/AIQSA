@@ -112,6 +112,14 @@ describe("Workspace runner lifecycle diagnostics", () => {
       expect((await secrets(invalid)).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
     }
     expect(syncPersonalSecrets).toHaveBeenCalledOnce();
+    const bounded = (boundUvCache: unknown) => request(`/v1/sessions/${sessionId}/secrets`, { operation: body.operation,
+      secrets: [], modelRunId: "server_run", runtimeSandboxId: "sandbox_fixture", boundUvCache });
+    expect((await bounded(true)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.objectContaining({ boundUvCache: true }));
+    expect((await bounded(false)).writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(syncPersonalSecrets).toHaveBeenLastCalledWith(expect.not.objectContaining({ boundUvCache: expect.anything() }));
+    expect((await bounded("yes")).writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+    expect(syncPersonalSecrets).toHaveBeenCalledTimes(3);
   });
 
   it.each([
