@@ -214,6 +214,7 @@ export async function acceptedOperation(input: Parameters<typeof executeAccepted
     const deferred = error instanceof KnowledgeAnswerOperationDeferredError;
     const failure = observedFailure(error);
     logEvent("tool_execution", {
+      error,
       ...fields, ...failure, stage: observation.stage, duration_ms: performance.now() - startedAt,
       outcome: observation.cancelled ? "cancelled" : deferred ? "degraded" : "failed",
       ...(observation.cancelled ? { reason: "cancelled" as const } : {}),

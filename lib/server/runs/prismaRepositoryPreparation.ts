@@ -4560,7 +4560,7 @@ async function continuePreparingRunWithClient(
         logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "failed",
           code: MEMORY_PREPARATION_SKIPPED_CODE });
       } catch (fallbackError) {
-        logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "failed",
+        logEvent("run_preparation", { error: fallbackError, run_id: created.runId, stage: "preparing", outcome: "failed",
           code: memoryPreparationFailureCode(fallbackError, "finalize") });
       }
     }
@@ -4798,7 +4798,7 @@ async function continueDeferredPreparedRunWithClient(
         memoryPreparationCauseCode(cause)
       );
     } catch (fallbackError) {
-      logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "failed",
+      logEvent("run_preparation", { error: fallbackError, run_id: created.runId, stage: "preparing", outcome: "failed",
         code: memoryPreparationFailureCode(fallbackError, "finalize") });
     }
     if (!skipped) throw finalizeError ?? failure("unavailable");

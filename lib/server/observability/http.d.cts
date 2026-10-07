@@ -9,7 +9,7 @@ export type ResolvedRoute = Readonly<{
 export type RouteResolver = (url: string | undefined) => ResolvedRoute;
 export function createRouteResolver(manifest: unknown): RouteResolver;
 export function loadRouteResolver(manifestPath: string): RouteResolver;
-export function reportNextRequestError(method: string, routePath: string): void;
+export function reportNextRequestError(method: string, routePath: string, error?: unknown): void;
 export function resolveRouteTemplate(pathname: string | undefined): ResolvedRoute;
 export function wrapHttpListener(
   listener: (request: IncomingMessage, response: ServerResponse) => unknown,

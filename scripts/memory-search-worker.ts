@@ -152,7 +152,7 @@ async function main(): Promise<void> {
       if (pass.claimed > 0) continue;
     } catch (error) {
       const code = safeErrorCode(error);
-      reportSubsystemFailure({ subsystem: "memory_search", stage: "projection", code, action: once || drain ? "stop" : "retry" });
+      reportSubsystemFailure({ error, subsystem: "memory_search", stage: "projection", code, action: once || drain ? "stop" : "retry" });
       if (once || drain) throw error;
     }
     await wait(configuration.worker.intervalMs);

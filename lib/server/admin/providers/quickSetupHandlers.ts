@@ -116,7 +116,7 @@ async function safely(operation: () => Promise<Response>, stage: LifecycleStage 
   } catch (error) {
     if (error instanceof AdminProviderQuickSetupServiceError) {
       const response = serviceError(error);
-      logEvent("service_operation", { subsystem: "admin", stage, code: error.code, httpStatus: response.status,
+      logEvent("service_operation", { error, subsystem: "admin", stage, code: error.code, httpStatus: response.status,
         outcome: response.status === 422 ? "failed" : "skipped" });
       return response;
     }

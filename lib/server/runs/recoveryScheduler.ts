@@ -56,9 +56,10 @@ export class RunRecoveryScheduler {
             reportSubsystemHealthy(this.#subsystem, "recovery");
           } catch (error) {
             if (this.#controller.signal.aborted) logEvent("runtime_lifecycle", {
+              error,
               subsystem: this.#subsystem, stage: "recovery", outcome: "cancelled", action: "stop"
             });
-            else reportSubsystemFailure({ subsystem: this.#subsystem, stage: "recovery",
+            else reportSubsystemFailure({ error, subsystem: this.#subsystem, stage: "recovery",
               code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" });
             throw error;
           }

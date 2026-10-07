@@ -213,7 +213,7 @@ export async function readAdminHealthQueueCounts(
       ]);
       readings.push({ queue, counts: normalize(queue, rows[0]) });
     } catch (error) {
-      logEvent("service_operation", { subsystem: "admin", stage: "read", outcome: "failed",
+      logEvent("service_operation", { error, subsystem: "admin", stage: "read", outcome: "failed",
         code: "admin_health_failed", prisma_code: databaseFailureCode(error) });
       readings.push({ queue, counts: null });
     }

@@ -933,7 +933,7 @@ async function observeRecoveryRun(runId: string, operation: () => Promise<void>)
       logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: "completed", duration_ms: performance.now() - started });
     } catch (error) {
       const failure = observedFailure(error);
-      logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: failure.reason === "cancelled" ? "cancelled" : "failed",
+      logEvent("run_recovery", { error, subsystem: "run_recovery", stage: "recovery", outcome: failure.reason === "cancelled" ? "cancelled" : "failed",
         code: failure.code, prisma_code: databaseFailureCode(error), duration_ms: performance.now() - started, action: "wait" });
       throw error;
     }
@@ -1136,7 +1136,7 @@ async function recoveredToolHistoryProjection(deps: RunRecoveryDeps, request: Pr
   try {
     return await project({ actor, readers, toolHistory: history, currentUserMessageId, ...(state ? { cache: state.cache } : {}) });
   } catch (error) {
-    logEvent("run_recovery", { subsystem: "run_recovery", stage: "projection", outcome: "degraded", action: "degrade",
+    logEvent("run_recovery", { error, subsystem: "run_recovery", stage: "projection", outcome: "degraded", action: "degrade",
       code: "tool_history_unavailable", prisma_code: databaseFailureCode(error), run_id: actor.runId });
     return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
   }
@@ -3906,7 +3906,7 @@ async function recoverCheckpointedToolLoop(
     // A predecessor's live capture lease is retried on a later recovery tick;
     // it is neither provider failure nor permission to retire that owner.
     if (error instanceof WorkspaceHandoffDeferred) {
-      logEvent("run_recovery", { subsystem: "run_recovery", stage: "process", outcome: "waiting", action: "wait" });
+      logEvent("run_recovery", { error, subsystem: "run_recovery", stage: "process", outcome: "waiting", action: "wait" });
       return;
     }
     logEvent("run_recovery", { subsystem: "run_recovery", stage: "process",

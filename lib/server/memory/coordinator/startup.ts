@@ -98,7 +98,7 @@ export async function startMemoryCoordinatorFeatureLocally(input: Readonly<{
     reportSubsystemHealthy("memory", stage);
     return Object.freeze({ status: "ready" });
   } catch (error) {
-    reportSubsystemFailure({ subsystem: "memory", stage, action: "stop",
+    reportSubsystemFailure({ error, subsystem: "memory", stage, action: "stop",
       code: error instanceof MemoryCoordinatorStartupError ? error.code : "memory_coordinator_startup_failed",
       prisma_code: databaseFailureCode(error) });
     if (error instanceof MemoryCoordinatorStartupError) {

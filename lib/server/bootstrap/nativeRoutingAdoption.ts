@@ -179,7 +179,7 @@ export async function adoptNativeOpenRouterRoutes(input: {
 
 let running: Promise<unknown> | undefined;
 export function startNativeRoutingAdoption(): void {
-  running ??= import("../prisma").then(({ prisma }) => adoptNativeOpenRouterRoutes({ db: prisma })).catch(() => {
-    logEvent("service_operation", { subsystem: "admin", stage: "startup", outcome: "degraded", code: "native_route_adoption_failed" });
+  running ??= import("../prisma").then(({ prisma }) => adoptNativeOpenRouterRoutes({ db: prisma })).catch((error: unknown) => {
+    logEvent("service_operation", { error, subsystem: "admin", stage: "startup", outcome: "degraded", code: "native_route_adoption_failed" });
   });
 }

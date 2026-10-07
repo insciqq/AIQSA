@@ -327,7 +327,7 @@ function effectiveRuntimeCandidate(input: {
       });
       reportSubsystemHealthy("mcp", "preflight", input.record.id);
     } catch (error) {
-      reportSubsystemFailure({ subsystem: "mcp", stage: "preflight", scope_id: input.record.id,
+      reportSubsystemFailure({ error, subsystem: "mcp", stage: "preflight", scope_id: input.record.id,
         code: observedFailureCode(error), action: "skip" });
       return null;
     }
@@ -586,7 +586,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           url: configuration.source.url
         };
       } catch (error) {
-        reportSubsystemFailure({ subsystem: "mcp", stage: "recovery", scope_id: generation.id,
+        reportSubsystemFailure({ error, subsystem: "mcp", stage: "recovery", scope_id: generation.id,
           code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "wait" });
         return null;
       }
@@ -598,7 +598,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           await input.reconcileOAuthConnections();
           reportSubsystemHealthy("mcp", "reconcile", "oauth_reconcile");
         } catch (error) {
-          reportSubsystemFailure({ subsystem: "mcp", stage: "reconcile", scope_id: "oauth_reconcile",
+          reportSubsystemFailure({ error, subsystem: "mcp", stage: "reconcile", scope_id: "oauth_reconcile",
             code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" });
         }
       }
@@ -807,7 +807,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           candidate = sharedRuntimeCandidate({ key, server });
           reportSubsystemHealthy("mcp", "preflight", server.id);
         } catch (error) {
-          reportSubsystemFailure({ subsystem: "mcp", stage: "preflight", scope_id: server.id,
+          reportSubsystemFailure({ error, subsystem: "mcp", stage: "preflight", scope_id: server.id,
             code: observedFailureCode(error), action: "skip" });
           candidate = null;
         }

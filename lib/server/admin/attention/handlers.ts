@@ -34,7 +34,7 @@ export function createAdminAttentionHandler(input: Readonly<{
     try {
       return json({ attention: await input.service.list(session.userId) });
     } catch (error) {
-      logEvent("service_operation", { subsystem: "admin", stage: "read", outcome: "failed",
+      logEvent("service_operation", { error, subsystem: "admin", stage: "read", outcome: "failed",
         code: "admin_attention_failed", prisma_code: databaseFailureCode(error) });
       return json({ error: "admin_attention_failed" }, 500);
     }
@@ -55,7 +55,7 @@ export function createAdminAttentionSummaryHandler(input: Readonly<{
     try {
       return json({ summary: await input.service.read() });
     } catch (error) {
-      logEvent("service_operation", { subsystem: "admin", stage: "read", outcome: "failed",
+      logEvent("service_operation", { error, subsystem: "admin", stage: "read", outcome: "failed",
         code: "admin_attention_failed", prisma_code: databaseFailureCode(error) });
       return json({ error: "admin_attention_failed" }, 500);
     }

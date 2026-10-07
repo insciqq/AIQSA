@@ -47,8 +47,8 @@ export async function runMemoryCoordinatorWorker(
     let started: MemoryCoordinatorStartupResult | null;
     try {
       started = await dependencies.start();
-    } catch {
-      reportSubsystemFailure({ subsystem: "memory", stage: "startup",
+    } catch (error) {
+      reportSubsystemFailure({ error, subsystem: "memory", stage: "startup",
         code: "memory_coordinator_startup_failed", action: "stop" });
       started = null;
     }

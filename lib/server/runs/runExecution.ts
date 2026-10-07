@@ -853,7 +853,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             currentUserMessageId });
         } catch (error) {
           signal.throwIfAborted();
-          logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
+          logEvent("service_operation", { error, subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
             code: "tool_history_unavailable", prisma_code: runDatabaseFailureCode(error), run_id: runId });
           return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
         }
@@ -3763,6 +3763,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // The admitted answer identity names what failed in the same line.
         const failedAnswer = input.prepared.providerAdmissionPlan?.answer?.snapshot;
         logEvent("run_execution", {
+          error,
           run_id: runId, stage: executionStage, outcome: cancelled ? "cancelled" : "failed",
           duration_ms: Math.max(0, Date.now() - executionStartedAt),
           connectionId: failedAnswer?.connectionId, providerModelId: failedAnswer?.providerModelId,
@@ -3819,7 +3820,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         try {
           await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
         } catch (flushError) {
-          logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "failed",
+          logEvent("run_execution", { error: flushError, run_id: runId, stage: executionStage, outcome: "failed",
             code: "run_result_publication_failed", prisma_code: runDatabaseFailureCode(flushError) });
         }
 

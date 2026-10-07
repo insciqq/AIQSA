@@ -72,7 +72,7 @@ async function main(): Promise<void> {
   process.once("SIGTERM", shutdown);
 }
 
-main().catch(() => {
-  reportSubsystemFailure({ subsystem: "workspace", stage: "startup", code: "workspace_runner_failed", action: "stop" });
+main().catch((error: unknown) => {
+  reportSubsystemFailure({ error, subsystem: "workspace", stage: "startup", code: "workspace_runner_failed", action: "stop" });
   process.exitCode = 1;
 });

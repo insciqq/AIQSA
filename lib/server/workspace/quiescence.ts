@@ -97,7 +97,7 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
     });
   } catch (error) {
     observeQuiescenceFailure(error);
-    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "shutdown", outcome: "failed", code: "workspace_execution_stop_failed", action: "wait" });
+    logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "shutdown", outcome: "failed", code: "workspace_execution_stop_failed", action: "wait" });
     return { proven: false, stoppedVm: false, failureCode: "workspace_execution_stop_failed" };
   }
   logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "shutdown", outcome: "completed", code: WORKSPACE_EXECUTION_STOP_PROOF, action: "none" });
@@ -112,7 +112,7 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
     return { proven: true, stoppedVm: true };
   } catch (error) {
     observeQuiescenceFailure(error);
-    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "settle", outcome: "failed", code: "workspace_execution_settlement_failed", action: "wait" });
+    logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "settle", outcome: "failed", code: "workspace_execution_settlement_failed", action: "wait" });
     return { proven: false, stoppedVm: true, failureCode: "workspace_execution_settlement_failed" };
   }
 }

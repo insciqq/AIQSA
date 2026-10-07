@@ -2314,7 +2314,7 @@ export function createPrismaMcpRepository(input: {
         return { kind: "published" };
       }).catch((error) => {
         if (error instanceof McpEndpointBindingChangedError) {
-          logEvent("job_attempt", { subsystem: "mcp", job_id: claim.id, stage: "publish", outcome: "stale", code: "mcp_draft_changed", action: "stop" });
+          logEvent("job_attempt", { error, subsystem: "mcp", job_id: claim.id, stage: "publish", outcome: "stale", code: "mcp_draft_changed", action: "stop" });
           return { kind: "invalid" as const, issues: [{ code: "mcp_draft_changed", path: "auth.mode" }] };
         }
         throw error;

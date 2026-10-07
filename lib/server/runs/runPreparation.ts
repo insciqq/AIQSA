@@ -2353,10 +2353,10 @@ async function prepareRunWith(
   if (memorySearchAdmission) {
     try {
       memorySearch = await memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null);
-    } catch {
+    } catch (error) {
       // Nothing is frozen before acceptance: the run proceeds without the
       // optional tool, standing preparation is unchanged, and users see nothing.
-      logEvent("service_operation", { subsystem: "memory_search", stage: "preflight",
+      logEvent("service_operation", { error, subsystem: "memory_search", stage: "preflight",
         outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped" });
     }
   }
@@ -2403,7 +2403,7 @@ async function prepareRunWith(
         ? await deps.repository.loadScheduledPromptMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
         : null;
     } catch (error) {
-      logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
+      logEvent("service_operation", { error, subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
         code: "fetch_url_authority_unavailable", prisma_code: databaseFailureCode(error) });
     }
     // Known prompts only: messages refused for lack of marks are not called instructions.

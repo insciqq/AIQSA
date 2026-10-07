@@ -1451,7 +1451,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         : overflowed ? { code: "workspace_tool_output_limit_exceeded", reason: "safety_limit" as const } : workspaceToolFailure(error);
       const outcome = controller.signal.aborted || facts.reason === "cancelled" ? "cancelled" : "failed";
       if (finishRequest) finishRequest({ outcome, ...facts });
-      else logEvent("tool_execution", { tool_kind: "workspace", stage: "admission", outcome, ...facts });
+      else logEvent("tool_execution", { error, tool_kind: "workspace", stage: "admission", outcome, ...facts });
       this.discardClosedMcp(session, mcp);
       if (error instanceof WorkspaceRuntimeError) throw error;
       if (controller.signal.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");

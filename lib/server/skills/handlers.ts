@@ -37,7 +37,7 @@ export function createEnableAllSkillsHandler(deps: {
       const result = await deps.service.enableAll(session.userId);
       return result ? json(result) : json({ error: "forbidden" }, 403);
     } catch (error) {
-      logEvent("service_operation", { subsystem: "configuration", stage: "write", outcome: "failed", code: "skill_preference_failed", prisma_code: databaseFailureCode(error) });
+      logEvent("service_operation", { error, subsystem: "configuration", stage: "write", outcome: "failed", code: "skill_preference_failed", prisma_code: databaseFailureCode(error) });
       return json({ error: "skill_preference_failed" }, 503);
     }
   };
@@ -62,7 +62,7 @@ export function createSetSkillPreferenceHandler(deps: {
       const result = await deps.service.set(session.userId, skillId, value.enabled);
       return result ? json(result) : json({ error: "skill_not_available" }, 404);
     } catch (error) {
-      logEvent("service_operation", { subsystem: "configuration", stage: "write", outcome: "failed", code: "skill_preference_failed", prisma_code: databaseFailureCode(error) });
+      logEvent("service_operation", { error, subsystem: "configuration", stage: "write", outcome: "failed", code: "skill_preference_failed", prisma_code: databaseFailureCode(error) });
       return json({ error: "skill_preference_failed" }, 503);
     }
   };
