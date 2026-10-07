@@ -1,0 +1,225 @@
+import { z } from "zod";
+
+/** Methods an administrator configures; `AuthSignInMethodSetting` keeps one row each. */
+export const AUTH_SIGN_IN_METHODS = [
+  "google",
+  "yandex",
+  "oidc",
+  "ldap",
+  "saml",
+  "trusted_header",
+  "scim"
+] as const;
+
+export type AuthSignInMethod = (typeof AUTH_SIGN_IN_METHODS)[number];
+
+/** How a session's sign-in was proven; `AuthSession.signInMethod` records one of these. */
+export const AUTH_SESSION_SIGN_IN_METHODS = [
+  "password",
+  "ldap",
+  "google",
+  "yandex",
+  "oidc",
+  "saml",
+  "trusted_header",
+  "bootstrap",
+  "invite"
+] as const;
+
+export type AuthSessionSignInMethod = (typeof AUTH_SESSION_SIGN_IN_METHODS)[number];
+
+/** Methods whose group or role values map to AIQSA groups (`GroupExternalNameSource`). */
+export const EXTERNAL_GROUP_SOURCES = ["oidc", "ldap", "saml", "trusted_header"] as const;
+
+export type ExternalGroupSource = (typeof EXTERNAL_GROUP_SOURCES)[number];
+
+/** Where an active method's configuration comes from. */
+export type AuthSignInMethodConfigSource = "admin" | "environment";
+
+export const EXTERNAL_GROUP_NAME_MAX_LENGTH = 512;
+export const EXTERNAL_GROUP_LIST_MAX = 100;
+
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/u;
+const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
+
+export function isAuthSessionSignInMethod(value: unknown): value is AuthSessionSignInMethod {
+  return typeof value === "string" && AUTH_SESSION_SIGN_IN_METHODS.some((method) => method === value);
+}
+
+export function isExternalGroupSource(value: unknown): value is ExternalGroupSource {
+  return typeof value === "string" && EXTERNAL_GROUP_SOURCES.some((source) => source === value);
+}
+
+function text(max: number) {
+  return z.string().trim().min(1).max(max).refine((value) => !CONTROL_CHARACTERS.test(value));
+}
+
+function absoluteUrl(protocols: readonly string[]) {
+  return z.string().trim().max(2_048).refine((value) => {
+    try {
+      const url = new URL(value);
+      return protocols.includes(url.protocol) && !url.username && !url.password && !url.hash;
+    } catch {
+      return false;
+    }
+  });
+}
+
+const httpUrl = absoluteUrl(["https:", "http:"]);
+const headerName = z.string().trim().min(1).max(128).regex(HTTP_HEADER_NAME);
+const secretValue = z.string().trim().min(1).max(1_024);
+
+/** An exact external group or role value: compared as sent, never trimmed or case-folded. */
+export const externalGroupNameSchema = z
+  .string()
+  .min(1)
+  .max(EXTERNAL_GROUP_NAME_MAX_LENGTH)
+  .refine((value) => !CONTROL_CHARACTERS.test(value));
+
+const externalGroupList = z.array(externalGroupNameSchema).max(EXTERNAL_GROUP_LIST_MAX);
+
+/**
+ * Admission, admin role and group sync for a method whose source asserts groups. Empty
+ * `allowedGroups` admits anyone the source authenticated.
+ */
+const externalGroupPolicy = {
+  adminGroups: externalGroupList.default(() => []),
+  allowedGroups: externalGroupList.default(() => []),
+  autoCreateUsers: z.boolean().default(true),
+  syncGroups: z.boolean().default(false)
+};
+
+/** Linking to an existing account by an email the source did not assert as verified. */
+function emailTrust(trustUnverifiedEmail: boolean) {
+  return { trustUnverifiedEmail: z.boolean().default(trustUnverifiedEmail) };
+}
+
+export type ExternalGroupPolicyConfig = {
+  adminGroups: readonly string[];
+  allowedGroups: readonly string[];
+  autoCreateUsers: boolean;
+  syncGroups: boolean;
+  trustUnverifiedEmail?: boolean;
+};
+
+// Google and Yandex: OAuth clients; admission stays with the access rules.
+
+const oauthClientConfig = z.strictObject({ clientId: text(512) });
+const oauthClientSecrets = z.strictObject({ clientSecret: secretValue });
+
+export const googleSignInConfigSchema = oauthClientConfig;
+export const googleSignInSecretsSchema = oauthClientSecrets;
+export const yandexSignInConfigSchema = oauthClientConfig;
+export const yandexSignInSecretsSchema = oauthClientSecrets;
+
+// OIDC (auth-oidc refines).
+
+export const oidcSignInConfigSchema = z.strictObject({
+  autoRedirect: z.boolean().default(false),
+  buttonLabel: text(64).default("SSO"),
+  clientId: text(512),
+  groupsClaimPath: text(256).default("groups"),
+  groupsFrom: z.enum(["id_token", "userinfo", "id_token_then_userinfo"]).default("id_token_then_userinfo"),
+  idpLogout: z.boolean().default(false),
+  issuer: httpUrl,
+  scopes: text(512).default("openid email profile"),
+  ...externalGroupPolicy,
+  ...emailTrust(false)
+});
+
+export const oidcSignInSecretsSchema = z.strictObject({ clientSecret: secretValue });
+
+// LDAP (auth-ldap refines). The operator's directory owns its email addresses.
+
+const ldapAttribute = text(256);
+
+export const ldapSignInConfigSchema = z.strictObject({
+  attributes: z
+    .strictObject({
+      displayName: ldapAttribute.default("displayName"),
+      email: ldapAttribute.default("mail"),
+      groups: ldapAttribute.default("memberOf"),
+      id: ldapAttribute.default("entryUUID")
+    })
+    .default(() => ({ displayName: "displayName", email: "mail", groups: "memberOf", id: "entryUUID" })),
+  bindDn: text(1_024).nullable().default(null),
+  caCertificatePem: z.string().trim().min(1).max(65_536).nullable().default(null),
+  groupValueForm: z.enum(["cn", "dn"]).default("cn"),
+  loginUsesUsername: z.boolean().default(false),
+  startTls: z.boolean().default(false),
+  tlsRejectUnauthorized: z.boolean().default(true),
+  url: absoluteUrl(["ldap:", "ldaps:"]),
+  userSearchBase: text(1_024),
+  userSearchFilter: text(1_024).default("(mail={{username}})"),
+  ...externalGroupPolicy,
+  ...emailTrust(true)
+});
+
+export const ldapSignInSecretsSchema = z.strictObject({ bindPassword: z.string().min(1).max(1_024).optional() });
+
+// SAML (auth-saml refines).
+
+const samlAttribute = text(1_024);
+
+export const samlSignInConfigSchema = z
+  .strictObject({
+    allowSha1: z.boolean().default(false),
+    buttonLabel: text(64).default("SAML"),
+    displayNameAttribute: samlAttribute.nullable().default(null),
+    emailAttribute: samlAttribute.default("email"),
+    groupsAttribute: samlAttribute.nullable().default(null),
+    idpCertificates: z.array(z.string().trim().min(1).max(16_384)).min(1).max(4),
+    idpEntityId: text(1_024),
+    idpMetadataUrl: httpUrl.nullable().default(null),
+    idpSsoUrl: httpUrl,
+    nameIdFormat: text(256).default("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"),
+    requireSignedAssertion: z.boolean().default(true),
+    requireSignedResponse: z.boolean().default(false),
+    spEntityId: text(1_024).nullable().default(null),
+    subjectAttribute: samlAttribute.nullable().default(null),
+    ...externalGroupPolicy,
+    ...emailTrust(false)
+  })
+  .refine((config) => config.requireSignedAssertion || config.requireSignedResponse, {
+    path: ["requireSignedAssertion"]
+  });
+
+export const samlSignInSecretsSchema = z.strictObject({});
+
+// Trusted header (auth-trusted-header refines). The proxy owns the email, so there is no
+// email trust switch.
+
+export const trustedHeaderSignInConfigSchema = z.strictObject({
+  emailHeader: headerName,
+  groupsHeader: headerName.nullable().default(null),
+  groupsSeparator: z.string().min(1).max(8).default(","),
+  nameHeader: headerName.nullable().default(null),
+  ...externalGroupPolicy
+});
+
+export const trustedHeaderSignInSecretsSchema = z.strictObject({});
+
+// SCIM (auth-scim refines). Tokens live in `AuthScimToken`, not in the method secrets.
+
+export const SCIM_LINK_METHODS = ["none", "oidc", "saml", "ldap"] as const;
+
+export const scimConfigSchema = z.strictObject({ linkMethod: z.enum(SCIM_LINK_METHODS).default("none") });
+export const scimSecretsSchema = z.strictObject({});
+
+export const AUTH_SIGN_IN_METHOD_SCHEMAS = {
+  google: { config: googleSignInConfigSchema, secrets: googleSignInSecretsSchema },
+  ldap: { config: ldapSignInConfigSchema, secrets: ldapSignInSecretsSchema },
+  oidc: { config: oidcSignInConfigSchema, secrets: oidcSignInSecretsSchema },
+  saml: { config: samlSignInConfigSchema, secrets: samlSignInSecretsSchema },
+  scim: { config: scimConfigSchema, secrets: scimSecretsSchema },
+  trusted_header: { config: trustedHeaderSignInConfigSchema, secrets: trustedHeaderSignInSecretsSchema },
+  yandex: { config: yandexSignInConfigSchema, secrets: yandexSignInSecretsSchema }
+} as const satisfies Record<AuthSignInMethod, { config: z.ZodType; secrets: z.ZodType }>;
+
+export type AuthSignInMethodConfig<M extends AuthSignInMethod = AuthSignInMethod> = z.output<
+  (typeof AUTH_SIGN_IN_METHOD_SCHEMAS)[M]["config"]
+>;
+
+export type AuthSignInMethodSecrets<M extends AuthSignInMethod = AuthSignInMethod> = z.output<
+  (typeof AUTH_SIGN_IN_METHOD_SCHEMAS)[M]["secrets"]
+>;
