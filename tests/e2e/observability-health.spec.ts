@@ -44,9 +44,13 @@ async function telemetryCount(connectionId: string, code: string): Promise<numbe
 test("a provider that starts rejecting its key surfaces in the answer, Needs attention, the shell badge and Health", async ({ page }, testInfo) => {
   test.setTimeout(420_000);
   page.setDefaultTimeout(20_000);
+  // Theme switches animate colors; screenshots must show the settled theme.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   const userId = DEFAULT_BOOTSTRAP_USER_ID;
   const priorSettings = await prisma.userSettings.findUniqueOrThrow({ where: { userId } });
+  const priorPolicy = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   let mode: ProviderMode = "ok";
   const server = createServer((request, response) => {
     void (async () => {
@@ -138,8 +142,11 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
     // The chat shell shows an administrator badge (the summary is cached up to a minute).
     await expect.poll(async () => {
       await page.goto("/");
-      return page.getByTestId("admin-attention-dot").count();
-    }, { timeout: 90_000, intervals: [10_000] }).toBeGreaterThan(0);
+      await expect(page.getByTestId("app-shell")).toBeVisible();
+      // The badge appears once the shell's first summary read settles after hydration.
+      return page.getByTestId("admin-attention-dot").first().waitFor({ state: "visible", timeout: 8_000 })
+        .then(() => true, () => false);
+    }, { timeout: 120_000, intervals: [5_000] }).toBe(true);
     await expect(page.getByRole("link", { name: /^Control Center, \d+ items? needs? attention$/u })).toBeVisible();
     await shoot(page, testInfo, "shell-badge-desktop");
 
@@ -195,6 +202,13 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
         await tx.userSettings.update({ where: { userId }, data: { defaultProviderModelId: priorSettings.defaultProviderModelId,
           defaultControlValues: priorSettings.defaultControlValues as Prisma.InputJsonValue,
           defaultWorkspaceEnabled: priorSettings.defaultWorkspaceEnabled } });
+        // Custom setup may make the first answer model the installation default; restore both policies.
+        await tx.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorPolicy.defaultProviderModelId,
+          reasoningEffort: priorPolicy.reasoningEffort, version: priorPolicy.version } });
+        await tx.systemModelPolicy.update({ where: { id: "installation" }, data: { providerModelId: priorRoles.providerModelId,
+          chatTitleProviderModelId: priorRoles.chatTitleProviderModelId, chatTitleReasoningEffort: priorRoles.chatTitleReasoningEffort,
+          chatPdfProviderModelId: priorRoles.chatPdfProviderModelId, reasoningEffort: priorRoles.reasoningEffort,
+          chatPdfReasoningEffort: priorRoles.chatPdfReasoningEffort, version: priorRoles.version } });
         const runs = await tx.modelRun.findMany({ where: { userId, providerRunBindings: { some: { connectionId } } }, select: { id: true, chatId: true } });
         const chats = await tx.chat.findMany({ where: { userId, defaultProviderModel: { connectionId } }, select: { id: true } });
         const chatIds = [...new Set([...chats.map(({ id }) => id), ...runs.map(({ chatId }) => chatId)])];

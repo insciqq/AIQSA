@@ -17,7 +17,8 @@ function fakeStore() {
     write: vi.fn<TelemetryStore["write"]>(async () => undefined),
     deleteExpired: vi.fn<TelemetryStore["deleteExpired"]>(async () => ({ counters: 0, incidents: 0 })),
     readCounters: vi.fn<TelemetryStore["readCounters"]>(),
-    readIncidents: vi.fn<TelemetryStore["readIncidents"]>()
+    readIncidents: vi.fn<TelemetryStore["readIncidents"]>(),
+    countIncidentsByRun: vi.fn<TelemetryStore["countIncidentsByRun"]>()
   };
   const batch = (index: number): TelemetryBatch => store.write.mock.calls[index]![0];
   return { store, batch };
