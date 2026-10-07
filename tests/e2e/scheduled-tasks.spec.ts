@@ -350,7 +350,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90
+    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90, pinnedSkillIds: []
   } }]);
   await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
   await expect(panel.getByText("“Weekly planning” is scheduled.")).toBeVisible();
