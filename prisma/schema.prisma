@@ -7399,11 +7399,11 @@ model ScheduledTaskCarryover {
   createdAt                DateTime               @default(now())
   task                     ScheduledTask          @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
   sourceChat               Chat                   @relation(fields: [userId, sourceChatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
-  sourceAnswer             Message                @relation(fields: [sourceChatId, sourceAssistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  sourceAnswer             Message                @relation(fields: [sourceChatId, sourceAssistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "ScheduledTaskCarryover_source_answer_fkey")
 
   /// The owner-consistent key of the one-to-one task relation.
   @@unique([userId, taskId])
-  @@index([sourceChatId, sourceAssistantMessageId])
+  @@index([sourceChatId, sourceAssistantMessageId], map: "ScheduledTaskCarryover_source_answer_idx")
 }
 
 /// The installation's VAPID key pair for browser push, created on first use.
