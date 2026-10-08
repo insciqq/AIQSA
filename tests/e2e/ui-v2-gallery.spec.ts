@@ -750,6 +750,9 @@ for (const viewport of [
     await expect(member).toContainText("Only the person who sent this message can allow this tool.");
     await expect(member.getByRole("button")).toHaveCount(0);
     await expect(page.getByRole("listitem", { name: "Approval for Records vault purge_records" })).toContainText("Denied");
+    const waiting = page.getByRole("listitem", { name: "Approval for Calendar create_event" });
+    await expect(waiting).toContainText("The answer has not continued yet.");
+    await expect(waiting.getByRole("button", { name: "Continue" })).toBeVisible();
     await expect(page.getByRole("article", { exact: true, name: "Approval" })).toHaveText("Allowed: update_record");
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ fullPage: false, path: testInfo.outputPath(`mcp-approval-${viewport.name}-pending.png`) });

@@ -17,8 +17,16 @@ describe("MCP approval contract", () => {
     expect(decodeMcpApprovalCard(card)).toEqual(card);
     for (const value of [{ ...card, approvalId: "a/b" }, { ...card, state: "approved" }, { ...card, source: "hub" },
       { ...card, canDecide: false }, { ...card, serverName: "x".repeat(161) }, { ...card, extra: 1 },
-      { ...card, details: { ordinal: 0, roundIndex: 0 } }, { ...card, source: "code" }]) {
+      { ...card, details: { ordinal: 0, roundIndex: 0 } }, { ...card, source: "code" },
+      // Only an Allow continues.
+      { ...card, canContinue: true }, { ...card, canContinue: false, state: "allowed_once" },
+      { ...card, canContinue: true, state: "denied" }]) {
       expect(decodeMcpApprovalCard(value), JSON.stringify(value)).toBeNull();
+    }
+    for (const state of ["allowed_once", "allowed_server"] as const) {
+      const allowed = { approvalId: "approval-1", canContinue: true as const, serverName: "Records", source: "agent" as const,
+        state, toolName: "create_event" };
+      expect(decodeMcpApprovalCard(allowed)).toEqual(allowed);
     }
   });
 

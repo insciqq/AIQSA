@@ -1,10 +1,11 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type {
-  McpApprovalCard,
-  McpApprovalDecision,
-  McpApprovalSource,
-  McpApprovalState,
-  McpToolConsentWire
+import {
+  MCP_APPROVAL_CONTINUATION_KIND,
+  type McpApprovalCard,
+  type McpApprovalDecision,
+  type McpApprovalSource,
+  type McpApprovalState,
+  type McpToolConsentWire
 } from "@/lib/contracts/mcpApprovals";
 import { resolveChatAccess } from "../projects/access";
 import { MCP_APPROVAL_TTL_MS, type McpApprovalCallKey, type McpApprovalRequest } from "./writeApproval";
@@ -151,8 +152,14 @@ export async function revokeMcpToolConsent(
 
 /** The card fields every reader of a run selects. */
 export const mcpApprovalCardSelect = {
+  consumedAt: true,
+  decidedAt: true,
   decision: true,
   id: true,
+  // A continuation turn already answering the run's answer spends Continue.
+  modelRun: { select: { assistantMessage: { select: { children: {
+    select: { id: true }, take: 1, where: { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND }
+  } } } } },
   serverName: true,
   source: true,
   toolCall: { select: { ordinal: true, roundIndex: true } },
@@ -167,16 +174,31 @@ function cardState(decision: McpApprovalCardRow["decision"]): McpApprovalState {
 }
 
 /**
- * The cards of one run as a reader sees them. Only the initiator may decide
- * and expand the refused call's redacted request; Project members see the
- * card read-only. A branch copy of an answer shows them read-only too.
+ * An Allow whose continuation may still start: exactly while the send
+ * handler accepts it (`loadMcpApprovalContinuation`: unconsumed, decided
+ * within the approval window) and no continuation turn answers the run's
+ * answer yet.
+ */
+function continuable(row: McpApprovalCardRow, now: Date): boolean {
+  return (row.decision === "allow_once" || row.decision === "allow_server") && row.consumedAt === null &&
+    row.decidedAt !== null && row.decidedAt.getTime() > now.getTime() - MCP_APPROVAL_TTL_MS &&
+    (row.modelRun.assistantMessage?.children.length ?? 0) === 0;
+}
+
+/**
+ * The cards of one run as a reader sees them. Only the initiator may decide,
+ * continue after an Allow and expand the refused call's redacted request;
+ * Project members see the card read-only. A branch copy of an answer shows
+ * them read-only too.
  */
 export function projectMcpApprovalCards(
   rows: readonly McpApprovalCardRow[],
-  input: Readonly<{ initiator: boolean }>
+  input: Readonly<{ initiator: boolean; now?: Date }>
 ): McpApprovalCard[] {
+  const now = input.now ?? new Date();
   return rows.slice(0, 16).map((row) => ({
     approvalId: row.id,
+    ...(input.initiator && continuable(row, now) ? { canContinue: true as const } : {}),
     ...(input.initiator && row.decision === null ? { canDecide: true as const } : {}),
     ...(input.initiator && row.source === "model" && row.toolCall && row.toolCall.roundIndex > 0
       ? { details: { ordinal: row.toolCall.ordinal, roundIndex: row.toolCall.roundIndex } } : {}),
@@ -218,13 +240,14 @@ export async function decideMcpApproval(
     if (!locked) return { kind: "not_found" as const };
     const row = await tx.mcpToolApproval.findUniqueOrThrow({
       select: { ...mcpApprovalCardSelect, chatId: true, decisionNonce: true,
-        modelRun: { select: { answerCompletedAt: true, status: true } }, serverId: true },
+        modelRun: { select: { ...mcpApprovalCardSelect.modelRun.select, answerCompletedAt: true, status: true } },
+        serverId: true },
       where: { id: input.approvalId }
     });
     const access = await resolveChatAccess(tx, { chatId: row.chatId, minimumProjectRole: "CONTRIBUTOR",
       requireMutable: true, userId: input.userId });
     if (!access) return { kind: "not_found" as const };
-    const card = (current: McpApprovalCardRow) => projectMcpApprovalCards([current], { initiator: true })[0]!;
+    const card = (current: McpApprovalCardRow) => projectMcpApprovalCards([current], { initiator: true, now })[0]!;
     if (row.decision !== null) {
       return row.decision === input.decision && row.decisionNonce === input.nonce
         ? { card: card(row), continuation: row.decision !== "deny", kind: "decided" as const }
@@ -257,7 +280,8 @@ export async function decideMcpApproval(
 
 /**
  * The approval a continuation turn names, while it may still continue: the
- * initiator's own Allow in this chat, decided within the approval window.
+ * initiator's own Allow in this chat, decided within the approval window and
+ * not yet used by a run.
  */
 export async function loadMcpApprovalContinuation(
   client: Pick<PrismaClient, "mcpToolApproval">,
@@ -266,7 +290,7 @@ export async function loadMcpApprovalContinuation(
 ): Promise<Readonly<{ serverName: string; toolName: string }> | null> {
   const row = await client.mcpToolApproval.findFirst({
     select: { serverName: true, toolTitle: true },
-    where: { chatId: input.chatId, decidedAt: { gt: new Date(now.getTime() - MCP_APPROVAL_TTL_MS) },
+    where: { chatId: input.chatId, consumedAt: null, decidedAt: { gt: new Date(now.getTime() - MCP_APPROVAL_TTL_MS) },
       decision: { in: ["allow_once", "allow_server"] }, id: input.approvalId, userId: input.userId }
   });
   return row ? { serverName: row.serverName, toolName: row.toolTitle } : null;

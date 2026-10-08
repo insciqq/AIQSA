@@ -184,7 +184,9 @@ const approvalCards: McpApprovalCard[] = [
     toolName: "archive_records_with_a_rather_long_tool_name" },
   { approvalId: "approval-member", serverName: "Shared tracker", source: "model", state: "pending", toolName: "close_issue" },
   { approvalId: "approval-once", serverName: "Records vault", source: "model", state: "allowed_once", toolName: "update_record" },
-  { approvalId: "approval-server", serverName: "Calendar", source: "agent", state: "allowed_server", toolName: "create_event" },
+  // An Allow whose continuation started no run: the latest answer offers Continue.
+  { approvalId: "approval-server", canContinue: true, serverName: "Calendar", source: "agent", state: "allowed_server",
+    toolName: "create_event" },
   { approvalId: "approval-denied", serverName: "Records vault", source: "model", state: "denied", toolName: "purge_records" }
 ];
 
@@ -206,6 +208,11 @@ function ApprovalOutput() {
         const card = approvalCards.find((candidate) => candidate.approvalId === approvalId)!;
         return { approvalId, serverName: card.serverName, source: card.source, toolName: card.toolName,
           state: decision === "allow_once" ? "allowed_once" : decision === "allow_server" ? "allowed_server" : "denied" };
+      }}
+      offerContinue
+      onContinue={async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return "not_started" as const;
       }}
       runId="answer-outputs-run"
     />

@@ -6,6 +6,7 @@ import { randomUUID } from "@/lib/browser/randomUUID";
 import {
   mcpApprovalContinuationTool,
   type McpApprovalCard,
+  type McpApprovalContinuationOutcome,
   type McpApprovalDecision,
   type McpApprovalState
 } from "@/lib/contracts/mcpApprovals";
@@ -13,6 +14,8 @@ import { decideMcpApproval, McpApprovalApiError } from "./mcpApprovalApi";
 import { McpCallDetailsV2 } from "./McpCallDetailsV2";
 
 type Decide = typeof decideMcpApproval;
+/** Starts the continuation turn after an Allow; says whether a run started. */
+type Continue = (card: McpApprovalCard) => void | Promise<McpApprovalContinuationOutcome | void>;
 
 const HEADINGS: Readonly<Record<McpApprovalState, string>> = {
   allowed_once: "Allowed once",
@@ -36,10 +39,12 @@ function pendingText(card: McpApprovalCard): string {
   return "This tool may change data, so nothing was sent. If you allow it, the answer continues.";
 }
 
-function stateText(card: McpApprovalCard, live: boolean): string {
+function stateText(card: McpApprovalCard, live: boolean, continuable: boolean): string {
+  const waiting = continuable ? " The answer has not continued yet." : "";
   switch (card.state) {
-    case "allowed_once": return "Allowed once: only this exact call may run, once.";
-    case "allowed_server": return `Tools of ${card.serverName} now run without asking. You can revoke this in Settings › MCP servers.`;
+    case "allowed_once": return `Allowed once: only this exact call may run, once.${waiting}`;
+    case "allowed_server":
+      return `Tools of ${card.serverName} now run without asking. You can revoke this in Settings › MCP servers.${waiting}`;
     case "denied": return "Nothing was sent.";
     case "pending":
       return !card.canDecide ? "Only the person who sent this message can allow this tool. Nothing was sent."
@@ -55,22 +60,29 @@ function errorText(failure: unknown): string {
   return "Your decision could not be saved. Try again.";
 }
 
-function McpApprovalCardV2({ card, decide, live, onContinue, runId }: Readonly<{
+function McpApprovalCardV2({ card, decide, live, offerContinue, onContinue, runId }: Readonly<{
   card: McpApprovalCard;
   decide: Decide;
   live: boolean;
-  onContinue?(card: McpApprovalCard): void | Promise<void>;
+  offerContinue: boolean;
+  onContinue?: Continue;
   runId: string | null;
 }>) {
   const headingId = useId();
   const statusRef = useRef<HTMLParagraphElement>(null);
   const nonces = useRef(new Map<McpApprovalDecision, string>());
   const [decided, setDecided] = useState<McpApprovalCard | null>(null);
-  const [busy, setBusy] = useState<McpApprovalDecision | null>(null);
+  const [busy, setBusy] = useState<McpApprovalDecision | "continue" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The server refused the continuation for good (expired or already used).
+  const [continueSpent, setContinueSpent] = useState(false);
   // A decision the saved answer already carries wins over this card's own
   // (decisions are final, so a saved card never returns to pending).
   const current = card.state === "pending" && decided ? decided : card;
+
+  async function startContinuation(allowed: McpApprovalCard) {
+    if (await onContinue?.(allowed) === "unavailable") setContinueSpent(true);
+  }
 
   async function choose(decision: McpApprovalDecision) {
     if (busy || !runId) return;
@@ -83,7 +95,7 @@ function McpApprovalCardV2({ card, decide, live, onContinue, runId }: Readonly<{
       const result = await decide({ approvalId: card.approvalId, decision, nonce, runId });
       setDecided(result);
       queueMicrotask(() => statusRef.current?.focus());
-      if (result.state === "allowed_once" || result.state === "allowed_server") await onContinue?.(result);
+      if (result.state === "allowed_once" || result.state === "allowed_server") await startContinuation(result);
     } catch (failure) {
       if (failure instanceof McpApprovalApiError && failure.card) setDecided(failure.card);
       else setError(errorText(failure));
@@ -92,7 +104,23 @@ function McpApprovalCardV2({ card, decide, live, onContinue, runId }: Readonly<{
     }
   }
 
+  /** Retries a continuation that started no run (the chat said why). */
+  async function continueAnswer() {
+    if (busy) return;
+    setBusy("continue");
+    setError(null);
+    try {
+      await startContinuation(current);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const decidable = current.state === "pending" && current.canDecide === true && runId !== null;
+  // Only the chat's latest settled answer continues; the turn a continuation
+  // adds makes it older, so a started run hides Continue at once.
+  const continuable = offerContinue && !live && current.canContinue === true && !continueSpent &&
+    onContinue !== undefined && (busy === null || busy === "continue");
   return (
     <li className="v2-tool-approval" data-state={current.state} data-source={current.source} data-testid="mcp-approval-card"
       aria-label={`Approval for ${current.serverName} ${current.toolName}`}>
@@ -105,7 +133,7 @@ function McpApprovalCardV2({ card, decide, live, onContinue, runId }: Readonly<{
         <UiV2Chip tone={TONES[current.state]}>{HEADINGS[current.state]}</UiV2Chip>
       </div>
       <p className="v2-tool-approval-text" ref={statusRef} tabIndex={-1} role={current.state === "pending" ? undefined : "status"}>
-        {stateText(current, live)}
+        {stateText(current, live, continuable)}
       </p>
       {current.details && runId ? (
         <McpCallDetailsV2 label="Review arguments" meta="The request the model prepared" reference={current.details}
@@ -128,6 +156,13 @@ function McpApprovalCardV2({ card, decide, live, onContinue, runId }: Readonly<{
           </UiV2Button>
         </div>
       ) : null}
+      {continuable ? (
+        <div className="v2-tool-approval-actions" role="group" aria-labelledby={headingId}>
+          <UiV2Button busy={busy === "continue"} tone="primary" type="button" onClick={() => void continueAnswer()}>
+            Continue
+          </UiV2Button>
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -135,15 +170,21 @@ function McpApprovalCardV2({ card, decide, live, onContinue, runId }: Readonly<{
 /**
  * MCP calls the answer's run refused for its initiator's approval: one card
  * per refused call with Allow once, Always allow for this server and Deny.
- * An Allow starts the continuation turn (`onContinue`); a live answer's
- * cards wait for it to finish. Others see the cards read-only.
+ * An Allow starts the continuation turn (`onContinue`); when that started no
+ * run, the chat's latest answer offers Continue while the server still
+ * accepts it (`canContinue`). A live answer's cards wait for it to finish.
+ * Others see the cards read-only.
  */
-export function McpApprovalCardsV2({ cards, decide = decideMcpApproval, live = false, onContinue, runId }: Readonly<{
+export function McpApprovalCardsV2({
+  cards, decide = decideMcpApproval, live = false, offerContinue = false, onContinue, runId
+}: Readonly<{
   cards: readonly McpApprovalCard[];
   /** Test and gallery seam; production posts to the decision route. */
   decide?: Decide;
   live?: boolean;
-  onContinue?(card: McpApprovalCard): void | Promise<void>;
+  /** The cards belong to the chat's latest answer, the only one a continuation follows. */
+  offerContinue?: boolean;
+  onContinue?: Continue;
   runId: string | null | undefined;
 }>) {
   if (cards.length === 0) return null;
@@ -151,8 +192,8 @@ export function McpApprovalCardsV2({ cards, decide = decideMcpApproval, live = f
     <section className="v2-tool-approvals" aria-label="Tool approvals">
       <ul>
         {cards.map((card) => (
-          <McpApprovalCardV2 key={card.approvalId} card={card} decide={decide} live={live} onContinue={onContinue}
-            runId={runId ?? null} />
+          <McpApprovalCardV2 key={card.approvalId} card={card} decide={decide} live={live} offerContinue={offerContinue}
+            onContinue={onContinue} runId={runId ?? null} />
         ))}
       </ul>
     </section>
