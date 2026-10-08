@@ -202,7 +202,6 @@ test.afterAll(async ({ browser }) => {
     await restoreOidc?.();
     await restoreScim?.();
     await prisma.authScimToken.deleteMany({ where: { id: { notIn: tokenIdsBefore } } });
-    await prisma.projectGrant.deleteMany({ where: { projectId: { in: projectIds } } });
     await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
     await deleteSyntheticMcpServers(prisma, servers);
     // What SCIM pushed or the spec created on this stand: users and groups that were not here before.
