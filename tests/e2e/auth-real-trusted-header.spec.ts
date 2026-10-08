@@ -20,6 +20,9 @@ import {
   standMode
 } from "./support/realIdp";
 
+// No IdP passwords here; a failure screenshot shows the page state.
+test.use({ screenshot: "only-on-failure" });
+
 /**
  * Real-IdP scenario 6: the trusted header behind the stand's injecting proxy (auth-wave-e2e-docs
  * Scope §2.6). The proxy (nginx, tests/auth-idp/header-proxy.conf) overwrites the identity
