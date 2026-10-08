@@ -2722,6 +2722,7 @@ export function PowerAppShellV2({
       openPicker: assistantPickerOpen,
       pending: assistantUpdatePending,
       pickerItems: assistantSummaries,
+      ...(projectContext ? {} : { loadPickerItems: loadDefaultAssistantChoices }),
       pickerLoading: projectContext
         ? !activeProject
         : librarySnapshot.dataState === "loading" && !librarySnapshot.data,
