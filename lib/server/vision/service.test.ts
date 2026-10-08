@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import sharp from "sharp";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
@@ -26,7 +26,7 @@ function fixture() {
   const context = { runId: "run", userId: "user", persistedToolCallId: "tool", request: { visionAnalysis: plan,
     workspace: { outputDirectory: "/workspace/output/run" }, chatId: "chat", modelId: "text-model", modelCapabilities: { vision: false }, context: { messages: [{ secret: "private-history" }] } } } as unknown as ToolExecutionContext;
   const captures = { create: vi.fn(async () => ({ id: "capture" })), imageSource: vi.fn(async (ref: { relativePath: string }) => ({ ...ref, assertAccess: vi.fn(async () => {}) })), release: vi.fn(async () => {}) };
-  const prepareImages = vi.fn(async (sources: Array<{ source: { relativePath: string } }>): Promise<WorkspaceCapturedImage[]> => sources.map(({ source }, index) => ({
+  const prepareImages = vi.fn(async (sources: Array<{ source: { relativePath: string } }>, _signal?: AbortSignal): Promise<WorkspaceCapturedImage[]> => sources.map(({ source }, index) => ({
     descriptor: { version: 1, id: `image-${index}`, byteSize: 3, checksum: "a".repeat(64), mimeType: "image/png", width: 4, height: 4, frames: 1,
       source: { captureId: "capture", relativePath: source.relativePath, byteSize: 3, checksum: "b".repeat(64), width: 4, height: 4 }, transform: null },
     open: vi.fn(async () => new ReadableStream({ start(c) { c.enqueue(new Uint8Array([index, 2, 3])); c.close(); } })), dispose: vi.fn()
@@ -134,47 +134,144 @@ describe("shared System Vision boundary", () => {
     expect(result.status).toBe("error"); expect(JSON.stringify(result)).toContain("vision_analysis_cancelled");
     expect(f.store.settle.mock.calls[0]?.[2]).toMatchObject({ inputTokens: 5, outputTokens: 2 });
   });
-  it("waits by the plan's reasoning effort and settles its expiry as an ambiguous timeout", async () => {
-    const f = fixture(); f.context.request.visionAnalysis = { ...plan, reasoningEffort: "high" };
-    const deadline = new AbortController();
-    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
-    try {
-      f.execute.mockImplementation(async (_snapshot, _request, options) => {
-        expect(options?.timeoutMs).toBe(180_000); expect(options?.signal?.aborted).toBe(false);
-        deadline.abort(); options!.signal!.throwIfAborted(); throw new Error("unreachable");
-      });
-      const result = await f.service.execute(f.call, f.context, new AbortController().signal);
-      expect(timeout).toHaveBeenCalledWith(180_000);
-      expect(result.content[0]).toMatchObject({ value: { error: "vision_analysis_timeout", provider_outcome: "unknown" } });
-      expect(f.store.settle.mock.calls[0]?.[3]).toBe(true);
-    } finally { timeout.mockRestore(); }
-  });
-  it("reports one content-free outcome per analysis attempt with its stable code", async () => {
-    const observation = await captureRunObservation();
-    const identity = { adapterKind: "openai_responses_compatible", connectionId: "connection", providerFamily: "openai_compatible", providerModelId: "vision" };
-    const completed = fixture();
-    await completed.service.execute(completed.call, completed.context);
-    const failed = fixture(); failed.execute.mockRejectedValue(new Error("PRIVATE provider body"));
-    await failed.service.execute(failed.call, failed.context);
-    const timedOut = fixture(); const deadline = new AbortController();
-    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
-    try {
-      timedOut.execute.mockImplementation(async (_snapshot, _request, options) => { deadline.abort(); options!.signal!.throwIfAborted(); throw new Error("unreachable"); });
-      await timedOut.service.execute(timedOut.call, timedOut.context, new AbortController().signal);
-    } finally { timeout.mockRestore(); }
-    const unsettled = fixture(); unsettled.store.settle.mockRejectedValue(new Error("PRIVATE_DB_FAILURE"));
-    await expect(unsettled.service.execute(unsettled.call, unsettled.context)).rejects.toThrow();
-    const restored = fixture(); restored.store.restore.mockResolvedValue({ callId: "provider-call", name: "analyze_image", status: "complete", content: [] });
-    await restored.service.execute(restored.call, restored.context);
+  describe("deadlines", () => {
+    // Only the clock: stream decoding and promise chains keep their real scheduling.
+    beforeEach(() => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] }); });
+    afterEach(() => { vi.useRealTimers(); });
+    const untilAborted = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) =>
+      signal!.addEventListener("abort", () => reject(signal!.reason), { once: true }));
+    const reasoningPlan = (reasoningEffort: string | null, responseTimeoutMs: number): AvailableVisionAnalysisPlan => ({ ...plan, reasoningEffort,
+      snapshot: { ...plan.snapshot, connection: { ...plan.snapshot.connection, responseTimeoutMs },
+        model: { ...plan.snapshot.model, capabilities: { ...plan.snapshot.model.capabilities, reasoning: true } } } });
+    /** Starts one analysis and reports the fake time at which it settled. */
+    function start(f: ReturnType<typeof fixture>, signal?: AbortSignal) {
+      const begun = performance.now(); let endedAt: number | undefined;
+      const pending = f.service.execute(f.call, f.context, signal).finally(() => { endedAt = performance.now() - begun; });
+      return { pending, ended: () => endedAt };
+    }
 
-    const outcomes = observation.records().filter((record) => record.event === "tool_execution" && record.tool_kind === "vision");
-    expect(outcomes).toEqual([
-      expect.objectContaining({ ...identity, stage: "execution", outcome: "completed", level: "info", duration_ms: expect.any(Number) }),
-      expect.objectContaining({ ...identity, outcome: "failed", level: "error", code: "vision_analysis_provider_failed" }),
-      expect.objectContaining({ ...identity, outcome: "failed", code: "vision_analysis_timeout", reason: "deadline" }),
-      expect.objectContaining({ ...identity, outcome: "failed", code: "vision_analysis_settlement_failed" })
-    ]);
-    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|Compare colors|same\.png|red; second/);
+    it.each([
+      // effort, model response timeout, remaining turn time -> provider deadline, end of the wait, outcome
+      ["high", 900_000, 3_600_000, 300_000, 300_000, "vision_analysis_timeout"],
+      ["medium", 900_000, 3_600_000, 300_000, 300_000, "vision_analysis_timeout"],
+      [null, 900_000, 3_600_000, 300_000, 300_000, "vision_analysis_timeout"],
+      ["high", 120_000, 3_600_000, 120_000, 120_000, "vision_analysis_timeout"],
+      ["medium", 900_000, 100_000, 300_000, 100_000, "vision_analysis_cancelled"],
+      ["high", 200_000, 150_000, 200_000, 150_000, "vision_analysis_cancelled"],
+      ["low", 900_000, 3_600_000, 60_000, 60_000, "vision_analysis_timeout"],
+      ["low", 900_000, 30_000, 60_000, 30_000, "vision_analysis_cancelled"]
+    ] as const)("effort %s, response timeout %i ms, turn %i ms left: waits %i ms, ends at %i ms as %s, ambiguous and not replayed",
+      async (effort, responseTimeoutMs, turnMs, timeoutMs, endMs, code) => {
+        const f = fixture(); f.context.request.visionAnalysis = reasoningPlan(effort, responseTimeoutMs);
+        f.execute.mockImplementation((_snapshot, _request, options) => untilAborted(options?.signal));
+        const turn = new AbortController(); setTimeout(() => turn.abort(), turnMs);
+        const run = start(f, turn.signal);
+        await vi.advanceTimersByTimeAsync(endMs - 1);
+        expect(run.ended()).toBeUndefined();
+        expect(f.execute.mock.calls[0]?.[2]).toMatchObject({ timeoutMs });
+        await vi.advanceTimersByTimeAsync(1);
+        const result = await run.pending;
+        expect(run.ended()).toBe(endMs);
+        expect(result.content[0]).toMatchObject({ value: { error: code, provider_outcome: "unknown" } });
+        expect(f.store.settle).toHaveBeenCalledOnce();
+        expect(f.store.settle.mock.calls[0]?.[3]).toBe(true);
+        expect(f.execute).toHaveBeenCalledOnce();
+      });
+
+    it("does not spend the provider deadline on a slow Workspace preparation", async () => {
+      const observation = await captureRunObservation();
+      const f = fixture(); f.context.request.visionAnalysis = reasoningPlan("high", 900_000);
+      const prepare = f.prepareImages.getMockImplementation()!;
+      f.prepareImages.mockImplementation(async (sources: Parameters<typeof prepare>[0]) => {
+        await new Promise(resolve => setTimeout(resolve, 100_000)); return prepare(sources);
+      });
+      f.execute.mockImplementation((_snapshot, _request, options) => untilAborted(options?.signal));
+      const run = start(f, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(f.execute).toHaveBeenCalledOnce();
+      // The full provider deadline remains after 100 s of preparation.
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(run.ended()).toBeUndefined();
+      expect(f.execute.mock.calls[0]?.[2]?.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await run.pending;
+      expect(run.ended()).toBe(400_000);
+      expect(result.content[0]).toMatchObject({ value: { error: "vision_analysis_timeout", provider_outcome: "unknown" } });
+      const records = observation.records().filter(record => record.event === "tool_execution" && record.tool_kind === "vision");
+      expect(records).toEqual([expect.objectContaining({ code: "vision_analysis_timeout", reason: "deadline", duration_ms: 400_000,
+        preparation_duration_ms: 100_000, provider_duration_ms: 300_000, timeout_ms: 300_000 })]);
+
+      // The stored ambiguous outcome is what a later identical call receives: no second paid dispatch.
+      f.store.restore.mockResolvedValue(f.store.settle.mock.calls[0]![1]);
+      expect(await f.service.execute(f.call, f.context)).toEqual(result);
+      expect(f.execute).toHaveBeenCalledOnce();
+      expect(f.store.dispatch).toHaveBeenCalledOnce();
+    });
+
+    it("bounds preparation by its own allowance and fails it before any claim as a definite timeout", async () => {
+      const observation = await captureRunObservation();
+      const f = fixture(); f.context.request.visionAnalysis = reasoningPlan("high", 900_000);
+      f.prepareImages.mockImplementation((_sources, signal?: AbortSignal) => untilAborted(signal));
+      const run = start(f, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(run.ended()).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await run.pending;
+      expect(run.ended()).toBe(120_000);
+      expect(result.content[0]).toMatchObject({ value: { error: "vision_analysis_timeout" } });
+      expect(JSON.stringify(result)).not.toContain("provider_outcome");
+      expect(f.store.dispatch).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled(); expect(f.store.settle).not.toHaveBeenCalled();
+      expect(f.captures.release).toHaveBeenCalledOnce();
+      const [record] = observation.records().filter(entry => entry.event === "tool_execution" && entry.tool_kind === "vision");
+      expect(record).toMatchObject({ code: "vision_analysis_timeout", preparation_duration_ms: 120_000, timeout_ms: 300_000 });
+      expect(record).not.toHaveProperty("provider_duration_ms");
+    });
+
+    it("never labels a provider failure after the preparation allowance would have passed as a timeout", async () => {
+      const f = fixture(); f.context.request.visionAnalysis = reasoningPlan("high", 900_000);
+      f.execute.mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 150_000)); throw new Error("upstream"); });
+      const run = start(f, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(150_000);
+      const result = await run.pending;
+      expect(result.content[0]).toMatchObject({ value: { error: "vision_analysis_provider_failed", provider_outcome: "unknown" } });
+      expect(f.execute).toHaveBeenCalledOnce();
+    });
+
+    it("reports one content-free outcome per analysis attempt with its stable code and phase timings", async () => {
+      const observation = await captureRunObservation();
+      const identity = { adapterKind: "openai_responses_compatible", connectionId: "connection", providerFamily: "openai_compatible", providerModelId: "vision" };
+      const completed = fixture();
+      completed.execute.mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 42_000));
+        return { finalText: "First is red; second is blue.", finalProviderResponsePreview: {}, usage: { inputTokens: 9, outputTokens: 4 } };
+      });
+      const completedRun = start(completed);
+      await vi.advanceTimersByTimeAsync(42_000);
+      await completedRun.pending;
+      const failed = fixture(); failed.execute.mockRejectedValue(new Error("PRIVATE provider body"));
+      await failed.service.execute(failed.call, failed.context);
+      const timedOut = fixture();
+      timedOut.execute.mockImplementation((_snapshot, _request, options) => untilAborted(options?.signal));
+      const timedOutRun = start(timedOut, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await timedOutRun.pending;
+      const unsettled = fixture(); unsettled.store.settle.mockRejectedValue(new Error("PRIVATE_DB_FAILURE"));
+      await expect(unsettled.service.execute(unsettled.call, unsettled.context)).rejects.toThrow();
+      const restored = fixture(); restored.store.restore.mockResolvedValue({ callId: "provider-call", name: "analyze_image", status: "complete", content: [] });
+      await restored.service.execute(restored.call, restored.context);
+
+      const outcomes = observation.records().filter((record) => record.event === "tool_execution" && record.tool_kind === "vision");
+      expect(outcomes).toEqual([
+        expect.objectContaining({ ...identity, stage: "execution", outcome: "completed", level: "info", duration_ms: 42_000,
+          preparation_duration_ms: 0, provider_duration_ms: 42_000, timeout_ms: 60_000 }),
+        expect.objectContaining({ ...identity, outcome: "failed", level: "error", code: "vision_analysis_provider_failed",
+          provider_duration_ms: 0, timeout_ms: 60_000 }),
+        expect.objectContaining({ ...identity, outcome: "failed", code: "vision_analysis_timeout", reason: "deadline",
+          duration_ms: 60_000, provider_duration_ms: 60_000, timeout_ms: 60_000 }),
+        expect.objectContaining({ ...identity, outcome: "failed", code: "vision_analysis_settlement_failed", provider_duration_ms: 0 })
+      ]);
+      expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|Compare colors|same\.png|red; second/);
+    });
   });
   it("keeps the base bound without an effort and lets an earlier run deadline end the call as cancelled", async () => {
     const f = fixture(); const run = new AbortController();

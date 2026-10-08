@@ -270,6 +270,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         const sessionId = requiredString(body.sessionId, 128);
         if (!isWorkspaceOpaqueId(sessionId)) throw new Error("field_invalid");
         const operation = parseWorkspaceOperation(body.operation);
+        const predecessor = body.predecessor === undefined ? undefined : parseWorkspaceOperation(body.predecessor);
         const runtimeSandboxId = optionalString(body.runtimeSandboxId, 256);
         const ensure = {
           cpus: integer(body.cpus, 1, 8),
@@ -281,7 +282,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           sandboxName: requiredString(body.sandboxName, 160),
           sessionId
         };
-        await fence.claim({ operation, runtimeSandboxId, sessionId });
+        await fence.claim({ operation, ...(predecessor ? { predecessor } : {}), runtimeSandboxId, sessionId });
         sendJson(response, 200, await fence.run({ operation, sessionId }, (signal) => input.runtime.ensureSession({ ...ensure, signal })));
         return;
       }

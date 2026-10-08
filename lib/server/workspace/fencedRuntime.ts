@@ -19,7 +19,8 @@ export function fenceDeterministicWorkspaceRuntime(runtime: WorkspaceRuntime, sh
     claimSessionOperation: (input) => fence.claim(input),
     retireSessionOperation: (input) => fence.retire(input),
     async ensureSession(input) {
-      await fence.claim({ operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId, sessionId: input.sessionId });
+      await fence.claim({ operation: parseWorkspaceOperation(input.operation), ...(input.predecessor ? { predecessor: input.predecessor } : {}),
+        runtimeSandboxId: input.runtimeSandboxId, sessionId: input.sessionId });
       return call(input, (signal) => runtime.ensureSession({ ...input, signal }));
     },
     listStagedAttachments: (input) => call(input, (signal) => runtime.listStagedAttachments({ ...input, signal })),

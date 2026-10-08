@@ -37,6 +37,7 @@ import type {
 } from "../providers/types";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { ProviderSearchExecutionError } from "../providers/types";
+import { ImageInputError } from "../images/inputError";
 import { ImageGenerationError } from "../providers/imageGeneration";
 import { imageFailureDiagnostic } from "../providers/imageFailure";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
@@ -166,6 +167,7 @@ import {
   type RunRecoveryRegistry,
   type RunRecoveryRepository
 } from "./runRecovery";
+import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import { decodeContextCompactionStatus, type ContextPlanMeasurement, type ContextSummary, type ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { openAIResponsesToolBridge } from "../tools/bridges";
@@ -2124,6 +2126,245 @@ describe("run recovery", () => {
       expect(records).toContainEqual(expect.objectContaining({ event: "job_persistence", stage: "fail", outcome: "confirmed" }));
       expect(JSON.stringify(records)).not.toContain("PRIVATE_");
     } finally { writer.restore(); }
+  });
+
+  describe("invalid stored recovery records", () => {
+    const invalidWorkspace = () => ({
+      accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff: vi.fn(),
+      recoverExports: vi.fn(async () => ({ attempted: 0, completed: 0 })),
+      settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })), tools: vi.fn()
+    }) satisfies NonNullable<RunRecoveryDeps["workspace"]>;
+
+    it("ends only the invalid stale run and keeps one whose read failed for a later attempt", async () => {
+      const writer = await captureRunObservation();
+      try {
+        const refresh = vi.fn();
+        const adapter = providerWithRefresh(refresh);
+        const stream = vi.spyOn(adapter, "stream");
+        const runs = new Map([
+          staleControl({ id: "run-transient", assistantMessageId: "assistant-transient", providerResponseId: null }),
+          staleControl({ id: "run-invalid", assistantMessageId: "assistant-invalid", providerResponseId: null }),
+          staleControl({ id: "run-orphan", assistantMessageId: "assistant-orphan", provider: "anthropic", providerResponseId: null })
+        ].map((run) => [run.id, run]));
+        const harness = createHarness({ providers: { openai: adapter }, staleRuns: [...runs.values()] });
+        harness.repository.getRunControlForUser = async (id) => runs.get(id) ?? null;
+        const readFailure = new Error("PRIVATE_RECOVERY_READ_CANARY"); rememberDatabaseFailure(readFailure, "P2024");
+        harness.repository.loadCheckpointedToolLoopRun = async ({ runId: id }) => {
+          if (id === "run-transient") throw readFailure;
+          if (id === "run-invalid") throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
+          return null;
+        };
+        const recordUsage = vi.spyOn(harness.repository, "recordRunUsageEvents");
+        const workspace = invalidWorkspace();
+        await expect(reconcileStaleRuns({ ...harness.deps, workspace }, { now: new Date("2026-07-12T10:00:01.000Z"), userId }))
+          .resolves.toBeUndefined();
+        expect(harness.state.recoveredErrors).toEqual([{ error: { code: "tool_loop_checkpoint_invalid_in_storage",
+          message: expect.stringContaining("regenerate") }, outputEvents: [], runId: "run-invalid", usageAttributions: [], userId }]);
+        expect(harness.state.failed.map((entry) => [entry.runId, entry.error.code])).toEqual([
+          ["run-invalid", "tool_loop_checkpoint_invalid_in_storage"], ["run-orphan", "run_orphaned"]]);
+        expect(workspace.settle).toHaveBeenCalledTimes(2);
+        expect(workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed", runId: "run-invalid" }));
+        expect(workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-orphan" }));
+        expect(stream).not.toHaveBeenCalled();
+        expect(refresh).not.toHaveBeenCalled();
+        expect(recordUsage).not.toHaveBeenCalled();
+        expect(harness.deps.registry.has("run-invalid")).toBe(false);
+        const records = writer.records();
+        expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "run-transient",
+          stage: "recovery", outcome: "failed", prisma_code: "P2024" }));
+        expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "run-invalid",
+          stage: "process", outcome: "failed", code: "tool_loop_checkpoint_invalid_in_storage" }));
+        expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+      } finally { writer.restore(); }
+    });
+
+    const lostAnswer = expect.objectContaining({ modelId: "gpt-test", operationCount: 1, provider: "openai",
+      purpose: "chat_answer", usage: expect.objectContaining({ completeness: "unavailable" }) });
+    const invalidRequest = (harness: ReturnType<typeof createHarness>) => {
+      harness.repository.loadProviderDispatchRecoveryRequest = async () => {
+        throw new RecoveryStateInvalidError("provider_dispatch_recovery_request_invalid_in_storage");
+      };
+    };
+
+    it("ends a dispatched run whose accepted request is invalid with the lost answer in its terminal write", async () => {
+      const refresh = vi.fn();
+      const cancel = vi.fn(async () => ({}));
+      const adapter = { ...providerWithRefresh(refresh), cancel };
+      const stream = vi.spyOn(adapter, "stream");
+      const harness = createHarness({ providers: { openai: adapter } });
+      invalidRequest(harness);
+      const recordUsage = vi.spyOn(harness.repository, "recordRunUsageEvents");
+      const workspace = invalidWorkspace();
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([{ error: { code: "provider_dispatch_recovery_request_invalid_in_storage",
+        message: expect.any(String) }, outputEvents: [], runId, usageAttributions: [lostAnswer], userId }]);
+      expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+      expect(cancel).toHaveBeenCalledWith("response-old");
+      expect(workspace.settle).toHaveBeenCalledExactlyOnceWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
+      expect(stream).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(recordUsage).not.toHaveBeenCalled();
+    });
+
+    it("accounts nothing for an invalid run that was never dispatched", async () => {
+      const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: {} });
+      invalidRequest(harness);
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace: invalidWorkspace() }, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({ usageAttributions: [] })]);
+      expect(harness.state.usageAttributions).toEqual([]);
+    });
+
+    it("accounts a dispatched answer whose checkpoint is the invalid record as one unknown operation", async () => {
+      const harness = createHarness({ providers: {}, staleRuns: [staleControl()] });
+      harness.repository.loadCheckpointedToolLoopRun = async () => {
+        throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
+      };
+      await reconcileStaleRuns({ ...harness.deps, workspace: invalidWorkspace() },
+        { now: new Date("2026-07-12T10:00:01.000Z"), userId });
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_checkpoint_invalid_in_storage" }), usageAttributions: [lostAnswer] })]);
+    });
+
+    it("keeps the run when its checkpoint cannot be read before accounting", async () => {
+      const harness = createHarness({ providers: {} });
+      invalidRequest(harness);
+      const readFailure = new Error("synthetic read failure");
+      harness.repository.loadCheckpointedToolLoopRun = async () => { throw readFailure; };
+      await expect(refreshProviderRunIfNeeded(harness.deps, runId, userId)).rejects.toBe(readFailure);
+      expect(harness.state.failed).toEqual([]);
+      expect(harness.state.run.status).toBe("streaming");
+    });
+
+    it.each(["attributions", "write"] as const)("keeps the run after a transient %s failure and accounts the lost answer once on the next pass", async (failure) => {
+      const harness = createHarness({ providers: {} });
+      invalidRequest(harness);
+      const transient = new Error("synthetic transient failure");
+      if (failure === "attributions") vi.spyOn(harness.repository, "loadRunUsageAttributions").mockRejectedValueOnce(transient);
+      else vi.spyOn(harness.repository, "settleRecoveredRunError").mockRejectedValueOnce(transient);
+      const workspace = invalidWorkspace();
+      await expect(refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId)).rejects.toBe(transient);
+      expect(harness.state.run).toMatchObject({ recoverySettled: false, status: "streaming" });
+      expect(workspace.settle).not.toHaveBeenCalled();
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({ usageAttributions: [lostAnswer] })]);
+      expect(workspace.settle).toHaveBeenCalledOnce();
+    });
+
+    it("accounts a saved Search receipt exactly once when an invalid request ends a tools_running run", async () => {
+      const observations = memoryToolObservations();
+      const producer = { runId, userId, toolCallId: "stored-call-1" };
+      const execution: SearchExecutionEvidence = { displayName: "OpenAI Search", invocationId: "invocation-1", modelId: "search-model",
+        optionId: "openai-native-web-search", provider: "openai_compatible", revisionId: "search-revision-1", status: "complete",
+        findings: "Receipt-only findings", sources: [{ rank: 1, title: "Receipt source", url: "https://example.test/receipt" }],
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } };
+      await observations.repository.reserve(producer, "search", 8 * 1024 * 1024);
+      await observations.repository.recordSearchReceipt(producer, searchObservationReceipt({ callId: "provider-call-1",
+        name: "search_engine_1", status: "complete", content: searchToolResultContent([execution]),
+        rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: [execution] } }));
+      await observations.repository.recordOutcome(producer, "complete");
+      const search = vi.fn<ProviderSearchAdapter["search"]>();
+      const answerStream = vi.fn<ProviderAdapter["stream"]>();
+      const harness = createHarness({
+        providers: { openai: { buildRequestPreview: () => ({}), stream: answerStream },
+          openai_compatible: { buildRequestPreview: () => ({}), stream: answerStream } },
+        searchProviders: { openai_compatible: { buildRequestPreview: () => ({}), search } }
+      });
+      const storedCall: PersistedToolLoopCall = { ...persistedRecoveryCall("running"), arguments: { query: "current sources" },
+        mcpBinding: null, toolName: "search_engine_1" };
+      const installed = installCheckpointState(harness, {
+        ...checkpointedRun({ calls: [storedCall], phase: "tools_running", providerToolMessages: [{
+          arguments: JSON.stringify(storedCall.arguments), call_id: storedCall.providerCallId, name: storedCall.toolName, type: "function_call"
+        }] }),
+        normalizedRequest: { ...normalizedClientSearchRequest(), toolObservationVersion: 1 }
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+      invalidRequest(harness);
+      const deps = { ...harness.deps, observations: observations.service(), workspace: invalidWorkspace() };
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      expect(search).not.toHaveBeenCalled();
+      expect(answerStream).not.toHaveBeenCalled();
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "provider_dispatch_recovery_request_invalid_in_storage" }),
+        usageAttributions: [expect.objectContaining({ modelId: "search-model", operationCount: 1, provider: "openai_compatible",
+          purpose: "web_search", usage: expect.objectContaining({ inputTokens: 5, outputTokens: 2 }) })]
+      })]);
+      expect(installed.calls()[0]).toMatchObject({ state: "running", result: null });
+    });
+
+    it("accounts a saved Search result once when tool observations are Off and an invalid request ends the run", async () => {
+      const execution: SearchExecutionEvidence = { displayName: "OpenAI Search", invocationId: "invocation-1", modelId: "search-model",
+        optionId: "openai-native-web-search", provider: "openai_compatible", revisionId: "search-revision-1", status: "complete",
+        findings: "Saved findings", sources: [{ rank: 1, title: "Saved source", url: "https://example.test/saved" }],
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } };
+      const saved = { callId: "provider-call-1", name: "search_engine_1", status: "complete" as const,
+        content: searchToolResultContent([execution]),
+        rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: [execution] } };
+      const search = vi.fn<ProviderSearchAdapter["search"]>();
+      const answerStream = vi.fn<ProviderAdapter["stream"]>();
+      const harness = createHarness({
+        providers: { openai: { buildRequestPreview: () => ({}), stream: answerStream } },
+        searchProviders: { openai_compatible: { buildRequestPreview: () => ({}), search } }
+      });
+      const storedCall: PersistedToolLoopCall = { ...persistedRecoveryCall("complete"), arguments: { query: "current sources" },
+        mcpBinding: null, result: snapshotToolExecutionResult(saved, toolLoopPersistenceLimits.resultBytes), toolName: "search_engine_1",
+        usageAccountedAt: null };
+      installCheckpointState(harness, {
+        ...checkpointedRun({ calls: [storedCall], phase: "tools_running", providerToolMessages: [{
+          arguments: JSON.stringify(storedCall.arguments), call_id: storedCall.providerCallId, name: storedCall.toolName, type: "function_call"
+        }] }),
+        normalizedRequest: { ...normalizedClientSearchRequest(), toolObservationVersion: 0 }
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+      invalidRequest(harness);
+      const deps = { ...harness.deps, observations: memoryToolObservations().service(), workspace: invalidWorkspace() };
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      expect(search).not.toHaveBeenCalled();
+      expect(answerStream).not.toHaveBeenCalled();
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        usageAttributions: [expect.objectContaining({ modelId: "search-model", operationCount: 1, provider: "openai_compatible",
+          purpose: "web_search", usage: expect.objectContaining({ inputTokens: 5, outputTokens: 2 }) })]
+      })]);
+    });
+
+    it.each([false, true])("settles a recoverable error-status round with an invalid record keeping its usage (recorded %s)", async (recorded) => {
+      const harness = createHarness({ controls: [control({ status: "error" })], providers: {} });
+      invalidRequest(harness);
+      const answer = { modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer" as const,
+        recordedAt: "2026-07-12T09:00:00.000Z", usage: normalizeTokenUsage({ inputTokens: 2, outputTokens: 3 }) };
+      harness.repository.loadRunUsageAttributions = async () => recorded ? [answer] : [];
+      const workspace = invalidWorkspace();
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      // A recorded answer is never counted a second time, and its attributions stay as they are.
+      expect(harness.state.recoveredErrors).toEqual([{ error: expect.objectContaining({
+        code: "provider_dispatch_recovery_request_invalid_in_storage" }), outputEvents: [], runId,
+        usageAttributions: recorded ? [] : [lostAnswer], userId }]);
+      expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+      expect(workspace.settle).toHaveBeenCalledOnce();
+    });
+
+    it("leaves a run whose terminal write did not apply to its winner, accounting nothing", async () => {
+      const harness = createHarness({ providers: {}, settleRecoveredRunError: false });
+      invalidRequest(harness);
+      const recordUsage = vi.spyOn(harness.repository, "recordRunUsageEvents");
+      const workspace = invalidWorkspace();
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      expect(workspace.settle).not.toHaveBeenCalled();
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(recordUsage).not.toHaveBeenCalled();
+    });
+
+    it("keeps an unclassified failure of the accepted request for a later attempt", async () => {
+      const harness = createHarness({ providers: {} });
+      const readFailure = new Error("synthetic read failure");
+      harness.repository.loadProviderDispatchRecoveryRequest = async () => { throw readFailure; };
+      await expect(refreshProviderRunIfNeeded(harness.deps, runId, userId)).rejects.toBe(readFailure);
+      expect(harness.state.failed).toEqual([]);
+      expect(harness.state.run.status).toBe("streaming");
+    });
   });
 
   it("discovers and reconciles unrelated runs on successive ticks while a Workspace export is held", async () => {
@@ -10138,6 +10379,67 @@ describe("run recovery", () => {
     ]);
   });
 
+  it("logs the designed unknown-round termination under its own registered code", async () => {
+    const writer = await captureRunObservation();
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      providers: { openai: { buildRequestPreview: () => ({}), stream: vi.fn() as ProviderAdapter["stream"] } }
+    });
+    installCheckpointState(harness, checkpointedRun({ phase: "provider_running", providerResponseId: null }));
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    const terminations = writer.records().filter((record) => record.event === "run_recovery" && record.stage === "process");
+    // A lost executor's run failed for its user: an error-level record, like
+    // every other recovery termination, never `code: unknown`.
+    expect(terminations).toEqual([
+      expect.objectContaining({ action: "stop", code: "tool_loop_provider_round_outcome_unknown", level: "error", outcome: "failed" }),
+      expect.objectContaining({ action: "fail", code: "tool_loop_provider_round_outcome_unknown", level: "error", outcome: "failed" })
+    ]);
+  });
+
+  describe("a round lost while a dropped request was sent again", () => {
+    const unknownUsage = normalizeTokenUsage({ completeness: "unavailable" });
+    const dropped: PersistedRunUsageAttribution = { modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer",
+      recordedAt: "2026-07-12T09:00:00.000Z", usage: normalizeTokenUsage({ completeness: "partial", inputTokens: 9 }) };
+    const lost = (input: Readonly<{ answerRoundUsage?: readonly PersistedAnswerRoundUsage[]; providerResponseId?: string | null }>) => {
+      const stream = vi.fn();
+      const harness = createHarness({
+        controls: [control({ providerResponseId: input.providerResponseId ?? null })],
+        // A compatible adapter: it cannot resume a response by its id.
+        providers: { openai: { buildRequestPreview: () => ({}), stream: stream as ProviderAdapter["stream"] } }
+      });
+      const installed = installCheckpointState(harness, checkpointedRun({ phase: "provider_running",
+        providerResponseId: input.providerResponseId ?? null, ...(input.answerRoundUsage ? { answerRoundUsage: input.answerRoundUsage } : {}) }),
+      [dropped]);
+      return { harness, installed, stream };
+    };
+
+    it.each([null, "response-retried"])("counts the request in flight once, beside the dropped one (response id %s)", async (providerResponseId) => {
+      // The round re-opened: the dropped request left the round's usage and stays in the run's rows.
+      const { harness, installed, stream } = lost({ providerResponseId });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(installed.checkpoint().answerRoundUsage).toEqual([{ completeness: "partial", roundIndex: 1, usage: unknownUsage }]);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: providerResponseId ? "provider_resume_not_supported" : "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ operationCount: 2, purpose: "chat_answer",
+          usage: expect.objectContaining({ completeness: "partial", inputTokens: 9 }) })]
+      })]);
+    });
+
+    it("adds nothing for a loss during the wait, before the round re-opened", async () => {
+      const { harness, installed, stream } = lost({
+        answerRoundUsage: [{ completeness: "partial", roundIndex: 1, usage: normalizeTokenUsage({ completeness: "partial", inputTokens: 9 }) }]
+      });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(installed.checkpoint().answerRoundUsage).toHaveLength(1);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ operationCount: 1, usage: expect.objectContaining({ inputTokens: 9 }) })]
+      })]);
+    });
+  });
+
   it("records the reported usage of a terminal failed provider round once before settling it", async () => {
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       error: { code: "provider_terminal_error", message: "Provider stopped" },
@@ -10466,6 +10768,25 @@ describe("Recovered image and artifact tool services", () => {
       expect.objectContaining({ destinationKind: "image", modelRunToolCallId: call.id })]);
     expect(state.calls()[0]).toMatchObject({ state: "complete" });
     expect(harness.state.completed).not.toBeNull();
+  });
+
+  it.each(["image_reference_not_found", "image_reference_unsupported"] as const)("continues a recovered run after %s before dispatch", async (code) => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call = imageCall("pending");
+    const state = imageRun(harness, call);
+    const images = imageService({ execute: vi.fn(async () => { throw new ImageInputError(code, "bad-reference"); }) });
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+    expect(images.service.execute).toHaveBeenCalledOnce();
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(requests).toHaveLength(1);
+    const refusal = JSON.stringify(requests[0]!.providerToolMessages);
+    expect(refusal).toContain(code);
+    expect(refusal).toContain("bad-reference");
+    expect(refusal).not.toContain("Do not repeat");
   });
 
   it("ends a recovered image dispatch with the same cause and text as execution and never repeats it", async () => {

@@ -16,6 +16,12 @@ function shadowJobPredicate(generation: Prisma.Sql): Prisma.Sql {
       (${MEMORY_SHADOW_REBUILD_PIPELINE_VERSION + ":e:"} || ${generation}.id || ':%'))`;
 }
 
+/** A REBUILD_INDEX admission (not a compatible clone) created this shadow. */
+export function memoryAdmittedShadowPredicate(generation: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`EXISTS (SELECT 1 FROM "MemoryJob" rebuild_job
+    WHERE ${shadowJobPredicate(generation)})`;
+}
+
 export function memoryOrphanShadowPredicate(generation: Prisma.Sql): Prisma.Sql {
   // SUCCEEDED is a completed parent pass waiting for child/source settlement;
   // the existing wake path owns its next pass and full cutover proof.

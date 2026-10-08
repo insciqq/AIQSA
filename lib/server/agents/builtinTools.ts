@@ -1,5 +1,7 @@
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { defaultWorkspaceCheckpoints, type createWorkspaceCheckpoints } from "../workspace/checkpoints";
+import { imageInputFailure } from "../images/inputError";
+import { imageGenerationFailure } from "../images/errors";
 import { executionFailure } from "../runs/executionFailure";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
@@ -38,7 +40,7 @@ export const agentBuiltinTools = (request: NormalizedRunRequest) => [
 const imageErrors = new Set(["image_input_invalid", "image_parameters_invalid", "image_reference_unavailable", "image_reference_invalid",
   "image_provider_revoked", "image_binding_unavailable", "image_editing_unavailable", "image_generation_unavailable", "image_tool_budget_exhausted",
   "image_response_invalid", "image_response_too_large", "image_provider_http_error", "image_provider_request_failed", "image_request_timed_out",
-  "image_request_cancelled", "image_output_missing"]);
+  "image_request_cancelled", "image_output_missing", "image_generation_refused"]);
 
 /** Shared domain tools, with one durable claim per gateway delivery. Native
  * Codex remains the only planner; no file path grants host filesystem access. */
@@ -149,10 +151,12 @@ export function createAgentBuiltinDispatcher(input: {
       const restored = await input.store.builtinResult(claim.id);
       if (restored && !READERS.has(call.name)) return deliver(restored, signal);
       const checkpointFailure = call.name === CHECKPOINT_OUTPUTS_TOOL_NAME ? executionFailure(error) : null;
-      const code = checkpointFailure && checkpointFailure.code !== "tool_call_failed" ? checkpointFailure.code
-        : call.name === IMAGE_GENERATION_TOOL_NAME && error instanceof Error && imageErrors.has(error.message) ? error.message : "agent_builtin_interrupted";
+      const imageInput = call.name === IMAGE_GENERATION_TOOL_NAME ? imageInputFailure(error) : null;
+      const code = imageInput?.code ?? (checkpointFailure && checkpointFailure.code !== "tool_call_failed" ? checkpointFailure.code
+        : call.name === IMAGE_GENERATION_TOOL_NAME && error instanceof Error && imageErrors.has(error.message) ? error.message : "agent_builtin_interrupted");
+      const imageFailure = call.name === IMAGE_GENERATION_TOOL_NAME && imageErrors.has(code) ? imageGenerationFailure(error) : null;
       const result: ToolExecutionResult = { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
-        error: code, hint: checkpointFailure?.message ?? "The operation did not finish. No completed result is available for this delivery. Do not repeat an unconfirmed paid request."
+        error: code, hint: imageInput?.message ?? imageFailure?.message ?? checkpointFailure?.message ?? "The operation did not finish. No completed result is available for this delivery. Do not repeat an unconfirmed paid request."
       } }] };
       if (!signal.aborted && (claim.claimed || call.name !== CHECKPOINT_OUTPUTS_TOOL_NAME)) await input.store.settleBuiltinTool(claim.id, result);
       if (code !== "agent_builtin_interrupted") return result;

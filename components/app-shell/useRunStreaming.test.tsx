@@ -285,6 +285,43 @@ describe("run streaming", () => {
     });
   });
 
+  it("replaces a dropped request's text with the retry's instead of appending it", async () => {
+    const chatA = chat("chat-a", "Chat A");
+    useThreadStore.getState().replaceThread(chatA.id, {
+      activeLeafId: "assistant-chat-a",
+      messages: [{ content: "", id: "assistant-chat-a", parentMessageId: null, role: "assistant", status: "streaming" }],
+      usageStats: null
+    });
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: vi.fn(() => false) }));
+    const tokenBuffer = result.current.createStreamTokenBuffer({ chatId: chatA.id, getAssistantMessageId: () => "assistant-chat-a" });
+    const contents: string[] = [];
+    const unsubscribe = useThreadStore.subscribe((state) => {
+      const content = selectThreadSnapshot(state, chatA.id).messages[0]?.content;
+      if (typeof content === "string" && content !== contents.at(-1)) contents.push(content);
+    });
+
+    await act(async () => {
+      await result.current.consumeRunStream({
+        chatId: chatA.id,
+        failurePrefix: "send_failed",
+        onMessageIds: vi.fn(),
+        onRunId: vi.fn(),
+        response: new Response([
+          'event: token\ndata: {"delta":"Dropped par"}',
+          'event: message_reset\ndata: {"round":1}',
+          'event: token\ndata: {"delta":"Final answer"}',
+          'event: done\ndata: {"runId":"run-a","status":"complete"}',
+          ""
+        ].join("\n\n")),
+        tokenBuffer
+      });
+    });
+    unsubscribe();
+
+    expect(selectThreadSnapshot(useThreadStore.getState(), chatA.id).messages[0]?.content).toBe("Final answer");
+    expect(contents.every((content) => !content.includes("Dropped par") || content === "Dropped par")).toBe(true);
+  });
+
   it("rejects an EOF without a terminal frame while retaining delivered tokens", async () => {
     const push = vi.fn();
     const flush = vi.fn();

@@ -226,6 +226,8 @@ export function withTimeoutSignal(parentSignal?: AbortSignal, timeoutMs = provid
       clearTimeout(timeout);
       signal.removeEventListener("abort", onAbort);
     },
+    /** Time left before this deadline; a parent signal may end sooner. */
+    remainingMs: () => Math.max(0, timeoutMs - (performance.now() - startedAt)),
     signal
   };
 }

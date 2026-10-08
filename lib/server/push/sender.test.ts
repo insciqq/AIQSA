@@ -1,6 +1,11 @@
 import { createDecipheriv, createECDH, createPublicKey, hkdfSync, randomBytes, verify } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
-import { PushTransportError, type PushPost, type PushPostRequest } from "./pushTransport";
+import { EventEmitter } from "node:events";
+import type { ClientRequest, IncomingMessage } from "node:http";
+import type { RequestOptions } from "node:https";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { setRecordObserver, type ObservedRecord } from "../observability";
+import { createTelemetryAggregator } from "../telemetry/aggregator";
+import { createPinnedPushPost, PushTransportError, type PushPost, type PushPostRequest } from "./pushTransport";
 import { createBrowserPushSender, RUN_PUSH_GRACE_MS } from "./sender";
 import type { BrowserPushEvent, BrowserPushStore, BrowserPushTarget } from "./store";
 import { generateVapidKeyPair } from "./webPushCrypto";
@@ -76,7 +81,70 @@ function harness(options: Readonly<{
   return { clock, keys, loadKeys, recorded, requests, sender, sleeps, store };
 }
 
+afterEach(() => setRecordObserver(null));
+
 describe("browser push sender", () => {
+  it.each(["delivered", "failed"] as const)("records one %s dispatch after multiple connection attempts", async (outcome) => {
+    const records: ObservedRecord[] = [];
+    setRecordObserver(null);
+    setRecordObserver((record) => records.push(record));
+    let attempts = 0;
+    const writes = vi.fn();
+    const post = createPinnedPushPost({
+      resolve: async () => [{ address: "2001:4860:4860::8888", family: 6 }, { address: "8.8.8.8", family: 4 }],
+      request: (_options: RequestOptions, respond: (incoming: IncomingMessage) => void) => {
+        attempts += 1;
+        const index = attempts;
+        const outgoing = Object.assign(new EventEmitter(), {
+          destroy: vi.fn(),
+          end: () => {
+            writes();
+            const incoming = Object.assign(new EventEmitter(), { resume: vi.fn(), statusCode: 201 });
+            respond(incoming as unknown as IncomingMessage);
+            incoming.emit("end");
+          }
+        });
+        queueMicrotask(() => {
+          const socket = Object.assign(new EventEmitter(), { destroy: vi.fn() });
+          outgoing.emit("socket", socket);
+          if (index === 1 || outcome === "failed") {
+            outgoing.emit("error", Object.assign(new Error("PRIVATE_ENDPOINT_AND_KEYS"), { code: "ENETUNREACH" }));
+          } else {
+            socket.emit("connect");
+            socket.emit("secureConnect");
+          }
+        });
+        return outgoing as unknown as ClientRequest;
+      }
+    });
+    const phone = device("phone");
+    const h = harness({ post, targets: [phone.target] });
+    h.sender.notifyRun("run-1");
+    await h.sender.idle();
+    expect(attempts).toBe(2);
+    expect(writes).toHaveBeenCalledTimes(outcome === "delivered" ? 1 : 0);
+    expect(h.recorded).toEqual([["phone", outcome]]);
+    const dispatches = records.filter((record) => record.stage === "dispatch");
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]).toMatchObject(outcome === "delivered"
+      ? { httpStatus: 201, outcome: "completed" }
+      : { category: "network_unreachable", code: "push_transport_failed", outcome: "failed" });
+    const serialized = JSON.stringify(dispatches);
+    for (const privateValue of ["PRIVATE_", phone.target.endpoint, phone.target.auth, phone.target.p256dh, "8.8.8.8"]) {
+      expect(serialized).not.toContain(privateValue);
+    }
+    const aggregator = createTelemetryAggregator();
+    for (const record of dispatches) aggregator.observe(record);
+    const batch = aggregator.drain();
+    expect(batch.counters).toHaveLength(1);
+    expect(batch.counters[0]).toMatchObject({ count: 1 });
+    if (outcome === "failed") {
+      expect(batch.counters[0]!.dimensions).toMatchObject({ category: "network_unreachable", code: "push_transport_failed" });
+      expect(batch.incidents).toHaveLength(1);
+      expect(batch.incidents[0]!.details).toMatchObject({ category: "network_unreachable" });
+    }
+  });
+
   it("delivers one encrypted, content-free message per live device with VAPID and Web Push headers", async () => {
     const phone = device("phone");
     const laptop = device("laptop");

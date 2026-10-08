@@ -12,7 +12,7 @@ import type {
   MemoryRebuildStatus
 } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
-import type { MemoryJobClaim } from "../coordinator/types";
+import type { MemoryJobApplyOutcome, MemoryJobClaim } from "../coordinator/types";
 import {
   memoryItemEmbeddingPinFromSnapshot,
   memoryItemEmbeddingGenerationMatchesPin,
@@ -41,11 +41,16 @@ import {
 } from "../history/rounds";
 import {
   MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+  projectMemoryRecallRoundSegments,
   type MemoryRecallRoundSegmentSource
 } from "../history/segments";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
-import { persistMemoryRecallRoundSegmentProjection } from
-  "../history/segmentPersistence";
+import {
+  memoryRecallRoundSegmentsMatch,
+  persistedMemoryRecallRoundSegmentJoin,
+  persistMemoryRecallRoundSegmentProjection,
+  type PersistedMemoryRecallRoundSegment
+} from "../history/segmentPersistence";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
@@ -286,6 +291,10 @@ const nonterminalJobStates: readonly MemoryJobState[] = [
   "WAITING_FOR_EGRESS_CONSENT"
 ];
 const COMPATIBLE_GENERATION_PROMOTION_TIMEOUT_MS = 120_000;
+// Entry writes one catch-up pass applies under the owner lock (measured at
+// about a millisecond each with their lexical projection capture); the rest
+// of a large diff continues in further passes of the same job.
+const MEMORY_SHADOW_CATCH_UP_WRITE_WINDOW = 500;
 
 async function shadowCutoverHasBlockingJobs(
   tx: MemoryTransaction,
@@ -312,6 +321,21 @@ async function shadowCutoverHasBlockingJobs(
 
 function itemKey(itemType: CurrentSearchItemType, itemId: string): string {
   return `${itemType}:${itemId}`;
+}
+
+/** Rows grouped by key, each group in the rows' order; one pass, so a full
+ * catch-up stays linear in the owner's history instead of rows x joins. */
+function groupedBy<Row>(
+  rows: readonly Row[],
+  key: (row: Row) => string
+): ReadonlyMap<string, readonly Row[]> {
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const group = groups.get(key(row));
+    if (group) group.push(row);
+    else groups.set(key(row), [row]);
+  }
+  return groups;
 }
 
 function exactItemId(entry: Readonly<{
@@ -640,12 +664,13 @@ async function eligibleChunks(
       AND join_row."chunkId" IN (${Prisma.join(rows.map(({ id }) => id))})
     ORDER BY join_row."chunkId", join_row."ordinal"
   `);
+  const joinsByChunk = groupedBy(joins, ({ itemId }) => itemId);
   return rows.map((row) => {
     const suppressionIdentitySnapshot = suppressionIdentitySnapshots.get(row.chatId);
     if (!suppressionIdentitySnapshot) {
       throw new MemoryExecutionError("memory_execution_state_conflict");
     }
-    const messageJoins = joins.filter(({ itemId }) => itemId === row.id).map((join) => ({
+    const messageJoins = (joinsByChunk.get(row.id) ?? []).map((join) => ({
       endOffset: join.endOffset,
       messageId: join.messageId,
       ordinal: join.ordinal,
@@ -720,31 +745,56 @@ async function ensureRoundSegmentProjection(
     }
   });
   if (rounds.length === 0) return;
-  const joins = await tx.memoryRecallRoundMessage.findMany({
-    orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
-    where: {
-      roundId: { in: rounds.map(({ id }) => id) },
-      userId: settings.userId
-    }
-  });
+  const roundIds = rounds.map(({ id }) => id);
+  const [joins, storedSegments] = await Promise.all([
+    tx.memoryRecallRoundMessage.findMany({
+      orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
+      where: { roundId: { in: roundIds }, userId: settings.userId }
+    }),
+    // Every live segment of these rounds, of any projection version: a repair
+    // retires the ones the current projection does not name.
+    tx.memoryRecallRoundSegment.findMany({
+      where: {
+        roundId: { in: roundIds },
+        state: { in: ["ACTIVE", "SUPPRESSED"] },
+        userId: settings.userId
+      }
+    })
+  ]);
+  const storedJoins = storedSegments.length === 0 ? [] :
+    await tx.memoryRecallRoundSegmentMessage.findMany({
+      orderBy: [{ segmentId: "asc" }, { ordinal: "asc" }],
+      where: {
+        segmentId: { in: storedSegments.map(({ id }) => id) },
+        userId: settings.userId
+      }
+    });
   const joinsByRound = new Map<string, MemoryRecallRoundSegmentSource["messageJoins"]>();
-  for (const round of rounds) {
-    joinsByRound.set(round.id, joins
-      .filter((join) => join.roundId === round.id)
-      .map((join) => ({
-        messageId: join.messageId,
-        ordinal: join.ordinal,
-        role: join.role as
-          MemoryRecallRoundSegmentSource["messageJoins"][number]["role"],
-        roundEndOffset: join.roundEndOffset,
-        roundStartOffset: join.roundStartOffset,
-        safeTextHash: join.safeTextHash,
-        sourceEndOffset: join.sourceEndOffset,
-        sourceMessageContentHash: join.sourceMessageContentHash,
-        sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
-        sourceStartOffset: join.sourceStartOffset
-      })));
+  for (const [roundId, roundJoins] of groupedBy(joins, ({ roundId }) => roundId)) {
+    joinsByRound.set(roundId, roundJoins.map((join) => ({
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as
+        MemoryRecallRoundSegmentSource["messageJoins"][number]["role"],
+      roundEndOffset: join.roundEndOffset,
+      roundStartOffset: join.roundStartOffset,
+      safeTextHash: join.safeTextHash,
+      sourceEndOffset: join.sourceEndOffset,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      sourceStartOffset: join.sourceStartOffset
+    })));
   }
+  const storedJoinsBySegment = groupedBy(storedJoins, ({ segmentId }) => segmentId);
+  const storedSegmentsByRound = groupedBy(
+    storedSegments.map((segment): PersistedMemoryRecallRoundSegment => ({
+      ...segment,
+      messageJoins: (storedJoinsBySegment.get(segment.id) ?? [])
+        .map(persistedMemoryRecallRoundSegmentJoin)
+    })),
+    ({ roundId }) => roundId
+  );
+  const roundById = new Map(rounds.map((round) => [round.id, round]));
   for (const round of rounds) {
     if (!(["GENERATED", "RAW_FALLBACK"] as const).includes(
       round.contextualKeyState as "GENERATED" | "RAW_FALLBACK"
@@ -755,7 +805,7 @@ async function ensureRoundSegmentProjection(
     const dependenciesValid = supportingRoundIds.length <= 2 &&
       new Set(supportingRoundIds).size === supportingRoundIds.length &&
       supportingRoundIds.every((supportingRoundId) => {
-        const support = rounds.find(({ id }) => id === supportingRoundId);
+        const support = roundById.get(supportingRoundId);
         return Boolean(
           support && support.id !== round.id && support.userId === round.userId &&
           support.chatId === round.chatId &&
@@ -766,7 +816,7 @@ async function ensureRoundSegmentProjection(
         );
       });
     const generated = round.contextualKeyState === "GENERATED" && dependenciesValid;
-    await persistMemoryRecallRoundSegmentProjection(tx, {
+    const source: MemoryRecallRoundSegmentSource = {
       chatId: round.chatId,
       contextualKeyPolicyVersion: round.contextualKeyPolicyVersion,
       contextualKeyState: generated ? "GENERATED" : "RAW_FALLBACK",
@@ -784,7 +834,15 @@ async function ensureRoundSegmentProjection(
       sourceRevision: round.sourceRevisionAtCreation,
       supportingRoundIds: generated ? supportingRoundIds : [],
       userId: round.userId
-    }, now);
+    };
+    // Each catch-up pass of every rebuild runs this repair under the owner
+    // lock. Rows that already are the exact projection are left untouched,
+    // so a pass writes (and fires source guards for) only what changed.
+    if (memoryRecallRoundSegmentsMatch(
+      storedSegmentsByRound.get(round.id) ?? [],
+      projectMemoryRecallRoundSegments(source)
+    )) continue;
+    await persistMemoryRecallRoundSegmentProjection(tx, source, now);
   }
 }
 
@@ -873,12 +931,13 @@ async function eligibleRounds(
       AND join_row."roundId" IN (${Prisma.join(rows.map(({ id }) => id))})
     ORDER BY join_row."roundId", join_row."ordinal"
   `);
+  const joinsByRound = groupedBy(joins, ({ itemId }) => itemId);
   return rows.map((row) => {
     const suppressionIdentitySnapshot = suppressionIdentitySnapshots.get(row.chatId);
     if (!suppressionIdentitySnapshot) {
       throw new MemoryExecutionError("memory_execution_state_conflict");
     }
-    const messageJoins = joins.filter(({ itemId }) => itemId === row.id).map((join) => ({
+    const messageJoins = (joinsByRound.get(row.id) ?? []).map((join) => ({
       messageId: join.messageId,
       ordinal: join.ordinal,
       role: join.role,
@@ -951,13 +1010,13 @@ async function eligibleRoundSegments(
   });
   const roundById = new Map(rounds.map((round) => [round.itemId, round]));
   const rootByRoundId = new Map(parents.map((round) => [round.id, round.evidenceRootHash]));
+  const joinsBySegment = groupedBy(joins, ({ segmentId }) => segmentId);
   return segments.map((segment): SearchIdentity => {
     const round = roundById.get(segment.roundId);
     if (!round || rootByRoundId.get(segment.roundId) !== segment.evidenceRootHash) {
       throw new MemoryExecutionError("memory_execution_state_conflict");
     }
-    const messageJoins = joins
-      .filter(({ segmentId }) => segmentId === segment.id)
+    const messageJoins = (joinsBySegment.get(segment.id) ?? [])
       .map((join) => ({
         messageId: join.messageId,
         ordinal: join.ordinal,
@@ -1503,16 +1562,54 @@ function targetData(item: SearchIdentity, userId: string, generationId: string) 
   } as const;
 }
 
+type ShadowEmbeddingProgress = Readonly<{ complete: boolean; failed: boolean }>;
+
+/** Keeps every unfinished vector of the shadow enqueued exactly once and
+ * reports whether all are ready or a child job can no longer finish one. */
+async function reconcileShadowEmbeddings(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  generation: GenerationConfiguration
+): Promise<ShadowEmbeddingProgress> {
+  if (generation.indexMode === "LEXICAL_ONLY") return { complete: true, failed: false };
+  const incomplete = await tx.memorySearchEntry.findMany({
+    orderBy: { id: "asc" },
+    select: { id: true, safeContentHash: true },
+    where: {
+      embeddingState: { not: "READY" },
+      indexGenerationId: generation.id,
+      userId: settings.userId
+    }
+  });
+  if (incomplete.length === 0) return { complete: true, failed: false };
+  const queued = await enqueueMemoryEmbeddingBatchItems(
+    tx,
+    settings,
+    incomplete.map((entry) => ({
+      entryId: entry.id,
+      triggerIdentity: memorySha256({
+        generationId: generation.id,
+        safeContentHash: entry.safeContentHash,
+        version: "memory-shadow-entry-v2"
+      })
+    }))
+  );
+  return { complete: false, failed: queued.failed };
+}
+
+/**
+ * Brings the shadow's entries toward the eligible set by at most one window
+ * of entry writes. Every written entry fires its lexical projection capture,
+ * so an unbounded first pass of a large owner would hold the owner lock for
+ * seconds; `remaining` counts the writes left for the next pass.
+ */
 async function applyFullSetDiff(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
   generation: GenerationConfiguration,
-  items: readonly SearchIdentity[]
-): Promise<Readonly<{
-  complete: boolean;
-  failed: boolean;
-  fullSetHash: string;
-}>> {
+  items: readonly SearchIdentity[],
+  writeWindow: number
+): Promise<ShadowEmbeddingProgress & Readonly<{ remaining: number }>> {
   const existing = await existingGenerationEntries(tx, settings.userId, generation.id);
   const expectedByKey = new Map(items.map((item) => [itemKey(item.itemType, item.itemId), item]));
   const retainedKeys = new Set<string>();
@@ -1534,16 +1631,24 @@ async function applyFullSetDiff(
     }
     retainedKeys.add(key);
   }
-  if (deleteIds.length > 0) {
-    await tx.memorySearchEntry.deleteMany({
-      where: { id: { in: deleteIds }, userId: settings.userId }
-    });
-  }
   const missingItems = items.filter((item) =>
     !retainedKeys.has(itemKey(item.itemType, item.itemId)));
-  if (missingItems.length > 0) {
+  const deleteWindow = deleteIds.slice(0, writeWindow);
+  // A replacement reuses its item's unique target, so creation starts only
+  // once every stale entry is gone.
+  const createWindow = deleteWindow.length < deleteIds.length
+    ? []
+    : missingItems.slice(0, writeWindow - deleteWindow.length);
+  const remaining = deleteIds.length + missingItems.length -
+    deleteWindow.length - createWindow.length;
+  if (deleteWindow.length > 0) {
+    await tx.memorySearchEntry.deleteMany({
+      where: { id: { in: deleteWindow }, userId: settings.userId }
+    });
+  }
+  if (createWindow.length > 0) {
     await tx.memorySearchEntry.createMany({
-      data: missingItems.map((item) => ({
+      data: createWindow.map((item) => ({
         ...targetData(item, settings.userId, generation.id),
         embeddingState: generation.indexMode === "LEXICAL_ONLY"
           ? "NOT_APPLICABLE" as const
@@ -1552,43 +1657,11 @@ async function applyFullSetDiff(
       }))
     });
   }
-
-  const fullSetHash = memorySha256(items.map((item) => ({
-    itemId: item.itemId,
-    itemType: item.itemType,
-    parentRoundId: item.parentRoundId ?? null,
-    safeContentHash: item.safeContentHash,
-    safetyIdentitySnapshot: item.safetyIdentitySnapshot,
-    sourceIdentitySnapshot: item.sourceIdentitySnapshot,
-    suppressionIdentitySnapshot: item.suppressionIdentitySnapshot
-  })));
-  if (generation.indexMode === "LEXICAL_ONLY") {
-    return { complete: true, failed: false, fullSetHash };
-  }
-
-  const pending = await tx.memorySearchEntry.findMany({
-    orderBy: { id: "asc" },
-    select: { embeddingState: true, id: true, safeContentHash: true },
-    where: { indexGenerationId: generation.id, userId: settings.userId }
-  });
-  const incomplete = pending.filter(({ embeddingState }) =>
-    embeddingState !== "READY");
-  const queued = await enqueueMemoryEmbeddingBatchItems(
-    tx,
-    settings,
-    incomplete.map((entry) => ({
-      entryId: entry.id,
-      triggerIdentity: memorySha256({
-        generationId: generation.id,
-        safeContentHash: entry.safeContentHash,
-        version: "memory-shadow-entry-v2"
-      })
-    }))
-  );
+  const embeddings = await reconcileShadowEmbeddings(tx, settings, generation);
   return {
-    complete: pending.every(({ embeddingState }) => embeddingState === "READY"),
-    failed: queued.failed,
-    fullSetHash
+    complete: remaining === 0 && embeddings.complete,
+    failed: embeddings.failed,
+    remaining
   };
 }
 
@@ -1780,8 +1853,9 @@ async function failShadowGeneration(
 async function applyShadowCatchUp(
   tx: MemoryTransaction,
   claim: MemoryJobClaim,
-  now: Date
-): Promise<void> {
+  now: Date,
+  writeWindow: number
+): Promise<MemoryJobApplyOutcome | void> {
   const identity = parseMemoryRebuildJobFingerprint(claim.idempotencyFingerprint);
   if (!identity || identity.type !== "SHADOW") {
     throw new Error("memory_rebuild_job_invalid");
@@ -1819,18 +1893,35 @@ async function applyShadowCatchUp(
     );
     return;
   }
-  if (target.state === "BUILDING" || target.state === "READY") {
+  const revision = settings.memoryRevision;
+  if (target.state === "CATCHING_UP" && target.indexedThroughMemoryRevision === revision) {
+    // A previous pass wrote the whole eligible set at this revision. Until
+    // its vectors are ready a woken pass only keeps them enqueued; once they
+    // are, the full pass below proves the whole set again under this lock
+    // before any cutover.
+    const progress = await reconcileShadowEmbeddings(tx, settings, target);
+    if (progress.failed) {
+      await failShadowGeneration(
+        tx,
+        claim.userId,
+        target.id,
+        "memory_rebuild_child_failed"
+      );
+      return;
+    }
+    if (!progress.complete) return;
+  }
+  if (target.state === "READY") {
     await tx.memoryIndexGeneration.update({
       data: { readyAt: null, state: "CATCHING_UP" },
       where: { id: target.id }
     });
   }
-  const revision = settings.memoryRevision;
   if (generationAcceptsRoundSegments(target)) {
     await ensureRoundSegmentProjection(tx, settings, now);
   }
   const items = await enumerateEligibleItems(tx, settings, now);
-  const diff = await applyFullSetDiff(tx, settings, target, items);
+  const diff = await applyFullSetDiff(tx, settings, target, items, writeWindow);
   const reread = await tx.userMemorySettings.findUnique({
     select: { memoryRevision: true },
     where: { userId: claim.userId }
@@ -1838,11 +1929,12 @@ async function applyShadowCatchUp(
   if (reread?.memoryRevision !== revision) {
     throw new Error("memory_rebuild_revision_proof_failed");
   }
+  // A shadow whose entry set is still incomplete stays BUILDING; only a pass
+  // that wrote its whole diff records the revision it caught up through.
   await tx.memoryIndexGeneration.update({
-    data: {
-      indexedThroughMemoryRevision: revision,
-      state: "CATCHING_UP"
-    },
+    data: diff.remaining > 0
+      ? { readyAt: null, state: "BUILDING" }
+      : { indexedThroughMemoryRevision: revision, readyAt: null, state: "CATCHING_UP" },
     where: { id: target.id }
   });
   if (diff.failed) {
@@ -1854,6 +1946,9 @@ async function applyShadowCatchUp(
     );
     return;
   }
+  // The rest of the diff is the next pass's: no other write wakes a lexical
+  // shadow, and an unfinished set must never wait for one.
+  if (diff.remaining > 0) return { requeue: true };
   if (!diff.complete) return;
   if (!(await targetEmbeddingVectorSpaceIsCurrent(tx, settings, target))) {
     await failShadowGeneration(
@@ -1991,8 +2086,13 @@ function publicFailureCode(errorCode: string | null): MemoryRebuildStatus["error
 }
 
 export function createPrismaMemoryRebuildRepository(
-  client: PrismaClient = prisma
+  client: PrismaClient = prisma,
+  options: Readonly<{ catchUpWriteWindow?: number }> = {}
 ) {
+  const writeWindow = options.catchUpWriteWindow ?? MEMORY_SHADOW_CATCH_UP_WRITE_WINDOW;
+  if (!Number.isSafeInteger(writeWindow) || writeWindow < 1) {
+    throw new Error("memory_rebuild_write_window_invalid");
+  }
   async function status(userId: string, jobId: string): Promise<MemoryRebuildStatus | null> {
     const job = await client.memoryJob.findFirst({
       where: { id: jobId, kind: "REBUILD_INDEX", userId }
@@ -2410,8 +2510,8 @@ export function createPrismaMemoryRebuildRepository(
       tx: MemoryTransaction,
       claim: MemoryJobClaim,
       now: Date
-    ): Promise<void> {
-      return applyShadowCatchUp(tx, claim, now);
+    ): Promise<MemoryJobApplyOutcome | void> {
+      return applyShadowCatchUp(tx, claim, now, writeWindow);
     },
 
     async cancel(userId: string, jobId: string, now = new Date()): Promise<MemoryRebuildStatus | null> {

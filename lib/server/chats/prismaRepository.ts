@@ -34,6 +34,7 @@ import { Prisma } from "@prisma/client";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
 import {
+  APPROX_TOKEN_WEIGHT_CLASSES,
   estimateApproxTokensFromProjectedParts,
   type ApproxTokenProjectedPart
 } from "../../domain/contextBudget";
@@ -313,46 +314,6 @@ const hydratedMessageSelect = {
   answerReviewStep: true
 } satisfies Prisma.MessageSelect;
 
-const sessionStatusEventsSelect = {
-  orderBy: { sequence: "desc" as const },
-  select: { payload: true },
-  take: 1,
-  where: { eventType: "artifact", payload: { path: ["artifactType"], equals: "context_status" } }
-};
-
-function latestSessionStatus(messages: readonly {
-  id: string;
-  role: string;
-  assistantModelRuns?: readonly { events?: readonly { payload: unknown }[] }[];
-  branchSourceModelRun?: { events?: readonly { payload: unknown }[] } | null;
-}[]): Pick<ChatContextStats, "session" | "sessionMessageId"> {
-  for (const message of [...messages].reverse()) {
-    if (message.role !== "assistant") continue;
-    const run = message.assistantModelRuns?.[0] ?? message.branchSourceModelRun;
-    for (const event of run?.events ?? []) {
-      if (isRecord(event.payload) && event.payload.artifactType === "context_status") {
-        const status = decodeSessionContextStatus(event.payload.payload);
-        if (status) return { session: status, sessionMessageId: message.id };
-      }
-    }
-  }
-  return { session: null, sessionMessageId: null };
-}
-
-const lightweightMessageSelect = {
-  assistantModelRuns: {
-    orderBy: { createdAt: "desc" },
-    select: {
-      events: sessionStatusEventsSelect,
-    },
-    take: 1
-  },
-  id: true,
-  branchSourceModelRun: { select: { events: sessionStatusEventsSelect } },
-  parentMessageId: true,
-  role: true
-} satisfies Prisma.MessageSelect;
-
 const chatSummarySelect = {
   ...chatTitleMetadataSelect,
   continuationSource: { select: { id: true } },
@@ -410,6 +371,22 @@ const archivedChatSummarySelect = {
   }
 } satisfies Prisma.ChatSelect;
 
+/**
+ * The page's message select with its run lookups kept on the chat's runs:
+ * runs are created in their messages' chat, and the message columns they
+ * join on have no index of their own.
+ */
+function hydratedMessageSelectInChat(chatId: string) {
+  return {
+    ...hydratedMessageSelect,
+    assistantModelRuns: { ...hydratedMessageSelect.assistantModelRuns, where: { chatId } },
+    userModelRuns: {
+      ...hydratedMessageSelect.userModelRuns,
+      where: { ...hydratedMessageSelect.userModelRuns.where, chatId }
+    }
+  } satisfies Prisma.MessageSelect;
+}
+
 type ChatSummaryRow = Prisma.ChatGetPayload<{ select: typeof chatSummarySelect }>;
 type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
   select: typeof archivedChatSummarySelect;
@@ -430,7 +407,6 @@ type HydratedMessagePath = Readonly<{
  * deleted.
  */
 type CurrentScheduledTasks = ReadonlyMap<string, ScheduledTask>;
-type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
   mcpToolApprovals?: readonly McpApprovalCardRow[];
   normalizedRequest?: unknown;
@@ -522,35 +498,44 @@ function knowledgeDefaultJson(
   } as Prisma.InputJsonValue;
 }
 
-function activeBranchPath<TMessage extends { id: string; parentMessageId: string | null }>(
-  messages: TMessage[],
+type ActiveBranchMessage = Readonly<{ id: string; parentMessageId: string | null; role: string }>;
+
+/**
+ * The active branch from its root to the leaf, walked in PostgreSQL along
+ * the leaf's ancestors only, so other branches and every body stay unread. A
+ * walk that ends before a root (a missing ancestor, or a cycle cut at the
+ * chat's message count) yields no branch.
+ */
+async function loadActiveBranchPath(
+  tx: Prisma.TransactionClient,
+  chatId: string,
   activeLeafMessageId: string | null
-): TMessage[] {
-  if (!activeLeafMessageId) {
-    return [];
-  }
-
-  const byId = new Map(messages.map((message) => [message.id, message]));
-  const path: TMessage[] = [];
-  const seen = new Set<string>();
-  let cursor: string | null = activeLeafMessageId;
-
-  while (cursor) {
-    if (seen.has(cursor)) {
-      return [];
-    }
-
-    const message = byId.get(cursor);
-    if (!message) {
-      return [];
-    }
-
-    seen.add(cursor);
-    path.push(message);
-    cursor = message.parentMessageId;
-  }
-
-  return path.reverse();
+): Promise<ActiveBranchMessage[]> {
+  if (!activeLeafMessageId) return [];
+  const rows = await tx.$queryRaw<ActiveBranchMessage[]>(Prisma.sql`
+    WITH RECURSIVE "bound" AS MATERIALIZED (
+      SELECT count(*)::int AS "messages" FROM "Message" WHERE "chatId" = ${chatId}
+    ), "path" AS (
+      SELECT message."id", message."parentMessageId", message."role", 0 AS "depth"
+      FROM "Message" AS message
+      WHERE message."chatId" = ${chatId} AND message."id" = ${activeLeafMessageId}
+      UNION ALL
+      SELECT parent."id", parent."parentMessageId", parent."role", path."depth" + 1
+      FROM "path" AS path
+      CROSS JOIN "bound"
+      -- One primary-key probe per step; a join would re-read the chat's
+      -- messages on every step of the walk.
+      CROSS JOIN LATERAL (
+        SELECT message."id", message."parentMessageId", message."role"
+        FROM "Message" AS message
+        WHERE message."id" = path."parentMessageId" AND message."chatId" = ${chatId}
+        LIMIT 1
+      ) AS parent
+      WHERE path."depth" < "bound"."messages"
+    )
+    SELECT "id", "parentMessageId", "role" FROM "path" ORDER BY "depth" DESC
+  `);
+  return rows[0]?.parentMessageId === null ? rows : [];
 }
 
 type ChatHistoryCursor = {
@@ -663,7 +648,7 @@ async function hydrateMessagePath(
     };
   }
   const hydrated = await tx.message.findMany({
-    select: hydratedMessageSelect,
+    select: hydratedMessageSelectInChat(chatId),
     where: {
       chatId,
       id: { in: messages.map((message) => message.id) }
@@ -712,111 +697,183 @@ async function loadCurrentScheduledTasks(
   return new Map(rows.map((row) => [row.id, toScheduledTask(row, { lastRun: null, running: false, unseen: false })]));
 }
 
-async function approximateActiveBranchInputTokens(
+type CodePointRanges = typeof APPROX_TOKEN_WEIGHT_CLASSES[number]["ranges"];
+
+/** A regular expression matching runs of the given ranges' characters. */
+function codePointRunPattern(ranges: CodePointRanges): string {
+  const escape = (codePoint: number) => `\\U${codePoint.toString(16).padStart(8, "0")}`;
+  return `[${ranges.map(([first, last]) => `${escape(first)}-${escape(last)}`).join("")}]+`;
+}
+
+const [ASCII_CLASS, CYRILLIC_CLASS, GREEK_HEBREW_ARABIC_CLASS, PLAIN_CLASS] = APPROX_TOKEN_WEIGHT_CLASSES;
+const twoByteRange = ([first, last]: CodePointRanges[number]) => first >= 0x80 && last <= 0x7ff;
+if (ASCII_CLASS!.ranges.some(([, last]) => last > 0x7f)) throw new Error("approx_token_ascii_class_not_single_byte");
+// ASCII (one UTF-8 byte) and two-byte Cyrillic go in one pass: in English and
+// Russian prose they form long runs, so the expression matches rarely, and
+// their byte lengths then tell their counts apart.
+const ASCII_AND_TWO_BYTE_CYRILLIC_RUNS = codePointRunPattern([
+  ...ASCII_CLASS!.ranges, ...CYRILLIC_CLASS!.ranges.filter(twoByteRange)
+]);
+const OTHER_CYRILLIC_RUNS = codePointRunPattern(CYRILLIC_CLASS!.ranges.filter((range) => !twoByteRange(range)));
+const GREEK_HEBREW_ARABIC_RUNS = codePointRunPattern(GREEK_HEBREW_ARABIC_CLASS!.ranges);
+const PLAIN_RUNS = codePointRunPattern(PLAIN_CLASS!.ranges);
+// Any member stands for its class: every member weighs the class weight.
+const CLASS_REPRESENTATIVES = APPROX_TOKEN_WEIGHT_CLASSES.map((weightClass) => weightClass.ranges[0]![0]);
+
+/**
+ * Each message's token estimate, exactly as the shared estimator measures its
+ * content, with every text body kept in PostgreSQL (a UTF-8 database). A text
+ * block is counted per fixed-weight character class by removing the classes'
+ * runs in turn (length counts characters, octet_length bytes); only the
+ * characters outside every class (emoji, rarer scripts) are counted one code
+ * point at a time. Non-text blocks keep the JSON measurement the client
+ * applies.
+ */
+async function approximateMessageInputTokens(
   tx: Prisma.TransactionClient,
-  activeMessages: Array<{ id: string }>
-): Promise<number> {
-  if (activeMessages.length === 0) return 0;
-  // Keep off-page text bodies in PostgreSQL while preserving the shared
-  // estimator exactly: text becomes code-point counts, while bounded
-  // non-text blocks retain the JSON.stringify semantics used by the client.
-  const ids = activeMessages.map((message) => message.id);
+  chatId: string,
+  messageIds: readonly string[]
+): Promise<Map<string, number>> {
+  if (messageIds.length === 0) return new Map();
+  // One row per block. OFFSET 0 keeps each removal a separate subquery, so
+  // every regexp_replace runs once per block instead of once per reference.
   const rows = await tx.$queryRaw<Array<{
     blockOrdinal: number;
     blockValue: unknown;
-    codePoint: number | null;
-    kind: "code_points" | "value";
+    classCounts: number[] | null;
     messageId: string;
-    occurrences: number | null;
+    residualCounts: Record<string, number> | null;
   }>>(Prisma.sql`
-    WITH "message_blocks" AS (
-      SELECT
-        message."id" AS "messageId",
-        block.ordinality::int AS "blockOrdinal",
-        block.value AS "blockValue",
-        COALESCE(
-          jsonb_typeof(block.value) = 'object'
-            AND block.value->>'type' = 'text'
-            AND jsonb_typeof(block.value->'text') = 'string',
-          false
-        ) AS "isText"
-      FROM "Message" AS message
-      CROSS JOIN LATERAL jsonb_array_elements(
-        CASE
-          WHEN jsonb_typeof(message."content"->'blocks') = 'array'
-            THEN message."content"->'blocks'
-          ELSE '[]'::jsonb
-        END
-      ) WITH ORDINALITY AS block(value, ordinality)
-      WHERE message."id" IN (${Prisma.join(ids)})
-    ),
-    "projected_parts" AS (
-      SELECT
-        message_blocks."blockOrdinal",
-        message_blocks."blockValue",
-        NULL::int AS "codePoint",
-        'value'::text AS "kind",
-        message_blocks."messageId",
-        NULL::int AS "occurrences"
-      FROM "message_blocks" AS message_blocks
-      WHERE NOT message_blocks."isText"
-
-      UNION ALL
-
-      SELECT
-        message_blocks."blockOrdinal",
-        NULL::jsonb AS "blockValue",
-        ascii(split_character.value)::int AS "codePoint",
-        'code_points'::text AS "kind",
-        message_blocks."messageId",
-        count(*)::int AS "occurrences"
-      FROM "message_blocks" AS message_blocks
-      CROSS JOIN LATERAL regexp_split_to_table(
-        message_blocks."blockValue"->>'text',
-        ''
-      ) AS split_character(value)
-      WHERE message_blocks."isText"
-        AND message_blocks."blockValue"->>'text' <> ''
-      GROUP BY
-        message_blocks."blockOrdinal",
-        message_blocks."messageId",
-        ascii(split_character.value)
-    )
     SELECT
-      "blockOrdinal",
-      "blockValue",
-      "codePoint",
-      "kind",
-      "messageId",
-      "occurrences"
-    FROM "projected_parts"
-    ORDER BY "messageId", "blockOrdinal", "kind", "codePoint"
+      message."id" AS "messageId",
+      block.ordinality::int AS "blockOrdinal",
+      CASE WHEN measured."text" IS NULL THEN block.value END AS "blockValue",
+      CASE WHEN measured."text" IS NOT NULL THEN ARRAY[
+        2 * common_removed."characters" - common_removed."bytes",
+        common_removed."bytes" - common_removed."characters" +
+          length(common_removed."rest") - length(cyrillic_removed."rest"),
+        length(cyrillic_removed."rest") - length(greek_removed."rest"),
+        length(greek_removed."rest") - length(plain_removed."rest")
+      ]::int[] END AS "classCounts",
+      (
+        SELECT jsonb_object_agg(residual."codePoint", residual."occurrences")
+        FROM (
+          SELECT ascii(split_character.value) AS "codePoint", count(*)::int AS "occurrences"
+          FROM regexp_split_to_table(plain_removed."rest", '') AS split_character(value)
+          WHERE plain_removed."rest" <> ''
+          GROUP BY 1
+        ) AS residual
+      ) AS "residualCounts"
+    FROM "Message" AS message
+    CROSS JOIN LATERAL jsonb_array_elements(
+      CASE
+        WHEN jsonb_typeof(message."content"->'blocks') = 'array'
+          THEN message."content"->'blocks'
+        ELSE '[]'::jsonb
+      END
+    ) WITH ORDINALITY AS block(value, ordinality)
+    CROSS JOIN LATERAL (
+      SELECT CASE
+        WHEN jsonb_typeof(block.value) = 'object'
+          AND block.value->>'type' = 'text'
+          AND jsonb_typeof(block.value->'text') = 'string'
+          THEN block.value->>'text'
+      END AS "text"
+      OFFSET 0
+    ) AS measured
+    CROSS JOIN LATERAL (
+      SELECT
+        common."rest",
+        -- Removed characters, and their UTF-8 bytes: one per ASCII
+        -- character, two per two-byte Cyrillic one.
+        length(measured."text") - length(common."rest") AS "characters",
+        octet_length(measured."text") - octet_length(common."rest") AS "bytes"
+      FROM (
+        SELECT regexp_replace(measured."text", ${ASCII_AND_TWO_BYTE_CYRILLIC_RUNS}, '', 'g') AS "rest" OFFSET 0
+      ) AS common
+      OFFSET 0
+    ) AS common_removed
+    CROSS JOIN LATERAL (
+      SELECT regexp_replace(common_removed."rest", ${OTHER_CYRILLIC_RUNS}, '', 'g') AS "rest" OFFSET 0
+    ) AS cyrillic_removed
+    CROSS JOIN LATERAL (
+      SELECT regexp_replace(cyrillic_removed."rest", ${GREEK_HEBREW_ARABIC_RUNS}, '', 'g') AS "rest" OFFSET 0
+    ) AS greek_removed
+    CROSS JOIN LATERAL (
+      SELECT regexp_replace(greek_removed."rest", ${PLAIN_RUNS}, '', 'g') AS "rest" OFFSET 0
+    ) AS plain_removed
+    WHERE message."chatId" = ${chatId}
+      AND message."id" = ANY(${[...messageIds]}::text[])
   `);
-  const partsByMessage = new Map<string, Map<number, ApproxTokenProjectedPart>>();
+  const partsByMessage = new Map<string, Array<readonly [number, ApproxTokenProjectedPart]>>();
   for (const row of rows) {
-    const parts = partsByMessage.get(row.messageId) ?? new Map<number, ApproxTokenProjectedPart>();
-    if (row.kind === "value") {
-      parts.set(row.blockOrdinal, { kind: "value", value: row.blockValue });
-    } else if (row.codePoint !== null && row.occurrences !== null) {
-      const existing = parts.get(row.blockOrdinal);
-      const counts = existing?.kind === "code_points" ? [...existing.counts] : [];
-      counts.push({
-        codePoint: Number(row.codePoint),
-        occurrences: Number(row.occurrences)
-      });
-      parts.set(row.blockOrdinal, { counts, kind: "code_points" });
-    }
+    const part: ApproxTokenProjectedPart = row.classCounts
+      ? { counts: [
+          ...CLASS_REPRESENTATIVES.map((codePoint, index) => ({ codePoint, occurrences: Number(row.classCounts![index] ?? 0) })),
+          ...Object.entries(row.residualCounts ?? {}).map(([codePoint, occurrences]) => ({
+            codePoint: Number(codePoint), occurrences: Number(occurrences)
+          }))
+        ], kind: "code_points" }
+      : { kind: "value", value: row.blockValue };
+    const parts = partsByMessage.get(row.messageId) ?? [];
+    parts.push([row.blockOrdinal, part]);
     partsByMessage.set(row.messageId, parts);
   }
-  return activeMessages.reduce(
-    (total, message) => {
-      const parts = [...(partsByMessage.get(message.id)?.entries() ?? [])]
-        .sort(([left], [right]) => left - right)
-        .map(([, part]) => part);
-      return total + estimateApproxTokensFromProjectedParts(parts);
-    },
-    0
-  );
+  return new Map(messageIds.map((messageId) => [messageId, estimateApproxTokensFromProjectedParts(
+    (partsByMessage.get(messageId) ?? [])
+      .sort(([left], [right]) => left - right)
+      .map(([, part]) => part)
+  )]));
+}
+
+/**
+ * The newest context measurement on the active branch: the latest
+ * `context_status` artifact of the run each answer shows (its newest run, or
+ * the run it was branched from), nearest the leaf first. Answers are read in
+ * growing windows from the leaf, since the latest answer is usually measured.
+ */
+async function loadLatestSessionStatus(
+  tx: Prisma.TransactionClient,
+  chatId: string,
+  path: readonly ActiveBranchMessage[]
+): Promise<Pick<ChatContextStats, "session" | "sessionMessageId">> {
+  const answers = path.filter((message) => message.role === "assistant").map((message) => message.id).reverse();
+  for (let offset = 0, size = 8; offset < answers.length; offset += size, size *= 8) {
+    const ids = answers.slice(offset, offset + size);
+    // Runs are created in their assistant message's chat, so the lookup stays
+    // on the chat's runs.
+    const rows = await tx.$queryRaw<Array<{ messageId: string; payload: unknown }>>(Prisma.sql`
+      WITH "answers" AS (
+        SELECT answer."id", answer."branchSourceModelRunId"
+        FROM "Message" AS answer
+        WHERE answer."chatId" = ${chatId} AND answer."id" = ANY(${ids}::text[])
+      ), "latest_runs" AS (
+        SELECT DISTINCT ON (run."assistantMessageId") run."assistantMessageId", run."id"
+        FROM "ModelRun" AS run
+        WHERE run."chatId" = ${chatId} AND run."assistantMessageId" = ANY(${ids}::text[])
+        ORDER BY run."assistantMessageId", run."createdAt" DESC, run."id" DESC
+      )
+      SELECT answers."id" AS "messageId", measurement."payload"
+      FROM "answers" AS answers
+      LEFT JOIN "latest_runs" AS latest_runs ON latest_runs."assistantMessageId" = answers."id"
+      CROSS JOIN LATERAL (
+        SELECT event."payload"
+        FROM "ModelRunEvent" AS event
+        WHERE event."modelRunId" = COALESCE(latest_runs."id", answers."branchSourceModelRunId")
+          AND event."eventType" = 'artifact'
+          AND event."payload"->>'artifactType' = 'context_status'
+        ORDER BY event."sequence" DESC
+        LIMIT 1
+      ) AS measurement
+    `);
+    const payloads = new Map(rows.map((row) => [row.messageId, row.payload]));
+    for (const id of ids) {
+      const payload = payloads.get(id);
+      const status = isRecord(payload) ? decodeSessionContextStatus(payload.payload) : null;
+      if (status) return { session: status, sessionMessageId: id };
+    }
+  }
+  return { session: null, sessionMessageId: null };
 }
 
 function serializeHydratedMessage(
@@ -1605,21 +1662,23 @@ async function wouldCreateFolderCycle(input: {
 
 async function loadActiveBranchContextStats(
   tx: Prisma.TransactionClient,
-  messages: LightweightMessageRow[]
+  chatId: string,
+  path: readonly ActiveBranchMessage[]
 ): Promise<ChatContextStats> {
-  const snapshot = latestSessionStatus(messages);
-  const snapshotIndex = snapshot.sessionMessageId
-    ? messages.findIndex((message) => message.id === snapshot.sessionMessageId) : -1;
-  const [approximateActiveBranchTokens, approximateInputTokensAfterSession] = await Promise.all([
-    approximateActiveBranchInputTokens(tx, messages),
-    snapshotIndex >= 0 ? approximateActiveBranchInputTokens(tx, messages.slice(snapshotIndex + 1)) : 0
+  const [snapshot, estimates] = await Promise.all([
+    loadLatestSessionStatus(tx, chatId, path),
+    approximateMessageInputTokens(tx, chatId, path.map((message) => message.id))
   ]);
+  const sum = (messages: readonly ActiveBranchMessage[]) =>
+    messages.reduce((total, message) => total + (estimates.get(message.id) ?? 0), 0);
+  const snapshotIndex = snapshot.sessionMessageId
+    ? path.findIndex((message) => message.id === snapshot.sessionMessageId) : -1;
   return {
-    approximateActiveBranchInputTokens: approximateActiveBranchTokens,
+    approximateActiveBranchInputTokens: sum(path),
     ...snapshot,
     ...(snapshot.session ? {
-      sessionBranchLeafId: messages.at(-1)?.id ?? null,
-      approximateInputTokensAfterSession
+      sessionBranchLeafId: path.at(-1)?.id ?? null,
+      approximateInputTokensAfterSession: snapshotIndex >= 0 ? sum(path.slice(snapshotIndex + 1)) : 0
     } : {})
   };
 }
@@ -1633,13 +1692,9 @@ export async function loadChatBranchSnapshotStats(
 }>> {
   // The caller supplies the leaf read in this same transaction so both
   // summaries remain fenced to the exact chat snapshot being serialized.
-  const messages = await tx.message.findMany({
-    select: lightweightMessageSelect,
-    where: { chatId: input.chatId }
-  });
-  const activeMessages = activeBranchPath(messages, input.activeLeafMessageId);
+  const path = await loadActiveBranchPath(tx, input.chatId, input.activeLeafMessageId);
   return {
-    contextStats: await loadActiveBranchContextStats(tx, activeMessages),
+    contextStats: await loadActiveBranchContextStats(tx, input.chatId, path),
     usageStats: await loadChatUsageTotals(tx, input.chatId)
   };
 }
@@ -1981,15 +2036,11 @@ export function createPrismaChatRepository(
           }
         });
         if (!chat) return null;
-        const lightweightMessages = await tx.message.findMany({
-          select: lightweightMessageSelect,
-          where: { chatId }
-        });
-        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
         const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
         const [messages, contextStats, usageStats] = await Promise.all([
           hydrateMessagePath(tx, chatId, pageMessages, userId),
-          loadActiveBranchContextStats(tx, activeMessages),
+          loadActiveBranchContextStats(tx, chatId, activeMessages),
           loadChatUsageTotals(tx, chatId)
         ]);
         return serializeArchivedChatDetail({
@@ -2029,11 +2080,7 @@ export function createPrismaChatRepository(
           cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
           cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
         ) return { kind: "stale" as const };
-        const lightweightMessages = await tx.message.findMany({
-          select: { id: true, parentMessageId: true },
-          where: { chatId }
-        });
-        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
         const boundary = activeMessages.findIndex(
           (message) => message.id === cursor.beforeMessageId
         );
@@ -2085,15 +2132,11 @@ export function createPrismaChatRepository(
           }
         });
         if (!chat) return null;
-        const lightweightMessages = await tx.message.findMany({
-          select: lightweightMessageSelect,
-          where: { chatId }
-        });
-        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
         const pageMessages = activeMessages.slice(-CHAT_HISTORY_PAGE_SIZE);
         const [messages, contextStats, usageStats] = await Promise.all([
           hydrateMessagePath(tx, chatId, pageMessages, userId),
-          loadActiveBranchContextStats(tx, activeMessages),
+          loadActiveBranchContextStats(tx, chatId, activeMessages),
           loadChatUsageTotals(tx, chatId)
         ]);
         const projectDefaultAuthority = access.kind === "project"
@@ -2181,14 +2224,7 @@ export function createPrismaChatRepository(
           cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
           cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
         ) return { kind: "stale" as const };
-        const lightweightMessages = await tx.message.findMany({
-          select: {
-            id: true,
-            parentMessageId: true
-          },
-          where: { chatId }
-        });
-        const activeMessages = activeBranchPath(lightweightMessages, chat.activeLeafMessageId);
+        const activeMessages = await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId);
         const boundary = activeMessages.findIndex(
           (message) => message.id === cursor.beforeMessageId
         );

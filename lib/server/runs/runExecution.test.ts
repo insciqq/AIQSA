@@ -1,5 +1,6 @@
 import * as workspaceCheckpoints from "../workspace/checkpoints";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
@@ -9,6 +10,8 @@ import { prepareWorkspaceImages } from "../workspace/imageCapture";
 import sharp from "sharp";
 import { createHash } from "node:crypto";
 import { observationWholeResultTokens } from "./runContextBudget";
+import { workspaceTurnSoftDeadlineMs } from "./workspaceTurnDeadline";
+import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "../../contracts/workspaceFailure";
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +34,7 @@ import { artifactTool } from "../tools/artifact";
 import { mixedToolsImagePlan, openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { imageGenerationTool } from "../tools/imageGeneration";
 import { analyzeImageTools } from "../tools/analyzeImage";
+import { ImageInputError } from "../images/inputError";
 import { ImageGenerationError } from "../providers/imageGeneration";
 import { imageFailureDiagnostic } from "../providers/imageFailure";
 import {
@@ -51,6 +55,8 @@ import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponses
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
 import { createFetchOpenRouterChatClient, createOpenRouterChatAdapter } from "../providers/openRouterChat";
 import { ProviderRequestTimeoutError } from "../providers/network";
+import { compatibleDroppedRoundDecision } from "../providers/openaiResponsesTransport";
+import { markProviderStreamDrop } from "../providers/streamDrop";
 import { ProviderSearchExecutionError } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
@@ -1486,6 +1492,8 @@ function compactionLoopFixture(input: Readonly<{
   resultChars: number;
   /** Parallel calls each tool round requests (default 1). */
   callsPerRound?: number;
+  /** Answer dispatches (1-based) whose stream drops after partial text; the binding admits sending them again. */
+  dropAnswers?: readonly number[];
   mutate?(request: NormalizedRunRequest): NormalizedRunRequest;
   onToolCall?(count: number): void;
   /** Answer dispatches (1-based) the provider rejects for context length. */
@@ -1519,7 +1527,7 @@ function compactionLoopFixture(input: Readonly<{
   const prepared = { ...base, normalizedRequest, providerRequest: { ...normalizedRequest, attachments: [] } };
   const summaries: ProviderRunRequest[] = [];
   const answers: ProviderRunRequest[] = [];
-  const adapter = createAdapter(async function* (request) {
+  const streamed = createAdapter(async function* (request) {
     if (request.forceNonStreaming) {
       summaries.push(request);
       if (input.summaryFails) throw new Error("summary provider unavailable");
@@ -1534,7 +1542,12 @@ function compactionLoopFixture(input: Readonly<{
       throw Object.assign(new Error("OpenAI request failed with status 400"), { code: "provider_context_length_exceeded",
         status: 400, providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY" });
     }
-    const accepted = answers.length - (input.rejectAnswers?.filter(index => index < answers.length).length ?? 0);
+    if (input.dropAnswers?.includes(answers.length)) {
+      yield { type: "token", data: { delta: "Dropped par" } };
+      throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
+    }
+    const accepted = answers.length - [...input.rejectAnswers ?? [], ...input.dropAnswers ?? []]
+      .filter(index => index < answers.length).length;
     if (accepted < 3) {
       return providerResult({ finalText: "", toolCalls: Array.from({ length: input.callsPerRound ?? 1 }, (_, index) =>
         ({ id: `read-${accepted}${index ? `-${index}` : ""}`, name, arguments: {} })) });
@@ -1542,6 +1555,10 @@ function compactionLoopFixture(input: Readonly<{
     yield { type: "token", data: { delta: "Done." } };
     return providerResult({ finalText: "Done." });
   });
+  const adapter: ProviderAdapter = input.dropAnswers
+    ? { ...streamed, droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe: () => undefined } }
+    : streamed;
+  if (input.dropAnswers) repository.repository.reopenToolLoopProviderRound ??= async () => true;
   let toolCalls = 0;
   const callTool = vi.fn(async () => {
     toolCalls += 1;
@@ -1975,6 +1992,25 @@ describe("run execution", () => {
     ]);
   });
 
+  it("sends a dropped clarified round again with the notes it already bought", async () => {
+    const repository = createRepository();
+    const followups = followupFixture(repository.repository);
+    const clarification = `Clarified constraint ${"f".repeat(7_000)}`;
+    const loop = compactionLoopFixture({
+      dropAnswers: [2], historyTokens: 3_500, repository, resultChars: 3_000,
+      onToolCall: count => { if (count === 1) followups.accept(clarification); }
+    });
+    await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
+    // One purchase: the clarified round's re-sent request is the dropped one, notes included.
+    expect(loop.summaries).toHaveLength(1);
+    const [, dropped, resent] = loop.answers;
+    expect(dropped?.contextCompactionSummary).toBeDefined();
+    expect(resent).toEqual(dropped);
+    expect(JSON.stringify(resent?.providerToolMessages)).toContain("Clarified constraint");
+  });
+
   it("buys notes for a Knowledge answer whose history exceeds the window and keeps its evidence exact", async () => {
     const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
     const repository = createRepository({ groundingResult: structuralGroundingResult(finalText) });
@@ -2326,6 +2362,68 @@ describe("run execution", () => {
       operationCount: 1, usage: expect.objectContaining({ completeness: "complete", inputTokens: 2, outputTokens: 1 }) })]);
   });
 
+  it.each([true, false])("sends a dropped round again only for an admitting binding, replacing its text (admitted=%s)", async (admitted) => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    const repository = createRepository();
+    const order: string[] = [];
+    const reopen = vi.fn(async (_input: { roundIndex: number; runId: string; userId: string }) => {
+      order.push("reopen");
+      return true;
+    });
+    repository.repository.reopenToolLoopProviderRound = reopen;
+    const recordRunUsageEvents = repository.repository.recordRunUsageEvents;
+    repository.repository.recordRunUsageEvents = async (input) => {
+      if (input.answerRoundUsage) order.push(`usage:${input.answerRoundUsage.completeness}`);
+      return recordRunUsageEvents(input);
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      ...createAdapter(async function* (request) {
+        requests.push(request);
+        order.push(`dispatch:${requests.length}`);
+        if (requests.length === 1) {
+          yield { type: "token", data: { delta: "Dropped par" } };
+          throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
+        }
+        yield { type: "token", data: { delta: "Final answer" } };
+        return providerResult({ finalText: "Final answer", usage: usage(4, 2, 0) });
+      }),
+      ...(admitted ? { droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe: vi.fn() } } : {})
+    };
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text());
+    const answerEvents = events.filter(event => event.type === "token" || event.type === "message_reset" || event.type === "done" || event.type === "error");
+    if (!admitted) {
+      expect(requests).toHaveLength(1);
+      expect(reopen).not.toHaveBeenCalled();
+      expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "provider_stream_failed" }) })]);
+      expect(answerEvents.map(event => event.type)).toEqual(["token", "error"]);
+      return;
+    }
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    // The dropped request is accounted before the round re-opens, which comes before the next request.
+    expect(order).toEqual(["dispatch:1", "usage:partial", "reopen", "dispatch:2", "usage:terminal"]);
+    expect(reopen).toHaveBeenCalledExactlyOnceWith({ roundIndex: 1, runId: "run-1", userId: "user-1" });
+    // The browser withdraws the dropped text and shows only the retry's.
+    expect(answerEvents).toEqual([
+      { data: { delta: "Dropped par" }, type: "token" },
+      { data: { round: 1 }, type: "message_reset" },
+      { data: { delta: "Final answer" }, type: "token" },
+      { data: { runId: "run-1", status: "complete" }, type: "done" }
+    ]);
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toEqual([expect.objectContaining({ finalText: "Final answer" })]);
+    expect(repository.assistantTexts.at(-1)).toBe("Final answer");
+    // Two requests, two operations: the dropped one of unknown usage.
+    expect(repository.completeRuns[0]?.usageAttributions).toEqual([expect.objectContaining({ operationCount: 2, purpose: "chat_answer",
+      usage: expect.objectContaining({ completeness: "partial", inputTokens: 4, outputTokens: 2 }) })]);
+  });
+
   it.each(["refused_replacement", "failed_interrupted_usage_write"] as const)("accounts an interrupted Follow-up generation once: %s", async mode => {
     const repository = createRepository();
     const entries: RunFollowup[] = [];
@@ -2420,6 +2518,37 @@ describe("run execution", () => {
     expect(JSON.stringify(repository.persistedEvents)).not.toContain("LIVE_CODE_CANARY");
     expect(repository.persistedEvents.some(({ event }) => event.type === "artifact_generation")).toBe(false);
     expect(repository.completeRuns).toHaveLength(1);
+  });
+  it.each(["image_reference_not_found", "image_reference_unsupported"] as const)("lets the model correct %s without failing the run", async (code) => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, imagePlan: mixedToolsImagePlan },
+      providerRequest: { ...base.providerRequest, imagePlan: mixedToolsImagePlan, tools: [imageGenerationTool(mixedToolsImagePlan)] } };
+    const repository = createRepository();
+    const execute = vi.fn<NonNullable<RunExecutionInput["images"]>["execute"]>(async (call) => {
+      if (Array.isArray(call.arguments.image_ids) && call.arguments.image_ids[0] === "bad-reference") throw new ImageInputError(code, "bad-reference");
+      return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: { image_id: "saved-image" } }] };
+    });
+    const images = { authorize: vi.fn(async () => true), execute, restore: vi.fn(async () => null),
+      withConversationPixels: vi.fn(async (request: ProviderRunRequest) => request) };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 3) return providerResult({ finalText: "Saved the corrected image." });
+      return providerResult({ finalText: "", toolCalls: [{ id: `image-${requests.length}`, name: "generate_image",
+        arguments: { prompt: "Edit the reference", image_ids: [requests.length === 1 ? "bad-reference" : "correct-reference"] } }] });
+    });
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+      images: images as unknown as NonNullable<RunExecutionInput["images"]> }).text();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(requests).toHaveLength(3);
+    const refusal = JSON.stringify(requests[1]!.providerToolMessages);
+    expect(refusal).toContain(code);
+    expect(refusal).toContain("bad-reference");
+    expect(refusal).toContain("Nothing was sent");
+    expect(refusal).not.toContain("Do not repeat");
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect([...repository.toolCalls.values()].map(call => call.state)).toEqual(["error", "complete"]);
   });
   it("ends the run with the image failure cause, keeps it with the failed call and never repeats the generation", async () => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
@@ -2705,7 +2834,7 @@ describe("run execution", () => {
     ]);
   });
 
-  it.each(["ready", "failed", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
+  it.each(["ready", "failed", "lost", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
     const boundary = deferred<void>();
     const repository = createRepository({ completionWins: outcome !== "completion_lost" });
     const providerCalls = vi.fn();
@@ -2714,6 +2843,7 @@ describe("run execution", () => {
     const handoff = vi.fn(async () => {
       await boundary.promise;
       if (outcome === "failed") throw new Error("synthetic_handoff_failure");
+      if (outcome === "lost") throw new WorkspaceRuntimeError("workspace_session_lost");
       return { status: "ready" as const };
     });
     const workspace = {
@@ -2756,6 +2886,13 @@ describe("run execution", () => {
       ]);
       expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
       if (outcome === "completion_lost") expect(repository.recordedRunUsageEvents).toHaveLength(1);
+      if (outcome === "failed" || outcome === "lost") {
+        // The saved answer ends terminally with the same plain text as recovery.
+        const error = { code: outcome === "lost" ? "workspace_session_lost" : "workspace_output_export_failed",
+          message: "The answer was saved, but Workspace could not finish preparing its files." };
+        expect(repository.failedRuns).toEqual([{ assistantMessageId: "assistant-1", error, options: { recoveryTerminal: true }, runId: "run-1" }]);
+        expect(events).toContainEqual({ type: "error", data: error });
+      } else expect(repository.failedRuns).toEqual([]);
     } finally { boundary.resolve(); await text; }
   });
 
@@ -7862,6 +7999,42 @@ describe("run execution diagnostics", () => {
     expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
   });
 
+  it.each(["answer", "tool_batch"] as const)("ends a %s accounting failure the same way, with its database cause", async (path) => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] } };
+    const expired = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", { clientVersion: "test", code: "P2028",
+      meta: { error: "Transaction already closed: A query cannot be executed on an expired transaction. PRIVATE_SQL_CANARY" } });
+    const recordRunUsageEvents = repository.repository.recordRunUsageEvents;
+    repository.repository.recordRunUsageEvents = async (input) => {
+      // An answer round reports its own usage; a settled tool batch writes the run's accounted usage.
+      if ((path === "answer") === Boolean(input.answerRoundUsage)) throw expired;
+      return recordRunUsageEvents(input);
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return path === "tool_batch"
+        ? providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }],
+          usage: usage(2, 1, 0) })
+        : providerResult({ finalText: "PRIVATE_ANSWER_CANARY", usage: usage(2, 1, 0) });
+    });
+    parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text());
+    // No provider round or tool is dispatched again for a local accounting failure.
+    expect(requests).toHaveLength(1);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: { code: "run_usage_persistence_failed", message: expect.stringContaining("could not confirm its usage record") },
+      options: { recoveryTerminal: true }
+    })]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed",
+      code: "run_usage_persistence_failed", prisma_code: "P2028", db_failure: "transaction_expired" }));
+    expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+  });
+
   it("keeps the original provider failure when failRun also fails and never reports a confirmed terminal", async () => {
     const observation = await captureRunObservation();
     const repository = createRepository();
@@ -7954,6 +8127,192 @@ it("retains final-only provider usage if completing the local egress receipt thr
   expect(JSON.stringify(events)).not.toContain("PRIVATE");
   expect(egress.completed).toEqual([]);
   expect(egress.failed).toHaveLength(1);
+});
+
+describe("Workspace turn deadlines", () => {
+  const shell = namespacedWorkspaceToolName("sandbox_shell");
+  // `completionWorkspace`: a 300 s turn and 5 s synchronous calls.
+  const softMs = workspaceTurnSoftDeadlineMs(completionWorkspace.turnTimeoutSeconds, completionWorkspace.syncToolTimeoutSeconds);
+  const hardMs = completionWorkspace.turnTimeoutSeconds * 1_000;
+  const timeInstruction = "Tool use is now disabled for this run: the time limit of this turn is close.";
+  const timeLimit = { code: "workspace_turn_time_limit", message: WORKSPACE_OPERATION_FAILURE_MESSAGES.workspace_turn_time_limit };
+  type WorkspaceInput = NonNullable<RunExecutionInput["workspace"]>;
+
+  beforeEach(() => {
+    activeRunControllersForTest().clear();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function workspaceTurn(input: Readonly<{
+    execute?: WorkspaceInput["execute"];
+    handoff?: WorkspaceInput["handoff"];
+    round(request: ProviderRunRequest, index: number, signal: AbortSignal | undefined): Promise<ProviderRunResult>;
+  }>) {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const workspace = {
+      accepts: ({ name }: { name: string }) => name === shell,
+      execute: vi.fn<WorkspaceInput["execute"]>(input.execute ?? (async ({ call }) => ({ callId: call.id, name: call.name,
+        status: "complete", content: [{ type: "text", text: "{\"data\":{\"exitCode\":0}}" }] }))),
+      tools: async () => [{ capability: "workspace" as const, name: shell, description: shell, inputSchema: { type: "object" } }],
+      finalize: vi.fn(), recoverExports: vi.fn(),
+      handoff: vi.fn<WorkspaceInput["handoff"]>(input.handoff ?? (async () => ({ status: "ready" as const }))),
+      settle: vi.fn<WorkspaceInput["settle"]>(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }))
+    } satisfies WorkspaceInput;
+    const adapter = createAdapter(async function* (request, options) {
+      requests.push(request);
+      return await input.round(request, requests.length, options?.signal);
+    });
+    const begin = vi.spyOn(repository.repository, "beginToolLoopProviderRound");
+    const cancelPending = vi.spyOn(repository.repository, "cancelPendingToolLoopCalls");
+    const base = preparedData({ provider: "openai", modelId: "gpt-tool-model", toolBudgets: { maxToolCalls: 80, maxToolRounds: 32 } });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, workspace: completionWorkspace },
+      providerRequest: { ...base.providerRequest, workspace: completionWorkspace } };
+    const run = async () => parseSse(await createRunExecutionResponse({
+      ...executionInput({ adapter, prepared, repository: repository.repository }), workspace }).text());
+    return { begin, cancelPending, repository, requests, run, workspace };
+  }
+  const shellCalls = (round: number, count: number) => providerResult({ finalText: "", toolCalls: Array.from({ length: count },
+    (_, index) => ({ id: `shell-${round}-${index}`, name: shell, arguments: { command: "synthetic-step" } })) });
+  const disabledRequests = (requests: readonly ProviderRunRequest[]) =>
+    requests.filter(request => JSON.stringify(request.providerToolMessages ?? []).includes("Tool use is now disabled"));
+  const terminalRounds = (repository: ReturnType<typeof createRepository>) => repository.recordedRunUsageEvents.flatMap(entry =>
+    entry.answerRoundUsage?.completeness === "terminal" ? [entry.answerRoundUsage.roundIndex] : []);
+
+  it("derives the soft deadline from the turn budget and the synchronous call limit", () => {
+    expect(workspaceTurnSoftDeadlineMs(1_800, 120)).toBe(1_440_000);
+    expect(workspaceTurnSoftDeadlineMs(3_600, 120)).toBe(3_240_000);
+    expect(workspaceTurnSoftDeadlineMs(1_800, 300)).toBe(1_260_000);
+    // Short budgets keep at least half of the turn for work.
+    expect(workspaceTurnSoftDeadlineMs(600, 120)).toBe(300_000);
+    expect(workspaceTurnSoftDeadlineMs(60, 120)).toBe(30_000);
+  });
+
+  it("finishes the running batch, forces exactly one tool-free answer and hands off normally at the soft deadline", async () => {
+    let executed = 0;
+    const turn = workspaceTurn({
+      execute: async ({ call }) => {
+        // The soft deadline passes while the first call of the batch runs.
+        if (++executed === 1) await vi.advanceTimersByTimeAsync(softMs);
+        return { callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: "{\"data\":{\"exitCode\":0}}" }] };
+      },
+      round: async (request, index) => request.toolChoice === "none"
+        ? providerResult({ finalText: "Steps 1-2 are done; the rest was not completed." })
+        : shellCalls(index, 2)
+    });
+    const events = await turn.run();
+
+    expect(turn.workspace.execute).toHaveBeenCalledTimes(2);
+    expect([...turn.repository.toolCalls.values()].map(call => call.state)).toEqual(["complete", "complete"]);
+    expect(turn.requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(disabledRequests(turn.requests)).toHaveLength(1);
+    expect(turn.requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: expect.stringContaining(timeInstruction) });
+    // A transient decision: nothing refused, no checkpointed synthesis, no tool-budget signal.
+    expect(turn.begin.mock.calls.some(([value]) => value.finalSynthesisOfRound !== undefined)).toBe(false);
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "tool_budget")).toBe(false);
+    expect(turn.workspace.handoff).toHaveBeenCalledOnce();
+    expect(turn.workspace.settle).not.toHaveBeenCalled();
+    expect(turn.repository.failedRuns).toEqual([]);
+    expect(turn.repository.completeRuns[0]?.finalText).toBe("Steps 1-2 are done; the rest was not completed.");
+    expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "complete" } });
+    expect(terminalRounds(turn.repository)).toEqual([1, 2]);
+  });
+
+  it("refuses a batch returned after the soft deadline into the same checkpointed synthesis", async () => {
+    const turn = workspaceTurn({
+      round: async (request, index) => {
+        if (request.toolChoice === "none") return providerResult({ finalText: "Nothing new was run; earlier results stand." });
+        // The soft deadline passes while the provider plans this batch.
+        await vi.advanceTimersByTimeAsync(softMs);
+        return shellCalls(index, 3);
+      }
+    });
+    const events = await turn.run();
+
+    expect(turn.workspace.execute).not.toHaveBeenCalled();
+    expect(turn.repository.toolCalls.size).toBe(0);
+    expect(turn.begin).toHaveBeenCalledWith(expect.objectContaining({ finalSynthesisOfRound: 1, roundIndex: 2,
+      providerContinuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }));
+    expect(turn.requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(disabledRequests(turn.requests)).toHaveLength(1);
+    expect(turn.requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: expect.stringContaining(timeInstruction) });
+    expect(JSON.stringify(turn.requests[1]!.providerToolMessages)).not.toContain("shell-1-0");
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "tool_budget")).toBe(false);
+    expect(turn.workspace.handoff).toHaveBeenCalledOnce();
+    expect(turn.repository.failedRuns).toEqual([]);
+    expect(turn.repository.completeRuns).toHaveLength(1);
+    expect(terminalRounds(turn.repository)).toEqual([1, 2]);
+  });
+
+  it("keeps the hard deadline as the safety net when a call outlives the soft deadline", async () => {
+    const turn = workspaceTurn({
+      execute: async ({ signal }) => {
+        await vi.advanceTimersByTimeAsync(hardMs);
+        expect(signal?.aborted).toBe(true);
+        throw signal!.reason;
+      },
+      round: async (request, index) => shellCalls(index, 1)
+    });
+    const events = await turn.run();
+
+    expect(turn.workspace.execute).toHaveBeenCalledOnce();
+    expect(turn.requests).toHaveLength(1);
+    expect(turn.cancelPending).toHaveBeenCalled();
+    expect(turn.workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "timed_out" }));
+    expect(turn.workspace.handoff).not.toHaveBeenCalled();
+    expect(turn.repository.completeRuns).toEqual([]);
+    expect(turn.repository.failedRuns).toEqual([expect.objectContaining({ error: timeLimit })]);
+    expect(events).toContainEqual({ type: "error", data: timeLimit });
+    expect(terminalRounds(turn.repository)).toEqual([1]);
+  });
+
+  it("fails a handoff the hard deadline interrupts with the time-limit message and keeps the published answer", async () => {
+    const turn = workspaceTurn({
+      handoff: async ({ signal }) => {
+        await vi.advanceTimersByTimeAsync(hardMs);
+        signal?.throwIfAborted();
+        return { status: "ready" };
+      },
+      round: async () => providerResult({ finalText: "Report written to the output directory." })
+    });
+    const events = await turn.run();
+
+    expect(turn.requests).toHaveLength(1);
+    expect(turn.workspace.handoff).toHaveBeenCalledOnce();
+    expect(turn.repository.publishedAnswers).toHaveLength(1);
+    expect(turn.repository.completeRuns).toEqual([]);
+    expect(turn.workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "timed_out" }));
+    expect(turn.repository.failedRuns).toEqual([expect.objectContaining({ error: timeLimit })]);
+    expect(events).toContainEqual({ type: "error", data: timeLimit });
+    expect(events.filter(event => event.type === "answer_complete")).toHaveLength(1);
+    expect(terminalRounds(turn.repository)).toEqual([1]);
+  });
+
+  it("lets Stop win over the soft deadline's final answer", async () => {
+    const turn = workspaceTurn({
+      execute: async ({ call }) => {
+        await vi.advanceTimersByTimeAsync(softMs);
+        return { callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: "{\"data\":{\"exitCode\":0}}" }] };
+      },
+      round: async (request, index, signal) => {
+        if (request.toolChoice !== "none") return shellCalls(index, 1);
+        expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+        signal?.throwIfAborted();
+        return providerResult({ finalText: "must not complete" });
+      }
+    });
+    const events = await turn.run();
+
+    expect(turn.requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(turn.workspace.execute).toHaveBeenCalledOnce();
+    expect(turn.workspace.handoff).not.toHaveBeenCalled();
+    expect(turn.workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "cancelled" }));
+    expect(turn.repository.failedRuns).toEqual([]);
+    expect(turn.repository.completeRuns).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "cancelled" } });
+  });
 });
 
 describe("tool-free synthesis and repeated calls in live execution", () => {

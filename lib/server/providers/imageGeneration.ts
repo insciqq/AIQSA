@@ -15,6 +15,7 @@ import { imageFailureDiagnostic } from "./imageFailure";
 import { reportedUsageCostUsd } from "./reportedUsageCost";
 import { observeProviderDeadline, observeProviderFetch, observeProviderOperation } from "./providerObservability";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
+import { ImageInputError } from "../images/inputError";
 
 export type ImageGenerationInput = { bytes: Uint8Array; mimeType: GeneratedImageMimeType };
 export type ImageGenerationRequest = {
@@ -40,7 +41,8 @@ export type ImageGenerationResult = {
 };
 export type ImageGenerationErrorCode = "image_input_invalid" | "image_parameters_invalid" | "image_response_invalid" |
   "image_response_too_large" | "image_provider_http_error" | "image_provider_request_failed" | "image_request_timed_out" |
-  "image_request_cancelled" | "image_output_missing";
+  "image_request_cancelled" | "image_output_missing" | "image_generation_refused";
+export type ImageFinishReason = "safety" | "blocked" | "other";
 export class ImageGenerationError extends Error {
   /** What a completed response the adapter then rejected (no image, an
    * invalid image) reported, so the paid call can be accounted; null when no
@@ -48,10 +50,19 @@ export class ImageGenerationError extends Error {
   usage: ImageGenerationUsage | null = null;
 
   constructor(readonly code: ImageGenerationErrorCode, readonly httpStatus: number | null = null,
-    readonly diagnostic?: ImageFailureDiagnostic) {
+    readonly diagnostic?: ImageFailureDiagnostic, readonly finishReason?: ImageFinishReason) {
     super(code);
     this.name = "ImageGenerationError";
   }
+}
+
+/** Reference validation preserves the original bytes and never describes input as provider output. */
+export async function validateImageReference(bytes: Uint8Array, declaredMime: unknown): Promise<void> {
+  try {
+    await validateStaticRaster(bytes, {
+      maxBytes: IMAGE_MAX_BYTES, maxPixels: IMAGE_MAX_PIXELS, mimeTypes: IMAGE_MIME_TYPES
+    }, { declaredMime });
+  } catch { throw new ImageInputError("image_reference_unsupported"); }
 }
 
 function usageReported(usage: ImageGenerationUsage): boolean {
@@ -121,16 +132,16 @@ export function createImageGenerationAdapter(input: {
   return {
     async generate(request) {
       if (typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > IMAGE_MAX_PROMPT_CHARACTERS ||
-        request.prompt.includes("\u0000") || request.images && !Array.isArray(request.images)) throw new ImageGenerationError("image_input_invalid");
+        request.prompt.includes("\u0000") || request.images && !Array.isArray(request.images)) throw new ImageInputError("image_input_invalid");
       const images = request.images ?? [];
       if (images.length > IMAGE_MAX_INPUTS || images.reduce((sum, image) => sum + (image.bytes?.byteLength ?? Infinity), 0) > IMAGE_MAX_INPUT_BYTES) {
-        throw new ImageGenerationError("image_input_invalid");
+        throw new ImageInputError("image_input_invalid");
       }
-      for (const image of images) await validateGeneratedImage(image.bytes, image.mimeType);
+      for (const image of images) await validateImageReference(image.bytes, image.mimeType);
       let parameters: ImageGenerationParameters;
       try {
         parameters = normalizeImageGenerationParameters({ ...model.defaultParams, ...request.parameters }, imageConfiguration, model.upstreamModelId);
-      } catch { throw new ImageGenerationError("image_parameters_invalid"); }
+      } catch { throw new ImageInputError("image_parameters_invalid"); }
       const gemini = imageConfiguration.profile === "gemini";
       const openrouter = imageConfiguration.profile === "openrouter";
       const headers: Record<string, string> = { accept: "application/json" };
@@ -227,10 +238,13 @@ async function decodedImage(parsed: Record<string, unknown>, gemini: boolean): P
   let encoded: unknown;
   let mimeType: unknown;
   if (gemini) {
-    if (parsed.status !== "completed" || !Array.isArray(parsed.steps) || parsed.steps.length > 1000) throw new ImageGenerationError("image_response_invalid");
+    if (typeof parsed.status !== "string") throw new ImageGenerationError("image_response_invalid");
+    if (parsed.status !== "completed") throw geminiImageRefusal(parsed);
+    if (!Array.isArray(parsed.steps) || parsed.steps.length > 1000) throw new ImageGenerationError("image_response_invalid");
     const outputs = parsed.steps.flatMap((step: unknown) => record(step) && step.type === "model_output" && Array.isArray(step.content)
       ? step.content.filter((part: unknown) => record(part) && part.type === "image" && part.thought !== true) : []);
-    if (outputs.length !== 1 || !record(outputs[0])) throw new ImageGenerationError("image_output_missing");
+    if (!outputs.length) throw geminiImageRefusal(parsed);
+    if (outputs.length !== 1 || !record(outputs[0])) throw new ImageGenerationError("image_response_invalid");
     encoded = outputs[0].data;
     mimeType = outputs[0].mime_type;
   } else {
@@ -241,4 +255,14 @@ async function decodedImage(parsed: Record<string, unknown>, gemini: boolean): P
   const bytes = imageBytes(encoded);
   const metadata = await validateGeneratedImage(bytes, mimeType);
   return { bytes, ...metadata };
+}
+
+function geminiImageRefusal(parsed: Record<string, unknown>): ImageGenerationError {
+  const steps = Array.isArray(parsed.steps) ? parsed.steps.slice(0, 1000).filter(record) : [];
+  const reasons = [parsed.status, parsed.finish_reason, record(parsed.error) ? parsed.error.code : undefined,
+    ...steps.map((step) => step.finish_reason)];
+  const safety = reasons.some((reason) => ["SAFETY", "safety", "IMAGE_SAFETY", "content_policy_violation", "safety_violation"].includes(typeof reason === "string" ? reason : ""));
+  const blocked = reasons.some((reason) => ["blocked", "BLOCKED", "refused", "PROHIBITED_CONTENT"].includes(typeof reason === "string" ? reason : "")) ||
+    steps.some((step) => Array.isArray(step.content) && step.content.some((part: unknown) => record(part) && part.type === "refusal"));
+  return new ImageGenerationError("image_generation_refused", null, undefined, safety ? "safety" : blocked ? "blocked" : "other");
 }

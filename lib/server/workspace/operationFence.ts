@@ -131,14 +131,29 @@ export class WorkspaceOperationFence {
     } finally { if (timer) clearTimeout(timer); }
   }
 
-  async claim(input: Readonly<{ operation: WorkspaceOperation; runtimeSandboxId: string | null; sessionId: string }>): Promise<void> {
+  /**
+   * `predecessor` is the operation a successor continues (an export of the
+   * same run). While it is the exact active operation and none of its requests
+   * is in flight, the handover needs no VM stop: that successor quiesces the
+   * run's executions itself before it reads guest bytes. Otherwise the claim
+   * drains as usual.
+   */
+  async claim(input: Readonly<{
+    operation: WorkspaceOperation; predecessor?: WorkspaceOperation; runtimeSandboxId: string | null; sessionId: string;
+  }>): Promise<void> {
     const operation = parseWorkspaceOperation(input.operation);
+    const predecessor = input.predecessor ? parseWorkspaceOperation(input.predecessor) : null;
     await this.locked(input.sessionId, async (state) => {
       if (state.record && operation.generation <= state.record.generation) {
         if (!this.exact(state, operation) || (state.record.phase !== "active" && state.record.phase !== "claiming")) {
           throw new WorkspaceRuntimeError("workspace_operation_stale");
         }
         if (state.record.phase === "active") return;
+      }
+      if (predecessor && state.record?.phase === "active" && this.exact(state, predecessor) && state.pending.size === 0) {
+        // Nothing to abort or stop; later requests of the predecessor are stale.
+        await this.persist(input.sessionId, state, { ...operation, phase: "active" });
+        return;
       }
       // Persist the high-water mark BEFORE abort or any runtime mutation.
       // An interrupted claim stays unavailable until the same owner retries

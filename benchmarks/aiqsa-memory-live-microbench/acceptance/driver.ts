@@ -317,7 +317,8 @@ export class AcceptanceDriver {
     const service = createMemoryRebuildService({ repository, probeEmbeddingPin: (userId) =>
       probeCurrentMemoryEmbeddingPin(defaultMemoryExecutionAuthority, this.prisma, userId, MEMORY_ITEM_EMBEDDING_VERSIONS) });
     const started = await service.start(identity.userId, { embeddingDeploymentId: this.roles.embeddingId,
-      expectedMemoryRevision: settings.memoryRevision, expectedSettingsRevision: settings.settingsRevision, operation: "REEMBED" });
+      expectedMemoryRevision: settings.memoryRevision, expectedSettingsRevision: settings.settingsRevision,
+      operation: "REEMBED" }, "embedding_setup");
     const deadline = Date.now() + PROFILE.settlementTimeoutMs;
     while (Date.now() < deadline) {
       const status = await repository.status(identity.userId, started.jobId);

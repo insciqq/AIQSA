@@ -306,6 +306,38 @@ async function settleVisibleMutationCounter(
   }
 }
 
+/**
+ * A revision-advancing source mutation that invalidated nothing leaves the
+ * active index exactly as complete as before: the new path's content reaches
+ * it through its checkpoint and INDEX_HISTORY, as after any appended turn.
+ * Without this settle, retrieval cutover reads the revision gap as a lagging
+ * index and rebuilds (and re-embeds) the owner's whole Memory on every
+ * Regenerate, edit or branch switch. Only an index that was current at the
+ * revision the mutation advanced from is settled; an older gap stays for the
+ * cutover proof. Learning settles the same revision when it changes facts.
+ */
+async function settleUnchangedIndexRevision(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  event: MemoryRetainedSourceMutationEvent
+): Promise<void> {
+  const advance = event.memoryRevisionAdvance;
+  if (
+    !advance ||
+    !settings.activeIndexGenerationId ||
+    settings.memoryRevision !== advance.to
+  ) return;
+  await tx.memoryIndexGeneration.updateMany({
+    data: { indexedThroughMemoryRevision: advance.to },
+    where: {
+      id: settings.activeIndexGenerationId,
+      indexedThroughMemoryRevision: advance.from,
+      state: "ACTIVE",
+      userId: settings.userId
+    }
+  });
+}
+
 async function updateExistingCheckpoint(
   tx: MemoryTransaction,
   event: MemoryRetainedSourceMutationEvent
@@ -507,6 +539,8 @@ export async function applyMemoryHistorySourceMutation(
             });
           }
         }
+      } else {
+        await settleUnchangedIndexRevision(tx, settings, event);
       }
       await updateExistingCheckpoint(tx, event);
     }

@@ -1300,6 +1300,20 @@ export type RunRepository = {
     userId: string;
   }): Promise<boolean>;
   /**
+   * Re-opens a dispatchable run's current provider round whose request
+   * dropped, immediately before the round is sent again (PROVIDERS.md:
+   * Codex LB). The dropped request's partial usage leaves the round's
+   * checkpointed usage while the run's attribution rows keep it as one
+   * operation, so a lost next request is the round's own unknown operation.
+   * The draft, answer start and provider response id are cleared. False when
+   * the round is no longer that one or recorded no partial usage.
+   */
+  reopenToolLoopProviderRound?(input: {
+    roundIndex: number;
+    runId: string;
+    userId: string;
+  }): Promise<boolean>;
+  /**
    * Records when the current round's answer text began. A tool-loop round
    * reset clears the mark, so the settled value is the final answer's start.
    */

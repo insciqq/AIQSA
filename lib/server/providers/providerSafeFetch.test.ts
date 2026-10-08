@@ -10,6 +10,7 @@ import {
   createProviderSafeFetch as createCurrentProviderSafeFetch,
   ProviderSafeFetchError
 } from "./providerSafeFetch";
+import { providerStreamDrop } from "./streamDrop";
 import type { ProviderConnectionConfiguration } from "./providerConfiguration";
 import { parseOpenAIResponsesSse } from "./openaiResponsesResponse";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
@@ -466,6 +467,21 @@ describe("compatible create delivery phases on a loopback provider", () => {
       expect(response.status).toBe(200);
       await expect(response.text()).rejects.toThrow();
       expect(received).toHaveLength(1);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("names a connection the provider broke mid-stream a reset drop", async () => {
+    const { server } = fixtureServer("drop_after_headers");
+    const port = await listen(server);
+    try {
+      const response = await client(port).responses.stream!({ model: "fixture-model", stream: true });
+      const failure = await (async () => {
+        for await (const event of parseOpenAIResponsesSse({ background: false, responseBody: response.body!, stream: true,
+          streamLimits: DEFAULT_PROVIDER_STREAM_LIMITS })) void event;
+      })().then(() => null, (error: unknown) => error);
+      expect(providerStreamDrop(failure)).toBe("reset");
     } finally {
       await close(server);
     }

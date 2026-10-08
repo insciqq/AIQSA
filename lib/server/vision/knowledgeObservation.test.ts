@@ -148,9 +148,14 @@ describe("Knowledge image observation", () => {
     const base = fixture();
     await base.observe(base.input);
     expect(base.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 60_000 });
+    const slow = { ...vision.snapshot, connection: { ...vision.snapshot.connection, responseTimeoutMs: 900_000 } };
     const high = fixture();
-    await high.observe({ ...high.input, plan: { ...plan, vision: { ...vision, reasoningEffort: "high" } } });
-    expect(high.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 180_000 });
+    await high.observe({ ...high.input, plan: { ...plan, vision: { ...vision, reasoningEffort: "high", snapshot: slow } } });
+    expect(high.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 300_000 });
+    // Never longer than the destination's own response timeout.
+    const capped = fixture();
+    await capped.observe({ ...capped.input, plan: { ...plan, vision: { ...vision, reasoningEffort: "high" } } });
+    expect(capped.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 60_000 });
     const answer = fixture();
     await answer.observe({ ...answer.input, plan: { ...plan, vision: { ...vision, reasoningEffort: "high" } }, timeoutMs: 90_000 });
     expect(answer.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 90_000 });
@@ -177,8 +182,10 @@ describe("Knowledge image observation", () => {
     const outcomes = observation.records().filter((record) => record.event === "tool_execution" && record.tool_kind === "vision");
     const identity = { adapterKind: "openai_responses_compatible", connectionId: "connection", providerFamily: "openai_compatible", providerModelId: "vision" };
     expect(outcomes).toEqual([
-      expect.objectContaining({ ...identity, stage: "grounding", outcome: "completed", duration_ms: expect.any(Number) }),
-      expect.objectContaining({ ...identity, stage: "grounding", outcome: "failed", code: "vision_analysis_provider_failed" })
+      expect.objectContaining({ ...identity, stage: "grounding", outcome: "completed", duration_ms: expect.any(Number),
+        preparation_duration_ms: expect.any(Number), provider_duration_ms: expect.any(Number), timeout_ms: 60_000 }),
+      expect.objectContaining({ ...identity, stage: "grounding", outcome: "failed", code: "vision_analysis_provider_failed",
+        provider_duration_ms: expect.any(Number), timeout_ms: 60_000 })
     ]);
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|headline|poster/);
   });

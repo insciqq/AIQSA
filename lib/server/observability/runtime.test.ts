@@ -29,6 +29,29 @@ class Sink extends EventEmitter {
 afterEach(() => { setProcessRole("app"); vi.restoreAllMocks(); });
 
 describe("bounded observability runtime", () => {
+  it.each(["dns", "connect", "tls", "timeout", "reset", "network_unreachable", "unknown"] as const)(
+    "keeps the closed push failure category %s without transport content", (category) => {
+      const fields = { category, code: "push_transport_failed", outcome: "failed", stage: "dispatch", subsystem: "push" } as const;
+      const event = record("job_attempt", { ...fields, endpoint: "PRIVATE_ENDPOINT", host: "PRIVATE_HOST", ip: "PRIVATE_IP",
+        headers: "PRIVATE_HEADERS", body: "PRIVATE_BODY", keys: "PRIVATE_KEYS", subscriptionId: "PRIVATE_ID" } as never);
+      expect(event).toMatchObject(fields);
+      expect(JSON.stringify(event)).not.toContain("PRIVATE_");
+      expect(record("job_attempt", { ...fields, category: "PRIVATE_ERROR" } as never)).not.toHaveProperty("category");
+    }
+  );
+
+  it("keeps image failure stages and finish categories content-free", () => {
+    const fields = { stage: "provider", code: "image_generation_refused", duration_ms: 35, finish_reason: "safety" } as const;
+    const event = record("image_execution", { ...fields, image_ids: ["PRIVATE_ID"], prompt: "PRIVATE_PROMPT",
+      url: "https://PRIVATE_URL", data: "PRIVATE_BYTES", fileName: "PRIVATE_FILE", secret: "PRIVATE_KEY" } as never);
+    expect(event).toMatchObject(fields);
+    expect(JSON.stringify(event)).not.toContain("PRIVATE");
+    const invalid = record("image_execution", { ...fields, stage: "PRIVATE_STAGE", finish_reason: "PRIVATE_REASON", code: "PRIVATE_CODE" } as never);
+    expect(invalid).toMatchObject({ code: "unknown" });
+    expect(invalid).not.toHaveProperty("stage");
+    expect(invalid).not.toHaveProperty("finish_reason");
+  });
+
   it("projects local tool search counts without the query or tool names", () => {
     const fields = { outcome: "completed", duration_ms: 3, mode: "keywords", candidate_count: 180,
       result_count: 4, loaded_count: 3, already_loaded_count: 1, unknown_name_count: 0 } as const;

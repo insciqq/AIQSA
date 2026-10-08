@@ -21,6 +21,10 @@ import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
   "../history/segments";
 import { memoryOrphanShadowPredicate, memoryShadowCancelledByPausePredicate } from "../rebuild/lifecycle";
 import { memoryShadowRebuildJobFingerprint } from "../rebuild/contract";
+import {
+  logMemoryRebuildAdmission,
+  type MemoryRebuildAdmissionReason
+} from "../rebuild/admissionReason";
 
 export const MEMORY_RETRIEVAL_CUTOVER_VERSION =
   "memory-vnext-retrieval-cutover-v1";
@@ -93,9 +97,80 @@ export type MemoryRetrievalCutoverResult = Readonly<{
     | "in_progress"
     | "queued"
     | "retry";
+  /** Why a queued rebuild was admitted. */
+  reason?: MemoryRebuildAdmissionReason;
 }>;
 
 type ReconcileCandidate = Readonly<{ userId: string }>;
+
+type CutoverTriggerRow = Readonly<{
+  embedding: boolean | null;
+  missing: boolean | null;
+  pipeline: boolean | null;
+  resume: boolean | null;
+  revision: boolean | null;
+}>;
+
+/* Candidate triggers over a `settings` row and its LEFT JOINed `active`
+ * generation, shared by discovery and the admission reason. */
+
+function revisionLagPredicate(settings: Prisma.Sql, active: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`${active}."indexedThroughMemoryRevision" <> ${settings}."memoryRevision"`;
+}
+
+function resumedAfterActivationPredicate(settings: Prisma.Sql, active: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM "MemoryPauseInterval" AS pause
+    WHERE pause."userId" = ${settings}."userId"
+      AND (
+        pause."scope" = 'MASTER'::"MemoryPauseScope"
+        OR (${settings}."referenceChatHistory" = TRUE
+          AND pause."scope" = 'SEARCH_HISTORY'::"MemoryPauseScope")
+      )
+      AND pause."resumedAt" > COALESCE(${active}."activatedAt", ${active}."createdAt")
+  )`;
+}
+
+function pipelineVersionPredicate(active: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`(
+    ${active}."languageProfile" <> ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
+    OR ${active}."normalizationVersion" <> ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
+    OR ${active}."chunkingVersion" <> ${MEMORY_LEXICAL_CHUNKING_VERSION}
+    OR ${active}."contextualKeyPolicyVersion" IS DISTINCT FROM
+      ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
+    OR ${active}."roundProjectionVersion" IS DISTINCT FROM
+      ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
+    OR ${active}."roundSegmentProjectionVersion" IS DISTINCT FROM
+      ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
+    OR ${active}."retrievalPipelineVersion" <> CASE ${active}."indexMode"
+      WHEN 'HYBRID'::"MemoryIndexMode"
+        THEN ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION}
+      ELSE ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION}
+    END
+  )`;
+}
+
+function embeddingModelPredicate(settings: Prisma.Sql, active: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`${active}."embeddingProviderModelId" IS DISTINCT FROM
+    CASE ${active}."indexMode"
+      WHEN 'HYBRID'::"MemoryIndexMode" THEN ${settings}."embeddingProviderModelId"
+      ELSE NULL
+    END`;
+}
+
+/** The most structural trigger names an admitted rebuild; one without any
+ * (after an orphaned shadow or a race) only lacked a complete index proof. */
+export function memoryCutoverAdmissionReason(
+  trigger: CutoverTriggerRow & Readonly<{ toolTextRepair: boolean }>
+): MemoryRebuildAdmissionReason {
+  if (trigger.missing) return "missing_generation";
+  if (trigger.pipeline) return "pipeline_version";
+  if (trigger.embedding) return "embedding_model";
+  if (trigger.resume) return "resume";
+  if (trigger.toolTextRepair) return "tool_text_repair";
+  if (trigger.revision) return "revision_lag";
+  return "index_incomplete";
+}
 
 function validLimit(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 1 && value <= 100;
@@ -105,6 +180,36 @@ export function createPrismaMemoryRetrievalCutoverRepository(
   client: PrismaClient = prisma
 ) {
   const rebuild = createPrismaMemoryRebuildRepository(client);
+
+  async function admissionReason(
+    userId: string,
+    toolTextRepair: boolean
+  ): Promise<MemoryRebuildAdmissionReason> {
+    const settings = Prisma.sql`settings`;
+    const active = Prisma.sql`active`;
+    const [trigger] = await client.$queryRaw<CutoverTriggerRow[]>(Prisma.sql`
+      SELECT
+        active."id" IS NULL AS "missing",
+        ${pipelineVersionPredicate(active)} AS "pipeline",
+        ${embeddingModelPredicate(settings, active)} AS "embedding",
+        ${resumedAfterActivationPredicate(settings, active)} AS "resume",
+        ${revisionLagPredicate(settings, active)} AS "revision"
+      FROM "UserMemorySettings" AS settings
+      LEFT JOIN "MemoryIndexGeneration" AS active
+        ON active."userId" = settings."userId"
+        AND active."id" = settings."activeIndexGenerationId"
+        AND active."state" = 'ACTIVE'::"MemoryIndexGenerationState"
+      WHERE settings."userId" = ${userId}
+    `);
+    return memoryCutoverAdmissionReason({
+      embedding: trigger?.embedding ?? null,
+      missing: trigger?.missing ?? null,
+      pipeline: trigger?.pipeline ?? null,
+      resume: trigger?.resume ?? null,
+      revision: trigger?.revision ?? null,
+      toolTextRepair
+    });
+  }
 
   async function ensure(
     userId: string,
@@ -203,6 +308,10 @@ export function createPrismaMemoryRetrievalCutoverRepository(
         kind: "blocked_failed"
       };
     }
+    const reason = await admissionReason(
+      userId,
+      repairNeeded && inventory.activeGenerationId !== null
+    );
     const admitted = await rebuild.admit(userId, {
       expectedMemoryRevision: settings.memoryRevision,
       expectedSettingsRevision: settings.settingsRevision,
@@ -218,11 +327,13 @@ export function createPrismaMemoryRetrievalCutoverRepository(
           }
     });
     if (admitted.kind === "ok") {
+      logMemoryRebuildAdmission(reason, admitted.jobId);
       return {
         generationId: inventory.activeGenerationId,
         inventory,
         jobId: admitted.jobId,
-        kind: "queued"
+        kind: "queued",
+        reason
       };
     }
     if (admitted.kind === "in_progress") {
@@ -279,36 +390,10 @@ export function createPrismaMemoryRetrievalCutoverRepository(
         ) OR (settings."useMemoryFacts" = TRUE
           AND (
             active."id" IS NULL
-            OR active."indexedThroughMemoryRevision" <> settings."memoryRevision"
-            OR EXISTS (
-              SELECT 1 FROM "MemoryPauseInterval" AS pause
-              WHERE pause."userId" = settings."userId"
-                AND (
-                  pause."scope" = 'MASTER'::"MemoryPauseScope"
-                  OR (settings."referenceChatHistory" = TRUE
-                    AND pause."scope" = 'SEARCH_HISTORY'::"MemoryPauseScope")
-                )
-                AND pause."resumedAt" > COALESCE(active."activatedAt", active."createdAt")
-            )
-            OR active."languageProfile" <> ${MEMORY_LEXICAL_ANALYSIS_PROFILE}
-            OR active."normalizationVersion" <> ${MEMORY_LEXICAL_NORMALIZATION_VERSION}
-            OR active."chunkingVersion" <> ${MEMORY_LEXICAL_CHUNKING_VERSION}
-            OR active."contextualKeyPolicyVersion" IS DISTINCT FROM
-              ${MEMORY_CONTEXTUAL_KEY_POLICY_VERSION}
-            OR active."roundProjectionVersion" IS DISTINCT FROM
-              ${MEMORY_RECALL_ROUND_PROJECTION_VERSION}
-            OR active."roundSegmentProjectionVersion" IS DISTINCT FROM
-              ${MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION}
-            OR active."embeddingProviderModelId" IS DISTINCT FROM
-              CASE active."indexMode"
-                WHEN 'HYBRID'::"MemoryIndexMode" THEN settings."embeddingProviderModelId"
-                ELSE NULL
-              END
-            OR active."retrievalPipelineVersion" <> CASE active."indexMode"
-              WHEN 'HYBRID'::"MemoryIndexMode"
-                THEN ${MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION}
-              ELSE ${MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION}
-            END
+            OR ${revisionLagPredicate(Prisma.sql`settings`, Prisma.sql`active`)}
+            OR ${resumedAfterActivationPredicate(Prisma.sql`settings`, Prisma.sql`active`)}
+            OR ${pipelineVersionPredicate(Prisma.sql`active`)}
+            OR ${embeddingModelPredicate(Prisma.sql`settings`, Prisma.sql`active`)}
             OR ${toolEventTextMismatch(
               Prisma.sql`settings."userId"`, Prisma.sql`active."id"`
             )}

@@ -1,11 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryRebuildStatus } from "../../../contracts/memory";
+import { logEvent } from "../../observability";
 import type { MemoryItemEmbeddingPin } from "../embedding/contract";
 import type { MemoryRebuildRepository } from "./repository";
 import {
   createMemoryRebuildService,
   MemoryRebuildServiceError
 } from "./service";
+
+vi.mock("../../observability", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../observability")>(),
+  logEvent: vi.fn()
+}));
+
+afterEach(() => vi.mocked(logEvent).mockReset());
 
 const status: MemoryRebuildStatus = {
   completedUnits: 0,
@@ -78,13 +86,20 @@ describe("Memory rebuild service", () => {
       expectedMemoryRevision: 7,
       expectedSettingsRevision: 3,
       operation: "REBUILD_SEARCH_INDEX"
-    })).resolves.toEqual(status);
+    }, "admin")).resolves.toEqual(status);
     expect(probeEmbeddingPin).not.toHaveBeenCalled();
     expect(rebuildRepository.admit).toHaveBeenCalledWith(
       "user-1",
       expect.objectContaining({ operation: "REBUILD_SEARCH_INDEX", pin: null })
     );
     expect(kick).toHaveBeenCalledTimes(1);
+    expect(logEvent).toHaveBeenCalledExactlyOnceWith("service_operation", {
+      code: "memory_rebuild_reason_admin",
+      job_id: "job-1",
+      outcome: "started",
+      stage: "rebuild",
+      subsystem: "memory"
+    });
   });
 
   it("pins re-embedding to the explicitly selected current deployment", async () => {
@@ -104,7 +119,9 @@ describe("Memory rebuild service", () => {
       expectedMemoryRevision: 7,
       expectedSettingsRevision: 3,
       operation: "REEMBED"
-    })).resolves.toMatchObject({ operation: "REEMBED" });
+    }, "embedding_setup")).resolves.toMatchObject({ operation: "REEMBED" });
+    expect(logEvent).toHaveBeenCalledExactlyOnceWith("service_operation",
+      expect.objectContaining({ code: "memory_rebuild_reason_embedding_setup" }));
     expect(rebuildRepository.admit).toHaveBeenCalledWith(
       "user-1",
       expect.objectContaining({
@@ -127,7 +144,8 @@ describe("Memory rebuild service", () => {
       expectedMemoryRevision: 6,
       expectedSettingsRevision: 3,
       operation: "REBUILD_SEARCH_INDEX"
-    })).rejects.toEqual(new MemoryRebuildServiceError("memory_version_stale"));
+    }, "admin")).rejects.toEqual(new MemoryRebuildServiceError("memory_version_stale"));
+    expect(logEvent).not.toHaveBeenCalled();
     await expect(service.status("user-1", "foreign-job")).rejects.toEqual(
       new MemoryRebuildServiceError("memory_rebuild_not_found")
     );
