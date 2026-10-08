@@ -10,7 +10,8 @@ import { artifactExcerptBefore, artifactSourceSpan, artifactTextFromBytes, withA
 import type { ArtifactVendorMetadata } from "./vendoring";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
+import { serialize, type DefaultTreeAdapterMap } from "parse5";
+import { parseArtifactHtml } from "./htmlParse";
 import {
   ARTIFACT_LIMITS,
   artifactContentSecurityPolicy,
@@ -187,7 +188,7 @@ function rejectControlCharacters(text: string, path: string): void {
 function validateSvgText(text: string, path = "image.svg"): void {
   // Parse character references and attributes before checking them; namespace
   // declarations are metadata, not network requests.
-  const document = parse(text);
+  const document = parseArtifactHtml(text);
   let foundSvg = false;
   function visit(node: HtmlNode) {
     if ("tagName" in node) {
@@ -429,7 +430,7 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
   }
   function svg(source: string, from: string): string {
     countSvg(from);
-    const parsed = parse(source);
+    const parsed = parseArtifactHtml(source);
     let root: Element | undefined;
     let changed = false;
     function visit(node: HtmlNode): void {
@@ -459,7 +460,7 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
       : entry!.text!;
   // Source offsets locate a markup error in the entry file, so the model can
   // write an exact edit for a file it never saw (one supplied by reference).
-  const document = parse(source, { sourceCodeLocationInfo: true });
+  const document = parseArtifactHtml(source, { sourceCodeLocationInfo: true });
   const from = entry?.path ?? "index.html";
   function iconHref(value: string): string {
     // Icons load through img-src; keep them inline like other images.
@@ -494,7 +495,7 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
       }
       if (node.tagName === "svg") {
         // Resolve image hrefs before applying the unchanged strict SVG subset.
-        const rendered = parse(svg(serialize({ nodeName: "#document-fragment", childNodes: [node] }), from));
+        const rendered = parseArtifactHtml(svg(serialize({ nodeName: "#document-fragment", childNodes: [node] }), from));
         const findSvg = (candidate: HtmlNode): Element | undefined => "tagName" in candidate && candidate.tagName === "svg" ? candidate
           : "childNodes" in candidate ? candidate.childNodes.map(findSvg).find(Boolean) : undefined;
         const replacement = findSvg(rendered)!;
