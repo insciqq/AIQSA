@@ -38,6 +38,17 @@ TOTP is optional per user and covers only the sign-ins AIQSA verifies itself: pa
 - A new secret replaces the active one only after it is confirmed, and starting that replacement, new recovery codes and turning TOTP off each need a current code or a recovery code. Password reset by email never touches the factor. An administrator reset removes the factor and its codes and ends every session of the user; it is refused for the administrator's own account.
 - Secrets live in purpose-bound envelopes under the encryption key, and recovery codes only as hashes keyed from it, so losing that key blocks password and LDAP sign-in of users with TOTP until an administrator resets their factor.
 
+## OpenID Connect
+
+One OIDC connection rides the shared OAuth start and callback (signed flow cookie, PKCE S256, state, nonce, rate limits). Its identities are bound to the configured issuer.
+
+- Discovery must name that issuer exactly and offer the code flow and, when it lists challenge methods, `S256`. Issuers that admit any tenant (`{tenantid}`, Entra `common`, `organizations`, `consumers`) are refused by the tester and at sign-in. The tester also probes the client credentials with an unknown code.
+- An id token counts only when a key from the issuer's JWKS signed it with RS256/384/512, PS256 or ES256/384 (never `none` or HS*), with exact `iss`, `aud` containing the client, `azp` equal to the client when present or when there are several audiences, the flow's nonce, and `exp`/`iat` within 60 s. Userinfo must name the same `sub`.
+- `email_verified` counts only as `true` or `"true"`. Groups at the claim path are strings; over 1 000 values, a value over 512 characters or an Entra overage pointer mean the claim is missing.
+- Codes and tokens live only in the exchanging request: never stored, logged, returned or recorded in health.
+- IdP logout revokes the local session first, then sends the browser to the end-session endpoint with `client_id` and `post_logout_redirect_uri=<base>/login`, without `id_token_hint`, since no id token is kept. Auto-redirect skips `/login?local=1` (the administrator's way back), shown outcomes, expired sessions and invitation, reset or verification links.
+- IdP requests follow the personal MCP address policy with the LAN allowed: metadata, link-local and AIQSA's own services stay unreachable, plain HTTP stays private, and redirects are refused.
+
 ## Dependencies
 
 | Dependency | Boundary/rationale |
