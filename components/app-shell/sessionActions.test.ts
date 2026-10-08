@@ -233,6 +233,9 @@ describe("signOutCurrentSession", () => {
       navigate,
       timeoutMs: 250
     });
+    // Only the session-expiry suppression's own release stays, for a navigation that never leaves.
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(vi.getTimerCount()).toBe(0);
 
     await signOutCurrentSession({
