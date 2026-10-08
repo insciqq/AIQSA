@@ -14,6 +14,8 @@ import { hasInvalidProviderToolArguments, type ToolExecutionResult } from "../to
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { canonicalJsonText } from "./contextCompactionContract";
 import { repeatBlockedRounds } from "./toolCallRepeatGuard";
+import { mcpApprovalGated } from "./mcpApprovalGate";
+import { MCP_APPROVAL_REFUSAL } from "../mcp/writeApproval";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import type { ToolHistoryBlock, ToolHistoryEntry, ToolHistoryProjection } from "./toolHistory";
 import { READ_TOOL_CALL_NAME, TOOL_HISTORY_LIMITS, type ToolHistorySnapshot } from "./toolHistoryContract";
@@ -124,7 +126,7 @@ export type ToolCallOutcome = Readonly<{
   status: "succeeded" | "tool_error" | "failed" | "not_executed" | "unknown";
   /** Whether the call crossed its dispatch boundary; null when not proven. */
   dispatched: boolean | null;
-  reason?: "repeat_blocked" | "cancelled" | "refused" | "superseded" | "invalid_arguments";
+  reason?: "approval_required" | "repeat_blocked" | "cancelled" | "refused" | "superseded" | "invalid_arguments";
 }>;
 
 export type ToolHistoryArguments =
@@ -169,6 +171,14 @@ function repeatBlocked(facts: ToolCallFacts): boolean {
   }) !== null;
 }
 
+/** Only the server's own gated form, with no receipt and no observation, waited for the user's approval. */
+function approvalGated(facts: ToolCallFacts): boolean {
+  return facts.receipts.length === 0 && facts.observation === null && mcpApprovalGated({
+    providerCallId: facts.providerCallId, result: snapshotToolLoopJson(facts.result, toolLoopPersistenceLimits.resultBytes),
+    startedAt: facts.startedAt, state: facts.state, toolName: facts.toolName
+  });
+}
+
 function storedResult(facts: ToolCallFacts): Pick<ToolExecutionResult, "content" | "rawPreview" | "status"> | null {
   if (facts.omittedResult) {
     // Only the envelope was loaded: its status and preview flags still
@@ -196,6 +206,7 @@ function agentOutcome(facts: ToolCallFacts): ToolCallOutcome {
   if (result.state === "COMPLETE" || result.status === "complete" && facts.state === "complete") return { status: "succeeded", dispatched: true };
   if (result.state === "ERROR" || result.status === "error") return { status: "tool_error", dispatched: true };
   if (result.code === "agent_mcp_call_limit") return { status: "not_executed", dispatched: false, reason: "refused" };
+  if (result.code === MCP_APPROVAL_REFUSAL) return { status: "not_executed", dispatched: false, reason: "approval_required" };
   return facts.state === "complete" ? { status: "succeeded", dispatched: null } : { status: "failed", dispatched: null };
 }
 
@@ -211,6 +222,7 @@ export function toolCallOutcome(facts: ToolCallFacts): ToolCallOutcome {
   const open = facts.receipts.some(receipt => receipt.dispatchState === "DISPATCHED");
   const failedReceipt = facts.receipts.some(receipt => receipt.dispatchState === "FAILED");
   if (repeatBlocked(facts)) return { status: "not_executed", dispatched: false, reason: "repeat_blocked" };
+  if (approvalGated(facts)) return { status: "not_executed", dispatched: false, reason: "approval_required" };
   if (hasInvalidProviderToolArguments(facts.arguments) && facts.state === "error") {
     return { status: "not_executed", dispatched: false, reason: "invalid_arguments" };
   }
@@ -361,6 +373,7 @@ export function toolCallOutcomeText(outcome: ToolCallOutcome): string {
     case "unknown": return "outcome unknown: it may have taken effect; do not assume it failed";
     case "not_executed":
       return outcome.reason === "repeat_blocked" ? "not executed: repeated call without new data, blocked by AIQSA"
+        : outcome.reason === "approval_required" ? "not executed: it waited for the user's approval; nothing was sent"
         : outcome.reason === "cancelled" ? "not executed: cancelled before dispatch"
         : outcome.reason === "superseded" ? "not executed: superseded by a user clarification"
         : outcome.reason === "invalid_arguments" ? "not executed: the arguments were invalid"

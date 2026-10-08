@@ -95,6 +95,8 @@ export type ModelRunSseEvent =
           | "context_status"
           | "context_compaction"
           | "context_truncated"
+          /** Live only: an MCP approval card (`McpApprovalCard`); its row is the durable state. */
+          | "mcp_approval"
           | "reasoning"
           | "scheduled_task"
           | "search"

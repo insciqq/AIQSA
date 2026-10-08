@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { decodeMemorySearchSnapshot } from "../memory/search/contract";
 import { decodeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeAcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
@@ -59,6 +60,9 @@ import type { NormalizedRunRequest } from "../providers/types";
 import { CONTEXT_COMPACTION_LIMITS, decodeConversationContextPolicy, type BranchContextCheckpoint } from "./contextCompactionContract";
 import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer";
 import { repeatBlockedRounds, repeatBlockedToolCallResult, validRepeatRounds } from "./toolCallRepeatGuard";
+import { mcpApprovalGated, mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
+import { isMcpApprovalAdmission, isMcpApprovalRequest, type McpApprovalRequest } from "../mcp/writeApproval";
+import { consumeMcpApproval, countAvailableMcpApprovals, requestMcpApproval } from "../mcp/writeApprovalRepository";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
@@ -449,11 +453,13 @@ const knowledgeBudgetPostDispatchCancellationFailure =
 
 type LockedToolLoopRun = {
   assistantMessageId: string | null;
+  chatId: string;
   errorPayload: Prisma.JsonValue | null;
   followupRevision: number;
   providerResponseId: string | null;
   status: ModelRunStatus;
   toolLoopState: Prisma.JsonValue | null;
+  userId: string;
 };
 
 async function lockToolLoopRun(
@@ -466,11 +472,13 @@ async function lockToolLoopRun(
   const [run] = await tx.$queryRaw<LockedToolLoopRun[]>(Prisma.sql`
     SELECT
       "assistantMessageId",
+      "chatId",
       "errorPayload",
       "followupRevision",
       "providerResponseId",
       "status",
-      "toolLoopState"
+      "toolLoopState",
+      "userId"
     FROM "ModelRun"
     WHERE "id" = ${input.runId}
       ${ownerPredicate}
@@ -666,6 +674,7 @@ const normalizedRequestKeys = new Set([
   "memoryStandingVersion",
   "memorySearch",
   "modelCapabilities",
+  "mcpApproval",
   "mcpDiscovery",
   "mcp",
   "modelId",
@@ -1088,6 +1097,7 @@ function decodeProviderDispatchRecoveryRequest(
       !isScheduledTaskManagementSettings(value.scheduledTaskManagementTool))) ||
     (value.fetchUrl !== undefined && !isFetchUrlPlan(value.fetchUrl)) ||
     (value.skillSaveTool !== undefined && (value.skillSaveTool !== true || !value.workspace)) ||
+    (value.mcpApproval !== undefined && !isMcpApprovalAdmission(value.mcpApproval)) ||
     (value.toolCallReader !== undefined && value.toolCallReader !== true) ||
     (value.toolHistory !== undefined && !decodeToolHistorySnapshot(value.toolHistory)) ||
     (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 0 && value.toolObservationVersion !== 1) ||
@@ -1583,6 +1593,25 @@ export function createPrismaRunToolLoopOperations(
         phase: "tools_running"
       });
       if (!runningCheckpoint) return { kind: "not_found" as const };
+      // A call needing its initiator's approval dispatches only by consuming
+      // one matching one-shot approval in this claim; without one left it
+      // settles undispatched with the card's pending request instead.
+      if (input.mcpApproval) {
+        if (!isMcpApprovalRequest(input.mcpApproval) || input.mcpApproval.toolName !== call.toolName) {
+          return { kind: "not_found" as const };
+        }
+        const scope = { chatId: run.chatId, runId: input.runId, userId: run.userId };
+        if (!await consumeMcpApproval(tx, scope, input.mcpApproval)) {
+          call = await tx.modelRunToolCall.update({
+            data: { completedAt: new Date(), state: "error",
+              result: json(mcpApprovalRequiredToolCallResult({ providerCallId: call.providerCallId, toolName: call.toolName })) },
+            include: toolLoopCallInclude,
+            where: { id: call.id }
+          });
+          await requestMcpApproval(tx, scope, { ...input.mcpApproval, source: "model", toolCallId: call.id });
+          return { call: persistedToolLoopCall(call), kind: "settled" as const };
+        }
+      }
       call = await tx.modelRunToolCall.update({
         data: { startedAt: new Date(), state: "running" },
         include: toolLoopCallInclude,
@@ -2045,6 +2074,7 @@ export function createPrismaRunToolLoopOperations(
       }
       const providerCallIds = new Set<string>();
       const preparedCalls: Array<{
+        approval: McpApprovalRequest | null;
         arguments: Readonly<Record<string, ToolLoopJsonValue>>;
         ordinal: number;
         providerCallId: string;
@@ -2063,11 +2093,15 @@ export function createPrismaRunToolLoopOperations(
           (runtimeFingerprint !== null && !/^[a-f0-9]{64}$/u.test(runtimeFingerprint)) ||
           (call.workspace !== undefined && call.workspace !== true) ||
           (call.workspace === true && runtimeFingerprint !== null) ||
-          call.repeatBlocked !== undefined && !validRepeatRounds(call.repeatBlocked.repeatOf, input.roundIndex)) {
+          call.repeatBlocked !== undefined && !validRepeatRounds(call.repeatBlocked.repeatOf, input.roundIndex) ||
+          // Only an MCP call (with its runtime binding) is gated, never also a blocked repeat.
+          call.mcpApproval !== undefined && (!isMcpApprovalRequest(call.mcpApproval) || call.mcpApproval.toolName !== call.toolName ||
+            runtimeFingerprint === null || call.repeatBlocked !== undefined)) {
           return { kind: "conflict" as const };
         }
         providerCallIds.add(call.providerCallId);
         preparedCalls.push({
+          approval: call.mcpApproval ?? null,
           arguments: argumentsValue,
           ordinal: call.ordinal,
           providerCallId: call.providerCallId,
@@ -2117,6 +2151,9 @@ export function createPrismaRunToolLoopOperations(
                 expected.runtimeGenerationFingerprint &&
               (call.workspaceRunBindingId === input.runId) === expected.workspace &&
               JSON.stringify(repeatBlockedRounds(persistedToolLoopCall(call))) === JSON.stringify(expected.repeatOf) &&
+              // Approval availability may differ since the first persist; a
+              // gated row only needs the replay to still require approval.
+              (!mcpApprovalGated(persistedToolLoopCall(call)) || expected.approval !== null) &&
               canonicalJson(argumentsValue!) === canonicalJson(expected.arguments as Record<string, ToolLoopJsonValue>));
           });
           return sameContinuation && sameCalls
@@ -2163,10 +2200,29 @@ export function createPrismaRunToolLoopOperations(
         }
 
         const settledAt = new Date();
+        // A call needing approval dispatches only while an unconsumed
+        // one-shot approval of exactly it is left (its claim consumes one);
+        // each approval serves one call of the batch, in provider order.
+        const scope = { chatId: run.chatId, runId: input.runId, userId: run.userId };
+        const available = new Map<string, number>();
+        const gated = new Set<number>();
         for (const call of preparedCalls) {
+          if (!call.approval) continue;
+          const { argumentsDigest, definitionHash, serverId, toolName } = call.approval;
+          const key = [serverId, toolName, definitionHash, argumentsDigest].join("\0");
+          const left = available.get(key) ?? await countAvailableMcpApprovals(tx, scope, call.approval, settledAt);
+          if (left > 0) available.set(key, left - 1);
+          else {
+            available.set(key, 0);
+            gated.add(call.ordinal);
+          }
+        }
+        for (const call of preparedCalls) {
+          const id = randomUUID();
           await tx.modelRunToolCall.create({
             data: {
               arguments: json(call.arguments),
+              id,
               mcpRunBindingId: call.runtimeGenerationFingerprint
                 ? bindingsByFingerprint.get(call.runtimeGenerationFingerprint)!
                 : null,
@@ -2174,17 +2230,25 @@ export function createPrismaRunToolLoopOperations(
               ordinal: call.ordinal,
               providerCallId: call.providerCallId,
               roundIndex: input.roundIndex,
-              // A blocked repeat is settled with its batch and never claimed
-              // for dispatch: no start, no egress receipt, no observation.
+              // A blocked repeat or a call gated for the user's approval is
+              // settled with its batch and never claimed for dispatch: no
+              // start, no egress receipt, no observation.
               ...(call.repeatOf ? {
                 completedAt: settledAt,
                 result: json(repeatBlockedToolCallResult({ providerCallId: call.providerCallId, repeatOf: call.repeatOf, toolName: call.toolName })),
+                state: "error" as const
+              } : gated.has(call.ordinal) ? {
+                completedAt: settledAt,
+                result: json(mcpApprovalRequiredToolCallResult({ providerCallId: call.providerCallId, toolName: call.toolName })),
                 state: "error" as const
               } : { state: "pending" as const }),
               toolName: call.toolName,
               workspaceRunBindingId: call.workspace ? input.runId : null
             }
           });
+          if (call.approval && gated.has(call.ordinal)) {
+            await requestMcpApproval(tx, scope, { ...call.approval, source: "model", toolCallId: id });
+          }
         }
         await tx.modelRun.update({
           data: { toolLoopState: json(pendingCheckpoint) },

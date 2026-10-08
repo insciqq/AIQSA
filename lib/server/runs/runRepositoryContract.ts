@@ -217,6 +217,7 @@ export type RunChatUpdateRecord = {
     provider: string | null;
     role: string;
     status: string;
+    systemTurnKind?: ChatMessageWire["systemTurnKind"];
     toolActivity?: ThreadToolActivity | null;
     workspaceActivity?: ThreadWorkspaceActivity | null;
   }[];
@@ -598,6 +599,8 @@ export type CreateRunInput = {
   /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
   scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
   signal?: AbortSignal;
+  /** The user message is a turn the server wrote for the user (`Message.systemTurnKind`). */
+  systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
@@ -794,6 +797,10 @@ export type RunRepository = {
     callId: string;
     /** The clarification revision used by the provider that planned this call. */
     followupRevision?: number;
+    /** The call needs its run initiator's approval: the claim consumes one
+     * matching one-shot approval in its transaction, or settles the call as
+     * an undispatched `mcp_approval_required` error with a pending request. */
+    mcpApproval?: import("../mcp/writeApproval").McpApprovalRequest;
     runId: string;
     userId: string;
   }): Promise<ClaimToolLoopCallResult>;
@@ -1089,6 +1096,18 @@ export type RunRepository = {
   loadScheduledPromptMessageIds?(input: Readonly<{
     chatId: string; messageIds: readonly string[]; userId: string;
   }>): Promise<ReadonlySet<string>>;
+  /** The servers among `serverIds` the user always allows (MCP write approval), read at admission. */
+  loadMcpToolConsentServerIds?(input: Readonly<{ serverIds: readonly string[]; userId: string }>): Promise<readonly string[]>;
+  /**
+   * The approval a continuation turn names, while it may continue: the
+   * user's own Allow in this chat within the approval window; null otherwise.
+   */
+  loadMcpApprovalContinuation?(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
+    serverName: string; toolName: string;
+  }> | null>;
+  /** The approval cards of a run, as its initiator's live stream shows them. */
+  loadRunMcpApprovalCards?(input: Readonly<{ runId: string; userId: string }>): Promise<
+    readonly import("../../contracts/mcpApprovals").McpApprovalCard[]>;
   /**
    * Whether the owner has a saved scheduled task a chat answer may manage
    * (null: none), and the task whose own chat `chatId` is: the one that posts
