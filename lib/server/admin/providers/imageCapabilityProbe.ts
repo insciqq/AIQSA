@@ -88,7 +88,7 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
         if (error instanceof ImageGenerationError) {
           if ([404, 405].includes(error.httpStatus ?? 0)) status = "unsupported";
           else if ([400, 422].includes(error.httpStatus ?? 0)) status = "rejected";
-          else if (["image_response_invalid", "image_output_missing"].includes(error.code)) status = "rejected";
+          else if (["image_response_invalid", "image_output_missing", "image_generation_refused"].includes(error.code)) status = "rejected";
         }
         const httpStatus = error instanceof ImageGenerationError ? error.httpStatus : undefined;
         const diagnostic = error instanceof ImageGenerationError ? error.diagnostic : undefined;

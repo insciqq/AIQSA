@@ -57,6 +57,11 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
 }>;
 export type EventFields = {
+  image_execution: CaughtError & Readonly<{
+    stage: "input" | "binding" | "run" | "references" | "reference_read" | "reference_validation" | "authorization" |
+      "dispatch_claim" | "usage" | "provider" | "storage" | "publication";
+    code: string; duration_ms: number; finish_reason?: "safety" | "blocked" | "other";
+  }>;
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
   "http.route_resolver_unavailable": Readonly<{ reason: "missing" | "invalid" | "unsupported" }>;
