@@ -97,6 +97,7 @@ import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import { skillSaveToolsForRequest } from "../tools/skillSave";
+import { answerReviewToolsForRequest, type AnswerReviewStepMarker } from "../tools/answerReview";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import { admitScheduledTaskManagement, scheduledTaskManagementToolsForRequest } from "../tools/scheduledTaskManagement";
 import {
@@ -214,6 +215,8 @@ type RunPreparationRepository = Pick<
   | "createScheduledTaskForCall"
   /** Present where a run can save a Workspace folder as a Skill: admission offers `save_skill` only then. */
   | "saveSkillForCall"
+  /** Without it a step's link authority excludes only its own server-written turn. */
+  | "loadSystemTurnMessageIds"
   /** Present where a run can manage scheduled tasks: admission offers that tool only then. */
   | "loadScheduledTaskManagement"
   | "manageScheduledTaskForCall"
@@ -387,7 +390,16 @@ export type RunPreparationDeps = Readonly<{
   workspace?: WorkspaceAdmissionService;
 }>;
 
+/**
+ * Server-only: the answer review step a send admits (never a request field).
+ * Its run reads its session's full chain, offers the step's report tool and
+ * none of the owner's write exceptions, and needs a tool-calling model.
+ */
+export type AnswerReviewStepPreparation = Readonly<Omit<AnswerReviewStepMarker, "modelName" | "version">>;
+
 export type SendRunPreparationSource = Readonly<{
+  /** Server-only: the answer review step this send admits. */
+  answerReviewStep?: AnswerReviewStepPreparation;
   chat: Readonly<{
     activeLeafMessageId: string | null;
     assistantId?: string | null;
@@ -1304,6 +1316,8 @@ async function prepareRunWith(
   // occurrence, a regeneration by the task that posted the prompt (never in a branch copy).
   const scheduledMemoryRead = scheduledOccurrence ? scheduledOccurrence.memory === true
     : input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskMemory === true;
+  // An answer review step's run: a turn the server wrote, answered by the step's model.
+  const answerReviewStep = input.source.kind === "send" ? input.source.answerReviewStep : undefined;
   if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
   const agentEnabled = body?.agentEnabled === true;
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
@@ -1326,6 +1340,9 @@ async function prepareRunWith(
   const assistantSource = chatAssistantSource(body, chat, newProjectChat ? project!.defaults.assistantId : null);
   if (!assistantSource.ok) return failure(assistantSource.code, assistantSource.status);
   attempt.implicitProjectDefault = assistantSource.projectDefault === true;
+  // The Assistant fixes the model, and Agent's Codex owns its own loop.
+  if (answerReviewStep && assistantSource.assistantId) return failure("answer_review_assistant_unsupported", 409);
+  if (answerReviewStep && agentEnabled) return failure("answer_review_agent_unsupported", 409);
   if (agentEnabled && !workspaceEnabled) return failure("agent_workspace_required", 400);
   if (agentEnabled && (project || assistantSource.assistantId)) return failure("agent_personal_chat_required", 400);
 
@@ -1461,6 +1478,8 @@ async function prepareRunWith(
   }
   const knowledgeRequested = decodedKnowledgePlan.plan.mode !== "none";
   if (agentEnabled && knowledgeRequested) return failure("agent_knowledge_unsupported", 400);
+  // Knowledge composes Source-bound answers: no route there writes a review or a revision.
+  if (answerReviewStep && knowledgeRequested) return failure("answer_review_knowledge_unsupported", 409);
 
   const decodedSearchPlan = assistantRun
     ? null
@@ -1861,7 +1880,8 @@ async function prepareRunWith(
         : await deps.repository.loadConversationContextForExpectedLeaf(
             chat.id,
             input.userId,
-            input.source.chat.activeLeafMessageId
+            input.source.chat.activeLeafMessageId,
+            { answerReviewSessionId: answerReviewStep?.sessionId ?? null }
           )
       : null;
   if (input.source.kind === "send" && !branchContext) {
@@ -1889,6 +1909,11 @@ async function prepareRunWith(
         );
   const skillToolsSupported = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  // A step reports through its built-in tool: a model that cannot call it is refused before anything is accepted.
+  if (answerReviewStep && (body?.tools === "none" || modelCapabilities.toolCalling !== true ||
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) !== true)) {
+    return failure("answer_review_model_unsupported", 409, "This model can't use tools, so it can't take part in a review.");
+  }
   // A monitoring check reports its outcome through one built-in tool, frozen
   // only from the server-only occurrence of a monitoring task. A check that
   // could not call it is refused before anything is accepted.
@@ -2048,7 +2073,7 @@ async function prepareRunWith(
   // server-authorized chat scope, never a request field. An unusable model is
   // never substituted: the run gets no image tool and the answer model is
   // told why. An installation without image generation stays silent.
-  const imageResolution = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+  const imageResolution = !answerReviewStep && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }))
     ? await deps.images?.resolveFor(project ? { kind: "project" } : { kind: "personal", userId: input.userId }) ?? null : null;
   const imagePlan = imageResolution?.ok ? imageResolution.plan : null;
@@ -2056,7 +2081,7 @@ async function prepareRunWith(
     ? imageGenerationUnavailableGuidance({ reason: imageResolution.reason, scope: project ? "project" : "personal",
       source: imageResolution.source })
     : null;
-  const artifactToolAvailable = !project && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
+  const artifactToolAvailable = !answerReviewStep && !project && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
     modelCapabilities.toolCalling === true && (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true);
   const artifactResourcePolicy = artifactToolAvailable ? getArtifactResourcePolicy() : undefined;
   const artifactToolDescription = artifactResourcePolicy ? describeArtifactTool(artifactResourcePolicy) : undefined;
@@ -2390,7 +2415,7 @@ async function prepareRunWith(
   // Memory only when this run itself was admitted to read it: an eligible
   // chat, and the owner's Memory on (search admission, which every run that
   // may create a task attempts, reads exactly that).
-  const scheduledTaskSettings = !scheduledPromptAnswer && !project && !assistantRun &&
+  const scheduledTaskSettings = !scheduledPromptAnswer && !answerReviewStep && !project && !assistantRun &&
     !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
@@ -2409,7 +2434,7 @@ async function prepareRunWith(
   // (operator exception, 2026-10-07). Never an answer to a scheduled task's
   // prompt, a temporary, Project, Assistant or Knowledge run: there the tool
   // is absent, not refused late.
-  const skillSaveTool = !scheduledPromptAnswer && !project && !assistantRun && !knowledgeRequested &&
+  const skillSaveTool = !scheduledPromptAnswer && !answerReviewStep && !project && !assistantRun && !knowledgeRequested &&
     resolvedChatMode.mode !== "TEMPORARY" && workspaceAdmissionPlan !== undefined &&
     typeof deps.repository.saveSkillForCall === "function" && (agentEnabled || (modelCapabilities.toolCalling === true &&
       toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true));
@@ -2428,12 +2453,19 @@ async function prepareRunWith(
     const storedIds = fetchUrlAuthoringMessages(conversationMessages).map((message) => message.id)
       .filter((id) => id !== currentSendMessageId);
     let promptIds: ReadonlySet<string> | null = null;
+    let systemTurnIds: ReadonlySet<string> | null = new Set();
     try {
       // Without the marks, only the current message (never a stored prompt) authorizes links.
       promptIds = deps.repository.loadScheduledPromptMessageIds
         ? await deps.repository.loadScheduledPromptMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
         : null;
+      // Turns the server wrote for the user (review steps, approval continuations) authorize nothing.
+      systemTurnIds = deps.repository.loadSystemTurnMessageIds
+        ? await deps.repository.loadSystemTurnMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
+        : new Set();
     } catch (error) {
+      promptIds = null;
+      systemTurnIds = null;
       logEvent("service_operation", { error, subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
         code: "fetch_url_authority_unavailable", prisma_code: databaseFailureCode(error) });
     }
@@ -2442,7 +2474,9 @@ async function prepareRunWith(
     if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
       instructionIds.add(input.source.source.userMessage.id);
     }
-    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds]);
+    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds),
+      // A step's own turn is the server's text too.
+      ...(answerReviewStep ? [currentSendMessageId] : [])]);
     const userUrlDigests = userAuthoredFetchUrlDigests(conversationMessages, excludedIds);
     const instructionUrlDigests = taskInstructionFetchUrlDigests(conversationMessages, instructionIds, userUrlDigests);
     fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };
@@ -2465,7 +2499,14 @@ async function prepareRunWith(
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
         serverIds: approvalServerIds, userId: input.userId }) ?? [])
     : undefined;
+  // The step's facts, frozen with the admitted model's display name for its card and the transcript.
+  const answerReviewStepMarker: AnswerReviewStepMarker | undefined = answerReviewStep ? {
+    ...answerReviewStep,
+    modelName: Array.from(admissionPlan.answer.snapshot.modelDisplayName.trim() || "Model").slice(0, 160).join(""),
+    version: 1
+  } : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
+    ...(answerReviewStepMarker ? { answerReviewStep: answerReviewStepMarker } : {}),
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
     toolObservationVersion,
@@ -2581,6 +2622,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
     ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+    ...answerReviewToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskManagementToolsForRequest(baseNormalizedRequest),
     ...(agent ? [] : skillSaveToolsForRequest(baseNormalizedRequest)),
@@ -2770,7 +2812,8 @@ async function prepareRunWith(
   // Assistant-derived values never overwrite the user's ordinary manual
   // defaults or the chat's ordinary default columns, so an Assistant run
   // persists no accepted-defaults update; its chat changes are overrides.
-  const defaults: PreparedRunDefaultsData | null = assistantRun || project
+  // Nor does a review step: its model is the step's, not a composer choice.
+  const defaults: PreparedRunDefaultsData | null = assistantRun || project || answerReviewStep
     ? null
     : {
         controlDefaults: runControlDefaultsFromBody(body, parameterControls),

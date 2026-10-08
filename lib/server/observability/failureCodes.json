@@ -1174,5 +1174,6 @@
   "transcription_provider_request_failed",
   "transcription_request_timed_out",
   "transcription_response_invalid",
-  "transcription_response_too_large"
+  "transcription_response_too_large",
+  "answer_review_unavailable"
 ]

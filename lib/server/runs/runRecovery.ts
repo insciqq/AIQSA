@@ -217,11 +217,16 @@ import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } fro
 import {
   executeMonitoringVerdict,
   isMonitoringVerdictCall,
-  MONITORING_VERDICT_TOOL_NAME,
-  monitoringVerdictReservedInstruction,
   monitoringVerdictTool,
   type MonitoringVerdictRecorder
 } from "../tools/monitoringVerdict";
+import {
+  answerReviewCallSubmitted,
+  answerReviewToolsForRequest,
+  executeAnswerReviewCall,
+  isAnswerReviewCall
+} from "../tools/answerReview";
+import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import {
   executeCreateScheduledTask,
   isScheduledTaskCreateCall,
@@ -996,6 +1001,8 @@ type RecoverySearchExecutor = Readonly<{
 }>;
 
 type RecoveryToolContext = {
+  /** An answer review step's report already settled with its card: another call is refused. */
+  answerReviewReported: boolean;
   skillResultBudget: ReturnType<typeof createSkillToolResultBudget>;
   activeMcpDiscovery: McpDiscoveryState | undefined;
   activeMcpSnapshot: McpRunPlanSnapshot | undefined;
@@ -1061,6 +1068,17 @@ function isRecoveredMonitoringCall(context: RecoveryToolContext, name: string): 
   return isMonitoringVerdictCall(context.run.normalizedRequest, name);
 }
 
+function isRecoveredReviewCall(context: RecoveryToolContext, name: string): boolean {
+  return isAnswerReviewCall(context.run.normalizedRequest, name);
+}
+
+/** The live rule: a review step reports once; validated again, a report gives the same card. */
+function executeRecoveredReviewCall(context: RecoveryToolContext, call: ModelToolCall): ToolExecutionResult {
+  const result = executeAnswerReviewCall(call, context.run.normalizedRequest, { submitted: context.answerReviewReported });
+  if (result.status === "complete") context.answerReviewReported = true;
+  return result;
+}
+
 /** The run's scheduled task creation or management, or its Skill save, as admitted; each settles its call atomically. */
 function isRecoveredScheduledTaskCall(context: RecoveryToolContext, name: string): boolean {
   return isScheduledTaskCreateCall(context.run.normalizedRequest, name) ||
@@ -1073,32 +1091,35 @@ function recoveredVerdictRecorder(deps: RunRecoveryDeps): MonitoringVerdictRecor
 }
 
 /**
- * The run's reserved monitoring verdict as the live loop tracks it: whether a
- * call of it was persisted before `beforeRound` (any round when omitted).
+ * The run's reserved report (a monitoring verdict, an answer review step's
+ * review or decisions) as the live loop tracks it: whether a call of it was
+ * persisted before `beforeRound` (any round when omitted).
  */
 function recoveredReservedCall(
   run: Readonly<{ calls: readonly Readonly<{ roundIndex: number; toolName: string }>[];
-    normalizedRequest: Readonly<{ monitoringVerdictTool?: unknown }> }>,
+    normalizedRequest: Readonly<{ answerReviewStep?: unknown; monitoringVerdictTool?: unknown }> }>,
   beforeRound?: number
 ): Readonly<{ called: boolean }> | undefined {
-  return run.normalizedRequest.monitoringVerdictTool === true
+  const reserved = reservedToolCallForRequest(run.normalizedRequest);
+  return reserved
     ? { called: run.calls.some((call) => (beforeRound === undefined || call.roundIndex < beforeRound) &&
-        call.toolName === MONITORING_VERDICT_TOOL_NAME) }
+        call.toolName === reserved.name) }
     : undefined;
 }
 
 /**
  * Calls that count against the tool budgets, as the live loop counts them:
- * every persisted call except the run's first monitoring verdict, in round and
- * batch order. A repeated verdict counts like any other call.
+ * every persisted call except the run's first reserved report, in round and
+ * batch order. A repeated report counts like any other call.
  */
 function budgetedRecoveredCalls<T extends Readonly<{ ordinal: number; roundIndex: number; toolName: string }>>(
-  run: Readonly<{ normalizedRequest: Readonly<{ monitoringVerdictTool?: unknown }> }>,
+  run: Readonly<{ normalizedRequest: Readonly<{ answerReviewStep?: unknown; monitoringVerdictTool?: unknown }> }>,
   calls: Iterable<T>
 ): T[] {
   const loopCalls = [...calls].filter((call) => call.roundIndex > 0);
+  const reserved = reservedToolCallForRequest(run.normalizedRequest);
   const exempt = loopCalls.reduce<T | undefined>((first, call) =>
-    isMonitoringVerdictCall(run.normalizedRequest, call.toolName) && (!first || call.roundIndex < first.roundIndex ||
+    reserved !== null && call.toolName === reserved.name && (!first || call.roundIndex < first.roundIndex ||
       call.roundIndex === first.roundIndex && call.ordinal < first.ordinal) ? call : first, undefined);
   return loopCalls.filter((call) => call !== exempt);
 }
@@ -1731,6 +1752,14 @@ async function executePersistedToolCallInContext(
     if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered monitoring report could not be settled.");
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
   }
+  if (claim.kind === "ambiguous" && isRecoveredReviewCall(context, call.name)) {
+    const result = executeRecoveredReviewCall(context, call);
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
+      result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered review report could not be settled.");
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
+  }
   if (claim.kind === "ambiguous" && isRecoveredCallRead(context, call.name)) {
     const read = await executeReadToolCall(recoveredToolCallReader(context.deps), call,
       { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex),
@@ -1992,7 +2021,7 @@ async function executePersistedToolCallInContext(
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
     const isMemoryCall = Boolean(context.run.normalizedRequest.memorySearch) && call.name === MEMORY_SEARCH_TOOL_NAME;
-    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredMonitoringCall(context, call.name) && !isRecoveredScheduledTaskCall(context, call.name) && !isRecoveredObservationRead(context, call.name) && !isRecoveredCallRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
+    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredMonitoringCall(context, call.name) && !isRecoveredReviewCall(context, call.name) && !isRecoveredScheduledTaskCall(context, call.name) && !isRecoveredObservationRead(context, call.name) && !isRecoveredCallRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -2139,6 +2168,8 @@ async function executePersistedToolCallInContext(
       result = executeSessionStatus(call, context.sessionRequest ?? context.providerRequest, context.sessionToolBridge);
     } else if (isRecoveredMonitoringCall(context, call.name)) {
       result = await executeMonitoringVerdict(call, executionContext, recoveredVerdictRecorder(context.deps));
+    } else if (isRecoveredReviewCall(context, call.name)) {
+      result = executeRecoveredReviewCall(context, call);
     } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
       result = await executeRecoveredMcpDiscovery(call, persisted, context, signal);
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
@@ -2655,6 +2686,7 @@ async function recoverCheckpointedToolLoop(
       ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
       ...(run.normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+      ...answerReviewToolsForRequest(run.normalizedRequest),
       ...scheduledTaskToolsForRequest(run.normalizedRequest),
       ...scheduledTaskManagementToolsForRequest(run.normalizedRequest),
       ...skillSaveToolsForRequest(run.normalizedRequest),
@@ -2715,6 +2747,7 @@ async function recoverCheckpointedToolLoop(
     const loadSearchUrls = deps.repository.loadRunSearchSourceUrls?.bind(deps.repository);
     const loadFetchCalls = deps.repository.loadRunFetchUrlCalls?.bind(deps.repository);
     const context: RecoveryToolContext = {
+      answerReviewReported: run.calls.some((call) => answerReviewCallSubmitted(run.normalizedRequest, call)),
       skillResultBudget: createSkillToolResultBudget(),
       activeMcpDiscovery,
       activeMcpSnapshot: run.normalizedRequest.mcp,
@@ -3271,6 +3304,7 @@ async function recoverCheckpointedToolLoop(
             !isRecoveredCallRead(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME) &&
             !isMonitoringVerdictCall(run.normalizedRequest, call.name) &&
+            !isRecoveredReviewCall(context, call.name) &&
             !isRecoveredScheduledTaskCall(context, call.name) &&
             !isFetchUrlCall(run.normalizedRequest, call.name)) {
             throw new ToolLoopRecoveryError(
@@ -3698,6 +3732,7 @@ async function recoverCheckpointedToolLoop(
       currentProviderResponseId = null;
     }
 
+    const recoveredReserved = reservedToolCallForRequest(run.normalizedRequest);
     const outcome = await runProviderToolLoop({
       deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
       toolObservation(call) {
@@ -3869,9 +3904,8 @@ async function recoverCheckpointedToolLoop(
         seenCallIds: [...persistedCalls.keys()]
       },
       // The live reservation, derived from the persisted calls.
-      ...(run.normalizedRequest.monitoringVerdictTool ? { reservedCall: {
-        called: [...persistedCalls.values()].some((call) => call.toolName === MONITORING_VERDICT_TOOL_NAME),
-        instruction: monitoringVerdictReservedInstruction(), name: MONITORING_VERDICT_TOOL_NAME
+      ...(recoveredReserved ? { reservedCall: {
+        called: [...persistedCalls.values()].some((call) => call.toolName === recoveredReserved.name), ...recoveredReserved
       } } : {}),
       signal,
       tools
