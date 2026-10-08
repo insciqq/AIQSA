@@ -13,14 +13,14 @@ export function aiqsaPostgresRuntimeOptions(current: string | undefined): string
 export function aiqsaPostgresRuntimeUrl(current: string | undefined): string | undefined {
   // Keep Prisma's lazy missing-configuration validation for build-time imports.
   if (!current) return current;
+  // A value this parser cannot rewrite safely goes to Prisma unchanged, as it
+  // did before, without the JIT option: startup never fails here. The URL can
+  // hold credentials, so nothing about it is thrown or logged.
+  if (current.trim() !== current) return current;
   try {
-    const url = new URL(current);
-    if (!["postgres:", "postgresql:"].includes(url.protocol) || current.trim() !== current) {
-      throw new Error();
-    }
+    if (!["postgres:", "postgresql:"].includes(new URL(current).protocol)) return current;
   } catch {
-    // URL parsing errors can include credentials; never propagate their input.
-    throw new Error("postgres_runtime_url_invalid");
+    return current;
   }
 
   const fragmentAt = current.indexOf("#");

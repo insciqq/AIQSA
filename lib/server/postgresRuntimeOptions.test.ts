@@ -100,10 +100,11 @@ describe("AIQSA PostgreSQL runtime URL", () => {
     expect(aiqsaPostgresRuntimeUrl(value)).toBe(value);
   });
 
-  it.each([" ", "invalid", "postgresql://[invalid", "https://database.invalid/fixture"])(
-    "rejects malformed or non-PostgreSQL configuration without exposing input",
+  it.each([" ", "invalid", "postgresql://[invalid", "https://database.invalid/fixture",
+    ` ${base}`, `${base}\n`, `\t${base}?schema=public `])(
+    "passes malformed, padded or non-PostgreSQL configuration to Prisma unchanged",
     (value) => {
-      expect(() => aiqsaPostgresRuntimeUrl(value)).toThrowError(new Error("postgres_runtime_url_invalid"));
+      expect(aiqsaPostgresRuntimeUrl(value)).toBe(value);
     }
   );
 });
