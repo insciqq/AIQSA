@@ -334,8 +334,19 @@ test("auto-redirect sends /login to Keycloak, ?local=1 stays, and signing out en
   // Earlier tests left other sessions of alice open in their own browsers: sign-out ends this one.
   const sessionsBefore = await prisma.authSession.count({ where: { revokedAt: null, signInMethod: "oidc", userId: aliceId } });
 
-  await page.getByRole("button", { name: "Account menu" }).first().click();
-  await page.getByRole("menu", { name: "Account", exact: true }).getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  // A click before hydration opens nothing: retry until the menu shows.
+
+  const accountMenu = page.getByRole("menu", { name: "Account", exact: true });
+
+  await expect(async () => {
+
+    await page.getByRole("button", { name: "Account menu" }).first().click();
+
+    await expect(accountMenu).toBeVisible({ timeout: 2_000 });
+
+  }).toPass({ timeout: 30_000 });
+
+  await accountMenu.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL((url) => url.origin === keycloakOrigin && url.pathname.endsWith("/protocol/openid-connect/logout"), { timeout: 30_000 });
   // Without an id_token_hint Keycloak asks before it ends its session.
   await page.screenshot({ path: testInfo.outputPath("oidc-idp-logout-confirm-desktop.png") });

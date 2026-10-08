@@ -160,7 +160,8 @@ async function authentikSignIn(browser: Browser, person: Person): Promise<{ cont
     await expect(password).toBeVisible({ timeout: 30_000 });
   }
   await password.fill(person.password);
-  await password.press("Enter");
+  // Authentik's flow executor submits on its button; Enter in the field is not reliable.
+  await page.locator('button[type="submit"]').click();
   await page.waitForURL((url) => url.origin !== new URL(authentikUrl()).origin, { timeout: 60_000 });
   return { context, page };
 }
