@@ -37,7 +37,7 @@ describe("OIDC ID token hint", () => {
     expect(openOidcIdTokenHint({ config, hint: { envelope: sealed.envelope, sessionId: other.sessionId }, key: () => key })).toBeNull();
   });
 
-  it("keeps a token of at most 16 KiB", () => {
+  it("keeps a token of at most 6 KiB", () => {
     const longest = `${"a".repeat(OIDC_ID_TOKEN_HINT_MAX_LENGTH - 4)}.b.c`;
     const sealed = seal(longest);
 
