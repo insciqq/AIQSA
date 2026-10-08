@@ -17,6 +17,8 @@ import {
 } from "./handlers";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { ChatAssistantUpdateError } from "./assistantUpdateError";
+import { RecoveryStateInvalidError } from "../runs/recoveryStateInvalid";
+import { reconcileStaleRuns, type RunRecoveryRegistry, type RunRecoveryRepository } from "../runs/runRecovery";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -276,6 +278,91 @@ describe("chat route handlers", () => {
     expect(body).not.toHaveProperty("contentMatches");
     expect(body.chats[0]).not.toHaveProperty("messages");
     expect(body.chats[0]).not.toHaveProperty("usageStats");
+  });
+
+  it("returns the chat history while its stale runs cannot be recovered", async () => {
+    const stale = ["run-unavailable", "run-unreadable"].map((id) => ({
+      assistantMessageId: `assistant-${id}`, chatId: "chat-1", id, modelId: "model-1", provider: "provider-1",
+      providerResponseId: null, status: "streaming", updatedAt: new Date(0)
+    }));
+    const failed: string[] = [];
+    const recoveryRepository = {
+      failRun: async (runId: string, _assistantMessageId: string, error: { code: string }) => {
+        failed.push(`${runId}:${error.code}`);
+        return true;
+      },
+      findStaleActiveRunsForUser: async (input: { chatId?: string; userId: string }) =>
+        input.userId === config.bootstrapUserId && input.chatId === "chat-1" ? stale : [],
+      getRunControlForUser: async (runId: string) => stale.find((run) => run.id === runId) ?? null,
+      loadCheckpointedToolLoopRun: async ({ runId }: { runId: string }) => {
+        if (runId === "run-unreadable") throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
+        throw new Error("synthetic database timeout");
+      }
+    } as unknown as RunRecoveryRepository;
+    const registry: RunRecoveryRegistry = {
+      has: () => false, ids: () => [],
+      register: () => ({ release: () => undefined, signal: new AbortController().signal })
+    };
+    const GET = createGetChatHandler({
+      reconcileRuns: (input) => reconcileStaleRuns({ providers: {}, registry, repository: recoveryRepository }, input),
+      repository: {
+        ...historyRepositoryMethods,
+        archiveChat: async () => false,
+        createChat: async () => null,
+        createFolder: async () => null,
+        deleteFolder: async () => false,
+        getChat: async ({ chatId, userId }) => chatId === "chat-1" && userId === config.bootstrapUserId ? {
+          activeLeafMessageId: "user-message-1",
+          contextStats: { approximateActiveBranchInputTokens: 3 },
+          createdAt: "2026-06-07T09:00:00.000Z",
+          defaultModelId: null,
+          defaultProvider: null,
+          folderId: null,
+          id: "chat-1",
+          messageCount: 1,
+          messages: [{
+            content: { blocks: [{ text: "Saved question", type: "text" }] },
+            createdAt: "2026-06-07T09:00:00.000Z",
+            id: "user-message-1",
+            modelId: null,
+            parentMessageId: null,
+            provider: null,
+            role: "user",
+            status: "complete"
+          }],
+          pageInfo: {
+            activeLeafMessageId: "user-message-1",
+            beforeCursor: null,
+            hasOlder: false,
+            snapshotUpdatedAt: "2026-06-07T09:00:00.000Z"
+          },
+          pinned: false,
+          title: "Interrupted chat",
+          updatedAt: "2026-06-07T09:00:00.000Z",
+          usageStats: {
+            estimatedCostMicros: null,
+            hasCompletedAnswer: false,
+            incompleteRecordCount: 0,
+            knownCostRecordCount: 0,
+            recordCount: 0,
+            totalTokens: 0
+          }
+        } : null,
+        listWorkspace: async () => null,
+        updateFolder: async () => null,
+        updateChat: async () => null
+      },
+      resolveAuth: auth.resolveAuth
+    });
+
+    const response = await GET(new Request("http://app.local/api/chats/chat-1", { headers: { cookie: authCookie() } }),
+      { params: { chatId: "chat-1" } });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      chat: { id: "chat-1", messages: [{ content: { blocks: [{ text: "Saved question", type: "text" }] }, id: "user-message-1" }] }
+    });
+    expect(failed).toEqual(["run-unreadable:tool_loop_checkpoint_invalid_in_storage"]);
   });
 
   it("includes the latest assistant model run id in chat details", async () => {

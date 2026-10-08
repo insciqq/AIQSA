@@ -38,6 +38,7 @@ import {
   type RunHandlerDeps
 } from "./handlers";
 import { reconcileStaleRuns, sweepBootOrphanedRunsOnce } from "./runRecovery";
+import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
@@ -5281,6 +5282,57 @@ describe("model run route handlers", () => {
     expect(state.created?.content).toEqual({
       blocks: [{ text: "Send after stale reconcile", type: "text" }]
     });
+  });
+
+  it.each(["send", "regenerate"] as const)("admits a %s while stale runs of another chat cannot be recovered", async (kind) => {
+    const { repository, state } = createMemoryRepository();
+    const deps = { ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository };
+    const send = createSendMessageHandler(deps);
+    const warmup = await send(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", text: "Warm up boot sweep" }),
+      headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    expect(warmup.status).toBe(200);
+    await warmup.text();
+    state.failed = null;
+    const stale = [
+      staleRunRecord({ assistantMessageId: "assistant-unavailable", chatId: "chat-other", id: "run-unavailable" }),
+      staleRunRecord({ assistantMessageId: "assistant-unreadable", chatId: "chat-other", id: "run-unreadable" })
+    ];
+    state.staleActiveRuns = stale;
+    const failed: string[] = [];
+    const failRun = repository.failRun;
+    repository.failRun = async (...args) => {
+      failed.push(`${args[0]}:${args[2].code}:${String(args[3]?.recoveryTerminal)}`);
+      return failRun(...args);
+    };
+    const getRunControlForUser = repository.getRunControlForUser;
+    repository.getRunControlForUser = async (id, userId) =>
+      stale.find((run) => run.id === id) ?? getRunControlForUser(id, userId);
+    repository.loadCheckpointedToolLoopRun = async ({ runId }) => {
+      if (runId === "run-unreadable") throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
+      if (runId === "run-unavailable") throw new Error("synthetic database timeout");
+      return null;
+    };
+    const request = kind === "send"
+      ? new Request("http://app.local/api/chats/chat-1/messages", {
+          body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", text: "Send beside unrecoverable runs" }),
+          headers: { cookie: authCookie() }, method: "POST"
+        })
+      : new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+          body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] } }),
+          headers: { cookie: authCookie(), "content-type": "application/json" }, method: "POST"
+        });
+    const response = kind === "send"
+      ? await send(request, { params: { chatId: "chat-1" } })
+      : await createRegenerateModelRunHandler(deps)(request, { params: { messageId: "assistant-message-1" } });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(failed).toEqual(["run-unreadable:tool_loop_checkpoint_invalid_in_storage:true"]);
+    if (kind === "send") {
+      expect(state.created?.content).toEqual({ blocks: [{ text: "Send beside unrecoverable runs", type: "text" }] });
+    } else expect(state.regenerated).toMatchObject({ chatId: "chat-1", modelId: "fake-qsa" });
   });
 
   it("rejects new sends while a recent active run exists and ignores stale active runs", async () => {
