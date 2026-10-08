@@ -141,13 +141,19 @@ import {
 import { RunAnswerV2, RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import {
   answerReviewAuthorModelsV2,
+  answerReviewAutoChipV2,
+  answerReviewAutoRunningV2,
+  answerReviewAutoSummaryV2,
   answerReviewAvailabilityV2,
   answerReviewGroupDisplayProgressV2,
+  answerReviewGroupProgressV2,
   answerReviewReviewerCandidatesV2,
   groupAnswerReviewsV2,
   type AnswerReviewCatalogModelV2,
   type AnswerReviewGroupV2
 } from "@/features/answer-review-v2/answerReviewModel";
+import { AnswerReviewSettingsDialogV2 } from "@/features/answer-review-v2/AnswerReviewSettingsDialogV2";
+import type { ComposerPaletteEntry } from "@/features/composer-v2/command-palette/paletteModel";
 import { AnswerReviewHistoryV2, AnswerReviewStatusV2, AnswerReviewTurnV2 } from "@/features/answer-review-v2/AnswerReviewV2";
 import { AnswerReviewDialogV2, type AnswerReviewReviewerPick } from "@/features/answer-review-v2/AnswerReviewDialogV2";
 import { KnowledgeCitationControl } from "@/features/citations-v2/KnowledgeCitationViewer";
@@ -602,6 +608,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   }> | null>(null);
   const [answerReviewStarting, setAnswerReviewStarting] = useState(false);
   const [answerReviewError, setAnswerReviewError] = useState<string | null>(null);
+  // The chat's automatic review settings, opened from the model picker's row or `/review`.
+  const [answerReviewSettingsOpen, setAnswerReviewSettingsOpen] = useState(false);
+  const [answerReviewSettingsError, setAnswerReviewSettingsError] = useState<string | null>(null);
+  const [answerReviewStoppingId, setAnswerReviewStoppingId] = useState<string | null>(null);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -1088,10 +1098,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       locked: provenance.locked,
       name: modelName,
       onToggle: (anchor) => composerLayerController.current?.toggle("model", anchor),
+      review: composer.answerReview ? answerReviewAutoChipV2(composer.answerReview.state) : null,
       title: provenance.title
     };
   }, [
     chatAssistant,
+    composer.answerReview,
     composer.catalog,
     composer.catalogError,
     composer.currentModel,
@@ -1099,13 +1111,57 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     composerLayerHost,
     thread.activeChatStreaming
   ]);
+  // The chat's latest answer review while the server still drives it: the composer waits for it and Stop ends it.
+  const autoReviewGroup = (() => {
+    const last = groupAnswerReviewsV2(thread.visibleMessages).at(-1);
+    return last?.kind === "review" && answerReviewAutoRunningV2(last.group, answerReviewGroupProgressV2(last.group))
+      ? last.group : null;
+  })();
+  const stopAnswerReview = (sessionId: string) => {
+    if (!thread.stopAnswerReview || answerReviewStoppingId) return;
+    setAnswerReviewStoppingId(sessionId);
+    void thread.stopAnswerReview(sessionId).finally(() => setAnswerReviewStoppingId(null));
+  };
+  const answerReviewView = composer.answerReview ?? null;
+  const openAnswerReviewSettings = () => {
+    setAnswerReviewSettingsError(null);
+    setAnswerReviewSettingsOpen(true);
+  };
+  // `/review`: with the chat's reviewers at hand it turns review on or off; otherwise it opens the settings.
+  const answerReviewPaletteEntries: readonly ComposerPaletteEntry[] = answerReviewView ? [{
+    detail: answerReviewView.state.config.enabled
+      ? answerReviewAutoSummaryV2(answerReviewView.state)
+      : "Off · another model checks each answer",
+    disabledReason: answerReviewView.state.blockedReason,
+    icon: "shield",
+    id: "answer-review",
+    keywords: ["review", "answer review", "reviewer", "check answer"],
+    label: "Review answers",
+    run: () => {
+      const { config, reviewers } = answerReviewView.state;
+      if (config.enabled || (reviewers.length > 0 && reviewers.length === config.reviewers.length)) {
+        void answerReviewView.save({ ...config, enabled: !config.enabled }).then((error) => {
+          if (error) openAnswerReviewSettings();
+        });
+      } else {
+        openAnswerReviewSettings();
+      }
+    },
+    section: "actions"
+  }] : [];
   const canSubmitFollowup = Boolean(latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
     !activeProjectChat?.archived && (!projectContext || activeProject?.status === "ACTIVE" && activeProject.capabilities.mutateChats) && composer.submitFollowup);
   const composerSurface = (
     <ComposerV2
       sessionKey={skillScopeKey}
       usageLimitsAccountId={session.accountId}
-      activeRun={thread.activeChatStreaming && !thread.answerComplete}
+      activeRun={(thread.activeChatStreaming && !thread.answerComplete) || Boolean(autoReviewGroup)}
+      answerReview={answerReviewView ? {
+        disabledReason: answerReviewView.state.blockedReason,
+        onOpen: openAnswerReviewSettings,
+        summary: answerReviewAutoSummaryV2(answerReviewView.state)
+      } : null}
+      commandPaletteEntries={answerReviewPaletteEntries}
       skillsMode={skillsMode}
       onSelectSkillsMode={mode => useComposerControlStore.getState().setSkillsMode(mode)}
       artifactEdit={composerArtifactEdit}
@@ -1177,14 +1233,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectSearchPlanMode={mode => composer.selectSearchPlan(composer.selectedSearchOptionIds, mode)}
       onResetSearchPlan={composer.useOrganizationSearchDefault}
       onSend={() => void composer.submitComposer()}
-      onFollowup={canSubmitFollowup
+      onFollowup={canSubmitFollowup && !autoReviewGroup
           ? runId => void composer.submitFollowup?.(runId) : undefined}
       followupSending={Boolean(followupSubmission?.inFlight)}
-      onStop={() => void composer.stopCurrentRun(thread.currentRunId)}
-      stopping={composer.stopping}
+      onStop={() => autoReviewGroup ? stopAnswerReview(autoReviewGroup.session.id) : void composer.stopCurrentRun(thread.currentRunId)}
+      stopping={composer.stopping || Boolean(autoReviewGroup && answerReviewStoppingId === autoReviewGroup.session.id)}
       onUploadFiles={(files) => composer.uploadFiles(files)}
       onReuseFile={composer.reuseFile}
-      runId={thread.currentRunId}
+      // A review between its steps has no run of its own: its Stop ends the session.
+      runId={thread.currentRunId ?? (autoReviewGroup ? `answer-review:${autoReviewGroup.session.id}` : null)}
       knowledgePlanSource={composer.knowledge.planSource}
       mcpSelection={mcpSelection}
       selectedKnowledgeSelection={composer.knowledge.selection}
@@ -1220,6 +1277,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerOperationError = (
     <>
       <BackgroundRunStatusV2 onCheck={thread.checkBackgroundRun} waiting={Boolean(thread.backgroundRunWaiting)} />
+      {autoReviewGroup ? (
+        <div className="v2-live-composer-error v2-live-background-run" data-testid="answer-review-composer-status" role="status">
+          <span>Review in progress — Stop to send now</span>
+        </div>
+      ) : null}
       <ComposerOperationErrorV2
         error={composer.operationError}
         live={composer.operationErrorLive}
@@ -1344,7 +1406,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const authorModels = answerReviewAuthorModelsV2(answer, reviewModels);
     const candidates = answerReviewReviewerCandidatesV2(reviewModels, authorModels);
     const availability = answerReviewAvailabilityV2({
-      activeRun: thread.activeChatStreaming,
+      activeRun: thread.activeChatStreaming || Boolean(autoReviewGroup),
       agentEnabled: composer.agent?.enabled === true,
       answer,
       assistantChat: composer.assistant.current?.state === "bound",
@@ -1381,8 +1443,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const question = message.parentMessageId ? messageById.get(message.parentMessageId) : null;
     const regenerateUnavailable = message.role === "assistant" &&
       (question === null || (question !== undefined && question.role !== "user"));
+    // A step of the chat's automatic review is the run in progress: Stop ends the review and frees the chat.
     const disabledReason = thread.activeChatStreaming
-      ? "Wait for the current answer to finish."
+      ? autoReviewGroup ? "Stop the review first." : "Wait for the current answer to finish."
       : projectMutationReason ?? editMutationReason ??
         (regenerateUnavailable ? "There is no question before this answer to answer again." : null);
     return {
@@ -1704,7 +1767,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       actions: reviewGroupActionsFor(group),
       afterOutputs: (
         <AnswerReviewHistoryV2
-          defaultOpen={progress.stopReason === "approval_required"}
+          defaultOpen={progress.stopReason === "approval_required" || progress.stopReason === "disagreement"}
           group={group}
           renderAnswer={(message, leading) => renderAnswerMessage(message, { actions: null, leading })}
         />
@@ -1718,9 +1781,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onStop={() => {
             if (stepRunId) void composer.stopCurrentRun(stepRunId);
           }}
+          onStopSession={thread.stopAnswerReview ? () => stopAnswerReview(group.session.id) : undefined}
           progress={progress}
           stopUnavailableReason={stepRunId ? null : "The run is not yet acknowledged by the server."}
-          stopping={composer.stopping}
+          stopping={composer.stopping || answerReviewStoppingId === group.session.id}
         />
       ),
       pagerMessageId: group.source?.id ?? group.latest.id
@@ -2116,6 +2180,24 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
               title={session.activeChatTitle}
             />
+            {answerReviewSettingsOpen && answerReviewView ? (
+              <AnswerReviewSettingsDialogV2
+                busy={answerReviewView.saving}
+                candidates={answerReviewView.state.candidates}
+                error={answerReviewSettingsError}
+                initial={answerReviewView.state.config}
+                mode="chat"
+                onCancel={() => setAnswerReviewSettingsOpen(false)}
+                onSave={(config) => {
+                  setAnswerReviewSettingsError(null);
+                  void answerReviewView.save(config).then((error) => {
+                    if (error) setAnswerReviewSettingsError(error);
+                    else setAnswerReviewSettingsOpen(false);
+                  });
+                }}
+                unavailableReason={answerReviewView.state.unavailableReason}
+              />
+            ) : null}
             {answerReviewDialog ? (
               <AnswerReviewDialogV2
                 busy={answerReviewStarting}

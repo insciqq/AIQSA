@@ -75,6 +75,8 @@ export function projectChatSummaryFromApi(chat: ProjectChatSummaryWire): Workspa
   return {
     ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
+    // Always present, so a merged summary never keeps a stale choice.
+    answerReview: chat.answerReview,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: chat.defaultKnowledgePlan,
     defaultSearchPlan: chat.defaultSearchPlan,

@@ -156,7 +156,12 @@ import {
   type ProjectRunAdmission
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
-import { admitAnswerReviewInTransaction, answerReviewMessageFields, createClaimingMessage } from "../answerReviews/admission";
+import {
+  admitAnswerReviewInTransaction,
+  answerReviewMessageFields,
+  createAutoAnswerReviewSession,
+  createClaimingMessage
+} from "../answerReviews/admission";
 import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
@@ -1180,6 +1185,8 @@ export async function admitProjectRunWithClient(
       // Project turns are always interactive (scheduled tasks post only into
       // personal chats); a review step's server-written turn is not a message.
       if (!answerReviewStep) await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
+      await createAutoAnswerReviewSession(tx, { auto: input.answerReviewAuto, chatId: input.chatId,
+        sourceAssistantMessageId: assistantMessageId, userId: input.userId, userMessageId });
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
         assistantMessageId,
@@ -1757,6 +1764,10 @@ export async function admitPreparingRunWithClient(
         // Message limits count interactive admissions in a log that outlives
         // the chat; a review step's server-written turn is not a message.
         await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
+      }
+      if (!scheduledOccurrence) {
+        await createAutoAnswerReviewSession(tx, { auto: input.answerReviewAuto, chatId: input.chatId,
+          sourceAssistantMessageId: assistantMessageId, userId: input.userId, userMessageId });
       }
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {

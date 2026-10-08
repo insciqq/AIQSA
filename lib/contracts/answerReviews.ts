@@ -7,6 +7,8 @@
  * session's messages as one answer with a collapsible history.
  */
 
+import { decodeSearchPlan, type SearchPlan } from "./search";
+
 export const ANSWER_REVIEW_REQUEST_KIND = "answer_review_request";
 export const ANSWER_REVISION_REQUEST_KIND = "answer_revision_request";
 export const ANSWER_REVIEW_TURN_KINDS = [ANSWER_REVIEW_REQUEST_KIND, ANSWER_REVISION_REQUEST_KIND] as const;
@@ -18,6 +20,12 @@ export function isAnswerReviewTurnKind(value: unknown): value is AnswerReviewTur
 
 /** Reviewers of one round, run one after another. */
 export const ANSWER_REVIEW_MAX_REVIEWERS = 2;
+/** Rounds an automatic session runs at most; the user picks one to three, three by default. */
+export const ANSWER_REVIEW_MAX_ROUNDS = 3;
+export const ANSWER_REVIEW_DEFAULT_ROUNDS = 3;
+/** An automatic session's hard ceilings: its answer and every step are runs (1 + 3 × (2 + 1)), within 30 minutes. */
+export const ANSWER_REVIEW_AUTO_MAX_RUNS = 1 + ANSWER_REVIEW_MAX_ROUNDS * (ANSWER_REVIEW_MAX_REVIEWERS + 1);
+export const ANSWER_REVIEW_AUTO_MAX_MS = 30 * 60_000;
 /** Findings one review reports at most. */
 export const ANSWER_REVIEW_MAX_FINDINGS = 10;
 /** Bounds of the model-written fields of a review and of its decisions (code points). */
@@ -35,7 +43,7 @@ export type AnswerReviewMode = "manual" | "auto";
 export type AnswerReviewState = "running" | "finished" | "stopped";
 export const ANSWER_REVIEW_STOP_REASONS = [
   "clean", "max_rounds", "disagreement", "budget", "approval_required", "user_stopped", "superseded",
-  "review_unreadable", "error"
+  "review_unreadable", "error", "unsupported", "time_limit"
 ] as const;
 export type AnswerReviewStopReason = (typeof ANSWER_REVIEW_STOP_REASONS)[number];
 export type AnswerReviewStepKind = "review" | "revision";
@@ -135,6 +143,91 @@ export type AnswerReviewStepRequest = Readonly<{
   kind: AnswerReviewStepKind;
 }>;
 
+export type AnswerReviewRounds = 1 | 2 | 3;
+/** A catalog identity of a model, never its display name. */
+export type AnswerReviewModelIdentity = Readonly<{ modelId: string; provider: string }>;
+
+/**
+ * Automatic review of a chat (`Chat.answerReviewConfig`) and the default new
+ * chats start with (Settings › Chat defaults, off): on or off, one or two
+ * reviewer models in order and up to three rounds. Reviewers are catalog
+ * identities the composer offers; every send admits them again.
+ */
+export type AnswerReviewAutoConfig = Readonly<{
+  enabled: boolean;
+  maxRounds: AnswerReviewRounds;
+  reviewers: readonly AnswerReviewModelIdentity[];
+}>;
+
+export const ANSWER_REVIEW_AUTO_DEFAULT: AnswerReviewAutoConfig = Object.freeze({
+  enabled: false,
+  maxRounds: ANSWER_REVIEW_DEFAULT_ROUNDS,
+  reviewers: Object.freeze([])
+});
+
+/**
+ * A send with automatic review on: its reviewers in order, each with the
+ * Search the composer reconciled for that model (as a manual step sends it),
+ * and its rounds. The server freezes it into the answer's session.
+ */
+export type AnswerReviewSendRequest = Readonly<{
+  maxRounds: AnswerReviewRounds;
+  reviewers: readonly Readonly<AnswerReviewModelIdentity & { searchPlan: SearchPlan }>[];
+}>;
+
+/** Extra answers a session may add per question: each round's reviews and revision. */
+export function answerReviewExtraAnswers(config: Pick<AnswerReviewAutoConfig, "maxRounds" | "reviewers">): number {
+  return config.maxRounds * (Math.max(1, config.reviewers.length) + 1);
+}
+
+function decodeRounds(value: unknown): AnswerReviewRounds | null {
+  return value === 1 || value === 2 || value === 3 ? value : null;
+}
+
+function decodeIdentities(value: unknown, keys: readonly string[]): Array<Record<string, unknown>> | null {
+  if (!Array.isArray(value) || value.length > ANSWER_REVIEW_MAX_REVIEWERS) return null;
+  const identities: Array<Record<string, unknown>> = [];
+  for (const entry of value) {
+    if (!record(entry) || !only(entry, keys) || !id(entry.modelId) || !id(entry.provider) ||
+      identities.some((other) => other.modelId === entry.modelId && other.provider === entry.provider)) return null;
+    identities.push(entry);
+  }
+  return identities;
+}
+
+/** A stored or requested configuration; on needs at least one reviewer. */
+export function decodeAnswerReviewAutoConfig(value: unknown): AnswerReviewAutoConfig | null {
+  if (!record(value) || !only(value, ["enabled", "maxRounds", "reviewers"]) || typeof value.enabled !== "boolean") return null;
+  const maxRounds = decodeRounds(value.maxRounds);
+  const reviewers = decodeIdentities(value.reviewers, ["modelId", "provider"]);
+  if (!maxRounds || !reviewers || (value.enabled && reviewers.length === 0)) return null;
+  return {
+    enabled: value.enabled,
+    maxRounds,
+    reviewers: reviewers.map((entry) => ({ modelId: entry.modelId as string, provider: entry.provider as string }))
+  };
+}
+
+export function decodeAnswerReviewSendRequest(value: unknown): AnswerReviewSendRequest | null {
+  if (!record(value) || !only(value, ["maxRounds", "reviewers"])) return null;
+  const maxRounds = decodeRounds(value.maxRounds);
+  const reviewers = decodeIdentities(value.reviewers, ["modelId", "provider", "searchPlan"]);
+  if (!maxRounds || !reviewers || reviewers.length === 0) return null;
+  const decoded: Array<AnswerReviewSendRequest["reviewers"][number]> = [];
+  for (const entry of reviewers) {
+    const search = decodeSearchPlan(entry.searchPlan);
+    if (!search.ok) return null;
+    decoded.push({ modelId: entry.modelId as string, provider: entry.provider as string, searchPlan: search.plan });
+  }
+  return { maxRounds, reviewers: decoded };
+}
+
+export function sameAnswerReviewAutoConfig(left: AnswerReviewAutoConfig, right: AnswerReviewAutoConfig): boolean {
+  return left.enabled === right.enabled && left.maxRounds === right.maxRounds && left.reviewers.length === right.reviewers.length &&
+    left.reviewers.every((reviewer, index) => reviewer.provider === right.reviewers[index]?.provider &&
+      reviewer.modelId === right.reviewers[index]?.modelId);
+}
+
 /** Refusals of the review routes and of a step's admission, beside the ordinary send refusals. */
 export const ANSWER_REVIEW_REFUSALS = [
   "answer_review_invalid",
@@ -188,6 +281,8 @@ const STOP_COPY: Readonly<Record<AnswerReviewStopReason, string>> = {
   max_rounds: "Finished all rounds",
   review_unreadable: "Stopped: the review could not be read",
   superseded: "Stopped: the chat moved on",
+  time_limit: "Stopped: the review reached its 30-minute limit",
+  unsupported: "Not reviewed: answers with generated images can't be reviewed",
   user_stopped: "Stopped"
 };
 

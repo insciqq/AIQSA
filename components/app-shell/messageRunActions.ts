@@ -41,6 +41,8 @@ import {
   ANSWER_REVISION_REQUEST_KIND,
   answerReviewRefusalCopy,
   decodeAnswerReviewStartResponse,
+  type AnswerReviewAutoConfig,
+  type AnswerReviewSendRequest,
   type AnswerReviewSessionWire,
   type AnswerReviewStepKind,
   type AnswerReviewStepWire
@@ -92,6 +94,12 @@ type MutableRef<T> = { current: T };
 
 type MessageRunControlSnapshot = {
   agentEnabled: boolean;
+  /**
+   * The chat's automatic answer review for this send, when it is on and can
+   * run: each reviewer with the Search reconciled for its model, as a manual
+   * step sends it. Absent from Assistant chats.
+   */
+  answerReview: AnswerReviewSendRequest | null;
   contextConfigurationKey: string;
   /**
    * The chat's Assistant at capture: its id and `{name, avatar}` (null without
@@ -125,6 +133,8 @@ type MessageRunControlSnapshot = {
 
 type MessageRunActionsInput = {
   activeChat: WorkspaceChatSummary | null;
+  /** The chat's automatic answer review a send carries now (on and able to run), or null. */
+  answerReviewForSend?(): AnswerReviewAutoConfig | null;
   activeChatDetailLoading: boolean;
   activeChatId: string | null;
   activeChatIdRef: MutableRef<string | null>;
@@ -256,6 +266,7 @@ const runsAwaitingAssistant = new Set<string>();
 
 export function useMessageRunActions({
   activeChat,
+  answerReviewForSend,
   activeChatDetailLoading,
   activeChatId,
   activeChatIdRef,
@@ -343,8 +354,28 @@ export function useMessageRunActions({
         }
       : undefined;
     const searchPreferenceOptionIds = [...selectedSearchOptionIds];
+    const searchOptions = (catalog?.searchStrategies ?? []).map((option) => ({
+      ...option,
+      ...(option.executionModes
+        ? { executionModes: [...option.executionModes] }
+        : {})
+    }));
+    const review = controls.assistant ? null : answerReviewForSend?.() ?? null;
+    const reviewers = review?.reviewers.flatMap((reviewer) => {
+      const reviewerModel = catalog?.models.find((candidate) =>
+        candidate.provider === reviewer.provider && candidate.modelId === reviewer.modelId);
+      return reviewerModel ? [{
+        modelId: reviewer.modelId,
+        provider: reviewer.provider,
+        // The reviewer searches as a manual step of this chat would: the chat's Search, reconciled for its model.
+        searchPlan: reconcileModelSearchPlan(reviewerModel, searchPreferenceOptionIds, searchPlanMode, searchOptions)
+      }] : [];
+    }) ?? [];
 
     return {
+      answerReview: review && reviewers.length === review.reviewers.length
+        ? { maxRounds: review.maxRounds, reviewers }
+        : null,
       contextConfigurationKey: composerContextConfigurationKey(controls, {
         agentEnabled: session.agentEnabled,
         memoryMode: chat?.pendingInitialMemoryMode ?? chat?.memoryMode ?? composerSessionModeFromKey(sessionKey), workspaceEnabled
@@ -376,12 +407,7 @@ export function useMessageRunActions({
         optionIds: searchPreferenceOptionIds
       },
       searchPreferenceSource: catalog?.defaults.searchPreferenceSource ?? "personal",
-      searchOptions: (catalog?.searchStrategies ?? []).map((option) => ({
-        ...option,
-        ...(option.executionModes
-          ? { executionModes: [...option.executionModes] }
-          : {})
-      })),
+      searchOptions,
       skillIds: selectedSkills.map((skill) => skill.id),
       toolsOverride: toolsOverride(model),
       workspaceEnabled
@@ -514,6 +540,19 @@ export function useMessageRunActions({
     };
   }
 
+  /** A send's automatic review; the server freezes it into the answer's session. */
+  function answerReviewPayload(snapshot: MessageRunControlSnapshot): { answerReview?: AnswerReviewSendRequest } {
+    return snapshot.answerReview ? { answerReview: snapshot.answerReview } : {};
+  }
+
+  /**
+   * An answer that an automatic review follows is not the one to announce:
+   * the session's end notifies once (`useAnswerReviewFollowV2`).
+   */
+  function answerNotifier(snapshot: MessageRunControlSnapshot): () => Promise<void> {
+    return snapshot.answerReview ? async () => undefined : notifyAnswerReady;
+  }
+
   /** A change of the chat's Assistant or of its values is queued or in flight. */
   function assistantUpdatePending(chatId: string | null): chatId is string {
     return Boolean(chatId && chatAssistantUpdates?.hasPendingUpdate(chatId));
@@ -612,7 +651,7 @@ export function useMessageRunActions({
       createStreamTokenBuffer,
       failurePrefix: "edit_run_failed",
       fetchRun,
-      notifyAnswerReady,
+      notifyAnswerReady: answerNotifier(runControlSnapshot),
       optimisticAssistantMessageId: assistantId,
       primeAnswerSound,
       reconcileMessageIds({ currentRunId, messageIds }) {
@@ -639,7 +678,8 @@ export function useMessageRunActions({
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
             admissionId,
-            ...runControlPayload(runControlSnapshot, Boolean(activeChat?.projectId))
+            ...runControlPayload(runControlSnapshot, Boolean(activeChat?.projectId)),
+            ...answerReviewPayload(runControlSnapshot)
           }),
           headers: {
             "content-type": "application/json"
@@ -1038,11 +1078,14 @@ export function useMessageRunActions({
       const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
       const personalDraftForSend = currentChatSummary?.pendingPersonalDraft ?? null;
       startedFromBlankWorkspace = startedFromBlankWorkspace || Boolean(projectDraftForSend);
-      const sendControlPayload = runControlPayload(
-        runControlSnapshot,
-        Boolean(currentChatSummary?.projectId),
-        Boolean(personalDraftForSend || projectDraftForSend)
-      );
+      const sendControlPayload = {
+        ...runControlPayload(
+          runControlSnapshot,
+          Boolean(currentChatSummary?.projectId),
+          Boolean(personalDraftForSend || projectDraftForSend)
+        ),
+        ...answerReviewPayload(runControlSnapshot)
+      };
 
       const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
       if (activeSend && !activeSend.answerComplete) {
@@ -1097,7 +1140,7 @@ export function useMessageRunActions({
         createStreamTokenBuffer,
         failurePrefix: "send_failed",
         fetchRun,
-        notifyAnswerReady,
+        notifyAnswerReady: answerNotifier(runControlSnapshot),
         onAnswerPublished(runId) {
           useComposerSessionStore.getState().finishSend(sendToken, "succeeded", null, true, runId);
         },
@@ -1876,10 +1919,17 @@ export function useMessageRunActions({
     }
     const regenerationParentMessageId =
       original.role === "assistant" ? original.parentMessageId : original.id;
-    const regenerateControlPayload = runControlPayload(
-      runControlSnapshot,
-      Boolean(activeChat?.projectId)
-    );
+    // A turn the server wrote (an approval continuation) is never reviewed.
+    const regeneratesUserSpeech = !threadBeforeRegenerate.messages.find((message) =>
+      message.id === regenerationParentMessageId)?.systemTurnKind;
+    const reviewedSnapshot = regeneratesUserSpeech ? runControlSnapshot : { ...runControlSnapshot, answerReview: null };
+    const regenerateControlPayload = {
+      ...runControlPayload(
+        runControlSnapshot,
+        Boolean(activeChat?.projectId)
+      ),
+      ...answerReviewPayload(reviewedSnapshot)
+    };
     const retryPdfPreparation = original.pdfPreparation?.some(({ phase }) => phase === "failed" || phase === "cancelled") === true;
 
     const assistantId = `assistant-regen-${Date.now()}`;
@@ -1908,7 +1958,7 @@ export function useMessageRunActions({
       createStreamTokenBuffer,
       failurePrefix: "regenerate_failed",
       fetchRun,
-      notifyAnswerReady,
+      notifyAnswerReady: answerNotifier(reviewedSnapshot),
       optimisticAssistantMessageId: assistantId,
       primeAnswerSound,
       reconcileMessageIds({ currentRunId, messageIds }) {

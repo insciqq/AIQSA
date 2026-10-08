@@ -40,6 +40,8 @@ export function createAnswerReviewStepHandler(deps: Readonly<{
         admissionId: body.admissionId,
         controls: body.controls,
         expectedActiveLeafId: body.expectedActiveLeafId,
+        // The browser starts only a manual session's steps; the server drives an automatic one.
+        expectedMode: "manual",
         kind: body.kind,
         // The browser session is resolved again whenever the send asks.
         resolveAuth: () => deps.resolveAuth(request),

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import type { AnswerReviewStopReason } from "../../contracts/answerReviews";
 import type { ScheduledTaskRunTrigger, ScheduledTaskUnavailableSource } from "../../contracts/scheduledTasks";
 import type { ScheduledTaskSettledState } from "../scheduledTasks/runnerPolicy";
 import { unavailableSourcesWire } from "../scheduledTasks/sourceHealth";
-import { notScheduledRunSql } from "./scheduledRunExclusion";
+import { notAutoReviewRunSql, notScheduledRunSql } from "./scheduledRunExclusion";
 import type { ValidatedPushSubscription } from "./subscriptionRequest";
 
 /** Devices one account keeps; registering another drops the least recently registered. */
@@ -32,7 +33,22 @@ export type OccurrencePushEvent = Readonly<{
   userId: string;
 }>;
 
-export type BrowserPushEvent = RunPushEvent | OccurrencePushEvent;
+/**
+ * The end of an automatic answer review session (claimed once by its driver):
+ * "Reviewed answer ready · N rounds", or the answer and how its review stopped.
+ */
+export type AnswerReviewPushEvent = Readonly<{
+  answerFailed: boolean;
+  chatId: string;
+  kind: "answer_review";
+  rounds: number;
+  state: "finished" | "stopped";
+  stopReason: AnswerReviewStopReason;
+  title: string;
+  userId: string;
+}>;
+
+export type BrowserPushEvent = RunPushEvent | OccurrencePushEvent | AnswerReviewPushEvent;
 
 export type BrowserPushTarget = Readonly<{ auth: string; endpoint: string; id: string; p256dh: string; sessionId: string }>;
 
@@ -51,6 +67,12 @@ export interface BrowserPushStore {
   claimRun(runId: string, now: Date): Promise<RunPushEvent | null>;
   /** Claims the single push of a settled scheduled occurrence when its owner can receive one. */
   claimOccurrence(occurrenceId: string, now: Date): Promise<OccurrencePushEvent | null>;
+  /**
+   * The chat title of an ended automatic review, when its chat is an ordinary
+   * personal chat and its owner can receive pushes; the driver's claim on the
+   * session's end makes it once.
+   */
+  loadAnswerReviewChat(input: Readonly<{ chatId: string; userId: string }>, now: Date): Promise<Readonly<{ title: string }> | null>;
   /** The owner's live subscriptions, rechecked at delivery time. */
   listTargets(userId: string, now: Date): Promise<readonly BrowserPushTarget[]>;
   recordDelivery(target: Pick<BrowserPushTarget, "endpoint" | "id">, outcome: BrowserPushDeliveryOutcome, now: Date): Promise<void>;
@@ -150,6 +172,7 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
             AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
             AND chat."permanentDeletionAt" IS NULL
             AND ${notScheduledRunSql()}
+            AND ${notAutoReviewRunSql()}
             AND ${ownerAcceptsSql(Prisma.sql`run."userId"`, now)}
         ), claimed AS (
           INSERT INTO "BrowserPushDelivery" ("id", "runId", "claimedAt")
@@ -192,6 +215,20 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
       return row ? {
         ...row, kind: "occurrence", trigger: trigger(row.trigger), unavailableSources: unavailableSourcesWire(row.unavailableSources)
       } : null;
+    },
+
+    async loadAnswerReviewChat({ chatId, userId }, now) {
+      const [row] = await prisma.$queryRaw<Array<{ title: string }>>(Prisma.sql`
+        SELECT chat."title"
+        FROM "Chat" AS chat
+        WHERE chat."id" = ${chatId}
+          AND chat."userId" = ${userId}
+          AND chat."projectId" IS NULL
+          AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
+          AND chat."permanentDeletionAt" IS NULL
+          AND ${ownerAcceptsSql(Prisma.sql`chat."userId"`, now)}
+      `);
+      return row ? { title: row.title } : null;
     },
 
     async listTargets(userId, now) {
