@@ -1,6 +1,7 @@
 import { prisma } from "../../prisma";
 import { completeExternalSignIn } from "../externalIdentity";
 import type { ResolvedOAuthProvider } from "../oauthHandlers";
+import type { SealedIdTokenHint } from "../requestAuth";
 import { resolveSignInMethods } from "../signInMethods";
 import { recordSignInMethodOutcome } from "../signInSettings/defaultSignInSettings";
 import { defaultOidcClient } from "./oidcClient";
@@ -22,7 +23,11 @@ export async function resolveOidcSignInProvider(): Promise<ResolvedOAuthProvider
 }
 
 /** The logout handler's IdP step for the active OIDC configuration. */
-export async function activeOidcLogoutRedirect(input: { appBaseUrl: string; signInMethod: string | null }): Promise<string | null> {
+export async function activeOidcLogoutRedirect(input: {
+  appBaseUrl: string;
+  idTokenHint: SealedIdTokenHint | null;
+  signInMethod: string | null;
+}): Promise<string | null> {
   if (input.signInMethod !== "oidc") return null;
   const config = (await resolveSignInMethods()).oidc?.config ?? null;
   return oidcLogoutRedirect({ ...input, client: defaultOidcClient(), config });

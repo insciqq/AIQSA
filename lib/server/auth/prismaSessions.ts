@@ -48,10 +48,14 @@ export function createPrismaAuthSessionStore(prisma: PrismaClient): AuthSessionS
 
       return result.count;
     },
-    async findSessionByTokenHash(tokenHash) {
+    async findSessionByTokenHash(tokenHash, options) {
       return prisma.authSession.findUnique({
         include: {
           user: true
+        },
+        // Authenticating a request never reads the sealed ID token; only logout does.
+        omit: {
+          idTokenHintEnvelope: !options?.idTokenHint
         },
         where: {
           tokenHash

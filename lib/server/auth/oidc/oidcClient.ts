@@ -87,6 +87,12 @@ export type OidcSignInClaims = {
   subject: string;
 };
 
+/** A validated sign-in: its claims and the ID token that asserted them. */
+export type OidcSignInResult = OidcSignInClaims & {
+  /** The raw token, only for the session's IdP logout hint (`oidcIdTokenHint.ts`); never logged or returned. */
+  idToken: string;
+};
+
 export type OidcClient = {
   authorizationUrl(input: {
     codeChallenge: string;
@@ -95,8 +101,15 @@ export type OidcClient = {
     redirectUri: string;
     state: string;
   }): Promise<URL>;
-  /** The IdP logout target for `idpLogout`, or null when the IdP has none. Never throws. */
-  endSessionUrl(input: { config: OidcConfig; postLogoutRedirectUri: string }): Promise<string | null>;
+  /**
+   * The IdP logout target for `idpLogout`, with the session's ID token as `id_token_hint` when
+   * it kept one, or null when the IdP has none. Never throws.
+   */
+  endSessionUrl(input: {
+    config: OidcConfig;
+    idTokenHint?: string | null;
+    postLogoutRedirectUri: string;
+  }): Promise<string | null>;
   /** Exchanges the code and validates everything the sign-in asserts; throws `OidcError`. */
   signIn(input: {
     code: string;
@@ -106,7 +119,7 @@ export type OidcClient = {
     now: Date;
     redirectUri: string;
     secrets: OidcSecrets;
-  }): Promise<OidcSignInClaims>;
+  }): Promise<OidcSignInResult>;
   /** The admin tester: discovery, issuer, keys, PKCE and client authentication. */
   test(input: {
     appBaseUrl: string;
@@ -363,14 +376,16 @@ export function createOidcClient(input: { fetchImpl?: typeof fetch; now?: () => 
       return url;
     },
 
-    async endSessionUrl({ config, postLogoutRedirectUri }) {
+    async endSessionUrl({ config, idTokenHint, postLogoutRedirectUri }) {
       try {
         const endpointUrl = (await metadata(config.issuer)).endSessionEndpoint;
         if (!endpointUrl) return null;
-        // No `id_token_hint`: the id token is never kept, so the IdP may ask to confirm.
         const url = new URL(endpointUrl);
         url.searchParams.set("client_id", config.clientId);
         url.searchParams.set("post_logout_redirect_uri", postLogoutRedirectUri);
+        // Okta ends its session only with the hint; Keycloak and Auth0 skip their confirmation.
+        // Without one (older sessions) the IdP may ask to confirm.
+        if (idTokenHint) url.searchParams.set("id_token_hint", idTokenHint);
         return url.toString();
       } catch {
         return null;
@@ -393,7 +408,8 @@ export function createOidcClient(input: { fetchImpl?: typeof fetch; now?: () => 
       if (status !== 200 || !isRecord(body) || typeof body.id_token !== "string" || !body.id_token || body.id_token.length > ID_TOKEN_MAX_LENGTH) {
         throw new OidcError("token_exchange_failed");
       }
-      // Tokens stay in this scope: never stored, logged or returned.
+      // The access token stays in this scope. The ID token goes back only to the sign-in flow,
+      // which may seal it as the session's IdP logout hint; neither is logged.
       const accessToken = typeof body.access_token === "string" && body.access_token ? body.access_token : null;
       const idClaims = await validatedIdToken(body.id_token, { config, metadata: provider, nonce, now });
       const subject = idClaims.sub!;
@@ -419,6 +435,7 @@ export function createOidcClient(input: { fetchImpl?: typeof fetch; now?: () => 
         email: oidcEmail(emailClaims),
         emailVerified: oidcEmailVerified(emailClaims),
         groups,
+        idToken: body.id_token,
         subject
       };
     },
