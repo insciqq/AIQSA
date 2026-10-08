@@ -4,6 +4,7 @@ import type {
   AdminSignInMethodStatus
 } from "@/lib/contracts/adminSignIn";
 import type { AuthSessionSignInMethod, AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
+import { oidcFailureMessages, oidcTestMessages } from "./oidcSignInMessages";
 
 export const signInMethodLabels: Record<AuthSignInMethod | AuthSessionSignInMethod, string> = {
   bootstrap: "Bootstrap token",
@@ -45,7 +46,8 @@ const testMessages: Record<string, string> = {
   secret_unreadable: "The stored secret cannot be read. Enter it again and save.",
   test_failed: "The test could not be completed.",
   test_timeout: "The test timed out.",
-  trusted_proxy_mode: "Trusted-proxy mode is on. Check this request above to see the proxy's header."
+  trusted_proxy_mode: "Trusted-proxy mode is on. Check this request above to see the proxy's header.",
+  ...oidcTestMessages
 };
 
 /** A tester's code in words; method testers may add their own codes, shown as they are. */
@@ -61,7 +63,8 @@ const failureMessages: Record<string, string> = {
   header_missing: "the proxy sent no identity header",
   not_allowed: "the account is not allowed by the access rules",
   sign_in_failed: "the sign-in failed",
-  source_changed: "the identity belongs to a previous source"
+  source_changed: "the identity belongs to a previous source",
+  ...oidcFailureMessages
 };
 
 export function signInFailureMessage(code: string): string {

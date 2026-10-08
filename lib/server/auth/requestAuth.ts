@@ -28,6 +28,8 @@ export type AuthSessionRecord = {
   id: string;
   lastSeenAt: Date | string | null;
   revokedAt: Date | string | null;
+  /** How the session's sign-in was proven, where the store records it. */
+  signInMethod?: string | null;
   user: AuthenticatedUser | null;
   userId: string;
 };

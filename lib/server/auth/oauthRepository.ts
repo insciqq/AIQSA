@@ -1,12 +1,12 @@
 import type { PrismaClient } from "@prisma/client";
-import type { OAuthProviderId } from "../../auth/oauth";
+import type { OAuthClientProviderId } from "../../auth/oauth";
 import { settleExternalIdentity, type ExternalIdentityPolicy } from "./externalIdentity";
 
 export type OAuthIdentitySettlementInput = {
   displayName: string;
   email: string;
   now: Date;
-  provider: OAuthProviderId;
+  provider: OAuthClientProviderId;
   providerAccountId: string;
 };
 
@@ -41,7 +41,7 @@ const OAUTH_POLICY: ExternalIdentityPolicy = {
 const OAUTH_EMAIL_VERIFIED = {
   google: true,
   yandex: true
-} as const satisfies Record<OAuthProviderId, boolean>;
+} as const satisfies Record<OAuthClientProviderId, boolean>;
 
 export function createPrismaOAuthIdentityRepository(prisma: PrismaClient): OAuthIdentityRepository {
   return {

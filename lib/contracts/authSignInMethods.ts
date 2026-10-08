@@ -112,18 +112,44 @@ export const googleSignInSecretsSchema = oauthClientSecrets;
 export const yandexSignInConfigSchema = oauthClientConfig;
 export const yandexSignInSecretsSchema = oauthClientSecrets;
 
-// OIDC (auth-oidc refines).
+// OIDC. One connection per installation; `issuer` is the identity source.
+
+export const OIDC_GROUPS_FROM = ["id_token", "userinfo", "id_token_then_userinfo"] as const;
+
+/** A dot path into the claims (`groups`, `realm_access.roles`, `resource_access.aiqsa.roles`). */
+const OIDC_CLAIM_PATH = /^[^.\s]+(?:\.[^.\s]+){0,7}$/u;
+const OIDC_SCOPE = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
+
+/**
+ * Entra's multi-tenant issuers accept tokens from any tenant, so a subject or email from a
+ * stranger's tenant could sign in; only a single-tenant issuer may be configured.
+ */
+export function isMultiTenantOidcIssuer(issuer: string): boolean {
+  const value = issuer.toLowerCase();
+  if (value.includes("{tenantid}") || value.includes("%7btenantid%7d")) return true;
+  try {
+    const firstSegment = new URL(issuer).pathname.split("/").filter(Boolean)[0] ?? "";
+    return ["common", "consumers", "organizations"].includes(firstSegment.toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 export const oidcSignInConfigSchema = z.strictObject({
   autoRedirect: z.boolean().default(false),
   buttonLabel: text(64).default("SSO"),
   clientId: text(512),
-  groupsClaimPath: text(256).default("groups"),
-  groupsFrom: z.enum(["id_token", "userinfo", "id_token_then_userinfo"]).default("id_token_then_userinfo"),
+  groupsClaimPath: text(256).regex(OIDC_CLAIM_PATH).default("groups"),
+  groupsFrom: z.enum(OIDC_GROUPS_FROM).default("id_token_then_userinfo"),
   idpLogout: z.boolean().default(false),
   issuer: httpUrl,
-  scopes: text(512).default("openid email profile"),
+  scopes: text(512)
+    .refine((value) => value.split(/\s+/u).every((scope) => OIDC_SCOPE.test(scope)) && value.split(/\s+/u).includes("openid"))
+    .default("openid email profile"),
   ...externalGroupPolicy,
+  // Sync changes only groups that carry an OIDC external name, so it is a no-op until an
+  // administrator names one; the card offers it switched on.
+  syncGroups: z.boolean().default(true),
   ...emailTrust(false)
 });
 
