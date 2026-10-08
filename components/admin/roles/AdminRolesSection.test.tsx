@@ -4,6 +4,7 @@ import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
 import type { AdminPublishedImageModel, AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import type { AdminSpeechToTextRole } from "@/lib/contracts/speechToText";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminConfirmationRequest } from "../useAdminConfirmationController";
 import type { AdminFeedbackNoticeAction } from "../useAdminFeedback";
@@ -112,6 +113,10 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
   let roles = initialRoles;
   let model = initialModel;
   let knowledge = initialKnowledge;
+  let speechToText: AdminSpeechToTextRole = { assignment: null, configuredAt: null, connections: [
+    { displayName: "OpenRouter", family: "openrouter", id: "openrouter", ready: true },
+    { displayName: "Local Whisper", family: "openai_compatible", id: "local", ready: false }
+  ] };
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -230,6 +235,19 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
         }) });
       }
       return Response.json({ knowledge });
+    }
+    if (url === "/api/admin/providers/speech-to-text") {
+      if (method === "POST" && body?.action === "discover") return Response.json({ models: ["openai/whisper-1", "openai/gpt-4o-transcribe"] });
+      if (method === "POST" && body?.action === "test_and_save") {
+        if (body.expectedConfiguredAt !== speechToText.configuredAt) return Response.json({ error: "speech_to_text_stale" }, { status: 409 });
+        if (body.modelId === "openai/gpt-4o-transcribe") {
+          return Response.json({ error: "speech_to_text_test_failed", reason: "rejected" }, { status: 422 });
+        }
+        speechToText = { ...speechToText, configuredAt: "2026-10-08T10:00:00.000Z", assignment: { available: true,
+          connectionDisplayName: "OpenRouter", connectionId: String(body.connectionId), modelId: String(body.modelId), unavailableReason: null } };
+      }
+      if (method === "POST" && body?.action === "clear") speechToText = { ...speechToText, assignment: null, configuredAt: "2026-10-08T11:00:00.000Z" };
+      return Response.json({ speechToText });
     }
     return Response.json({ error: "unexpected_request" }, { status: 500 });
   }));
@@ -1112,5 +1130,38 @@ describe("Image generation role", () => {
     expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([{ expectedVersion: 1, imageProviderModelId: "image-b",
       imageModels: [{ providerModelId: "image-a", parameters: { quality: "low" } }, { providerModelId: "image-b", parameters: {} }] }]);
     expect(within(row).getByRole("button", { name: "Withdraw Image A" })).toBeVisible();
+  });
+
+  it("finds speech-to-text models, keeps the role off after a failed Test and saves only a passing one", async () => {
+    const calls = server();
+    const { requestConfirmation } = renderSection();
+    const row = await screen.findByTestId("admin-role-speech-to-text");
+    await waitFor(() => expect(within(row).getByTestId("admin-role-speech-to-text-status")).toHaveTextContent("Not assigned"));
+    const provider = within(row).getByLabelText("Provider");
+    expect(provider).toHaveValue("openrouter");
+    expect(within(row).getByRole("option", { name: "Local Whisper · no usable default key" })).toBeDisabled();
+    fireEvent.click(within(row).getByRole("button", { name: "Find models" }));
+    const model = await within(row).findByRole("combobox", { name: "Model" });
+    expect(model).toHaveValue("openai/whisper-1");
+    fireEvent.change(model, { target: { value: "openai/gpt-4o-transcribe" } });
+    fireEvent.click(within(row).getByRole("button", { name: "Test & save" }));
+    expect(await within(row).findByRole("alert")).toHaveTextContent("Test failed, nothing was saved. The provider rejected the test recording");
+    expect(within(row).getByTestId("admin-role-speech-to-text-status")).toHaveTextContent("Not assigned");
+    fireEvent.change(model, { target: { value: "openai/whisper-1" } });
+    fireEvent.click(within(row).getByRole("button", { name: "Test & save" }));
+    await waitFor(() => expect(within(row).getByTestId("admin-role-speech-to-text-status")).toHaveTextContent("Ready"));
+    expect(within(row).getByTestId("admin-speech-to-text-assignment")).toHaveTextContent("openai/whisper-1 · OpenRouter");
+    expect(calls.filter((call) => call.url === "/api/admin/providers/speech-to-text" && call.method === "POST").map((call) => call.body)).toEqual([
+      { action: "discover", connectionId: "openrouter" },
+      { action: "test_and_save", connectionId: "openrouter", expectedConfiguredAt: null, modelId: "openai/gpt-4o-transcribe" },
+      { action: "test_and_save", connectionId: "openrouter", expectedConfiguredAt: null, modelId: "openai/whisper-1" }
+    ]);
+    fireEvent.click(within(row).getByRole("button", { name: "Speech to text actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear role" }));
+    const confirmation = requestConfirmation.mock.calls.at(-1)![0];
+    expect(confirmation.body).toContain("Dictation turns off for everyone");
+    await act(async () => confirmation.onConfirm());
+    await waitFor(() => expect(within(row).getByTestId("admin-role-speech-to-text-status")).toHaveTextContent("Not assigned"));
+    expect(calls.at(-1)?.body).toEqual({ action: "clear", expectedConfiguredAt: "2026-10-08T10:00:00.000Z" });
   });
 });

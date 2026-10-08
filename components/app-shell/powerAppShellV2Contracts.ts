@@ -309,6 +309,8 @@ export type ShellComposerView = {
     /** Personal: pinned, Featured, Yours, Shared; Project: the Project's Assistants. */
     pickerItems: AssistantSummary[];
     pickerLoading: boolean;
+    /** Loads the personal list once when nothing has loaded it yet (the composer's `/` palette); absent in a Project. */
+    loadPickerItems?(): void;
     /** Assistants of the latest personal chats, newest first (from the list response). */
     recentIds: string[];
     /**

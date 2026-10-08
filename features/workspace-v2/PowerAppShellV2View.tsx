@@ -71,8 +71,13 @@ import type { PersonalMcpConnection } from "@/components/app-shell/personalMcpAp
 import { ensurePersonalMcpLoaded, usePersonalMcpStore } from "@/components/app-shell/personalMcpStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import {
+  refreshSkillLibrary,
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
+import type {
+  ComposerPaletteAssistantSource,
+  ComposerPaletteSkillSource
+} from "@/features/composer-v2/command-palette/paletteEntries";
 import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
 import { pinSkillForNextTurn } from "@/components/app-shell/skillPinActions";
 import type { PowerAppShellV2Props, ShellComposerView, ShellWorkspacePaneActions } from "@/components/app-shell/powerAppShellV2Contracts";
@@ -91,6 +96,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
+import { useAnswerReadAloud } from "@/features/read-aloud/useAnswerReadAloud";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
@@ -598,9 +604,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const personalConnections = usePersonalMcpStore((state) => state.connections);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
+  const skillCatalogState = useSkillLibraryStore((state) => state.loadState);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const navigationFolders = useWorkspaceStore((state) => state.navigationFolders);
+  // Dictation is an account feature: the personal catalog decides it, also in Project chats.
+  const dictation = useWorkspaceStore((state) => state.catalog?.dictation ?? null);
   // Server-verified capability gate for the direct "Delete…" entries; the
   // deletion confirm surface and its semantics stay unchanged.
   const permanentChatDeletionAvailable = useMemorySettingsStore(
@@ -759,6 +768,29 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   });
   const latestMessage = thread.visibleMessages.at(-1);
   function openSkillLibrary() { setSkillLibraryScope(skillScopeKey); }
+  // The composer's `/` palette pins through the Skill library's own selection
+  // path and switches Assistants as the header selector does.
+  const pinPaletteSkill = (skillId: string) => selectManualSkills([...selectedSkills.map((skill) => skill.id), skillId]);
+  const paletteSkills: ComposerPaletteSkillSource = projectContext ? {
+    items: (activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" && resource.available
+      ? [{ id: resource.resourceId, name: resource.label, description: resource.description ?? "" }] : []),
+    pin: pinPaletteSkill,
+    state: activeProject ? "ready" : workspace.projects.syncState === "error" ? "error" : "loading"
+  } : {
+    items: (skillCatalog?.skills ?? []).filter((skill) => !skill.archived)
+      .map(({ description, id, name }) => ({ description, id, name })),
+    pin: pinPaletteSkill,
+    search: (query) => { void refreshSkillLibrary(false, query).catch(() => undefined); },
+    state: skillCatalogState
+  };
+  const paletteAssistants: ComposerPaletteAssistantSource = {
+    choose: composer.assistant.choose,
+    currentId: composer.assistant.current?.state === "bound" ? composer.assistant.current.id : null,
+    items: composer.assistant.pickerItems,
+    ...(composer.assistant.loadPickerItems ? { load: composer.assistant.loadPickerItems } : {}),
+    openPicker: () => composer.assistant.setPickerOpen(true),
+    pending: composer.assistant.pending
+  };
   const assistantAvailableSkills = assistantIncludedSkills ? assistantIncludedSkills.filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined;
   const continuationEligible = Boolean(workspace.pane.actions.openContinuedChat && session.activeChatId && latestMessage?.role === "assistant" &&
     latestMessage.status === "complete" && !thread.activeChatStreaming && !thread.activeChatDetailLoading &&
@@ -1084,6 +1116,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       disabledReason={thread.editingMessageId
         ? "Finish or cancel the inline edit first."
         : composer.composerDisabledHint}
+      dictation={dictation}
       draft={composer.draft}
       comments={composerComments}
       draftTooLargeToKeep={composerDraftTooLarge}
@@ -1110,6 +1143,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onOpenModelParameters={() => setRunSetupOpen(true)}
       onOpenSkillLibrary={openSkillLibrary}
       onOverrideKnowledgePlan={composer.knowledge.override}
+      paletteAssistants={paletteAssistants}
+      paletteSkills={paletteSkills}
       onRemoveAttachment={id => { if (!cancelWorkspaceUpload(id)) composer.composerActions.removeAttachment(id); }}
       onRejectedFiles={(files) => composer.composerActions.rejectAttachments(files.map((file) => file.name))}
       onRetryAttachment={id => { if (!retryWorkspaceUpload(id)) composer.composerActions.retryAttachment?.(id); }}
@@ -1241,6 +1276,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     />
   ) : null;
   const messageById = new Map(thread.visibleMessages.map((message) => [message.id, message]));
+  const readAloud = useAnswerReadAloud({
+    chatKey: session.activeChatId,
+    hasMessage: (id) => messageById.has(id),
+    runActive: thread.activeChatStreaming
+  });
   const previousAnswerById = previousVisibleAnswersV2(thread.visibleMessages);
   const liveTail = thread.visibleMessages.at(-1);
   const readingAnchorMessageId = liveTail?.role === "assistant"
@@ -1295,6 +1335,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ...(message.role === "user" ? {
         onEdit: () => thread.handleEditMessage(message)
       } : {
+        ...(readAloud && messageText(message).trim() ? {
+          onReadAloud: () => readAloud.toggle(message.id, messageText(message)),
+          readingAloud: readAloud.activeId === message.id
+        } : {}),
         onRegenerate: () => thread.handleRegenerateMessage(message.id),
         regenerateDisabled: mutationBlocked || regenerateUnavailable
       })
