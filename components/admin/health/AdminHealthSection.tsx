@@ -8,6 +8,7 @@ import {
   type AdminHealthIncidentFilterState
 } from "@/components/admin/health/AdminHealthIncidents";
 import { AdminHealthErrorGroups } from "@/components/admin/health/AdminHealthErrorGroups";
+import { AdminHealthProblemReports } from "@/components/admin/health/AdminHealthProblemReports";
 import { AdminHealthProviders } from "@/components/admin/health/AdminHealthProviders";
 import { AdminHealthQueues } from "@/components/admin/health/AdminHealthQueues";
 import type { AdminHealthIncidentsResult, AdminHealthResult } from "@/components/admin/health/adminHealthApi";
@@ -20,6 +21,10 @@ import {
 } from "@/components/admin/health/healthFormat";
 import { useAdminHealth, useAdminHealthIncidents } from "@/components/admin/health/useAdminHealth";
 import { useAdminHealthQueues, type AdminHealthQueuesResult } from "@/components/admin/health/useAdminHealthQueues";
+import {
+  useAdminHealthProblemReports,
+  type AdminHealthProblemReportsResult
+} from "@/components/admin/health/useAdminHealthProblemReports";
 import { SettingsSegmentV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { UiV2Button } from "@/components/ui-v2";
 import {
@@ -107,9 +112,12 @@ export type AdminHealthSectionProps = Readonly<{
   requestHealth?: (range: AdminHealthRange, signal?: AbortSignal) => Promise<AdminHealthResult>;
   requestIncidents?: (filters: AdminHealthIncidentFilters, signal?: AbortSignal) => Promise<AdminHealthIncidentsResult>;
   requestQueues?: (signal?: AbortSignal) => Promise<AdminHealthQueuesResult>;
+  requestProblemReports?: (range: AdminHealthRange, signal?: AbortSignal) => Promise<AdminHealthProblemReportsResult>;
 }>;
 
-export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requestIncidents, requestQueues }: AdminHealthSectionProps) {
+export function AdminHealthSection({
+  filter, onSelectFilter, requestHealth, requestIncidents, requestProblemReports, requestQueues
+}: AdminHealthSectionProps) {
   const range: AdminHealthRange = isAdminHealthRange(filter) ? filter : defaultAdminHealthRange;
   const controller = useAdminHealth(range, requestHealth);
   const [incidentFilters, setIncidentFilters] = useState<AdminHealthIncidentFilterState>(emptyIncidentFilters);
@@ -118,6 +126,8 @@ export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requ
   const refreshIncidents = incidents.refresh;
   const queues = useAdminHealthQueues(requestQueues);
   const refreshQueues = queues.refresh;
+  const problemReports = useAdminHealthProblemReports(range, requestProblemReports);
+  const refreshProblemReports = problemReports.refresh;
 
   const topbar = useMemo(() => ({
     actions: (
@@ -129,13 +139,14 @@ export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requ
           refresh();
           refreshIncidents();
           refreshQueues();
+          refreshProblemReports();
         }}
       >
         Refresh
       </UiV2Button>
     ),
     title: "Health"
-  }), [controller.loading, controller.refreshing, refresh, refreshIncidents, refreshQueues]);
+  }), [controller.loading, controller.refreshing, refresh, refreshIncidents, refreshProblemReports, refreshQueues]);
   useAdminSectionTopbar(topbar);
 
   const { health } = controller;
@@ -221,6 +232,16 @@ export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requ
             onChangeFilters={setIncidentFilters}
             retentionNote={range === "30d"}
           />
+        </section>
+      )}
+
+      {controller.error === "forbidden" || controller.error === "unauthorized" ? null : (
+        <section aria-labelledby="admin-health-problem-reports-heading" className="min-w-0">
+          <div className="mb-2 flex min-w-0 flex-col gap-0.5">
+            <h2 className={headingClass} id="admin-health-problem-reports-heading">Problem reports</h2>
+            <p className="text-xs text-ink-muted">What users reported about answers; their questions and the answers are not included.</p>
+          </div>
+          <AdminHealthProblemReports controller={problemReports} range={range} />
         </section>
       )}
     </div>
