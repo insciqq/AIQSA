@@ -682,7 +682,7 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
   const unpackFile = (id: string) => ({ path: "site.zip", mimeType: "application/zip", asset_ref: id, unpack: true });
   const sitePaths = ["about.html", "css/empty.css", "css/site.css", "img/copy.png", "img/logo.png", "index.html"];
   const siteArchive = () => archiveOf({
-    "site/index.html": '<!doctype html><html><head><link rel="stylesheet" href="css/site.css"></head><body><h1>SYNTHETIC_SITE</h1><img alt="Logo" src="img/logo.png"></body></html>',
+    "site/index.html": '<!doctype html><html><head><link rel="stylesheet" href="css/site.css"></head><body><h1>SYNTHETIC_SITE</h1><img alt="Logo" src="img/logo.png"><a href="contact.html">Contact</a></body></html>',
     "site/about.html": "<p>About</p>", "site/css/site.css": "h1{color:teal}", "site/css/empty.css": "",
     "site/img/logo.png": png, "site/img/copy.png": png, "site/img/.DS_Store": "x", "__MACOSX/site/._index.html": "x"
   });
@@ -696,8 +696,12 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
       const created = await run.call({ intent: "create", kind: "html", title: "Site", files: [unpackFile(archive.id)] }, [archive.id]);
       expect(created.status).toBe("complete");
       expect((created.content[0] as { value: Record<string, unknown> }).value).toMatchObject({ entrypoint: "index.html",
-        unpacked: { root_folder: "site", skipped_entries: 2, file_count: sitePaths.length, paths: sitePaths } });
+        unpacked: { root_folder: "site", skipped_entries: 2, file_count: sitePaths.length, paths: sitePaths },
+        render_notes: { missing_links: [{ page: "index.html", href: "contact.html", path: "contact.html" }], hint: expect.stringContaining("missing_links") } });
       const first = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: run.run.id } });
+      // The notes stay in the private manifest, out of the public one.
+      expect(first.manifest).toMatchObject({ report: { renderNotes: { missingLinks: [{ page: "index.html", href: "contact.html", path: "contact.html" }] } } });
+      expect((await f.service.getArtifactVersion({ ownerUserId: f.owner.id, artifactId: first.artifactId }))!.manifest).not.toHaveProperty("report");
       const before = storedBundle(f, first.bundleStorageKey).files;
       expect(before.map(file => file.path)).toEqual(sitePaths);
       expect(before.find(file => file.path === "css/empty.css")).toEqual({ path: "css/empty.css", mimeType: "text/css", text: "" });

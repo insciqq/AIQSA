@@ -29,7 +29,7 @@ import { artifactReadPage } from "./readPage";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import type { ArtifactResourcePolicy } from "./resourcePolicy";
-import { artifactToolResult, decodeArtifactVersionReport, type ArtifactVersionReport } from "./toolResult";
+import { artifactRenderNotes, artifactToolResult, decodeArtifactVersionReport, type ArtifactVersionReport } from "./toolResult";
 import { unpackArtifactArchive } from "./unpack";
 
 type ArtifactToolContext = Omit<ToolExecutionContext, "request"> & {
@@ -265,10 +265,11 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     // Edited and unpacked bytes equal no attachment: later versions reuse them by path.
     const stored = { ...operation, files: operation.files.map(file => referenced.edited.has(file.path) || file.assetRef !== undefined && unpacked?.assets.has(file.assetRef)
       ? { ...file, assetRef: inheritedAssetRef(file.path) } : file) };
-    // The build's render notes belong in this report too (ArtifactVersionReport.renderNotes).
-    const report: ArtifactVersionReport | undefined = unpacked ? { unpacked: unpacked.report } : undefined;
     const assets = [...referenced.assets, ...vendors.assets];
     const built = buildArtifactBundle(stored, assets, vendors.files);
+    const renderNotes = artifactRenderNotes(built.notes);
+    const report: ArtifactVersionReport | undefined = unpacked || renderNotes
+      ? { ...(unpacked ? { unpacked: unpacked.report } : {}), ...(renderNotes ? { renderNotes } : {}) } : undefined;
     if (input.signal?.aborted) throw new ArtifactToolError("artifact_resource_unreachable", { hint: "Artifact creation was cancelled." });
     const assetBytes = new Map(assets.map((asset) => [asset.path, asset.bytes.byteLength]));
     const manifestOperation = {

@@ -1,21 +1,19 @@
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
+import { ARTIFACT_NOTE_LIMITS, type ArtifactBundleNotes } from "./bundle";
 import { ARTIFACT_UNPACK_SKIPPED_FILES, type ArtifactUnpackReport } from "./unpack";
 
 /** Paths of an unpacked site listed in its tool result; `more_paths` counts the rest. */
 export const ARTIFACT_RESULT_PATHS = 100;
-const NOTE_ENTRIES = 32;
 const NOTE_CHARACTERS = 256;
 const ARCHIVE_PATH_CHARACTERS = 512;
+const INVALID_PAGES_HINT = "Each page in invalid_pages failed validation with the given error code and shows that error when opened; fix it with edits.";
+const MISSING_LINKS_HINT = "Each link in missing_links points to a file this artifact does not hold; add the file or correct the href with edits.";
 
-export type ArtifactRemovedLinkNote = Readonly<{ page: string; rel: string; href: string }>;
-export type ArtifactMissingLinkNote = Readonly<{ page: string; href: string; path: string }>;
-/** Render findings that never block a version: service links removed from pages, local links to missing files. */
-export type ArtifactRenderNotes = Readonly<{
-  removedLinks: readonly ArtifactRemovedLinkNote[];
-  missingLinks: readonly ArtifactMissingLinkNote[];
-  /** Further notes beyond the listed ones. */
-  omitted: number;
-}>;
+/**
+ * Render findings that never block a version: service links removed from pages, local links
+ * to missing files and pages other than the entry page that fail validation.
+ */
+export type ArtifactRenderNotes = Omit<ArtifactBundleNotes, "pages">;
 
 /**
  * Findings of a version's creation, stored in its private manifest so that a
@@ -23,9 +21,14 @@ export type ArtifactRenderNotes = Readonly<{
  */
 export type ArtifactVersionReport = Readonly<{
   unpacked?: ArtifactUnpackReport;
-  /** The build's render notes, once the renderer reports them. */
   renderNotes?: ArtifactRenderNotes;
 }>;
+
+/** The build's notes worth reporting, or nothing for a clean build. */
+export function artifactRenderNotes(notes: ArtifactBundleNotes): ArtifactRenderNotes | undefined {
+  const { removedLinks, missingLinks, invalidPages, omitted } = notes;
+  return removedLinks.length || missingLinks.length || invalidPages.length || omitted ? { removedLinks, missingLinks, invalidPages, omitted } : undefined;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -41,7 +44,7 @@ function decodeUnpacked(value: unknown): ArtifactUnpackReport | undefined {
 }
 
 function decodeNotes<T extends string>(value: unknown, keys: readonly T[]): Array<Record<T, string>> | undefined {
-  if (!Array.isArray(value) || value.length > NOTE_ENTRIES) return undefined;
+  if (!Array.isArray(value) || value.length > ARTIFACT_NOTE_LIMITS.maxEntries) return undefined;
   const notes = value.map(note => isRecord(note) && keys.every(key => boundedText(note[key], NOTE_CHARACTERS))
     ? Object.fromEntries(keys.map(key => [key, note[key]])) as Record<T, string> : null);
   return notes.every(note => note !== null) ? notes as Array<Record<T, string>> : undefined;
@@ -51,7 +54,8 @@ function decodeRenderNotes(value: unknown): ArtifactRenderNotes | undefined {
   if (!isRecord(value) || !isCount(value.omitted)) return undefined;
   const removedLinks = decodeNotes(value.removedLinks, ["page", "rel", "href"] as const);
   const missingLinks = decodeNotes(value.missingLinks, ["page", "href", "path"] as const);
-  return removedLinks && missingLinks ? { removedLinks, missingLinks, omitted: value.omitted } : undefined;
+  const invalidPages = decodeNotes(value.invalidPages, ["page", "code"] as const);
+  return removedLinks && missingLinks && invalidPages ? { removedLinks, missingLinks, invalidPages, omitted: value.omitted } : undefined;
 }
 
 /** The validated report of a stored private manifest, if it has one. */
@@ -60,6 +64,18 @@ export function decodeArtifactVersionReport(manifest: unknown): ArtifactVersionR
   const unpacked = decodeUnpacked(manifest.report.unpacked);
   const renderNotes = decodeRenderNotes(manifest.report.renderNotes);
   return unpacked || renderNotes ? { ...(unpacked ? { unpacked } : {}), ...(renderNotes ? { renderNotes } : {}) } : undefined;
+}
+
+/** Non-empty lists only, with one hint line for the findings the model can repair. */
+function renderNotesValue(notes: ArtifactRenderNotes) {
+  const hint = [notes.invalidPages.length ? INVALID_PAGES_HINT : "", notes.missingLinks.length ? MISSING_LINKS_HINT : ""].filter(Boolean).join(" ");
+  return {
+    ...(notes.removedLinks.length ? { removed_links: notes.removedLinks } : {}),
+    ...(notes.missingLinks.length ? { missing_links: notes.missingLinks } : {}),
+    ...(notes.invalidPages.length ? { invalid_pages: notes.invalidPages } : {}),
+    ...(notes.omitted ? { omitted: notes.omitted } : {}),
+    ...(hint ? { hint } : {})
+  };
 }
 
 /** The same exact-version receipt is used by execution and crash recovery. */
@@ -85,8 +101,7 @@ export function artifactToolResult(call: Pick<ModelToolCall, "id" | "name">, ver
       paths: paths.slice(0, ARTIFACT_RESULT_PATHS),
       ...(paths.length > ARTIFACT_RESULT_PATHS ? { more_paths: paths.length - ARTIFACT_RESULT_PATHS } : {})
     } } : {}),
-    ...(notes ? { render_notes: { removed_links: notes.removedLinks, missing_links: notes.missingLinks,
-      ...(notes.omitted ? { omitted: notes.omitted } : {}) } } : {})
+    ...(notes ? { render_notes: renderNotesValue(notes) } : {})
   };
   return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value }],
     artifacts: [{ type: "artifact", data: { artifactType: "generated_artifact", payload } }] };
