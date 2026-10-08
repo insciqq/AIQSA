@@ -69,12 +69,12 @@ export async function waitForCatalogModel(
  * A codex-lb answer model through custom setup (CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL, the Codex root ending in `/backend-api/codex`, so catalog
  * prices apply). `nativeSearch` also creates the connection's hosted web
- * search source. AIQSA_BUDGETS_CODEX_MODEL picks the model (default
- * gpt-5.6-luna, else gpt-5.5 when the endpoint does not list it).
+ * search source. `preferredModel`, else AIQSA_BUDGETS_CODEX_MODEL, picks the
+ * model (default gpt-5.6-luna, else gpt-5.5 when the endpoint does not list it).
  */
 export async function setupCodexLbAnswerModel(
   request: APIRequestContext,
-  options: Readonly<{ label: string; nativeSearch: boolean }>
+  options: Readonly<{ label: string; nativeSearch: boolean; preferredModel?: string | null }>
 ): Promise<PaidAnswerModel> {
   const apiRoot = paidEnv("CODEX_LB_BASE_URL")?.replace(/\/+$/u, "");
   const secret = paidEnv("CODEX_LB_API_KEY");
@@ -83,7 +83,7 @@ export async function setupCodexLbAnswerModel(
     data: { allowPrivateNetwork: true, apiRoot, authenticationMode: "bearer", responseTimeoutSeconds: 180, secret } });
   const discovery = discovered.ok() ? await discovered.json() as { catalogProof?: unknown; models?: Array<{ id?: unknown }> } : null;
   const listed = new Set((discovery?.models ?? []).map((model) => model.id));
-  const preferred = paidEnv("AIQSA_BUDGETS_CODEX_MODEL") ?? "gpt-5.6-luna";
+  const preferred = options.preferredModel ?? paidEnv("AIQSA_BUDGETS_CODEX_MODEL") ?? "gpt-5.6-luna";
   const upstream = listed.size === 0 || listed.has(preferred) ? preferred : "gpt-5.5";
   const catalogProof = typeof discovery?.catalogProof === "string" && listed.has(upstream) ? discovery.catalogProof : undefined;
   const tag = randomUUID().slice(0, 8);
