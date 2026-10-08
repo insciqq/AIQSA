@@ -1488,6 +1488,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 live={!settled}
                 canSaveFiles={!projectContext && !temporarySession}
                 runId={source.runId ?? null}
+                latestAnswer={source.id === latestMessage?.id}
                 onContinueAfterMcpApproval={thread.sendMcpApprovalContinuation}
                 onEditArtifact={projectContext || temporarySession ? undefined : generated => editArtifact(generated)}
                 onEditScheduledTask={projectContext || temporarySession || !settings.studio ? undefined

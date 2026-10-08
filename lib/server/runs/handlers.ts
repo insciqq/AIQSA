@@ -2,7 +2,11 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { InstructionPresetError } from "../instructions/store";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
-import { MCP_APPROVAL_CONTINUATION_KIND, mcpApprovalContinuationText } from "../../contracts/mcpApprovals";
+import {
+  MCP_APPROVAL_CONTINUATION_KIND,
+  MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
+  mcpApprovalContinuationText
+} from "../../contracts/mcpApprovals";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
@@ -683,7 +687,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const continuationBody = await approvalContinuationBody(deps, body, chat.id, auth.userId);
     if (continuationBody === "invalid") return Response.json({ error: "system_turn_invalid" }, { status: 400 });
     if (continuationBody === "unavailable") {
-      return Response.json({ error: "mcp_approval_continuation_unavailable" }, { status: 409 });
+      return Response.json({ error: MCP_APPROVAL_CONTINUATION_UNAVAILABLE }, { status: 409 });
     }
     const sendBody = continuationBody ?? body;
 

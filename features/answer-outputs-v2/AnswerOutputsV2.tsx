@@ -60,7 +60,7 @@ import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
 import { ScheduledTaskCardsV2 } from "./ScheduledTaskCardV2";
 import { SkillSaveCardsV2 } from "./SkillSaveCardV2";
 import { McpApprovalCardsV2 } from "./McpApprovalCardV2";
-import type { McpApprovalCard } from "@/lib/contracts/mcpApprovals";
+import type { McpApprovalCard, McpApprovalContinuationOutcome } from "@/lib/contracts/mcpApprovals";
 import { presentSearchSourcesV2 } from "./sourcePresentation";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
@@ -529,6 +529,7 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
 export function AnswerOutputsV2({
   artifact,
   canSaveFiles = false,
+  latestAnswer = false,
   live = false,
   onContinueAfterMcpApproval,
   onEditArtifact,
@@ -540,10 +541,12 @@ export function AnswerOutputsV2({
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   canSaveFiles?: boolean;
+  /** The chat's latest answer: only its approval cards offer Continue. */
+  latestAnswer?: boolean;
   /** While running, show only already-settled draft downloads and created or managed scheduled tasks. */
   live?: boolean;
   /** Starts the continuation turn after the initiator allowed a refused MCP call. */
-  onContinueAfterMcpApproval?(card: McpApprovalCard): void | Promise<void>;
+  onContinueAfterMcpApproval?(card: McpApprovalCard): void | Promise<McpApprovalContinuationOutcome | void>;
   onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void>;
   /** Opens a scheduled task the answer created or managed in its editor. */
   onEditScheduledTask?(taskId: string): void | Promise<void>;
@@ -605,7 +608,7 @@ export function AnswerOutputsV2({
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
       <SkillSaveCardsV2 cards={skillSaves} />
-      <McpApprovalCardsV2 cards={mcpApprovals} onContinue={onContinueAfterMcpApproval} runId={runId} />
+      <McpApprovalCardsV2 cards={mcpApprovals} offerContinue={latestAnswer} onContinue={onContinueAfterMcpApproval} runId={runId} />
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
       ) : null}

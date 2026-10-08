@@ -65,7 +65,12 @@ import {
 } from "@/components/app-shell/composerAssistantState";
 import type { AssistantIdentity, AssistantRowKey } from "@/lib/contracts/assistants";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
-import { MCP_APPROVAL_CONTINUATION_KIND, mcpApprovalContinuationText } from "@/lib/contracts/mcpApprovals";
+import {
+  MCP_APPROVAL_CONTINUATION_KIND,
+  MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
+  mcpApprovalContinuationText,
+  type McpApprovalContinuationOutcome
+} from "@/lib/contracts/mcpApprovals";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 
 type MutableRef<T> = { current: T };
@@ -221,6 +226,15 @@ const ASSISTANT_CHANGED_SEND_COPY =
   "The chat's Assistant changed before your message was sent. Your draft is back in the composer; check the Assistant and send it again.";
 const ASSISTANT_CHANGED_RUN_COPY =
   "The chat's Assistant changed before this could start. Check the Assistant and try again.";
+
+/** Why the continuation after an MCP approval started no run; the card's Continue retries it. */
+function mcpApprovalContinuationRetryCopy(reason: string): string {
+  const sentence = reason.trim();
+  return `${/[.!?)]$/u.test(sentence) ? sentence : `${sentence}.`} The answer did not continue. ` +
+    "Use Continue on the approval card to try again.";
+}
+const MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY =
+  "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval.";
 
 /** Chats whose run is waiting for a change of the chat's Assistant to settle. */
 const runsAwaitingAssistant = new Set<string>();
@@ -712,12 +726,12 @@ export function useMessageRunActions({
    * (also after a draft chat returns to its blank route). A result arriving
    * after navigation to another chat stays silent.
    */
-  function noticeRejectedRun(chatId: string, result: MessageRunLifecycleResult) {
+  function noticeRejectedRun(chatId: string, result: MessageRunLifecycleResult, describe = (reason: string) => reason) {
     if (!result.failed || result.cancelled || activeChatIdRef.current !== chatId) return;
     const reason = assistantChangedRefusal(chatId, result)
       ? ASSISTANT_CHANGED_RUN_COPY
       : result.rejectionMessage ?? result.failureMessage;
-    if (reason) setNotice({ chatId, kind: "error", text: reason });
+    if (reason) setNotice({ chatId, kind: "error", text: describe(reason) });
   }
 
   /**
@@ -1459,27 +1473,41 @@ export function useMessageRunActions({
    * The continuation turn after the initiator allowed a refused MCP call: an
    * ordinary send of the open chat with its current controls, as Regenerate
    * uses them, whose text the server writes from the approval. The composer
-   * draft stays untouched; the turn shows as a compact chip.
+   * draft stays untouched; the turn shows as a compact chip. An attempt that
+   * starts no run says why; Continue on the card retries it.
    */
-  async function sendMcpApprovalContinuation(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>) {
+  async function sendMcpApprovalContinuation(
+    card: Readonly<{ approvalId: string; serverName: string; toolName: string }>
+  ): Promise<McpApprovalContinuationOutcome> {
     const chatId = useWorkspaceStore.getState().activeChatId;
-    const activeSend = chatId ? useRunLifecycleStore.getState().activeStreams[chatId] : undefined;
-    if (!chatId || chatId !== activeChatIdRef.current || activeSend && !activeSend.answerComplete) return;
-    if (assistantUpdatePending(chatId) && !(await settleAssistantBeforeRun(chatId))) return;
+    const notStarted = (reason: string): McpApprovalContinuationOutcome => {
+      setNotice({ ...(chatId ? { chatId } : {}), kind: "error", text: mcpApprovalContinuationRetryCopy(reason) });
+      return "not_started";
+    };
+    if (!chatId || chatId !== activeChatIdRef.current) return notStarted("The chat changed before the answer could continue.");
+    const activeSend = useRunLifecycleStore.getState().activeStreams[chatId];
+    if (activeSend && !activeSend.answerComplete) return notStarted("Another answer is still running in this chat.");
+    if (assistantUpdatePending(chatId) && !(await settleAssistantBeforeRun(chatId))) {
+      return notStarted("The chat's Assistant change is still being saved.");
+    }
     const runControlSnapshot = captureRunControlSnapshot();
-    if (!runControlSnapshot.model || assistantBlocksRun(runControlSnapshot)) return;
-    if (hasUnreconciledOptimisticLeaf(chatId) && !(await reconcileBeforeRunMutation(chatId))) return;
+    const assistantBlockReason = runControlSnapshot.assistant?.blockReason;
+    if (assistantBlockReason) return notStarted(assistantBlockReason);
+    if (!runControlSnapshot.model) return notStarted("No available model is selected for this chat.");
+    if (hasUnreconciledOptimisticLeaf(chatId) && !(await reconcileBeforeRunMutation(chatId))) {
+      return notStarted("The chat's previous answer could not be reconciled yet.");
+    }
     const chatSummary = useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chatId);
     const thread = selectThreadSnapshot(useThreadStore.getState(), chatId);
     const parentLeafForSend = effectiveActiveLeafId(thread.messages, thread.activeLeafId) ??
       chatSummary?.activeLeafMessageId ?? null;
-    if (!parentLeafForSend) return;
+    if (!parentLeafForSend) return notStarted("The chat's latest answer could not be found.");
     try {
       await persistActiveLeaf(chatId, parentLeafForSend);
     } catch (error) {
-      setNotice({ kind: "error", text: errorMessage(error) });
+      notStarted(errorMessage(error));
       await reconcileBranchConflict(chatId, error instanceof Error ? error.message : undefined);
-      return;
+      return "not_started";
     }
     clearNoticeForChat?.(chatId);
     const userMessage: ThreadMessage = {
@@ -1560,7 +1588,19 @@ export function useMessageRunActions({
       }
     });
     await reconcileBranchConflict(chatId, result.failureCode);
+    if (result.failureCode === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) {
+      // Expired or already used by a run: retrying cannot help.
+      if (activeChatIdRef.current === chatId) setNotice({ chatId, kind: "error", text: MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY });
+      return "unavailable";
+    }
+    if (result.failed && !result.cancelled && result.rejectionMessage !== undefined) {
+      // The server refused the turn before any run existed (another answer
+      // running, a usage limit, a moved branch): Continue retries it.
+      noticeRejectedRun(chatId, result, mcpApprovalContinuationRetryCopy);
+      return "not_started";
+    }
     noticeRejectedRun(chatId, result);
+    return "started";
   }
 
   async function regenerateMessage(messageId: string) {
