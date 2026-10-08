@@ -1762,6 +1762,33 @@ describe("Prisma tool-free synthesis and blocked repeats", () => {
     expect(await store.operations.resetToolLoopAssistantDraft({ roundIndex: 42, runId: "run-1", userId: "user-1" })).toBe(false);
   });
 
+  it.each(["reopens", "terminal", "no_usage", "other_round", "tools", "cancelled"] as const)(
+    "re-opens a dropped round only from its own partial usage while the run is live: %s", async (state) => {
+      const store = harness({ status: state === "cancelled" ? "cancelled" : "streaming" });
+      store.run.toolLoopState = toolLoopCheckpoint({
+        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage },
+          ...(state === "no_usage" ? [] : [{ completeness: state === "terminal" ? "terminal" as const : "partial" as const, roundIndex: 2, usage }])],
+        phase: state === "tools" ? "tools_pending" : "provider_running",
+        providerContinuation: { providerResponseId: null, providerToolMessages: [] }, roundIndex: 2 });
+      const reopen = () => store.operations.reopenToolLoopProviderRound!({ roundIndex: state === "other_round" ? 1 : 2, runId: "run-1", userId: "user-1" });
+      expect(await reopen()).toBe(state === "reopens");
+      if (state !== "reopens") {
+        expect(store.tx.modelRun.update).not.toHaveBeenCalled();
+        expect(store.tx.message.updateMany).not.toHaveBeenCalled();
+        return;
+      }
+      // The dropped request leaves the round's usage; earlier rounds keep theirs.
+      expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ phase: "provider_running", roundIndex: 2,
+        answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage }] });
+      expect(store.run.providerResponseId).toBeNull();
+      expect(store.tx.message.updateMany).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        data: { content: expect.anything(), errorMessage: null } }));
+      expect(store.tx.modelRun.update).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        data: expect.objectContaining({ answerStartedAt: null, providerResponseId: null }) }));
+      // Re-opened once: nothing of the round is left to withdraw.
+      expect(await reopen()).toBe(false);
+    });
+
   it("persists a blocked repeat already settled with its batch and reuses the same batch", async () => {
     const store = harness();
     store.run.toolLoopState = toolLoopCheckpoint({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 3, usage }],

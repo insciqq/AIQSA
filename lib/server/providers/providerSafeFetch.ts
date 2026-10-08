@@ -19,6 +19,7 @@ export type ProviderSafeFetchErrorCode =
   | "provider_http_redirect_forbidden"
   | "provider_http_request_body_too_large"
   | "provider_http_request_failed"
+  | "provider_http_tls_failed"
   | "provider_http_url_forbidden";
 
 // Provider requests may contain inline PDFs/images admitted by the run-level
@@ -82,6 +83,9 @@ function mapSafeFetchError(error: McpSafeFetchError): ProviderSafeFetchError {
       return new ProviderSafeFetchError("provider_http_redirect_forbidden");
     case "mcp_http_request_failed":
       return new ProviderSafeFetchError("provider_http_request_failed", { requestNotSent: error.requestNotSent });
+    // A handshake that failed before the session existed keeps that proof.
+    case "mcp_http_tls_failed":
+      return new ProviderSafeFetchError("provider_http_tls_failed", { requestNotSent: error.requestNotSent });
     case "mcp_http_request_body_too_large":
       return new ProviderSafeFetchError("provider_http_request_body_too_large");
     case "mcp_http_protocol_forbidden":
