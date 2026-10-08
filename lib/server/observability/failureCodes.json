@@ -280,6 +280,7 @@
   "image_tool_budget_exhausted",
   "image_tool_not_claimed",
   "image_tool_unavailable",
+  "image_usage_unrecorded",
   "installation_already_adopted",
   "installation_bootstrap_failed",
   "installation_budget_exhausted",
