@@ -57,6 +57,8 @@ export class McpHubServiceError extends Error {
 
 export type McpHubPreparedToolCall = Readonly<{
   arguments: Readonly<Record<string, unknown>>;
+  /** The exact accepted definition: an MCP write approval matches it. */
+  definitionHash: string;
   descriptor: McpHubToolDescriptor;
   serverId: string;
 }>;
@@ -371,6 +373,7 @@ export function createMcpToolService<Authority extends McpToolAuthority>(
       await revalidate(input.authority, materialized.descriptor, input.signal);
       const prepared = {
         arguments: toolArguments,
+        definitionHash: materialized.snapshot.tools[0]!.definitionHash,
         descriptor: materialized.descriptor,
         serverId: materialized.snapshot.tools[0]!.serverId
       };
