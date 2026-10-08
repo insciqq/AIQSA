@@ -2,9 +2,12 @@ import "./worker-bootstrap.cjs";
 import { logEvent } from "../lib/server/observability";
 import { OpenSearchTransportError } from "../lib/server/search/opensearch/coreTransport";
 import { PrismaClient } from "@prisma/client";
+import { aiqsaPostgresRuntimeUrl } from "../lib/server/postgresRuntimeOptions";
 import { inspectKnowledgeSearchIntegrity } from "../lib/server/knowledge/searchProjection";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasourceUrl: aiqsaPostgresRuntimeUrl(process.env.DATABASE_URL)
+});
 
 async function main(): Promise<void> {
   const result = await inspectKnowledgeSearchIntegrity({ client: prisma });

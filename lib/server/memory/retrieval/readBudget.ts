@@ -250,9 +250,8 @@ export async function withMemoryReadBudget<T>(
     const lockTimeout = `${Math.min(lockBudgetMs, statementBudgetMs)}ms`;
     try {
       return await admittedMemoryRead.run(true, () => client.$transaction(async (tx) => {
-        // The Prisma query engine does not apply PGOPTIONS, so JIT stays on
-        // for the pool. Short authority-heavy reads must not pay LLVM
-        // compilation inside their budget; the setting ends with the transaction.
+        // Keep bounded reads free of LLVM compilation even for injected clients
+        // or sessions whose JIT setting changed after connection startup.
         await tx.$queryRaw(Prisma.sql`
           SELECT
             set_config('lock_timeout', ${lockTimeout}, true),
