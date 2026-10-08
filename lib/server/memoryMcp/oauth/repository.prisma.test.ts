@@ -157,6 +157,38 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
     await prisma.$disconnect();
   });
 
+  it("admits no consent, exchange, refresh or token while a SCIM deactivation is pending", async () => {
+    await withFixture(async ({ clientId, repository, userId }) => {
+      const client = (await repository.findClient(clientId))!;
+      const now = new Date();
+      const authority = { resource: `${RESOURCE}/skills`, capability: "skills:store" as const };
+      const pair = (scopes: readonly string[]) => ({ ...authority, clientId, codeHash: hashToken(randomUUID()), codeChallenge: CHALLENGE,
+        redirectUri: REDIRECT_URI, issuer: ISSUER, now, scopes,
+        accessExpiresAt: new Date(now.getTime() + 3_600_000), accessTokenHash: hashToken(randomUUID()),
+        refreshExpiresAt: new Date(now.getTime() + 86_400_000), refreshTokenHash: hashToken(randomUUID()) });
+      const issued = pair(["skills:read"]);
+      expect(await repository.approveAuthorization({ ...issued, clientRecordId: client.id,
+        expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(true);
+      const pending = pair(["skills:read"]);
+      expect(await repository.approveAuthorization({ ...pending, clientRecordId: client.id,
+        expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(true);
+      expect(await repository.exchangeAuthorizationCode(issued)).toEqual({ scopes: ["skills:read"] });
+      const auth = (await repository.resolveAccessToken({ ...issued, tokenHash: issued.accessTokenHash }))!;
+      expect(auth).not.toBeNull();
+
+      // SCIM keeps a sole Project Owner active while it waits for an ownership transfer.
+      await prisma.user.update({ data: { scimDeactivatedAt: now }, where: { id: userId } });
+      const late = pair(["skills:read"]);
+      expect(await repository.approveAuthorization({ ...late, clientRecordId: client.id,
+        expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(false);
+      expect(await repository.exchangeAuthorizationCode(pending)).toBe(false);
+      expect(await repository.resolveAccessToken({ ...issued, tokenHash: issued.accessTokenHash })).toBeNull();
+      expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, auth, "read"))).toBe(false);
+      expect(await repository.rotateRefreshToken({ ...issued, presentedRefreshTokenHash: issued.refreshTokenHash,
+        nextRefreshTokenHash: hashToken(randomUUID()), accessTokenHash: hashToken(randomUUID()) })).not.toEqual({ scopes: ["skills:read"] });
+    });
+  });
+
   it("isolates Skills scopes across issuance, narrowing refresh, reconsent and revocation", async () => {
     await withFixture(async ({ clientId, repository, userId }) => {
       const client = (await repository.findClient(clientId))!;
