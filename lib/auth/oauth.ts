@@ -1,13 +1,18 @@
-export const OAUTH_PROVIDER_IDS = ["google", "yandex"] as const;
+export const OAUTH_PROVIDER_IDS = ["google", "yandex", "oidc"] as const;
 
 export type OAuthProviderId = (typeof OAUTH_PROVIDER_IDS)[number];
+
+/** Providers with a fixed OAuth client adapter; OIDC runs its own discovery-driven flow. */
+export type OAuthClientProviderId = Exclude<OAuthProviderId, "oidc">;
 
 export const OAUTH_LOGIN_OUTCOMES = [
   "account_conflict",
   "cancelled",
+  "email_missing",
   "failed",
   "not_allowed",
-  "pending"
+  "pending",
+  "source_changed"
 ] as const;
 
 export type OAuthLoginOutcome = (typeof OAUTH_LOGIN_OUTCOMES)[number];

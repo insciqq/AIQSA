@@ -4,6 +4,7 @@ import type {
   AdminSignInMethodStatus
 } from "@/lib/contracts/adminSignIn";
 import type { AuthSessionSignInMethod, AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
+import { oidcFailureMessages, oidcTestMessages } from "./oidcSignInMessages";
 
 export const signInMethodLabels: Record<AuthSignInMethod | AuthSessionSignInMethod, string> = {
   bootstrap: "Bootstrap token",
@@ -43,7 +44,8 @@ const testMessages: Record<string, string> = {
   no_test_required: "Nothing to test for this method.",
   secret_unreadable: "The stored secret cannot be read. Enter it again and save.",
   test_failed: "The test could not be completed.",
-  test_timeout: "The test timed out."
+  test_timeout: "The test timed out.",
+  ...oidcTestMessages
 };
 
 /** A tester's code in words; method testers may add their own codes, shown as they are. */
@@ -57,7 +59,8 @@ const failureMessages: Record<string, string> = {
   exchange_failed: "the provider rejected the sign-in or could not be reached",
   not_allowed: "the account is not allowed by the access rules",
   sign_in_failed: "the sign-in failed",
-  source_changed: "the identity belongs to a previous source"
+  source_changed: "the identity belongs to a previous source",
+  ...oidcFailureMessages
 };
 
 export function signInFailureMessage(code: string): string {

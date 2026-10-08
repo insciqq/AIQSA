@@ -27,6 +27,8 @@ type AuthLoginProps = {
   oauthOutcome?: OAuthLoginOutcome;
   oauthProvider?: OAuthProviderId;
   oauthProviders?: OAuthProviderId[];
+  /** The OIDC button's label from the admin configuration. */
+  oidcButtonLabel?: string;
   /** The installation's password sign-in switch; off hides every password form. */
   passwordLoginEnabled?: boolean;
   /** Self-service access requests; invites work either way. */
@@ -81,7 +83,7 @@ type AuthRequestGeneration = {
 
 const oauthButtonClassName = `${focusRingClassName} relative flex min-h-touch w-full items-center justify-center rounded-control border border-control-boundary bg-answer-paper px-10 py-2 text-sm font-medium text-ink hover:bg-control-hover`;
 
-function oauthProviderLabel(provider: OAuthProviderId | undefined): string {
+function oauthProviderLabel(provider: OAuthProviderId | undefined, oidcLabel?: string): string {
   if (provider === "google") {
     return "Google";
   }
@@ -90,10 +92,17 @@ function oauthProviderLabel(provider: OAuthProviderId | undefined): string {
     return "Yandex";
   }
 
+  if (provider === "oidc") {
+    return oidcLabel || "SSO";
+  }
+
   return "OAuth";
 }
 
-function oauthProviderInitial(provider: OAuthProviderId): string {
+function oauthProviderInitial(provider: OAuthProviderId, oidcLabel?: string): string {
+  if (provider === "oidc") {
+    return Array.from(oauthProviderLabel(provider, oidcLabel))[0]?.toUpperCase() ?? "S";
+  }
   return provider === "google" ? "G" : "Y";
 }
 
@@ -129,7 +138,8 @@ function modeForAuthProof(proof: ActiveAuthProof): Mode {
 
 function oauthOutcomeMessage(
   outcome: OAuthLoginOutcome | undefined,
-  provider: OAuthProviderId | undefined
+  provider: OAuthProviderId | undefined,
+  oidcLabel: string | undefined
 ): { error: string | null; notice: string | null } {
   if (!outcome) {
     return {
@@ -138,7 +148,7 @@ function oauthOutcomeMessage(
     };
   }
 
-  const label = oauthProviderLabel(provider);
+  const label = oauthProviderLabel(provider, oidcLabel);
 
   if (outcome === "pending") {
     return {
@@ -150,8 +160,10 @@ function oauthOutcomeMessage(
   const messages: Record<Exclude<OAuthLoginOutcome, "pending">, string> = {
     account_conflict: `${label} could not be linked to this AIQSA account. Sign in another way or contact the operator.`,
     cancelled: `${label} sign-in was cancelled. You can try again.`,
+    email_missing: `${label} did not share an email address for this account. Ask an administrator to check the identity provider's email claim.`,
     failed: `${label} sign-in could not be completed. Try again or use email and password.`,
-    not_allowed: `This ${label} account is not allowed to access AIQSA.`
+    not_allowed: `This ${label} account is not allowed to access AIQSA.`,
+    source_changed: `This ${label} account was linked through a previous sign-in configuration. Ask an administrator to unlink it, then sign in again.`
   };
 
   return {
@@ -163,9 +175,10 @@ function oauthOutcomeMessage(
 function initialAuthFeedback(
   sessionExpired: boolean | undefined,
   outcome: OAuthLoginOutcome | undefined,
-  provider: OAuthProviderId | undefined
+  provider: OAuthProviderId | undefined,
+  oidcLabel: string | undefined
 ): { error: string | null; notice: string | null } {
-  const oauthMessage = oauthOutcomeMessage(outcome, provider);
+  const oauthMessage = oauthOutcomeMessage(outcome, provider, oidcLabel);
   if (oauthMessage.error || oauthMessage.notice || !sessionExpired) {
     return oauthMessage;
   }
@@ -396,11 +409,13 @@ async function postJson(
 function PasswordSignInOff({
   invited,
   nextPath,
-  oauthProviders
+  oauthProviders,
+  oidcButtonLabel
 }: {
   invited: boolean;
   nextPath: string;
   oauthProviders: readonly OAuthProviderId[];
+  oidcButtonLabel?: string;
 }) {
   return (
     <div className={formClassName} data-testid="password-sign-in-off">
@@ -424,9 +439,9 @@ function PasswordSignInOff({
                 aria-hidden="true"
                 className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
               >
-                {oauthProviderInitial(provider)}
+                {oauthProviderInitial(provider, oidcButtonLabel)}
               </span>
-              Continue with {oauthProviderLabel(provider)}
+              Continue with {oauthProviderLabel(provider, oidcButtonLabel)}
             </a>
           ))}
         </div>
@@ -496,13 +511,14 @@ export function AuthLogin({
   oauthOutcome,
   oauthProvider,
   oauthProviders = [],
+  oidcButtonLabel,
   passwordLoginEnabled = true,
   registrationEnabled = true,
   resetToken,
   sessionExpired,
   verifyToken
 }: AuthLoginProps) {
-  const initialFeedback = initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider);
+  const initialFeedback = initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider, oidcButtonLabel);
   const proofInputKey = JSON.stringify([verifyToken ?? null, resetToken ?? null, inviteToken ?? null]);
   const previousProofInputKeyRef = useRef(proofInputKey);
   const proofGenerationRef = useRef(0);
@@ -1041,7 +1057,12 @@ export function AuthLogin({
             ) : null}
 
           {passwordSignInOff ? (
-            <PasswordSignInOff invited={Boolean(activeInviteToken)} nextPath={nextPath} oauthProviders={oauthProviders} />
+            <PasswordSignInOff
+              invited={Boolean(activeInviteToken)}
+              nextPath={nextPath}
+              oauthProviders={oauthProviders}
+              oidcButtonLabel={oidcButtonLabel}
+            />
           ) : null}
 
           {mode === "password" && !passwordSignInOff ? (
@@ -1136,9 +1157,9 @@ export function AuthLogin({
                           aria-hidden="true"
                           className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
                         >
-                          {oauthProviderInitial(provider)}
+                          {oauthProviderInitial(provider, oidcButtonLabel)}
                         </span>
-                        Continue with {oauthProviderLabel(provider)}
+                        Continue with {oauthProviderLabel(provider, oidcButtonLabel)}
                       </a>
                     ))}
                   </div>
