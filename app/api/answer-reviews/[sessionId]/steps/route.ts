@@ -1,6 +1,6 @@
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
-import { answerReviewHandlers } from "@/lib/server/answerReviews/defaultAnswerReviews";
+import { answerReviewStepHandler } from "@/lib/server/answerReviews/defaultAnswerReviewSteps";
 
 export const runtime = "nodejs";
 
-export const POST: AsyncRouteHandler<typeof answerReviewHandlers.POST_STEP> = answerReviewHandlers.POST_STEP;
+export const POST: AsyncRouteHandler<typeof answerReviewStepHandler> = answerReviewStepHandler;
