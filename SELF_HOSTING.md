@@ -192,7 +192,7 @@ An authenticating reverse proxy (oauth2-proxy, Authelia, an Authentik outpost, C
 
 **The proxy must authenticate every request it forwards and overwrite the identity headers a client sends, and AIQSA must be reachable only through it.** Any other path lets anyone sign in as anyone; every process that can reach AIQSA's loopback port can do so.
 
-1. In `.env` set `AIQSA_TRUST_PROXY_HEADERS=true`, keep the default loopback bind (`AIQSA_BIND_ADDRESS=127.0.0.1`), set `AIQSA_TRUSTED_PROXY_COUNT` to the number of proxies when there is more than one, and run `./aiqsa.sh up`. The card shows this mode but cannot turn it on.
+1. In `.env` set `AIQSA_TRUST_PROXY_HEADERS=true` and `AIQSA_APP_BASE_URL` to the URL people open through the proxy (otherwise AIQSA refuses changes made from the proxy's address, sign-out included), keep the default loopback bind (`AIQSA_BIND_ADDRESS=127.0.0.1`), set `AIQSA_TRUSTED_PROXY_COUNT` to the number of proxies when there is more than one, and run `./aiqsa.sh up`. The card shows this mode but cannot turn it on.
 2. On the Trusted header card pick the preset for your proxy, **Save**, **Test**, **Activate**. The card shows whether your own request carries the email header.
 3. Without a session, `/login` signs people in at once; `/login?local=1` shows the other methods. Signing out of AIQSA lands on `/login?local=1`; on shared computers also sign out at the proxy (`/oauth2/sign_out` for oauth2-proxy, the logout page for Authelia).
 
