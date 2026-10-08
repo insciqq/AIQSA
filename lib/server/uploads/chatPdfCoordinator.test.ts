@@ -175,6 +175,7 @@ describe("durable PDF coordinator", () => {
     }));
     expect(seen).toHaveLength(1);
     expect(seen[0]?.run_id).toBe("run");
+    expect(seen[0]?.user_id).toBe("owner");
     expect(seen[0]?.trace_id).not.toBe(requestTrace);
     expect(seen[0]?.job_id).toBeUndefined();
   });

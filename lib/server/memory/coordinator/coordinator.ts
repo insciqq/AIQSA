@@ -494,7 +494,7 @@ export class MemoryCoordinator {
       this.#runningJobs += 1;
       try {
         await runInBackground(() => runWithContext(
-          { job_id: claimedJob.id },
+          { job_id: claimedJob.id, user_id: claimedJob.userId },
           () => this.#processJob(claimedJob)
         ));
       } finally {
@@ -549,7 +549,7 @@ export class MemoryCoordinator {
       }
       claims += 1;
       await runInBackground(() => runWithContext(
-        { job_id: claim.id },
+        { job_id: claim.id, user_id: claim.userId },
         () => this.#processDeletion(claim)
       ));
     }
