@@ -1,7 +1,7 @@
 export const WORKSPACE_RUNTIME_VERSION = "0.6.16";
 export const WORKSPACE_MCP_VERSION = "0.6.16";
 /** The guest version bundled with the runner image (its archive's own reference). */
-export const WORKSPACE_DEFAULT_IMAGE_REF = "aiqsa-workspace:0.1.32";
+export const WORKSPACE_DEFAULT_IMAGE_REF = "aiqsa-workspace:0.1.33";
 
 /**
  * One Workspace tool result crosses two JSON transports: the pinned MCP stdio
