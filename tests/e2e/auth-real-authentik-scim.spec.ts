@@ -159,10 +159,21 @@ async function authentikSignIn(browser: Browser, person: Person): Promise<{ cont
     await uid.press("Enter");
     await expect(password).toBeVisible({ timeout: 30_000 });
   }
-  await password.fill(person.password);
-  // Authentik's flow executor submits on its button; Enter in the field is not reliable.
-  await page.locator('button[type="submit"]').click();
-  await page.waitForURL((url) => url.origin !== new URL(authentikUrl()).origin, { timeout: 60_000 });
+  const authentikOrigin = new URL(authentikUrl()).origin;
+  // Authentik's flow executor may re-render the stage after the field is filled, clearing it, and the
+  // browser then blocks the empty required field silently: fill, confirm (a boolean, never the value),
+  // submit on the stage's button, and repeat until the browser leaves Authentik.
+  await expect(async () => {
+    if (new URL(page.url()).origin !== authentikOrigin) return;
+    await password.fill(person.password);
+    expect(await password.evaluate((input) => (input as HTMLInputElement).value.length > 0)).toBe(true);
+    await page.locator('button[type="submit"]').click();
+    await page.waitForURL((url) => url.origin !== authentikOrigin, { timeout: 15_000 });
+  }).toPass({ intervals: [1_000], timeout: 90_000 }).catch(async (error: unknown) => {
+    // Content-free: Authentik's own stage error text, reduced to words.
+    const stageError = (await page.locator(".pf-m-error").allInnerTexts().catch(() => [])).join(" ").replace(/[^A-Za-z ]/gu, "").slice(0, 120);
+    throw new Error(`authentik_password_stage_not_left stage_error=${stageError || "-"}`, { cause: error });
+  });
   return { context, page };
 }
 
