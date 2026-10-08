@@ -621,11 +621,22 @@ describe("Prisma Assistant list summary fields", () => {
       { groupId: retired.id, userId: ownerUserId }
     ] });
     // Counts every SQL statement the list sends, relation loads included.
+    // Prisma delivers query events through its logger callback, which can run
+    // after the awaited call resolves; the events share one ordered channel, so
+    // a marker statement's event arrives only after every earlier one.
     let queries = 0;
+    let flushed: (() => void) | undefined;
     const counting = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
-    counting.$on("query", () => {
-      queries += 1;
+    counting.$on("query", (event) => {
+      if (event.query.includes("query_log_barrier")) flushed?.();
+      else queries += 1;
     });
+    const settledQueries = async () => {
+      const arrived = new Promise<void>((resolve) => { flushed = resolve; });
+      await counting.$queryRaw`SELECT 1 AS query_log_barrier`;
+      await arrived;
+      return queries;
+    };
     const repository = createPrismaAssistantRepository(counting as unknown as PrismaClient);
     const skillIds: string[] = [];
     try {
@@ -691,9 +702,10 @@ describe("Prisma Assistant list summary fields", () => {
         [plain]: { featured: true, featuredOrder: first, skillLinkCount: 0 }
       };
 
+      await settledQueries();
       queries = 0;
       const owner = await list(ownerUserId);
-      const ownerQueries = queries;
+      const ownerQueries = await settledQueries();
       expect(fields(owner, ids)).toEqual({
         ...featuredPair,
         [grouped]: { featured: false, featuredOrder: null, skillLinkCount: 1 },
@@ -744,11 +756,12 @@ describe("Prisma Assistant list summary fields", () => {
         const assistantId = await create(name, [skillIds[1]!]);
         await prisma.assistantPublication.create({ data: { assistantId, groupId: extra.id, scope: "group" } });
       }
+      await settledQueries();
       queries = 0;
       const grown = await list(ownerUserId);
       expect(grown.assistants.length).toBeGreaterThanOrEqual(owner.assistants.length + 3);
       expect(grown.publishableGroups).toHaveLength(3);
-      expect(queries).toBe(ownerQueries);
+      expect(await settledQueries()).toBe(ownerQueries);
     } finally {
       await counting.$disconnect();
       const assistantIds = (await prisma.assistantDefinition.findMany({
