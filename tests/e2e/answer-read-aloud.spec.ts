@@ -225,8 +225,8 @@ test.describe("answer read aloud", () => {
     await removeSpeech(page);
     await openReadAloudChat(page);
     const menu = await openAnswerMenu(page, answers(page).last());
-    // The menu as without the wave's read aloud: answer review's "Review…" stays.
-    await expect(menu.getByRole("menuitem")).toHaveText(["Branch from here", "Review…", "Delete"]);
+    // The menu as without the wave's read aloud: answer review's "Review…" and "Report a problem…" stay.
+    await expect(menu.getByRole("menuitem")).toHaveText(["Branch from here", "Review…", "Report a problem…", "Delete"]);
   });
 
   test.describe("phone portrait", () => {
