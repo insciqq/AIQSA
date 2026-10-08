@@ -70,6 +70,12 @@ export type AdminUserRecord = {
   id: string;
   lastSessionAt: string | null;
   role: AdminUserRole;
+  /**
+   * Present while a SCIM deactivation waits for a Project ownership transfer: sessions and
+   * connected apps are revoked, and `projectCount` Projects still have this user as their only
+   * active Owner.
+   */
+  scimDeactivationPending?: { projectCount: number };
   status: "active" | "denied" | "disabled" | "pending";
   /** Whether the user confirmed TOTP two-factor sign-in. */
   twoFactorEnabled?: boolean;

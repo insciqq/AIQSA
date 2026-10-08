@@ -85,6 +85,11 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
           userId: identity.userId
         });
 
+        // A pending SCIM deactivation answers like any credential that does not sign in.
+        if (issued.kind === "refused") {
+          return null;
+        }
+
         if (issued.kind === "second_factor_required") {
           return {
             challenge: {

@@ -112,67 +112,75 @@ async function resolveGrantTarget(
   return { groupId, providerConnectionId: provider, providerModelId: null, searchStrategy: null, userId: null };
 }
 
-function reservedFullAccessName(name: string): boolean {
+export function reservedFullAccessName(name: string): boolean {
   return name.toLowerCase() === FULL_ACCESS_GROUP_NAME.toLowerCase();
+}
+
+/**
+ * Archives an active group inside the caller's transaction with the MCP side effects of losing
+ * its grants: each member's servers it granted re-resolve, and a server a member can no longer
+ * use is switched off for them. The Full access group is never archived. False when nothing
+ * was archived.
+ */
+export async function archiveActiveGroup(tx: Prisma.TransactionClient, groupId: string): Promise<boolean> {
+  const group = await tx.group.findFirst({
+    select: {
+      mcpGrants: {
+        select: { serverId: true },
+        where: { canUse: true }
+      },
+      systemRole: true,
+      users: { select: { userId: true } }
+    },
+    where: { archivedAt: null, id: groupId }
+  });
+  if (!group || group.systemRole === "full_access") return false;
+
+  await tx.group.update({
+    data: { archivedAt: new Date() },
+    where: { id: groupId }
+  });
+
+  const serverIds = [...new Set(group.mcpGrants.map((grant) => grant.serverId))];
+  for (const membership of group.users) {
+    if (serverIds.length) {
+      await tx.mcpUserServer.updateMany({
+        data: { desiredRuntimeGenerationId: null },
+        where: { serverId: { in: serverIds }, userId: membership.userId }
+      });
+    }
+    for (const serverId of serverIds) {
+      const canStillUse = await tx.mcpGrant.count({
+        where: {
+          canUse: true,
+          serverId,
+          OR: [
+            { userId: membership.userId },
+            {
+              group: {
+                archivedAt: null,
+                users: { some: { userId: membership.userId } }
+              }
+            }
+          ]
+        }
+      });
+      if (!canStillUse) {
+        await tx.mcpUserServer.updateMany({
+          data: { enabled: false },
+          where: { serverId, userId: membership.userId }
+        });
+      }
+    }
+  }
+
+  return true;
 }
 
 export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupGrantCommands {
   return {
     async archiveGroup(groupId) {
-      return prisma.$transaction(async (tx) => {
-        const group = await tx.group.findFirst({
-          select: {
-            mcpGrants: {
-              select: { serverId: true },
-              where: { canUse: true }
-            },
-            systemRole: true,
-            users: { select: { userId: true } }
-          },
-          where: { archivedAt: null, id: groupId }
-        });
-        if (!group || group.systemRole === "full_access") return false;
-
-        await tx.group.update({
-          data: { archivedAt: new Date() },
-          where: { id: groupId }
-        });
-
-        const serverIds = [...new Set(group.mcpGrants.map((grant) => grant.serverId))];
-        for (const membership of group.users) {
-          if (serverIds.length) {
-            await tx.mcpUserServer.updateMany({
-              data: { desiredRuntimeGenerationId: null },
-              where: { serverId: { in: serverIds }, userId: membership.userId }
-            });
-          }
-          for (const serverId of serverIds) {
-            const canStillUse = await tx.mcpGrant.count({
-              where: {
-                canUse: true,
-                serverId,
-                OR: [
-                  { userId: membership.userId },
-                  {
-                    group: {
-                      archivedAt: null,
-                      users: { some: { userId: membership.userId } }
-                    }
-                  }
-                ]
-              }
-            });
-            if (!canStillUse) {
-              await tx.mcpUserServer.updateMany({
-                data: { enabled: false },
-                where: { serverId, userId: membership.userId }
-              });
-            }
-          }
-        }
-
-        return true;
-      });
+      return prisma.$transaction((tx) => archiveActiveGroup(tx, groupId));
     },
     async createGroup(input) {
       const name = normalizeAdminGroupName(input.name);
