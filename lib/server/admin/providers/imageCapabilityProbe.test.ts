@@ -54,6 +54,23 @@ describe("independent image capability probes", () => {
       expect(fetchFn).toHaveBeenCalledTimes(3);
     });
 
+  it("reports the paid usage of a refused Gemini answer and leaves that capability unverified", async () => {
+    const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: "white" } }).png().toBuffer();
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ status: "blocked", finish_reason: "SAFETY",
+      usage: { total_input_tokens: 7, total_output_tokens: 2, total_tokens: 9, cost: 0.04 } }))
+      .mockImplementation(async () => Response.json({ status: "completed", steps: [{ type: "model_output",
+        content: [{ type: "image", mime_type: "image/png", data: png.toString("base64") }] }] }));
+    const onProviderUsage = vi.fn();
+    const gemini = { ...input, model: imageModelConfiguration("gemini-3.1-flash-image", { profile: "gemini" }), providerFamily: "gemini",
+      onProviderUsage };
+    const result = await testImageCapabilities(gemini, { createFetch: () => fetchFn });
+    expect(onProviderUsage).toHaveBeenNthCalledWith(1, { usage: { inputTokens: 7, outputTokens: 2, totalTokens: 9 }, reportedCostUsd: 0.04 });
+    expect(onProviderUsage).toHaveBeenCalledTimes(2);
+    expect(result.evidence.capabilitySetup).toMatchObject({ checks: { imageGeneration: "incomplete", imageEditing: "verified" },
+      attempts: { imageGeneration: { status: "incomplete", reason: "semantic_inconclusive" } } });
+    expect(result.evidence.imageGeneration).toBeUndefined();
+  });
+
   it("settles two unsupported routes without enabling the model or paying again on Retry", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => Response.json({}, { status: 404 }));
     const result = await testImageCapabilities(input, { createFetch: () => fetchFn });
