@@ -213,6 +213,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     : null;
 
   return {
+    ...(message.answerReview ? { answerReview: message.answerReview } : {}),
     artifactSummary,
     assistantIdentity: message.assistantIdentity ?? null,
     author: message.author ?? null,

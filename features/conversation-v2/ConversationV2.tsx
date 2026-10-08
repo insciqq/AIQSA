@@ -53,6 +53,9 @@ export type ConversationMessageActionsV2 = Readonly<{
   /** Toggles browser speech of this answer; lives in the More menu. */
   onReadAloud?(): void;
   onRegenerate?(): void;
+  /** "Review…" with another model; lives in the More menu, disabled with its reason. */
+  onReview?(): void;
+  reviewDisabledReason?: string | null;
   /** This answer is the one speaking: the menu item offers Stop reading. */
   readingAloud?: boolean;
   regenerateDisabled?: boolean;
@@ -258,9 +261,9 @@ export function ConversationTurnV2({
   const editing = isUser && Boolean(edit);
   const hasActions = Boolean(
     actions?.onBranchFromHere || actions?.onCopy || actions?.onDelete ||
-    actions?.onEdit || actions?.onMore || actions?.onReadAloud || actions?.onRegenerate
+    actions?.onEdit || actions?.onMore || actions?.onReadAloud || actions?.onRegenerate || actions?.onReview
   );
-  const hasMoreMenu = Boolean(actions?.onDelete || actions?.onBranchFromHere || actions?.onReadAloud);
+  const hasMoreMenu = Boolean(actions?.onDelete || actions?.onBranchFromHere || actions?.onReadAloud || actions?.onReview);
   const label = ariaLabel ?? (isUser ? "Question" : "Answer");
   const bubbleClampCandidate = isUser && shouldClampUserBubbleV2(content);
   const bubbleExpanded = bubbleExpansion === "expanded" ||
@@ -524,7 +527,20 @@ export function ConversationTurnV2({
                       {actions.readingAloud ? "Stop reading" : "Read aloud"}
                     </UiV2MenuItem>
                   ) : null}
-                  {(actions.onBranchFromHere || actions.onReadAloud) && actions.onDelete ? <UiV2MenuSeparator /> : null}
+                  {actions.onReview ? (
+                    <UiV2MenuItem
+                      disabled={Boolean(actions.reviewDisabledReason)}
+                      icon="shield"
+                      sub={actions.reviewDisabledReason ?? undefined}
+                      onClick={() => {
+                        closeMoreMenu();
+                        actions.onReview?.();
+                      }}
+                    >
+                      Review…
+                    </UiV2MenuItem>
+                  ) : null}
+                  {(actions.onBranchFromHere || actions.onReadAloud || actions.onReview) && actions.onDelete ? <UiV2MenuSeparator /> : null}
                   {actions.onDelete ? (
                     <UiV2MenuItem
                       disabled={actions.deleteDisabled}
