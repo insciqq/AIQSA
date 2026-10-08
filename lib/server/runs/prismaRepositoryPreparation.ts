@@ -4105,6 +4105,7 @@ export async function createDormantPreparingRun(
   memorySourceHooks?: MemorySourceMutationHooks,
   memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 ): Promise<PreparingRunAdmissionResult & Readonly<{
+  acceptedAt: Date;
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
   if (admission.project) {
@@ -4114,7 +4115,7 @@ export async function createDormantPreparingRun(
     }
     const created = await admitProjectRunWithClient(prismaClient, admission);
     logEvent("run_accepted", { run_id: created.runId, kind: "project", preparation: created.deferredPdf ? "pdf" : "ready" });
-    return created;
+    return { ...created, acceptedAt: new Date() };
   }
   const memoryAdmissionDeadlineAtMs =
     Date.now() + (admission.normalizedRequest.memoryStandingVersion === 1
@@ -4146,7 +4147,7 @@ export async function createDormantPreparingRun(
     logEvent("run_accepted", { run_id: fallback.runId,
       kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
       preparation: fallback.deferredPdf ? "pdf" : "ready" });
-    return fallback;
+    return { ...fallback, acceptedAt: new Date() };
   }
   // Temporary, Agent and scheduled task turns without a standing read (any
   // answer to a task's prompt, as admission read it) were made dispatchable
@@ -4156,7 +4157,8 @@ export async function createDormantPreparingRun(
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
     preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory" });
-  if (created.deferredPdf || created.deferredWorkspace || withoutMemory) return created;
+  const acceptedAt = new Date();
+  if (created.deferredPdf || created.deferredWorkspace || withoutMemory) return { ...created, acceptedAt };
   // Durable acceptance transfers cancellation from the HTTP request to the
   // run owner. Stop still aborts this controller; recovery sees an active owner
   // until Memory settlement. PDF preparation already owns its own registration.
@@ -4173,7 +4175,7 @@ export async function createDormantPreparingRun(
         memoryRetrieval, memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineAtMs);
       logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "completed",
         duration_ms: Math.max(0, Date.now() - startedAt) });
-      return result;
+      return { ...result, acceptedAt };
     });
   } finally {
     registration.release();

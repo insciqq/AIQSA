@@ -80,6 +80,30 @@ describe("telemetry aggregation", () => {
       details: { method: "GET", status: 502, duration_ms: 12, outcome: "completed" } })]);
   });
 
+  it("keeps a time-to-first-output histogram per provider family, model and what came first", () => {
+    const aggregator = createTelemetryAggregator();
+    const firstOutput = (runId: string, durationMs: number, after: "dispatch" | "tools", providerModelId = "model-1") =>
+      aggregator.observe(Object.freeze(JSON.parse(serializeEvent("run_execution", { run_id: runId, stage: "first_output",
+        outcome: "completed", duration_ms: durationMs, after, providerFamily: "openai", connectionId: "connection-1",
+        providerModelId })!)));
+    firstOutput("run-1", 800, "dispatch");
+    firstOutput("run-2", 2_000, "dispatch");
+    firstOutput("run-3", 40_000, "tools");
+    firstOutput("run-4", 90, "dispatch", "model-2");
+    const { counters, incidents } = aggregator.drain();
+    expect(incidents).toEqual([]);
+    const dimensions = { after: "dispatch", connectionId: "connection-1", outcome: "completed", providerFamily: "openai",
+      providerModelId: "model-1", stage: "first_output" };
+    expect(counters).toHaveLength(3);
+    expect(counters).toContainEqual(expect.objectContaining({ event: "run_execution", level: "info", dimensions,
+      count: 2, durationCount: 2, durationSumMs: 2_800, durationMaxMs: 2_000, durationBuckets: buckets({ 3: 1, 4: 1 }) }));
+    expect(counters).toContainEqual(expect.objectContaining({ dimensions: { ...dimensions, after: "tools" },
+      count: 1, durationBuckets: buckets({ 8: 1 }) }));
+    expect(counters).toContainEqual(expect.objectContaining({ dimensions: { ...dimensions, providerModelId: "model-2" },
+      count: 1, durationBuckets: buckets({ 0: 1 }) }));
+    expect(JSON.stringify(counters)).not.toContain("run-");
+  });
+
   it("keeps rate-limited error incidents with the record's remaining fields", () => {
     const aggregator = createTelemetryAggregator(limits({ incidentsPerMinute: 3, maxIncidents: 6 }));
     for (let index = 0; index < 5; index += 1) {
