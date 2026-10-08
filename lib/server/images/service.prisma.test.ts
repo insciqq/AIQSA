@@ -181,7 +181,7 @@ describe("durable conversational images", () => {
     const storageKey = `image-fixture/${id}`;
     await f.storage.putObject({ storageKey, contentType: mimeType, body });
     await f.db.attachment.create({ data: { id, userId: f.userId, chatId: f.request.chatId, kind: "image", status: "ready",
-      fileName: "reference", mimeType, byteSize: body.length, storageKey } });
+      fileName: "reference", mimeType, byteSize: body.length, metadata: {}, storageKey } });
     f.request.imageReferences = [{ attachmentId: id, fileName: "reference", messageId: f.assistantId, origin: "upload" }];
     const badId = fault === "missing" ? randomUUID() : fault === "malformed" ? `${id}x` : id;
     const first = await f.call([badId]);
