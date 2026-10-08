@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
+import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import { lockAuthIdentity } from "./transactionLocks";
 
@@ -27,12 +28,20 @@ export type PasswordResetTokenInput = {
   userId: string;
 };
 
+/**
+ * A verified password ends in a session, or, for a user with TOTP, in a challenge for the
+ * second factor; no session exists before that factor.
+ */
+export type PasswordSignInResult =
+  | { kind: "session"; user: PasswordIdentityRecord["user"] }
+  | { challenge: SecondFactorChallengeSubject; kind: "second_factor_required" };
+
 export type PasswordAuthRepository = {
   createSessionForCurrentPassword(input: {
     identityId: string;
     passwordHash: string;
     session: SignInSessionInput;
-  }): Promise<{ user: PasswordIdentityRecord["user"] } | null>;
+  }): Promise<PasswordSignInResult | null>;
   /** The normalized email lets the caller clear that account's password-login lock. */
   completePasswordReset(input: {
     now: Date;
@@ -70,13 +79,27 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
           return null;
         }
 
-        await issueSignInSession(tx, {
+        const issued = await issueSignInSession(tx, {
           session: input.session,
           signInMethod: "password",
           userId: identity.userId
         });
 
+        if (issued.kind === "second_factor_required") {
+          return {
+            challenge: {
+              credential: input.passwordHash,
+              factorBinding: issued.factorBinding,
+              identityId: identity.id,
+              signInMethod: "password",
+              userId: identity.userId
+            },
+            kind: "second_factor_required"
+          };
+        }
+
         return {
+          kind: "session",
           user: identity.user
         };
       });

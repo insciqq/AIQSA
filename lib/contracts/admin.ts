@@ -71,6 +71,8 @@ export type AdminUserRecord = {
   lastSessionAt: string | null;
   role: AdminUserRole;
   status: "active" | "denied" | "disabled" | "pending";
+  /** Whether the user confirmed TOTP two-factor sign-in. */
+  twoFactorEnabled?: boolean;
 };
 
 export type AdminAccessRuleRecord = {
@@ -190,7 +192,7 @@ export type AdminActionRequest =
       userId: string;
     }
   | {
-      action: "disable_user" | "reject_user" | "revoke_user_sessions";
+      action: "disable_user" | "reject_user" | "reset_user_two_factor" | "revoke_user_sessions";
       userId: string;
     }
   | {
@@ -249,6 +251,7 @@ export const adminActionNames = [
   "delete_user",
   "disable_user",
   "reject_user",
+  "reset_user_two_factor",
   "revoke_all_sessions",
   "revoke_invite",
   "revoke_user_sessions",
@@ -290,6 +293,7 @@ type AdminActionDomainErrorCode =
   | "self_disable_forbidden"
   | "self_delete_forbidden"
   | "self_role_change_forbidden"
+  | "self_two_factor_reset_forbidden"
   | "user_active"
   | "user_access_stale"
   | "user_credential_invalid"
