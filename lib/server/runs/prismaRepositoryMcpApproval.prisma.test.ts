@@ -74,7 +74,10 @@ async function fixture<T>(execute: (fixture: Fixture) => Promise<T>): Promise<T>
     return await execute({
       chatId: chat.id, otherId, serverId, userId, request,
       async create(overrides = {}) {
-        const run = await repository.createRun({ ...input, ...overrides });
+        // Admission requires the normalized request to carry the turn's own content.
+        const content = overrides.content ?? input.content;
+        const run = await repository.createRun({ ...input, ...overrides, content,
+          normalizedRequest: { ...input.normalizedRequest, content } });
         await prisma.mcpRunBinding.create({ data: { modelRunId: run.runId, runtimeGenerationId: generationId,
           runtimeGenerationFingerprint: fingerprint } });
         return run;
