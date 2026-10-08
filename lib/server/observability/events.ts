@@ -7,6 +7,8 @@ export type SubsystemState = "disabled" | "starting" | "unknown" | "ready" | "fa
 export type LifecycleStage = "startup" | "discover" | "reconcile" | "claim" | "drain" | "preflight" | "prepare" | "process" | "parse" | "chunk" | "embed" | "validate" | "publish" | "progress" | "retry" | "complete" | "fail" | "release" | "settle" | "refresh" | "probe" | "evict" | "initialize" | "quiesce" | "export" | "restore" | "recovery" | "continuation" | "cleanup" | "projection" | "integrity" | "rebuild" | "dispatch" | "shutdown" | "read" | "write" | "delete" | "multipart_start" | "multipart_complete" | "multipart_abort" | "multipart_sign" | "health" | "heartbeat";
 export type LifecycleOutcome = "started" | "completed" | "failed" | "degraded" | "cancelled" | "stale" | "waiting" | "skipped" | "lost_lease" | "blocked";
 export type LifecycleAction = "none" | "retry" | "stop" | "complete" | "fail" | "degrade" | "release" | "skip" | "wait";
+/** The closed kind of a database failure (see databaseCause.cjs). */
+export type DatabaseFailureKind = "transaction_expired" | "transaction_start_timeout" | "lock_timeout" | "statement_timeout" | "serialization_conflict" | "deadlock";
 /** A caught value for events that record its content-free projection
  * (error class, application code site, fingerprint); never serialized itself. */
 export type CaughtError = Readonly<{ error?: unknown }>;
@@ -14,7 +16,7 @@ export type LifecycleFields = CaughtError & Readonly<{
   subsystem: Subsystem; stage: LifecycleStage; outcome: LifecycleOutcome;
   work_stage?: LifecycleStage;
   job_id?: string; run_id?: string; generation_id?: string; attempt?: number; duration_ms?: number;
-  code?: string; prisma_code?: string; httpStatus?: number; action?: LifecycleAction;
+  code?: string; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number; action?: LifecycleAction;
   delay_ms?: number; retry_at?: string; count?: number; repeat_count?: number;
   claimed_count?: number; failed_count?: number; completed_count?: number; pending_count?: number;
 }>;
@@ -54,7 +56,7 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
 }>;
 export type EventFields = {
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
-  "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected" }>;
+  "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
   "http.route_resolver_unavailable": Readonly<{ reason: "missing" | "invalid" | "unsupported" }>;
   "client.error": Readonly<{ kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown" }>;
   "process.failure": EmergencyFailure;
@@ -67,8 +69,8 @@ export type EventFields = {
   "logging.dropped_records": Readonly<{ count: number }>;
   run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf" }>;
   run_preparation: CaughtError & Readonly<{ run_id: string; stage: "preparing"; outcome: PreparationOutcome; duration_ms?: number; code?: string }>;
-  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion"; outcome: OperationOutcome; duration_ms?: number; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; httpStatus?: number }>;
-  run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string }>;
+  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion"; outcome: OperationOutcome; duration_ms?: number; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number }>;
+  run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
   run_stop_requested: Record<string, never>;
   run_stop_admission: Readonly<{ run_id?: string; outcome: "accepted" | "not_found" | "not_cancelable" | "unauthorized" | "failed"; prisma_code?: string }>;
   run_http_failed: CaughtError & Readonly<{ stage: "send" | "regenerate" | "cancel"; code?: string; reason?: Reason; prisma_code?: string }>;

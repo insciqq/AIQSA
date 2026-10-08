@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createRouteResolver,
@@ -277,6 +278,29 @@ describe("HTTP context and completion", () => {
     ]);
     expect(records()[2]).not.toHaveProperty("routePath");
     expect(lines.join("")).not.toMatch(/canary|CANARY/);
+  });
+
+  it("names an escaped database failure by its Prisma code and closed kind only", async () => {
+    const expired = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", {
+      clientVersion: "test", code: "P2028",
+      meta: { error: "Transaction already closed: A query cannot be executed on an expired transaction. PRIVATE_CANARY" }
+    });
+    reportNextRequestError("POST", "/api/items/new", expired);
+    const response = await runHttpHandler(new Request("http://localhost/private-canary", { method: "GET" }), () => {
+      throw new Error("wrapper", { cause: new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", {
+        clientVersion: "test", code: "P2010", meta: { code: "55P03", message: "PRIVATE_CANARY" }
+      }) });
+    });
+    expect(response.status).toBe(500);
+    reportNextRequestError("GET", "/api/items/new", new Error("not a database failure"));
+    expect(records()).toEqual([
+      expect.objectContaining({ event: "http.request_failed", prisma_code: "P2028", db_failure: "transaction_expired" }),
+      expect.objectContaining({ event: "http.request_failed", prisma_code: "P2010", db_failure: "lock_timeout" }),
+      expect.objectContaining({ event: "http.request_failed" })
+    ]);
+    expect(records()[2]).not.toHaveProperty("prisma_code");
+    expect(records()[2]).not.toHaveProperty("db_failure");
+    expect(lines.join("")).not.toContain("CANARY");
   });
 
   it("sanitizes direct handler failures while keeping the correlation response header", async () => {

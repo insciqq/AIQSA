@@ -12,7 +12,7 @@ export type TelemetryIncidentLevel = Extract<TelemetryLevel, "error" | "fatal">;
  * codes, statuses and installation-level identities. Never run, job, trace or
  * tool-call ids, counts, durations, timestamps, attempts, bytes or limits. */
 export const TELEMETRY_DIMENSIONS = Object.freeze([
-  "abort_source", "action", "adapterKind", "category", "cause", "code", "connectionId", "error_category",
+  "abort_source", "action", "adapterKind", "category", "cause", "code", "connectionId", "db_failure", "error_category",
   "error_class", "error_fingerprint", "error_site",
   "httpStatus", "kind", "layer", "method", "mode", "operation", "outcome", "prisma_code", "providerFamily",
   "providerModelId", "provider_code", "provider_status", "reason", "routePath", "stage", "state", "status",

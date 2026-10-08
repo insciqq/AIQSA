@@ -1,6 +1,8 @@
+import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import { ContextSummaryError } from "./contextCompactionSummarizer";
+import { RunSettlementError, runSettlementFailure } from "./settlementFailure";
 import {
   continueToolLoop,
   type ToolLoopBudgets,
@@ -696,6 +698,41 @@ describe("provider-neutral tool loop", () => {
       status: "failed"
     });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it("keeps a local settlement failure's code and cause wherever the loop meets it", async () => {
+    const database = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", {
+      clientVersion: "test", code: "P2028", meta: { error: "A query cannot be executed on an expired transaction." }
+    });
+    const accounting = new RunSettlementError("accounting", database);
+    const evidence = new Error("PRIVATE_EVIDENCE_CANARY");
+    const afterTools = (error: unknown) => continueToolLoop({
+      budgets: defaultBudgets,
+      executeTool: async () => ({ status: "complete" as const, value: "settled" }),
+      initialContinuation: null,
+      onToolBatchSettled: () => { throw error; },
+      runProviderRound: async ({ round }) => round === 1
+        ? { calls: [call("a")], continuation: null, status: "tool_calls" as const }
+        : { final: "never dispatched", status: "complete" as const }
+    });
+    const direct = await continueToolLoop({
+      budgets: defaultBudgets,
+      executeTool: vi.fn(),
+      initialContinuation: null,
+      runProviderRound: async () => { throw accounting; }
+    });
+    const batch = await afterTools(accounting);
+    for (const outcome of [direct, batch]) {
+      expect(outcome).toMatchObject({ status: "failed", failure: {
+        code: "run_usage_persistence_failed", message: runSettlementFailure(accounting)?.message, round: 1, stage: "persistence"
+      } });
+      expect(outcome.status === "failed" ? outcome.failure.cause : null).toBe(accounting);
+    }
+    expect(batch).toMatchObject({ providerRounds: 1 });
+    const other = await afterTools(evidence);
+    expect(other).toMatchObject({ status: "failed", failure: { code: "tool_loop_evidence_failed", stage: "persistence" } });
+    expect(other.status === "failed" ? other.failure.cause : null).toBe(evidence);
+    expect(other.status === "failed" ? other.failure.message : null).not.toContain("PRIVATE_");
   });
 
   it("returns a structured provider timeout and validates budgets before starting", async () => {

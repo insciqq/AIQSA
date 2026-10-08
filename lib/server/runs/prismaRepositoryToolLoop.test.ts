@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { agentLimits } from "../agents/config";
@@ -1784,5 +1784,70 @@ describe("Prisma tool-free synthesis and blocked repeats", () => {
     invalid.run.toolLoopState = store.run.toolLoopState;
     expect(await invalid.operations.persistToolLoopCallBatch({ ...batch,
       calls: [{ ...batch.calls[0]!, repeatBlocked: { repeatOf: [2, 3] as const } }] })).toEqual({ kind: "conflict" });
+  });
+});
+
+describe("Prisma run usage settlement under lock contention", () => {
+  const usage = { cachedInputTokens: 0, cacheWriteInputTokens: 0, completeness: "complete" as const,
+    inputTokens: 3, outputTokens: 2, reasoningTokens: 0, totalTokens: 5 };
+
+  function harness(failures: readonly unknown[]) {
+    const run = { assistantMessageId: "assistant-1", errorPayload: null, followupRevision: 0,
+      providerResponseId: null, status: "streaming", toolLoopState: null };
+    const usageRows: unknown[] = [];
+    const statements: string[] = [];
+    const pending = [...failures];
+    let transactions = 0;
+    const tx = {
+      $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) => {
+        const sql = (query.strings ?? []).join("");
+        statements.push(sql);
+        return sql.includes("JOIN \"Chat\"") ? [] : [{ ...run }];
+      }),
+      modelRun: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      usageEvent: {
+        createMany: vi.fn(async ({ data }: { data: unknown[] }) => { usageRows.push(...data); }),
+        deleteMany: vi.fn(async () => { usageRows.splice(0); })
+      }
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      $transaction: async (consume: (client: typeof tx) => Promise<unknown>) => {
+        transactions += 1;
+        // A rolled-back attempt applied nothing: its writes never reach the store.
+        const failure = pending.shift();
+        if (failure) throw failure;
+        return consume(tx);
+      }
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const record = () => operations.recordRunUsageEvents({ chatId: "chat-1", runId: "run-1", userId: "user-1",
+      usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] });
+    return { record, statements, transactions: () => transactions, usageRows };
+  }
+
+  it("bounds each lock wait and writes the provider-reported usage once after a rolled-back attempt", async () => {
+    const lockTimeout = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", {
+      clientVersion: "test", code: "P2010", meta: { code: "55P03" }
+    });
+    const store = harness([lockTimeout]);
+    await expect(store.record()).resolves.toBe(true);
+    expect(store.transactions()).toBe(2);
+    expect(store.statements[0]).toContain("set_config('lock_timeout'");
+    expect(store.usageRows).toEqual([expect.objectContaining({ inputTokens: 3, outputTokens: 2, purpose: "chat_answer" })]);
+    await expect(store.record()).resolves.toBe(true);
+    expect(store.usageRows).toHaveLength(1);
+  });
+
+  it("returns an unsafe or exhausted failure unchanged with its database code", async () => {
+    const expired = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", {
+      clientVersion: "test", code: "P2028", meta: { error: "A query cannot be executed on an expired transaction." }
+    });
+    const exhausted = harness([expired, expired, expired]);
+    await expect(exhausted.record()).rejects.toBe(expired);
+    expect(exhausted.transactions()).toBe(3);
+    expect(exhausted.usageRows).toEqual([]);
+    const violation = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", { clientVersion: "test", code: "P2003" });
+    const unsafe = harness([violation]);
+    await expect(unsafe.record()).rejects.toBe(violation);
+    expect(unsafe.transactions()).toBe(1);
   });
 });

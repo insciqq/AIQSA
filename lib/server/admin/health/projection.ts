@@ -91,7 +91,7 @@ export function adminHealthP95(buckets: readonly number[], maxMs: number | null)
  */
 export const ADMIN_HEALTH_INCIDENT_DETAIL_KEYS: ReadonlySet<string> = new Set([
   "abort_source", "action", "adapterKind", "attempt", "category", "cause", "claimed_count", "completed_count",
-  "configured_timeout_ms", "count", "deadline_kind", "delay_ms", "duration_ms", "durationMs", "effective_timeout_ms",
+  "configured_timeout_ms", "count", "db_failure", "deadline_kind", "delay_ms", "duration_ms", "durationMs", "effective_timeout_ms",
   "engine_index", "error_category", "error_class", "error_fingerprint", "error_site", "failed_count", "headers_ms", "issue_count", "kind", "layer", "limit", "method",
   "mode", "node_version", "observed", "operation", "operation_index", "operation_stage", "outcome", "pending_count",
   "prisma_code", "providerFamily", "provider_code", "provider_status", "reason", "repeat_count", "retry_at",

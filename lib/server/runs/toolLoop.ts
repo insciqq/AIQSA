@@ -100,6 +100,9 @@ export type ToolLoopBudgets = Readonly<{
 export type ToolLoopFailure = ToolLoopIssue &
   Readonly<{
     callId?: string;
+    /** The original exception of a local persistence failure, kept only for
+     * its content-free database diagnostics; never serialized or shown. */
+    cause?: unknown;
     round?: number;
     stage: "budget" | "configuration" | "persistence" | "provider" | "protocol" | "signal" | "tool";
     toolName?: string;
@@ -625,6 +628,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
           errorMessage(providerRound.error, `Provider round ${round} failed.`),
         round,
         stage: signalFailure ? "signal" : settlement || providerErrorCode && isRunPersistenceFailureCode(providerErrorCode) ? "persistence" : "provider",
+        ...(settlement ? { cause: providerRound.error } : {}),
         ...(streamSafetyReport ? { streamSafetyReport } : {}),
         ...(httpClassStatus !== undefined ? { httpStatus: httpClassStatus } : {})
       });
@@ -766,8 +770,12 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       });
     } catch (error) {
       if (input.signal?.aborted) return cancelled(progress);
+      // A local settlement failure (the batch's accounting) keeps its own
+      // code, exactly as when a provider round reports it, so its terminal
+      // and recovery handling cannot depend on where it was raised.
       return failed(progress, {
-        code: "tool_loop_evidence_failed",
+        cause: error,
+        code: runSettlementFailure(error)?.code ?? "tool_loop_evidence_failed",
         message: errorMessage(error, "Settled tool-call evidence could not be persisted."),
         round,
         stage: "persistence"

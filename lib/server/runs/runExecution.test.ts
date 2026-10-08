@@ -7826,6 +7826,42 @@ describe("run execution diagnostics", () => {
     expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
   });
 
+  it.each(["answer", "tool_batch"] as const)("ends a %s accounting failure the same way, with its database cause", async (path) => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] } };
+    const expired = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", { clientVersion: "test", code: "P2028",
+      meta: { error: "Transaction already closed: A query cannot be executed on an expired transaction. PRIVATE_SQL_CANARY" } });
+    const recordRunUsageEvents = repository.repository.recordRunUsageEvents;
+    repository.repository.recordRunUsageEvents = async (input) => {
+      // An answer round reports its own usage; a settled tool batch writes the run's accounted usage.
+      if ((path === "answer") === Boolean(input.answerRoundUsage)) throw expired;
+      return recordRunUsageEvents(input);
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return path === "tool_batch"
+        ? providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }],
+          usage: usage(2, 1, 0) })
+        : providerResult({ finalText: "PRIVATE_ANSWER_CANARY", usage: usage(2, 1, 0) });
+    });
+    parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text());
+    // No provider round or tool is dispatched again for a local accounting failure.
+    expect(requests).toHaveLength(1);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: { code: "run_usage_persistence_failed", message: expect.stringContaining("could not confirm its usage record") },
+      options: { recoveryTerminal: true }
+    })]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed",
+      code: "run_usage_persistence_failed", prisma_code: "P2028", db_failure: "transaction_expired" }));
+    expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+  });
+
   it("keeps the original provider failure when failRun also fails and never reports a confirmed terminal", async () => {
     const observation = await captureRunObservation();
     const repository = createRepository();

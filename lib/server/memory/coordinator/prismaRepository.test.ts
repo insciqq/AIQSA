@@ -1,4 +1,4 @@
-import { databaseFailureCode } from "../../observability/databaseFailure";
+import { databaseFailureCode, databaseFailureKind } from "../../observability/databaseFailure";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryCoordinatorError } from "./errors";
@@ -27,6 +27,14 @@ function deletionClaim(): MemoryDeletionClaim {
     targetType: "HISTORY_SOURCE@memory-history-source-v1",
     userId: "user-1"
   };
+}
+
+/** A job commit's first statements: bound the owner lock wait, take the
+ * owner and settings locks, then restore the transaction's lock wait. */
+function ownerLockedQuery() {
+  return vi.fn().mockResolvedValueOnce([{ previous: "0" }])
+    .mockResolvedValueOnce([{ id: "user-1" }])
+    .mockResolvedValueOnce([]);
 }
 
 function jobClaim(): MemoryJobClaim {
@@ -58,7 +66,7 @@ describe("Prisma memory coordinator repository preflight", () => {
     "settles durable %s command receipts without repeating source validation or apply", async (commandStatus) => {
       const apply = vi.fn();
       const tx = {
-        $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "user-1" }])
+        $queryRaw: ownerLockedQuery()
           .mockResolvedValueOnce([{ commandStatus, commandOperation: "SAVE", commandResult: { private: "checkpoint" } }]),
         memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) }
       };
@@ -70,7 +78,8 @@ describe("Prisma memory coordinator repository preflight", () => {
         now: new Date("2026-08-21T10:00:00.000Z"), stage: "old_worker_stage"
       })).toBe(true);
       expect(apply).not.toHaveBeenCalled();
-      expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+      // Bounded owner lock (bound, lock, restore) and the receipt read only.
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(4);
       expect(tx.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ state: "SUCCEEDED", stage: `command_${commandStatus.toLowerCase()}`,
           commandIntent: Prisma.DbNull, commandResult: Prisma.DbNull }),
@@ -83,7 +92,7 @@ describe("Prisma memory coordinator repository preflight", () => {
     { status: "REJECTED", operation: "UNKNOWN", value: { classification: "NONE", private: "checkpoint" }, retained: false },
     { status: "COMMITTED", operation: "SAVE", value: { classification: "NONE" }, retained: false }
   ])("preserves only the exact successful ordinary-command marker ($status/$retained)", async ({ status, operation, value, retained }) => {
-    const tx = { $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "user-1" }])
+    const tx = { $queryRaw: ownerLockedQuery()
       .mockResolvedValueOnce([{ commandStatus: status, commandOperation: operation, commandResult: value }]),
       memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) } };
     const repository = createPrismaMemoryCoordinatorRepository({
@@ -133,7 +142,7 @@ describe("Prisma memory coordinator repository preflight", () => {
   it("does not settle a command without a durable terminal receipt", async () => {
     const apply = vi.fn();
     const tx = {
-      $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "user-1" }]).mockResolvedValueOnce([]),
+      $queryRaw: ownerLockedQuery().mockResolvedValueOnce([]),
       memoryJob: { updateMany: vi.fn() }
     };
     const repository = createPrismaMemoryCoordinatorRepository({
@@ -474,6 +483,71 @@ describe("Prisma memory coordinator repository preflight", () => {
     } finally { writer.mockRestore(); }
   });
 
+  it("keeps an expired commit's failure kind through retries and policy mapping", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const failure = new Prisma.PrismaClientKnownRequestError("PRIVATE_DATABASE", {
+      clientVersion: "test", code: "P2028",
+      meta: { error: "Transaction already closed: A commit cannot be executed on an expired transaction. PRIVATE_SQL" }
+    });
+    const repo = createPrismaMemoryCoordinatorRepository({
+      $transaction: vi.fn(async () => { throw failure; })
+    } as never, { jobCommitRetryDelay: async () => undefined });
+    try {
+      const mapped = await repo.commitJobSuccess({ acceptedResultHash: "a".repeat(64), claim: jobClaim(),
+        now: new Date("2026-08-21T10:00:00.000Z"), stage: "catching_up" }).catch((error: unknown) => error);
+      expect(mapped).toMatchObject({ code: "memory_job_commit_timeout", retryable: true });
+      expect(databaseFailureKind(mapped)).toBe("transaction_expired");
+      const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+      expect(records).toHaveLength(7);
+      expect(records.every((record) => record.db_failure === "transaction_expired")).toBe(true);
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally { writer.mockRestore(); }
+  });
+
+  it("bounds only its wait for the owner lock and restores the transaction's own bound", async () => {
+    const queries: Prisma.Sql[] = [];
+    const rows = [[{ previous: "7s" }], [{ ownerStatus: "active", userId: "user-1" }], [], [{ id: "job-commit" }]];
+    const tx = {
+      $queryRaw: vi.fn(async (query: Prisma.Sql) => {
+        queries.push(query);
+        return rows[queries.length - 1] ?? [];
+      }),
+      memoryJob: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    };
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: async (consume: (value: typeof tx) => Promise<boolean>) => consume(tx)
+    } as never);
+    await expect(repository.commitJobSuccess({ acceptedResultHash: "a".repeat(64), claim: jobClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z"), stage: "catching_up" })).resolves.toBe(true);
+    expect(queries[0]?.sql).toContain("set_config('lock_timeout'");
+    expect(queries[0]?.values).toEqual(["1000ms"]);
+    expect(queries[1]?.sql).toContain("FOR NO KEY UPDATE OF owner");
+    expect(queries[2]?.sql).toContain("set_config('lock_timeout'");
+    expect(queries[2]?.values).toEqual(["7s"]);
+  });
+
+  it("returns a pass that left work for itself to the queue instead of completing it", async () => {
+    const tx = {
+      $queryRaw: ownerLockedQuery().mockResolvedValueOnce([{ id: "job-commit" }]),
+      memoryJob: { updateMany: vi.fn(async (_input: unknown) => ({ count: 1 })) }
+    };
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: async (consume: (value: typeof tx) => Promise<boolean>) => consume(tx)
+    } as never);
+    await expect(repository.commitJobSuccess({
+      acceptedResultHash: "a".repeat(64),
+      apply: async () => ({ requeue: true }),
+      claim: jobClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z"),
+      stage: "catching_up"
+    })).resolves.toBe(true);
+    expect(tx.memoryJob.updateMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({ acceptedResultHash: null, attemptCount: 0, completedAt: null,
+        leaseExpiresAt: null, leaseToken: null, nextAttemptAt: null, state: "QUEUED" }),
+      where: expect.objectContaining({ leaseToken: "job-commit-claim", state: "CLAIMED" })
+    });
+  });
+
   it("preserves only code-owned safe commit failures", async () => {
     const safeFailure = new Error("memory_embedding_batch_parent_invalid");
     const privateFailure = new Error("private source detail");
@@ -569,7 +643,9 @@ describe("Prisma memory coordinator repository preflight", () => {
         stage: null,
         userId: "user-1"
       }],
+      [{ previous: "0" }],
       [{ ownerStatus: "active", userId: "user-1" }],
+      [],
       [{ memoryGeneration: 2, memoryRevision: 7 }],
       [{ id: "probe-1" }]
     ];
@@ -599,7 +675,7 @@ describe("Prisma memory coordinator repository preflight", () => {
       ownerUserId: "user-1",
       probeId: "probe-1"
     })).resolves.toBeUndefined();
-    expect(queryIndex).toBe(6);
+    expect(queryIndex).toBe(8);
     expect(executeIndex).toBe(3);
     expect(sawSucceeded).toBe(true);
     expect(memoryJob.count).toHaveBeenCalledWith({ where: { id: "probe-1" } });

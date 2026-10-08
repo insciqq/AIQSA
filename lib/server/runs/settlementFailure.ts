@@ -1,5 +1,5 @@
 import { observedFailureWithoutHttpClass } from "../providers/providerObservability";
-import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
+import { retainDatabaseCause } from "../observability/databaseFailure";
 
 const failures = {
   publication: { code: "run_result_publication_failed", message: "The application could not publish the provider response. Do not repeat an operation whose outcome is uncertain." },
@@ -14,7 +14,7 @@ export class RunSettlementError extends Error {
     super(failures[stage].message, { cause });
     this.name = "RunSettlementError";
     this.code = failures[stage].code;
-    rememberDatabaseFailure(this, databaseFailureCode(cause));
+    retainDatabaseCause(this, cause);
   }
 }
 
