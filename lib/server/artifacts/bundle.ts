@@ -221,7 +221,7 @@ export function decodeArtifactBundle(bytes: Uint8Array): ArtifactBundle {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("artifact_bundle_invalid");
   const bundle = value as Partial<ArtifactBundle>;
   if (bundle.version !== 1 && bundle.version !== 2 || !Array.isArray(bundle.files) || bundle.files.length < 1 ||
-    bundle.files.length > ARTIFACT_LIMITS.maxFiles + ARTIFACT_RESOURCE_LIMITS.maxResources || !ARTIFACT_KINDS.includes(bundle.kind as ArtifactKind)) throw new Error("artifact_bundle_invalid");
+    bundle.files.length > ARTIFACT_LIMITS.maxBundleFiles + ARTIFACT_RESOURCE_LIMITS.maxResources || !ARTIFACT_KINDS.includes(bundle.kind as ArtifactKind)) throw new Error("artifact_bundle_invalid");
   if (bundle.entrypoint !== null && typeof bundle.entrypoint !== "string") throw new Error("artifact_bundle_invalid");
   const files = bundle.files.map((file) => {
     if (typeof file !== "object" || file === null || Array.isArray(file) || typeof file.path !== "string" ||
@@ -264,7 +264,7 @@ export function decodeArtifactBundle(bytes: Uint8Array): ArtifactBundle {
       intent: "create",
       kind: bundle.kind,
       title: "decoded artifact"
-    });
+    }, undefined, { stored: true });
   } catch {
     throw new Error("artifact_bundle_invalid");
   }

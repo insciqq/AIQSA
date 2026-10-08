@@ -122,7 +122,8 @@ export function artifactTool(description = LEGACY_ARTIFACT_DESCRIPTION): RunTool
               asset_ref: { type: "string", maxLength: 128, description: "Instead of text: exact file_id of a conversation file or attachment_id of a file produced in this run; mimeType must equal the file's MIME type." },
               mimeType: { type: "string", maxLength: 128 },
               path: { type: "string", maxLength: ARTIFACT_LIMITS.maxPathBytes },
-              text: { type: "string", maxLength: ARTIFACT_LIMITS.maxTextFileBytes }
+              text: { type: "string", maxLength: ARTIFACT_LIMITS.maxTextFileBytes },
+              unpack: { type: "boolean", description: "Only with asset_ref of a ZIP archive (application/zip): unpack its files into the artifact root instead of storing the archive; path is then only a label. One archive per call. Folders, macOS metadata, hidden files and empty binary files are skipped; on update, unpacked files replace files at the same paths." }
             },
             required: ["mimeType", "path"]
           }

@@ -5,7 +5,8 @@ import { ArtifactToolError } from "./errors";
  * code. Only a single module is shipped: every import/re-export is rejected. */
 export function assertArtifactSingleModule(source: string, path: string): void {
   const invalid = (): never => { throw new ArtifactToolError("artifact_module_graph_unsupported", { path,
-    hint: "Use valid self-contained JavaScript or a UMD/IIFE build. External, relative and dynamic module imports are unsupported." }); };
+    hint: "Use valid self-contained JavaScript or a UMD/IIFE build. External, relative and dynamic module imports are unsupported. " +
+      "Bundle a site of several modules into one file with esbuild in the Workspace (esbuild main.js --bundle --outfile=app.js), then reference app.js instead of the modules; without the Workspace, tell the user." }); };
   let program: unknown;
   try { program = parse(source, { ecmaVersion: "latest", sourceType: "module" }); }
   catch { return invalid(); }
