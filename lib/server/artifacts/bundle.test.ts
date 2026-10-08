@@ -238,7 +238,7 @@ describe("artifact pages, local files and links", () => {
       removedLinks: [{ page: "index.html", rel: "prefetch", href: "next.html" }],
       missingLinks: [{ page: "docs/good.html", href: "missing.html", path: "docs/missing.html" }],
       invalidPages: [{ page: "docs/bad.html", code: "artifact_element_unsupported" }, { page: "docs/worse.html", code: "artifact_external_script_unsupported" }],
-      omitted: 0 });
+      omitted: 0, unvalidatedPages: 0 });
     expect(page(built.bundle)).toContain('<a href="docs/bad.html"');
     // Opening the failing page shows its own typed error, with the excerpt of its markup.
     expect(() => renderArtifactBundle(built.bundle, false, "docs/bad.html"))
@@ -251,7 +251,7 @@ describe("artifact pages, local files and links", () => {
       { path: "index.html", text: "<h1>Home</h1>" },
       { path: "data.json", mimeType: "application/json", text: "{}" }
     ]), []);
-    expect(built.notes).toEqual({ pages: ["index.html", "docs/b.html"], removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0 });
+    expect(built.notes).toEqual({ pages: ["index.html", "docs/b.html"], removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: 0 });
     expect(page(built.bundle)).toContain("<h1>Home</h1>");
     expect(page(built.bundle, "index.html")).toBe(page(built.bundle));
     expect(page(built.bundle, "docs/b.html")).toContain("<h1>B</h1>");
