@@ -98,6 +98,13 @@ describe("AdminHealthSection", () => {
     view.rerender(<AdminHealthSection filter="7d" onSelectFilter={view.onSelectFilter} requestHealth={view.requestHealth} requestIncidents={view.requestIncidents} />);
     await waitFor(() => expect(view.requestHealth).toHaveBeenLastCalledWith("7d", expect.any(AbortSignal)));
     expect(view.requestIncidents).toHaveBeenLastCalledWith(expect.objectContaining({ range: "7d", cursor: null }), expect.any(AbortSignal));
+    expect(within(screen.getByRole("radiogroup", { name: "Time range" })).getAllByRole("radio").map((radio) => radio.textContent)).toEqual(["24 hours", "7 days", "14 days", "30 days"]);
+    fireEvent.click(screen.getByRole("radio", { name: "14 days" }));
+    expect(view.onSelectFilter).toHaveBeenLastCalledWith("14d");
+    view.rerender(<AdminHealthSection filter="14d" onSelectFilter={view.onSelectFilter} requestHealth={view.requestHealth} requestIncidents={view.requestIncidents} />);
+    await waitFor(() => expect(view.requestHealth).toHaveBeenLastCalledWith("14d", expect.any(AbortSignal)));
+    expect(view.requestIncidents).toHaveBeenLastCalledWith(expect.objectContaining({ range: "14d", cursor: null }), expect.any(AbortSignal));
+    expect(screen.getByRole("radio", { name: "14 days" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("radio", { name: "24 hours" }));
     expect(view.onSelectFilter).toHaveBeenLastCalledWith(null);
   });

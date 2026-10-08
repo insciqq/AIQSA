@@ -219,7 +219,6 @@ export function AdminHealthSection({ filter, onSelectFilter, requestHealth, requ
             controller={incidents}
             filters={incidentFilters}
             onChangeFilters={setIncidentFilters}
-            retentionNote={range === "30d"}
           />
         </section>
       )}

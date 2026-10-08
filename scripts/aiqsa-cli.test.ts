@@ -1257,9 +1257,9 @@ describe("health", () => {
     const password = values(body).AIQSA_POSTGRES_PASSWORD;
     fixture.rules.push({ match: " exec -T app node --import tsx scripts/health-report.ts", stdout: report,
       stderr: `{"level":"error","event":"service_operation","note":"${password}"}\n` });
-    const result = fixture.run(["health", "--since", "7d", "--json"]);
+    const result = fixture.run(["health", "--since", "14d", "--json"]);
     expect(result.status, result.stderr).toBe(0);
-    expect(fixture.dockerLog).toMatch(/compose --project-directory \S+ exec -T app node --import tsx scripts\/health-report\.ts --since 7d --json\n/u);
+    expect(fixture.dockerLog).toMatch(/compose --project-directory \S+ exec -T app node --import tsx scripts\/health-report\.ts --since 14d --json\n/u);
     expect(fixture.dockerLog).not.toContain(" run ");
     expect(result.stdout).toBe(report);
     expect(result.stderr).toBe('{"level":"error","event":"service_operation","note":"***"}\n');
@@ -1300,7 +1300,7 @@ describe("health", () => {
   });
 
   it.each([
-    [["health", "--since", "1h"], "--since must be 24h, 7d or 30d for health."],
+    [["health", "--since", "1h"], "--since must be 24h, 7d, 14d or 30d for health."],
     [["health", "--since", "7d", "--run", "1a2b3c4d"], "--run and --since are mutually exclusive."],
     [["health", "--run", "1a2b"], "--run needs an error reference"],
     [["health", "--run", "1a2b3c4d;id"], "--run needs an error reference"],
@@ -1321,7 +1321,7 @@ describe("health", () => {
   it("is listed in help with its flags", () => {
     const help = new Fixture().run(["help"]).stdout;
     expect(help).toMatch(/^ {2}health +Read-only report of recent problems/mu);
-    expect(help).toMatch(/--since 24h\|7d\|30d +health: report range \(default 24h\)/u);
+    expect(help).toMatch(/--since 24h\|7d\|14d\|30d +health: report range \(default 24h\)/u);
     expect(help).toMatch(/--run <reference> +health: look up/u);
   });
 });

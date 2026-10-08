@@ -7,6 +7,7 @@ import type {
 export const healthRangeOptions: readonly Readonly<{ label: string; value: AdminHealthRange }>[] = [
   { label: "24 hours", value: "24h" },
   { label: "7 days", value: "7d" },
+  { label: "14 days", value: "14d" },
   { label: "30 days", value: "30d" }
 ];
 
@@ -58,7 +59,7 @@ export function healthStageLabel(stage: string | null): string {
 }
 
 export function healthRangeLabel(range: AdminHealthRange): string {
-  return range === "24h" ? "last 24 hours" : range === "7d" ? "last 7 days" : "last 30 days";
+  return `last ${healthRangeOptions.find((option) => option.value === range)?.label ?? range}`;
 }
 
 const integer = new Intl.NumberFormat(undefined);

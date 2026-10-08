@@ -23,10 +23,18 @@ describe("admin health projection", () => {
     expect(week.to.toISOString()).toBe("2026-10-08T00:00:00.000Z");
     expect(week.previous?.from.toISOString()).toBe("2026-09-24T00:00:00.000Z");
 
+    const fortnight = adminHealthWindow("14d", now);
+    expect(fortnight.interval).toBe("day");
+    expect(fortnight.buckets).toHaveLength(14);
+    expect(fortnight.from.toISOString()).toBe("2026-09-24T00:00:00.000Z");
+    expect(fortnight.to.toISOString()).toBe("2026-10-08T00:00:00.000Z");
+    expect(fortnight.previous).toEqual({ from: new Date("2026-09-10T00:00:00.000Z"), to: fortnight.from });
+
     const month = adminHealthWindow("30d", now);
     expect(month.buckets).toHaveLength(30);
     expect(month.previous).toBeNull();
     expect(adminHealthIncidentFrom("7d", now).toISOString()).toBe("2026-09-30T12:34:56.000Z");
+    expect(adminHealthIncidentFrom("14d", now).toISOString()).toBe("2026-09-23T12:34:56.000Z");
   });
 
   it("puts every error event in exactly one category", () => {
