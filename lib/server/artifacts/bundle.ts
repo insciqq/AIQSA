@@ -6,6 +6,7 @@ import { parseArtifactCss, expandArtifactCssImport } from "./css";
 import { assertArtifactSingleModule } from "./modulePolicy";
 import { artifactResourceText } from "./resourceFetch";
 import { ARTIFACT_RESOURCE_LIMITS, artifactResourceByteLimit } from "./resourcePolicy";
+import { artifactExcerptBefore, artifactSourceSpan, artifactTextFromBytes, withArtifactErrorExcerpt } from "./referencedFiles";
 import type { ArtifactVendorMetadata } from "./vendoring";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
@@ -14,6 +15,7 @@ import {
   ARTIFACT_LIMITS,
   artifactContentSecurityPolicy,
   ARTIFACT_KINDS,
+  isArtifactTextMime,
   normalizeArtifactOperation,
   type ArtifactKind,
   type NormalizedArtifactFile,
@@ -84,8 +86,11 @@ function cssImageDataUrl(value: string, path: string): string | null {
 }
 
 function rejectControlCharacters(text: string, path: string): void {
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(text)) {
-    invalid("artifact_text_invalid", path, "Remove control characters from this file.");
+  const control = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.exec(text);
+  if (control) {
+    const codePoint = control[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, "0");
+    throw new ArtifactToolError("artifact_text_invalid", { path, excerpt: artifactExcerptBefore(text, control.index),
+      hint: `Remove control characters from this file; the first, U+${codePoint}, follows the excerpt. Clean a referenced file in Workspace or remove it with an edit.` });
   }
 }
 
@@ -188,8 +193,9 @@ export function buildArtifactBundle(
     }
     const asset = byPath.get(file.path);
     if (!asset || !file.assetRef) throw new Error("artifact_asset_unavailable");
-    if (asset.bytes.byteLength > ARTIFACT_LIMITS.maxAssetBytes) throw new Error("artifact_bundle_limit_exceeded");
-    return { blob: artifactChecksum(asset.bytes), byteSize: asset.bytes.byteLength, mimeType: asset.mimeType, path: file.path };
+    if (asset.bytes.byteLength < 1 || asset.bytes.byteLength > ARTIFACT_LIMITS.maxAssetBytes) throw new Error("artifact_bundle_limit_exceeded");
+    // By-reference text is stored as a blob too and becomes text again below.
+    return { blob: artifactChecksum(asset.bytes), byteSize: asset.bytes.byteLength, mimeType: file.mimeType, path: file.path };
   });
   if (files.some(file => file.path === "_vendor" || file.path.startsWith("_vendor/")) ||
     new Set([...files, ...vendorFiles].map(file => file.path)).size !== files.length + vendorFiles.length) {
@@ -199,6 +205,7 @@ export function buildArtifactBundle(
   const bundle: ArtifactBundle = { entrypoint: operation.entrypoint, files, kind: operation.kind, version: 2 };
   const bytes = encodeArtifactBundle(bundle);
   const hydrated = { ...bundle, files: files.map(file => file.blob ? hydrateArtifactBundleFile(file, byPath.get(file.path)!.bytes) : file) };
+  for (const file of hydrated.files) if (file.blob && !file.vendor && file.text !== undefined) rejectControlCharacters(file.text, file.path);
   renderArtifactBundle(hydrated);
   for (const file of files) if (file.mimeType === "image/svg+xml" && file.path !== bundle.entrypoint) {
     renderArtifactBundle({ ...hydrated, kind: "svg", entrypoint: file.path }, true);
@@ -206,10 +213,14 @@ export function buildArtifactBundle(
   return { bundle, bytes, checksum: artifactChecksum(bytes) };
 }
 
+/** Whether a stored blob becomes text (vendored code, by-reference text) rather than base64. */
+export function artifactBlobIsText(file: Pick<ArtifactBundleFile, "mimeType" | "vendor">): boolean {
+  return file.vendor ? ["script", "style"].includes(file.vendor.resourceClass) : isArtifactTextMime(file.mimeType);
+}
+
 export function hydrateArtifactBundleFile(file: ArtifactBundleFile, bytes: Buffer): ArtifactBundleFile {
-  return file.vendor && ["script", "style"].includes(file.vendor.resourceClass)
-    ? { ...file, text: artifactResourceText(bytes, file.path) }
-    : { ...file, base64: bytes.toString("base64") };
+  if (!artifactBlobIsText(file)) return { ...file, base64: bytes.toString("base64") };
+  return { ...file, text: file.vendor ? artifactResourceText(bytes, file.path) : artifactTextFromBytes(bytes, file.path) };
 }
 
 export function bundleFileBytes(file: ArtifactBundleFile): Buffer {
@@ -308,9 +319,16 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
     : entry!.mimeType === "image/svg+xml"
       ? `<!doctype html><html><head><title>SVG</title></head><body style="margin:0;display:grid;place-items:center;min-height:100vh">${svg(entry!.text!, entry!.path)}</body></html>`
       : entry!.text!;
-  const document = parse(source);
+  // Source offsets locate a markup error in the entry file, so the model can
+  // write an exact edit for a file it never saw (one supplied by reference).
+  const document = parse(source, { sourceCodeLocationInfo: true });
   const from = entry?.path ?? "index.html";
   function visit(node: HtmlNode): void {
+    // The innermost failing element of the entry file names the location.
+    try { visitNode(node); }
+    catch (error) { throw source === entry?.text ? withArtifactErrorExcerpt(error, source, artifactSourceSpan(node), from) : error; }
+  }
+  function visitNode(node: HtmlNode): void {
     if ("tagName" in node) {
       let inlinedStyle = false;
       if (BLOCKED_ELEMENTS.has(node.tagName)) invalid("artifact_element_unsupported", from, "Remove the unsupported element and use ordinary HTML, SVG or canvas.");

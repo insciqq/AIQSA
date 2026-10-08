@@ -4,21 +4,24 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   ARTIFACT_LIMITS,
   artifactManifest,
+  artifactMimeEssence,
   normalizeArtifactOperation,
+  isArtifactImageMime,
   isArtifactTextMime,
   type ArtifactOperation,
   type ArtifactSource,
   type NormalizedArtifactOperation
 } from "@/lib/contracts/artifacts";
 import { createShareToken, hashShareToken } from "@/lib/server/shares/tokens";
-import type { StorageAdapter } from "@/lib/server/uploads/storage";
-import { buildArtifactBundle, bundleFileBytes, decodeArtifactBundle, renderArtifactBundle, type ArtifactBundle } from "./bundle";
+import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "@/lib/server/uploads/storage";
+import { artifactBlobIsText, buildArtifactBundle, bundleFileBytes, decodeArtifactBundle, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleAsset, type ArtifactBundleFile } from "./bundle";
 import { vendorArtifactResources } from "./vendoring";
 import type { ArtifactResourceFetcher } from "./resourceFetch";
 import { ARTIFACT_WRITE_LEASE_MS } from "./lifecycle";
 import { artifactZip } from "./zip";
 import { ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME } from "../tools/artifact";
-import { ArtifactToolError, artifactToolError } from "./errors";
+import { ARTIFACT_ASSET_HINTS, ArtifactToolError, artifactToolError, type ArtifactAssetErrorCode } from "./errors";
+import { materializeArtifactReferences } from "./referencedFiles";
 import { createArtifactObjects } from "./objects";
 import { createArtifactPublications, publicManifestFromPrivate } from "./publications";
 import { artifactDownloadName } from "./downloadName";
@@ -40,6 +43,9 @@ type ArtifactExecutionOptions = {
 
 function json(value: unknown): Prisma.InputJsonValue { return value as Prisma.InputJsonValue; }
 const checksum = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+const assetError = (code: ArtifactAssetErrorCode, path: string, hint: string = ARTIFACT_ASSET_HINTS[code]) => new ArtifactToolError(code, { path, hint });
+const authoredText = (file: ArtifactBundleFile) => !file.vendor && isArtifactTextMime(file.mimeType);
+type ArtifactBase = Readonly<{ bundle: ArtifactBundle; metadata: ReadonlyArray<{ path: string; assetRef?: string }> }>;
 
 export type ArtifactService = ReturnType<typeof createArtifactService>;
 
@@ -87,36 +93,51 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     await tx.artifactVersionBlob.deleteMany({ where: { version: { artifactId, status: "FAILED" } } });
   }
 
+  async function readAttachment(row: { storageKey: string; byteSize: number; checksum: string | null }, path: string, signal?: AbortSignal): Promise<Buffer> {
+    let body: Buffer;
+    try { body = (await storage.getObject(row.storageKey, { maxBytes: row.byteSize, ...(signal ? { signal } : {}) })).body; }
+    catch (error) {
+      if (isStoredObjectMissingError(error) || isStoredObjectTooLargeError(error)) throw assetError("artifact_asset_invalid", path);
+      throw error;
+    }
+    if (body.byteLength !== row.byteSize || row.checksum && checksum(body) !== row.checksum) throw assetError("artifact_asset_invalid", path);
+    return body;
+  }
+
+  /**
+   * Copy the exact bytes behind each asset_ref, of any type. A reference names
+   * a file of the accepted base version, or an attachment of this owner outside
+   * Projects that a model run admitted from its chat or produced itself (the
+   * owner's own route may name its chat or any personal attachment). Checks
+   * run for the whole set before any read: authority, declared type, checksum
+   * presence and sizes. Each read then proves the stored size and checksum, so
+   * a file whose text extraction is pending or failed is still usable.
+   */
   async function resolveAssets(
     userId: string,
     operation: NormalizedArtifactOperation,
-    source: { chatId?: string; modelRunId?: string; allowedAssetRefs?: readonly string[]; baseVersionId?: string } = {}
-  ) {
-    const refs = operation.files.filter((file) => file.assetRef).map((file) => file.assetRef!);
-    if (!refs.length) return [];
-    // Binary assets in a ready version are independent of the attachment and
-    // source chat. An edit may reuse only assets actually present in its base.
+    source: { chatId?: string; modelRunId?: string; allowedAssetRefs?: readonly string[]; base?: ArtifactBase; signal?: AbortSignal } = {}
+  ): Promise<ArtifactBundleAsset[]> {
+    const files = operation.files.filter((file) => file.assetRef);
+    if (!files.length) return [];
+    // Bytes in a ready version are independent of the attachment and source
+    // chat. An edit may reuse only files actually present in its base.
     const reusable = new Map<string, { bytes: Buffer; mimeType: string }>();
-    if (source.baseVersionId) {
-      const base = await db.artifactVersion.findFirst({ where: { id: source.baseVersionId, status: "READY",
-        artifact: { ownerUserId: userId, archivedAt: null } } });
-      if (!base) throw new Error("artifact_version_not_found");
-      const object = await storage.getObject(base.bundleStorageKey, { maxBytes: base.byteSize });
-      if (object.body.byteLength !== base.byteSize || checksum(object.body) !== base.checksum) throw new Error("artifact_bundle_unavailable");
-      const bundle = await objects.hydrate(userId, base.id, decodeArtifactBundle(object.body));
-      const metadata = (base.manifest as { files: Array<{ path: string; assetRef?: string }> }).files;
-      for (const file of bundle.files.filter(file => !file.vendor)) {
-        const ref = metadata.find((item) => item.path === file.path)?.assetRef ?? inheritedAssetRef(file.path);
-        if (ref && file.base64 !== undefined) reusable.set(ref, { bytes: Buffer.from(file.base64, "base64"), mimeType: file.mimeType });
-      }
+    for (const file of source.base?.bundle.files ?? []) {
+      if (file.vendor || file.base64 === undefined && !(file.blob && file.text !== undefined)) continue;
+      const ref = source.base!.metadata.find((item) => item.path === file.path)?.assetRef ?? inheritedAssetRef(file.path);
+      reusable.set(ref, { bytes: bundleFileBytes(file), mimeType: file.mimeType });
     }
-    const rows = await db.attachment.findMany({
+    const pending = [...new Set(files.map((file) => file.assetRef!).filter((ref) => !reusable.has(ref)))];
+    const rows = pending.length ? await db.attachment.findMany({
       where: {
-        id: { in: refs.filter((ref) => !reusable.has(ref)) },
+        id: { in: pending },
         userId,
         projectId: null,
-        status: "ready",
         ...(source.allowedAssetRefs !== undefined ? {
+          // A run names only files of its own chat: the conversation files
+          // admitted with the run or the files the run produced itself.
+          ...(source.chatId ? { chatId: source.chatId } : {}),
           OR: [
             { id: { in: [...source.allowedAssetRefs] } },
             ...(source.modelRunId ? [{ producerModelRunId: source.modelRunId }] : [])
@@ -130,33 +151,35 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
             }
           : {})
       },
-      select: { id: true, mimeType: true, storageKey: true, byteSize: true, checksum: true }
-    });
+      select: { id: true, mimeType: true, storageKey: true, byteSize: true, checksum: true, status: true }
+    }) : [];
     // Bound the complete read set before fetching attachment bodies. The final
     // encoded-bundle check also accounts for JSON/base64 overhead.
     let totalBytes = operation.totalBytes;
-    for (const file of operation.files.filter((file) => file.assetRef)) {
-      const byteSize = reusable.get(file.assetRef!)?.bytes.byteLength ?? rows.find((row) => row.id === file.assetRef)?.byteSize;
-      if (byteSize === undefined) throw new Error("artifact_asset_unavailable");
-      if (byteSize <= 0 || byteSize > ARTIFACT_LIMITS.maxAssetBytes) throw new Error("artifact_asset_too_large");
+    const planned = files.map((file) => {
+      const reused = reusable.get(file.assetRef!);
+      const row = reused ? undefined : rows.find((candidate) => candidate.id === file.assetRef);
+      // Unauthorized and nonexistent ids share one answer; details follow only for the owner's files.
+      if (!reused && !row) throw assetError("artifact_asset_unavailable", file.path);
+      const actualMime = reused ? reused.mimeType : artifactMimeEssence(row!.mimeType);
+      if (actualMime !== file.mimeType) throw assetError("artifact_asset_mime_mismatch", file.path, actualMime
+        ? `Declare mimeType "${actualMime}", the referenced file's type.` : "The referenced file has no usable type and cannot be copied.");
+      // Rows from before upload checksums stay usable only as ready raster images.
+      if (row && !row.checksum && !(isArtifactImageMime(file.mimeType) && row.status === "ready")) throw assetError("artifact_asset_checksum_missing", file.path);
+      const byteSize = reused ? reused.bytes.byteLength : row!.byteSize;
+      if (byteSize < 1) throw assetError("artifact_asset_invalid", file.path, "The referenced file is empty; omit it.");
+      if (byteSize > ARTIFACT_LIMITS.maxAssetBytes) throw assetError("artifact_asset_too_large", file.path,
+        `The referenced file is ${(byteSize / 1024 / 1024).toFixed(1)} MiB. ${ARTIFACT_ASSET_HINTS.artifact_asset_too_large}`);
       totalBytes += byteSize;
-      if (totalBytes > ARTIFACT_LIMITS.maxBundleBytes) throw new Error("artifact_bundle_limit_exceeded");
-    }
-    return Promise.all(operation.files.filter((file) => file.assetRef).map(async (file) => {
-      const copied = reusable.get(file.assetRef!);
-      if (copied) {
-        if (copied.mimeType !== file.mimeType) throw new Error("artifact_asset_mime_mismatch");
-        return { ...copied, path: file.path };
-      }
-      const row = rows.find((candidate) => candidate.id === file.assetRef);
-      if (!row) throw new Error("artifact_asset_unavailable");
-      if (row.byteSize <= 0 || row.byteSize > ARTIFACT_LIMITS.maxAssetBytes) throw new Error("artifact_asset_too_large");
-      if (row.mimeType.toLowerCase() !== file.mimeType) throw new Error("artifact_asset_mime_mismatch");
-      const stored = await storage.getObject(row.storageKey, { maxBytes: row.byteSize });
-      if (stored.body.byteLength !== row.byteSize || row.checksum && (await import("node:crypto")).createHash("sha256").update(stored.body).digest("hex") !== row.checksum) {
-        throw new Error("artifact_asset_invalid");
-      }
-      return { bytes: stored.body, mimeType: row.mimeType, path: file.path };
+      if (totalBytes > ARTIFACT_LIMITS.maxBundleBytes) throw assetError("artifact_bundle_limit_exceeded", file.path);
+      return { file, reused, row };
+    });
+    const reads = new Map<string, Promise<Buffer>>();
+    return Promise.all(planned.map(async ({ file, reused, row }) => {
+      if (reused) return { bytes: reused.bytes, mimeType: file.mimeType, path: file.path };
+      let read = reads.get(row!.id);
+      if (!read) { read = readAttachment(row!, file.path, source.signal); reads.set(row!.id, read); }
+      return { bytes: await read, mimeType: file.mimeType, path: file.path };
     }));
   }
 
@@ -180,20 +203,22 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       }
       if (existing) throw new Error("artifact_version_in_progress");
     }
-    let baseBundle: ArtifactBundle | undefined;
-    let baseVersionId: string | undefined;
+    let baseSnapshot: ArtifactBase | undefined;
     let baseOperation: Pick<NormalizedArtifactOperation, "kind" | "title" | "entrypoint" | "files"> | undefined;
     if (input.operation?.intent === "update") {
-      const base = await db.artifactVersion.findFirst({ where: { id: input.operation.baseVersionId ?? "", status: "READY",
+      const row = await db.artifactVersion.findFirst({ where: { id: input.operation.baseVersionId ?? "", status: "READY",
         artifact: { ownerUserId: input.ownerUserId, archivedAt: null } } });
-      if (!base) throw new ArtifactToolError("artifact_version_not_found", { hint: "Use the exact base_version_id from an artifact available in this conversation." });
-      const bundle = await objects.readBundle(base);
-      baseBundle = bundle; baseVersionId = base.id;
-      const metadata = (base.manifest as { files: Array<{ path: string; assetRef?: string; byteSize: number }> }).files;
-      baseOperation = { kind: base.kind, title: base.title, entrypoint: base.entrypoint,
-        files: bundle.files.filter(file => !file.vendor).map(file => ({ path: file.path, mimeType: file.mimeType,
-          byteSize: file.text !== undefined ? Buffer.byteLength(file.text) : 0,
-          ...(file.text !== undefined ? { text: file.text } : { assetRef: metadata.find(item => item.path === file.path)?.assetRef ?? inheritedAssetRef(file.path) }) })) };
+      if (!row) throw new ArtifactToolError("artifact_version_not_found", { hint: "Use the exact base_version_id from an artifact available in this conversation." });
+      // One verified read of the base serves edits, byte reuse and vendored resources.
+      const bundle = await objects.hydrate(input.ownerUserId, row.id, await objects.readBundle(row));
+      const metadata = (row.manifest as { files: Array<{ path: string; assetRef?: string }> }).files;
+      baseSnapshot = { bundle, metadata };
+      // Stored files, by-reference text included, stay references: their
+      // edits are applied after the bytes are resolved, under the 24 MiB bound.
+      baseOperation = { kind: row.kind, title: row.title, entrypoint: row.entrypoint,
+        files: bundle.files.filter(file => !file.vendor).map(file => file.blob === undefined && file.text !== undefined
+          ? { path: file.path, mimeType: file.mimeType, byteSize: Buffer.byteLength(file.text), text: file.text }
+          : { path: file.path, mimeType: file.mimeType, byteSize: 0, assetRef: metadata.find(item => item.path === file.path)?.assetRef ?? inheritedAssetRef(file.path) }) };
     }
     const operation = normalizeArtifactOperation(input.operation, baseOperation);
     if (input.sourceChatId && !await db.chat.findFirst({ where: {
@@ -209,23 +234,28 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       if (!base) throw new Error("artifact_version_not_found");
       artifactId = base.artifactId;
     }
-    const assets = await resolveAssets(input.ownerUserId, operation, {
+    const referenced = materializeArtifactReferences(operation, await resolveAssets(input.ownerUserId, operation, {
       chatId: input.sourceChatId,
       modelRunId: input.sourceModelRunId,
       allowedAssetRefs: input.allowedAssetRefs,
-      baseVersionId: operation.intent === "update" ? operation.baseVersionId : undefined
-    });
-    const vendors = await vendorArtifactResources(operation, {
-      ...(baseBundle && baseVersionId ? { base: await objects.hydrate(input.ownerUserId, baseVersionId, baseBundle) } : {}),
+      base: baseSnapshot,
+      signal: input.signal
+    }));
+    // Referenced HTML/SVG is scanned for supported external resources like written text.
+    const vendors = await vendorArtifactResources({ ...operation, files: operation.files.map(file => referenced.texts.has(file.path)
+      ? { ...file, text: referenced.texts.get(file.path)! } : file) }, {
+      ...(baseSnapshot ? { base: baseSnapshot.bundle } : {}),
       fetchResource: options.fetchResource, signal: input.signal, acceptedPolicy: input.resourcePolicy
     });
-    assets.push(...vendors.assets);
-    const built = buildArtifactBundle(operation, assets, vendors.files);
+    // Edited bytes no longer equal their source file: later versions reuse them by path.
+    const stored = { ...operation, files: operation.files.map(file => referenced.edited.has(file.path) ? { ...file, assetRef: inheritedAssetRef(file.path) } : file) };
+    const assets = [...referenced.assets, ...vendors.assets];
+    const built = buildArtifactBundle(stored, assets, vendors.files);
     if (input.signal?.aborted) throw new ArtifactToolError("artifact_resource_unreachable", { hint: "Artifact creation was cancelled." });
     const assetBytes = new Map(assets.map((asset) => [asset.path, asset.bytes.byteLength]));
     const manifestOperation = {
-      ...operation,
-      files: operation.files.map((file) => file.assetRef
+      ...stored,
+      files: stored.files.map((file) => file.assetRef
         ? { ...file, byteSize: assetBytes.get(file.path) ?? 0 }
         : file)
     };
@@ -365,7 +395,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     if (!row) return null;
     const object = await storage.getObject(row.bundleStorageKey, { maxBytes: row.byteSize });
     if (object.body.byteLength !== row.byteSize || checksum(object.body) !== row.checksum) throw new Error("artifact_bundle_unavailable");
-    const bundle = await objects.hydrate(input.ownerUserId, row.id, decodeArtifactBundle(object.body), { vendorTextOnly: true });
+    const bundle = await objects.hydrate(input.ownerUserId, row.id, decodeArtifactBundle(object.body), { only: artifactBlobIsText });
     return { versionId: row.id, files: bundle.files.map((file) => ({ path: file.path, mimeType: file.mimeType,
       group: file.vendor ? "vendored" as const : "authored" as const,
       byteSize: file.byteSize ?? (file.text !== undefined ? Buffer.byteLength(file.text) : Buffer.from(file.base64 ?? "", "base64").byteLength),
@@ -531,7 +561,8 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       const authoredFiles = manifest.files.filter(file => file.group !== "vendored");
       const textBytes = authoredFiles.reduce((sum, file) => sum + (isArtifactTextMime(file.mimeType) ? file.byteSize : 0), 0);
       const inline = index === 0 && textBytes <= Math.min(ARTIFACT_LIMITS.maxInlineSourceBytes, input.maxInlineSourceBytes ?? ARTIFACT_LIMITS.maxInlineSourceBytes);
-      const bundle = inline ? await objects.readBundle({ ...version, id: version.id }).catch(() => null) : null;
+      const bundle = inline ? await objects.readBundle({ ...version, id: version.id })
+        .then(stored => objects.hydrate(input.ownerUserId, version.id, stored, { only: authoredText })).catch(() => null) : null;
       const files = authoredFiles.map(file => ({ path: file.path, mimeType: file.mimeType, bytes: file.byteSize,
         ...(isArtifactTextMime(file.mimeType) ? {
           ...(bundle?.files.find(source => source.path === file.path)?.text !== undefined ? { text: bundle.files.find(source => source.path === file.path)!.text! } : {})
@@ -671,7 +702,8 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       const expected = artifactToolError(error);
       if (!expected) throw error;
       return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
-        error: expected.code, ...(expected.path ? { path: expected.path } : {}), hint: expected.hint
+        error: expected.code, ...(expected.path ? { path: expected.path } : {}), hint: expected.hint,
+        ...(expected.excerpt !== undefined ? { excerpt: expected.excerpt } : {})
       } }] };
     }
   }
@@ -683,7 +715,10 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     const row = await db.artifactVersion.findFirst({ where: { id: reference.versionId, artifactId: reference.artifactId, status: "READY",
       artifact: { ownerUserId: context.userId, archivedAt: null } } });
     if (!row) throw new ArtifactToolError("artifact_read_unavailable", { hint: "The accepted artifact is no longer available." });
-    const bundle = await objects.readBundle(row);
+    // Text stored as a blob reads like written text; only the requested files are fetched.
+    const requested = Array.isArray(call.arguments.paths) ? new Set<unknown>(call.arguments.paths) : null;
+    const bundle = await objects.hydrate(context.userId, row.id, await objects.readBundle(row), {
+      only: file => authoredText(file) && (!requested || requested.has(file.path)) });
     const envelopeBytes = Buffer.byteLength(JSON.stringify({ callId: call.id, name: call.name,
       status: "complete", content: [{ type: "json", value: null }] })) - 4;
     const page = artifactReadPage({ artifactId: reference.artifactId, versionId: reference.versionId, ownerUserId: context.userId,
@@ -703,7 +738,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     const title = titleCharacters.join("");
     const assets = bundle.files.filter(file => file.blob || file.base64 !== undefined).map(file => ({ path: file.path, mimeType: file.mimeType, bytes: bundleFileBytes(file) }));
     const operation = normalizeArtifactOperation({ intent: "create", title, kind: row.kind, entrypoint: row.entrypoint ?? undefined,
-      files: bundle.files.filter(file => !file.vendor).map(file => file.text !== undefined ? { path: file.path, mimeType: file.mimeType, text: file.text }
+      files: bundle.files.filter(file => !file.vendor).map(file => file.blob === undefined && file.text !== undefined ? { path: file.path, mimeType: file.mimeType, text: file.text }
         : { path: file.path, mimeType: file.mimeType, assetRef: inheritedAssetRef(file.path) }) });
     const built = buildArtifactBundle(operation, assets, bundle.files.filter(file => file.vendor).map(file => ({
       path: file.path, mimeType: file.mimeType, blob: file.blob!, byteSize: file.byteSize!, vendor: file.vendor!
