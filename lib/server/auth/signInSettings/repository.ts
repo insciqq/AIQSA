@@ -129,6 +129,14 @@ function failure<T>(code: SignInSettingsFailureCode, affectedIdentities?: number
   return affectedIdentities === undefined ? { code, ok: false } : { affectedIdentities, code, ok: false };
 }
 
+/**
+ * Serializes the password switch with method disables, also before the policy row exists (a
+ * missing row means both switches on, and a row lock would lock nothing).
+ */
+async function lockSignInPolicy(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended('aiqsa:sign-in-policy', 0))::text AS "lock"`;
+}
+
 async function lockSetting(
   tx: Prisma.TransactionClient,
   method: AuthSignInMethod
@@ -295,9 +303,10 @@ export function createPrismaSignInSettingsRepository(input: {
 
     async disable(request) {
       return prisma.$transaction<SignInSettingsResult<AuthSignInMethodSetting>>(async (tx) => {
-        // Lock order shared with updatePolicy: the policy row first, then the method row.
+        // Lock order shared with updatePolicy: the policy lock first, then the method row.
+        await lockSignInPolicy(tx);
         const policy = await tx.$queryRaw<{ passwordLoginEnabled: boolean }[]>`
-          SELECT "passwordLoginEnabled" FROM "AuthSignInPolicy" WHERE "id" = ${SIGN_IN_POLICY_ID} FOR SHARE
+          SELECT "passwordLoginEnabled" FROM "AuthSignInPolicy" WHERE "id" = ${SIGN_IN_POLICY_ID}
         `;
         const current = await lockSetting(tx, request.method);
         if (current.activeVersion !== request.expectedActiveVersion) return failure("active_conflict");
@@ -310,6 +319,13 @@ export function createPrismaSignInSettingsRepository(input: {
             where: { id: request.sessionId }
           });
           if (session?.signInMethod === request.method) return failure("lockout_risk");
+          // Nor may it end the last external way in: other administrators' methods count only
+          // while they stay active, here or from the environment.
+          const others = await tx.authSignInMethodSetting.count({
+            where: { enabled: true, method: { in: [...LOCKOUT_SAFE_SIGN_IN_METHODS].filter((m) => m !== request.method) } }
+          });
+          const environment = [...request.environmentMethods].filter((m) => m !== request.method);
+          if (others === 0 && environment.length === 0) return failure("lockout_risk");
         }
         const updated = await tx.authSignInMethodSetting.update({
           data: {
@@ -364,7 +380,7 @@ export function createPrismaSignInSettingsRepository(input: {
     async updatePolicy(request) {
       try {
         return await prisma.$transaction<SignInSettingsResult<SignInPolicyRecord>>(async (tx) => {
-          await tx.$queryRaw`SELECT "id" FROM "AuthSignInPolicy" WHERE "id" = ${SIGN_IN_POLICY_ID} FOR UPDATE`;
+          await lockSignInPolicy(tx);
           const current = await tx.authSignInPolicy.findUnique({ where: { id: SIGN_IN_POLICY_ID } });
           if ((current?.version ?? 0) !== request.expectedVersion) return failure("policy_conflict");
 

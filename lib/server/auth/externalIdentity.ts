@@ -234,11 +234,14 @@ async function applyExternalAdminRole(
     user: SettledUser;
   }
 ): Promise<ExternalIdentityWarning | undefined> {
+  const others = input.activeAdmins.map((admin) => admin.id).filter((id) => id !== input.user.id);
+  // An admin whose SCIM deactivation is pending cannot sign in, so it does not keep the installation administrable.
+  const usableOthers = others.length ? await tx.user.count({ where: { id: { in: others }, scimDeactivatedAt: null } }) : 0;
   const change = externalAdminRoleChange({
     adminGroups: input.adminGroups,
     groups: input.groups,
     manager: input.manager,
-    otherActiveAdmins: input.activeAdmins.filter((admin) => admin.id !== input.user.id).length,
+    otherActiveAdmins: usableOthers,
     role: input.user.role,
     roleManagedBy: input.user.roleManagedBy
   });
