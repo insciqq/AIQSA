@@ -127,7 +127,7 @@ test("trusted-header sign-in follows the client identity mode", async ({ browser
   const missing = await proxiedPage(browser, null);
   await missing.page.goto("/login");
   await expect(missing.page).toHaveURL(/trusted_header=missing/);
-  await expect(missing.page.getByRole("alert")).toContainText("did not provide an identity");
+  await expect(missing.page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText("did not provide an identity");
   await missing.context.close();
   const oversized = await proxiedPage(browser, `${"a".repeat(320)}@${domain}`);
   await oversized.page.goto("/login");
