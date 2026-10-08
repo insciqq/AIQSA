@@ -5,6 +5,7 @@ import type { MessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { prisma } from "../prisma";
+import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { createPrismaChatRepository, loadChatBranchSnapshotStats } from "./prismaRepository";
 
 afterAll(() => prisma.$disconnect());
@@ -17,7 +18,12 @@ const TURNS = 1000;
 const ALT_FROM_TURN = 500;
 const ALT_TURNS = 30;
 const OTHER_RUNS = 20_000;
-const OPEN_BUDGET_MS = 2_500;
+// Well inside the 5 s interactive-transaction budget the open used to
+// outlive, with headroom for a loaded runner; the statement count and the
+// absence of P2028 are the structural proof.
+const OPEN_BUDGET_MS = 4_000;
+// Measured 36; it must not grow with the chat's length.
+const OPEN_STATEMENTS_MAX = 40;
 
 const fragments = [
   "The quick brown fox jumps over the lazy dog, then reads the log output again. ",
@@ -214,6 +220,7 @@ it("opens a thousand-turn chat inside its read budget with the same page, branch
       await prisma.chat.update({ where: { id: chatId }, data: { activeLeafMessageId: mainPath.at(-1)!.id } });
 
       expect(samples.map((sample) => sample.failure)).toEqual([null, null, null, null]);
+      expect(Math.max(...samples.map((sample) => sample.statements))).toBeLessThanOrEqual(OPEN_STATEMENTS_MAX);
       expect(median.ms).toBeLessThan(OPEN_BUDGET_MS);
     } finally {
       await counting.$disconnect();
@@ -223,3 +230,50 @@ it("opens a thousand-turn chat inside its read budget with the same page, branch
     await prisma.user.delete({ where: { id: userId } });
   }
 }, 900_000);
+
+it("shows a branch copy's source runs and context measurement, which live in the source chat", async () => {
+  const userId = randomUUID();
+  const sourceChatId = randomUUID();
+  await prisma.user.create({ data: { id: userId, displayName: "Branch copy", status: "active" } });
+  try {
+    await prisma.chat.create({ data: { id: sourceChatId, userId, title: "Branch source" } });
+    const runIds: string[] = [];
+    let parentMessageId: string | null = null;
+    // Seeds 1–4 carry no attachment block: a copy clones only stored attachments.
+    for (const [index, measured] of [[0, 1_200], [1, 2_400]] as const) {
+      const question: { id: string } = await prisma.message.create({ data: {
+        chatId: sourceChatId, content: content(index * 2 + 1, 300) as Prisma.InputJsonValue, parentMessageId, role: "user", status: "complete"
+      } });
+      const answer: { id: string } = await prisma.message.create({ data: {
+        chatId: sourceChatId, content: content(index * 2 + 2, 600) as Prisma.InputJsonValue, parentMessageId: question.id,
+        role: "assistant", status: "complete"
+      } });
+      const run = await prisma.modelRun.create({ data: {
+        assistantMessageId: answer.id, chatId: sourceChatId, modelId: "fake-qsa", normalizedRequest: { sessionStatusTool: true },
+        provider: "fake", status: "complete", userId, userMessageId: question.id,
+        events: { create: { eventType: "artifact", payload: { artifactType: "context_status", payload: status(measured) }, sequence: 1 } }
+      } });
+      runIds.push(run.id);
+      parentMessageId = answer.id;
+    }
+    await prisma.chat.update({ where: { id: sourceChatId }, data: { activeLeafMessageId: parentMessageId } });
+    const chats = createPrismaChatRepository(prisma);
+    const source = await chats.getChat({ chatId: sourceChatId, userId });
+
+    // The copy's answers reference the source chat's runs by branchSourceModelRunId.
+    const branch = await createPrismaMessageBranchRepository(prisma).createChatBranchFromMessage({ sourceMessageId: parentMessageId!, userId });
+    const copy = await chats.getChat({ chatId: branch!.id, userId });
+    expect(copy!.messages.map((message) => message.modelRunId)).toEqual([null, runIds[0], null, runIds[1]]);
+    expect(copy!.messages.map((message) => [message.role, message.status, message.content]))
+      .toEqual(source!.messages.map((message) => [message.role, message.status, message.content]));
+    expect(copy!.contextStats.session).toEqual(status(2_400));
+    expect(copy!.contextStats).toEqual({
+      ...source!.contextStats,
+      sessionBranchLeafId: copy!.messages.at(-1)!.id,
+      sessionMessageId: copy!.messages.at(-1)!.id
+    });
+  } finally {
+    await prisma.modelRun.deleteMany({ where: { userId } });
+    await prisma.user.delete({ where: { id: userId } });
+  }
+}, 120_000);
