@@ -2373,6 +2373,51 @@ describe("model run route handlers", () => {
     expect(await conflict.json()).toEqual({ error: "answer_review_step_unavailable" });
   });
 
+  it("stops an answer review step whose provider has not answered yet, at once", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    let signal: AbortSignal | undefined;
+    // A slow reviewer: no output until the request is aborted, then the transport's abort error.
+    const heldProvider: ProviderAdapter = {
+      buildRequestPreview: () => ({ provider: "fake" }),
+      async *stream(_request, options = {}) {
+        signal = options.signal;
+        await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+        throw options.signal?.reason ?? new DOMException("The operation was aborted.", "AbortError");
+      }
+    };
+    const send = createSendMessageHandler({ ...authDeps, answerReviewStep: {
+      preparation: { kind: "review", reviewer: 0, round: 1, sessionId: "session-1", step: 0 }, turnKind: "answer_review_request"
+    }, providers: { fake: heldProvider }, repository });
+    const cancel = createCancelModelRunHandler({ ...authDeps, providers: { fake: heldProvider }, repository });
+    const response = await send(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Review the answer.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(200);
+    for (let attempt = 0; attempt < 50 && !signal; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signal).toBeDefined();
+
+    const started = Date.now();
+    const cancelled = await cancel(new Request("http://app.local/api/model-runs/run-1/cancel", {
+      headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { runId: "run-1" } });
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({ run: { id: "run-1", status: "cancelled" } });
+    // The step's run settled with the Stop, never waiting out the provider.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(signal?.aborted).toBe(true);
+    const events = parseSse(await response.text());
+    expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["run_start", "message_start"]));
+    expect(state.cancelled).toMatchObject({ code: "model_run_cancelled" });
+    expect(state.completed).toBeNull();
+  });
+
+
 
   it("streams a complete fake provider SSE run and persists run artifacts", async () => {
     const { repository, state } = createMemoryRepository();

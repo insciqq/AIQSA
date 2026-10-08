@@ -12,6 +12,9 @@ import type { ConsumeMessageRunStream } from "./messageRunLifecycle";
 import { assistantControlDefaults, useMessageRunActions } from "./messageRunActions";
 import { chatRouteForState } from "./chatRoute";
 import { useRunLifecycleStore } from "./runLifecycleStore";
+import { useRunLifecycleActions } from "./runLifecycleActions";
+import { visibleMessagePath } from "./threadPath";
+import { answerReviewGroupDisplayProgressV2, groupAnswerReviewsV2 } from "@/features/answer-review-v2/answerReviewModel";
 import {
   selectRunSurface,
   useRunSurfaceStore
@@ -4535,5 +4538,103 @@ describe("continuation after an MCP approval", () => {
     expect(await actions.sendMcpApprovalContinuation(card)).toBe("unavailable");
     expect(actions.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error",
       text: "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval." });
+  });
+});
+
+describe("answer review steps", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const session = {
+    author: { modelId: "author-model", name: "GPT-5.5", provider: "openai" },
+    canAct: true,
+    id: "session-1",
+    maxRounds: null,
+    mode: "manual",
+    reviewers: [{ modelId: "reviewer-model", name: "Fixture Reviewer", provider: "connection-r" }],
+    round: 1,
+    sourceAssistantMessageId: "answer-1",
+    state: "running",
+    stopReason: null
+  } as const;
+
+  /** The group of the chat's review session as the transcript reads it, with its running step's answer. */
+  function reviewGroup() {
+    const thread = selectThreadSnapshot(useThreadStore.getState(), "chat-a");
+    const item = groupAnswerReviewsV2(visibleMessagePath(thread.messages, thread.activeLeafId))
+      .find((entry) => entry.kind === "review");
+    if (!item || item.kind !== "review") throw new Error("no review group");
+    return item.group;
+  }
+
+  it("stops a running review step through the real cancellation endpoint and shows it stopped", async () => {
+    let streamSignal: AbortSignal | undefined;
+    let acknowledge!: () => void;
+    const acknowledged = new Promise<void>((resolve) => { acknowledge = resolve; });
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      async consumeRunStream({ onMessageIds, onRunId, signal }) {
+        // The step's run is admitted and announced; its slow reviewer has not answered yet.
+        await acknowledged;
+        onRunId("run-s");
+        onMessageIds({ assistantMessageId: "step-answer", userMessageId: "step-turn" }, "run-s");
+        streamSignal = signal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) resolve();
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return { failed: false, receivedChatUpdate: false, runId: "run-s", terminalStatus: "cancelled" };
+      }
+    });
+    useThreadStore.getState().replaceThread("chat-a", {
+      activeLeafId: "answer-1",
+      messages: [
+        { content: "Question", id: "question-1", parentMessageId: null, role: "user", status: "complete" },
+        { content: "Answer", id: "answer-1", modelId: "gpt-5.5", parentMessageId: "question-1", provider: "openai", role: "assistant",
+          runId: "run-a", status: "complete" }
+      ],
+      usageStats: null
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/chats/chat-a/answer-reviews" && init?.method === "POST") return Response.json({ session });
+      if (url === "/api/answer-reviews/session-1/steps" && init?.method === "POST") {
+        return new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" }, status: 200 });
+      }
+      if (url === "/api/model-runs/run-s/cancel" && init?.method === "POST") {
+        return Response.json({ run: { id: "run-s", status: "cancelled" } });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lifecycle = useRunLifecycleActions({
+      activeChatId: "chat-a",
+      activeChatIdRef: actions.activeChatIdRef,
+      activeStreamAbortRef: actions.activeStreamAbortRef,
+      notifyAnswerReady: vi.fn(async () => undefined),
+      refreshActiveChat: actions.refreshActiveChat,
+      setNotice: vi.fn()
+    });
+
+    await expect(actions.startAnswerReview({ answerMessageId: "answer-1",
+      reviewers: [{ modelId: "reviewer-model", provider: "connection-r" }] })).resolves.toEqual({ ok: true });
+    // Before the server acknowledges the step's run a Stop has no run to cancel and is dropped:
+    // the status line therefore keeps its Stop disabled until then.
+    await vi.waitFor(() => expect(useRunLifecycleStore.getState().activeStreams["chat-a"]).toMatchObject({ runId: null }));
+    await lifecycle.stopCurrentRun(undefined);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/cancel"))).toBe(false);
+    acknowledge();
+    await vi.waitFor(() => expect(useRunLifecycleStore.getState().activeStreams["chat-a"]).toMatchObject({ runId: "run-s" }));
+    await vi.waitFor(() => expect(reviewGroup().steps[0]?.answer).toMatchObject({ id: "step-answer", status: "streaming" }));
+    expect(answerReviewGroupDisplayProgressV2(reviewGroup(), { latest: true }).running).toMatchObject({ kind: "review" });
+
+    // The status line's Stop: the running step's own run, through the ordinary Stop.
+    await lifecycle.stopCurrentRun(reviewGroup().steps[0]?.answer?.runId ?? undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/model-runs/run-s/cancel", { method: "POST" });
+    expect(streamSignal?.aborted).toBe(true);
+    expect(reviewGroup().steps[0]?.answer).toMatchObject({ id: "step-answer", status: "cancelled" });
+    expect(answerReviewGroupDisplayProgressV2(reviewGroup(), { latest: true })).toMatchObject({
+      running: null, state: "stopped", stopReason: "user_stopped"
+    });
   });
 });
