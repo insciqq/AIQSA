@@ -104,7 +104,7 @@ function render(template, values) {
 
 function prefix(subnet) {
   const match = /^(\d+\.\d+\.\d+)\.0\/24$/u.exec(subnet);
-  if (!match) fail(`subnets must be /24 networks such as 10.231.147.0/24 (got ${subnet})`);
+  if (!match) fail(`subnets must be /24 networks such as 172.29.147.0/24 (got ${subnet})`);
   return match[1];
 }
 
@@ -383,8 +383,8 @@ async function main() {
 
   const mode = options.mode ?? "direct";
   if (!["direct", "trusted"].includes(mode)) fail("--mode must be direct or trusted");
-  const appSubnet = options["app-subnet"] ?? "10.231.146.0/24";
-  const lanSubnet = options["lan-subnet"] ?? "10.231.147.0/24";
+  const appSubnet = options["app-subnet"] ?? "172.29.146.0/24";
+  const lanSubnet = options["lan-subnet"] ?? "172.29.147.0/24";
   mkdirSync(state, { mode: 0o700, recursive: true });
   chmodSync(state, 0o700);
   const secretsFile = path.join(state, "secrets.env");
