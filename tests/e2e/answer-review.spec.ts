@@ -329,8 +329,9 @@ test("a review's finding is decided and revised into Version 2, and the next tur
 
 test("a clean review shows No substantive issues and offers no Revise", async ({ page }) => {
   test.setTimeout(180_000);
-  await page.setViewportSize({ height: 844, width: 390 });
+  // The chat starts on desktop, where the navigation offers New chat.
   await answeredChat(page, "Summarize the plan in one line [AIQSA_REVIEW_E2E:clean]");
+  await page.setViewportSize({ height: 844, width: 390 });
   await startReview(page);
   await expect(status(page)).toHaveText(/No substantive issues/u, { timeout: 60_000 });
   await expect(page.getByRole("button", { name: "Revise" })).toHaveCount(0);
@@ -340,8 +341,8 @@ test("a clean review shows No substantive issues and offers no Revise", async ({
 
 test("a budget refusal on a step stops the session and keeps the answer", async ({ page }) => {
   test.setTimeout(180_000);
-  await page.setViewportSize({ height: 1180, width: 820 });
   const chatId = await answeredChat(page, "Estimate the cost [AIQSA_REVIEW_E2E:findings]");
+  await page.setViewportSize({ height: 1180, width: 820 });
   const previous = await prisma.usageLimit.findUnique({ where: { userId } });
   const spend = await prisma.usageEvent.create({ data: { chatId, estimatedCostMicros: 10_000, inputTokens: 1, modelId: "fake-qsa",
     outputTokens: 1, provider: "fake", purpose: "chat_answer", totalTokens: 2, usageCompleteness: "COMPLETE", userId } });
@@ -367,8 +368,8 @@ test("a budget refusal on a step stops the session and keeps the answer", async 
 
 test("a reload during a step shows the same live state and the step runs once; Stop ends the session", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
-  await page.setViewportSize({ height: 390, width: 844 });
   const chatId = await answeredChat(page, "Check the invoice total [AIQSA_REVIEW_E2E:findings]");
+  await page.setViewportSize({ height: 390, width: 844 });
   let release = stand!.endpoint.hold();
   const reviewsBefore = stand!.endpoint.reviews.length;
   try {
