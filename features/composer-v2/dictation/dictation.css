@@ -73,3 +73,34 @@
 @media (prefers-reduced-motion: reduce) {
   .v2-composer-dictation[data-phase="recording"] .v2-composer-dictation-dot { animation: none; }
 }
+
+/* Touch and narrow composers size the dictation buttons like the composer's
+   other run-action buttons (composer.css): at least 44px targets. */
+@media (hover: none), (pointer: coarse) {
+  .v2-composer-run-action .v2-composer-dictation .v2-icon-button,
+  .v2-composer-run-action .v2-composer-dictation .v2-icon-button:disabled {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+
+@container composer (max-width: 26rem) {
+  .v2-composer-run-action .v2-composer-dictation .v2-icon-button,
+  .v2-composer-run-action .v2-composer-dictation .v2-icon-button:disabled {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  /* While recording, the timer, Cancel and Stop take their own row beside
+     Send (right-aligned) so the message keeps the full width; the chips
+     stay below. Idle and transcribing keep the one-row layout. */
+  .v2-composer-entry:has(.v2-composer-dictation[data-phase="recording"]),
+  .v2-composer-entry:has(.v2-composer-dictation[data-phase="starting"]) {
+    grid-template-areas: "add input input" "send send send" "chips chips chips";
+  }
+
+  .v2-composer-entry:has(.v2-composer-dictation[data-phase="recording"]) .v2-composer-run-action,
+  .v2-composer-entry:has(.v2-composer-dictation[data-phase="starting"]) .v2-composer-run-action {
+    justify-self: end;
+  }
+}
