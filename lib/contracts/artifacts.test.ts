@@ -253,6 +253,9 @@ describe("files supplied by reference", () => {
 
   it("counts exact non-overlapping matches before replacing", () => {
     expect(applyArtifactTextEdit("aaa", { old_string: "aa", new_string: "b" }, "a.txt", 0)).toBe("ba");
+    expect(() => applyArtifactTextEdit("a".repeat(600), { old_string: "a", new_string: "b".repeat(1024), replace_all: true }, "a.txt", 3))
+      .toThrowError(expect.objectContaining({ code: "artifact_text_limit_exceeded", editIndex: 3 }));
+    expect(applyArtifactTextEdit("a".repeat(600), { old_string: "a", new_string: "bb", replace_all: true }, "a.txt", 0, 1200)).toHaveLength(1200);
     expect(applyArtifactTextEdit("x-x-x", { old_string: "x", new_string: "$&", replace_all: true }, "a.txt", 0)).toBe("$&-$&-$&");
     expect(applyArtifactTextEdit("one $1", { old_string: "$1", new_string: "$$" }, "a.txt", 0)).toBe("one $$");
     expect(() => applyArtifactTextEdit("abc", { old_string: "z", new_string: "y" }, "a.txt", 2)).toThrowError(expect.objectContaining({ code: "artifact_edit_not_found", editIndex: 2 }));

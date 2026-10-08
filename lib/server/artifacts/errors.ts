@@ -42,7 +42,7 @@ export function artifactToolError(error: unknown): ArtifactToolError | null {
       : error.code === "artifact_asset_ref_invalid" ? "Give each file either text or the exact asset_ref id of an attached or produced file."
       : error.code === "artifact_mime_invalid" ? "Use a bare type/subtype such as text/html without parameters. Kind image shows only image/png, image/jpeg or image/webp asset_ref files; show other files from an HTML page."
       : error.code === "artifact_text_invalid" ? "Write inline text only for text/html, text/css, text/javascript, application/json, text/plain, text/markdown, text/csv or image/svg+xml files, without NUL or unpaired surrogates; supply any other type by asset_ref."
-      : error.code === "artifact_text_limit_exceeded" ? `Text written in the call may be at most ${ARTIFACT_LIMITS.maxTextFileBytes / 1024} KiB per file; reference a larger file by asset_ref instead.`
+      : error.code === "artifact_text_limit_exceeded" ? `Text written in the call may be at most ${ARTIFACT_LIMITS.maxTextFileBytes / 1024} KiB per file, and a file supplied by asset_ref at most ${ARTIFACT_LIMITS.maxAssetBytes / (1024 * 1024)} MiB after each edit; reference a larger file by asset_ref or make the edits smaller.`
       : "Check the artifact file paths, types, entrypoint and size limits, then correct the operation.")
   });
   if (error instanceof Error && isAssetErrorCode(error.message)) {

@@ -81,7 +81,7 @@ export function materializeArtifactReferences(operation: NormalizedArtifactOpera
     const text = texts.get(edit.path);
     if (text === undefined) throw new ArtifactToolError("artifact_edit_path_invalid", { path: edit.path,
       hint: `Edit ${edit.editIndex + 1}: edit a text file supplied by asset_ref in this call or an existing text file of the accepted artifact.` });
-    texts.set(edit.path, applyArtifactTextEdit(text, edit, edit.path, edit.editIndex));
+    texts.set(edit.path, applyArtifactTextEdit(text, edit, edit.path, edit.editIndex, ARTIFACT_LIMITS.maxAssetBytes));
     edited.add(edit.path);
   }
   let totalBytes = operation.totalBytes;
