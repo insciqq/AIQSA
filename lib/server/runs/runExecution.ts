@@ -170,10 +170,10 @@ import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } fro
 import {
   executeMonitoringVerdict,
   isMonitoringVerdictCall,
-  MONITORING_VERDICT_TOOL_NAME,
-  monitoringVerdictReservedInstruction,
   monitoringVerdictTool
 } from "../tools/monitoringVerdict";
+import { answerReviewToolsForRequest, executeAnswerReviewCall, isAnswerReviewCall } from "../tools/answerReview";
+import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import {
   executeCreateScheduledTask,
   isScheduledTaskCreateCall,
@@ -489,6 +489,7 @@ function serializeChatUpdate(
       role: message.role,
       status: message.status,
       ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
+      ...(message.answerReview ? { answerReview: message.answerReview } : {}),
       ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
       toolActivity: message.toolActivity ?? null,
       workspaceActivity: message.workspaceActivity ?? null
@@ -2255,6 +2256,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
           ...(normalizedRequest.toolCallReader ? [readToolCallTool] : []),
           ...(normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+          ...answerReviewToolsForRequest(normalizedRequest),
           ...scheduledTaskToolsForRequest(normalizedRequest),
           ...scheduledTaskManagementToolsForRequest(normalizedRequest),
           ...skillSaveToolsForRequest(normalizedRequest),
@@ -2275,6 +2277,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // write is fenced again by the run's link to that running occurrence.
         const isMonitoringCall = (name: string) => isMonitoringVerdictCall(normalizedRequest, name);
         const recordVerdict = input.repository.recordMonitoringVerdict?.bind(input.repository);
+        // An answer review step reports once: the first call that settles its
+        // card wins, and a later one (also within the same batch) is refused.
+        const isReviewCall = (name: string) => isAnswerReviewCall(normalizedRequest, name);
+        let answerReviewReported = false;
+        const executeReviewCall = (call: ModelToolCall): ToolExecutionResult => {
+          const reviewed = executeAnswerReviewCall(call, normalizedRequest, { submitted: answerReviewReported });
+          if (reviewed.status === "complete") answerReviewReported = true;
+          return reviewed;
+        };
+        const reservedToolCall = reservedToolCallForRequest(normalizedRequest);
         // Only a run admitted with the frozen markers creates or manages
         // scheduled tasks or saves a Skill; the repository fences the run's
         // scheduled origin and its call again. Each settles with its write.
@@ -2380,11 +2392,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // Every checkpoint of a v1 non-Agent run carries the rebuild record.
           allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
           deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
-          // A monitoring check's first verdict is reserved outside the business
-          // tool budgets; a repeated one counts as an ordinary call.
-          ...(normalizedRequest.monitoringVerdictTool ? { reservedCall: {
-            called: false, instruction: monitoringVerdictReservedInstruction(), name: MONITORING_VERDICT_TOOL_NAME
-          } } : {}),
+          // A monitoring check's first verdict, or an answer review step's
+          // first report, is reserved outside the business tool budgets; a
+          // repeated one counts as an ordinary call.
+          ...(reservedToolCall ? { reservedCall: { called: false, ...reservedToolCall } } : {}),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
             if (!persisted) return undefined;
@@ -2636,6 +2647,15 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Monitoring report could not be settled.");
                 return { status: "complete", value: result };
               }
+              if (claim.kind === "ambiguous" && isReviewCall(call.name)) {
+                // A review report has no external effect: validated again, it gives the same card.
+                const result = executeReviewCall(call);
+                const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+                const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
+                  result: snapshot, runId, state: result.status, userId: input.userId });
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Review report could not be settled.");
+                return { status: "complete", value: result };
+              }
               if (claim.kind === "ambiguous" && isCheckpointCall(call.name)) {
                 const restored = await (await defaultWorkspaceCheckpoints()).restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId }, context.signal);
                 return { status: "complete", value: restored };
@@ -2739,6 +2759,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 }
                 if (stored) skillResultBudget.restore(stored);
                 if (stored) observationBatches.replay(persisted.roundIndex, observationWholeResultTokens(request), stored);
+                if (stored?.status === "complete" && isReviewCall(call.name)) answerReviewReported = true;
                 if (stored && isKnowledgeCall(call.name) &&
                   knowledgeEvidenceFromToolResult(stored) && input.memoryEgress &&
                   !(await input.memoryEgress.settleRecoveredToolDispatch({
@@ -2848,7 +2869,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isScheduledTaskCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
+                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isReviewCall(call.name) && !isScheduledTaskCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2992,6 +3013,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   result = executeSessionStatus(call, sessionRequest, toolBridge);
                 } else if (isMonitoringCall(call.name)) {
                   result = await executeMonitoringVerdict(call, executionContext, recordVerdict);
+                } else if (isReviewCall(call.name)) {
+                  result = executeReviewCall(call);
                 } else if (isMcpDiscoveryCall(call.name)) {
                   // Each call searches separately; the queue orders epochs.
                   result = await serializeMcpDiscovery(async () => {
@@ -3287,7 +3310,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isMemoryCall(call.name) && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isScheduledTaskCall(call.name) && !isFetchCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
+                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isReviewCall(call.name) && !isScheduledTaskCall(call.name) && !isFetchCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 const callArguments = toolLoopJson(
@@ -3562,7 +3585,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.visionAnalysis !== undefined || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.scheduledTaskTool !== undefined || normalizedRequest.fetchUrl !== undefined || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.visionAnalysis !== undefined || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.answerReviewStep !== undefined || normalizedRequest.scheduledTaskTool !== undefined || normalizedRequest.fetchUrl !== undefined || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;

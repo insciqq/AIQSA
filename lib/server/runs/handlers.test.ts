@@ -38,9 +38,11 @@ import {
   type RunHandlerDeps
 } from "./handlers";
 import { reconcileStaleRuns, sweepBootOrphanedRunsOnce } from "./runRecovery";
+import { answerReviewCallSubmitted } from "../tools/answerReview";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
   KnowledgeRunPlanConflictError,
@@ -2294,6 +2296,83 @@ describe("model run route handlers", () => {
     expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation",
       content: { blocks: [{ type: "text", text: "The user approved `delete_record` on `Records`. Continue the task." }] } });
   });
+
+  it("admits an answer review step as the server's turn: it claims the step, counts no message window and takes no systemTurn", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    const answerReviewStep = {
+      preparation: { kind: "review" as const, reviewer: 0, round: 1, sessionId: "session-1", step: 0 },
+      turnKind: "answer_review_request" as const
+    };
+    // The user's own messages filled this hour's window; a step is the server's turn.
+    const windowFull = (now: Date): UsageLimitStatus => ({
+      ...NO_USAGE_LIMITS,
+      effective: { ...NO_USAGE_LIMITS.effective, messagesPerHour: { source: { kind: "installation" }, value: 2 } },
+      lastHour: { count: 2, freesAt: new Date(now.getTime() + 60_000) }
+    });
+    const usageLimits = { loadUsageLimitStatus: vi.fn(async (_userId: string, now: Date) => windowFull(now)) };
+    const POST = createSendMessageHandler({ ...authDeps, answerReviewStep, providers: { fake: createFakeProviderAdapter() }, repository,
+      usageLimits });
+    const send = (extra: Record<string, unknown> = {}) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Review the answer.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] }, ...extra }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    const withSystemTurn = await send({ systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } });
+    expect(withSystemTurn.status).toBe(400);
+    expect(state.created).toBeNull();
+
+    const accepted = await send();
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(state.created).toMatchObject({
+      answerReviewStep: { round: 1, sessionId: "session-1", step: 0 },
+      normalizedRequest: { answerReviewStep: { kind: "review", modelName: "fake-qsa", reviewer: 0, round: 1, version: 1 } },
+      systemTurnKind: "answer_review_request"
+    });
+    // The step's report is the run's own tool: settled with its card, which the answer publishes.
+    const report = state.toolCalls.find((call) => call.toolName === "submit_answer_review");
+    expect(report).toMatchObject({ state: "complete" });
+    expect(answerReviewCallSubmitted(state.created!.normalizedRequest, report!)).toBe(true);
+    expect(JSON.stringify(state.events.map((entry) => entry.event))).toContain("\"artifactType\":\"answer_review\"");
+  });
+
+  it("refuses an answer review step at a reached budget and when its step was already claimed", async () => {
+    const answerReviewStep = {
+      preparation: { kind: "review" as const, reviewer: 0, round: 1, sessionId: "session-1", step: 0 },
+      turnKind: "answer_review_request" as const
+    };
+    const capabilities = { toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true };
+    const request = () => new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Review the answer.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    });
+    const budget = createMemoryRepository(entitledFakeModel, [], null, capabilities);
+    const exhausted = await createSendMessageHandler({ ...authDeps, answerReviewStep, providers: { fake: createFakeProviderAdapter() },
+      repository: budget.repository, usageLimits: { loadUsageLimitStatus: async () => ({
+        ...NO_USAGE_LIMITS,
+        effective: { ...NO_USAGE_LIMITS.effective, monthlyBudgetMicros: { source: { kind: "user" }, value: 5_000_000 } },
+        userSpentMicros: 5_250_000
+      }) } })(request(), { params: { chatId: "chat-1" } });
+    expect(exhausted.status).toBe(429);
+    expect(await exhausted.json()).toMatchObject({ error: "usage_budget_exhausted" });
+    expect(budget.state.created).toBeNull();
+
+    const claimed = createMemoryRepository(entitledFakeModel, [], null, capabilities);
+    claimed.repository.createRun = async () => { throw new AnswerReviewStepConflictError("answer_review_step_unavailable"); };
+    const conflict = await createSendMessageHandler({ ...authDeps, answerReviewStep, providers: { fake: createFakeProviderAdapter() },
+      repository: claimed.repository })(request(), { params: { chatId: "chat-1" } });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "answer_review_step_unavailable" });
+  });
+
 
   it("streams a complete fake provider SSE run and persists run artifacts", async () => {
     const { repository, state } = createMemoryRepository();

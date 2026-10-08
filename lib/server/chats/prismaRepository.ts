@@ -15,6 +15,12 @@ import {
   type ScheduledTaskCard
 } from "../../contracts/scheduledTasks";
 import { foldSkillSaveCards } from "../../contracts/skillSaves";
+import {
+  foldAnswerReviewCards,
+  foldAnswerReviewDecisionsCards,
+  type AnswerReviewMessageWire
+} from "../../contracts/answerReviews";
+import { answerReviewStepModelName, loadAnswerReviewProjection } from "../answerReviews/repository";
 import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
 import { mcpApprovalGated } from "../runs/mcpApprovalGate";
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
@@ -300,7 +306,10 @@ const hydratedMessageSelect = {
     where: { scheduledOccurrenceId: { not: null } }
   },
   status: true,
-  systemTurnKind: true
+  systemTurnKind: true,
+  answerReviewRound: true,
+  answerReviewSessionId: true,
+  answerReviewStep: true
 } satisfies Prisma.MessageSelect;
 
 const sessionStatusEventsSelect = {
@@ -405,6 +414,8 @@ type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
 }>;
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
 type HydratedMessagePath = Readonly<{
+  /** Each message of an answer review session, with its session and step. */
+  answerReviews: ReadonlyMap<string, AnswerReviewMessageWire>;
   memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>;
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>;
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>;
@@ -641,6 +652,7 @@ async function hydrateMessagePath(
 ): Promise<HydratedMessagePath> {
   if (messages.length === 0) {
     return {
+      answerReviews: new Map(),
       memoryActionsByRun: new Map(),
       memorySourcesByRun: new Map(),
       memoryStatusesByRun: new Map(),
@@ -666,14 +678,20 @@ async function hydrateMessagePath(
       : message.branchSourceModelRun?.id
         ? [message.branchSourceModelRun.id]
         : []);
-  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks] = await Promise.all([
+  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks, answerReviews] = await Promise.all([
     loadMemoryRunActions(tx, { runIds, userId }),
     loadMemoryRunSources(tx, { runIds, userId }),
     loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
-      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId)
+      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
+    loadAnswerReviewProjection(tx, { chatId, messages: ordered.map((message) => ({
+      answerReviewRound: message.answerReviewRound, answerReviewSessionId: message.answerReviewSessionId,
+      answerReviewStep: message.answerReviewStep, id: message.id, parentMessageId: message.parentMessageId, role: message.role,
+      stepModelName: answerReviewStepModelName(message.assistantModelRuns[0]?.normalizedRequest),
+      systemTurnKind: message.systemTurnKind
+    })), viewerUserId: userId })
   ]);
-  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, scheduledTasks };
+  return { answerReviews, memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, scheduledTasks };
 }
 
 /** The reader's current tasks among those the given answers' cards name; one read per page, none without cards. */
@@ -805,7 +823,8 @@ function serializeHydratedMessage(
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>,
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>,
   viewerUserId: string,
-  scheduledTasks: CurrentScheduledTasks
+  scheduledTasks: CurrentScheduledTasks,
+  answerReviews: ReadonlyMap<string, AnswerReviewMessageWire> = new Map()
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
@@ -824,7 +843,9 @@ function serializeHydratedMessage(
         message.assistantModelRuns.length ? viewerUserId : undefined
       )
     : null;
+  const answerReview = answerReviews.get(message.id);
   return {
+    ...(answerReview ? { answerReview } : {}),
     ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
       projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
         ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
@@ -927,7 +948,8 @@ function serializeChatDetail(input: {
         input.messages.memorySourcesByRun,
         input.messages.memoryStatusesByRun,
         input.viewerUserId,
-        input.messages.scheduledTasks
+        input.messages.scheduledTasks,
+        input.messages.answerReviews
       )),
     pageInfo: {
       activeLeafMessageId: chat.activeLeafMessageId,
@@ -1406,6 +1428,11 @@ export function summarizeMessageRunArtifacts(
     .map(artifactInnerPayload));
   const mcpApprovals = projectMcpApprovalCards(run.mcpToolApprovals ?? [],
     { initiator: viewerUserId !== undefined && run.userId === viewerUserId });
+  // A review step's report: the first valid card of its run.
+  const answerReviews = foldAnswerReviewCards(artifactPayloads.filter((payload) => artifactType(payload) === "answer_review")
+    .map(artifactInnerPayload));
+  const answerReviewDecisions = foldAnswerReviewDecisionsCards(artifactPayloads
+    .filter((payload) => artifactType(payload) === "answer_review_decisions").map(artifactInnerPayload));
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
@@ -1461,6 +1488,8 @@ export function summarizeMessageRunArtifacts(
     scheduledTasks.length === 0 &&
     skillSaves.length === 0 &&
     mcpApprovals.length === 0 &&
+    answerReviews.length === 0 &&
+    answerReviewDecisions.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
@@ -1494,6 +1523,8 @@ export function summarizeMessageRunArtifacts(
     ...(scheduledTasks.length > 0 ? { scheduledTasks } : {}),
     ...(skillSaves.length > 0 ? { skillSaves } : {}),
     ...(mcpApprovals.length > 0 ? { mcpApprovals } : {}),
+    ...(answerReviews.length > 0 ? { answerReviews } : {}),
+    ...(answerReviewDecisions.length > 0 ? { answerReviewDecisions } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== null ? { workDurationMs } : {})
@@ -2003,7 +2034,8 @@ export function createPrismaChatRepository(
                 messages.memorySourcesByRun,
                 messages.memoryStatusesByRun,
                 userId,
-                messages.scheduledTasks
+                messages.scheduledTasks,
+                messages.answerReviews
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
@@ -2157,7 +2189,8 @@ export function createPrismaChatRepository(
                 messages.memorySourcesByRun,
                 messages.memoryStatusesByRun,
                 userId,
-                messages.scheduledTasks
+                messages.scheduledTasks,
+                messages.answerReviews
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,

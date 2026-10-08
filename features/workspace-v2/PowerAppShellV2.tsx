@@ -1886,9 +1886,11 @@ export function PowerAppShellV2({
   });
 
   const {
+    continueAnswerReview,
     refreshInterruptedRun,
     regenerateMessage,
     sendMcpApprovalContinuation,
+    startAnswerReview,
     sendStarterPrompt,
     submitMessageEdit,
     submitComposer,
@@ -2236,7 +2238,9 @@ export function PowerAppShellV2({
     handleThreadScroll,
     interruptedRun: activeChatInterruptedRun,
     refreshInterruptedRun: () => refreshInterruptedRun(),
+    continueAnswerReview,
     sendMcpApprovalContinuation,
+    startAnswerReview,
     jumpToLatest,
     refreshLayout: refreshThreadLayout,
     hasOlderMessages: activeThreadHistory.hasOlder,

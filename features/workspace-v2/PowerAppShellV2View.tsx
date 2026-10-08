@@ -139,6 +139,17 @@ import {
   type NewChatMode
 } from "@/features/navigation-v2/NavigationV2";
 import { RunAnswerV2, RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
+import {
+  answerReviewAuthorModelsV2,
+  answerReviewAvailabilityV2,
+  answerReviewGroupProgressV2,
+  answerReviewReviewerCandidatesV2,
+  groupAnswerReviewsV2,
+  type AnswerReviewCatalogModelV2,
+  type AnswerReviewGroupV2
+} from "@/features/answer-review-v2/answerReviewModel";
+import { AnswerReviewHistoryV2, AnswerReviewStatusV2, AnswerReviewTurnV2 } from "@/features/answer-review-v2/AnswerReviewV2";
+import { AnswerReviewDialogV2, type AnswerReviewReviewerPick } from "@/features/answer-review-v2/AnswerReviewDialogV2";
 import { KnowledgeCitationControl } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   presentRunLifecycleV2,
@@ -583,6 +594,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   /** Groups of monitoring checks with no update the reader opened, by group id. */
   const [openScheduledChecks, setOpenScheduledChecks] = useState<ReadonlySet<string>>(() => new Set());
+  // The reviewer picker of "Review…": the answer it reviews, its offer and the round being started.
+  const [answerReviewDialog, setAnswerReviewDialog] = useState<Readonly<{
+    answerMessageId: string;
+    candidates: readonly AnswerReviewCatalogModelV2[];
+    initial: readonly AnswerReviewReviewerPick[];
+  }> | null>(null);
+  const [answerReviewStarting, setAnswerReviewStarting] = useState(false);
+  const [answerReviewError, setAnswerReviewError] = useState<string | null>(null);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -1292,9 +1311,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     role: message.role,
     streaming: message.status === "streaming"
   });
+  // An answer review session reads as one answer: its latest version stands
+  // for the group in the transcript and renders the group's history with it.
+  const answerReviewGroups = new Map<string, AnswerReviewGroupV2>();
+  const reviewedTranscript = groupAnswerReviewsV2(thread.visibleMessages).map((item) => {
+    if (item.kind === "message") return item.message;
+    answerReviewGroups.set(item.group.latest.id, item.group);
+    return item.group.latest;
+  });
+  const latestAnswerReviewSession = [...answerReviewGroups.values()].at(-1)?.session ?? null;
   // Consecutive monitoring checks with no update fold into one quiet row; opening it shows them unchanged below.
   const scheduledCheckGroups = new Map<string, number>();
-  const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
+  const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(reviewedTranscript).flatMap((item) => {
     if (item.kind === "message") return [conversationMessage(item.message)];
     scheduledCheckGroups.set(item.id, item.checks);
     const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
@@ -1307,6 +1335,39 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   });
   const presentAnswer = (source: ThreadMessage) => presentAnswerV2(source, thread);
   const announcedPresentation = announcedPresentationV2(liveTail, thread);
+
+  const reviewModels: readonly AnswerReviewCatalogModelV2[] = composer.catalog?.models ?? [];
+  /** "Review…" on an answer: offered on the chat's latest answer only, disabled with its reason. */
+  const reviewActionFor = (answer: ThreadMessage, latest: boolean): Pick<ConversationMessageActionsV2, "onReview" |
+    "reviewDisabledReason"> => {
+    if (answer.role !== "assistant" || answer.status !== "complete") return {};
+    const authorModels = answerReviewAuthorModelsV2(answer, reviewModels);
+    const candidates = answerReviewReviewerCandidatesV2(reviewModels, authorModels);
+    const availability = answerReviewAvailabilityV2({
+      activeRun: thread.activeChatStreaming,
+      agentEnabled: composer.agent?.enabled === true,
+      answer,
+      assistantChat: composer.assistant.current?.state === "bound",
+      authorModels,
+      candidates,
+      knowledgeEnabled: composer.knowledge.selection.mode !== "none",
+      latest,
+      mutationReason: projectMutationReason ?? (thread.editingMessageId ? "Finish or cancel the inline edit first." : null)
+    });
+    if (!thread.startAnswerReview) return {};
+    return {
+      onReview: () => {
+        setAnswerReviewError(null);
+        setAnswerReviewDialog({
+          answerMessageId: answer.id,
+          candidates,
+          // Until Settings holds a default, the chat's most recent choice of reviewers.
+          initial: answer.answerReview?.session.reviewers ?? latestAnswerReviewSession?.reviewers ?? []
+        });
+      },
+      reviewDisabledReason: availability.available ? null : availability.reason
+    };
+  };
 
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const editMutationReason = thread.editingMessageId
@@ -1340,12 +1401,36 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           readingAloud: readAloud.activeId === message.id
         } : {}),
         onRegenerate: () => thread.handleRegenerateMessage(message.id),
-        regenerateDisabled: mutationBlocked || regenerateUnavailable
+        regenerateDisabled: mutationBlocked || regenerateUnavailable,
+        ...reviewActionFor(message, message.id === latestMessage?.id)
       })
     };
   };
 
+  /**
+   * A review group's actions act on its answer: copy and read its latest
+   * version, regenerate or delete from its source answer (a new branch, or
+   * the whole group), and review it again. A branch copy would hold the
+   * group's server-written turns without their session, so it is not offered.
+   */
+  const reviewGroupActionsFor = (group: AnswerReviewGroupV2): ConversationMessageActionsV2 => {
+    const latest = group.messages.at(-1)?.id === thread.visibleMessages.at(-1)?.id;
+    const base = actionsFor(group.latest);
+    const source = group.source;
+    return {
+      ...base,
+      onBranchFromHere: undefined,
+      ...(source ? {
+        onDelete: () => thread.handleDeleteMessage(source.id),
+        onRegenerate: () => thread.handleRegenerateMessage(source.id)
+      } : { onDelete: undefined, onRegenerate: undefined }),
+      ...reviewActionFor(group.latest, latest)
+    };
+  };
+
   const renderMessage = (message: ConversationMessageV2): ReactNode => {
+    const reviewGroup = answerReviewGroups.get(message.id);
+    if (reviewGroup) return renderAnswerReviewGroup(reviewGroup);
     const checks = scheduledCheckGroups.get(message.id);
     if (checks !== undefined) {
       return (
@@ -1377,6 +1462,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     if (source.role === "user" && source.systemTurnKind === "mcp_approval_continuation") {
       // The server-written turn after an approval is not the user's speech.
       return <McpApprovalContinuationTurnV2 anchorId={source.id} content={messageText(source)} />;
+    }
+    if (source.role === "user" && source.systemTurnKind) {
+      // A review step's server-written turn outside its group (a copy without
+      // its session) is never shown as the user's speech either.
+      return <AnswerReviewTurnV2 anchorId={source.id} kind={source.systemTurnKind} />;
     }
     if (source.role === "user") {
       // Owner-only quiet line of the files sent with this exact message,
@@ -1420,6 +1510,39 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       );
     }
+    return renderAnswerMessage(source, { actions, pagerSlot });
+  };
+
+  /**
+   * One answer as the transcript renders it. A review group passes its own
+   * actions, status line and history; an answer inside the history passes no
+   * actions and a leading label.
+   */
+  const renderAnswerMessage = (source: ThreadMessage, options: Readonly<{
+    actions: ConversationMessageActionsV2 | null;
+    afterOutputs?: ReactNode;
+    leading?: ReactNode;
+    notice?: ReactNode;
+    pagerMessageId?: string;
+    pagerSlot?: ReactNode;
+  }>): ReactNode => {
+    const actions = options.actions ?? undefined;
+    // An answer inside a review history is a step's own run: it is never
+    // regenerated or retried on its own, only through its session.
+    const inHistory = options.actions === null;
+    const pagerMessageId = options.pagerMessageId ?? source.id;
+    const pagerSlot = options.pagerSlot ?? (
+      <BranchPagerSlotV2
+        disabledReason={thread.activeChatStreaming
+          ? "Wait for the current answer to finish."
+          : projectMutationReason ?? (thread.editingMessageId
+              ? "Finish or cancel the inline edit first."
+              : null)}
+        graph={branches.graph}
+        messageId={pagerMessageId}
+        onCheckout={branches.checkoutBranch}
+      />
+    );
     const { artifact, events, ownsLiveRun, presentation, transportLost } = presentAnswer(source);
     const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null,
       !transportLost && (source.status === "complete" || source.status === "error" || source.status === "cancelled"));
@@ -1444,15 +1567,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // fold (Thinking → Steps → Memory) sits above the text with the
     // memory-saved notice under it; the actions row below carries the pager,
     // the Sources chip and the verbs.
-    const leadingSlot = activeChatSummary?.hasContinuationSource && !source.runId &&
+    const identityLead = activeChatSummary?.hasContinuationSource && !source.runId &&
       source.parentMessageId === thread.visibleMessages[0]?.id && thread.visibleMessages[0]?.parentMessageId === null ? (
       <a className="v2-chat-continuation-source v2-focusable"
         href={`/api/chats/${encodeURIComponent(activeChatSummary.id)}/continuation-source`}>Previous chat</a>
     ) : identity ? <AnswerIdentityChipV2 identity={identity} /> : null;
+    const leadingSlot = options.leading ? <>{options.leading}{identityLead}</> : identityLead;
     const command = source.parentMessageId ? memoryCommands.get(source.parentMessageId) : undefined;
     // A background command owns the notice slot; its failed, unknown, stale
     // and rejected outcomes stay silent instead of reviving older feedback.
-    const noticeSlot = command && memoryCommandIsVisible(command) ? (
+    const memoryNotice = command && memoryCommandIsVisible(command) ? (
       <MemoryCommandStatusV2 command={command} onOpenMemory={settings.openMemory} />
     ) : command && (command.operation !== "UNKNOWN" ||
       ["FAILED", "UNKNOWN", "STALE"].includes(command.status)) ? null
@@ -1463,6 +1587,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onOpenMemorySettings={settings.openMemory}
       />
     ) : null;
+    const noticeSlot = options.notice ? <>{options.notice}{memoryNotice}</> : memoryNotice;
     const knowledgeHandles = new Set(
       artifact?.knowledgeCitations?.map((citation) => citation.handle) ?? []
     );
@@ -1511,6 +1636,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onOpen={(draftId, source) => { if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, draftId }, source); }}
                 onOpenArtifact={(generated, source) => { if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source); }}
               /> : null}
+              {options.afterOutputs}
             </>}
         anchorId={source.id}
         artifact={artifact}
@@ -1521,16 +1647,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         leadingSlot={leadingSlot}
         noticeSlot={noticeSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
-        onRegenerate={() => thread.handleRegenerateMessage(source.id)}
-        onRetry={() => {
+        onRegenerate={inHistory ? undefined : () => thread.handleRegenerateMessage(source.id)}
+        onRetry={inHistory ? undefined : () => {
           if (isMcpAutoDiscoveryFailureCode(presentation.failure?.code)) {
             retryAutoMcpDiscoveryV2(() => thread.handleRegenerateMessage(source.id));
             return;
           }
           thread.handleRegenerateMessage(source.id);
         }}
-        onSelectModel={() => setRunSetupOpen(true)}
-        onUseLoadAll={() => applyLoadAllAfterMcpDiscoveryFailureV2(
+        onSelectModel={inHistory ? undefined : () => setRunSetupOpen(true)}
+        onUseLoadAll={inHistory ? undefined : () => applyLoadAllAfterMcpDiscoveryFailureV2(
           () => thread.handleRegenerateMessage(source.id)
         )}
         pdfPreparation={source.pdfPreparation}
@@ -1547,7 +1673,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ) : null
           : undefined}
         showReasoning={composer.showReasoningBlocks}
-        toolbarLeading={branches.graph && branchPagerForMessageV2(branches.graph, source.id)
+        toolbarLeading={options.actions && branches.graph && branchPagerForMessageV2(branches.graph, pagerMessageId)
           ? pagerSlot
           : null}
         toolActivity={toolActivity}
@@ -1556,6 +1682,43 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       />
       </>
     );
+  };
+
+  /**
+   * A review session as one answer: its status line above the latest
+   * version, which keeps the ordinary answer anatomy, and its collapsed
+   * history below. Versions are answer content, so the settled answer grows
+   * no receipt row: the history holds earlier versions and the steps.
+   */
+  const renderAnswerReviewGroup = (group: AnswerReviewGroupV2): ReactNode => {
+    const runningAnswer = group.steps.find((entry) => entry.answer?.status === "streaming")?.answer ?? null;
+    const progress = answerReviewGroupProgressV2(group, runningAnswer
+      ? { artifact: presentAnswer(runningAnswer).artifact, messageId: runningAnswer.id } : undefined);
+    const latestGroup = group.messages.at(-1)?.id === thread.visibleMessages.at(-1)?.id;
+    const actionsEnabled = latestGroup && !thread.activeChatStreaming && !projectMutationReason && !thread.editingMessageId;
+    const startStep = (kind: "review" | "revision") => void thread.continueAnswerReview?.(group.session.id, kind);
+    return renderAnswerMessage(group.latest, {
+      actions: reviewGroupActionsFor(group),
+      afterOutputs: (
+        <AnswerReviewHistoryV2
+          defaultOpen={progress.stopReason === "approval_required"}
+          group={group}
+          renderAnswer={(message, leading) => renderAnswerMessage(message, { actions: null, leading })}
+        />
+      ),
+      notice: (
+        <AnswerReviewStatusV2
+          actionsEnabled={actionsEnabled && Boolean(thread.continueAnswerReview)}
+          group={group}
+          onContinue={() => startStep("review")}
+          onRevise={() => startStep("revision")}
+          onStop={() => void composer.stopCurrentRun(runningAnswer?.runId ?? undefined)}
+          progress={progress}
+          stopping={composer.stopping}
+        />
+      ),
+      pagerMessageId: group.source?.id ?? group.latest.id
+    });
   };
 
   // The account menu always opens the account's own Settings, also in a Project.
@@ -1947,6 +2110,26 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
               title={session.activeChatTitle}
             />
+            {answerReviewDialog ? (
+              <AnswerReviewDialogV2
+                busy={answerReviewStarting}
+                candidates={answerReviewDialog.candidates}
+                error={answerReviewError}
+                initial={answerReviewDialog.initial}
+                onCancel={() => setAnswerReviewDialog(null)}
+                onStart={(reviewers) => {
+                  if (!thread.startAnswerReview) return;
+                  setAnswerReviewStarting(true);
+                  setAnswerReviewError(null);
+                  void thread.startAnswerReview({ answerMessageId: answerReviewDialog.answerMessageId, reviewers })
+                    .then((result) => {
+                      if (result.ok) setAnswerReviewDialog(null);
+                      else setAnswerReviewError(result.error);
+                    })
+                    .finally(() => setAnswerReviewStarting(false));
+                }}
+              />
+            ) : null}
             <ConversationV2
               composerSlot={conversationMessages.length === 0 ? (
                 <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>

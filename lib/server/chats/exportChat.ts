@@ -11,6 +11,7 @@ import type { RequestAuthResolver } from "../auth/requestAuth";
 import { resolveChatAccess } from "../projects/access";
 import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
+import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
 
 export const chatExportChatSelect = {
   activeLeafMessageId: true,
@@ -26,6 +27,7 @@ export type ChatExportChatRow = Prisma.ChatGetPayload<{ select: typeof chatExpor
 
 const chatExportMessageSelect = {
   ...messageFollowupSelect,
+  answerReviewSessionId: true,
   content: true,
   createdAt: true,
   id: true,
@@ -33,17 +35,31 @@ const chatExportMessageSelect = {
   parentMessageId: true,
   provider: true,
   role: true,
-  status: true
+  status: true,
+  systemTurnKind: true
 } satisfies Prisma.MessageSelect;
 
-type ChatExportReadClient = Pick<Prisma.TransactionClient, "attachment" | "message">;
+type ChatExportReadClient = Pick<Prisma.TransactionClient, "answerReviewSession" | "attachment" | "message">;
 
 /**
  * Every message of one chat with its follow-ups and attachment metadata, in
  * a fixed number of queries regardless of the chat's size.
  */
 export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatExportChatRow): Promise<ChatExportSource> {
-  const rows = await db.message.findMany({ select: chatExportMessageSelect, where: { chatId: chat.id } });
+  const loaded = await db.message.findMany({ select: chatExportMessageSelect, where: { chatId: chat.id } });
+  // Each answer review reads as its answer: the source question, then the
+  // group's latest version. Its server-written turns, reviews and earlier
+  // versions stay out (the document shape holds no review history).
+  const sessions = loaded.some((row) => row.answerReviewSessionId)
+    ? await db.answerReviewSession.findMany({ select: { id: true, sourceAssistantMessageId: true }, where: { chatId: chat.id } })
+    : [];
+  const collapse = collapseAnswerReviews(loaded.map((row) => ({ answerReviewSessionId: row.answerReviewSessionId, id: row.id,
+    parentId: row.parentMessageId, role: row.role, status: row.status, systemTurnKind: row.systemTurnKind })), sessions);
+  const rows = loaded.filter((row) => !collapse.removed.has(row.id))
+    .map((row) => collapse.parents.has(row.id) ? { ...row, parentMessageId: collapse.parents.get(row.id) ?? null } : row);
+  const activeLeafKey = chat.activeLeafMessageId
+    ? collapse.replacements.get(chat.activeLeafMessageId) ?? chat.activeLeafMessageId
+    : null;
   const attachmentIds = [...new Set(rows.flatMap((row) => chatExportAttachmentIds(row.content)))];
   const attachmentRows = attachmentIds.length
     ? await db.attachment.findMany({
@@ -57,7 +73,7 @@ export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatE
       { byteSize: row.byteSize, mimeType: row.mimeType, name: row.fileName }
     ])),
     chat: {
-      activeLeafKey: chat.activeLeafMessageId,
+      activeLeafKey,
       archived: chat.archived,
       createdAt: chat.createdAt,
       pinned: chat.pinned,
