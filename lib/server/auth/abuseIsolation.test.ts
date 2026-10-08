@@ -52,7 +52,7 @@ function syntheticDirectory(passwords: Record<string, string>): PasswordAuthRepo
     async createSessionForCurrentPassword(input) {
       const identity = [...identities.values()].find((candidate) => candidate.id === input.identityId);
 
-      return identity?.passwordHash === input.passwordHash ? { user: identity.user } : null;
+      return identity?.passwordHash === input.passwordHash ? { kind: "session", user: identity.user } : null;
     },
     async findPasswordIdentityByEmail(email) {
       return identities.get(email) ?? null;

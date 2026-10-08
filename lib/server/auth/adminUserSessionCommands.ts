@@ -30,6 +30,7 @@ export type AdminUserSessionCommands = Pick<
   | "deleteStaleUser"
   | "disableUser"
   | "rejectUser"
+  | "resetUserTwoFactor"
   | "revokeAllSessions"
   | "revokeUserSessions"
   | "setUserRole"
@@ -322,6 +323,21 @@ export function createAdminUserSessionCommands(
         await revokeAllInboundMcpGrants(tx, { now, reason: "admin_revoke_all" });
 
         return result.count;
+      });
+    },
+    async resetUserTwoFactor(input) {
+      // Lock order of the user's own enrolment: the user row, then the factor row.
+      return prisma.$transaction(async (tx) => {
+        await lockAuthUser(tx, input.userId);
+        const user = await tx.user.findUnique({ select: { id: true }, where: { id: input.userId } });
+
+        if (!user) {
+          return null;
+        }
+
+        await tx.authTotpFactor.deleteMany({ where: { userId: input.userId } });
+
+        return revokeUserSessions(tx, input);
       });
     },
     async revokeUserSessions(input) {

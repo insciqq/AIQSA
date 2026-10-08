@@ -9,9 +9,14 @@ export function createPrismaAuthSessionStore(prisma: PrismaClient): AuthSessionS
 
       if (signInMethod) {
         // Sign-ins without a transaction of their own (bootstrap token, Google and Yandex)
-        // end here: the completion seam and the insert share one transaction.
+        // end here: the completion seam and the insert share one transaction. None of them
+        // asks for a second factor, so a challenge here is a programming error.
         return prisma.$transaction(async (tx) => {
           const issued = await issueSignInSession(tx, { session, signInMethod, userId });
+
+          if (issued.kind !== "session") {
+            throw new Error("sign_in_second_factor_unsupported");
+          }
 
           return issued.session;
         });

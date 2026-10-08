@@ -19,7 +19,7 @@ Keep `.env` restricted and outside Git, images, logs, transcripts, and support b
 
 Session/flow signing, `AIQSA_ENCRYPTION_KEY`, Memory fingerprint/routing keys and Workspace token are cryptographically independent; never derive one from another. Back up encryption/Memory keys separately from data.
 
-Replacing `AIQSA_ENCRYPTION_KEY` without migration loses encrypted provider/SMTP/MCP/OAuth readability. Fingerprint rotation is additive; missing historical versions block affected state, and backup preflight records required IDs without keys. Routing-key or ID rotation requires a full derived lexical rebuild before readiness; canonical PostgreSQL survives but mixed-key fallback is forbidden. Missing key history or destination authority never weakens suppression or selects another destination.
+Replacing `AIQSA_ENCRYPTION_KEY` without migration loses encrypted provider/SMTP/MCP/OAuth/TOTP readability. Fingerprint rotation is additive; missing historical versions block affected state, and backup preflight records required IDs without keys. Routing-key or ID rotation requires a full derived lexical rebuild before readiness; canonical PostgreSQL survives but mixed-key fallback is forbidden. Missing key history or destination authority never weakens suppression or selects another destination.
 
 The trusted base URL determines callback/email origins, cookie/HSTS defaults, and same-origin policy; request Host/forwarding never selects it. Changing it is an identity/security migration. Direct non-loopback HTTP gives no confidentiality; [Security](SECURITY.md) owns exposure rules.
 
