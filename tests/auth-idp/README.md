@@ -7,7 +7,7 @@ Fixtures and a launcher for the opt-in real identity provider scenarios in `test
 One Compose project with two networks, like an installation whose identity providers live elsewhere on the LAN:
 
 - AIQSA's network: `app` (the Playwright image with this checkout at `/app`; Playwright's web server starts `next dev` there on `http://127.0.0.1:3000`) and its PostgreSQL. `header-proxy` (nginx, `http://127.0.0.1:8088`) and a route helper share the app's network namespace.
-- A separate LAN (`10.231.147.0/24` by default) with Keycloak (realm `aiqsa`, OIDC client and SAML client), Authentik (server, worker, PostgreSQL), OpenLDAP with the `memberof` overlay and a Samba AD DC (LDAPS, `dc1.aiqsa.test`).
+- A separate LAN (`172.29.147.0/24` by default) with Keycloak (realm `aiqsa`, OIDC client and SAML client), Authentik (server, worker, PostgreSQL), OpenLDAP with the `memberof` overlay and a Samba AD DC (LDAPS, `dc1.aiqsa.test`).
 - A `router` container forwards the app's LAN traffic and is the identity providers' only way back to AIQSA (`http://router:3000`, used by Authentik's SCIM provider). AIQSA refuses its own container networks as an identity provider destination, so the providers must not join AIQSA's network.
 
 Every image is pinned by digest in `stand.mjs`. The realm, the directory seed and the proxy configuration are `keycloak-realm.template.json`, `openldap-seed.ldif` and `header-proxy.conf`; the Samba users and groups are created by `stand.mjs` with `samba-tool`.
