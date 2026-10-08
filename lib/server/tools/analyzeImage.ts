@@ -36,7 +36,7 @@ export function visionAnalysisTimeoutMs(plan: Pick<AvailableVisionAnalysisPlan, 
   const bound = effort === undefined
     ? model.capabilities.reasoning === false ? VISION_ANALYSIS_LIMITS.timeoutMs : VISION_ANALYSIS_REASONING_TIMEOUT_MS
     : Object.hasOwn(VISION_ANALYSIS_EFFORT_TIMEOUT_MS, effort) ? VISION_ANALYSIS_EFFORT_TIMEOUT_MS[effort] : VISION_ANALYSIS_LIMITS.timeoutMs;
-  const response = effectiveProviderResponseTimeoutMs(plan.snapshot.connection, model);
+  const response = effectiveProviderResponseTimeoutMs(plan.snapshot.connection, model.adapterKind === "fake" ? null : model);
   return Number.isFinite(response) && response > 0 ? Math.min(bound, response) : bound;
 }
 
