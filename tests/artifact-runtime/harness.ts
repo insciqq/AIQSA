@@ -1,3 +1,4 @@
+import { createSocket } from "node:dgram";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Page } from "@playwright/test";
@@ -57,6 +58,10 @@ export type RuntimeServer = Readonly<{
   origin: string;
   wsOrigin: string;
   hits: RuntimeHit[];
+  /** One entry per accepted TCP socket. A resource hint (preconnect) opens a
+   * socket without ever sending an HTTP request, so it never reaches `hits`;
+   * this counter is the only evidence that the connection was made. */
+  connections: string[];
   /** Serves a viewer-like host page for an already rendered artifact document. */
   hostPage(document: string, policies?: readonly string[]): string;
   close(): Promise<void>;
@@ -82,6 +87,7 @@ function trapResponse(request: IncomingMessage, response: ServerResponse): void 
 export async function startRuntimeServer(): Promise<RuntimeServer> {
   const pages = new Map<string, { body: string; policies: readonly string[] }>();
   const hits: RuntimeHit[] = [];
+  const connections: string[] = [];
   const server: Server = createServer((request, response) => {
     const path = new URL(request.url ?? "/", "http://runtime.invalid").pathname;
     const page = pages.get(path);
@@ -101,6 +107,8 @@ export async function startRuntimeServer(): Promise<RuntimeServer> {
     hits.push({ kind: "upgrade", method: request.method ?? "", path: new URL(request.url ?? "/", "http://runtime.invalid").pathname });
     socket.destroy();
   });
+  // A resource hint opens a socket and may send no bytes; record the raw connection.
+  server.on("connection", socket => { connections.push(`${socket.remoteAddress ?? ""}:${socket.remotePort ?? 0}`); });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const { port } = server.address() as AddressInfo;
   let next = 0;
@@ -108,6 +116,7 @@ export async function startRuntimeServer(): Promise<RuntimeServer> {
     origin: `http://127.0.0.1:${port}`,
     wsOrigin: `ws://127.0.0.1:${port}`,
     hits,
+    connections,
     hostPage(document, policies = []) {
       const path = `/host/${++next}`;
       pages.set(path, { body: hostDocument(document), policies });
@@ -137,3 +146,28 @@ export const PROBE_OUTCOME_SOURCE = "const outcome = (name, run, ms = 3000) => n
   "let settled = false; const done = value => { if (!settled) { settled = true; clearTimeout(timer); resolve([name, String(value)]); } };" +
   "const timer = setTimeout(() => done('timeout'), ms);" +
   "try { run(done); } catch (error) { done('threw:' + (error && error.name)); } });";
+
+/** UDP datagram with the STUN magic cookie 0x2112A442 in bytes 4..8 (RFC 5389). */
+export function isStunPacket(datagram: Buffer): boolean {
+  return datagram.length >= 8 && datagram.readUInt32BE(4) === 0x2112a442;
+}
+
+export type StunTrap = Readonly<{
+  /** The UDP port a `stun:`/`turn:` URL points at. */
+  port: number;
+  /** Every datagram received; a WebRTC ICE binding request is a STUN packet. */
+  packets: Buffer[];
+  close(): Promise<void>;
+}>;
+
+/** A loopback UDP listener. WebRTC ICE gathering sends STUN binding requests
+ * (and TURN allocate requests) to its configured server over UDP, outside any
+ * CSP fetch directive; a datagram here is proof the channel reached the network. */
+export async function startStunTrap(): Promise<StunTrap> {
+  const packets: Buffer[] = [];
+  const socket = createSocket("udp4");
+  socket.on("message", datagram => { packets.push(Buffer.from(datagram)); });
+  await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.bind(0, "127.0.0.1", resolve); });
+  const { port } = socket.address();
+  return { port, packets, close: () => new Promise<void>(resolve => socket.close(() => resolve())) };
+}

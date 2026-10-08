@@ -93,6 +93,7 @@ export function parseArtifactNavigateMessage(value: unknown): ArtifactNavigateMe
   const input = value as Record<string, unknown>;
   const withFragment = Object.hasOwn(input, "fragment");
   if (input.type !== "aiqsa_artifact_navigate" || !exactFields(input, withFragment ? ["type", "path", "fragment"] : ["type", "path"])) return null;
+  // The exact authored path grammar, `_vendor/` in any letter case excluded (artifactPagePath).
   const path = artifactPagePath(input.path);
   if (!path) return null;
   if (!withFragment) return { path };
