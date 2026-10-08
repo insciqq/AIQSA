@@ -204,6 +204,8 @@ describe("answer review availability", () => {
       [{ answer: { ...answer, artifactSummary: artifact({ generatedImages: [{ attachmentId: "i", fileName: "x.png" }] as never }) } },
         /generated images/u],
       [{ candidates: [] }, /No other model/u],
+      // An answer the server has not named yet: its id is still the browser's.
+      [{ answer: { ...answer, id: "assistant-1760000000000" } }, /Wait for the current answer/u],
       [{ answer: { ...answer, answerReview: { session: sessionWire({ canAct: undefined }) } } }, /member who started this review/u]
     ] as const) {
       const result = answerReviewAvailabilityV2({ ...base, ...overrides } as AnswerReviewAvailabilityInput);
@@ -230,6 +232,18 @@ describe("answer review dialog", () => {
     expect(within(dialog).getByText("Second")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Start review" }));
     expect(onStart).toHaveBeenCalledWith([{ modelId: "gpt-5", provider: "openai" }, { modelId: "gemini", provider: "google" }]);
+  });
+
+  it("starts a later round with an earlier session's reviewers as identities only", () => {
+    const onStart = vi.fn();
+    // An earlier session's reviewers carry their display names; a round request names models by identity alone.
+    const earlier = [{ modelId: "gemini", name: "Gemini", provider: "google" }];
+    render(<AnswerReviewDialogV2 candidates={candidates} initial={earlier} onCancel={vi.fn()} onStart={onStart} />);
+    const dialog = screen.getByRole("dialog", { name: "Review with another model" });
+    expect(within(dialog).getByRole("checkbox", { name: "Gemini" })).toBeChecked();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start review" }));
+    expect(onStart).toHaveBeenCalledWith([{ modelId: "gemini", provider: "google" }]);
+    expect(Object.keys(onStart.mock.calls[0]![0][0])).toEqual(["modelId", "provider"]);
   });
 
   it("keeps an earlier choice that is still offered and cannot start without a reviewer", () => {
