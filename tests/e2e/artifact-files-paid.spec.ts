@@ -6,8 +6,9 @@
  * AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE, CODEX_LB_API_KEY and CODEX_LB_BASE_URL
  * (the Codex root ending in `/backend-api/codex`); AIQSA_FEATURES_CODEX_MODEL
  * picks the codex-lb model (default as `setupCodexLbAnswerModel`). The
- * `large-html` scenario also needs AIQSA_AFC_PRIVATE_DIR holding the
- * operator's `backrooms-rebuilt.html`; it is read in place and uploaded to the
+ * `large-html` scenario also needs the operator's private large self-contained
+ * page (AIQSA_AFC_LARGE_HTML, or the single `.html` file in
+ * AIQSA_AFC_PRIVATE_DIR); it is read in place and uploaded to the
  * stand only, never copied, and skipped when absent. The scenarios run
  * serially and one failure skips the rest; AIQSA_AFC_PAID_SERIAL=0 runs each
  * on its own. Every scenario is its own test, so `--grep <scenario>` runs a
@@ -27,8 +28,8 @@
  * paid specs' connections. `public-and-zip` uses no model.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
 import { PrismaClient, type ModelRun, type ModelRunStatus, type Prisma } from "@prisma/client";
 import { expect, test, type Page, type Response as PageResponse, type TestInfo } from "@playwright/test";
 import { parseChatRoutePath } from "../../lib/domain/chatRoute";
@@ -74,6 +75,7 @@ import {
   sha256Hex,
   uploadAttachment,
   zipFiles,
+  privateLargeHtmlPath,
   type Box
 } from "./support/artifactFilesStand";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
@@ -104,7 +106,6 @@ const SCENARIO_TIMEOUT_MS = 45 * 60_000;
 const ACTIVE_RUN_STATUSES: ModelRunStatus[] = ["preparing", "queued", "streaming", "in_progress"];
 const ARTIFACT_TOOL = "create_artifact";
 const MAX_REFERENCE_ARGUMENT_BYTES = 64 * 1024;
-const PRIVATE_HTML_NAME = "backrooms-rebuilt.html";
 
 /** One codex-lb connection for the whole file. */
 let answerModel: PaidAnswerModel | null = null;
@@ -572,19 +573,13 @@ function officeView(stand: Stand, bundle: Bundle, phrases: readonly string[], pd
 
 // ------------------------------------------------------------- Scenarios ---
 
-function privateHtmlPath(): string | null {
-  const directory = paidEnv("AIQSA_AFC_PRIVATE_DIR");
-  const path = directory ? join(directory, PRIVATE_HTML_NAME) : null;
-  return path && existsSync(path) ? path : null;
-}
-
 /** The document without its `<title>` element and the whitespace around it. */
 const withoutTitle = (html: string) => html.replace(/\s*<title\b[^>]*>[\s\S]*?<\/title\s*>\s*/iu, "");
 const titleText = (html: string) => /<title\b[^>]*>([\s\S]*?)<\/title\s*>/iu.exec(html)?.[1] ?? "";
 
 test("large-html: the operator's page becomes an artifact unchanged, renders and rotates; a title edit is a new blob version", async ({ page }, testInfo) => {
-  const path = privateHtmlPath();
-  test.skip(!path, "requires AIQSA_AFC_PRIVATE_DIR with the operator's backrooms-rebuilt.html");
+  const path = privateLargeHtmlPath();
+  test.skip(!path, "requires the operator's private large page (AIQSA_AFC_LARGE_HTML or AIQSA_AFC_PRIVATE_DIR)");
   test.setTimeout(75 * 60_000);
   await withScenario(page, testInfo, "large-html", async (stand) => {
     const bytes = readFileSync(path!);
@@ -597,7 +592,7 @@ test("large-html: the operator's page becomes an artifact unchanged, renders and
 
     stand.step = "original_version";
     const upload = await db().attachment.findFirst({ select: { checksum: true },
-      where: { chatId: first.chatId, origin: "USER_UPLOAD", fileName: PRIVATE_HTML_NAME } });
+      where: { chatId: first.chatId, origin: "USER_UPLOAD", fileName: basename(path!) } });
     expect(upload?.checksum === fileSha, "the stored upload is the exact file").toBe(true);
     const versions = await runVersions(first.run.id);
     stand.summary.versionsCreated = versions.length;
@@ -651,7 +646,7 @@ test("large-html: the operator's page becomes an artifact unchanged, renders and
     await closePanel(page);
 
     stand.step = "title_edit";
-    const second = await sendTurn(stand, "Поменяй заголовок страницы (title) на «Backrooms AIQSA»");
+    const second = await sendTurn(stand, "Поменяй заголовок страницы (title) на «Large Page AIQSA»");
     const edited = (await runVersions(second.run.id)).at(-1);
     expect(edited !== undefined, "the edit created a new version").toBe(true);
     expect(edited!.artifactId === original.artifactId && edited!.versionNumber > original.versionNumber,
@@ -672,7 +667,7 @@ test("large-html: the operator's page becomes an artifact unchanged, renders and
     const editedText = editedBundle.files.get(editedEntry)?.toString("utf8") ?? "";
     const originalText = originalEntry!.toString("utf8");
     const onlyTitleChanged = withoutTitle(editedText) === withoutTitle(originalText);
-    const titleSet = titleText(editedText).includes("Backrooms AIQSA");
+    const titleSet = titleText(editedText).includes("Large Page AIQSA");
     Object.assign(stand.summary, { onlyTitleChanged, titleSet });
     expect(onlyTitleChanged, "the edit changed only the <title>").toBe(true);
     expect(titleSet, "the new <title> is set").toBe(true);

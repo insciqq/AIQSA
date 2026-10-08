@@ -3,7 +3,8 @@
  * disposable stand of the paid file-to-artifact spec. Never a default lane: it
  * runs only with AIQSA_AFC_ADAPTIVE_E2E=DISPOSABLE. AIQSA_AFC_BROWSER picks the
  * engine: chromium (default), webkit or firefox. The `large-html` case also
- * needs AIQSA_AFC_PRIVATE_DIR holding the operator's `backrooms-rebuilt.html`;
+ * needs the operator's private large page (AIQSA_AFC_LARGE_HTML, or the single
+ * `.html` file in AIQSA_AFC_PRIVATE_DIR);
  * it is read in place and uploaded to the stand only, never copied, and the
  * case is skipped when the file is absent.
  *
@@ -25,8 +26,8 @@
  * afterwards; unsent uploads have no delete route and stay with the stand.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import {
   devices,
   expect,
@@ -53,6 +54,7 @@ import {
   largestCanvasBox,
   luminanceStdDev,
   NON_UNIFORM_STDDEV,
+  privateLargeHtmlPath,
   removeArtifact,
   uploadAttachment
 } from "./support/artifactFilesStand";
@@ -67,7 +69,6 @@ test.skip(process.env.AIQSA_AFC_ADAPTIVE_E2E !== "DISPOSABLE", "requires AIQSA_A
 test.use({ browserName: engine });
 test.describe.configure({ mode: "serial" });
 
-const PRIVATE_HTML_NAME = "backrooms-rebuilt.html";
 const MIB = 1024 * 1024;
 
 type Profile = Readonly<{ name: string; touch: boolean; options: BrowserContextOptions }>;
@@ -335,18 +336,12 @@ async function sampleLoad(browser: Browser, context: BrowserContext, page: Page)
   };
 }
 
-function privateHtmlPath(): string | null {
-  const directory = process.env.AIQSA_AFC_PRIVATE_DIR?.trim();
-  const path = directory ? join(directory, PRIVATE_HTML_NAME) : null;
-  return path && existsSync(path) ? path : null;
-}
-
 test("large-html: the operator's scene draws, fits and takes a tap on every profile; phone load metrics in Chromium", async ({ browser, baseURL }, testInfo) => {
-  const path = privateHtmlPath();
-  test.skip(!path, "requires AIQSA_AFC_PRIVATE_DIR with the operator's backrooms-rebuilt.html");
+  const path = privateLargeHtmlPath();
+  test.skip(!path, "requires the operator's private large page (AIQSA_AFC_LARGE_HTML or AIQSA_AFC_PRIVATE_DIR)");
   test.setTimeout(60 * 60_000);
   await withArtifact(browser, baseURL!, testInfo, "large-html", async (request) => {
-    const upload = await uploadAttachment(request, { fileName: PRIVATE_HTML_NAME, mimeType: "text/html", bytes: readFileSync(path!) });
+    const upload = await uploadAttachment(request, { fileName: basename(path!), mimeType: "text/html", bytes: readFileSync(path!) });
     return createArtifactFromUploads(request, { title: `Large scene check ${tag()}`, entrypoint: "index.html",
       files: [{ path: "index.html", mimeType: "text/html", assetRef: upload.id }] });
   }, async (artifact, summary) => {
