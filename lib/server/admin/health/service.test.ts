@@ -186,6 +186,7 @@ describe("admin health incidents", () => {
     id: "0b6c7f0e-5d1c-4a51-9df7-7d1fb0d6c111", occurredAt: new Date("2026-10-07T12:00:00.000Z"), role: "app",
     event: "provider_operation", level: "error", appVersion: "0.3.7", instanceId: "a".repeat(32),
     code: "provider_auth_rejected", subsystem: null, connectionId: CONNECTION, runId: "run-1", traceId: "b".repeat(32),
+    userId: "user-secret",
     details: { stage: "answer", outcome: "failed", httpStatus: 401, providerModelId: MODEL, duration_ms: 812,
       job_id: "job-secret", tool_call_id: "call-1", scope_id: "scope", generation_id: "gen" }
   };
@@ -211,7 +212,7 @@ describe("admin health incidents", () => {
       connectionName: "OpenAI production", modelName: "GPT answer", httpStatus: 401, runId: "run-1", traceId: "b".repeat(32),
       details: [{ key: "duration_ms", value: 812 }, { key: "outcome", value: "failed" }]
     }]);
-    expect(JSON.stringify(page)).not.toMatch(/job-secret|call-1|scope|gen"/u);
+    expect(JSON.stringify(page)).not.toMatch(/job-secret|call-1|scope|gen"|user-secret/u);
     expect(telemetry.readIncidents).toHaveBeenCalledWith({ from: new Date("2026-10-06T12:30:00.000Z"), cursor: null, limit: 50 });
   });
 
