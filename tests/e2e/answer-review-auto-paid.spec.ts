@@ -13,11 +13,12 @@
  * The user chooses the review in the model picker (2 rounds), asks a short
  * synthetic trap question, closes the tab while the reviewer checks, and the
  * server finishes the session alone. AIQSA_ANSWER_REVIEW_PAID_SCENARIO=revision
- * instead asks to polish a sentence keeping a wrong percentage as written, so
- * the reviewer has a substantive finding and the author's revision step (its
- * decisions on the finding) runs with a real model; it requires one revision. Oracles are the persisted session, its
- * step turns and the one push attempt to an unresolvable endpoint (as in
- * answer-review-auto.spec.ts), then the reopened chat; never the models'
+ * instead asks for a sentence under strict, checkable constraints that fast
+ * models often break, so the reviewer has a finding and the author's revision
+ * step (its decisions on the finding) runs with a real model; it requires one
+ * revision. Oracles are the persisted session, its step turns and the one
+ * push attempt to an unresolvable endpoint (as in answer-review-auto.spec.ts),
+ * then the reopened chat; never the models'
  * wording. The summary holds counts, codes, model ids, tokens and costs only,
  * never the prompt, the answers or the key. The chat, the push subscription
  * and the account's settings are restored; the provider connections stay on
@@ -62,9 +63,9 @@ const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"];
 const TRAP_QUESTION = "Answer in at most three short lines, one per question. (1) A bat and a ball cost $1.10 together, and " +
   "the bat costs $1.00 more than the ball: what does the ball cost? (2) How many letters r are in the word \"strawberry\"? " +
   "(3) Is 1001 a prime number?";
-/** The user's own figure is wrong (12 to 15 is 25%), and the author is asked to keep it. */
-const REVISION_QUESTION = "Polish the wording of this sentence for our team newsletter in one sentence, keeping every fact and " +
-  "number exactly as written: \"Our support team grew from 12 to 15 people this quarter, a 50% increase.\"";
+/** Constraints a reviewer can check word by word and a fast author often misses (a count, an initial, no repeats). */
+const REVISION_QUESTION = "Write one English sentence of exactly 15 words in which every word begins with the letter b and no " +
+  "word is repeated. Reply with the sentence only.";
 const scenario = paidEnv("AIQSA_ANSWER_REVIEW_PAID_SCENARIO") === "revision" ? "revision" : "trap";
 
 /** Cheap, fast tool-calling classes first. */

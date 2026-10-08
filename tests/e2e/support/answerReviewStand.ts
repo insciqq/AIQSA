@@ -224,6 +224,9 @@ async function removeFixtureDeployment(prisma: PrismaClient, input: Readonly<{
     await tx.memoryJob.deleteMany({ where: { chatId: { in: chatIds }, userId } });
     await tx.memoryRetrievalAttempt.deleteMany({ where: { chatId: { in: chatIds }, userId } });
     await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: chatIds }, userId } });
+    // A chat Memory checkpointed restricts its messages' deletion.
+    await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: chatIds } } });
+    await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: chatIds } } });
     await tx.chat.deleteMany({ where: { id: { in: chatIds }, userId } });
     await tx.accessGrant.deleteMany({ where: { OR: [{ providerConnectionId: id }, { providerModel: { connectionId: id } }] } });
     await tx.providerUserCredentialAssignment.deleteMany({ where: { connectionId: id } });
