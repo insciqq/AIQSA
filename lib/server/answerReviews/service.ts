@@ -7,6 +7,7 @@ import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { resolveChatAccess } from "../projects/access";
 import type { RunPreparationDeps } from "../runs/runPreparation";
 import {
+  answerReviewSessionSelect,
   canActOnAnswerReviewSession,
   decodeAnswerReviewModelRef,
   decodeAnswerReviewSessionRow,
@@ -52,8 +53,8 @@ export function decodeAnswerReviewReviewerRequest(value: unknown): Array<Readonl
  * Project scope), so a name never reaches the session for a model the user
  * cannot use. Null when it is unavailable or cannot call tools.
  */
-async function admittedToolModel(
-  deps: AnswerReviewServiceDeps,
+export async function admitAnswerReviewToolModel(
+  deps: Pick<AnswerReviewServiceDeps, "providerAdmission">,
   model: Readonly<{ modelId: string; provider: string }>,
   scope: Readonly<{ projectId: string | null; userId: string }>
 ): Promise<AnswerReviewModelRef | null> {
@@ -77,10 +78,7 @@ async function admittedToolModel(
   }
 }
 
-const sessionSelect = {
-  authorModel: true, chatId: true, id: true, maxRounds: true, mode: true, reviewers: true, round: true,
-  sourceAssistantMessageId: true, state: true, stopReason: true, userId: true
-} satisfies Prisma.AnswerReviewSessionSelect;
+const sessionSelect = answerReviewSessionSelect;
 
 type Target = Readonly<{
   /** The session the answer is the latest version of, when it has one. */
@@ -169,7 +167,7 @@ export async function startAnswerReviewRound(
   let author: AnswerReviewModelRef | null = target.session?.authorModel ?? null;
   if (target.session && author && target.session.userId !== input.userId) {
     // Taking a session over: its revisions will run under the new initiator's own access.
-    author = await admittedToolModel(deps, { modelId: author.modelId, provider: author.provider }, scope);
+    author = await admitAnswerReviewToolModel(deps, { modelId: author.modelId, provider: author.provider }, scope);
     if (!author) return refused("answer_review_model_unsupported");
   }
   if (!target.session) {
@@ -195,7 +193,7 @@ export async function startAnswerReviewRound(
     if ((sourceRun?.workspaceProducedAttachments.length ?? 0) > 0) return refused("answer_review_image_unsupported");
     const binding = sourceRun?.providerRunBindings[0];
     if (!binding?.connectionId || !binding.providerModelId) return refused("answer_review_model_unsupported");
-    author = await admittedToolModel(deps, { modelId: binding.providerModelId, provider: binding.connectionId }, scope);
+    author = await admitAnswerReviewToolModel(deps, { modelId: binding.providerModelId, provider: binding.connectionId }, scope);
     if (!author) return refused("answer_review_model_unsupported");
   }
   if (!author) return refused("answer_review_model_unsupported");
@@ -213,7 +211,7 @@ export async function startAnswerReviewRound(
   }
   const reviewers: AnswerReviewModelRef[] = [];
   for (const reviewer of input.reviewers) {
-    const admitted = await admittedToolModel(deps, reviewer, scope);
+    const admitted = await admitAnswerReviewToolModel(deps, reviewer, scope);
     if (!admitted) return refused("answer_review_reviewer_unavailable");
     reviewers.push(admitted);
   }
@@ -232,11 +230,15 @@ export async function startAnswerReviewRound(
     if (typeof current === "string") return refused(current);
     if (current.session) {
       if (!canActOnAnswerReviewSession(current.session, input.userId)) return refused("answer_review_not_initiator");
+      // The server drives a running automatic session; once it ended, a further round is the user's own.
+      if (current.session.mode === "auto" && current.session.state === "running") return refused("answer_review_step_unavailable");
       const takingOver = current.session.userId !== input.userId;
       const stepsThisRound = await tx.message.count({ where: { answerReviewRound: current.session.round,
         answerReviewSessionId: current.session.id, chatId: input.chatId, role: "user" } });
       const row = await tx.answerReviewSession.update({
         data: {
+          ...(current.session.mode === "auto"
+            ? { controls: Prisma.DbNull, endNotifiedAt: null, maxRounds: null, mode: "manual" as const } : {}),
           ...(takingOver ? { authorModel: authorRef as unknown as Prisma.InputJsonValue, userId: input.userId } : {}),
           reviewers: reviewers as unknown as Prisma.InputJsonValue,
           round: stepsThisRound > 0 ? current.session.round + 1 : current.session.round,

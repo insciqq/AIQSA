@@ -42,6 +42,7 @@ import {
   type ChatWorkspaceState
 } from "../../contracts/workspace";
 import { decodeKnowledgeSelection, type KnowledgePlan } from "../../contracts/knowledge";
+import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
 import { ChatAssistantUpdateError, type ChatAssistantUpdateErrorCode } from "./assistantUpdateError";
 
 export type {
@@ -79,6 +80,8 @@ export type ChatMessageRecord = {
 };
 
 export type ChatSummaryRecord = {
+  /** The chat's automatic answer review; absent is off. */
+  answerReview?: AnswerReviewAutoConfig | null;
   defaultSearchPlan?: SearchPlan | null;
   titlePending?: boolean;
   hasContinuationSource?: boolean;
@@ -174,6 +177,8 @@ export type ChatRepository = {
     userId: string;
   }): Promise<FolderRecord | null>;
   updateChat(input: {
+    /** The chat's automatic answer review choice; null clears it (off). */
+    answerReview?: AnswerReviewAutoConfig | null;
     defaultSearchPlan?: SearchPlan | null;
     activeLeafMessageId?: string | null;
     /** A string binds the Assistant, null removes it; either clears the overrides. */
@@ -334,6 +339,7 @@ export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSumm
     ...(chat.importSource && chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}),
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
+    ...(chat.answerReview ? { answerReview: chat.answerReview } : {}),
     assistantId: chat.assistantId ?? null,
     createdAt: iso(chat.createdAt),
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,
@@ -587,6 +593,12 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
       return chatRouteErrorJson({ error: "search_plan_invalid" }, { status: 400 });
     }
     const defaultKnowledgePlan = knowledgeDefaultValue(body);
+    const answerReview = body && "answerReview" in body
+      ? body.answerReview === null ? null : decodeAnswerReviewAutoConfig(body.answerReview) ?? "invalid"
+      : undefined;
+    if (answerReview === "invalid") {
+      return chatRouteErrorJson({ error: "answer_review_invalid" }, { status: 400 });
+    }
     const workspaceEnabled = workspaceEnabledValue(body);
     if (!workspaceEnabled.ok) {
       return chatRouteErrorJson({ error: "workspace_state_invalid" }, { status: 400 });
@@ -606,6 +618,7 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     try {
       chat = await deps.repository.updateChat({
         activeLeafMessageId: activeLeafValue(body),
+        ...(answerReview !== undefined ? { answerReview } : {}),
         ...assistant.update,
         chatId: params.chatId,
         defaultKnowledgePlan: defaultKnowledgePlan.value,

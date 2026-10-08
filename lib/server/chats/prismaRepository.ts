@@ -21,6 +21,7 @@ import {
   type AnswerReviewMessageWire
 } from "../../contracts/answerReviews";
 import { answerReviewStepModelName, loadAnswerReviewProjection } from "../answerReviews/repository";
+import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
 import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
 import { mcpApprovalGated } from "../runs/mcpApprovalGate";
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
@@ -364,6 +365,7 @@ const chatSummarySelect = {
     }
   },
   activeLeafMessageId: true,
+  answerReviewConfig: true,
   assistantId: true,
   createdAt: true,
   defaultSearchPlan: true,
@@ -923,6 +925,7 @@ function serializeChatDetail(input: {
     : null;
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
+    ...storedAnswerReview(chat.answerReviewConfig),
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: projectDefaults
@@ -1001,6 +1004,20 @@ function importProjection(chat: Pick<ChatSummaryRow, "importSource" | "importSou
     : {};
 }
 
+/** A chat's stored automatic review choice; one that no longer decodes reads as off. */
+function storedAnswerReview(value: Prisma.JsonValue | null): { answerReview?: AnswerReviewAutoConfig } {
+  const decoded = value === null ? null : decodeAnswerReviewAutoConfig(value);
+  return decoded ? { answerReview: decoded } : {};
+}
+
+function answerReviewJson(value: AnswerReviewAutoConfig | null): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  return value === null ? Prisma.DbNull : {
+    enabled: value.enabled,
+    maxRounds: value.maxRounds,
+    reviewers: value.reviewers.map(({ modelId, provider }) => ({ modelId, provider }))
+  };
+}
+
 function serializeChatSummary(
   chat: ChatSummaryRow,
   availability: WorkspaceAvailabilityService,
@@ -1010,6 +1027,7 @@ function serializeChatSummary(
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     ...importProjection(chat),
     activeLeafMessageId: chat.activeLeafMessageId,
+    ...storedAnswerReview(chat.answerReviewConfig),
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
@@ -2548,6 +2566,7 @@ export function createPrismaChatRepository(
     },
     updateChat: async ({
       activeLeafMessageId,
+      answerReview,
       assistantId,
       assistantOverrides,
       chatId,
@@ -2656,6 +2675,7 @@ export function createPrismaChatRepository(
           const updated = await tx.chat.update({
             data: {
               ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
+              ...(answerReview !== undefined ? { answerReviewConfig: answerReviewJson(answerReview) } : {}),
               ...assistantData,
               ...(defaultKnowledgePlan !== undefined
                 ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
@@ -2768,11 +2788,12 @@ export function createPrismaChatRepository(
         }
 
         const hasMetadataUpdate = defaultSearchPlan !== undefined || defaultKnowledgePlan !== undefined ||
-          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined ||
+          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined || answerReview !== undefined ||
           Object.keys(assistantData).length > 0;
         const updated = hasMetadataUpdate
           ? await tx.chat.update({
               data: {
+                ...(answerReview !== undefined ? { answerReviewConfig: answerReviewJson(answerReview) } : {}),
                 ...assistantData,
                 ...(defaultKnowledgePlan !== undefined
                   ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }

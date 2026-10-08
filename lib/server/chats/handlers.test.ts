@@ -660,6 +660,55 @@ describe("chat route handlers", () => {
     expect(body.chat).not.toHaveProperty("usageStats");
   });
 
+  it("validates, persists and returns a chat's automatic answer review", async () => {
+    const received: unknown[] = [];
+    const repository: ChatRepository = {
+      ...historyRepositoryMethods,
+      archiveChat: async () => false,
+      createChat: async () => null,
+      createFolder: async () => null,
+      deleteFolder: async () => false,
+      getChat: async () => null,
+      listWorkspace: async () => null,
+      updateChat: async (input) => {
+        received.push(input.answerReview);
+        return {
+          activeLeafMessageId: null,
+          ...(input.answerReview ? { answerReview: input.answerReview } : {}),
+          createdAt: "2026-10-08T00:00:00.000Z",
+          defaultKnowledgePlan: null,
+          defaultModelId: "fake-qsa",
+          defaultProvider: "fake",
+          folderId: null,
+          id: input.chatId,
+          messageCount: 1,
+          pinned: false,
+          title: "Review",
+          updatedAt: "2026-10-08T00:00:00.000Z"
+        };
+      },
+      updateFolder: async () => null
+    };
+    const patch = createUpdateChatHandler({ repository, resolveAuth: auth.resolveAuth });
+    const send = (body: unknown) => patch(new Request("http://app.local/api/chats/chat-1", {
+      body: JSON.stringify(body), headers: { cookie: authCookie() }, method: "PATCH"
+    }), { params: { chatId: "chat-1" } });
+    const config = { enabled: true, maxRounds: 2, reviewers: [{ modelId: "model-b", provider: "connection-b" }] };
+
+    const saved = await send({ answerReview: config });
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).chat.answerReview).toEqual(config);
+    const cleared = await send({ answerReview: null });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).chat).not.toHaveProperty("answerReview");
+    expect(received).toEqual([config, null]);
+
+    const invalid = await send({ answerReview: { enabled: true, maxRounds: 2, reviewers: [] } });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "answer_review_invalid" });
+    expect(received).toHaveLength(2);
+  });
+
   it("validates and persists nullable chat and folder Knowledge defaults", async () => {
     let chatDefault: Parameters<ChatRepository["updateChat"]>[0]["defaultKnowledgePlan"];
     let folderDefault: Parameters<ChatRepository["updateFolder"]>[0]["defaultKnowledgePlan"];
