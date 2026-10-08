@@ -13,7 +13,7 @@ import { calculateContextBudgetLimits } from "../../domain/contextBudget";
 import { createCompatibleResponsesAdapter } from "../providers/compatibleResponses";
 import { createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
 import { anthropicMessagesToolBridge, geminiInteractionsToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
-import { runProviderToolLoop } from "./providerToolLoop";
+import { runProviderToolLoop, toolSynthesisDecision } from "./providerToolLoop";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { openRouterChatToolBridge } from "../tools/bridges";
 import { createOpenRouterChatAdapter } from "../providers/openRouterChat";
@@ -1884,6 +1884,90 @@ describe("tool-free synthesis when the budget ends tool use", () => {
     });
     expect(requests[1]!.toolChoice).toBe("auto");
     expect(JSON.stringify(requests[1]!.providerToolMessages)).not.toContain("Tool use is now disabled");
+  });
+
+  const timeInstruction = "Tool use is now disabled for this run: the time limit of this turn is close. " +
+    "Planned tool calls may not have been executed. " +
+    "Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.";
+
+  it("lets a batch running when the time budget ends settle, then answers once without tools or a budget signal", async () => {
+    const { adapter, requests } = scripted([{ calls: 2, text: "" }, { text: "partial answer" }]);
+    let timeUsedUp = false;
+    const executeTool = vi.fn(async (call: { id: string; name: string }) => {
+      timeUsedUp = true;
+      return { status: "complete" as const, value: { callId: call.id, name: call.name, status: "complete" as const,
+        content: [{ type: "text" as const, text: "ok" }] } };
+    });
+    const transition = vi.fn();
+    const budgets: unknown[] = [];
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool, initialRequest: request(), parallelToolCalls: true, tools, onFinalSynthesisTransition: transition,
+      onFinalSynthesis: budget => { budgets.push(budget); }, timeBudgetExhausted: () => timeUsedUp
+    });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "partial answer" }, toolCalls: 2, toolRounds: 1 });
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(transition).not.toHaveBeenCalled();
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: timeInstruction });
+    expect(budgets).toEqual([]);
+  });
+
+  it("refuses a batch returned after the time budget ends into the checkpointed synthesis and names time as its cause", async () => {
+    const { adapter, requests } = scripted([{ calls: 3, text: "planning" }, { text: "answer from earlier results" }]);
+    const executeTool = vi.fn();
+    const persistToolBatch = vi.fn();
+    const transitions: Array<{ continuation: ProviderToolLoopContinuation; round: number }> = [];
+    const dispatchMarks: number[] = [];
+    const budgets: unknown[] = [];
+    const usage: Array<[number, string]> = [];
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool, initialRequest: request(), parallelToolCalls: true, persistToolBatch, tools,
+      onFinalSynthesis: budget => { budgets.push(budget); },
+      onFinalSynthesisTransition: input => { transitions.push(input); },
+      beforeSynthesisDispatch: ({ round }) => { dispatchMarks.push(round); },
+      onUsage: (_usage, _request, context) => { usage.push([context.round, context.completeness]); },
+      // Used up while the first round is planned.
+      timeBudgetExhausted: () => requests.length > 0
+    });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer from earlier results" }, toolCalls: 0 });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(persistToolBatch).not.toHaveBeenCalled();
+    expect(transitions).toEqual([{ round: 1, continuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }]);
+    expect(dispatchMarks).toEqual([2]);
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: timeInstruction });
+    expect(JSON.stringify(transitions)).not.toContain("Tool use is now disabled");
+    expect(budgets).toEqual([]);
+    expect(usage).toEqual([[1, "terminal"], [2, "terminal"]]);
+  });
+
+  it("decides time only where live execution knows it; recovery keeps the checkpointed call-budget decision", () => {
+    const decide = (timeExhausted?: boolean) => toolSynthesisDecision({
+      budgets: { maxToolCalls: 320, maxToolRounds: 100 }, continuation: { finalSynthesis: "budget_exhausted" },
+      initialToolChoice: "auto", noProgress: false, progress: { toolCalls: 4, toolRounds: 2 },
+      ...(timeExhausted === undefined ? {} : { timeExhausted })
+    });
+    expect(decide()).toEqual({ budget: { kind: "calls", limit: 320 }, reason: "budget_exhausted" });
+    expect(decide(false)).toEqual({ budget: { kind: "calls", limit: 320 }, reason: "budget_exhausted" });
+    expect(decide(true)).toEqual({ budget: null, reason: "time" });
+    expect(toolSynthesisDecision({ budgets: { maxToolCalls: 320, maxToolRounds: 100 }, continuation: {},
+      initialToolChoice: "none", noProgress: false, progress: { toolCalls: 0, toolRounds: 0 }, timeExhausted: true })).toBeNull();
+  });
+
+  it("keeps the no-progress cause over a used-up time budget", async () => {
+    const { adapter, requests } = scripted([{ calls: 1, text: "" }, { text: "answer" }]);
+    let blocked = false;
+    await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool: async call => { blocked = true; return { status: "complete", value: { callId: call.id, name: call.name,
+        status: "error", content: [{ type: "json", value: { error: "tool_call_repeat_blocked", repeatOf: [1, 2] } }] } }; },
+      initialRequest: request(), parallelToolCalls: true, tools, isRepeatBlockedCall: () => true,
+      timeBudgetExhausted: () => blocked
+    });
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: instruction("repeated identical calls returned no new data", true) });
   });
 
   it("sends the Anthropic instruction as a text block the adapter keeps", async () => {
