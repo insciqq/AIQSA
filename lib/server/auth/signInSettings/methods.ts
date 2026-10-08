@@ -1,6 +1,7 @@
 import { ldapSignInMethod } from "../ldap/defaultLdapConnect";
 import { oidcSignInMethod } from "../oidc/oidcMethod";
 import { samlSignInMethod } from "../saml/method";
+import { scimSignInMethod } from "../scim/signInMethod";
 import { trustedHeaderSignInMethod } from "../trustedHeader/method";
 import { googleSignInMethod, yandexSignInMethod } from "./oauthClientMethod";
 import type { SignInMethodServerRegistry } from "./registry";
@@ -15,6 +16,7 @@ export const signInMethodServerRegistry: SignInMethodServerRegistry = {
   ldap: ldapSignInMethod,
   oidc: oidcSignInMethod,
   saml: samlSignInMethod,
+  scim: scimSignInMethod,
   trusted_header: trustedHeaderSignInMethod,
   yandex: yandexSignInMethod
 };

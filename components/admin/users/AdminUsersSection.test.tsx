@@ -294,6 +294,29 @@ describe("AdminUsersSection", () => {
     expect(document.body.textContent).not.toMatch(/draft|revision|evidence|probe|adapter/iu);
   });
 
+  it("marks a SCIM deactivation that waits for an ownership transfer in the users list", () => {
+    const dashboard = dashboardFixture();
+    dashboard.users = dashboard.users.map((entry) =>
+      entry.id === "ada" ? { ...entry, scimDeactivationPending: { projectCount: 2 } } : entry);
+    renderSection({ initialDashboard: dashboard });
+
+    expect(within(rowFor("Ada Analyst")).getByTestId("admin-user-scim-pending-tag"))
+      .toHaveTextContent("SCIM deactivation pending: 2 Projects need a new Owner");
+    expect(screen.getAllByTestId("admin-user-scim-pending-tag")).toHaveLength(1);
+  });
+
+  it("explains a pending SCIM deactivation on the user page", async () => {
+    const dashboard = dashboardFixture();
+    dashboard.users = dashboard.users.map((entry) =>
+      entry.id === "ada" ? { ...entry, scimDeactivationPending: { projectCount: 1 } } : entry);
+    renderSection({ initialDashboard: dashboard, resource: "ada" });
+
+    const page = await screen.findByTestId("admin-user-page");
+    expect(within(page).getByTestId("admin-user-scim-pending")).toHaveTextContent(
+      "SCIM deactivation pending: 1 Project needs a new Owner. The identity provider deactivated this account"
+    );
+  });
+
   it("approves a pending user with the group chosen in the row and rejects with a confirmation", async () => {
     const { confirmations, posts } = renderSection();
     const row = rowFor("Pending Person");

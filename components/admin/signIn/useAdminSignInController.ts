@@ -9,7 +9,7 @@ import {
   saveAdminSignInPolicy,
   testAdminSignInMethod
 } from "@/components/admin/signIn/adminSignInApi";
-import { signInMethodLabels, signInTestMessage } from "@/components/admin/signIn/signInView";
+import { signInMethodActivity, signInMethodLabels, signInTestMessage } from "@/components/admin/signIn/signInView";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type {
   AdminSignInMethodState,
@@ -163,7 +163,7 @@ export function useAdminSignInController({
       if (!mountedRef.current) return { message: "", ok: false };
       if (result.ok) {
         replaceMethod(result.data.method);
-        onNotice(`${signInMethodLabels[method]} sign-in is active.`);
+        onNotice(`${signInMethodActivity(method)} is active.`);
         return { ok: true };
       }
       if (result.error === "sign_in_source_changed" && !confirmSourceChange) {
@@ -201,13 +201,16 @@ export function useAdminSignInController({
 
     requestDisable: (method, onFailure) => {
       const label = signInMethodLabels[method];
+      const activity = signInMethodActivity(method);
       const current = methodState(method);
       requestConfirmation({
         body: current?.environmentConfigured
           ? `${label} sign-in goes back to the configuration in the environment variables. The settings here are kept.`
-          : `People can no longer sign in with ${label}. The settings are kept, so you can activate them again later.`,
+          : method === "scim"
+            ? "The identity provider can no longer provision users and groups: every SCIM request is refused. The settings and tokens are kept, so you can activate them again later."
+            : `People can no longer sign in with ${label}. The settings are kept, so you can activate them again later.`,
         confirmLabel: "Disable",
-        dialogLabel: `Disable ${label} sign-in`,
+        dialogLabel: `Disable ${activity}`,
         onConfirm: async () => {
           await guard(method, async () => {
             const latest = methodState(method);
@@ -225,12 +228,12 @@ export function useAdminSignInController({
               return outcome;
             }
             replaceMethod(result.data.method);
-            onNotice(`${label} sign-in is off in the admin panel.`);
+            onNotice(`${activity} is off in the admin panel.`);
             return { ok: true };
           });
         },
         testId: "admin-confirm-sign-in-disable",
-        title: `Disable ${label} sign-in?`,
+        title: `Disable ${activity}?`,
         tone: "warning"
       });
     },

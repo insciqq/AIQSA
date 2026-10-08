@@ -25,7 +25,7 @@ const confirmedFactor = {
   userId: "user-1"
 };
 
-function sessionTransaction(factor: typeof confirmedFactor | null = null) {
+function sessionTransaction(factor: typeof confirmedFactor | null = null, scimDeactivatedAt: Date | null = null) {
   const create = vi.fn(async (input: { data: object }) => ({ ...input.data, id: "session-1", user: createTestUser() }));
   const findFactor = vi.fn(async () => factor);
 
@@ -33,6 +33,8 @@ function sessionTransaction(factor: typeof confirmedFactor | null = null) {
     create,
     findFactor,
     tx: {
+      // The seam's shared lock on the account row, which reads a pending SCIM deactivation.
+      $queryRaw: vi.fn(async () => [{ scimDeactivatedAt }]),
       authRecoveryCode: { count: vi.fn(async () => 2) },
       authSession: { create },
       authTotpFactor: { findUnique: findFactor }
@@ -81,6 +83,22 @@ describe("sign-in completion seam", () => {
       signInMethod: "ldap",
       userId: "user-1"
     })).resolves.toMatchObject({ kind: "second_factor_required" });
+  });
+
+  it("refuses every method but the bootstrap token while a SCIM deactivation is pending", async () => {
+    for (const signInMethod of AUTH_SESSION_SIGN_IN_METHODS) {
+      const { create, findFactor, tx } = sessionTransaction(confirmedFactor, new Date("2026-10-08T00:00:00.000Z"));
+      const issued = await issueSignInSession(tx as never, { session, signInMethod, userId: "user-1" });
+
+      if (signInMethod === "bootstrap") {
+        // The break-glass sign-in keeps working.
+        expect(issued).toMatchObject({ kind: "session" });
+      } else {
+        expect(issued).toEqual({ kind: "refused" });
+        expect(create).not.toHaveBeenCalled();
+        expect(findFactor).not.toHaveBeenCalled();
+      }
+    }
   });
 
   it("creates no session when a second factor is required", async () => {

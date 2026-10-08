@@ -190,7 +190,8 @@ export type InboundMcpAccountRevocationReason =
   | "admin_revoke_all"
   | "admin_revoke_user"
   | "password_change"
-  | "password_reset";
+  | "password_reset"
+  | "scim_deactivated";
 
 /**
  * Ends every ACTIVE inbound grant of one account, Memory `/mcp` and Hub `/mcp/hub` alike, inside

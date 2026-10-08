@@ -67,7 +67,9 @@ const publicPrefixes = [
   // waits for the initiating browser at /api/auth/saml/complete.
   "/saml/acs",
   "/saml/metadata",
-  "/mcp"
+  "/mcp",
+  // SCIM provisioning: the bearer token is the only credential, checked by the route.
+  "/scim/v2"
 ];
 
 function isPublicPath(

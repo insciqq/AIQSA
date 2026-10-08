@@ -161,6 +161,22 @@ describe("scheduled task end to end", () => {
     expect(await prisma.usageMessageAdmission.count({ where: { userId } })).toBe(0);
   });
 
+  it("pauses the tasks of an owner whose SCIM deactivation waits for a Project ownership transfer", async () => {
+    const { task, userId } = await ownerWithTask("SAME");
+    // The account stays active only for its Projects; its access already ended.
+    await prisma.user.update({ data: { scimDeactivatedAt: new Date() }, where: { id: userId } });
+    const scheduler = runner();
+
+    await scheduler.tick();
+    await scheduler.idle();
+    const [occurrence] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
+    expect(occurrence).toMatchObject({ reasonCode: "account_inactive", runId: null, state: "FAILED" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } }))
+      .toMatchObject({ pauseReason: "account_inactive", status: "PAUSED" });
+    expect(await prisma.modelRun.count({ where: { userId } })).toBe(0);
+    await expect(createPrismaScheduledTaskOwnerLoader(prisma)({ taskId: task.id, userId })).resolves.toBeNull();
+  });
+
   it("starts a new dated chat for every run in new-chat mode, each seeing only its prompt", async () => {
     const { task, userId } = await ownerWithTask("NEW");
     const scheduler = runner();
