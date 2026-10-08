@@ -184,6 +184,8 @@ export interface WorkspaceRuntime {
     runtimeSandboxId: string | null;
     sandboxName: string;
     operation?: WorkspaceOperation;
+    /** The same run's operation an export continues; the receiver then may hand over without a VM stop. */
+    predecessor?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
   }>): Promise<WorkspaceRuntimeSession>;

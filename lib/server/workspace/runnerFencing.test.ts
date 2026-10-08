@@ -99,6 +99,31 @@ describe("Workspace runner stale operation requests", () => {
     expect(terminate).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("hands the run's own export over without stopping the guest (restart=%s)", async (restart) => {
+    const value = await fixture();
+    let connection = value;
+    if (restart) {
+      await close(value.server);
+      servers.splice(servers.indexOf(value.server), 1);
+      connection = { ...value, ...await value.start() };
+    }
+    const stop = vi.spyOn(value.runtime, "stopSession");
+    const handover = { generation: 2, owner: "export:fixture_1:token" };
+    const next = await connection.post("ensure", { ...value.ensureBody(2, value.runtimeSandboxId), operation: handover, predecessor: operation(1) });
+    expect(next.status).toBe(200);
+    await next.arrayBuffer();
+    expect(stop).not.toHaveBeenCalled();
+    const stale = await connection.post(`${sessionId}/stop`, { operation: operation(1), runtimeSandboxId: value.runtimeSandboxId });
+    expect(stale.status).toBe(409);
+    await stale.arrayBuffer();
+    expect(stop).not.toHaveBeenCalled();
+    // A predecessor that is not the receiver's current operation still drains through a stop.
+    const other = await connection.post("ensure", { ...value.ensureBody(3, value.runtimeSandboxId), predecessor: operation(1) });
+    expect(other.status).toBe(200);
+    await other.arrayBuffer();
+    expect(stop).toHaveBeenCalled();
+  });
+
   it("validates a replacement request before stopping the current owner", async () => {
     const value = await fixture();
     const stop = vi.spyOn(value.runtime, "stopSession");
