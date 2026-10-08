@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { TelemetryCounterGroup, TelemetryCounterQuery, TelemetryIncident, TelemetryIncidentQuery } from "../../telemetry/store";
+import type {
+  TelemetryCounterGroup, TelemetryCounterQuery, TelemetryIncident, TelemetryIncidentQuery, TelemetryStore
+} from "../../telemetry/store";
 import { createAdminHealthService, type AdminHealthDependencies } from "./service";
 
 const NOW = new Date("2026-10-07T12:30:00.000Z");
@@ -87,7 +89,12 @@ function store(overrides: Partial<Record<"totals" | "previous" | "series" | "pro
     if (!query.groupBy) return overrides.previous ?? [group({ group: {}, count: 2 })];
     return overrides.totals ?? totals;
   });
-  return { queries, readCounters, readIncidents: vi.fn() };
+  // The first failure's incidents named two users and three runs; the second kept none.
+  const countIncidentReachByFingerprint = vi.fn(async (query: Parameters<TelemetryStore["countIncidentReachByFingerprint"]>[0]) => {
+    void query;
+    return new Map([["aaaaaaaaaaaa", { incidents: 4, users: 2, runs: 3 }]]);
+  });
+  return { queries, readCounters, readIncidents: vi.fn(), countIncidentReachByFingerprint };
 }
 
 const names: AdminHealthDependencies["providerNames"] = vi.fn(async () => ({
@@ -135,11 +142,15 @@ describe("admin health service", () => {
     expect(health.errorGroups).toEqual([
       { fingerprint: "aaaaaaaaaaaa", errorClass: "TypeError", site: "lib/server/memory/a.ts:12", count: 5, events: ["job_attempt"],
         roles: ["memory_coordinator"], codes: ["memory_job_failed"], lastSeenAt: "2026-10-07T11:40:00.000Z",
-        firstSeenAt: "2026-10-07T09:00:00.000Z", isNew: true },
+        firstSeenAt: "2026-10-07T09:00:00.000Z", isNew: true, usersAtLeast: 2, runsAtLeast: 3 },
       { fingerprint: "bbbbbbbbbbbb", errorClass: "Error", site: null, count: 9, events: ["http.request_failed"], roles: ["app"], codes: [],
-        lastSeenAt: "2026-10-07T10:30:00.000Z", firstSeenAt: "2026-09-20T00:00:00.000Z", isNew: false }
+        lastSeenAt: "2026-10-07T10:30:00.000Z", firstSeenAt: "2026-09-20T00:00:00.000Z", isNew: false, usersAtLeast: 0, runsAtLeast: 0 }
     ]);
     expect(health.errorGroupsTruncated).toBe(false);
+    // Reach comes from the listed failures' incidents over the window of their counts.
+    expect(telemetry.countIncidentReachByFingerprint).toHaveBeenCalledExactlyOnceWith({
+      from: new Date("2026-10-06T13:00:00.000Z"), to: new Date("2026-10-07T13:00:00.000Z"), fingerprints: ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]
+    });
     const retention = telemetry.queries.find((query) => query.groupBy?.length === 1 && query.groupBy[0] === "error_fingerprint");
     expect(retention).toMatchObject({ from: new Date("2026-09-07T13:00:00.000Z"), to: new Date("2026-10-07T13:00:00.000Z"), levels: ["error", "fatal"] });
 
@@ -175,7 +186,8 @@ describe("admin health service", () => {
   });
 
   it("propagates a database failure instead of returning an empty view", async () => {
-    const failing = { readCounters: vi.fn().mockRejectedValue(new Error("db down")), readIncidents: vi.fn() };
+    const failing = { readCounters: vi.fn().mockRejectedValue(new Error("db down")), readIncidents: vi.fn(),
+      countIncidentReachByFingerprint: vi.fn() };
     const service = createAdminHealthService({ store: failing, providerNames: names, now: () => NOW });
     await expect(service.read("24h")).rejects.toThrow("db down");
   });
@@ -196,7 +208,7 @@ describe("admin health incidents", () => {
       void query;
       return { items, nextCursor: "next" };
     });
-    return { readCounters: vi.fn(), readIncidents };
+    return { readCounters: vi.fn(), readIncidents, countIncidentReachByFingerprint: vi.fn() };
   }
 
   const filters = { range: "24h" as const, category: null, code: null, cursor: null, event: null, level: null, q: null };

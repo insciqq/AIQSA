@@ -58,7 +58,7 @@ const health: AdminHealth = {
   providersTruncated: false,
   errorGroups: [{ fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/memory/coordinator/workerProcess.ts:51",
     count: 12, events: ["job_attempt"], roles: ["knowledge_search"], codes: ["memory_job_failed"],
-    lastSeenAt: "2026-10-07T09:40:00.000Z", firstSeenAt: "2026-10-07T08:00:00.000Z", isNew: true }],
+    lastSeenAt: "2026-10-07T09:40:00.000Z", firstSeenAt: "2026-10-07T08:00:00.000Z", isNew: true, usersAtLeast: 3, runsAtLeast: 5 }],
   errorGroupsTruncated: false
 };
 
@@ -138,7 +138,8 @@ describe("health report text", () => {
     expect(text).toContain("  By area: providers 9 · requests 3 · runs 20 · background 10\n");
     expect(text).toContain("  server errors 3 · provider failures 9 of 240 (3.8%) · browser crashes 1\n");
     expect(text).toContain("  NEW   TypeError · lib/server/memory/coordinator/workerProcess.ts:51\n" +
-      "        12 times · job_attempt · memory_job_failed · knowledge_search · last 2026-10-07 09:40\n");
+      "        12 times · at least 3 users · at least 5 runs · job_attempt · memory_job_failed\n" +
+      "        knowledge_search · last 2026-10-07 09:40\n");
     expect(text).toMatch(/\n {2}OpenAI · gpt-5 +answer +7\/120 +5\.8% {2}quota +2026-10-07 09:58\n/u);
     expect(text).toContain("  app: 3 starts (2 restarts)\n");
     expect(text).not.toContain("memory_coordinator");
@@ -159,6 +160,21 @@ describe("health report text", () => {
     }), "24h");
     expect(formatHealthReport(report)).toContain("  2026-10-07 09:59:12  error  app  http.request_failed\n" +
       "      TypeError at app/api/x/route.ts:3 · next_request\n");
+  });
+
+  it("prints how many users and runs a failure hit as counts only, in text and JSON", async () => {
+    const one = { ...health.errorGroups[0]!, fingerprint: "ba9876543210", errorClass: "RangeError", site: "lib/server/a.ts:1",
+      count: 120, events: ["run_execution"], roles: ["app"], codes: [], isNew: false, usersAtLeast: 1, runsAtLeast: 0 };
+    const none = { ...one, fingerprint: "aaaaaaaaaaaa", errorClass: "SyntaxError", usersAtLeast: 0 };
+    const report = await collectHealthReport(sources({
+      health: { read: vi.fn().mockResolvedValue({ ...health, errorGroups: [...health.errorGroups, one, none] }),
+        incidents: vi.fn().mockResolvedValue({ incidents: [], nextCursor: null }) }
+    }), "24h");
+    expect(report.errorGroups.map((group) => [group.usersAtLeast, group.runsAtLeast])).toEqual([[3, 5], [1, 0], [0, 0]]);
+    expect(JSON.stringify(report)).not.toMatch(/"user_?[iI]d"/u);
+    const text = formatHealthReport(report);
+    expect(text).toContain("      RangeError · lib/server/a.ts:1\n        120 times · at least 1 user · run_execution · app · last ");
+    expect(text).toContain("      SyntaxError · lib/server/a.ts:1\n        120 times · run_execution · app · last ");
   });
 
   it("says so when nothing went wrong", async () => {
