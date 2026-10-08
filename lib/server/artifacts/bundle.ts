@@ -608,6 +608,13 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
   head.childNodes.unshift(script([{ name: "data-aiqsa-artifact-bridge", value: ARTIFACT_BRIDGE_VERSION }], artifactRuntimeBridge(site)),
     ...(validation ? [] : blocks.map(file => script([{ name: "type", value: "application/octet-stream" }, { name: "data-aiqsa-file", value: file.path }],
       file.base64 ?? bundleFileBytes(file).toString("base64")))));
+  // Resource hints (dns-prefetch) resolve host names outside any CSP fetch
+  // directive, so a name can carry data. This renderer-owned control asks the
+  // browser not to prefetch DNS; it is best-effort defense in depth beside the
+  // bridge, not a substitute for a policy directive.
+  head.childNodes.unshift({ tagName: "meta", nodeName: "meta", namespaceURI: head.namespaceURI,
+    attrs: [{ name: "http-equiv", value: "x-dns-prefetch-control" }, { name: "content", value: "off" }],
+    childNodes: [], parentNode: head });
   head.childNodes.unshift({ tagName: "meta", nodeName: "meta", namespaceURI: head.namespaceURI,
     attrs: [{ name: "http-equiv", value: "Content-Security-Policy" }, { name: "content", value: artifactContentSecurityPolicy("meta") }],
     childNodes: [], parentNode: head });

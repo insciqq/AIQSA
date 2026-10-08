@@ -20,6 +20,19 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
   const site = ${ARTIFACT_SITE_PLACEHOLDER} || { page: "", media: false, files: [] };
   const limits = ${JSON.stringify(ARTIFACT_STORAGE_LIMITS)};
   const send = value => { try { parent.postMessage(value, "*"); } catch {} };
+  // WebRTC reaches the network outside every CSP fetch directive: an
+  // RTCPeerConnection with a stun:/turn: server sends UDP STUN binding requests
+  // to an arbitrary host — and resolves that host's DNS name, which can carry
+  // private data — as soon as a data channel's offer is applied, with no camera
+  // or microphone permission. The bridge runs before any authored script and
+  // shares this opaque frame's only realm (nested frames are blocked by
+  // child-src 'none'/frame-src, popups by the sandbox, and a Worker does not
+  // expose RTCPeerConnection), so deleting the constructors leaves no way to
+  // open one and no other realm to recover them from.
+  for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "mozRTCPeerConnection", "RTCDataChannel", "RTCIceCandidate", "RTCSessionDescription", "RTCCertificate"]) {
+    try { delete window[name]; } catch {}
+    try { if (name in window) Object.defineProperty(window, name, { configurable: true, value: undefined }); } catch {}
+  }
   const storage = (entries, persistent) => {
     let values = new Map(entries);
     const api = Object.create(null);
