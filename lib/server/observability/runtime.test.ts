@@ -194,6 +194,18 @@ describe("bounded observability runtime", () => {
     expect(JSON.stringify(unsafe)).not.toContain("private-provider");
   });
 
+  it("records time to first output as an info stage with a closed after field", () => {
+    const fields = { run_id: "run-1", stage: "first_output", outcome: "completed", duration_ms: 1_234.4,
+      providerFamily: "openai", providerModelId: "model-1" } as const;
+    for (const after of ["dispatch", "tools"] as const) {
+      expect(record("run_execution", { ...fields, after })).toMatchObject({ ...fields, duration_ms: 1_234, after, level: "info" });
+    }
+    const unsafe = record("run_execution", { ...fields, after: "PRIVATE_TOOL_NAME", delta: "PRIVATE_ANSWER" } as never);
+    expect(unsafe).not.toHaveProperty("after");
+    expect(unsafe).not.toHaveProperty("delta");
+    expect(JSON.stringify(unsafe)).not.toContain("PRIVATE_");
+  });
+
   it("uses the current event schema after HMR while preserving the singleton sink and context", () => {
     const runtimeUrl = new URL("./runtime.cjs", import.meta.url);
     const source = readFileSync(runtimeUrl, "utf8");

@@ -729,6 +729,10 @@ export type PreparingRunMemoryMaterializer = (
 ) => PreparingRunMaterializedRequest | null;
 
 export type CreatedRun = Readonly<{
+  /** When admission committed: this process's clock at the `run_accepted`
+   * record (a deferred run reads its row's creation time). In memory only; the
+   * start of the run's time to first output. */
+  acceptedAt?: Date;
   deferredPdf?: true;
   deferredWorkspace?: true;
   assistantMessageId: string;
