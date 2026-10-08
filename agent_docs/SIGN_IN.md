@@ -57,7 +57,7 @@ Sign-in from an authenticating reverse proxy's identity headers exists only in t
 - The proxy is the authority for the email: it counts as verified and is the identity's subject under the source `trusted-header`, so a changed address is a new identity, linked by email under the settlement rules.
 - Header values are bounded before use (email 320 and name 160 characters, groups 4 KiB and 200 values); an oversized or malformed header refuses the sign-in, and a missing email header says the proxy provided no identity.
 - Without a session, `/login` goes straight to the sign-in route unless `?local=1` or an outcome keeps it on screen.
-- A sign-in arriving with a session of another account revokes that session first, whatever its outcome. Nothing re-checks the header after sign-in, and signing out of AIQSA alone signs straight back in while the proxy still vouches; on shared browsers, sign out at the proxy and in AIQSA.
+- A sign-in arriving with a session of another account revokes that session first, whatever its outcome. Nothing re-checks the header after sign-in. Signing out lands on `/login?local=1`, since a plain `/login` would sign the browser straight back in while the proxy still vouches; on shared browsers, sign out at the proxy as well.
 - The route is a session-creating GET. A cross-site request still carries only the identity the proxy sets for that browser, so it can sign the browser's own user in, never into an account the requester picks, and it returns only to an internal path.
 
 ## LDAP

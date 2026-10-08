@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { trustedHeaderSignInConfigSchema } from "@/lib/contracts/authSignInMethods";
 import type { ResolvedSignInMethods } from "../signInMethods";
-import { trustedHeaderLoginState } from "./loginPage";
+import { trustedHeaderLoginState, trustedHeaderLogoutRedirect } from "./loginPage";
 
 const active: ResolvedSignInMethods = {
   trusted_header: {
@@ -79,5 +79,14 @@ describe("login page with trusted-header sign-in", () => {
 
   it("offers nothing while the method is off", async () => {
     await expect(state({ methods: {} }).result).resolves.toEqual({ redirectTo: null });
+  });
+});
+
+describe("signing out of a trusted-header session", () => {
+  it("lands on the login page kept on screen, and leaves other sessions to their own logout", () => {
+    expect(trustedHeaderLogoutRedirect({ appBaseUrl: "https://ai.example.test", signInMethod: "trusted_header" }))
+      .toBe("https://ai.example.test/login?local=1");
+    expect(trustedHeaderLogoutRedirect({ appBaseUrl: "https://ai.example.test", signInMethod: "oidc" })).toBeNull();
+    expect(trustedHeaderLogoutRedirect({ appBaseUrl: "https://ai.example.test", signInMethod: null })).toBeNull();
   });
 });
