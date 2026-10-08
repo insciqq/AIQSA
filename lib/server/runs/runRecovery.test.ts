@@ -2148,7 +2148,9 @@ describe("run recovery", () => {
           { assistantMessageId: "assistant-orphan", error: expect.objectContaining({ code: "run_orphaned" }), runId: "run-orphan" }
         ]);
         expect(terminalOptions).toEqual([["run-invalid", true], ["run-orphan", undefined]]);
-        expect(workspace.settle.mock.calls.map(([input]) => input.runId)).toEqual(["run-invalid", "run-orphan"]);
+        expect(workspace.settle).toHaveBeenCalledTimes(2);
+        expect(workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed", runId: "run-invalid" }));
+        expect(workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-orphan" }));
         expect(stream).not.toHaveBeenCalled();
         expect(refresh).not.toHaveBeenCalled();
         expect(recordUsage).not.toHaveBeenCalled();
