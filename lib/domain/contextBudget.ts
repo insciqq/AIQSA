@@ -107,7 +107,7 @@ export function stringifyForEstimate(value: unknown): string {
 
 export function estimateApproxTokens(value: unknown): number {
   const text = stringifyForEstimate(value);
-  return text ? Math.ceil(approximateTokenUnits(text)) : 0;
+  return text ? tokensFromUnits(approximateTokenUnits(text)) : 0;
 }
 
 /** Alphabetic scripts that current tokenizers encode in a few characters per
@@ -120,31 +120,68 @@ export function estimateApproxTokens(value: unknown): number {
 const CYRILLIC_TOKEN_WEIGHT = 0.5;
 const RTL_GREEK_TOKEN_WEIGHT = 0.8;
 
-function isCyrillic(codePoint: number): boolean {
-  return (codePoint >= 0x0400 && codePoint <= 0x052f) || (codePoint >= 0x1c80 && codePoint <= 0x1c8f) ||
-    (codePoint >= 0x2de0 && codePoint <= 0x2dff) || (codePoint >= 0xa640 && codePoint <= 0xa69f);
+type CodePointRange = readonly [first: number, last: number];
+
+const CYRILLIC_RANGES: readonly CodePointRange[] = [[0x0400, 0x052f], [0x1c80, 0x1c8f], [0x2de0, 0x2dff], [0xa640, 0xa69f]];
+const GREEK_HEBREW_ARABIC_RANGES: readonly CodePointRange[] = [
+  [0x0370, 0x03ff], [0x1f00, 0x1fff], [0x0590, 0x05ff], [0x0600, 0x06ff],
+  [0x0750, 0x077f], [0x08a0, 0x08ff], [0xfb1d, 0xfdff], [0xfe70, 0xfeff]
+];
+
+/** Code point ranges whose every character has the same weight, so stored
+ * history can be measured by counting characters per class instead of per
+ * code point. The last class is common one-token scripts with no
+ * pictographic character in them; characters outside every class are
+ * weighed one by one. */
+export const APPROX_TOKEN_WEIGHT_CLASSES: readonly Readonly<{ ranges: readonly CodePointRange[]; weight: number }>[] = [
+  { ranges: [[0x0001, 0x007f]], weight: 0.25 },
+  { ranges: CYRILLIC_RANGES, weight: CYRILLIC_TOKEN_WEIGHT },
+  { ranges: GREEK_HEBREW_ARABIC_RANGES, weight: RTL_GREEK_TOKEN_WEIGHT },
+  // Latin-1 (without © and ®), Latin Extended, IPA and combining marks;
+  // general punctuation (without ‼ and ⁉); CJK punctuation (without 〰 and
+  // 〽) and kana; CJK ideographs; Hangul; fullwidth forms.
+  { ranges: [
+    [0x0080, 0x00a8], [0x00aa, 0x00ad], [0x00af, 0x036f],
+    [0x2000, 0x203b], [0x203d, 0x2048], [0x204a, 0x206f],
+    [0x3000, 0x302f], [0x3031, 0x303c], [0x303e, 0x30ff],
+    [0x3400, 0x4dbf], [0x4e00, 0x9fff], [0xac00, 0xd7af], [0xff00, 0xffef]
+  ], weight: 1 }
+];
+
+function inRanges(ranges: readonly CodePointRange[], codePoint: number): boolean {
+  for (const [first, last] of ranges) {
+    if (codePoint >= first && codePoint <= last) return true;
+  }
+  return false;
 }
 
-function isGreekHebrewOrArabic(codePoint: number): boolean {
-  return (codePoint >= 0x0370 && codePoint <= 0x03ff) || (codePoint >= 0x1f00 && codePoint <= 0x1fff) ||
-    (codePoint >= 0x0590 && codePoint <= 0x05ff) || (codePoint >= 0x0600 && codePoint <= 0x06ff) ||
-    (codePoint >= 0x0750 && codePoint <= 0x077f) || (codePoint >= 0x08a0 && codePoint <= 0x08ff) ||
-    (codePoint >= 0xfb1d && codePoint <= 0xfdff) || (codePoint >= 0xfe70 && codePoint <= 0xfeff);
+/** Weights are summed in twentieths of a token, so an estimate is exact and
+ * independent of the order its characters are counted in. */
+const UNITS_PER_TOKEN = 20;
+const weightUnits = (weight: number) => Math.round(weight * UNITS_PER_TOKEN);
+const ASCII_UNITS = weightUnits(0.25);
+const CYRILLIC_UNITS = weightUnits(CYRILLIC_TOKEN_WEIGHT);
+const RTL_GREEK_UNITS = weightUnits(RTL_GREEK_TOKEN_WEIGHT);
+const DEFAULT_UNITS = weightUnits(1);
+const PICTOGRAPHIC_UNITS = weightUnits(2);
+
+function approximateTokenWeightUnits(codePoint: number): number {
+  if (codePoint <= 0x7f) return ASCII_UNITS;
+  if (inRanges(CYRILLIC_RANGES, codePoint)) return CYRILLIC_UNITS;
+  if (inRanges(GREEK_HEBREW_ARABIC_RANGES, codePoint)) return RTL_GREEK_UNITS;
+  return EXTENDED_PICTOGRAPHIC.test(String.fromCodePoint(codePoint)) ? PICTOGRAPHIC_UNITS : DEFAULT_UNITS;
 }
 
-function approximateTokenWeight(codePoint: number): number {
-  if (codePoint <= 0x7f) return 0.25;
-  if (isCyrillic(codePoint)) return CYRILLIC_TOKEN_WEIGHT;
-  if (isGreekHebrewOrArabic(codePoint)) return RTL_GREEK_TOKEN_WEIGHT;
-  return EXTENDED_PICTOGRAPHIC.test(String.fromCodePoint(codePoint)) ? 2 : 1;
+function tokensFromUnits(total: number): number {
+  return Math.ceil(total / UNITS_PER_TOKEN);
 }
 
 function approximateTokenUnits(text: string): number {
-  let estimatedTokens = 0;
+  let total = 0;
   for (const character of text) {
-    estimatedTokens += approximateTokenWeight(character.codePointAt(0) ?? 0);
+    total += approximateTokenWeightUnits(character.codePointAt(0) ?? 0);
   }
-  return estimatedTokens;
+  return total;
 }
 
 function approximateTokenUnitsFromCodePointCounts(
@@ -163,7 +200,7 @@ function approximateTokenUnitsFromCodePointCounts(
       continue;
     }
     occurrences += count.occurrences;
-    units += approximateTokenWeight(count.codePoint) * count.occurrences;
+    units += approximateTokenWeightUnits(count.codePoint) * count.occurrences;
   }
   return { occurrences, units };
 }
@@ -171,7 +208,7 @@ function approximateTokenUnitsFromCodePointCounts(
 export function estimateApproxTokensFromProjectedParts(
   parts: readonly ApproxTokenProjectedPart[]
 ): number {
-  let estimatedTokens = 0;
+  let total = 0;
   let projectedParts = 0;
   for (const part of parts) {
     const projection = part.kind === "code_points"
@@ -182,12 +219,12 @@ export function estimateApproxTokensFromProjectedParts(
         })();
     if (projection.occurrences === 0) continue;
     if (projectedParts > 0) {
-      estimatedTokens += approximateTokenWeight("\n".codePointAt(0)!);
+      total += approximateTokenWeightUnits("\n".codePointAt(0)!);
     }
-    estimatedTokens += projection.units;
+    total += projection.units;
     projectedParts += 1;
   }
-  return Math.ceil(estimatedTokens);
+  return tokensFromUnits(total);
 }
 
 export function calculateContextBudgetLimits({
