@@ -1,3 +1,4 @@
+import { createSecondFactorChallengeCookie } from "./secondFactorChallenge";
 import { createSessionClearCookie, createSessionToken } from "./session";
 import type { AuthMailer } from "./mailer";
 import {
@@ -483,6 +484,22 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       ...(source ? [loginRateLimiter.reset(accountSourceRateLimitKey(rateLimitKey, source))] : []),
       ...(clientRateLimitKey ? [loginRateLimiter.release(clientRateLimitKey)] : [])
     ]);
+
+    // A verified password of a user with TOTP creates no session, only a challenge that the
+    // second-factor route redeems; its own limits bound the code guesses.
+    if (currentCredential.kind === "second_factor_required") {
+      return json(
+        { status: "second_factor_required" },
+        {
+          headers: {
+            "set-cookie": await createSecondFactorChallengeCookie(currentCredential.challenge, {
+              config,
+              now: new Date()
+            })
+          }
+        }
+      );
+    }
 
     return json(
       {

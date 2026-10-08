@@ -10,6 +10,15 @@ import {
 import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { safeInternalPath } from "@/lib/auth/internalPath";
 import type { OAuthLoginOutcome, OAuthProviderId } from "@/lib/auth/oauth";
+import {
+  fieldClassName,
+  focusRingClassName,
+  formClassName,
+  invalidFieldClassName,
+  primaryButtonClassName,
+  secondaryButtonClassName
+} from "./authFormStyles";
+import { SecondFactorStep } from "./SecondFactorStep";
 
 type AuthLoginProps = {
   inviteToken?: string;
@@ -23,7 +32,7 @@ type AuthLoginProps = {
   verifyToken?: string;
 };
 
-type Mode = "check-email" | "password" | "register" | "reset-request" | "reset-complete" | "verify-email";
+type Mode = "check-email" | "password" | "register" | "reset-request" | "reset-complete" | "second-factor" | "verify-email";
 
 // False for the server markup and the hydration render; true from the first
 // client render after hydration, once the forms submit through their handlers.
@@ -58,7 +67,7 @@ type RegistrationOutcome = "request-received" | "verification-required";
 type AuthPostResult = {
   error?: string;
   ok: boolean;
-  status?: "active" | "pending" | "request_received" | "verification_required";
+  status?: "active" | "pending" | "request_received" | "second_factor_required" | "verification_required";
 };
 
 type AuthRequestGeneration = {
@@ -66,23 +75,7 @@ type AuthRequestGeneration = {
   request: number;
 };
 
-const fieldClassName =
-  "h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3.5 text-[15px] text-ink caret-proof outline-none placeholder:text-ink-disabled autofill:bg-answer-paper autofill:text-ink disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled disabled:opacity-70 focus:border-focus focus:ring-2 focus:ring-focus";
-
-const invalidFieldClassName =
-  "border-critical focus:border-critical";
-
-const focusRingClassName =
-  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
-
-const primaryButtonClassName = `${focusRingClassName} flex min-h-touch w-full items-center justify-center gap-2 rounded-control bg-proof px-4 py-2 text-sm font-semibold text-proof-contrast hover:bg-proof-hover disabled:cursor-not-allowed disabled:opacity-60`;
-
-const secondaryButtonClassName = `${focusRingClassName} flex min-h-touch items-center justify-center rounded-control px-3 py-2 text-sm font-medium text-ink-secondary hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled`;
-
 const oauthButtonClassName = `${focusRingClassName} relative flex min-h-touch w-full items-center justify-center rounded-control border border-control-boundary bg-answer-paper px-10 py-2 text-sm font-medium text-ink hover:bg-control-hover`;
-
-const formClassName =
-  "mt-7 space-y-5 [@media(max-height:32rem)]:!mt-3 [@media(max-height:32rem)]:!space-y-3";
 
 function oauthProviderLabel(provider: OAuthProviderId | undefined): string {
   if (provider === "google") {
@@ -344,6 +337,7 @@ function decodeAuthSuccess(operation: PendingAction, data: unknown): AuthPostRes
   if (!isRecord(data)) return null;
 
   if (operation === "login") {
+    if (data.status === "second_factor_required") return { ok: true, status: "second_factor_required" };
     return isRecord(data.user) ? { ok: true } : null;
   }
   if (operation === "reset-request" || operation === "reset-complete") {
@@ -492,7 +486,9 @@ export function AuthLogin({
         ? "verification-feedback"
         : mode === "reset-request"
           ? "reset-request-feedback"
-          : "reset-complete-feedback";
+          : mode === "second-factor"
+            ? "second-factor-feedback"
+            : "reset-complete-feedback";
   const invalidFieldIds = new Set(fieldError?.fieldIds ?? []);
   const showInitialAuthFeedback =
     mode === "password" &&
@@ -559,6 +555,14 @@ export function AuthLogin({
         description: "Choose a password to prove this email and finish the one-time verification link.",
         eyebrow: "Account verification",
         title: "Choose your password"
+      };
+    }
+
+    if (mode === "second-factor") {
+      return {
+        description: "Your account uses two-factor sign-in. Enter the code from your authenticator app.",
+        eyebrow: "Account access",
+        title: "Two-factor verification"
       };
     }
 
@@ -684,6 +688,12 @@ export function AuthLogin({
       if (!result.ok) {
         const errorCode = result.error ?? "unauthorized";
         showAuthError("login", errorCode);
+        return;
+      }
+
+      if (result.status === "second_factor_required") {
+        setPasswordVisible(false);
+        setMode("second-factor");
         return;
       }
 
@@ -1075,6 +1085,22 @@ export function AuthLogin({
             </form>
           ) : null}
 
+          {mode === "second-factor" ? (
+            <SecondFactorStep
+              feedbackId={feedbackId}
+              inputRef={firstFieldRef}
+              onBack={() => switchMode("password")}
+              onExpired={() => {
+                switchMode("password");
+                setError("This sign-in step expired. Sign in again. (challenge_expired)");
+              }}
+              onSignedIn={() => {
+                const redirectTarget = safeInternalPath(nextPath, window.location.origin);
+                (navigateAfterLogin ?? window.location.assign.bind(window.location))(redirectTarget);
+              }}
+            />
+          ) : null}
+
           {mode === "register" ? (
             <form
               aria-busy={submitting}
@@ -1353,7 +1379,7 @@ export function AuthLogin({
             </form>
           ) : null}
 
-          {mode !== "password" && !showInitialAuthFeedback ? (
+          {mode !== "password" && mode !== "second-factor" && !showInitialAuthFeedback ? (
             <AuthFeedback error={error} feedbackId={feedbackId} notice={notice} />
           ) : null}
           </div>

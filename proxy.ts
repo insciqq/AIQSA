@@ -41,6 +41,9 @@ const publicPrefixes = [
   "/api/auth/invite",
   "/api/auth/password-reset",
   "/api/auth/register",
+  // Session-free by design: the signed challenge cookie of a verified first factor is the
+  // only credential; no session exists before the second factor.
+  "/api/auth/second-factor",
   "/api/auth/verify-email",
   "/api/auth/logout",
   "/api/test/auth-mails",

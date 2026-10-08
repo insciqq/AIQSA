@@ -8,6 +8,8 @@ import { DataSettingsRowsV2, deleteAllSummary } from "./DataSettingsRowsV2";
 const accountApi = vi.hoisted(() => ({
   changeAccountPassword: vi.fn(),
   loadAccountProfile: vi.fn(),
+  // The two-factor row has its own tests; here it stays out of the way.
+  loadTwoFactorStatus: vi.fn(() => new Promise(() => undefined)),
   updateAccountDisplayName: vi.fn()
 }));
 

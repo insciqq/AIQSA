@@ -19,3 +19,17 @@ Every external sign-in (Google, Yandex, OIDC, LDAP, SAML, trusted header) goes t
 ## Ending A Sign-In
 
 Every sign-in that creates a session decides it through one completion seam in the transaction that creates the session (for password and invite sign-in, the one that re-checks the credential), and each session records its sign-in method.
+
+## Two-Factor Sign-In
+
+TOTP is optional per user and covers only the sign-ins AIQSA verifies itself: password and LDAP. Google, Yandex, OIDC, SAML and the trusted header rely on the identity provider's MFA; accounts that only use one see no setting. Invite acceptance needs no code, and the bootstrap token is the break-glass path that never asks for one.
+
+- A verified first factor of a user with a confirmed factor creates no session, only a short-lived signed challenge bound to the password hash (or LDAP identity) and the factor state. The second step re-checks both, the account and the code in the transaction that issues the session; a code counts once per step, a recovery code once, and any success makes earlier challenges stale. Code guesses are limited per source and per account.
+- A new secret replaces the active one only after it is confirmed, and starting that replacement, new recovery codes and turning TOTP off each need a current code or a recovery code. Password reset by email never touches the factor. An administrator reset removes the factor and its codes and ends every session of the user; it is refused for the administrator's own account.
+- Secrets live in purpose-bound envelopes under the encryption key, and recovery codes only as hashes keyed from it, so losing that key blocks password and LDAP sign-in of users with TOTP until an administrator resets their factor.
+
+## Dependencies
+
+| Dependency | Boundary/rationale |
+| --- | --- |
+| `uqr` | Zero-dependency QR encoder that turns the provisioning URI into module data in the browser, rendered as a React SVG path without markup injection; the URI never leaves the account settings page. |

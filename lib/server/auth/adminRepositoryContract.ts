@@ -173,6 +173,11 @@ export type AdminRepository = {
   listDashboard(actingAdminUserId: string): Promise<AdminDashboard>;
   rejectUser(input: AdminRevokeUserSessionsInput): Promise<AdminRejectUserResult>;
   renameGroup(input: AdminRenameGroupInput): Promise<AdminGroupRecord | null>;
+  /**
+   * Removes the user's TOTP factor with its recovery codes and ends their sessions and
+   * inbound MCP grants; the revoked session count, or null for an unknown user.
+   */
+  resetUserTwoFactor(input: AdminRevokeUserSessionsInput): Promise<number | null>;
   revokeAllSessions(input: AdminRevokeAllSessionsInput): Promise<number>;
   revokeInvite(inviteId: string): Promise<boolean>;
   revokeUserSessions(input: AdminRevokeUserSessionsInput): Promise<number>;

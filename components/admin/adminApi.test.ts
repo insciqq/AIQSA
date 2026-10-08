@@ -44,7 +44,7 @@ function invalidJsonResponse(status = 200): Response {
 
 describe("admin API client", () => {
   it("keeps the exact shared action discriminant inventory visible", () => {
-    expect(adminActionNames).toHaveLength(20);
+    expect(adminActionNames).toHaveLength(21);
     expectTypeOf<Exclude<AdminActionRequest["action"], (typeof adminActionNames)[number]>>().toEqualTypeOf<never>();
     expectTypeOf<Exclude<(typeof adminActionNames)[number], AdminActionRequest["action"]>>().toEqualTypeOf<never>();
   });
