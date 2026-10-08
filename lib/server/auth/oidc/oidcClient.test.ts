@@ -103,12 +103,17 @@ describe("OIDC authorization", () => {
 });
 
 describe("OIDC sign-in", () => {
-  it("exchanges the code with client_secret_basic and PKCE and returns the validated claims", async () => {
-    await expect(signIn()).resolves.toEqual({
+  it("exchanges the code with client_secret_basic and PKCE and returns the validated claims and id token", async () => {
+    let issued = "";
+    idp.state.idToken = async () => (issued = await idp.sign(idp.standardClaims()));
+    const result = await signIn();
+    expect(issued).toMatch(/^[\w-]+\.[\w-]+\.[\w-]+$/u);
+    expect(result).toEqual({
       displayName: "Person Example",
       email: "person@example.test",
       emailVerified: true,
       groups: ["/staff"],
+      idToken: issued,
       subject: "subject-1"
     });
 
@@ -264,11 +269,23 @@ describe("OIDC groups and userinfo", () => {
 });
 
 describe("OIDC logout", () => {
-  it("builds the end-session URL with client_id and post_logout_redirect_uri, never an id token hint", async () => {
-    const url = new URL((await client.endSessionUrl({ config: config(), postLogoutRedirectUri: "https://aiqsa.example/login" }))!);
-    expect(`${url.origin}${url.pathname}`).toBe(`${idp.issuer}/protocol/openid-connect/logout`);
+  it("builds the end-session URL with client_id and post_logout_redirect_uri, without a hint when there is none", async () => {
+    for (const idTokenHint of [undefined, null, ""]) {
+      const url = new URL((await client.endSessionUrl({ config: config(), idTokenHint, postLogoutRedirectUri: "https://aiqsa.example/login" }))!);
+      expect(`${url.origin}${url.pathname}`).toBe(`${idp.issuer}/protocol/openid-connect/logout`);
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        client_id: idp.clientId,
+        post_logout_redirect_uri: "https://aiqsa.example/login"
+      });
+    }
+  });
+
+  it("adds the session's id token as id_token_hint beside client_id and post_logout_redirect_uri", async () => {
+    const idToken = await idp.sign(idp.standardClaims());
+    const url = new URL((await client.endSessionUrl({ config: config(), idTokenHint: idToken, postLogoutRedirectUri: "https://aiqsa.example/login" }))!);
     expect(Object.fromEntries(url.searchParams)).toEqual({
       client_id: idp.clientId,
+      id_token_hint: idToken,
       post_logout_redirect_uri: "https://aiqsa.example/login"
     });
   });

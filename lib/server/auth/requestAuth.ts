@@ -23,9 +23,20 @@ export type AuthenticatedSession = {
   userId: string;
 };
 
+/**
+ * An OIDC session's ID token, sealed to the id of the session that keeps it
+ * (`oidc/oidcIdTokenHint.ts`): only that session's id opens it, and only as `id_token_hint`.
+ */
+export type SealedIdTokenHint = {
+  envelope: string;
+  sessionId: string;
+};
+
 export type AuthSessionRecord = {
   expiresAt: Date | string;
   id: string;
+  /** The sealed ID token an OIDC session keeps for IdP logout; revocation clears it. */
+  idTokenHintEnvelope?: string | null;
   lastSeenAt: Date | string | null;
   revokedAt: Date | string | null;
   /** How the session's sign-in was proven, where the store records it. */
@@ -50,7 +61,8 @@ export type RequestSessionRevocationReason = "logout";
 export type AuthSessionStore = {
   createSession(input: CreateAuthSessionInput): Promise<AuthSessionRecord>;
   deleteExpiredSessions?(now: Date): Promise<number>;
-  findSessionByTokenHash(tokenHash: string): Promise<AuthSessionRecord | null>;
+  /** `idTokenHint` also reads the sealed ID token, which only logout needs; other reads leave it out. */
+  findSessionByTokenHash(tokenHash: string, options?: { idTokenHint?: boolean }): Promise<AuthSessionRecord | null>;
   revokeSessionByTokenHash(input: {
     revokedAt: Date;
     revokedReason: RequestSessionRevocationReason;

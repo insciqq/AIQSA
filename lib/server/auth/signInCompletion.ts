@@ -1,11 +1,14 @@
 import type { Prisma } from "@prisma/client";
 import type { AuthSessionSignInMethod } from "@/lib/contracts/authSignInMethods";
-import type { CreateAuthSessionInput } from "./requestAuth";
+import type { CreateAuthSessionInput, SealedIdTokenHint } from "./requestAuth";
 import { isSecondFactorSignInMethod, type SecondFactorSignInMethod } from "./secondFactorChallenge";
 import { readTotpFactorBinding, type SecondFactorProof } from "./totpFactor";
 
 /** The session fields a sign-in prepares; the issuing transaction adds the user and method. */
-export type SignInSessionInput = Omit<CreateAuthSessionInput, "signInMethod" | "userId">;
+export type SignInSessionInput = Omit<CreateAuthSessionInput, "signInMethod" | "userId"> & {
+  /** OIDC with IdP logout on: the ID token sealed to the id the session is then created with. */
+  idTokenHint?: SealedIdTokenHint;
+};
 
 /**
  * How a verified first factor ends. `second_factor_required` carries the factor state the
@@ -100,11 +103,14 @@ export async function issueSignInSession(
     };
   }
 
+  const idTokenHint = input.session.idTokenHint;
   const session = await tx.authSession.create({
     data: {
       createdByIp: input.session.createdByIp ?? null,
       createdByUserAgent: input.session.createdByUserAgent ?? null,
       expiresAt: input.session.expiresAt,
+      // The hint opens only under the session id it was sealed to, so the session takes that id.
+      ...(idTokenHint ? { id: idTokenHint.sessionId, idTokenHintEnvelope: idTokenHint.envelope } : {}),
       lastSeenAt: input.session.lastSeenAt ?? null,
       signInMethod: input.signInMethod,
       tokenHash: input.session.tokenHash,
