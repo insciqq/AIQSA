@@ -67,6 +67,10 @@ async function proxyBrowser(browser: Browser, user: string | null, groups: strin
   return { context, page: await context.newPage() };
 }
 
+// Behind an authenticating proxy the administrator reaches AIQSA through it too: the proxy is the
+// app's base URL in trusted mode, and browser mutations must come from that origin.
+const adminOptions = standMode === "trusted" ? { baseURL: proxyUrl() } : {};
+
 async function setStandIdentity(context: import("@playwright/test").BrowserContext, user: string, groups: string) {
   const host = new URL(proxyUrl()).hostname;
   await context.addCookies([
@@ -100,7 +104,7 @@ test.afterAll(async ({ browser }) => {
 
 test("the administrator configures the oauth2-proxy headers; the card shows the stand's client identity mode", async ({ browser }, testInfo) => {
   test.setTimeout(120_000);
-  const { context, page } = await adminSession(browser);
+  const { context, page } = await adminSession(browser, adminOptions);
   const card = await openSignInCard(page, "trusted_header");
   await expect(card.getByTestId("trusted-header-mode")).toHaveAttribute("data-mode", standMode === "trusted" ? "trusted_proxy" : /^(?!trusted_proxy).+/u);
   await card.getByRole("button", { name: "oauth2-proxy" }).click();
@@ -127,7 +131,7 @@ test("the administrator configures the oauth2-proxy headers; the card shows the 
   await context.close();
 
   // The card's probe, read through the proxy with the stand-in identity, sees the injected header.
-  const probe = await adminSession(browser);
+  const probe = await adminSession(browser, adminOptions);
   await setStandIdentity(probe.context, TARA, STAFF);
   await probe.page.goto(`${proxyUrl()}/admin?section=sign-in`);
   const proxied = probe.page.getByTestId("admin-sign-in-card-trusted_header");
