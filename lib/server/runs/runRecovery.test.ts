@@ -10357,6 +10357,23 @@ describe("run recovery", () => {
     ]);
   });
 
+  it("logs the designed unknown-round termination under its own registered code", async () => {
+    const writer = await captureRunObservation();
+    const harness = createHarness({
+      controls: [control({ providerResponseId: null })],
+      providers: { openai: { buildRequestPreview: () => ({}), stream: vi.fn() as ProviderAdapter["stream"] } }
+    });
+    installCheckpointState(harness, checkpointedRun({ phase: "provider_running", providerResponseId: null }));
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    const terminations = writer.records().filter((record) => record.event === "run_recovery" && record.stage === "process");
+    // A lost executor's run failed for its user: an error-level record, like
+    // every other recovery termination, never `code: unknown`.
+    expect(terminations).toEqual([
+      expect.objectContaining({ action: "stop", code: "tool_loop_provider_round_outcome_unknown", level: "error", outcome: "failed" }),
+      expect.objectContaining({ action: "fail", code: "tool_loop_provider_round_outcome_unknown", level: "error", outcome: "failed" })
+    ]);
+  });
+
   it("records the reported usage of a terminal failed provider round once before settling it", async () => {
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       error: { code: "provider_terminal_error", message: "Provider stopped" },
