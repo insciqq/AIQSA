@@ -1408,10 +1408,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   };
 
   /**
-   * A review group's actions act on its answer: copy and read its latest
-   * version, regenerate or delete from its source answer (a new branch, or
-   * the whole group), and review it again. A branch copy would hold the
-   * group's server-written turns without their session, so it is not offered.
+   * A review group's actions act on its answer: copy, read and branch from
+   * its latest version (a branch copies the question and that version, never
+   * the review), regenerate or delete from its source answer (a new branch,
+   * or the whole group), and review it again.
    */
   const reviewGroupActionsFor = (group: AnswerReviewGroupV2): ConversationMessageActionsV2 => {
     const latest = group.messages.at(-1)?.id === thread.visibleMessages.at(-1)?.id;
@@ -1419,7 +1419,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const source = group.source;
     return {
       ...base,
-      onBranchFromHere: undefined,
       ...(source ? {
         onDelete: () => thread.handleDeleteMessage(source.id),
         onRegenerate: () => thread.handleRegenerateMessage(source.id)

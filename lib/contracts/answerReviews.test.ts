@@ -82,6 +82,7 @@ describe("answer review contract", () => {
 
   it("names refusals and stop reasons for the user", () => {
     expect(answerReviewRefusalCopy("answer_review_assistant_unsupported")).toContain("Assistant");
+    expect(answerReviewRefusalCopy("answer_review_not_initiator")).toBe("Only the member who started this review can continue it.");
     expect(answerReviewRefusalCopy("usage_budget_exhausted")).toBeNull();
     expect(answerReviewStopCopy("clean")).toBe("No substantive issues");
     expect(answerReviewStopCopy("budget")).toContain("usage limit");
