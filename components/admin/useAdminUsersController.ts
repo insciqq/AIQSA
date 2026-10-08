@@ -29,6 +29,8 @@ export type AdminUsersController = Readonly<{
     requestDelete(user: AdminUserActionTarget, onSuccess?: () => void): void;
     requestDisable(user: AdminUserActionTarget): void;
     requestReject(user: AdminUserActionTarget): void;
+    /** Removes the user's TOTP factor and recovery codes and signs them out, after a confirmation. */
+    requestResetTwoFactor(user: AdminUserActionTarget): void;
     requestRevokeAllSessions(): void;
     requestRevokeSessions(user: AdminUserActionTarget): void;
     /** Grants (`admin`) or revokes (`user`) the admin role of another active user after a confirmation. */
@@ -151,6 +153,21 @@ export function useAdminUsersController({
     });
   }, [requestConfirmedAction]);
 
+  const requestResetTwoFactor = useCallback((user: AdminUserActionTarget) => {
+    requestConfirmedAction({
+      body: { action: "reset_user_two_factor", userId: user.id },
+      confirmLabel: "Reset two-factor",
+      dialogLabel: `Reset two-factor sign-in for ${userLabel(user)}`,
+      icon: "x",
+      message: "Two-factor sign-in reset. The user was signed out everywhere.",
+      prompt: `Reset two-factor sign-in for ${userLabel(user)}? Their authenticator app and recovery codes stop working, ` +
+        "every session ends, and they sign in with their password alone until they turn two-factor on again.",
+      testId: "admin-confirm-reset-user-two-factor",
+      title: "Reset two-factor sign-in?",
+      tone: "warning"
+    });
+  }, [requestConfirmedAction]);
+
   const requestDisable = useCallback((user: AdminUserActionTarget) => {
     requestConfirmedAction({
       body: { action: "disable_user", userId: user.id },
@@ -229,6 +246,7 @@ export function useAdminUsersController({
       requestDelete,
       requestDisable,
       requestReject,
+      requestResetTwoFactor,
       requestRevokeAllSessions,
       requestRevokeSessions,
       requestSetRole,
@@ -245,6 +263,7 @@ export function useAdminUsersController({
     requestDelete,
     requestDisable,
     requestReject,
+    requestResetTwoFactor,
     requestRevokeAllSessions,
     requestRevokeSessions,
     requestSetRole,

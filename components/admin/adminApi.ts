@@ -185,6 +185,7 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     self_disable_forbidden: "Your current administrator account cannot disable itself.",
     self_delete_forbidden: "Your current admin account cannot delete itself.",
     self_role_change_forbidden: "You cannot change your own administrator role. Another administrator can.",
+    self_two_factor_reset_forbidden: "Turn off your own two-factor sign-in from Account settings with a current code. Another administrator can reset it.",
     system_group_forbidden: "Full access is built in and cannot be renamed, archived, deleted, or edited with ordinary grants.",
     unauthorized: "Your admin session is no longer valid. Sign in again to continue.",
     user_active: "Disable this user before deleting it.",

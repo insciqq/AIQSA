@@ -57,6 +57,11 @@ const adminDashboardUserSelect = {
     },
     take: 5
   },
+  authTotpFactor: {
+    select: {
+      confirmedAt: true
+    }
+  },
   displayName: true,
   email: true,
   groups: {
@@ -326,7 +331,8 @@ export async function listAdminDashboard(
       id: user.id,
       lastSessionAt: serializeAdminLastSession(user.authSessions),
       role: user.role,
-      status: user.status
+      status: user.status,
+      twoFactorEnabled: Boolean(user.authTotpFactor?.confirmedAt)
     };
   });
   const navigation = summarizeAdminNavigation({

@@ -14,6 +14,7 @@ import {
 } from "@/lib/contracts/account";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SettingsRowV2 } from "./SettingsV2";
+import { TwoFactorSettingsV2 } from "./TwoFactorSettingsV2";
 import { UsageLimitsSettingsV2 } from "./UsageLimitsSettingsV2";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 
@@ -34,7 +35,7 @@ type PasswordFormState =
   | Readonly<{ kind: "saved" }>;
 
 /**
- * Account identity, Display name and Password rows (PRD §4.9). The profile is
+ * Account identity, Display name, Password and Two-factor sign-in rows (PRD §4.9). The profile is
  * read from the server on mount; the password row is hidden for accounts that
  * sign in only through an external identity provider.
  */
@@ -211,6 +212,7 @@ export function AccountSettingsRowsV2({
           </div>
         </form>
       ) : null}
+      <TwoFactorSettingsV2 />
       <UsageLimitsSettingsV2 />
     </>
   );

@@ -18,18 +18,81 @@ const session = {
   tokenHash: "session-token-hash"
 };
 
-function sessionTransaction() {
-  const create = vi.fn(async (input: { data: object }) => ({ ...input.data, id: "session-1", user: createTestUser() }));
+const confirmedFactor = {
+  confirmedAt: new Date("2026-10-01T00:00:00.000Z"),
+  lastUsedStep: 58_000_000n,
+  secretEnvelope: "v2.envelope",
+  userId: "user-1"
+};
 
-  return { create, tx: { authSession: { create } } };
+function sessionTransaction(factor: typeof confirmedFactor | null = null) {
+  const create = vi.fn(async (input: { data: object }) => ({ ...input.data, id: "session-1", user: createTestUser() }));
+  const findFactor = vi.fn(async () => factor);
+
+  return {
+    create,
+    findFactor,
+    tx: {
+      authRecoveryCode: { count: vi.fn(async () => 2) },
+      authSession: { create },
+      authTotpFactor: { findUnique: findFactor }
+    }
+  };
 }
 
 describe("sign-in completion seam", () => {
-  it("ends every sign-in method in a session", async () => {
+  it("ends every sign-in method of a user without two-factor in a session", async () => {
     for (const signInMethod of AUTH_SESSION_SIGN_IN_METHODS) {
-      await expect(decideSessionIssuance({} as never, { signInMethod, userId: "user-1" }))
+      await expect(decideSessionIssuance(sessionTransaction().tx as never, { signInMethod, userId: "user-1" }))
         .resolves.toEqual({ kind: "session" });
     }
+  });
+
+  it("asks only password and LDAP sign-ins of a user with a confirmed factor for a second factor", async () => {
+    for (const signInMethod of AUTH_SESSION_SIGN_IN_METHODS) {
+      const { findFactor, tx } = sessionTransaction(confirmedFactor);
+      const decision = await decideSessionIssuance(tx as never, { signInMethod, userId: "user-1" });
+
+      if (signInMethod === "password" || signInMethod === "ldap") {
+        expect(decision).toEqual({ factorBinding: `${confirmedFactor.confirmedAt.getTime()}:58000000:2`, kind: "second_factor_required" });
+      } else {
+        // Bootstrap token, invite, Google, Yandex, OIDC, SAML and trusted header never ask.
+        expect(decision).toEqual({ kind: "session" });
+        expect(findFactor).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("treats a pending, unconfirmed setup as no factor", async () => {
+    const { tx } = sessionTransaction({ ...confirmedFactor, confirmedAt: null as never, secretEnvelope: null as never });
+
+    await expect(decideSessionIssuance(tx as never, { signInMethod: "password", userId: "user-1" }))
+      .resolves.toEqual({ kind: "session" });
+  });
+
+  it("accepts a second-factor proof only for its own user", async () => {
+    const { tx } = sessionTransaction(confirmedFactor);
+    const proof = { userId: "user-1" } as never;
+
+    await expect(decideSessionIssuance(tx as never, { secondFactor: proof, signInMethod: "password", userId: "user-1" }))
+      .resolves.toEqual({ kind: "session" });
+    await expect(decideSessionIssuance(tx as never, {
+      secondFactor: { userId: "someone-else" } as never,
+      signInMethod: "ldap",
+      userId: "user-1"
+    })).resolves.toMatchObject({ kind: "second_factor_required" });
+  });
+
+  it("creates no session when a second factor is required", async () => {
+    const { create, tx } = sessionTransaction(confirmedFactor);
+
+    await expect(issueSignInSession(tx as never, { session, signInMethod: "ldap", userId: "user-1" })).resolves.toEqual({
+      factorBinding: expect.any(String),
+      kind: "second_factor_required",
+      signInMethod: "ldap",
+      userId: "user-1"
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("records the method on the session it issues", async () => {
