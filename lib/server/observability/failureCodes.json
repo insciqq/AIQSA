@@ -887,6 +887,7 @@
   "provider_http_redirect_forbidden",
   "provider_http_request_body_too_large",
   "provider_http_request_failed",
+  "provider_http_tls_failed",
   "provider_http_url_forbidden",
   "provider_model_class_immutable",
   "provider_model_not_found",

@@ -30,6 +30,7 @@ import {
   createOpenRouterPerplexitySearchAdapter
 } from "./openRouterChat";
 import {
+  codexLbConnection,
   normalizeProviderConnectionConfiguration,
   normalizeProviderDefaultParams,
   normalizeProviderModelCapabilities,
@@ -42,9 +43,16 @@ import {
 } from "./providerConfiguration";
 import { withTimeoutSignal } from "./network";
 import { effectiveOpenAIBackgroundPollTimeoutMs } from "./openaiBackgroundPolling";
-import type { ProviderAdapter, ProviderSearchAdapter } from "./types";
+import { compatibleDroppedRoundDecision } from "./openaiResponsesTransport";
+import type { ProviderAdapter, ProviderDroppedRoundRetry, ProviderSearchAdapter } from "./types";
 import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
-import { observeProviderDeadline, observeProviderFetch, observeProviderOperation, observeProviderStream } from "./providerObservability";
+import {
+  observeProviderDeadline,
+  observeProviderFetch,
+  observeProviderOperation,
+  observeProviderRoundRetry,
+  observeProviderStream
+} from "./providerObservability";
 import {
   assertProviderCredentialSource,
   resolveProviderCredentialSource,
@@ -102,10 +110,26 @@ export type ProviderRuntimeFactoryOptions = Readonly<{
 type ProviderRuntimeComponents = Readonly<{
   adapter: ProviderAdapter;
   backgroundPollTimeoutMs?: number;
+  droppedRoundRetry?: Omit<ProviderDroppedRoundRetry, "observe">;
   searchAdapter?: ProviderSearchAdapter;
   structuredOutputAdapter?: ProviderStructuredOutputAdapter;
   toolBridge?: ProviderToolBridge;
 }>;
+
+/** Operator decision 2026-10-08 (PROVIDERS.md): a dropped Codex LB answer
+ * round is sent at most twice more. */
+const CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS = 3;
+
+/** Only an accepted codex-lb connection admits the dropped-round retry;
+ * capability probes own their retries and never take it. */
+function droppedRoundRetry(
+  snapshot: ProviderExecutionSnapshot,
+  options: ProviderRuntimeFactoryOptions
+): Pick<ProviderRuntimeComponents, "droppedRoundRetry"> {
+  return !options.disableRequestRetries && codexLbConnection(snapshot.connection)
+    ? { droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS } }
+    : {};
+}
 
 export type ProviderRuntimeBinding = ProviderRuntimeComponents & Readonly<{
   agentResponses?: AgentResponsesTransport;
@@ -331,6 +355,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
           client,
           reasoningRequestMapping: snapshot.model.reasoningRequestMapping
         }),
+        ...droppedRoundRetry(snapshot, input.options),
         structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
           client,
           model: snapshot.model
@@ -459,6 +484,7 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
           client,
           reasoningRequestMapping: snapshot.model.reasoningRequestMapping
         }),
+        ...droppedRoundRetry(snapshot, input.options),
         structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
           client,
           model: snapshot.model
@@ -558,6 +584,9 @@ function withProviderStreamSafetyObservability(
     buildRequestPreview: (request) => adapter.buildRequestPreview(request),
     ...(adapter.cancel
       ? { cancel: (providerResponseId: string) => observeProviderOperation(identity, "cancel", () => adapter.cancel!(providerResponseId), { requestTimeoutMs: responseTimeoutMs }) }
+      : {}),
+    ...(binding.droppedRoundRetry
+      ? { droppedRoundRetry: { ...binding.droppedRoundRetry, observe: (event) => observeProviderRoundRetry(identity, event) } }
       : {}),
     ...(adapter.refresh
       ? { refresh: (providerResponseId: string) => observeProviderOperation(identity, "refresh", () => adapter.refresh!(providerResponseId), { requestTimeoutMs: responseTimeoutMs }) }

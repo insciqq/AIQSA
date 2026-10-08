@@ -10374,6 +10374,50 @@ describe("run recovery", () => {
     ]);
   });
 
+  describe("a round lost while a dropped request was sent again", () => {
+    const unknownUsage = normalizeTokenUsage({ completeness: "unavailable" });
+    const dropped: PersistedRunUsageAttribution = { modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer",
+      recordedAt: "2026-07-12T09:00:00.000Z", usage: normalizeTokenUsage({ completeness: "partial", inputTokens: 9 }) };
+    const lost = (input: Readonly<{ answerRoundUsage?: readonly PersistedAnswerRoundUsage[]; providerResponseId?: string | null }>) => {
+      const stream = vi.fn();
+      const harness = createHarness({
+        controls: [control({ providerResponseId: input.providerResponseId ?? null })],
+        // A compatible adapter: it cannot resume a response by its id.
+        providers: { openai: { buildRequestPreview: () => ({}), stream: stream as ProviderAdapter["stream"] } }
+      });
+      const installed = installCheckpointState(harness, checkpointedRun({ phase: "provider_running",
+        providerResponseId: input.providerResponseId ?? null, ...(input.answerRoundUsage ? { answerRoundUsage: input.answerRoundUsage } : {}) }),
+      [dropped]);
+      return { harness, installed, stream };
+    };
+
+    it.each([null, "response-retried"])("counts the request in flight once, beside the dropped one (response id %s)", async (providerResponseId) => {
+      // The round re-opened: the dropped request left the round's usage and stays in the run's rows.
+      const { harness, installed, stream } = lost({ providerResponseId });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(installed.checkpoint().answerRoundUsage).toEqual([{ completeness: "partial", roundIndex: 1, usage: unknownUsage }]);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: providerResponseId ? "provider_resume_not_supported" : "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ operationCount: 2, purpose: "chat_answer",
+          usage: expect.objectContaining({ completeness: "partial", inputTokens: 9 }) })]
+      })]);
+    });
+
+    it("adds nothing for a loss during the wait, before the round re-opened", async () => {
+      const { harness, installed, stream } = lost({
+        answerRoundUsage: [{ completeness: "partial", roundIndex: 1, usage: normalizeTokenUsage({ completeness: "partial", inputTokens: 9 }) }]
+      });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(installed.checkpoint().answerRoundUsage).toHaveLength(1);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }),
+        usageAttributions: [expect.objectContaining({ operationCount: 1, usage: expect.objectContaining({ inputTokens: 9 }) })]
+      })]);
+    });
+  });
+
   it("records the reported usage of a terminal failed provider round once before settling it", async () => {
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       error: { code: "provider_terminal_error", message: "Provider stopped" },

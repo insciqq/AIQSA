@@ -3470,21 +3470,27 @@ async function recoverCheckpointedToolLoop(
             : "The run stopped while summarizing earlier context. The summary was not repeated and no answer was produced."
         );
       }
-      if (!currentProviderResponseId) {
-        // The round's answer request may have been dispatched, so its outcome
-        // and billing are unknown: one operation without invented usage,
-        // recorded as this round's usage evidence so a later pass cannot count
-        // it again. Usage the round reported before the loss already stands
-        // for it; a committed summary receipt keeps its own usage.
+      // The round's answer request may have been dispatched (a dropped round
+      // sent again included), so its outcome and billing are unknown: one
+      // operation without invented usage, recorded as this round's usage
+      // evidence so a later pass cannot count it again. Usage the round
+      // reported before the loss already stands for it; a committed summary
+      // receipt keeps its own usage.
+      const recordLostRound = async () => {
         if (round >= 1 && !answerRoundUsage.some((entry) => entry.roundIndex === round)) {
           await recordAnswerRoundUsage(normalizeTokenUsage({ completeness: "unavailable" }), run, "partial", round);
         }
+      };
+      if (!currentProviderResponseId) {
+        await recordLostRound();
         throw new ToolLoopRecoveryError(
           "tool_loop_provider_round_outcome_unknown",
           "The model round stopped before a durable provider response ID was saved and was not repeated."
         );
       }
       if (!adapter.refresh) {
+        // A response id cannot be resumed here; its request is lost alike.
+        await recordLostRound();
         throw new ToolLoopRecoveryError(
           "provider_resume_not_supported",
           "The provider cannot resume the saved model round."

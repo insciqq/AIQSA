@@ -16,7 +16,7 @@ export const TELEMETRY_DIMENSIONS = Object.freeze([
   "error_class", "error_fingerprint", "error_site",
   "httpStatus", "kind", "layer", "method", "mode", "operation", "outcome", "prisma_code", "providerFamily",
   "providerModelId", "provider_code", "provider_status", "reason", "routePath", "stage", "state", "status",
-  "subsystem", "termination", "tool_kind", "transport", "work_stage"
+  "stream_drop", "subsystem", "termination", "tool_kind", "transport", "work_stage"
 ] as const);
 export type TelemetryDimension = (typeof TELEMETRY_DIMENSIONS)[number];
 export type TelemetryDimensionValue = string | number | boolean;

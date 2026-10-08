@@ -8,6 +8,7 @@ import {
   createProviderPreviewRuntimeBinding,
   normalizeProviderExecutionSnapshot
 } from "./runtimeFactory";
+import { markProviderStreamDrop } from "./streamDrop";
 
 const runtimeAdapterKinds = [
   "deepseek_responses_native",
@@ -445,6 +446,48 @@ describe("provider runtime factory", () => {
     } finally {
       vi.restoreAllMocks();
       vi.useRealTimers();
+    }
+  });
+
+  it("admits the dropped-round retry only for an accepted codex-lb compatible Responses binding", () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    const base = snapshot("openai_responses_compatible");
+    const bind = (value: ProviderExecutionSnapshot, disableRequestRetries = false) => createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn, ...(disableRequestRetries ? { disableRequestRetries } : {}) }, secret: "secret", snapshot: value
+    }).adapter.droppedRoundRetry;
+    const detected = { ...base, connection: { ...base.connection, responsesRequestIsolationDetected: true } };
+    const legacyRoot = { ...base, connection: { ...base.connection, apiRoot: "https://lb.example.test/backend-api/codex" } };
+    expect(bind(detected)).toMatchObject({ maxAttempts: 3 });
+    expect(bind(legacyRoot)).toMatchObject({ maxAttempts: 3 });
+    // The catalog evidence outranks the root; other bindings never get it.
+    expect(bind({ ...legacyRoot, connection: { ...legacyRoot.connection, responsesRequestIsolationDetected: false } })).toBeUndefined();
+    expect(bind(base)).toBeUndefined();
+    expect(bind(detected, true)).toBeUndefined();
+    for (const adapterKind of runtimeAdapterKinds.filter((kind) => kind !== "openai_responses_compatible")) {
+      const other = snapshot(adapterKind);
+      expect(bind({ ...other, connection: { ...other.connection, responsesRequestIsolationDetected: true } })).toBeUndefined();
+    }
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("records each dropped-round decision content-free under the binding's identity", () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const base = snapshot("openai_responses_compatible");
+      const retry = createProviderRuntimeBinding({ options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() }, secret: "secret",
+        snapshot: { ...base, connection: { ...base.connection, responsesRequestIsolationDetected: true } } }).adapter.droppedRoundRetry!;
+      const drop = markProviderStreamDrop(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), "reset");
+      expect(retry.decision(drop)).toEqual({ retryAfterMs: null });
+      retry.observe({ action: "retry", attempt: 1, delayMs: 125, error: drop });
+      const records = writer.mock.calls.flatMap(([chunk]) => {
+        try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+      });
+      expect(records).toContainEqual(expect.objectContaining({ event: "provider_retry", level: "warn", action: "retry", attempt: 1, delay_ms: 125,
+        stage: "answer", stream_drop: "reset", adapterKind: "openai_responses_compatible", connectionId: "connection-1",
+        providerModelId: "deployment-1" }));
+      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+    } finally {
+      writer.mockRestore();
     }
   });
 

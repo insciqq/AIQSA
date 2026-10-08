@@ -266,6 +266,7 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
         ? await executeWithProviderRetry({
             operation,
             options: input.initialRequestRetry,
+            remainingMs: timeout.remainingMs,
             shouldRetry: (error) => geminiInitialRequestRetryDecision(error, timeout.signal),
             signal: timeout.signal
           })

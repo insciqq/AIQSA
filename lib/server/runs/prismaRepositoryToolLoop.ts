@@ -627,6 +627,7 @@ export type PrismaRunToolLoopOperations = Pick<
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
   | "recordRunUsageEvents"
+  | "reopenToolLoopProviderRound"
   | "resetToolLoopAssistantDraft"
   | "settleRecoveredRunError"
   | "settleToolLoopCall"
@@ -2336,6 +2337,39 @@ export function createPrismaRunToolLoopOperations(
         if (reset.count !== 1) return false;
         await tx.modelRun.update({
           data: { answerStartedAt: null, updatedAt: new Date() },
+          where: { id: input.runId }
+        });
+        return true;
+      });
+    },
+    reopenToolLoopProviderRound: async (input) => {
+      if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 1 ||
+        input.roundIndex > toolLoopPersistenceLimits.roundIndex) return false;
+      return prismaClient.$transaction(async (tx) => {
+        const run = await lockToolLoopRun(tx, input);
+        if (!run || !dispatchableModelRunStatuses.includes(run.status) || !run.assistantMessageId) return false;
+        const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
+        // The dropped request's settled partial usage; a terminal entry means
+        // the round already has its result and is never sent again.
+        const dropped = checkpoint?.answerRoundUsage.find(entry => entry.roundIndex === input.roundIndex);
+        if (!checkpoint || checkpoint.phase !== "provider_running" || checkpoint.roundIndex !== input.roundIndex ||
+          dropped?.completeness !== "partial") return false;
+        const reopened = toolLoopCheckpoint({
+          answerRoundUsage: checkpoint.answerRoundUsage.filter(entry => entry !== dropped),
+          ...(checkpoint.contextCompaction ? { contextCompaction: checkpoint.contextCompaction } : {}),
+          phase: "provider_running",
+          providerContinuation: checkpoint.providerContinuation,
+          providerCursor: checkpoint.providerCursor,
+          roundIndex: checkpoint.roundIndex
+        });
+        if (!reopened) return false;
+        const reset = await tx.message.updateMany({
+          data: { content: json(textMessageContent("")), errorMessage: null },
+          where: { id: run.assistantMessageId, status: { in: activeMessageStatuses } }
+        });
+        if (reset.count !== 1) return false;
+        await tx.modelRun.update({
+          data: { answerStartedAt: null, providerResponseId: null, toolLoopState: json(reopened), updatedAt: new Date() },
           where: { id: input.runId }
         });
         return true;
