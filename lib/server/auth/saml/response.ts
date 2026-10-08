@@ -197,17 +197,36 @@ function checkValidatedAssertion(
   return { code: failure, ok: false };
 }
 
-/** The identity the validated assertion asserts; attributes come only from node-saml's profile. */
+/**
+ * Every value of the attribute `name` in the assertion node-saml validated, across all its
+ * `Attribute` elements: some IdPs (Keycloak's group list) send one element per value, and
+ * node-saml's `profile.attributes` keeps only the last one. Null when no element has the name.
+ */
+function validatedAttributeValues(profile: Profile, name: string): string[] | null {
+  const document = profile.getAssertion?.();
+  const assertion = isRecord(document) && isRecord(document.Assertion) ? document.Assertion : undefined;
+  let found = false;
+  const values: string[] = [];
+  for (const statement of children(assertion, "AttributeStatement")) {
+    for (const attribute of children(statement, "Attribute")) {
+      if (attributeOf(attribute, "Name") !== name) continue;
+      found = true;
+      const raw = Object.hasOwn(attribute, "AttributeValue") ? attribute.AttributeValue : undefined;
+      for (const item of Array.isArray(raw) ? raw : []) {
+        const value = typeof item === "string" ? item : isRecord(item) ? textOf(item) : null;
+        if (value !== null) values.push(value);
+      }
+    }
+  }
+  return found ? values : null;
+}
+
+/** The identity the validated assertion asserts; attributes come only from its validated content. */
 function assertedIdentity(
   profile: Profile,
   config: SamlSignInConfig
 ): { identity: SamlAssertedIdentity; ok: true } | { code: SamlResponseFailure; ok: false } {
-  const attributes = isRecord(profile.attributes) ? profile.attributes : {};
-  const values = (name: string | null): string[] | null => {
-    if (!name || !Object.hasOwn(attributes, name)) return null;
-    const value = attributes[name];
-    return (Array.isArray(value) ? value : [value]).filter((item): item is string => typeof item === "string");
-  };
+  const values = (name: string | null): string[] | null => (name ? validatedAttributeValues(profile, name) : null);
   const first = (name: string | null) => values(name)?.find((value) => value.trim())?.trim() ?? null;
 
   // A transient NameID changes with every sign-in, so it can never find the account again.

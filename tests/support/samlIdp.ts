@@ -117,6 +117,11 @@ export type SamlTestAssertionInput = {
   acsUrl: string;
   assertionId?: string;
   attributes?: Record<string, string | readonly string[]>;
+  /**
+   * Extra `Attribute` elements after `attributes`, names may repeat: Keycloak sends one element
+   * per group, each with a typed (`xsi:type="xs:string"`) value.
+   */
+  attributeElements?: ReadonlyArray<readonly [string, readonly string[]]>;
   audience: string;
   /** The confirmation's `InResponseTo`; null omits it (an IdP-initiated assertion). */
   inResponseTo: string | null;
@@ -137,7 +142,10 @@ export function samlTestAssertion(input: SamlTestAssertionInput): string {
   const notOnOrAfter = (input.notOnOrAfter ?? new Date(now + 5 * 60_000)).toISOString();
   const attributes = Object.entries(input.attributes ?? {}).map(([name, values]) =>
     `<saml:Attribute Name="${escapeXml(name)}">${(typeof values === "string" ? [values] : values)
-      .map((value) => `<saml:AttributeValue>${escapeXml(value)}</saml:AttributeValue>`).join("")}</saml:Attribute>`).join("");
+      .map((value) => `<saml:AttributeValue>${escapeXml(value)}</saml:AttributeValue>`).join("")}</saml:Attribute>`).join("") +
+    (input.attributeElements ?? []).map(([name, values]) =>
+      `<saml:Attribute Name="${escapeXml(name)}">${values.map((value) =>
+        `<saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">${escapeXml(value)}</saml:AttributeValue>`).join("")}</saml:Attribute>`).join("");
   return [
     `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${input.assertionId ?? samlTestId()}" Version="2.0" IssueInstant="${issued}">`,
     `<saml:Issuer>${escapeXml(input.issuer)}</saml:Issuer>`,
