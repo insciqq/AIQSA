@@ -173,6 +173,8 @@ import { normalizeTokenUsage } from "../../domain/usage";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import { contextCompactionCheckpoint, contextCompactionPolicyRetired, conversationContextPolicy } from "./contextCompactionContract";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
+import { mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
+import { MCP_APPROVAL_REQUIRED_MESSAGE } from "../mcp/writeApproval";
 import { measureSessionContext } from "./runContextBudget";
 import { readToolCallReceipt, readToolCallReceiptHash } from "../tools/readToolCall";
 import type { ToolHistoryRecord } from "./toolHistoryRecords";
@@ -1500,7 +1502,10 @@ function installCheckpointState(
     return recorded;
   };
   harness.repository.loadAttachments = async () => [];
-  const claimToolLoopCall: RunRecoveryRepository["claimToolLoopCall"] = async ({ callId }) => {
+  // One-shot MCP approvals left for this run's chat, as the durable claim consumes them.
+  let approvalsLeft = 0;
+  const approvalClaims: string[] = [];
+  const claimToolLoopCall: RunRecoveryRepository["claimToolLoopCall"] = async ({ callId, mcpApproval }) => {
     const call = calls.find((candidate) => candidate.id === callId);
     if (!call) return { kind: "not_found" };
     if (call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME && !isSkillToolName(call.toolName)) {
@@ -1509,6 +1514,17 @@ function installCheckpointState(
     if (call.state === "cancelled") return { call, kind: "cancelled" };
     if (call.state === "complete" || call.state === "error") {
       return { call, kind: "settled" };
+    }
+    if (mcpApproval) {
+      approvalClaims.push(call.providerCallId);
+      if (approvalsLeft > 0) approvalsLeft -= 1;
+      else {
+        // No approval left: the claim settles the call gated, undispatched.
+        const gated = { ...call, completedAt: "2026-07-12T09:00:30.000Z", state: "error" as const,
+          result: mcpApprovalRequiredToolCallResult({ providerCallId: call.providerCallId, toolName: call.toolName }) };
+        calls = calls.map((candidate) => candidate.id === call.id ? gated : candidate);
+        return { call: gated, kind: "settled" };
+      }
     }
     const claimed = {
       ...call,
@@ -1556,14 +1572,17 @@ function installCheckpointState(
         : null,
       ordinal: call.ordinal,
       providerCallId: call.providerCallId,
-      // Like the durable repository, a blocked repeat settles with its batch.
+      // Like the durable repository, a blocked repeat or a call without an
+      // approval left settles with its batch.
       result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
-        repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName }) : null,
+        repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName })
+        : call.mcpApproval && approvalsLeft === 0
+          ? mcpApprovalRequiredToolCallResult({ providerCallId: call.providerCallId, toolName: call.toolName }) : null,
       roundIndex: input.roundIndex,
       startedAt: null,
-      state: call.repeatBlocked ? "error" : "pending",
+      state: call.repeatBlocked || call.mcpApproval && approvalsLeft === 0 ? "error" : "pending",
       toolName: call.toolName,
-      ...(call.repeatBlocked ? { completedAt: "2026-07-12T09:00:20.000Z" } : {})
+      ...(call.repeatBlocked || call.mcpApproval && approvalsLeft === 0 ? { completedAt: "2026-07-12T09:00:20.000Z" } : {})
     }));
     calls = [...calls, ...created];
     currentCheckpoint = checkpoint(
@@ -1619,8 +1638,10 @@ function installCheckpointState(
     return "advanced";
   };
   return {
+    approvalClaims: () => approvalClaims,
     calls: () => calls,
     checkpoint: () => currentCheckpoint,
+    setApprovalsLeft(value: number) { approvalsLeft = value; },
     synthesisDispatchMarks: () => synthesisDispatchMarks
   };
 }
@@ -10753,6 +10774,85 @@ describe("recovered tool-free synthesis and repeated calls", () => {
     expect(requests[0]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content:
       `Tool use is now disabled for this run: repeated identical calls returned no new data. Some planned tool calls were not executed. ${instructionTail}` });
     expect(harness.state.completed).toMatchObject({ finalText: "Checked part answered; the rest was not verified." });
+  });
+
+  // MCP write approval: the frozen marker gates the run's write tool (no annotations).
+  const interactiveRequest = () => ({ ...normalizedToolRequest(), mcpApproval: { consentedServerIds: [], version: 1 as const },
+    toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } });
+
+  it("never dispatches a call gated for approval after a restart and ends the round in tool-free synthesis", async () => {
+    const gated: PersistedToolLoopCall = { ...persistedRecoveryCall("error"), arguments: { value: "x" }, id: "gated-1",
+      providerCallId: "write-1", roundIndex: 1, startedAt: null, completedAt: "2026-07-12T09:00:20.000Z",
+      result: mcpApprovalRequiredToolCallResult({ providerCallId: "write-1", toolName: recoveryToolName }) };
+    const { adapter, requests } = synthesisAdapter();
+    const runtimeCall = vi.fn();
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage: [terminal(1)], calls: [gated], phase: "tools_pending", roundIndex: 1 }),
+      normalizedRequest: interactiveRequest()
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain(MCP_APPROVAL_REQUIRED_MESSAGE);
+    expect(requests[0]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content:
+      `Tool use is now disabled for this run: a tool call waits for the user's approval in the chat. Some planned tool calls were not executed. ${instructionTail}` });
+    expect(harness.state.completed).not.toBeNull();
+  });
+
+  it.each([
+    { approvals: 0, dispatched: false },
+    { approvals: 1, dispatched: true }
+  ])("claims a recovered pending write with its approval request (approvals left: $approvals)", async ({ approvals, dispatched }) => {
+    const pending: PersistedToolLoopCall = { ...persistedRecoveryCall("pending"), arguments: { value: "x" }, id: "pending-1",
+      providerCallId: "write-1", roundIndex: 1, startedAt: null };
+    const { adapter, requests } = synthesisAdapter();
+    const runtimeCall = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["written"], unsupportedContentTypes: [] }));
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage: [terminal(1)], calls: [pending], phase: "tools_pending", roundIndex: 1 }),
+      normalizedRequest: interactiveRequest()
+    });
+    installed.setApprovalsLeft(approvals);
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    const claim = vi.spyOn(harness.repository, "claimToolLoopCall");
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    // The claim carries the exact call key; only a consumed approval lets it run.
+    expect(claim).toHaveBeenCalledWith(expect.objectContaining({ callId: "pending-1", mcpApproval: expect.objectContaining({
+      definitionHash: "b".repeat(64), serverId: "server-1", toolName: recoveryToolName }) }));
+    expect(installed.approvalClaims()).toEqual(["write-1"]);
+    expect(runtimeCall).toHaveBeenCalledTimes(dispatched ? 1 : 0);
+    expect(installed.calls()[0]).toMatchObject(dispatched ? { state: "complete" } : { startedAt: null, state: "error",
+      result: mcpApprovalRequiredToolCallResult({ providerCallId: "write-1", toolName: recoveryToolName }) });
+    expect(requests[0]!.toolChoice).toBe(dispatched ? "auto" : "none");
+  });
+
+  it("never gates a recovered write of a run admitted without the marker or with the server's consent", async () => {
+    for (const normalizedRequest of [{ ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } },
+      { ...interactiveRequest(), mcpApproval: { consentedServerIds: ["server-1"], version: 1 as const } }]) {
+      const pending: PersistedToolLoopCall = { ...persistedRecoveryCall("pending"), arguments: { value: "x" }, id: "pending-1",
+        providerCallId: "write-1", roundIndex: 1, startedAt: null };
+      const { adapter } = synthesisAdapter();
+      const runtimeCall = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["written"], unsupportedContentTypes: [] }));
+      const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      const installed = installCheckpointState(harness, {
+        ...checkpointedRun({ answerRoundUsage: [terminal(1)], calls: [pending], phase: "tools_pending", roundIndex: 1 }),
+        normalizedRequest
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(installed.approvalClaims()).toEqual([]);
+      expect(runtimeCall).toHaveBeenCalledOnce();
+    }
   });
 });
 

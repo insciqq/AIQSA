@@ -97,6 +97,7 @@ import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import { skillSaveToolsForRequest } from "../tools/skillSave";
+import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import { admitScheduledTaskManagement, scheduledTaskManagementToolsForRequest } from "../tools/scheduledTaskManagement";
 import {
   FETCH_URL_LIMITS,
@@ -222,6 +223,8 @@ type RunPreparationRepository = Pick<
   | "loadProjectAssistantRowContext"
   /** Without it only the current message's links are authorized for `fetch_url`. */
   | "loadScheduledPromptMessageIds"
+  /** Without it an interactive run freezes no "Always allow" consent: every write is asked. */
+  | "loadMcpToolConsentServerIds"
   | "loadToolHistory"
   | "projectToolHistory"
 >>;
@@ -2450,6 +2453,18 @@ async function prepareRunWith(
   const scheduledTaskManagementTool = scheduledTaskTool && deps.repository.manageScheduledTaskForCall
     ? await admitScheduledTaskManagement(deps.repository, { chatId: chat.id, userId: input.userId,
       userUrlDigests: fetchUrlPlan?.userUrlDigests ?? [] }) : undefined;
+  // A run a user started asks its initiator before an MCP tool that may change
+  // data runs (operator decision 2026-10-08); a scheduled task's own run is its
+  // owner's standing authority. The initiator's "Always allow" consents for the
+  // run's servers are frozen here: a revocation applies to later runs.
+  const approvalServerIds = [...new Set([
+    ...(mcpPlan?.ok ? mcpPlan.snapshot.servers.map((server) => server.serverId) : []),
+    ...(mcpDiscoveryEnabled && mcpCatalog ? mcpCatalog.servers.map((server) => server.serverId) : [])
+  ])];
+  const mcpApproval = !scheduledOccurrence && approvalServerIds.length > 0
+    ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
+        serverIds: approvalServerIds, userId: input.userId }) ?? [])
+    : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2476,6 +2491,7 @@ async function prepareRunWith(
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
     ...(scheduledTaskManagementTool ? { scheduledTaskManagementTool } : {}),
     ...(skillSaveTool ? { skillSaveTool: true as const } : {}),
+    ...(mcpApproval ? { mcpApproval } : {}),
     ...(fetchUrlPlan ? { fetchUrl: fetchUrlPlan } : {}),
     toolHistory,
     attachmentIds,

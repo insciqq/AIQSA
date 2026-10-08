@@ -4,6 +4,7 @@ import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { readToolCallReceipt, readToolCallReceiptHash } from "../tools/readToolCall";
 import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
 import { contextDigest } from "./contextCompactionContract";
+import { mcpApprovalGated } from "./mcpApprovalGate";
 import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import {
   toolLoopPersistenceLimits,
@@ -176,8 +177,10 @@ export class ToolCallRepeatHistory {
     if (successes.get(older) !== successes.get(newer)) return null;
     const mayChangeState = (entry: Readonly<{ arguments: unknown; toolName: string }>) =>
       !context.readOnly(entry.toolName) && toolCallRepeatKey(entry) !== key;
+    // A blocked repeat or a call gated for the user's approval never ran.
     const changedSince = [...this.rows.values()].some(row => row.roundIndex >= older && row.roundIndex < roundIndex &&
-      row.state !== "pending" && !repeatBlockedRounds(row) && row.key !== key && !context.readOnly(row.toolName));
+      row.state !== "pending" && !repeatBlockedRounds(row) && !mcpApprovalGated(row) && row.key !== key &&
+      !context.readOnly(row.toolName));
     return changedSince || context.batch.some(mayChangeState) ? null : [older, newer];
   }
 
@@ -214,6 +217,16 @@ export function repeatBlockedNote(rounds: ToolCallRepeatRounds): string {
 export function roundMadeNoProgress(rows: readonly Pick<ToolCallRepeatRow,
   "providerCallId" | "result" | "roundIndex" | "startedAt" | "state" | "toolName">[]): boolean {
   return rows.length > 0 && rows.every(row => repeatBlockedRounds(row) !== null);
+}
+
+/**
+ * A round of only calls gated for the user's approval and blocked repeats,
+ * at least one gated, waits for that approval: it ends in tool-free synthesis.
+ */
+export function roundAwaitsApproval(rows: readonly Pick<ToolCallRepeatRow,
+  "providerCallId" | "result" | "roundIndex" | "startedAt" | "state" | "toolName">[]): boolean {
+  return rows.length > 0 && rows.some(mcpApprovalGated) &&
+    rows.every(row => mcpApprovalGated(row) || repeatBlockedRounds(row) !== null);
 }
 
 /** The persisted form of an outcome this process settled: what its row now holds. */

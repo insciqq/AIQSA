@@ -309,6 +309,13 @@ export type NormalizedRunRequest = {
    * scheduled, temporary, Project, Assistant or Knowledge run). Never set
    * from a request field. */
   skillSaveTool?: true;
+  /** Server-owned admission marker of an interactive run with MCP authority
+   * (any run a user started, never a scheduled task's run): its MCP calls
+   * of tools that may change data need the initiator's approval, model,
+   * guest-code and Agent calls alike. Carries the initiator's "Always allow"
+   * consents for the run's servers as admission read them. Never set from a
+   * request field. */
+  mcpApproval?: import("../mcp/writeApproval").McpApprovalAdmission;
   /** Server-owned admission marker of a tool-calling run that may read pages
    * through `fetch_url`, with its frozen link authority: digests of links in
    * user-authored text on the visible branch, or a scheduled run's task
