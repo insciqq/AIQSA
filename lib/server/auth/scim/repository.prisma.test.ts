@@ -318,6 +318,32 @@ describe("SCIM repository", () => {
     });
   });
 
+  it("never changes the email of an administrator or a local-password account", async () => {
+    await withScimData(async (fixture) => {
+      const local = await prisma.user.create({
+        data: {
+          authIdentities: {
+            create: { normalizedEmail: fixture.email("local"), passwordHash: "hash", provider: "password", providerAccountId: fixture.email("local") }
+          },
+          displayName: "Local Person",
+          email: fixture.email("local"),
+          status: "active"
+        }
+      });
+      const renamed = (value: string) => parseScimUserPatch({ Operations: [{ op: "replace", path: "userName", value }] });
+
+      for (const id of [fixture.adminId, local.id]) {
+        await expect(scim.patchUser(id, renamed(fixture.email(`taken-over-${id.slice(0, 8)}`)), now))
+          .rejects.toMatchObject({ scimType: "mutability", status: 400 });
+        await expect(scim.patchUser(id, parseScimUserPatch({
+          Operations: [{ op: "replace", path: "displayName", value: "Renamed By IdP" }]
+        }), now)).resolves.toEqual({ kind: "ok", userId: id });
+      }
+      await expect(account(fixture.adminId)).resolves.toMatchObject({ displayName: "Renamed By IdP", email: fixture.email("operator") });
+      await expect(account(local.id)).resolves.toMatchObject({ displayName: "Renamed By IdP", email: fixture.email("local") });
+    });
+  });
+
   it("revokes sessions and connected-app grants at once when SCIM deactivates a user", async () => {
     await withScimData(async (fixture) => {
       const mcp = await createInboundMcpTestClient(prisma, new Date());
@@ -540,10 +566,31 @@ describe("SCIM groups", () => {
       }))).rejects.toMatchObject({ detail: "A request may change at most 1000 members.", status: 400 });
       await expect(members(group)).resolves.toEqual([first]);
 
-      await expect(admins.setUserGroups({ expectedGroupIds: [group], groupIds: [], userId: first }))
-        .resolves.toBe("group_membership_managed");
-      await expect(admins.setUserGroups({ expectedGroupIds: [], groupIds: [group], userId: second }))
-        .resolves.toBe("group_membership_managed");
+      // The pushed memberships are SCIM's while SCIM is enabled; turned off, administrators edit them again.
+      const snapshot = await prisma.authSignInMethodSetting.findUnique({ where: { method: "scim" } });
+      try {
+        await prisma.authSignInMethodSetting.upsert({
+          create: { activatedAt: now, activeConfig: { linkMethod: "none" }, activeVersion: 1, enabled: true, method: "scim" },
+          update: { enabled: true },
+          where: { method: "scim" }
+        });
+        await expect(admins.setUserGroups({ expectedGroupIds: [group], groupIds: [], userId: first }))
+          .resolves.toBe("group_membership_managed");
+        await expect(admins.setUserGroups({ expectedGroupIds: [], groupIds: [group], userId: second }))
+          .resolves.toBe("group_membership_managed");
+
+        await prisma.authSignInMethodSetting.update({ data: { enabled: false }, where: { method: "scim" } });
+        await expect(admins.setUserGroups({ expectedGroupIds: [], groupIds: [group], userId: second }))
+          .resolves.toBe("applied");
+        await expect(members(group)).resolves.toEqual([first, second].sort());
+      } finally {
+        await prisma.authSignInMethodSetting.deleteMany({ where: { method: "scim" } });
+        if (snapshot) {
+          await prisma.authSignInMethodSetting.create({
+            data: { ...snapshot, activeConfig: snapshot.activeConfig ?? undefined, draftConfig: snapshot.draftConfig ?? undefined }
+          });
+        }
+      }
     });
   });
 
