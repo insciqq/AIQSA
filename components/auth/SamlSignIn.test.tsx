@@ -38,11 +38,18 @@ describe("AuthLogin with SAML", () => {
     );
     unmount();
 
-    render(<AuthLogin nextPath="/" samlOutcome="account_conflict" />);
+    const { unmount: unmountConflict } = render(<AuthLogin nextPath="/" samlOutcome="account_conflict" />);
     expect(screen.getByRole("alert")).toHaveTextContent(
       "SAML could not be linked to an existing AIQSA account. Sign in another way or contact the operator. (saml_account_conflict)"
     );
     expect(screen.queryByRole("link", { name: /Continue with/ })).not.toBeInTheDocument();
+    unmountConflict();
+
+    render(<AuthLogin nextPath="/" samlOutcome="browser_mismatch" samlSignIn={{ buttonLabel: "SAML" }} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This SAML sign-in did not finish in the browser that started it. Start it again here. (saml_browser_mismatch)"
+    );
+    expect(screen.getByRole("link", { name: "Continue with SAML" })).toBeInTheDocument();
   });
 
   it("does not render SAML when the method is off", () => {

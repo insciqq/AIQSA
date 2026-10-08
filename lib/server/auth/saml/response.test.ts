@@ -42,6 +42,7 @@ function harness(overrides: ConfigOverrides = {}) {
       const requestId = samlTestId();
       requests.issue(requestId, {
         activeVersion,
+        bindingHash: "0".repeat(64),
         expiresAt: Date.now() + 10 * 60_000,
         issuedAt: new Date().toISOString(),
         nextPath

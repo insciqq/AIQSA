@@ -18,8 +18,8 @@ import { createFixedWindowLoginRateLimiter } from "../rateLimit";
 import { readCookie, SESSION_COOKIE_NAME } from "../session";
 import type { ResolvedSignInMethod } from "../signInMethods";
 import { hashToken } from "../token";
-import { createSamlAcsHandler, createSamlStartHandler } from "./handlers";
-import { createSamlReplayCache, createSamlRequestStore } from "./state";
+import { createSamlAcsHandler, createSamlCompleteHandler, createSamlStartHandler } from "./handlers";
+import { createSamlCompletionStore, createSamlReplayCache, createSamlRequestStore } from "./state";
 
 // A loopback installation without proxy trust: its clients need no rate-limit identity.
 const BASE_URL = "http://localhost:3000";
@@ -34,7 +34,10 @@ type SamlFixture = {
   domain: string;
   email(localPart: string): string;
   group(label: string, externalName: string): Promise<string>;
-  /** Signs in through the start route and the ACS, as a browser and the IdP would; the NameID is `value(subject)`. */
+  /**
+   * Signs in through the start route, the ACS and the completion step, as a browser and the IdP
+   * would; the NameID is `value(subject)`. Returns the completion step's response.
+   */
   signIn(input: { attributes: Record<string, string | string[]>; entityId?: string; subject: string }): Promise<Response>;
   /** A name unique to this run. */
   value(name: string): string;
@@ -62,6 +65,7 @@ async function withSamlData<T>(overrides: Record<string, unknown>, run: (fixture
   const domain = `saml-${id}.example.com`;
   const groupIds: string[] = [];
   const requests = createSamlRequestStore();
+  const completions = createSamlCompletionStore();
   const replayCache = createSamlReplayCache();
 
   try {
@@ -79,12 +83,19 @@ async function withSamlData<T>(overrides: Record<string, unknown>, run: (fixture
         const method = samlMethod(input.entityId ?? idp.entityId, overrides);
         const handlers = {
           acs: createSamlAcsHandler({
-            completeSignIn: (signIn) => completeExternalSignIn(prisma, signIn),
+            completions,
             getConfig: () => config,
             loginRateLimiter: createFixedWindowLoginRateLimiter(),
             recordOutcome: async () => undefined,
             replayCache,
             requests,
+            resolveMethod: async () => method
+          }),
+          complete: createSamlCompleteHandler({
+            completeSignIn: (signIn) => completeExternalSignIn(prisma, signIn),
+            completions,
+            getConfig: () => config,
+            recordOutcome: async () => undefined,
             resolveMethod: async () => method
           }),
           start: createSamlStartHandler({
@@ -95,6 +106,7 @@ async function withSamlData<T>(overrides: Record<string, unknown>, run: (fixture
           })
         };
         const started = await handlers.start(new Request(`${BASE_URL}/api/auth/saml/start?next=%2Fc%2Fsaml-chat`));
+        const bindingCookie = started.headers.get("set-cookie")!.split(";")[0]!;
         const location = new URL(started.headers.get("location")!);
         const requestId = samlAuthnRequestFromLocation(location).id;
         const assertion = signSamlTestAssertion(samlTestAssertion({
@@ -114,11 +126,13 @@ async function withSamlData<T>(overrides: Record<string, unknown>, run: (fixture
             issuer: method.config.idpEntityId
           }))
         });
-        return handlers.acs(new Request(`${BASE_URL}/saml/acs`, {
+        const accepted = await handlers.acs(new Request(`${BASE_URL}/saml/acs`, {
           body: body.toString(),
           headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://idp.example.test" },
           method: "POST"
         }));
+        expect(accepted.headers.get("location")).toBe(`${BASE_URL}/api/auth/saml/complete`);
+        return handlers.complete(new Request(accepted.headers.get("location")!, { headers: { cookie: bindingCookie } }));
       },
       value: (name) => `${name}-${id}`
     });
@@ -132,6 +146,11 @@ async function withSamlData<T>(overrides: Record<string, unknown>, run: (fixture
 
 function outcome(response: Response): string | null {
   return new URL(response.headers.get("location")!).searchParams.get("saml");
+}
+
+function sessionToken(response: Response): string | undefined {
+  const cookie = response.headers.getSetCookie().find((value) => value.startsWith(`${SESSION_COOKIE_NAME}=`));
+  return cookie ? readCookie(cookie, SESSION_COOKIE_NAME) : undefined;
 }
 
 async function identityOf(subject: string) {
@@ -159,7 +178,7 @@ describe("SAML sign-in settlement", () => {
 
       expect(response.status).toBe(303);
       expect(response.headers.get("location")).toBe(`${BASE_URL}/c/saml-chat`);
-      const token = readCookie(response.headers.get("set-cookie"), SESSION_COOKIE_NAME)!;
+      const token = sessionToken(response)!;
       const identity = await identityOf(fixture.value("ada"));
       expect(identity).toMatchObject({ normalizedEmail: email, provider: "saml", source: idp.entityId });
       // An unverified email never becomes the account's address unless the method trusts it.
@@ -212,7 +231,7 @@ describe("SAML sign-in settlement", () => {
           await expect(prisma.authIdentity.count({ where: { provider: "saml", userId: owner.id } })).resolves.toBe(1);
         } else {
           expect(outcome(response)).toBe("account_conflict");
-          expect(response.headers.get("set-cookie")).toBeNull();
+          expect(sessionToken(response)).toBeUndefined();
           await expect(prisma.authIdentity.count({ where: { provider: "saml", userId: owner.id } })).resolves.toBe(0);
         }
       });

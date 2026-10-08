@@ -2,7 +2,7 @@ import { SAML, SamlStatusError, type CacheProvider, type Profile } from "@node-s
 import { SAML_NAME_ID_FORMATS, type SamlServiceProvider } from "@/lib/contracts/samlSignIn";
 import { SAML_CLOCK_SKEW_MS, type SamlSignInConfig } from "./config";
 import { samlNodeOptions } from "./options";
-import type { SamlPendingRequest, SamlReplayCache, SamlRequestStore } from "./state";
+import type { SamlAssertedIdentity, SamlPendingRequest, SamlReplayCache, SamlRequestStore } from "./state";
 import {
   childElements,
   elementsByLocalName,
@@ -55,14 +55,6 @@ export type SamlResponseFailure =
   | "subject_missing"
   | "subject_transient"
   | "unsolicited_response";
-
-export type SamlAssertedIdentity = {
-  displayName: string;
-  email: string | null;
-  /** The groups attribute's values, exact; null when it is not configured or was not sent. */
-  groups: string[] | null;
-  subject: string;
-};
 
 export type SamlResponseVerification =
   | { identity: SamlAssertedIdentity; ok: true; request: SamlPendingRequest; requestId: string }

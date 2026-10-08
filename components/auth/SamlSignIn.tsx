@@ -19,6 +19,7 @@ export function samlOutcomeFeedback(
   }
   const messages: Record<Exclude<SamlLoginOutcome, "pending">, string> = {
     account_conflict: `${label} could not be linked to an existing AIQSA account. Sign in another way or contact the operator.`,
+    browser_mismatch: `This ${label} sign-in did not finish in the browser that started it. Start it again here.`,
     email_missing: `${label} did not send a usable email address. Ask the operator to check the SAML email attribute.`,
     failed: `${label} sign-in could not be completed. Try again or contact the operator.`,
     not_allowed: `This ${label} account is not allowed to access AIQSA.`,
