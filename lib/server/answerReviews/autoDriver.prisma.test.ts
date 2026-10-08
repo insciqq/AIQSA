@@ -181,7 +181,7 @@ const lastStep = async (sessionId: string): Promise<CreatedRun> => {
   return { assistantMessageId: run.assistantMessageId!, runId: run.id, userMessageId: turn.id };
 };
 
-beforeEach(() => startStep.mockReset());
+beforeEach(() => { startStep.mockReset(); });
 afterAll(() => prisma.$disconnect());
 
 describe("automatic answer review driver", () => {
