@@ -167,7 +167,7 @@ export function adminHealthEventCategory(event: string): AdminHealthCategory {
   if (REQUEST_EVENTS.has(event)) return "requests";
   if (event.startsWith("provider_")) return "providers";
   if (event.startsWith("run_")) return "runs";
-  if (event === "tool_execution") return "tools";
+  if (event === "tool_execution" || event === "tool_call") return "tools";
   return "other";
 }
 
@@ -177,7 +177,7 @@ export const ADMIN_HEALTH_CATEGORY_EVENTS: Readonly<Record<AdminHealthIncidentCa
   requests: [...REQUEST_EVENTS],
   runs: ["run_execution", "run_persistence", "run_http_failed", "run_preparation", "run_stop_admission"],
   background: [...BACKGROUND_EVENTS],
-  tools: ["tool_execution"]
+  tools: ["tool_execution", "tool_call"]
 };
 
 export const ADMIN_HEALTH_INCIDENT_EVENT_PATTERN = /^[a-z][a-z0-9_.]{0,63}$/u;

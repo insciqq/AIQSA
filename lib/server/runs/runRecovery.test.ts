@@ -1706,6 +1706,30 @@ const completionWorkspace: NonNullable<NormalizedRunRequest["workspace"]> = {
 };
 
 describe("run recovery", () => {
+  it("ends each recovered loop call with one content-free record of the shared family", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) {
+        requests.push(request);
+        if (requests.length === 1) return { ...providerResult, finalText: "", providerResponseId: "response-status-1",
+          providerToolCallMessage: [{ type: "function_call", name: "get_session_status", call_id: "status-1", arguments: "{}" }],
+          toolCalls: [{ id: "status-1", name: "get_session_status", arguments: {} }] };
+        return providerResult;
+      } } } });
+    const base = checkpointedRun({ calls: [{ ...persistedRecoveryCall("pending"), arguments: {}, toolName: "get_session_status" }],
+      phase: "tools_pending", providerToolMessages: [] });
+    const { mcp: _mcp, ...normalizedRequest } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalizedRequest, sessionStatusTool: true } });
+    const observation = await captureRunObservation();
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    const terminal = observation.records().filter((record) => record.event === "tool_call");
+    observation.restore();
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(terminal).toEqual([expect.objectContaining({ level: "info", tool_kind: "session_status", outcome: "completed" })]);
+    expect(JSON.stringify(terminal)).not.toContain("get_session_status");
+  });
+
   it.each(["complete", "running"] as const)("revalidates or settles a %s Memory call without replaying search", async state => {
     const requests: ProviderRunRequest[] = [];
     const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) {

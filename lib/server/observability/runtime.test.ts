@@ -43,6 +43,26 @@ describe("bounded observability runtime", () => {
     }
   });
 
+  it("records one bounded terminal tool call with its family, outcome and code only", () => {
+    expect(record("tool_call", { tool_kind: "fetch_url", outcome: "completed", duration_ms: 12.4 })).toMatchObject({
+      level: "info", tool_kind: "fetch_url", outcome: "completed", duration_ms: 12 });
+    expect(record("tool_call", { tool_kind: "artifact", outcome: "failed", code: "artifact_tool_unavailable" }))
+      .toMatchObject({ level: "warn", code: "artifact_tool_unavailable" });
+    expect(record("tool_call", { tool_kind: "other", outcome: "timeout", code: "tool_call_timeout" })).toMatchObject({ level: "warn" });
+    expect(record("tool_call", { tool_kind: "mcp", outcome: "cancelled", code: "tool_call_cancelled" })).toMatchObject({ level: "info" });
+    const thrown = new TypeError("PRIVATE_EXCEPTION_TEXT");
+    const unexpected = record("tool_call", { tool_kind: "skill", outcome: "failed", code: "tool_failed",
+      error_category: "unexpected", error: thrown });
+    expect(unexpected).toMatchObject({ level: "error", error_category: "unexpected", error_class: "TypeError" });
+    expect(unexpected.error_fingerprint).toMatch(/^[0-9a-f]{12}$/u);
+    const hostile = record("tool_call", { tool_kind: "PRIVATE_TOOL_NAME", outcome: "PRIVATE_OUTCOME", code: "PRIVATE_CODE",
+      name: "PRIVATE_TOOL_NAME", arguments: { url: "https://PRIVATE.example" }, error_category: "PRIVATE" } as never);
+    expect(hostile).not.toHaveProperty("tool_kind");
+    expect(hostile).not.toHaveProperty("outcome");
+    expect(hostile).toMatchObject({ code: "unknown", level: "info" });
+    expect(JSON.stringify([unexpected, hostile])).not.toContain("PRIVATE_");
+  });
+
   it.each(["native_route_http_error", "native_route_capability_mismatch", "native_route_authority_changed"])(
     "retains native adoption diagnosis %s without raw provider details", (code) => {
       const event = record("service_operation", { subsystem: "admin", stage: "validate", outcome: "degraded",
