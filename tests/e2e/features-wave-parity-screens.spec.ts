@@ -442,7 +442,9 @@ async function mcpConsentScreens(page: Page, testInfo: TestInfo, viewport: Viewp
     await expect(status).toHaveText(`${serverName} will ask for approval again.`);
     await expect(revoke).toHaveCount(0);
     await shot(page, testInfo, "mcp-consents-revoked", viewport);
-    await expectContained(page, viewport, "mcp-consents-revoked", [status]);
+    // The status line is text, not a control: it only has to stay on screen.
+    await expectContained(page, viewport, "mcp-consents-revoked", []);
+    await softly("mcp-consents-revoked: status within the viewport", () => expectWithinViewport(page, status));
   } finally {
     await page.goto("about:blank").catch(() => undefined);
     if (serverId) await page.request.delete(`/api/me/mcp-consents/${serverId}`).catch(() => undefined);

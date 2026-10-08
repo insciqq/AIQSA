@@ -9,6 +9,7 @@ import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import { createWriteApprovalFixture, startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
 import { activeChatId, disableMemoryRecall, lastAnswer, setWorkspaceEnabled, turnWorkspaceOn } from "./support/workspace";
+import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 
 /**
  * MCP write approval on the fake provider: a tool its server does not mark
@@ -97,7 +98,8 @@ async function withApprovalServer(page: Page, label: string, body: (stand: Stand
 async function chooseTools(page: Page, options: Readonly<{ workspace?: boolean }> = {}) {
   const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
   await expect(mcpMode).toBeVisible({ timeout: 30_000 });
-  // The 8k fake model cannot hold the Workspace tool surface beside MCP tools.
+  // The 8k fake model cannot hold the Workspace tool surface beside MCP tools;
+  // the Workspace case raises its window with prepareWorkspaceFakeContext.
   if (options.workspace) await turnWorkspaceOn(page);
   else if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await mcpMode.click();
@@ -278,17 +280,23 @@ test("Workspace code asks the same way and its re-run sends the approved call on
   // Guest code runs only in a real Microsandbox guest, never the deterministic runtime.
   test.skip(process.env.AIQSA_WORKSPACE_LIVE_E2E !== "DISPOSABLE", "requires an explicitly disposable KVM Microsandbox topology");
   test.setTimeout(900_000);
-  await withApprovalServer(page, "Code records", async (stand) => {
-    await newChat(page, { workspace: true });
-    await send(page, stand, "Delete record r-5 from code [AIQSA_MCP_CODE_E2E:delete_record:r-5]",
-      "Code MCP call finished: approval_required.", 360_000);
-    const card = deleteCard(page, stand);
-    await expect(card).toContainText("Code in the Workspace called this tool, which may change data. Nothing was sent.");
-    expect(stand.endpoint.dispatches("delete_record")).toBe(0);
-    await card.getByRole("button", { name: "Allow once" }).click();
-    await expect(lastAnswer(page)).toContainText("Code MCP call finished: done.", { timeout: 360_000 });
-    await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
-    expect(stand.endpoint.dispatches("delete_record", { id: "r-5" })).toBe(1);
-    expect(stand.endpoint.dispatches("delete_record")).toBe(1);
-  });
+  // Workspace and Load-all MCP tools exceed the fake model's 8k seed window.
+  const restore = await prepareWorkspaceFakeContext(prisma);
+  try {
+    await withApprovalServer(page, "Code records", async (stand) => {
+      await newChat(page, { workspace: true });
+      await send(page, stand, "Delete record r-5 from code [AIQSA_MCP_CODE_E2E:delete_record:r-5]",
+        "Code MCP call finished: approval_required.", 360_000);
+      const card = deleteCard(page, stand);
+      await expect(card).toContainText("Code in the Workspace called this tool, which may change data. Nothing was sent.");
+      expect(stand.endpoint.dispatches("delete_record")).toBe(0);
+      await card.getByRole("button", { name: "Allow once" }).click();
+      await expect(lastAnswer(page)).toContainText("Code MCP call finished: done.", { timeout: 360_000 });
+      await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
+      expect(stand.endpoint.dispatches("delete_record", { id: "r-5" })).toBe(1);
+      expect(stand.endpoint.dispatches("delete_record")).toBe(1);
+    });
+  } finally {
+    await restore();
+  }
 });
