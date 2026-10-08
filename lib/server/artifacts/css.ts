@@ -1,6 +1,7 @@
 import postcss, { type AtRule, type Root } from "postcss";
 import valueParser, { type Node as ValueNode } from "postcss-value-parser";
 import { ArtifactToolError } from "./errors";
+import { ARTIFACT_RESOURCE_LIMITS } from "./resourcePolicy";
 
 export type ArtifactCssReference = {
   value: string;
@@ -28,16 +29,57 @@ function singleUrl(node: ValueNode, path: string): string {
 }
 const quoteCss = (value: string) => value.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"').replace(/[\r\n\f]/gu, "");
 
+/**
+ * Bounds of one stylesheet text (a file, a `<style>` element or a style attribute) before
+ * postcss builds its tree. The cost follows the nodes, about 1 KB each, not the bytes: 15 MiB
+ * of tiny rules took 12 s and 3.7 GB. Statements count `{`, `}`, `;` and comment starts;
+ * value tokens bound the nodes of the values parsed for url(). The minified full Tailwind 2
+ * build (2.9 MB) has 98k statements and 172k value tokens, Bootstrap 5 11k and 8k; the
+ * costliest shapes measured at these bounds take under 0.5 s and fit a 200 MB heap.
+ */
+export const ARTIFACT_CSS_LIMITS = Object.freeze({ maxBytes: ARTIFACT_RESOURCE_LIMITS.styleBytes, maxStatements: 150_000, maxValueTokens: 300_000 });
+const tooLarge = (path: string): never => { throw new ArtifactToolError("artifact_stylesheet_too_large", { path,
+  hint: `Split the stylesheet into several linked files, or minify it and leave out unused rules (a purged production build). Each stylesheet, <style> element or style attribute may have at most ${ARTIFACT_CSS_LIMITS.maxBytes / 1024 / 1024} MiB and ${ARTIFACT_CSS_LIMITS.maxStatements} braces, semicolons and comments.` }); };
+
+/** Characters that open or close a postcss node; ones inside strings and comments only overcount. */
+function cssStatements(source: string): number {
+  let count = 0;
+  for (let index = 0; index < source.length; index++) {
+    const code = source.charCodeAt(index);
+    if (code === 0x7b || code === 0x7d || code === 0x3b || code === 0x2f && source.charCodeAt(index + 1) === 0x2a) count++;
+  }
+  return count;
+}
+
+/** One more than the characters that can end a postcss-value-parser node: a bound on its nodes. */
+function valueTokens(value: string): number {
+  let count = 1;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    // Whitespace and " ' ( ) , / :
+    if (code === 0x20 || code >= 0x09 && code <= 0x0d || code === 0x22 || code === 0x27 || code === 0x28 || code === 0x29 ||
+      code === 0x2c || code === 0x2f || code === 0x3a) count++;
+  }
+  return count;
+}
+
 /** Rules and values are parsed independently. Escaped selectors stay untouched. */
 export function parseArtifactCss(source: string, path: string): { root: Root; references: ArtifactCssReference[]; text: () => string } {
+  if (Buffer.byteLength(source) > ARTIFACT_CSS_LIMITS.maxBytes || cssStatements(source) > ARTIFACT_CSS_LIMITS.maxStatements) tooLarge(path);
   let root: Root;
   try { root = postcss.parse(source, { from: undefined }); } catch { return invalid(path); }
   const references: ArtifactCssReference[] = [];
   const pending: Array<() => void> = [];
+  let tokens = 0;
+  const parseValue = (value: string) => {
+    tokens += valueTokens(value);
+    if (tokens > ARTIFACT_CSS_LIMITS.maxValueTokens) tooLarge(path);
+    return valueParser(value);
+  };
   root.walkAtRules(rule => {
     const name = unescapeCss(rule.name).toLowerCase();
     if (name !== "import") return;
-    const parsed = valueParser(rule.params);
+    const parsed = parseValue(rule.params);
     const first = parsed.nodes.find(node => node.type !== "space" && node.type !== "comment");
     if (!first) return invalid(path);
     references.push({ kind: "import", value: singleUrl(first, path), atRule: rule,
@@ -49,7 +91,10 @@ export function parseArtifactCss(source: string, path: string): { root: Root; re
     pending.push(() => { rule.params = valueParser.stringify(parsed.nodes); });
   });
   root.walkDecls(declaration => {
-    const parsed = valueParser(declaration.value);
+    // Only a function holds a reference; without one, only a comment can stringify differently.
+    if (!declaration.value.includes("(") && !declaration.value.includes("/*")) return;
+    const parsed = parseValue(declaration.value);
+    const before = references.length;
     parsed.walk(node => {
       if (node.type !== "function") return;
       const name = unescapeCss(node.value).toLowerCase();
@@ -69,7 +114,12 @@ export function parseArtifactCss(source: string, path: string): { root: Root; re
         }
       }
     });
-    pending.push(() => { declaration.value = valueParser.stringify(parsed.nodes); });
+    // Only a value with references keeps its tree until their replacements are written.
+    if (references.length > before) pending.push(() => { declaration.value = valueParser.stringify(parsed.nodes); });
+    else {
+      const value = valueParser.stringify(parsed.nodes);
+      if (value !== declaration.value) pending.push(() => { declaration.value = value; });
+    }
   });
   return { root, references, text: () => { pending.forEach(write => write()); return root.toString(); } };
 }
