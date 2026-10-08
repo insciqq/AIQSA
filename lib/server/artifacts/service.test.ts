@@ -540,7 +540,7 @@ describe("render notes in the tool result", () => {
     ] });
     expect(result.status).toBe("complete");
     const renderNotes = { removedLinks: [{ page: "index.html", rel: "preload", href: "app.js" }], missingLinks: [{ page: "index.html", href: "gone.html", path: "gone.html" }],
-      invalidPages: [{ page: "about.html", code: "artifact_element_unsupported" }], omitted: 0 };
+      invalidPages: [{ page: "about.html", code: "artifact_element_unsupported" }], omitted: 0, unvalidatedPages: 0 };
     expect(resultValue(result).render_notes).toEqual({ removed_links: renderNotes.removedLinks, missing_links: renderNotes.missingLinks,
       invalid_pages: renderNotes.invalidPages, hint: expect.stringContaining("invalid_pages") });
     expect(resultValue(result)).not.toHaveProperty("unpacked");

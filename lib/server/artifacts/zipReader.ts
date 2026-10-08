@@ -1,5 +1,4 @@
-import { inflateRaw } from "node:zlib";
-import { crc32 } from "../../domain/crc32";
+import { crc32, inflateRaw } from "node:zlib";
 
 export type ZipReadLimits = {
   maxEntries: number;
@@ -17,6 +16,12 @@ export const ARTIFACT_ZIP_LIMITS: ZipReadLimits = Object.freeze({
   ratioFloorBytes: 1024 * 1024
 });
 
+/**
+ * Entry names are bounded near the artifact's own path limit (192 bytes, plus a wrapper
+ * folder and macOS metadata prefixes), which also bounds the folder bookkeeping per entry.
+ */
+export const ARTIFACT_ZIP_PATH_LIMITS = Object.freeze({ maxNameBytes: 256, maxSegments: 32 });
+
 export type ZipEntry = { path: string; bytes: Buffer };
 export type ArtifactZipErrorCode =
   | "artifact_zip_invalid"
@@ -32,6 +37,7 @@ export type ArtifactZipErrorCode =
   | "artifact_zip_size_mismatch"
   | "artifact_zip_crc_mismatch"
   | "artifact_zip_path_invalid"
+  | "artifact_zip_path_too_long"
   | "artifact_zip_symlink"
   | "artifact_zip_duplicate_path"
   | "artifact_zip_aborted"
@@ -74,7 +80,8 @@ function checkExtra(bytes: Buffer, path: string): void {
 }
 
 function decodePath(bytes: Buffer, flags: number): string {
-  if (bytes.length === 0 || bytes.length > 512) refuse("artifact_zip_path_invalid");
+  if (bytes.length === 0) refuse("artifact_zip_path_invalid");
+  if (bytes.length > ARTIFACT_ZIP_PATH_LIMITS.maxNameBytes) refuse("artifact_zip_path_too_long");
   let path: string;
   if (flags & 0x0800) {
     try {
@@ -94,6 +101,7 @@ function decodePath(bytes: Buffer, flags: number): string {
   }) || parts.some(part => !part || part === "." || part === ".." || /^[a-z]:/iu.test(part))) {
     refuse("artifact_zip_path_invalid", path);
   }
+  if (parts.length > ARTIFACT_ZIP_PATH_LIMITS.maxSegments) refuse("artifact_zip_path_too_long", path);
   return path;
 }
 
@@ -215,8 +223,9 @@ export async function readZipArchive(
     const parts = (directory ? path.slice(0, -1) : path).split("/");
     const folded = parts.join("/").toLowerCase();
     if (seen.has(folded) || (!directory && directories.has(folded))) refuse("artifact_zip_duplicate_path", path);
-    for (let depth = 1; depth < parts.length; depth++) {
-      const prefix = parts.slice(0, depth).join("/").toLowerCase();
+    // Each enclosing folder is a prefix of the folded path ending before one of its slashes.
+    for (let slash = folded.indexOf("/"); slash >= 0; slash = folded.indexOf("/", slash + 1)) {
+      const prefix = folded.slice(0, slash);
       if (files.has(prefix)) refuse("artifact_zip_duplicate_path", path);
       directories.add(prefix);
     }
