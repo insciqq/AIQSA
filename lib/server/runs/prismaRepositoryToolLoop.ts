@@ -668,6 +668,7 @@ const normalizedRequestKeys = new Set([
   "workspaceCheckpointToolDescription",
   "imagePlan",
   "imageReferences",
+  "fileReferences",
   "knowledgePlan",
   "knowledgeSearchInstructionVersion",
   "knowledgeQueryAnchorVersion",
@@ -708,6 +709,21 @@ function onlyKnownKeys(value: Record<string, unknown>, keys: ReadonlySet<string>
 function nonBlank(value: unknown, maximum = 512): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum &&
     value === value.trim() && !value.includes("\u0000");
+}
+
+const fileReferenceKeys = new Set(["attachmentId", "messageId", "fileName", "mimeType", "byteSize", "kind", "origin"]);
+const boundedText = (value: unknown, maximum: number) => typeof value === "string" && value.length > 0 &&
+  value.length <= maximum && !value.includes("\u0000");
+
+/** Stored file names are untrusted display text: bounded, never trimmed. */
+function validFileReferences(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 256) return false;
+  const ids = new Set<string>();
+  return value.every((reference) => isRecord(reference) && onlyKnownKeys(reference, fileReferenceKeys) &&
+    nonBlank(reference.attachmentId, 128) && !ids.has(reference.attachmentId) && Boolean(ids.add(reference.attachmentId)) &&
+    nonBlank(reference.messageId, 128) && boundedText(reference.fileName, 256) && boundedText(reference.mimeType, 255) &&
+    Number.isSafeInteger(reference.byteSize) && Number(reference.byteSize) >= 0 && nonBlank(reference.kind, 32) &&
+    (reference.origin === "upload" || reference.origin === "generated"));
 }
 
 function nullableString(value: unknown): value is string | null {
@@ -1091,6 +1107,7 @@ function decodeProviderDispatchRecoveryRequest(
       !value.artifactReferences.some((reference) => isRecord(reference) && isRecord(value.artifactEdit) &&
         reference.artifactId === value.artifactEdit.artifactId && reference.versionId === value.artifactEdit.versionId))) ||
     value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true && !value.workspace && value.visionAnalysis === undefined || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
+    value.fileReferences !== undefined && (value.artifactTool !== true || !validFileReferences(value.fileReferences)) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     (value.monitoringVerdictTool !== undefined && value.monitoringVerdictTool !== true) ||

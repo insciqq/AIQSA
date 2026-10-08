@@ -29,7 +29,7 @@ import type { ArtifactResourcePolicy } from "./resourcePolicy";
 import { artifactToolResult } from "./toolResult";
 
 type ArtifactToolContext = Omit<ToolExecutionContext, "request"> & {
-  request: Pick<ToolExecutionContext["request"], "chatId" | "artifactReferences" | "imageReferences" | "artifactResourcePolicy">;
+  request: Pick<ToolExecutionContext["request"], "chatId" | "artifactReferences" | "imageReferences" | "fileReferences" | "artifactResourcePolicy">;
 };
 type ArtifactExecutionOptions = {
   signal?: AbortSignal;
@@ -652,7 +652,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       sourceChatId: context.request.chatId,
       sourceModelRunId: context.runId,
       sourceToolCallId: context.persistedToolCallId,
-      allowedAssetRefs: context.request.imageReferences?.map((reference) => reference.attachmentId) ?? [],
+      allowedAssetRefs: (context.request.fileReferences ?? context.request.imageReferences)?.map((reference) => reference.attachmentId) ?? [],
       resourcePolicy: context.request.artifactResourcePolicy,
       signal: options?.signal,
       assertActive: options?.assertActive,
