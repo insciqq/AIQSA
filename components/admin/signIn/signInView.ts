@@ -38,12 +38,14 @@ export function signInStatusPresentation(status: AdminSignInMethodStatus): SignI
 const testMessages: Record<string, string> = {
   client_id_format_invalid: "The client ID does not look like one this provider issues.",
   client_secret_format_invalid: "The client secret has an unexpected format: spaces or too short.",
+  environment_unsupported: "This server's environment cannot run this method; see above for what it needs.",
   format_checked: "Format checked. The provider confirms the client at the first real sign-in.",
   invalid_configuration: "The saved settings are incomplete. Check the fields and save again.",
   no_test_required: "Nothing to test for this method.",
   secret_unreadable: "The stored secret cannot be read. Enter it again and save.",
   test_failed: "The test could not be completed.",
-  test_timeout: "The test timed out."
+  test_timeout: "The test timed out.",
+  trusted_proxy_mode: "Trusted-proxy mode is on. Check this request above to see the proxy's header."
 };
 
 /** A tester's code in words; method testers may add their own codes, shown as they are. */
@@ -55,6 +57,8 @@ const failureMessages: Record<string, string> = {
   account_conflict: "an identity could not be linked to an existing account",
   email_missing: "the provider sent no usable email",
   exchange_failed: "the provider rejected the sign-in or could not be reached",
+  header_invalid: "the proxy sent an oversized or malformed identity header",
+  header_missing: "the proxy sent no identity header",
   not_allowed: "the account is not allowed by the access rules",
   sign_in_failed: "the sign-in failed",
   source_changed: "the identity belongs to a previous source"

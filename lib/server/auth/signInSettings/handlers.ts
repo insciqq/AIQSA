@@ -89,6 +89,8 @@ function failureResponse(
       return errorJson("sign_in_draft_conflict", 409);
     case "encryption_unavailable":
       return errorJson("sign_in_encryption_unavailable", 503);
+    case "environment_unsupported":
+      return errorJson("sign_in_environment_unsupported", 409);
     case "invalid_configuration":
       return errorJson("sign_in_configuration_invalid", 400);
     case "not_configured":
