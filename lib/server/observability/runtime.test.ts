@@ -40,6 +40,18 @@ describe("bounded observability runtime", () => {
     }
   );
 
+  it("keeps image failure stages and finish categories content-free", () => {
+    const fields = { stage: "provider", code: "image_generation_refused", duration_ms: 35, finish_reason: "safety" } as const;
+    const event = record("image_execution", { ...fields, image_ids: ["PRIVATE_ID"], prompt: "PRIVATE_PROMPT",
+      url: "https://PRIVATE_URL", data: "PRIVATE_BYTES", fileName: "PRIVATE_FILE", secret: "PRIVATE_KEY" } as never);
+    expect(event).toMatchObject(fields);
+    expect(JSON.stringify(event)).not.toContain("PRIVATE");
+    const invalid = record("image_execution", { ...fields, stage: "PRIVATE_STAGE", finish_reason: "PRIVATE_REASON", code: "PRIVATE_CODE" } as never);
+    expect(invalid).toMatchObject({ code: "unknown" });
+    expect(invalid).not.toHaveProperty("stage");
+    expect(invalid).not.toHaveProperty("finish_reason");
+  });
+
   it("projects local tool search counts without the query or tool names", () => {
     const fields = { outcome: "completed", duration_ms: 3, mode: "keywords", candidate_count: 180,
       result_count: 4, loaded_count: 3, already_loaded_count: 1, unknown_name_count: 0 } as const;

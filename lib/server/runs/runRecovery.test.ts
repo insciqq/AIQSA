@@ -37,6 +37,7 @@ import type {
 } from "../providers/types";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { ProviderSearchExecutionError } from "../providers/types";
+import { ImageInputError } from "../images/inputError";
 import { ImageGenerationError } from "../providers/imageGeneration";
 import { imageFailureDiagnostic } from "../providers/imageFailure";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
@@ -10746,6 +10747,25 @@ describe("Recovered image and artifact tool services", () => {
       expect.objectContaining({ destinationKind: "image", modelRunToolCallId: call.id })]);
     expect(state.calls()[0]).toMatchObject({ state: "complete" });
     expect(harness.state.completed).not.toBeNull();
+  });
+
+  it.each(["image_reference_not_found", "image_reference_unsupported"] as const)("continues a recovered run after %s before dispatch", async (code) => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call = imageCall("pending");
+    const state = imageRun(harness, call);
+    const images = imageService({ execute: vi.fn(async () => { throw new ImageInputError(code, "bad-reference"); }) });
+    await refreshProviderRunIfNeeded({ ...harness.deps, images: images.deps }, runId, userId);
+    expect(images.service.execute).toHaveBeenCalledOnce();
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(requests).toHaveLength(1);
+    const refusal = JSON.stringify(requests[0]!.providerToolMessages);
+    expect(refusal).toContain(code);
+    expect(refusal).toContain("bad-reference");
+    expect(refusal).not.toContain("Do not repeat");
   });
 
   it("ends a recovered image dispatch with the same cause and text as execution and never repeats it", async () => {
