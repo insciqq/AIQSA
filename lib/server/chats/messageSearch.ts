@@ -120,6 +120,8 @@ export async function findMessageMatches(
             AND chat."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
             AND chat."permanentDeletionAt" IS NULL
             ${after}
+            -- A turn the server wrote for the user is not the user's text.
+            AND message."systemTurnKind" IS NULL
             AND aiqsa_message_search_text(message."content") ILIKE ${messageSearchPattern(input.query)} ESCAPE '\\'
         ),
         grouped AS (

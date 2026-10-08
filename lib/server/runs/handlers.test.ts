@@ -2264,6 +2264,37 @@ describe("model run route handlers", () => {
     ]);
   });
 
+  it("writes the continuation turn after an MCP approval from the user's own Allow, never from the body", async () => {
+    const { repository, state } = createMemoryRepository();
+    const loadMcpApprovalContinuation = vi.fn(async (input: { approvalId: string }) => input.approvalId === "approval-1"
+      ? { serverName: "Records", toolName: "delete_record" } : null);
+    repository.loadMcpApprovalContinuation = loadMcpApprovalContinuation;
+    const POST = createSendMessageHandler({ ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository });
+    const send = (systemTurn: unknown) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
+        systemTurn, text: "Text the browser must not decide" }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    for (const malformed of [{ approvalId: "approval-1", kind: "other" }, { approvalId: "a/b", kind: "mcp_approval_continuation" },
+      { approvalId: "approval-1", extra: true, kind: "mcp_approval_continuation" }, "approval-1"]) {
+      expect((await send(malformed)).status, JSON.stringify(malformed)).toBe(400);
+    }
+    const unavailable = await send({ approvalId: "approval-2", kind: "mcp_approval_continuation" });
+    expect(unavailable.status).toBe(409);
+    expect(await unavailable.json()).toEqual({ error: "mcp_approval_continuation_unavailable" });
+    expect(state.created).toBeNull();
+
+    const accepted = await send({ approvalId: "approval-1", kind: "mcp_approval_continuation" });
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(loadMcpApprovalContinuation).toHaveBeenLastCalledWith({ approvalId: "approval-1", chatId: "chat-1",
+      userId: config.bootstrapUserId });
+    expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation",
+      content: { blocks: [{ type: "text", text: "The user approved `delete_record` on `Records`. Continue the task." }] } });
+  });
+
   it("streams a complete fake provider SSE run and persists run artifacts", async () => {
     const { repository, state } = createMemoryRepository();
     const POST = createSendMessageHandler({

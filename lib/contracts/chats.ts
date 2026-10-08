@@ -93,6 +93,12 @@ import {
   type ScheduledTaskCheckOutcome
 } from "./scheduledTasks";
 import { foldSkillSaveCards, type SkillSaveCard } from "./skillSaves";
+import {
+  foldMcpApprovalCards,
+  MCP_APPROVAL_CONTINUATION_KIND,
+  type McpApprovalCard,
+  type MessageSystemTurnKind
+} from "./mcpApprovals";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -222,6 +228,8 @@ export type ThreadMessage = {
   /** See `ChatMessageWire.scheduledOutcome`. */
   scheduledOutcome?: ScheduledTaskCheckOutcome;
   status: "cancelled" | "complete" | "error" | "streaming";
+  /** See `ChatMessageWire.systemTurnKind`. */
+  systemTurnKind?: MessageSystemTurnKind;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
@@ -255,6 +263,8 @@ export type ThreadArtifactSummary = {
   scheduledTasks?: ScheduledTaskCard[];
   /** Skills the answer's `save_skill` call saved; see `SkillSaveCard`. */
   skillSaves?: SkillSaveCard[];
+  /** MCP calls the answer's run refused for its initiator's approval; see `McpApprovalCard`. */
+  mcpApprovals?: McpApprovalCard[];
   sources: ThreadSearchSource[];
   /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */
   sourcesTruncated?: true;
@@ -305,6 +315,8 @@ export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolA
 }
 
 export type ThreadToolActivityCall = {
+  /** An MCP call refused for the user's approval: never sent; the answer's card decides it. */
+  approvalRequired?: true;
   details?: { roundIndex: number; ordinal: number };
   /** `web_fetch` only: the settled body was read as a PDF. */
   fetchContentKind?: FetchUrlContentKind;
@@ -476,6 +488,11 @@ export type ChatMessageWire = {
    */
   scheduledOutcome?: ScheduledTaskCheckOutcome;
   status: string;
+  /**
+   * A user message the server wrote for the user (the continuation after an
+   * MCP approval): the transcript shows it as a compact chip, never as speech.
+   */
+  systemTurnKind?: MessageSystemTurnKind;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
@@ -1132,6 +1149,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ? value.workDurationMs as number
     : undefined;
   const skillSaves = Array.isArray(value.skillSaves) ? foldSkillSaveCards(value.skillSaves) : undefined;
+  const mcpApprovals = Array.isArray(value.mcpApprovals) ? foldMcpApprovalCards(value.mcpApprovals) : undefined;
   const scheduledTasks = Array.isArray(value.scheduledTasks)
     ? decodeOptionalItems(value.scheduledTasks, decodeScheduledTaskCard, SCHEDULED_TASK_CARDS_LIMIT, (card) => card.taskId).items
     : undefined;
@@ -1154,6 +1172,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks?.length ? { scheduledTasks } : {}),
     ...(skillSaves?.length ? { skillSaves } : {}),
+    ...(mcpApprovals?.length ? { mcpApprovals } : {}),
     sources: sources.items,
     ...(sources.truncated || value.sourcesTruncated === true ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})
@@ -1203,7 +1222,10 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
         ordinal === null || !Number.isSafeInteger(ordinal)) return null;
       details = { roundIndex, ordinal };
     }
+    if (candidate.approvalRequired !== undefined && (candidate.approvalRequired !== true || candidate.origin !== "mcp" ||
+      status !== "error")) return null;
     calls.push({
+      ...(candidate.approvalRequired === true ? { approvalRequired: true as const } : {}),
       ...(details ? { details } : {}),
       ...(candidate.origin === "memory" && candidate.toolName === "memory_search" ? {
         ...(candidate.memorySearchCall !== undefined ? { memorySearchCall: Number(candidate.memorySearchCall) } : {}),
@@ -1326,6 +1348,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   const scheduledOutcome: ScheduledTaskCheckOutcome | undefined = isScheduledTaskCheckOutcome(value.scheduledOutcome)
     ? value.scheduledOutcome : undefined;
   if (value.scheduledOutcome !== undefined && scheduledOutcome === undefined) return null;
+  if (value.systemTurnKind !== undefined && (value.systemTurnKind !== MCP_APPROVAL_CONTINUATION_KIND || role !== "user")) return null;
   let author: ProjectMessageAuthorWire | null | undefined;
   if (value.author === undefined || value.author === null) {
     author = value.author;
@@ -1379,6 +1402,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     ...(scheduledTask !== undefined ? { scheduledTask } : {}),
     ...(scheduledOutcome !== undefined ? { scheduledOutcome } : {}),
     status,
+    ...(value.systemTurnKind === MCP_APPROVAL_CONTINUATION_KIND ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
     ...(toolActivity !== undefined ? { toolActivity } : {}),
     ...(workspaceActivity !== undefined ? { workspaceActivity } : {})
   };
