@@ -360,6 +360,12 @@ describe("verifySamlResponse", () => {
     await expect(saml.verify(responseFor(exact, [signedAssertion(exact, { attributes: { groups: [" Team Leads ", "/staff"] } })])))
       .resolves.toMatchObject({ identity: { email: null, groups: [" Team Leads ", "/staff"] }, ok: true });
 
+    // Keycloak's group list sends one Attribute element per group, with typed values.
+    const repeated = saml.issue();
+    await expect(saml.verify(responseFor(repeated, [signedAssertion(repeated, {
+      attributeElements: [["groups", ["engineers"]], ["groups", ["admins"]]]
+    })]))).resolves.toMatchObject({ identity: { groups: ["staff", "/admins", "engineers", "admins"] }, ok: true });
+
     const flood = saml.issue();
     const groups = Array.from({ length: 1_001 }, (_, index) => `g${index}`);
     await expect(saml.verify(responseFor(flood, [signedAssertion(flood, { attributes: { groups } })])))
