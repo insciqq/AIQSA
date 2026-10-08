@@ -256,6 +256,18 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
               <UiV2Button disabled={busy} icon="logout" onClick={() => users.actions.requestRevokeSessions(user)} tone="ghost" type="button">
                 Revoke sessions
               </UiV2Button>
+              {user.twoFactorEnabled ? (
+                <UiV2Button
+                  disabled={busy}
+                  icon="shield"
+                  onClick={() => users.actions.requestResetTwoFactor(user)}
+                  data-testid="admin-user-reset-two-factor"
+                  tone="ghost"
+                  type="button"
+                >
+                  Reset two-factor
+                </UiV2Button>
+              ) : null}
               <UiV2Button disabled={busy} onClick={() => users.actions.requestDisable(user)} tone="destructive" type="button">
                 Disable
               </UiV2Button>
