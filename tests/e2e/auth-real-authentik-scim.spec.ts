@@ -255,6 +255,8 @@ test("Authentik's SCIM provider pushes users and a group; the pre-created group 
     client_id: CLIENT_ID,
     client_secret: CLIENT_SECRET,
     client_type: "confidential",
+    // Authentik 2026 providers allow only the grant types listed here (the UI preselects these).
+    grant_types: ["authorization_code", "refresh_token"],
     include_claims_in_id_token: true,
     invalidation_flow: invalidationFlow.pk,
     name: `AIQSA OIDC ${run}`,
