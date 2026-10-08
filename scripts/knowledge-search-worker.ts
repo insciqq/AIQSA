@@ -2,6 +2,7 @@ import "./worker-bootstrap.cjs";
 import { logEvent, reportSubsystemFailure } from "../lib/server/observability";
 import { OpenSearchTransportError } from "../lib/server/search/opensearch/coreTransport";
 import { PrismaClient } from "@prisma/client";
+import { aiqsaPostgresRuntimeUrl } from "../lib/server/postgresRuntimeOptions";
 import {
   inspectKnowledgeSearchIntegrity,
   rebuildKnowledgeSearchProjections,
@@ -16,7 +17,9 @@ import {
 import { createKnowledgeOpenSearchTransport } from "../lib/server/search/opensearch/transport";
 import { startTelemetryRecorder } from "../lib/server/telemetry/recorder";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasourceUrl: aiqsaPostgresRuntimeUrl(process.env.DATABASE_URL)
+});
 const once = process.argv.includes("--once");
 const drain = process.argv.includes("--drain");
 const rebuild = process.argv.includes("--rebuild");

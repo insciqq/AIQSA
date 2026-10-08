@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS } from
   "../../../domain/memory/retrieval/config";
 import { prisma } from "../../prisma";
+import { aiqsaPostgresRuntimeUrl } from "../../postgresRuntimeOptions";
 import {
   MemoryReadBudgetError,
   withMemoryReadBudget,
@@ -69,9 +70,6 @@ describe("Memory read admission PostgreSQL boundary", () => {
   });
 
   it("keeps JIT out of admitted read plans, including the vector profile count", async () => {
-    const jitAvailable = await prisma.$queryRaw<Array<{ available: boolean }>>(
-      Prisma.sql`SELECT pg_jit_available() AS available`
-    );
     const forceJit = Prisma.sql`
       SELECT set_config('jit_above_cost', '0', true),
         set_config('jit_inline_above_cost', '0', true),
@@ -82,10 +80,15 @@ describe("Memory read admission PostgreSQL boundary", () => {
       SELECT sum(value) FROM generate_series(1, 20000) AS value
     `;
     const control = await prisma.$transaction(async (tx) => {
+      // The control must opt into JIT independently of the pool default.
+      await tx.$queryRaw(Prisma.sql`SELECT set_config('jit', 'on', true)`);
+      const [jit] = await tx.$queryRaw<Array<{ available: boolean }>>(
+        Prisma.sql`SELECT pg_jit_available() AS available`
+      );
       await tx.$queryRaw(forceJit);
-      return tx.$queryRaw<unknown[]>(probe);
+      return { jitAvailable: jit?.available, plan: await tx.$queryRaw<unknown[]>(probe) };
     });
-    if (jitAvailable[0]?.available) expect(planText(control)).toContain('"JIT"');
+    if (control.jitAvailable) expect(planText(control.plan)).toContain('"JIT"');
 
     const vectorCount = memoryVectorProfiledEligibleCountSql({
       input: {
@@ -140,7 +143,7 @@ describe("Memory read admission PostgreSQL boundary", () => {
     const url = new URL(process.env.DATABASE_URL ?? "");
     url.searchParams.set("connection_limit", "1");
     url.searchParams.set("pool_timeout", "5");
-    const limited = new PrismaClient({ datasources: { db: { url: url.toString() } } });
+    const limited = new PrismaClient({ datasourceUrl: aiqsaPostgresRuntimeUrl(url.toString()) });
     try {
       await limited.$connect();
       let holding: () => void = () => undefined;

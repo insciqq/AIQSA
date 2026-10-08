@@ -1,6 +1,7 @@
 import "../scripts/worker-bootstrap.cjs";
 import { logEvent } from "../lib/server/observability";
 import { PrismaClient } from "@prisma/client";
+import { aiqsaPostgresRuntimeUrl } from "../lib/server/postgresRuntimeOptions";
 import {
   bootstrapInstallationDatabase,
   InstallationBootstrapError,
@@ -8,7 +9,9 @@ import {
 } from "../lib/server/bootstrap/installationBootstrap";
 import { assertAiqsaPostgresRuntime } from "../lib/server/postgresRuntimePreflight";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasourceUrl: aiqsaPostgresRuntimeUrl(process.env.DATABASE_URL)
+});
 
 async function main(): Promise<void> {
   await assertAiqsaPostgresRuntime(prisma);
