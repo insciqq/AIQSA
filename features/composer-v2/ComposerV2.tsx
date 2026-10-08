@@ -894,14 +894,23 @@ export function ComposerV2({
     if (!textarea) return;
     // Grow with the draft; the stylesheet's `max-height` and `min-height`
     // (which differ per surface and viewport) bound the box, so the measure
-    // repeats when the viewport changes.
+    // repeats when the viewport changes, and when the field's own width
+    // changes because neighbouring controls (such as dictation) grow or shrink.
+    let width = textarea.clientWidth;
     const fit = () => {
+      width = textarea.clientWidth;
       textarea.style.height = "auto";
       textarea.style.height = `${Math.max(36, textarea.scrollHeight)}px`;
     };
     fit();
     window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
+    const observer = typeof ResizeObserver === "undefined" ? null
+      : new ResizeObserver(() => { if (textarea.clientWidth !== width) fit(); });
+    observer?.observe(textarea);
+    return () => {
+      window.removeEventListener("resize", fit);
+      observer?.disconnect();
+    };
   }, [draft]);
 
   useEffect(() => {
