@@ -215,8 +215,8 @@ test("Auth0 applications, users and the groups Action are created; the OIDC conf
   const { context, page } = await adminSession(browser);
   // The redirect values the cards show are what Auth0 must allow.
   const oidcCard = await openSignInCard(page, "oidc");
-  const redirectUri = await oidcCard.getByLabel("Redirect URI").inputValue();
-  const postLogoutUri = await oidcCard.getByLabel("Post-logout redirect URI").inputValue();
+  const redirectUri = await oidcCard.getByLabel("Redirect URI", { exact: true }).inputValue();
+  const postLogoutUri = await oidcCard.getByLabel("Post-logout redirect URI", { exact: true }).inputValue();
   const samlCard = await openSignInCard(page, "saml");
   const acsUrl = await samlCard.getByLabel("ACS URL (Reply URL)").inputValue();
   const spEntityId = await samlCard.getByLabel("SP entity ID (Audience)").inputValue();
@@ -326,7 +326,7 @@ test("an administrator loads Auth0's SAML metadata into the card; SAML sign-ins 
   await card.getByLabel("Load from IdP metadata URL").fill(`${auth0Origin()}/samlp/metadata/${samlClientId}`);
   await card.getByTestId("admin-saml-metadata-import").getByRole("button", { name: "Load", exact: true }).click();
   await expect(card.getByTestId("admin-saml-metadata-message")).toHaveAttribute("role", "status", { timeout: 30_000 });
-  await card.getByLabel("Email attribute").fill("email");
+  await card.getByLabel("Email attribute", { exact: true }).fill("email");
   await card.getByLabel("Display name attribute (optional)").fill("displayName");
   await card.getByLabel("Groups attribute (optional)").fill("groups");
   await card.getByLabel("Admin groups").fill(ADMINS);
