@@ -235,6 +235,9 @@ describe("Full access admin group guards", () => {
       authIdentity: {
         findMany: vi.fn(async () => [])
       },
+      authSignInMethodSetting: {
+        findUnique: vi.fn(async () => ({ enabled: true }))
+      },
       group: {
         // The SCIM lookup of managed memberships asks for groups with a SCIM id; none has one.
         findMany: vi.fn(async (input: { where: { scimExternalId?: unknown } }) =>
@@ -295,6 +298,7 @@ describe("IdP-managed memberships", () => {
       deleteMany,
       transaction: {
         authIdentity: { findMany: vi.fn(async () => input.identities) },
+        authSignInMethodSetting: { findUnique: vi.fn(async () => ({ enabled: true })) },
         group: {
           findMany: vi.fn(async (query: { where: { scimExternalId?: unknown } }) =>
             query.where.scimExternalId

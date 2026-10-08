@@ -19,6 +19,13 @@ async function withManagementData<T>(run: (fixture: Fixture) => Promise<T>): Pro
   const id = randomUUID();
   const domain = `sign-in-management-${id}.example.com`;
   const groupIds: string[] = [];
+  // SCIM manages the groups it pushed only while it is enabled, so the fixture enables it.
+  const scimSnapshot = await prisma.authSignInMethodSetting.findUnique({ where: { method: "scim" } });
+  await prisma.authSignInMethodSetting.upsert({
+    create: { activatedAt: now, activeConfig: { linkMethod: "none" }, activeVersion: 1, enabled: true, method: "scim" },
+    update: { enabled: true },
+    where: { method: "scim" }
+  });
   try {
     return await run({
       async group(label, input = {}) {
@@ -65,6 +72,12 @@ async function withManagementData<T>(run: (fixture: Fixture) => Promise<T>): Pro
   } finally {
     await prisma.user.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
     await prisma.group.deleteMany({ where: { id: { in: groupIds } } });
+    await prisma.authSignInMethodSetting.deleteMany({ where: { method: "scim" } });
+    if (scimSnapshot) {
+      await prisma.authSignInMethodSetting.create({
+        data: { ...scimSnapshot, activeConfig: scimSnapshot.activeConfig ?? undefined, draftConfig: scimSnapshot.draftConfig ?? undefined }
+      });
+    }
   }
 }
 
