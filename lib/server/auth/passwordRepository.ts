@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
-import type { CreateAuthSessionInput } from "./requestAuth";
+import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
+import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import { lockAuthIdentity } from "./transactionLocks";
 
 export type PasswordIdentityRecord = {
@@ -27,12 +28,20 @@ export type PasswordResetTokenInput = {
   userId: string;
 };
 
+/**
+ * A verified password ends in a session, or, for a user with TOTP, in a challenge for the
+ * second factor; no session exists before that factor.
+ */
+export type PasswordSignInResult =
+  | { kind: "session"; user: PasswordIdentityRecord["user"] }
+  | { challenge: SecondFactorChallengeSubject; kind: "second_factor_required" };
+
 export type PasswordAuthRepository = {
   createSessionForCurrentPassword(input: {
     identityId: string;
     passwordHash: string;
-    session: Omit<CreateAuthSessionInput, "userId">;
-  }): Promise<{ user: PasswordIdentityRecord["user"] } | null>;
+    session: SignInSessionInput;
+  }): Promise<PasswordSignInResult | null>;
   /** The normalized email lets the caller clear that account's password-login lock. */
   completePasswordReset(input: {
     now: Date;
@@ -70,14 +79,32 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
           return null;
         }
 
-        await tx.authSession.create({
-          data: {
-            ...input.session,
-            userId: identity.userId
-          }
+        const issued = await issueSignInSession(tx, {
+          session: input.session,
+          signInMethod: "password",
+          userId: identity.userId
         });
 
+        // A pending SCIM deactivation answers like any credential that does not sign in.
+        if (issued.kind === "refused") {
+          return null;
+        }
+
+        if (issued.kind === "second_factor_required") {
+          return {
+            challenge: {
+              credential: input.passwordHash,
+              factorBinding: issued.factorBinding,
+              identityId: identity.id,
+              signInMethod: "password",
+              userId: identity.userId
+            },
+            kind: "second_factor_required"
+          };
+        }
+
         return {
+          kind: "session",
           user: identity.user
         };
       });

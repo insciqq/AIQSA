@@ -101,6 +101,14 @@ export function userAccessSummary(
   return { label: parts.join(" · "), tone: "normal" };
 }
 
+/** The marker of a SCIM deactivation that waits for a Project ownership transfer. */
+export function scimDeactivationPendingLabel(pending: NonNullable<AdminUserRecord["scimDeactivationPending"]>): string {
+  const count = pending.projectCount;
+  return count > 0
+    ? `SCIM deactivation pending: ${count} ${count === 1 ? "Project needs" : "Projects need"} a new Owner`
+    : "SCIM deactivation pending: the next identity provider retry disables the account";
+}
+
 /** Two-letter initials for the avatar tile; falls back to the email's first letter. */
 export function userInitials(user: Pick<AdminUserRecord, "displayName" | "email">): string {
   const words = user.displayName.trim().split(/\s+/u).filter(Boolean);

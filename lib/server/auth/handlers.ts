@@ -1,4 +1,5 @@
-import { createSessionClearCookie, createSessionToken } from "./session";
+import { createSecondFactorChallengeCookie } from "./secondFactorChallenge";
+import { createSessionClearCookie, createSessionToken, getSessionFromRequest } from "./session";
 import type { AuthMailer } from "./mailer";
 import {
   hashPassword as hashPasswordDefault,
@@ -25,6 +26,7 @@ import {
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
 import { resolveLoginRateLimitIdentity } from "./clientIdentity";
+import { refuseWhenPasswordSignInOff, type SignInPolicyReader } from "./signInPolicy";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import {
   waitForAuthResponseFloor
@@ -65,13 +67,44 @@ export type MeHandlerDeps = {
 
 type LogoutHandlerDeps = {
   getConfig(): Pick<AuthConfig, "cookieSecure">;
+  /**
+   * Where the browser goes next to end the identity provider's session of a just revoked
+   * session that `signInMethod` signed in (OIDC IdP logout), or null. Never fails the logout.
+   */
+  identityProviderLogout?(input: { signInMethod: string | null }): Promise<string | null>;
   sessions: AuthSessionStore;
 };
 
+/**
+ * A directory sign-in sharing the password form (LDAP). It answers the request itself, or hands
+ * an email with a usable local password back to the local password (break-glass accounts keep
+ * precedence), whose failures then wait for the directory's response floor.
+ */
+export type DirectoryPasswordSignIn = (input: {
+  /** One attempt under the password-login account budgets; a refusal is the 429 to return. */
+  admitAccount(accountKey: string): Promise<Response | null>;
+  config: AuthConfig;
+  identifier: string;
+  localPasswordUsable(normalizedEmail: string): Promise<boolean>;
+  password: string;
+  passwordLoginEnabled(): Promise<boolean>;
+  request: Request;
+  /** After a verified sign-in: clears the account's budgets, gives back this source attempt. */
+  signedIn(accountKey: string): Promise<void>;
+}) => Promise<
+  | { kind: "answered"; response: Response }
+  | { kind: "inactive" }
+  | { kind: "local"; waitForFloor(): Promise<void> }
+>;
+
 export type PasswordLoginHandlerDeps = {
+  /** LDAP on the same form; absent means local passwords only. */
+  directorySignIn?: DirectoryPasswordSignIn;
   getConfig(): AuthConfig;
   loginRateLimiter?: LoginRateLimiter;
   repository: PasswordAuthRepository;
+  /** The password sign-in switch; absent means on. */
+  signInPolicy?: SignInPolicyReader;
   verifyPassword?: (password: string, passwordHash: string | null | undefined) => Promise<boolean>;
 };
 
@@ -83,6 +116,7 @@ export type PasswordResetRequestHandlerDeps = {
   repository: PasswordAuthRepository;
   resetRateLimiter?: LoginRateLimiter;
   responseFloorMs?: number;
+  signInPolicy?: SignInPolicyReader;
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
@@ -94,6 +128,7 @@ export type PasswordResetCompleteHandlerDeps = {
   now?: () => Date;
   repository: PasswordAuthRepository;
   resetCompleteRateLimiter?: LoginRateLimiter;
+  signInPolicy?: SignInPolicyReader;
 };
 
 const defaultLoginRateLimiter = createFixedWindowLoginRateLimiter();
@@ -364,6 +399,7 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
       request,
       secureCookie: config.cookieSecure,
       sessions: deps.sessions,
+      signInMethod: "bootstrap",
       userId: user.id
     });
     await loginRateLimiter.reset(rateLimitKey);
@@ -431,6 +467,48 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       return json({ error: "credentials_required" }, { status: 400 });
     }
 
+    // Success clears only the account's keys. The source budget merely gets back the
+    // attempt this login used, so logging into an own account never restores the
+    // budget a source spent on other accounts.
+    const releaseAccountBudgets = async (accountKey: string) => {
+      await Promise.all([
+        loginRateLimiter.reset(accountKey),
+        ...(source ? [loginRateLimiter.reset(accountSourceRateLimitKey(accountKey, source))] : []),
+        ...(clientRateLimitKey ? [loginRateLimiter.release(clientRateLimitKey)] : [])
+      ]);
+    };
+    const directory = deps.directorySignIn
+      ? await deps.directorySignIn({
+          async admitAccount(accountKey) {
+            const decision = await admitPasswordLoginAccount(loginRateLimiter, { accountKey, source });
+            return decision.allowed ? null : rateLimitedResponse(decision);
+          },
+          config,
+          identifier: credentials.email,
+          async localPasswordUsable(email) {
+            const identity = await deps.repository.findPasswordIdentityByEmail(email);
+            return isActiveVerifiedPasswordIdentity(identity) && Boolean(identity.passwordHash);
+          },
+          password: credentials.password,
+          passwordLoginEnabled: async () => (await refuseWhenPasswordSignInOff(deps.signInPolicy)) === null,
+          request,
+          signedIn: releaseAccountBudgets
+        })
+      : { kind: "inactive" as const };
+
+    if (directory.kind === "answered") {
+      return directory.response;
+    }
+
+    const localUnauthorized = async () => {
+      if (directory.kind === "local") await directory.waitForFloor();
+      return unauthorized();
+    };
+
+    // Local passwords only: a directory sign-in sharing this form branched off above.
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
+
     const normalizedEmail = normalizeAuthEmail(credentials.email);
 
     if (!isPlausibleEmail(normalizedEmail)) {
@@ -457,7 +535,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     const passwordOk = await verifyPassword(credentials.password, usablePasswordHash);
 
     if (!identity?.passwordHash || !passwordOk || !isActiveVerifiedPasswordIdentity(identity)) {
-      return unauthorized();
+      return localUnauthorized();
     }
 
     const session = prepareAuthSession({
@@ -471,17 +549,26 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     });
 
     if (!currentCredential) {
-      return unauthorized();
+      return localUnauthorized();
     }
 
-    // Success clears only the account's keys. The source budget merely gets back the
-    // attempt this login used, so logging into an own account never restores the
-    // budget a source spent on other accounts.
-    await Promise.all([
-      loginRateLimiter.reset(rateLimitKey),
-      ...(source ? [loginRateLimiter.reset(accountSourceRateLimitKey(rateLimitKey, source))] : []),
-      ...(clientRateLimitKey ? [loginRateLimiter.release(clientRateLimitKey)] : [])
-    ]);
+    await releaseAccountBudgets(rateLimitKey);
+
+    // A verified password of a user with TOTP creates no session, only a challenge that the
+    // second-factor route redeems; its own limits bound the code guesses.
+    if (currentCredential.kind === "second_factor_required") {
+      return json(
+        { status: "second_factor_required" },
+        {
+          headers: {
+            "set-cookie": await createSecondFactorChallengeCookie(currentCredential.challenge, {
+              config,
+              now: new Date()
+            })
+          }
+        }
+      );
+    }
 
     return json(
       {
@@ -515,6 +602,9 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
     if (contentTypeError) {
       return contentTypeError;
     }
+
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
 
     const clientIdentity = credentialClientRateLimitKey({
       config,
@@ -615,6 +705,9 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
     if (contentTypeError) {
       return contentTypeError;
     }
+
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
 
     const config = deps.getConfig();
     const rateLimiter = resolveLoginRateLimiter(
@@ -718,17 +811,28 @@ export function createLogoutHandler(deps: LogoutHandlerDeps) {
     }
 
     const config = deps.getConfig();
-    await revokeRequestSession({
+    const token = deps.identityProviderLogout ? getSessionFromRequest(request) : undefined;
+    const session = token ? await deps.sessions.findSessionByTokenHash(hashToken(token)) : null;
+    // The local session is revoked first, whatever the identity provider does next.
+    const revoked = await revokeRequestSession({
       request,
       revokedReason: "logout",
       sessions: deps.sessions
     });
+    const clearCookie = createSessionClearCookie({
+      secure: config.cookieSecure
+    });
+    const redirectTo = revoked > 0 && session && deps.identityProviderLogout
+      ? await deps.identityProviderLogout({ signInMethod: session.signInMethod ?? null }).catch(() => null)
+      : null;
+
+    if (redirectTo) {
+      return json({ redirectTo }, { headers: { "set-cookie": clearCookie } });
+    }
 
     return new Response(null, {
       headers: {
-        "set-cookie": createSessionClearCookie({
-          secure: config.cookieSecure
-        })
+        "set-cookie": clearCookie
       },
       status: 204
     });

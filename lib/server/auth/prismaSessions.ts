@@ -1,9 +1,28 @@
 import type { PrismaClient } from "@prisma/client";
 import type { AuthSessionStore } from "./requestAuth";
+import { issueSignInSession } from "./signInCompletion";
 
 export function createPrismaAuthSessionStore(prisma: PrismaClient): AuthSessionStore {
   return {
     async createSession(input) {
+      const { signInMethod, userId, ...session } = input;
+
+      if (signInMethod) {
+        // Sign-ins without a transaction of their own (bootstrap token, Google and Yandex)
+        // end here: the completion seam and the insert share one transaction. None of them
+        // asks for a second factor, so a challenge here is a programming error; a refusal
+        // reaches here only when SCIM deactivated the account after settlement admitted it.
+        return prisma.$transaction(async (tx) => {
+          const issued = await issueSignInSession(tx, { session, signInMethod, userId });
+
+          if (issued.kind !== "session") {
+            throw new Error(issued.kind === "refused" ? "sign_in_refused" : "sign_in_second_factor_unsupported");
+          }
+
+          return issued.session;
+        });
+      }
+
       return prisma.authSession.create({
         data: {
           createdByIp: input.createdByIp ?? null,

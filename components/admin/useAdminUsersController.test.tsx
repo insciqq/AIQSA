@@ -86,6 +86,22 @@ describe("useAdminUsersController", () => {
     expect(confirmations.every((config) => config.prompt.includes("pat@example.com") || config.body.action === "revoke_all_sessions")).toBe(true);
   });
 
+  it("confirms a two-factor reset with the sign-out consequence named", () => {
+    const { confirmations, view } = harness();
+    act(() => {
+      view.result.current.actions.requestResetTwoFactor(target);
+    });
+
+    expect(confirmations).toEqual([expect.objectContaining({
+      body: { action: "reset_user_two_factor", userId: "pat" },
+      confirmLabel: "Reset two-factor",
+      testId: "admin-confirm-reset-user-two-factor",
+      tone: "warning"
+    })]);
+    expect(confirmations[0]!.prompt).toContain("pat@example.com");
+    expect(confirmations[0]!.prompt).toContain("every session ends");
+  });
+
   it("confirms granting and removing administrator rights with the consequence named", () => {
     const { confirmations, view } = harness();
     act(() => {
