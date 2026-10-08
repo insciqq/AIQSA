@@ -1,4 +1,5 @@
 import { defaultTreeAdapter, Parser, type DefaultTreeAdapterMap, type Token, type TreeAdapter } from "parse5";
+import { ArtifactToolError } from "./errors";
 
 type Document = DefaultTreeAdapterMap["document"];
 type TextNode = DefaultTreeAdapterMap["textNode"];
@@ -82,11 +83,33 @@ function textCollectingAdapter(): Readonly<{ adapter: TreeAdapter<DefaultTreeAda
 }
 
 /**
+ * Start tags one markup text may hold before parse5 builds its tree. A referenced
+ * page can be 24 MiB, and parse5 keeps about 1.6 KB per element with source
+ * locations: a million empty elements took 1.6 GB. Real pages, including a
+ * spreadsheet exported as a 10,000-row HTML table, stay below this.
+ */
+export const ARTIFACT_HTML_MAX_START_TAGS = 250_000;
+
+/** `<` followed by an ASCII letter: an upper bound of the start tags in the text. */
+function startTagBound(html: string): number {
+  let count = 0;
+  for (let index = html.indexOf("<"); index !== -1; index = html.indexOf("<", index + 1)) {
+    const next = html.charCodeAt(index + 1) | 0x20;
+    if (next >= 0x61 && next <= 0x7a) count++;
+  }
+  return count;
+}
+
+/**
  * `parse5.parse` with the default tree adapter's result, in memory proportional
  * to the text instead of to its character count: a page with a 20 MB inline
  * script otherwise needs most of a gigabyte while it parses.
  */
-export function parseArtifactHtml(html: string, options: Readonly<{ sourceCodeLocationInfo?: boolean }> = {}): Document {
+export function parseArtifactHtml(html: string, options: Readonly<{ sourceCodeLocationInfo?: boolean; path?: string }> = {}): Document {
+  if (startTagBound(html) > ARTIFACT_HTML_MAX_START_TAGS) {
+    throw new ArtifactToolError("artifact_page_too_complex", { ...(options.path ? { path: options.path } : {}),
+      hint: `This markup has more than ${ARTIFACT_HTML_MAX_START_TAGS.toLocaleString("en-US")} tags; split it into several pages, or convert a large table to a PDF or a smaller page in the Workspace.` });
+  }
   const text = textCollectingAdapter();
   const parser = new Parser<DefaultTreeAdapterMap>({ sourceCodeLocationInfo: options.sourceCodeLocationInfo ?? false, treeAdapter: text.adapter });
   collectCharacterRuns(parser.tokenizer as unknown as CharacterTokenizer);

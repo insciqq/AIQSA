@@ -200,7 +200,7 @@ function rejectControlCharacters(text: string, path: string): void {
 function validateSvgText(text: string, path = "image.svg"): void {
   // Parse character references and attributes before checking them; namespace
   // declarations are metadata, not network requests.
-  const document = parseArtifactHtml(text);
+  const document = parseArtifactHtml(text, { path });
   let foundSvg = false;
   function visit(node: HtmlNode) {
     if ("tagName" in node) {
@@ -639,7 +639,7 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
   }
   function svg(source: string, from: string): string {
     countSvg(from);
-    const parsed = parseArtifactHtml(source);
+    const parsed = parseArtifactHtml(source, { path: from });
     let root: Element | undefined;
     let changed = false;
     function visit(node: HtmlNode): void {
@@ -696,8 +696,8 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
       : entry!.text!;
   // Source offsets locate a markup error in the entry file, so the model can
   // write an exact edit for a file it never saw (one supplied by reference).
-  const document = parseArtifactHtml(source, { sourceCodeLocationInfo: true });
   const from = entry?.path ?? "index.html";
+  const document = parseArtifactHtml(source, { sourceCodeLocationInfo: true, path: from });
   function iconHref(value: string): string {
     // Icons load through img-src; keep them inline like other images.
     if (ICON_DATA_URL.test(value)) return value;

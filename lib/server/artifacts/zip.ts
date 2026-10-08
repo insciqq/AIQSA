@@ -3,6 +3,7 @@ import { posix } from "node:path";
 import type { DefaultTreeAdapterMap, Token } from "parse5";
 import { bundleFileBytes, localResourcePath, type ArtifactBundle, type ArtifactBundleFile } from "./bundle";
 import { parseArtifactCss } from "./css";
+import { ArtifactToolError } from "./errors";
 import { parseArtifactHtml } from "./htmlParse";
 import { crc32 } from "../../domain/crc32";
 
@@ -95,7 +96,11 @@ export function artifactZip(bundle: ArtifactBundle): Buffer {
       if ("childNodes" in node) node.childNodes.forEach(visit);
       if ("content" in node) visit(node.content);
     }
-    visit(parseArtifactHtml(source, { sourceCodeLocationInfo: true }));
+    let document: ReturnType<typeof parseArtifactHtml>;
+    // A page too large to parse (kept as a page note, never shown) exports as written.
+    try { document = parseArtifactHtml(source, { sourceCodeLocationInfo: true, path: file.path }); }
+    catch (error) { if (error instanceof ArtifactToolError && error.code === "artifact_page_too_complex") return source; throw error; }
+    visit(document);
     return splices.length ? applySplices(source, splices) : source;
   }
   function exportedText(file: ArtifactBundleFile): string {

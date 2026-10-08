@@ -5,7 +5,7 @@ import { buildArtifactBundle, hydrateArtifactBundleFile, type ArtifactBundle, ty
 import { createArtifactResourceFetcher } from "./resourceFetch";
 import { vendorArtifactResources } from "./vendoring";
 import { artifactZip } from "./zip";
-import { readZipArchive } from "./zipReader";
+import { ARTIFACT_ZIP_LIMITS, readZipArchive } from "./zipReader";
 
 const cdn = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/";
 // Synthetic stand-ins for the pinned UMD build: no network in tests.
@@ -86,5 +86,18 @@ describe("artifact ZIP export", () => {
       files: assets.map(asset => ({ path: asset.path, mimeType: asset.mimeType, assetRef: asset.path })) });
     const files = await exported(hydrate(buildArtifactBundle(operation, assets).bundle, assets));
     for (const asset of assets) expect(files.get(asset.path)!.equals(asset.bytes), asset.path).toBe(true);
+  });
+});
+
+describe("export of a page too large to parse", () => {
+  it("writes the page as it is instead of failing the export", async () => {
+    const big = "<i></i>".repeat(250_001);
+    const bundle: ArtifactBundle = { entrypoint: "index.html", kind: "html", version: 2, files: [
+      { path: "index.html", mimeType: "text/html", text: "<p>Start</p>" },
+      { path: "big.html", mimeType: "text/html", text: big }
+    ] };
+    // The repeated markup deflates far past the upload reader's ratio bound.
+    const { entries } = await readZipArchive(artifactZip(bundle), { ...ARTIFACT_ZIP_LIMITS, maxCompressionRatio: 1_000_000 });
+    expect(entries.find(entry => entry.path === "big.html")?.bytes.toString("utf8")).toBe(big);
   });
 });

@@ -3,7 +3,7 @@ import { parse } from "parse5";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeArtifactOperation } from "@/lib/contracts/artifacts";
 import type { ArtifactBundle, ArtifactBundleFile } from "./bundle";
-import { parseArtifactHtml } from "./htmlParse";
+import { ARTIFACT_HTML_MAX_START_TAGS, parseArtifactHtml } from "./htmlParse";
 
 /** The whole tree, source locations included, without the parent back-references. */
 const tree = (node: unknown) => JSON.stringify(node, (key, value: unknown) => key === "parentNode" ? undefined : value);
@@ -106,5 +106,19 @@ describe("artifact rendering with the collecting parser", () => {
     const stock = await outputs(true);
     expect(stock.error).toContain("excerpt");
     expect(await outputs(false)).toEqual(stock);
+  });
+});
+
+describe("artifact markup size bound", () => {
+  it("refuses markup with more start tags than the bound before building a tree, naming the file", () => {
+    const tags = "<i></i>".repeat(ARTIFACT_HTML_MAX_START_TAGS + 1);
+    expect(() => parseArtifactHtml(tags, { path: "big.html" }))
+      .toThrowError(expect.objectContaining({ code: "artifact_page_too_complex", path: "big.html", hint: expect.stringContaining("250,000") }));
+  });
+
+  it("counts only a < followed by a letter, so scripts, data and text stay unbounded", () => {
+    const page = `<p>${"a<1 && b < c ".repeat(300_000)}</p><script>${"if(i<2){}".repeat(1000)}</script>` +
+      "<i></i>".repeat(ARTIFACT_HTML_MAX_START_TAGS - 10);
+    expect(parseArtifactHtml(page).childNodes.length).toBeGreaterThan(0);
   });
 });

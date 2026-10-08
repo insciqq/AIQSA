@@ -58,7 +58,7 @@ function collectReferences(operation: NormalizedArtifactOperation): ResourceRef[
       if ("childNodes" in node) node.childNodes.forEach(visit);
       if ("content" in node) visit(node.content);
     }
-    visit(parseArtifactHtml(text, { sourceCodeLocationInfo: referenced }));
+    visit(parseArtifactHtml(text, { sourceCodeLocationInfo: referenced, path: file.path }));
   }
   return references;
 }
