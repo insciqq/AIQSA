@@ -97,17 +97,23 @@ export function createArtifactObjects(db: PrismaClient, storage: StorageAdapter)
   }
 
   async function bindBlobs(tx: Prisma.TransactionClient, ownerUserId: string, versionId: string, assets: readonly ArtifactBundleAsset[]) {
-    const writes = [];
-    // A consistent hash order also avoids deadlocks between multi-asset edits.
-    for (const asset of [...assets].sort((a, b) => artifactChecksum(a.bytes).localeCompare(artifactChecksum(b.bytes)))) {
-      const sha256 = artifactChecksum(asset.bytes);
-      const blob = await tx.artifactBlob.upsert({ where: { ownerUserId_sha256: { ownerUserId, sha256 } }, update: {},
-        create: { ownerUserId, sha256, byteSize: asset.bytes.byteLength, storageKey: `artifact-blobs/${ownerUserId}/${randomUUID()}` } });
-      if (blob.byteSize !== asset.bytes.byteLength) throw new Error("artifact_blob_unavailable");
-      await tx.artifactVersionBlob.create({ data: { versionId, blobId: blob.id, path: asset.path } });
-      await tx.attachmentDeletionJob.upsert({ where: { storageKey: blob.storageKey }, update: {}, create: { storageKey: blob.storageKey } });
-      writes.push({ ...blob, bytes: asset.bytes, mimeType: asset.mimeType });
-    }
+    // An unpacked site binds hundreds of files inside one interactive
+    // transaction: one statement per table keeps it far from its timeout.
+    // Rows are written in one consistent hash order, which also avoids
+    // deadlocks between concurrent multi-asset edits.
+    const hashed = assets.map(asset => ({ asset, sha256: artifactChecksum(asset.bytes) })).sort((a, b) => a.sha256.localeCompare(b.sha256));
+    if (!hashed.length) return [];
+    const sizes = new Map(hashed.map(({ asset, sha256 }) => [sha256, asset.bytes.byteLength]));
+    await tx.artifactBlob.createMany({ skipDuplicates: true, data: [...sizes].map(([sha256, byteSize]) =>
+      ({ ownerUserId, sha256, byteSize, storageKey: `artifact-blobs/${ownerUserId}/${randomUUID()}` })) });
+    const blobs = new Map((await tx.artifactBlob.findMany({ where: { ownerUserId, sha256: { in: [...sizes.keys()] } } })).map(blob => [blob.sha256, blob]));
+    const writes = hashed.map(({ asset, sha256 }) => {
+      const blob = blobs.get(sha256);
+      if (!blob || blob.byteSize !== asset.bytes.byteLength) throw new Error("artifact_blob_unavailable");
+      return { ...blob, bytes: asset.bytes, mimeType: asset.mimeType, path: asset.path };
+    });
+    await tx.artifactVersionBlob.createMany({ data: writes.map(blob => ({ versionId, blobId: blob.id, path: blob.path })) });
+    await tx.attachmentDeletionJob.createMany({ skipDuplicates: true, data: [...blobs.values()].map(blob => ({ storageKey: blob.storageKey })) });
     return writes;
   }
 

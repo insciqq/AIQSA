@@ -28,11 +28,24 @@ export const ARTIFACT_ASSET_HINTS = Object.freeze({
 export type ArtifactAssetErrorCode = keyof typeof ARTIFACT_ASSET_HINTS;
 const isAssetErrorCode = (value: string): value is ArtifactAssetErrorCode => Object.hasOwn(ARTIFACT_ASSET_HINTS, value);
 
+/** An unpacked site's entry page names the HTML pages the archive does have. */
+function unpackedEntryHint(error: ArtifactContractError): string {
+  const pages = error.candidates ?? [];
+  if (!pages.length) return "The unpacked site has no HTML page. Zip the site together with its HTML pages, or add an HTML page in files[] and set entrypoint to it.";
+  const more = (error.count ?? 0) > pages.length ? ` and ${error.count! - pages.length} more` : "";
+  return (error.code === "artifact_entrypoint_missing"
+    ? `There is no ${error.path ?? "index.html"} at the site root (a single top-level folder is removed). `
+    : `The entry page of an unpacked site must be HTML. `) + `Set entrypoint to one of its HTML pages: ${pages.join(", ")}${more}.`;
+}
+
 export function artifactToolError(error: unknown): ArtifactToolError | null {
   if (error instanceof ArtifactToolError) return error;
   if (error instanceof ArtifactContractError) return new ArtifactToolError(error.code, {
     ...(error.path ? { path: error.path } : {}),
-    hint: (error.editIndex !== undefined ? `Edit ${error.editIndex + 1}: ` : "") + (error.code === "artifact_edit_ambiguous" ? `The old_string matches ${error.count} times; provide a unique longer match or set replace_all=true.`
+    hint: (error.editIndex !== undefined ? `Edit ${error.editIndex + 1}: ` : "") + (error.candidates ? unpackedEntryHint(error)
+      : error.code === "artifact_edit_ambiguous" ? `The old_string matches ${error.count} times; provide a unique longer match or set replace_all=true.`
+      : error.code === "artifact_file_count_exceeded" ? `One call accepts at most ${ARTIFACT_LIMITS.maxFiles} files[] entries and ${ARTIFACT_LIMITS.maxFiles} delete_paths; an artifact holds at most ${ARTIFACT_LIMITS.maxBundleFiles} files, unpacked ones included. Leave out files the pages do not use, or add the rest in later updates.`
+      : error.code === "artifact_unpack_invalid" ? "Set unpack: true on at most one files[] entry per call, together with asset_ref and the archive's exact mimeType (application/zip or application/x-zip-compressed) and without text, for kind html, slides, game or chart. Its files land at the artifact root; path only labels the archive. A ZIP stored with another type must be saved again as a .zip file in the Workspace and that file referenced."
       : error.code === "artifact_edit_limit_exceeded" ? "Use at most 64 edits, with each replacement string no larger than 512 KiB."
       : error.code === "artifact_edit_not_found" ? "Read the accepted artifact file and use an exact old_string from its current text."
       : error.code === "artifact_delete_entrypoint" ? "Keep the entrypoint file; update its content instead of deleting it."

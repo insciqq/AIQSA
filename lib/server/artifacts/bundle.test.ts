@@ -432,6 +432,72 @@ describe("text and bytes supplied by reference", () => {
     expect(nested).toMatchObject({ code: "artifact_external_link_unsupported", excerpt: expect.stringContaining('<button formaction="#x">') });
   });
 
+  const INKSCAPE_SVG = '<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" ' +
+    'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" viewBox="0 0 8 8" sodipodi:docname="icon.svg">' +
+    '<metadata><rdf:RDF><rdf:Description/></rdf:RDF></metadata><style>.a{fill:#c00}</style>' +
+    '<sodipodi:namedview id="view" inkscape:zoom="1"/><circle class="a" cx="4" cy="4" r="4"/></svg>';
+  const svgDataUrl = (text: string) => `data:image/svg+xml;base64,${Buffer.from(text).toString("base64")}`;
+
+  it("shows an SVG supplied as bytes as an image with its own bytes, while authored SVG keeps the strict subset", () => {
+    const files = [
+      { path: "index.html", mimeType: "text/html", bytes: Buffer.from('<img alt="Icon" src="img/icon.svg"><div style="background:url(img/icon.svg)"></div>') },
+      { path: "img/icon.svg", mimeType: "image/svg+xml", bytes: Buffer.from(INKSCAPE_SVG) }
+    ];
+    const built = referenced(files);
+    expect(built.notes.invalidPages).toEqual([]);
+    const output = renderArtifactBundle(hydrated(built, files)).body.toString();
+    expect(output.split(svgDataUrl(INKSCAPE_SVG))).toHaveLength(3);
+    expect(output).not.toContain("sodipodi");
+    // The same markup authored as text, as an entry or inline in HTML stays refused.
+    const authored = (entry: { path: string; mimeType: string; text: string }, kind: "html" | "svg" = "html") => () => buildArtifactBundle(normalizeArtifactOperation({
+      intent: "create", kind, title: "Authored", entrypoint: entry.path,
+      files: [entry, ...entry.path === "index.html" ? [{ path: "img/icon.svg", mimeType: "image/svg+xml", text: INKSCAPE_SVG }] : []] }), []);
+    expect(authored({ path: "index.html", mimeType: "text/html", text: '<img alt="Icon" src="img/icon.svg">' }))
+      .toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported", path: "img/icon.svg" }));
+    expect(authored({ path: "index.html", mimeType: "text/html", text: "<p>No reference</p>" })).toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported" }));
+    expect(() => buildHtml(INKSCAPE_SVG.replace(/^<\?xml[^>]*>\n/u, ""))).toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported" }));
+    // An SVG supplied as bytes is still checked where it is the document itself.
+    const entry = [{ path: "icon.svg", mimeType: "image/svg+xml", bytes: Buffer.from(INKSCAPE_SVG) }];
+    expect(() => buildArtifactBundle(normalizeArtifactOperation({ intent: "create", kind: "svg", title: "Icon", entrypoint: "icon.svg",
+      files: [{ path: "icon.svg", mimeType: "image/svg+xml", assetRef: "ref-icon.svg" }] }), entry)).toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported" }));
+    expect(() => referenced(entry, "icon.svg")).toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported" }));
+  });
+
+  it("embeds a scripted SVG supplied as bytes only as an inert data: image", () => {
+    const hostile = '<svg xmlns="http://www.w3.org/2000/svg"><script>parent.STOLEN=1</script><image href="https://tracker.example/p.png"/><rect width="1" height="1" onclick="x()"/></svg>';
+    const files = [
+      { path: "index.html", mimeType: "text/html", bytes: Buffer.from('<img alt="Logo" src="logo.svg"><link rel="icon" href="logo.svg">') },
+      { path: "logo.svg", mimeType: "image/svg+xml", bytes: Buffer.from(hostile) }
+    ];
+    const output = renderArtifactBundle(hydrated(referenced(files), files)).body.toString();
+    expect(output).toContain(`<img alt="Logo" src="${svgDataUrl(hostile)}">`);
+    expect(output).toContain(`<link rel="icon" href="${svgDataUrl(hostile)}">`);
+    // The page DOM holds only the server's scripts: the SVG's markup exists only inside the data URLs.
+    const withoutDataUrls = output.split(svgDataUrl(hostile)).join("");
+    expect(withoutDataUrls).not.toMatch(/STOLEN|tracker\.example|onclick|<svg/u);
+    expect([...output.matchAll(/<script\b([^>]*)>/gu)].map(match => match[1])).toEqual([expect.stringContaining("data-aiqsa-artifact-bridge")]);
+  });
+
+  it("still inlines raster images of a strict SVG supplied as bytes", () => {
+    const strict = '<svg xmlns="http://www.w3.org/2000/svg"><image href="photo.png" width="1" height="1"/></svg>';
+    const png = Buffer.from([137, 80, 78, 71]);
+    const files = [
+      { path: "index.html", mimeType: "text/html", bytes: Buffer.from('<img alt="Card" src="card.svg">') },
+      { path: "card.svg", mimeType: "image/svg+xml", bytes: Buffer.from(strict) },
+      { path: "photo.png", mimeType: "image/png", bytes: png }
+    ];
+    const output = renderArtifactBundle(hydrated(referenced(files), files)).body.toString();
+    const embedded = /src="data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)"/u.exec(output)![1]!;
+    expect(Buffer.from(embedded, "base64").toString()).toContain(`<image href="data:image/png;base64,${png.toString("base64")}"`);
+  });
+
+  it("asks for one esbuild file instead of an import map or a browser compiler", () => {
+    for (const type of ["importmap", "text/babel"]) {
+      expect(() => buildHtml(`<script type="${type}">{}</script>`)).toThrow(expect.objectContaining({ code: "artifact_module_graph_unsupported",
+        hint: expect.stringContaining("esbuild main.js --bundle --outfile=app.js") }));
+    }
+  });
+
   it("locates errors only in the entry file it parsed", () => {
     const stylesheet = (() => {
       try {

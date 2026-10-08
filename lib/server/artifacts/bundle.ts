@@ -221,7 +221,7 @@ export function decodeArtifactBundle(bytes: Uint8Array): ArtifactBundle {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("artifact_bundle_invalid");
   const bundle = value as Partial<ArtifactBundle>;
   if (bundle.version !== 1 && bundle.version !== 2 || !Array.isArray(bundle.files) || bundle.files.length < 1 ||
-    bundle.files.length > ARTIFACT_LIMITS.maxFiles + ARTIFACT_RESOURCE_LIMITS.maxResources || !ARTIFACT_KINDS.includes(bundle.kind as ArtifactKind)) throw new Error("artifact_bundle_invalid");
+    bundle.files.length > ARTIFACT_LIMITS.maxBundleFiles + ARTIFACT_RESOURCE_LIMITS.maxResources || !ARTIFACT_KINDS.includes(bundle.kind as ArtifactKind)) throw new Error("artifact_bundle_invalid");
   if (bundle.entrypoint !== null && typeof bundle.entrypoint !== "string") throw new Error("artifact_bundle_invalid");
   const files = bundle.files.map((file) => {
     if (typeof file !== "object" || file === null || Array.isArray(file) || typeof file.path !== "string" ||
@@ -264,7 +264,7 @@ export function decodeArtifactBundle(bytes: Uint8Array): ArtifactBundle {
       intent: "create",
       kind: bundle.kind,
       title: "decoded artifact"
-    });
+    }, undefined, { stored: true });
   } catch {
     throw new Error("artifact_bundle_invalid");
   }
@@ -313,7 +313,8 @@ export function buildArtifactBundle(
       addNote(validation, validation.invalidPages, { page, code: error.code });
     }
   }
-  for (const file of files) if (file.mimeType === "image/svg+xml" && file.path !== bundle.entrypoint) {
+  // A non-entry SVG stored as bytes is only ever an image or fetched bytes; authored SVG text keeps the strict subset.
+  for (const file of files) if (file.mimeType === "image/svg+xml" && !file.blob && file.path !== bundle.entrypoint) {
     renderArtifactBundle({ ...hydrated, kind: "svg", entrypoint: file.path }, true);
   }
   const notes = { pages, removedLinks: validation.removedLinks, missingLinks: validation.missingLinks, invalidPages: validation.invalidPages, omitted: validation.omitted };
@@ -376,13 +377,24 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
   }
   // An SVG file renders the same for every reference, so repeated references parse it once.
   const svgFiles = new Map<string, string>();
+  function svgImage(file: ArtifactBundleFile): string {
+    const cached = svgFiles.get(file.path);
+    if (cached !== undefined) return cached;
+    let text: string;
+    try { text = svg(file.text ?? "", file.path); }
+    catch (error) {
+      // An SVG supplied as bytes (by reference or from an archive) shows here only as an image,
+      // which runs no script and loads nothing, so editor markup outside the strict subset keeps
+      // its own bytes. Authored SVG text keeps the strict subset.
+      if (!file.blob || !(error instanceof ArtifactToolError) || error.code !== "artifact_external_image_unsupported") throw error;
+      text = file.text ?? "";
+    }
+    svgFiles.set(file.path, text);
+    return text;
+  }
   function dataUrl(file: ArtifactBundleFile): string {
     inlined.add(file.path);
-    let svgText: string | undefined;
-    if (file.mimeType === "image/svg+xml") {
-      svgText = svgFiles.get(file.path) ?? svg(file.text ?? "", file.path);
-      svgFiles.set(file.path, svgText);
-    }
+    const svgText = file.mimeType === "image/svg+xml" ? svgImage(file) : undefined;
     // Bound expansion before allocating repeated base64 substitutions. A tiny
     // authored document can otherwise repeat one large image thousands of times.
     expandedBytes += 32 + (file.base64?.length ?? 4 * Math.ceil(Buffer.byteLength(svgText ?? file.text ?? "") / 3));
@@ -504,7 +516,9 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
         return;
       }
       const type = node.attrs.find(attr => attr.name === "type")?.value.toLowerCase();
-      if (node.tagName === "script" && ["importmap", "text/babel", "text/jsx", "text/tsx"].includes(type ?? "")) invalid("artifact_module_graph_unsupported", from, "Use plain JavaScript or a self-contained UMD/IIFE build; browser compilers and import maps are unsupported.");
+      if (node.tagName === "script" && ["importmap", "text/babel", "text/jsx", "text/tsx"].includes(type ?? "")) invalid("artifact_module_graph_unsupported", from,
+        "Use plain JavaScript or a self-contained UMD/IIFE build; browser compilers and import maps are unsupported. " +
+        "Bundle the site into one file with esbuild in the Workspace (esbuild main.js --bundle --outfile=app.js), then reference app.js; without the Workspace, tell the user.");
       const reference = node.tagName === "link" ? href : node.attrs.find(attr => attr.name === "src");
       const iconLink = node.tagName === "link" && iconRel(relation);
       if (iconLink) reference!.value = iconHref(reference!.value);
@@ -539,7 +553,8 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
             if (!target) invalid("artifact_external_link_unsupported", from, "Use an http, https or mailto link, a #fragment, or the relative path of a page or file in this artifact.");
             const file = files.get(target.path);
             if (!file || file.vendor) {
-              if (validation) addNote(validation, validation.missingLinks, { page: from, href: noteText(attr.value, ARTIFACT_NOTE_LIMITS.maxHrefCharacters), path: target.path });
+              if (validation) addNote(validation, validation.missingLinks, { page: from, href: noteText(attr.value, ARTIFACT_NOTE_LIMITS.maxHrefCharacters),
+                path: noteText(target.path, ARTIFACT_NOTE_LIMITS.maxHrefCharacters) });
             } else if (!isArtifactPage(file)) runtime.add(file.path);
             continue;
           }
