@@ -324,7 +324,9 @@ describe("chat route handlers", () => {
             content: { blocks: [{ text: "Saved question", type: "text" }] },
             createdAt: "2026-06-07T09:00:00.000Z",
             id: "user-message-1",
+            modelId: null,
             parentMessageId: null,
+            provider: null,
             role: "user",
             status: "complete"
           }],

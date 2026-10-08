@@ -5294,7 +5294,6 @@ describe("model run route handlers", () => {
     }), { params: { chatId: "chat-1" } });
     expect(warmup.status).toBe(200);
     await warmup.text();
-    state.created = null;
     state.failed = null;
     const stale = [
       staleRunRecord({ assistantMessageId: "assistant-unavailable", chatId: "chat-other", id: "run-unavailable" }),
