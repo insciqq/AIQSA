@@ -441,6 +441,26 @@ describe("provider-neutral tool loop", () => {
     expect(continuations).toEqual([40, 410]);
   });
 
+  it("refuses a batch once the time budget is used up only where a synthesis round exists", async () => {
+    for (const synthesisContinuation of [410, undefined]) {
+      const executeTool = vi.fn(async () => ({ status: "complete" as const, value: "ok" }));
+      const refuseToolBatch = vi.fn();
+      const outcome = await continueToolLoop({
+        budgets: defaultBudgets, executeTool, initialContinuation: 0, refuseToolBatch,
+        timeBudgetExhausted: () => true,
+        async runProviderRound(input) {
+          return input.round === 1
+            ? { calls: [call("a")], continuation: 1, status: "tool_calls" as const,
+                ...(synthesisContinuation === undefined ? {} : { synthesisContinuation }) }
+            : { final: "answer", status: "complete" as const };
+        }
+      });
+      expect(outcome).toMatchObject({ final: "answer", status: "complete" });
+      expect(executeTool).toHaveBeenCalledTimes(synthesisContinuation === undefined ? 1 : 0);
+      expect(refuseToolBatch).toHaveBeenCalledTimes(synthesisContinuation === undefined ? 0 : 1);
+    }
+  });
+
   it("fails before dispatch when call or round budgets are exceeded", async () => {
     const executeTool = vi.fn(async () => ({ status: "complete" as const, value: "unused" }));
     // Without a synthesis continuation the generic loop still refuses the run.

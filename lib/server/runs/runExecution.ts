@@ -58,6 +58,7 @@ import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservabi
 import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { logEvent, runWithContext } from "../observability";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
+import { workspaceTurnSoftDeadlineMs } from "./workspaceTurnDeadline";
 import { logRunPersistence, runDatabaseFailureCode, runDatabaseFailureKind } from "./runObservability";
 import type {
   ProviderAdapter,
@@ -754,12 +755,22 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         ? setTimeout(
             () => {
               logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "failed",
-                code: "workspace_tool_timeout", reason: "deadline", abort_source: "workspace_deadline",
-                timeout_ms: workspaceTurnTimeoutSeconds! * 1_000 });
-              workspaceTurnController.abort(normalizedRequest.agent ? new AgentExecutionError("agent_time_limit") : new WorkspaceRuntimeError("workspace_tool_timeout"));
+                code: normalizedRequest.agent ? "workspace_tool_timeout" : "workspace_turn_time_limit", reason: "deadline",
+                abort_source: "workspace_deadline", timeout_ms: workspaceTurnTimeoutSeconds! * 1_000 });
+              workspaceTurnController.abort(normalizedRequest.agent ? new AgentExecutionError("agent_time_limit") : new WorkspaceRuntimeError("workspace_turn_time_limit"));
             },
             workspaceTurnTimeoutSeconds! * 1_000
           )
+        : null;
+      // The soft deadline of a Workspace tool loop: once only the reserve for
+      // finishing remains, the existing forced tool-free answer and the normal
+      // handoff follow (see `workspaceTurnSoftDeadlineMs`). It only sets a
+      // flag: running work is never interrupted, and Stop and the hard
+      // deadline above keep their own signals.
+      let workspaceTimeBudgetExhausted = false;
+      const workspaceSoftDeadlineTimer = workspaceTurnTimer && normalizedRequest.workspace && !normalizedRequest.agent
+        ? setTimeout(() => { workspaceTimeBudgetExhausted = true; }, workspaceTurnSoftDeadlineMs(
+            normalizedRequest.workspace.turnTimeoutSeconds, normalizedRequest.workspace.syncToolTimeoutSeconds))
         : null;
       const signal = workspaceTurnController
         ? AbortSignal.any([abortController.signal, workspaceTurnController.signal])
@@ -2503,6 +2514,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             maxToolCalls: toolBudgets.maxToolCalls,
             maxToolRounds: toolBudgets.maxToolRounds
           },
+          ...(workspaceSoftDeadlineTimer ? { timeBudgetExhausted: () => workspaceTimeBudgetExhausted } : {}),
           executeTool: async (call, context) => {
               const persisted = persistedCalls.get(call.id);
               if (!persisted) {
@@ -3921,6 +3933,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         followups?.release();
         await artifactGeneration.stop(signal.aborted ? "cancelled" : "failed").catch(() => undefined);
         if (workspaceTurnTimer) clearTimeout(workspaceTurnTimer);
+        if (workspaceSoftDeadlineTimer) clearTimeout(workspaceSoftDeadlineTimer);
         if (input.prepared.project) notifyProjectEvent(input.prepared.project.projectId);
         if (activeRunControllers.get(runId) === abortController) {
           activeRunControllers.delete(runId);
