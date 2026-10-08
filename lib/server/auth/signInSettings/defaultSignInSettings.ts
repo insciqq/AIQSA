@@ -1,7 +1,12 @@
 import { isExternalGroupSource } from "@/lib/contracts/authSignInMethods";
 import { prisma } from "../../prisma";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
-import { createActiveSignInSettingsCache, decodeActiveSignInSetting, type ActiveSignInSetting } from "./activeSettings";
+import {
+  createActiveSignInSettingsCache,
+  decodeActiveSignInSetting,
+  type ActiveSignInSetting,
+  type ActiveSignInSettingsCache
+} from "./activeSettings";
 import { createSignInHealthRecorder } from "./health";
 import {
   createPrismaSignInManagementRepository,
@@ -13,10 +18,14 @@ import { createPrismaSignInSettingsRepository } from "./repository";
 import { createSignInSettingsService } from "./service";
 
 const ACTIVE_SETTINGS_TTL_MS = 5_000;
+const ACTIVE_SETTINGS_CACHE = Symbol.for("aiqsa.active-sign-in-settings.v1");
+const slot = globalThis as typeof globalThis & { [ACTIVE_SETTINGS_CACHE]?: ActiveSignInSettingsCache };
 
 export const signInSettingsRepository = createPrismaSignInSettingsRepository({ prisma });
 
-export const activeSignInSettings = createActiveSignInSettingsCache({
+// Process-global: route handlers and the login page are separate bundles with their own module
+// instances, and an activation or disable must invalidate the snapshot every one of them reads.
+export const activeSignInSettings = slot[ACTIVE_SETTINGS_CACHE] ??= createActiveSignInSettingsCache({
   async load() {
     const rows = await signInSettingsRepository.loadEnabled();
     return rows
