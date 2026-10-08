@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient, type AuthSignInMethodSetting } from "@prisma/client";
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
 import {
   createSamlTestIdp,
   encodeSamlTestResponse,
@@ -54,7 +54,10 @@ async function openSamlCard(page: Page) {
   return card;
 }
 
-/** The IdP's answer to the AuthnRequest a start redirect carries. */
+/**
+ * The IdP's answer to the AuthnRequest a start redirect carries. The start goes through the
+ * context's request API, which shares its cookie jar: that context holds the binding cookie.
+ */
 async function idpResponse(request: APIRequestContext, input: { email: string; inResponseTo?: "omit"; next?: string }) {
   const sp = serviceProvider!;
   const start = await request.get(`/api/auth/saml/start?next=${encodeURIComponent(input.next ?? "/")}`, { maxRedirects: 0 });
@@ -91,7 +94,11 @@ async function postFromIdp(page: Page, fields: Record<string, string>) {
   await Promise.all([page.waitForURL((url) => url.href !== "about:blank"), page.locator("form").evaluate((form: HTMLFormElement) => form.submit())]);
 }
 
-test("an administrator configures SAML; a signed response signs in, a replay or an unsolicited one does not", async ({ browser, page }, testInfo) => {
+async function hasSession(context: BrowserContext): Promise<boolean> {
+  return (await context.cookies()).some((cookie) => cookie.name === "aiqsa_session");
+}
+
+test("an administrator configures SAML; only the browser that started a sign-in completes it, replays and unsolicited responses fail", async ({ browser, page }, testInfo) => {
   const card = await openSamlCard(page);
   await expect(card.getByTestId("admin-sign-in-status")).toHaveText("Off");
   serviceProvider = {
@@ -126,13 +133,31 @@ test("an administrator configures SAML; a signed response signs in, a replay or 
   await expect(login.getByRole("link", { name: "Continue with SAML" })).toHaveAttribute("href", "/api/auth/saml/start?next=%2F");
   await login.screenshot({ path: testInfo.outputPath("saml-login-button.png") });
 
+  // The ACS hands the browser to the completion step, which the start's Lax binding cookie reaches.
   const email = `person@${domain}`;
   const fields = await idpResponse(login.request, { email });
   await postFromIdp(login, fields);
   await expect(login.getByTestId("app-shell")).toBeVisible();
   const identity = await prisma.authIdentity.findFirstOrThrow({ where: { normalizedEmail: email, provider: "saml" } });
   expect(identity.source).toBe(idp.entityId);
-  await expect(prisma.authSession.count({ where: { signInMethod: "saml", userId: identity.userId } })).resolves.toBe(1);
+  const samlSessions = () => prisma.authSession.count({ where: { signInMethod: "saml", userId: identity.userId } });
+  await expect(samlSessions()).resolves.toBe(1);
+
+  // Login CSRF: a valid response planted into a browser that did not start the sign-in.
+  const attackerContext = await browser.newContext();
+  const attacker = await attackerContext.newPage();
+  const victimContext = await browser.newContext();
+  const victim = await victimContext.newPage();
+  await postFromIdp(victim, await idpResponse(attacker.request, { email }));
+  await expect(victim).toHaveURL(/\/login\?saml=browser_mismatch&local=1$/u);
+  await expect(victim.getByRole("alert")).toContainText("did not finish in the browser that started it");
+  expect(await hasSession(victimContext)).toBe(false);
+  await expect(samlSessions()).resolves.toBe(1);
+  await victim.screenshot({ path: testInfo.outputPath("saml-login-browser-mismatch.png") });
+  // Only the browser holding the start's cookie turns that response into a session.
+  await attacker.goto("/api/auth/saml/complete");
+  await expect(attacker.getByTestId("app-shell")).toBeVisible();
+  await expect(samlSessions()).resolves.toBe(2);
 
   const replayContext = await browser.newContext();
   const replay = await replayContext.newPage();
@@ -143,13 +168,13 @@ test("an administrator configures SAML; a signed response signs in, a replay or 
 
   await postFromIdp(replay, await idpResponse(replay.request, { email, inResponseTo: "omit" }));
   await expect(replay).toHaveURL(/\/login\?saml=failed&local=1$/u);
-  await expect(prisma.authSession.count({ where: { signInMethod: "saml", userId: identity.userId } })).resolves.toBe(1);
+  expect(await hasSession(replayContext)).toBe(false);
+  await expect(samlSessions()).resolves.toBe(2);
 
   await page.reload();
   await expect(page.getByTestId("admin-sign-in-card-saml").getByTestId("admin-sign-in-health"))
     .toContainText("the response did not answer a sign-in AIQSA started");
-  await anonymous.close();
-  await replayContext.close();
+  for (const context of [anonymous, attackerContext, victimContext, replayContext]) await context.close();
 });
 
 for (const viewport of [

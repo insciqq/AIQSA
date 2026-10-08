@@ -6,6 +6,8 @@ import type { AdminAuthErrorCode, ErrorResponse, MutationOriginErrorCode } from 
 export const SAML_START_PATH = "/api/auth/saml/start";
 /** Outside `/api`: the IdP's HTTP-POST binding is a cross-site form POST without `Lax` cookies. */
 export const SAML_ACS_PATH = "/saml/acs";
+/** Where the ACS sends the browser; the initiating browser's binding cookie arrives here. */
+export const SAML_COMPLETE_PATH = "/api/auth/saml/complete";
 export const SAML_METADATA_PATH = "/saml/metadata";
 
 export const SAML_NAME_ID_FORMATS = {
@@ -44,6 +46,7 @@ export function samlServiceProvider(appBaseUrl: string, spEntityId: string | nul
 /** How a SAML sign-in ended for the person, as `/login?saml=<outcome>` shows it. */
 export const SAML_LOGIN_OUTCOMES = [
   "account_conflict",
+  "browser_mismatch",
   "email_missing",
   "failed",
   "not_allowed",

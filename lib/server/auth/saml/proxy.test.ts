@@ -15,8 +15,8 @@ describe("SAML proxy boundary", () => {
     expect(response.headers.get("x-middleware-next")).toBe("1");
   });
 
-  it("serves the SP metadata and the start route publicly, and nothing else under /saml", () => {
-    for (const path of ["/saml/metadata", "/api/auth/saml/start?next=%2F"]) {
+  it("serves the SP metadata, the start and the completion step publicly, and nothing else under /saml", () => {
+    for (const path of ["/saml/metadata", "/api/auth/saml/start?next=%2F", "/api/auth/saml/complete"]) {
       expect(proxyWithEnv(new NextRequest(`https://aiqsa.example${path}`), env).headers.get("x-middleware-next"), path).toBe("1");
     }
     const hidden = proxyWithEnv(new NextRequest("https://aiqsa.example/saml/acs-debug"), env);

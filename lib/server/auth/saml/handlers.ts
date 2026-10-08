@@ -1,6 +1,7 @@
 import { generateServiceProviderMetadata, SAML } from "@node-saml/node-saml";
 import type { AuthSessionSignInMethod } from "@/lib/contracts/authSignInMethods";
 import {
+  SAML_COMPLETE_PATH,
   SAML_NAME_ID_FORMATS,
   samlServiceProvider,
   type SamlLoginOutcome
@@ -19,11 +20,23 @@ import { prepareAuthSession } from "../requestAuth";
 import type { SignInSessionInput } from "../signInCompletion";
 import type { ResolvedSignInMethod } from "../signInMethods";
 import type { SignInHealthRecorder } from "../signInSettings/health";
+import {
+  clearSamlBrowserBindingCookie,
+  createSamlBrowserBinding,
+  readSamlBrowserBinding,
+  samlBindingMatches
+} from "./binding";
 import { samlIdentitySource } from "./config";
 import { samlNodeOptions } from "./options";
 import { createSamlRequestId, readSamlRelayState, signSamlRelayState } from "./relayState";
 import { SAML_RESPONSE_MAX_BYTES, verifySamlResponse } from "./response";
-import { SAML_REQUEST_TTL_MS, type SamlReplayCache, type SamlRequestStore } from "./state";
+import {
+  SAML_COMPLETION_TTL_MS,
+  SAML_REQUEST_TTL_MS,
+  type SamlCompletionStore,
+  type SamlReplayCache,
+  type SamlRequestStore
+} from "./state";
 
 export type SamlMethodResolver = () => Promise<ResolvedSignInMethod<"saml"> | null>;
 
@@ -45,20 +58,24 @@ function redirect(location: string, cookies: string[] = []): Response {
  * `/login?saml=<outcome>`, keeping a destination other than the default. `local=1` keeps an
  * OIDC auto-redirect from leaving before the person reads the outcome.
  */
-function outcomeRedirect(config: AuthConfig, outcome: SamlLoginOutcome, nextPath = "/", retryAfterSeconds?: number): Response {
+function outcomeRedirect(
+  config: AuthConfig,
+  outcome: SamlLoginOutcome,
+  input: { cookies?: string[]; nextPath?: string; retryAfterSeconds?: number } = {}
+): Response {
   const url = new URL("/login", config.appBaseUrl);
   url.searchParams.set("saml", outcome);
   url.searchParams.set("local", "1");
-  if (nextPath !== "/") url.searchParams.set("next", nextPath);
-  const response = redirect(url.toString());
-  if (retryAfterSeconds !== undefined) response.headers.set("retry-after", String(retryAfterSeconds));
+  if (input.nextPath && input.nextPath !== "/") url.searchParams.set("next", input.nextPath);
+  const response = redirect(url.toString(), input.cookies);
+  if (input.retryAfterSeconds !== undefined) response.headers.set("retry-after", String(input.retryAfterSeconds));
   return response;
 }
 
 /**
  * `GET /api/auth/saml/start?next=…`: an unsigned AuthnRequest over HTTP-Redirect. The request
- * id waits server-side with the destination (single replica); `RelayState` names it under an
- * HMAC. No cookie is set: the response arrives as a cross-site POST that would not send one.
+ * waits server-side with the destination (single replica) and the hash of a nonce whose `Lax`
+ * binding cookie this browser receives; `RelayState` names the request under an HMAC.
  */
 export function createSamlStartHandler(deps: {
   createRequestId?: () => string;
@@ -79,7 +96,7 @@ export function createSamlStartHandler(deps: {
     if (client.status === "unavailable") return outcomeRedirect(config, "failed");
     if (client.status === "available") {
       const decision = await deps.rateLimiter.check(`saml-start:client:${client.key}`);
-      if (!decision.allowed) return outcomeRedirect(config, "failed", "/", decision.retryAfterSeconds);
+      if (!decision.allowed) return outcomeRedirect(config, "failed", { retryAfterSeconds: decision.retryAfterSeconds });
     }
 
     const now = deps.now?.() ?? new Date();
@@ -106,11 +123,23 @@ export function createSamlStartHandler(deps: {
         undefined,
         {}
       );
-      if (!issuedAt) return outcomeRedirect(config, "failed", nextPath);
-      deps.requests.issue(requestId, { activeVersion: method.activeVersion ?? null, expiresAt, issuedAt, nextPath });
-      return redirect(location);
+      if (!issuedAt) return outcomeRedirect(config, "failed", { nextPath });
+      const binding = createSamlBrowserBinding({
+        maxAgeSeconds: SAML_REQUEST_TTL_MS / 1000,
+        requestId,
+        secret: config.sessionSecret,
+        secure: config.cookieSecure
+      });
+      deps.requests.issue(requestId, {
+        activeVersion: method.activeVersion ?? null,
+        bindingHash: binding.hash,
+        expiresAt,
+        issuedAt,
+        nextPath
+      });
+      return redirect(location, [binding.cookie]);
     } catch {
-      return outcomeRedirect(config, "failed", nextPath);
+      return outcomeRedirect(config, "failed", { nextPath });
     }
   };
 }
@@ -138,11 +167,13 @@ async function readSamlForm(request: Request): Promise<{ form: SamlForm; ok: tru
 /**
  * `POST /saml/acs`, outside `/api`: the IdP's cross-site form POST carries no `Lax` cookies
  * and would fail the `/api` origin guard. The response proves itself (see
- * `verifySamlResponse`); the sign-in then settles like every external method and continues at
- * the request's destination, or at `/` when `RelayState` does not name that request.
+ * `verifySamlResponse`), but proves nothing about the browser posting it, so the ACS creates
+ * no session: it keeps the validated identity briefly under the request and sends the browser
+ * to the completion step, where the binding cookie of the browser that started the sign-in
+ * must arrive. The destination is the request's own, or `/` when `RelayState` does not name it.
  */
 export function createSamlAcsHandler(deps: {
-  completeSignIn: SamlSignInCompleter;
+  completions: SamlCompletionStore;
   getConfig(): AuthConfig;
   loginRateLimiter: LoginRateLimiter;
   now?: () => Date;
@@ -163,7 +194,7 @@ export function createSamlAcsHandler(deps: {
     const rateLimitKey = client.status === "available" ? `saml-acs:client:${client.key}` : null;
     if (rateLimitKey) {
       const decision = await deps.loginRateLimiter.check(rateLimitKey);
-      if (!decision.allowed) return outcomeRedirect(config, "failed", "/", decision.retryAfterSeconds);
+      if (!decision.allowed) return outcomeRedirect(config, "failed", { retryAfterSeconds: decision.retryAfterSeconds });
     }
 
     const read = await readSamlForm(request);
@@ -183,15 +214,61 @@ export function createSamlAcsHandler(deps: {
     });
     if (!verification.ok) {
       await record(verification.code);
-      return outcomeRedirect(config, "failed", verification.request?.nextPath);
+      return outcomeRedirect(config, "failed", { nextPath: verification.request?.nextPath });
     }
 
     const relayState = readSamlRelayState(read.form.relayState, { now: now.getTime(), secret: config.sessionSecret });
-    const nextPath = relayState?.requestId === verification.requestId
-      ? safeInternalPath(verification.request.nextPath, config.appBaseUrl)
-      : "/";
+    deps.completions.put(verification.requestId, {
+      activeVersion: verification.request.activeVersion,
+      bindingHash: verification.request.bindingHash,
+      expiresAt: now.getTime() + SAML_COMPLETION_TTL_MS,
+      identity: verification.identity,
+      nextPath: relayState?.requestId === verification.requestId ? verification.request.nextPath : "/",
+      source: samlIdentitySource(method.config)
+    });
+    // A valid response gives back only its own attempt; earlier failures keep counting.
+    if (rateLimitKey) await deps.loginRateLimiter.release(rateLimitKey);
+    return redirect(new URL(SAML_COMPLETE_PATH, config.appBaseUrl).toString());
+  };
+}
+
+/**
+ * `GET /api/auth/saml/complete`: the top-level GET the ACS redirects to, which carries the
+ * initiating browser's `Lax` binding cookie. Only a cookie whose HMAC holds, naming a stored
+ * result whose nonce hash it matches, under the same active configuration, settles the sign-in
+ * through the shared seam and issues the session. Everything else, a response replayed into
+ * another browser included, ends without a session. The result is single-use either way.
+ */
+export function createSamlCompleteHandler(deps: {
+  completeSignIn: SamlSignInCompleter;
+  completions: SamlCompletionStore;
+  getConfig(): AuthConfig;
+  now?: () => Date;
+  recordOutcome: SignInHealthRecorder;
+  resolveMethod: SamlMethodResolver;
+}) {
+  return async function GET(request: Request): Promise<Response> {
+    const config = deps.getConfig();
+    if (!config.configured) return Response.json({ error: "not_found" }, { status: 404 });
+    const cookies = [clearSamlBrowserBindingCookie(config.cookieSecure)];
+    const binding = readSamlBrowserBinding(request.headers.get("cookie"), config.sessionSecret);
+    const completion = binding ? deps.completions.take(binding.requestId) : null;
+    // Not recorded as health: anyone can reach this step, so a mismatch says nothing of the IdP.
+    if (!binding || !completion || !samlBindingMatches(binding.nonce, completion.bindingHash)) {
+      return outcomeRedirect(config, "browser_mismatch", { cookies });
+    }
+    const nextPath = safeInternalPath(completion.nextPath, config.appBaseUrl);
+    const method = await deps.resolveMethod();
+    if (!method) return outcomeRedirect(config, "failed", { cookies, nextPath });
+    const record = (code: string) => deps.recordOutcome(method, code);
+    if ((method.activeVersion ?? null) !== completion.activeVersion) {
+      await record("request_unknown");
+      return outcomeRedirect(config, "failed", { cookies, nextPath });
+    }
+
+    const now = deps.now?.() ?? new Date();
     const session = prepareAuthSession({ now, request, secureCookie: config.cookieSecure });
-    const { identity } = verification;
+    const { identity } = completion;
     let result: ExternalSignInResult;
     try {
       result = await deps.completeSignIn({
@@ -205,31 +282,29 @@ export function createSamlAcsHandler(deps: {
         provider: "saml",
         session: session.input,
         signInMethod: "saml",
-        source: samlIdentitySource(method.config),
+        source: completion.source,
         subject: identity.subject
       });
     } catch {
       await record("sign_in_failed");
-      return outcomeRedirect(config, "failed", nextPath);
+      return outcomeRedirect(config, "failed", { cookies, nextPath });
     }
 
     switch (result.status) {
       case "active":
         await record("accepted");
-        // A completed sign-in gives back only its own attempt; earlier failures keep counting.
-        if (rateLimitKey) await deps.loginRateLimiter.release(rateLimitKey);
-        return redirect(new URL(nextPath, config.appBaseUrl).toString(), [session.cookie]);
+        return redirect(new URL(nextPath, config.appBaseUrl).toString(), [...cookies, session.cookie]);
       case "pending":
         // A pending account is the IdP working as configured.
         await record("accepted");
-        return outcomeRedirect(config, "pending", nextPath);
+        return outcomeRedirect(config, "pending", { cookies, nextPath });
       case "second_factor_required":
         // SAML relies on the IdP's MFA; the completion seam never asks it for a second factor.
         await record("sign_in_failed");
-        return outcomeRedirect(config, "failed", nextPath);
+        return outcomeRedirect(config, "failed", { cookies, nextPath });
       default:
         await record(result.status);
-        return outcomeRedirect(config, result.status, nextPath);
+        return outcomeRedirect(config, result.status, { cookies, nextPath });
     }
   };
 }
