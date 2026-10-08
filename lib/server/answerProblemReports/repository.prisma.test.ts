@@ -34,11 +34,14 @@ type Fixture = Readonly<{
   streamingId: string;
 }>;
 
-async function exchange(chatId: string, userId: string, connectionId: string, modelId: string): Promise<Chat> {
+/** A question and its settled answer; a Project chat's question names its author, as the database requires. */
+async function exchange(chatId: string, userId: string, connectionId: string, modelId: string,
+  author?: Readonly<{ displayName: string; role: "OWNER" | "MANAGER" | "CONTRIBUTOR" | "VIEWER" }>): Promise<Chat> {
   const questionId = randomUUID();
   const answerId = randomUUID();
   const runId = randomUUID();
-  await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic question"), id: questionId, role: "user" } });
+  await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic question"), id: questionId, role: "user",
+    ...(author ? { authorDisplayName: author.displayName, authorProjectRole: author.role, authorUserId: userId } : {}) } });
   await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic answer"), id: answerId, parentMessageId: questionId,
     role: "assistant", status: "complete" } });
   await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId, normalizedRequest: {},
@@ -76,7 +79,7 @@ async function withFixture<T>(execute: (fixture: Fixture) => Promise<T>): Promis
     const sharedChat = await prisma.chat.create({ data: { createdByDisplayName: "Owner", createdByUserId: owner.id,
       memoryMode: "EXCLUDED", projectId: project.id, title: "Problem report Project fixture", userId: null } });
     chatIds.push(sharedChat.id);
-    const projectChat = await exchange(sharedChat.id, owner.id, connectionId, modelId);
+    const projectChat = await exchange(sharedChat.id, owner.id, connectionId, modelId, { displayName: "Owner", role: "OWNER" });
     return await execute({ admin: admin.id, member: member.id, owner: owner.id, personal, projectChat, projectId: project.id,
       streamingId });
   } finally {
