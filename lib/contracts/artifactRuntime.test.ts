@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ARTIFACT_STORAGE_LIMITS, ARTIFACT_VIEW_ALLOW, ARTIFACT_VIEW_SANDBOX, artifactLinkCarriesData,
-  parseArtifactOpenLinkMessage, parseArtifactStorageMessage, parseArtifactStorageSnapshot } from "./artifactRuntime";
+import { ARTIFACT_NAVIGATE_FRAGMENT_LIMIT, ARTIFACT_STORAGE_LIMITS, ARTIFACT_VIEW_ALLOW, ARTIFACT_VIEW_SANDBOX, artifactLinkCarriesData,
+  parseArtifactNavigateMessage, parseArtifactOpenLinkMessage, parseArtifactStorageMessage, parseArtifactStorageSnapshot } from "./artifactRuntime";
 
 describe("artifact bridge contracts", () => {
   it("permits only the reviewed sandbox and browser capabilities", () => {
@@ -17,6 +17,20 @@ describe("artifact bridge contracts", () => {
     }
     expect(parseArtifactOpenLinkMessage({ ...message("https://example.com"), trusted: true })).toBeNull();
     expect(parseArtifactOpenLinkMessage([message("https://example.com")])).toBeNull();
+  });
+  it("accepts only exact navigation requests to bounded artifact page paths", () => {
+    const message = (fields: Record<string, unknown>) => ({ type: "aiqsa_artifact_navigate", ...fields });
+    expect(parseArtifactNavigateMessage(message({ path: "docs/b.html" }))).toEqual({ path: "docs/b.html" });
+    expect(parseArtifactNavigateMessage(message({ path: "b.html", fragment: "part 1" }))).toEqual({ path: "b.html", fragment: "part 1" });
+    const longest = "x".repeat(ARTIFACT_NAVIGATE_FRAGMENT_LIMIT);
+    expect(parseArtifactNavigateMessage(message({ path: "b.html", fragment: longest }))).toEqual({ path: "b.html", fragment: longest });
+    for (const path of ["", "/b.html", "../b.html", "docs//b.html", "docs/./b.html", "docs/", "_vendor/0123456789ab/a.html", "docs/b c.html", "a".repeat(193), 42, null]) {
+      expect(parseArtifactNavigateMessage(message({ path }))).toBeNull();
+    }
+    for (const fragment of ["", `${longest}x`, "a\nb", 7, null]) expect(parseArtifactNavigateMessage(message({ path: "b.html", fragment }))).toBeNull();
+    expect(parseArtifactNavigateMessage(message({ path: "b.html", href: "b.html" }))).toBeNull();
+    expect(parseArtifactNavigateMessage([message({ path: "b.html" })])).toBeNull();
+    expect(parseArtifactNavigateMessage({ type: "aiqsa_artifact_open_link", path: "b.html" })).toBeNull();
   });
   it("describes long or encoded address data without treating ordinary short links as suspicious", () => {
     expect(artifactLinkCarriesData("https://example.com/article?year=2026#intro")).toBe(false);

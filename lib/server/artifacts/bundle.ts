@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { ArtifactToolError } from "./errors";
-import { ARTIFACT_RUNTIME_BRIDGE } from "./runtimeBridge";
-import { parseArtifactLink } from "@/lib/contracts/artifactRuntime";
+import { artifactRuntimeBridge, type ArtifactRuntimeSite } from "./runtimeBridge";
+import { ARTIFACT_BRIDGE_VERSION, parseArtifactLink } from "@/lib/contracts/artifactRuntime";
 import { parseArtifactCss, expandArtifactCssImport } from "./css";
 import { assertArtifactSingleModule } from "./modulePolicy";
 import { artifactResourceText } from "./resourceFetch";
@@ -17,6 +17,7 @@ import {
   ARTIFACT_KINDS,
   isArtifactTextMime,
   normalizeArtifactOperation,
+  normalizedArtifactPath,
   type ArtifactKind,
   type NormalizedArtifactFile,
   type NormalizedArtifactOperation
@@ -53,17 +54,87 @@ type Element = DefaultTreeAdapterMap["element"];
 const BLOCKED_ELEMENTS = new Set(["iframe", "frame", "frameset", "object", "embed", "base", "portal"]);
 const SVG_ELEMENTS = new Set(["svg", "g", "defs", "symbol", "use", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "tspan", "title", "desc", "linearGradient", "radialGradient", "stop", "clipPath", "mask", "pattern", "image", "filter", "feGaussianBlur", "feOffset", "feBlend", "feColorMatrix", "feMerge", "feMergeNode"]);
 const RESOURCE_ATTRIBUTES = new Set(["src", "href", "poster", "background", "data", "action", "formaction"]);
+const MEDIA_ELEMENTS = new Set(["audio", "video", "source", "track"]);
+/** Resource hints and manifests only prepare network work, so a page drops them instead of failing. */
+const SERVICE_LINK_RELATIONS = new Set(["preload", "modulepreload", "prefetch", "prerender", "dns-prefetch", "preconnect", "manifest"]);
+const FILE_BLOCK_MARKUP_BYTES = '<script type="application/octet-stream" data-aiqsa-file=""></script>'.length;
 export const ARTIFACT_RENDERER_VERSION = 5;
 export const ARTIFACT_MAX_RENDER_BYTES = 64 * 1024 * 1024;
+export const ARTIFACT_NOTE_LIMITS = Object.freeze({ maxEntries: 32, maxHrefCharacters: 200, maxRelCharacters: 64 });
 
 function invalid(code: string, path: string, hint: string): never {
   throw new ArtifactToolError(code, { path, hint });
 }
 
+/** Relative paths resolve from the page, root-relative paths from the bundle root; `//host` stays external. */
 function localPath(value: string, from: string): string | null {
-  if (!value || /[\u0000-\u0020\u007f\\:#?%]/u.test(value) || value.startsWith("/")) return null;
-  const resolved = posix.normalize(posix.join(posix.dirname(from), value));
-  return resolved.startsWith("../") ? null : resolved;
+  if (!value || /[\u0000-\u0020\u007f\\:#?%]/u.test(value) || value.startsWith("//")) return null;
+  const resolved = value.startsWith("/") ? posix.normalize(value.slice(1)) : posix.normalize(posix.join(posix.dirname(from), value));
+  return resolved.startsWith("../") || [".", ".."].includes(resolved) ? null : resolved;
+}
+
+/** Every authored HTML file is a page; the bridge navigates between pages instead of embedding them. */
+function isArtifactPage(file: ArtifactBundleFile): boolean {
+  return !file.vendor && file.mimeType === "text/html";
+}
+
+/** HTML pages of a bundle, the entrypoint first. */
+export function artifactBundlePages(bundle: Pick<ArtifactBundle, "entrypoint" | "files">): string[] {
+  const pages = bundle.files.filter(isArtifactPage).map(file => file.path);
+  return [...pages.filter(path => path === bundle.entrypoint), ...pages.filter(path => path !== bundle.entrypoint)];
+}
+
+/**
+ * Resolves a link href to a bundle path with the runtime bridge's rules: relative to the page,
+ * `/` from the bundle root, `dir/` to `dir/index.html`; the query is ignored and the fragment
+ * kept. Returns null for anything that is not a local path. A path escaping the root is "".
+ */
+export function artifactLinkTarget(value: string, from: string): Readonly<{ path: string; fragment: string }> | null {
+  const raw = value.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/gu, "");
+  if (raw.length > 2048 || /[\u0000-\u001f\u007f\\]/u.test(raw) || raw.startsWith("//") || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(raw)) return null;
+  const hash = raw.indexOf("#");
+  const fragment = hash < 0 ? "" : raw.slice(hash + 1);
+  const rest = (hash < 0 ? raw : raw.slice(0, hash)).split("?")[0]!;
+  if (!rest) return null;
+  let decoded: string;
+  try { decoded = decodeURIComponent(rest); } catch { return { path: "", fragment }; }
+  const parts = decoded.split("/");
+  const segments = decoded.startsWith("/") ? [] : posix.dirname(from).split("/").filter(part => part && part !== ".");
+  for (const part of parts) {
+    if (part === "..") { if (!segments.length) return { path: "", fragment }; segments.pop(); }
+    else if (part && part !== ".") segments.push(part);
+  }
+  if (["", ".", ".."].includes(parts.at(-1)!)) segments.push("index.html");
+  return { path: segments.join("/"), fragment };
+}
+
+export type ArtifactRemovedLinkNote = Readonly<{ page: string; rel: string; href: string }>;
+export type ArtifactMissingLinkNote = Readonly<{ page: string; href: string; path: string }>;
+/** Creation-time findings for the tool result: they never block a version. */
+export type ArtifactBundleNotes = Readonly<{
+  pages: readonly string[];
+  removedLinks: readonly ArtifactRemovedLinkNote[];
+  missingLinks: readonly ArtifactMissingLinkNote[];
+  /** Further distinct notes beyond `ARTIFACT_NOTE_LIMITS.maxEntries` per list. */
+  omitted: number;
+}>;
+type PageValidation = { removedLinks: ArtifactRemovedLinkNote[]; missingLinks: ArtifactMissingLinkNote[]; omitted: number; seen: Set<string> };
+
+function noteText(value: string, max: number): string {
+  const text = value.replace(/[\u0000-\u001f\u007f]/gu, " ");
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function addNote<T extends ArtifactRemovedLinkNote | ArtifactMissingLinkNote>(validation: PageValidation, list: T[], note: T): void {
+  const key = JSON.stringify(note);
+  if (validation.seen.has(key)) return;
+  validation.seen.add(key);
+  if (list.length < ARTIFACT_NOTE_LIMITS.maxEntries) list.push(note);
+  else validation.omitted += 1;
+}
+
+function relationTokens(value: string | undefined): string[] {
+  return (value ?? "").toLowerCase().split(/[\t\n\f\r ]+/u).filter(Boolean);
 }
 
 const ICON_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/]+=*$/iu;
@@ -71,7 +142,7 @@ const ICON_HINT = "Use a data: image (PNG, JPEG, WebP, GIF, SVG or ICO) or an in
 
 /** Browsers match rel tokens case-insensitively; only plain icon relations are inert images. */
 function iconRel(value: string | undefined): boolean {
-  const tokens = (value ?? "").toLowerCase().split(/[\t\n\f\r ]+/u).filter(Boolean).sort().join(" ");
+  const tokens = relationTokens(value).sort().join(" ");
   return ["icon", "icon shortcut", "apple-touch-icon"].includes(tokens);
 }
 
@@ -193,7 +264,7 @@ export function buildArtifactBundle(
   operation: NormalizedArtifactOperation,
   assets: readonly ArtifactBundleAsset[],
   vendorFiles: readonly ArtifactBundleFile[] = []
-): Readonly<{ bundle: ArtifactBundle; bytes: Buffer; checksum: string }> {
+): Readonly<{ bundle: ArtifactBundle; bytes: Buffer; checksum: string; notes: ArtifactBundleNotes }> {
   const byPath = new Map(assets.map((asset) => [asset.path, asset]));
   const files: ArtifactBundleFile[] = operation.files.map((file: NormalizedArtifactFile) => {
     if (file.text !== undefined) {
@@ -215,11 +286,16 @@ export function buildArtifactBundle(
   const bytes = encodeArtifactBundle(bundle);
   const hydrated = { ...bundle, files: files.map(file => file.blob ? hydrateArtifactBundleFile(file, byPath.get(file.path)!.bytes) : file) };
   for (const file of hydrated.files) if (file.blob && !file.vendor && file.text !== undefined) rejectControlCharacters(file.text, file.path);
-  renderArtifactBundle(hydrated);
+  // Every page is validated by the same renderer that later serves it.
+  const pages = artifactBundlePages(bundle);
+  const validation: PageValidation = { removedLinks: [], missingLinks: [], omitted: 0, seen: new Set() };
+  renderBundlePage(hydrated, false, undefined, validation);
+  for (const page of pages) if (page !== bundle.entrypoint) renderBundlePage(hydrated, false, page, validation);
   for (const file of files) if (file.mimeType === "image/svg+xml" && file.path !== bundle.entrypoint) {
     renderArtifactBundle({ ...hydrated, kind: "svg", entrypoint: file.path }, true);
   }
-  return { bundle, bytes, checksum: artifactChecksum(bytes) };
+  const notes = { pages, removedLinks: validation.removedLinks, missingLinks: validation.missingLinks, omitted: validation.omitted };
+  return { bundle, bytes, checksum: artifactChecksum(bytes), notes };
 }
 
 /** Whether a stored blob becomes text (vendored code, by-reference text) rather than base64. */
@@ -238,21 +314,41 @@ export function bundleFileBytes(file: ArtifactBundleFile): Buffer {
   return Buffer.from(file.base64, "base64");
 }
 
-export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): Readonly<{
-  body: Buffer;
-  contentType: string;
-  fileName: string;
-}> {
+type RenderedArtifact = Readonly<{ body: Buffer; contentType: string; fileName: string }>;
+
+/**
+ * Renders the entrypoint, or another HTML page of the bundle. Each page embeds every non-page
+ * file it does not inline once as an inert `<script type="application/octet-stream"
+ * data-aiqsa-file>` block, which the runtime bridge serves to fetch, XHR and src.
+ */
+export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false, page?: string): RenderedArtifact {
+  return renderBundlePage(bundle, mainFile, page)!;
+}
+
+/** With `validation`, records notes and measures file blocks without materializing them. */
+function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: string | undefined, validation?: PageValidation): RenderedArtifact | null {
+  if (page !== undefined && page !== bundle.entrypoint && !bundle.files.some(file => file.path === page && isArtifactPage(file))) {
+    throw new ArtifactToolError("artifact_page_not_found", { ...(normalizedArtifactPath(page) === page ? { path: page } : {}),
+      hint: "Open the entry page or another HTML page of this artifact." });
+  }
+  const selected = page ?? bundle.entrypoint;
   if (bundle.kind === "image" && bundle.files.length === 1) {
     const image = bundle.files[0]!;
     if (!image.base64 || !/^image\/(?:png|jpeg|webp)$/u.test(image.mimeType)) throw new Error("artifact_bundle_image_missing");
     return { body: bundleFileBytes(image), contentType: image.mimeType, fileName: `image.${image.mimeType === "image/jpeg" ? "jpg" : image.mimeType.split("/")[1]}` };
   }
-  const entry = bundle.files.find((file) => file.path === bundle.entrypoint);
+  const entry = bundle.files.find((file) => file.path === selected);
   if (bundle.kind !== "image" && (!entry || entry.text === undefined)) throw new Error("artifact_bundle_entrypoint_missing");
   const files = new Map(bundle.files.map((file) => [file.path, file]));
-  let expandedBytes = bundle.files.reduce((sum, file) => sum + (file.text === undefined ? 0 : Buffer.byteLength(file.text)), 0);
+  // Files this page already carries as text or data: URLs, and files a reference
+  // needs at runtime even when an unrelated static reference inlined them.
+  const inlined = new Set<string>(entry ? [entry.path] : []);
+  const runtime = new Set<string>();
+  let media = false;
+  // Count only bytes this page actually carries; inlined resources add their own size.
+  let expandedBytes = entry?.text === undefined ? 0 : Buffer.byteLength(entry.text);
   function dataUrl(file: ArtifactBundleFile): string {
+    inlined.add(file.path);
     const svgText = file.mimeType === "image/svg+xml" ? svg(file.text ?? "", file.path) : undefined;
     // Bound expansion before allocating repeated base64 substitutions. A tiny
     // authored document can otherwise repeat one large image thousands of times.
@@ -320,7 +416,7 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
     validateSvgText(result, from);
     return result;
   }
-  if (bundle.kind === "svg" && mainFile) {
+  if (bundle.kind === "svg" && mainFile && selected === bundle.entrypoint) {
     return { body: Buffer.from(svg(entry!.text!, entry!.path)), contentType: "image/svg+xml; charset=utf-8", fileName: "image.svg" };
   }
   const source = bundle.kind === "image"
@@ -350,6 +446,16 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
       let inlinedStyle = false;
       if (BLOCKED_ELEMENTS.has(node.tagName)) invalid("artifact_element_unsupported", from, "Remove the unsupported element and use ordinary HTML, SVG or canvas.");
       if (node.tagName === "meta" && node.attrs.some((attr) => attr.name === "http-equiv")) invalid("artifact_element_unsupported", from, "Remove http-equiv metadata; the server supplies the security policy.");
+      // The bridge's attributes belong to the server; authored copies are dropped.
+      node.attrs = node.attrs.filter(attr => attr.name !== "data-aiqsa-src" && attr.name !== "data-aiqsa-file");
+      const relation = node.attrs.find(attr => attr.name === "rel")?.value;
+      if (node.tagName === "link" && relationTokens(relation).some(token => SERVICE_LINK_RELATIONS.has(token))) {
+        if (validation) addNote(validation, validation.removedLinks, { page: from, rel: noteText(relationTokens(relation).join(" "), ARTIFACT_NOTE_LIMITS.maxRelCharacters),
+          href: noteText(node.attrs.find(attr => attr.name === "href")?.value ?? "", ARTIFACT_NOTE_LIMITS.maxHrefCharacters) });
+        const siblings = node.parentNode?.childNodes;
+        siblings?.splice(siblings.indexOf(node), 1);
+        return;
+      }
       if (node.tagName === "svg") {
         // Resolve image hrefs before applying the unchanged strict SVG subset.
         const rendered = parse(svg(serialize({ nodeName: "#document-fragment", childNodes: [node] }), from));
@@ -371,6 +477,7 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
         const file = resolve(reference.value, from, script ? "artifact_external_script_unsupported" : "artifact_external_style_unsupported");
         if (!(script ? ["text/javascript", "application/javascript", "application/x-javascript"].includes(file.mimeType) : file.mimeType === "text/css") || file.text === undefined) invalid("artifact_mime_invalid", from, "Use a text/javascript script or text/css stylesheet file.");
         if (script && type === "module") assertArtifactSingleModule(file.text, file.path);
+        inlined.add(file.path);
         const retained = node.attrs.filter(attr => script ? ["type", "id", "nomodule"].includes(attr.name) : ["media", "id", "title"].includes(attr.name));
         node.tagName = script ? "script" : "style";
         node.nodeName = node.tagName;
@@ -390,8 +497,31 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
           if (attr.value.startsWith("#") || iconLink && attr === reference) continue;
           if (node.tagName === "a" && attr.name === "href") {
             const link = parseArtifactLink(attr.value);
-            if (!link) invalid("artifact_external_link_unsupported", from, "Use an http, https or mailto link no longer than 2048 characters.");
-            attr.value = link; continue;
+            if (link) { attr.value = link; continue; }
+            // Local links keep their authored href; the bridge resolves it with the same rules.
+            const target = artifactLinkTarget(attr.value, from);
+            if (!target) invalid("artifact_external_link_unsupported", from, "Use an http, https or mailto link, a #fragment, or the relative path of a page or file in this artifact.");
+            const file = files.get(target.path);
+            if (!file || file.vendor) {
+              if (validation) addNote(validation, validation.missingLinks, { page: from, href: noteText(attr.value, ARTIFACT_NOTE_LIMITS.maxHrefCharacters), path: target.path });
+            } else if (!isArtifactPage(file)) runtime.add(file.path);
+            continue;
+          }
+          if (attr.name === "src" && MEDIA_ELEMENTS.has(node.tagName)) {
+            if (/^data:/iu.test(attr.value)) continue;
+            // Media plays from a blob: URL the bridge creates from this file's block.
+            const path = localPath(attr.value, from);
+            const file = path ? files.get(path) : undefined;
+            if (!file || file.vendor || isArtifactPage(file)) invalid("artifact_external_media_unsupported", from, "Include the audio, video or caption file in the artifact and reference it by its relative path.");
+            attr.name = "data-aiqsa-src"; attr.value = file.path;
+            runtime.add(file.path); media = true;
+            continue;
+          }
+          if (attr.name === "poster" && node.tagName === "video") {
+            if (imageDataUrl(attr.value)) continue;
+            const file = resolve(attr.value, from);
+            if (!file.mimeType.startsWith("image/")) invalid("artifact_external_image_unsupported", from, "Use an included image as the video poster.");
+            attr.value = dataUrl(file); continue;
           }
           if (imageDataUrl(attr.value) && attr.name === "src" && node.tagName === "img") continue;
           const code = attr.name === "href" ? "artifact_external_link_unsupported" : "artifact_external_image_unsupported";
@@ -415,21 +545,42 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
         }
       }
     }
-    if ("childNodes" in node) node.childNodes.forEach(visit);
+    // Iterate a copy: dropped service links leave their parent's child list.
+    if ("childNodes" in node) [...node.childNodes].forEach(visit);
     if ("content" in node) visit(node.content);
   }
   visit(document);
+  // Pages are never blocks (navigation shows them); vendored copies serve only their static references.
+  const blocks = bundle.files.filter(file => !file.vendor && !isArtifactPage(file) && (!inlined.has(file.path) || runtime.has(file.path)));
+  const blockPaths = new Set(blocks.map(file => file.path));
+  let blockBytes = 0;
+  for (const file of blocks) {
+    const size = file.base64?.length ?? 4 * Math.ceil((file.text === undefined ? bundleFileBytes(file).byteLength : Buffer.byteLength(file.text)) / 3);
+    blockBytes += FILE_BLOCK_MARKUP_BYTES + Buffer.byteLength(file.path) + size;
+    if (expandedBytes + blockBytes > ARTIFACT_MAX_RENDER_BYTES) invalid("artifact_bundle_limit_exceeded", file.path, "Each page embeds every file it does not inline once; use smaller files or fewer repeated inline images.");
+  }
+  const site: ArtifactRuntimeSite = { page: entry?.path ?? "", media, files: bundle.files.filter(file => !file.vendor)
+    .map(file => [file.path, file.mimeType, isArtifactPage(file) ? "page" : blockPaths.has(file.path) ? "block" : "inline"] as const) };
   const htmlNode = document.childNodes.find((node): node is Element => "tagName" in node && node.tagName === "html")!;
   const head = htmlNode.childNodes.find((node): node is Element => "tagName" in node && node.tagName === "head")!;
-  const runtimeBridge: Element = { tagName: "script", nodeName: "script", namespaceURI: head.namespaceURI,
-    attrs: [{ name: "data-aiqsa-artifact-bridge", value: "3" }], childNodes: [], parentNode: head };
-  runtimeBridge.childNodes.push({ nodeName: "#text", value: ARTIFACT_RUNTIME_BRIDGE, parentNode: runtimeBridge });
-  head.childNodes.unshift(runtimeBridge);
+  const script = (attrs: Element["attrs"], text: string): Element => {
+    const element: Element = { tagName: "script", nodeName: "script", namespaceURI: head.namespaceURI, attrs, childNodes: [], parentNode: head };
+    element.childNodes.push({ nodeName: "#text", value: text, parentNode: element });
+    return element;
+  };
+  // Blocks follow the bridge and precede authored content, so every authored script can read them.
+  head.childNodes.unshift(script([{ name: "data-aiqsa-artifact-bridge", value: ARTIFACT_BRIDGE_VERSION }], artifactRuntimeBridge(site)),
+    ...(validation ? [] : blocks.map(file => script([{ name: "type", value: "application/octet-stream" }, { name: "data-aiqsa-file", value: file.path }],
+      file.base64 ?? bundleFileBytes(file).toString("base64")))));
   head.childNodes.unshift({ tagName: "meta", nodeName: "meta", namespaceURI: head.namespaceURI,
     attrs: [{ name: "http-equiv", value: "Content-Security-Policy" }, { name: "content", value: artifactContentSecurityPolicy("meta") }],
     childNodes: [], parentNode: head });
   head.childNodes.unshift({ tagName: "meta", nodeName: "meta", namespaceURI: head.namespaceURI,
     attrs: [{ name: "charset", value: "utf-8" }], childNodes: [], parentNode: head });
+  if (validation) {
+    if (Buffer.byteLength(serialize(document)) + blockBytes > ARTIFACT_MAX_RENDER_BYTES) invalid("artifact_bundle_limit_exceeded", from, "Reduce the rendered artifact size.");
+    return null;
+  }
   const body = Buffer.from(serialize(document), "utf8");
   if (body.byteLength > ARTIFACT_MAX_RENDER_BYTES) invalid("artifact_bundle_limit_exceeded", from, "Reduce the rendered artifact size.");
   return { body, contentType: "text/html; charset=utf-8", fileName: "index.html" };

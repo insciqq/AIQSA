@@ -25,8 +25,23 @@ export function productionViewerPolicies(): string[] {
 
 /** Renders an entry document (and optional extra files) through the real renderer. */
 export function renderArtifactDocument(html: string, files: readonly ArtifactBundleFile[] = []): string {
-  return renderArtifactBundle({ entrypoint: "index.html", files: [{ mimeType: "text/html", path: "index.html", text: html }, ...files],
-    kind: "html", version: 2 }).body.toString("utf8");
+  return renderArtifactPage([{ mimeType: "text/html", path: "index.html", text: html }, ...files]);
+}
+
+/** Renders one page (default: the `index.html` entrypoint) of a multi-file bundle. */
+export function renderArtifactPage(files: readonly ArtifactBundleFile[], page?: string): string {
+  return renderArtifactBundle({ entrypoint: "index.html", files, kind: "html", version: 2 }, false, page).body.toString("utf8");
+}
+
+/** 0.2 s of 8 kHz mono 8-bit PCM: a WAV file every engine decodes. */
+export function syntheticWav(): Buffer {
+  const samples = 1600;
+  const bytes = Buffer.alloc(44 + samples);
+  bytes.write("RIFF", 0, "ascii"); bytes.writeUInt32LE(36 + samples, 4); bytes.write("WAVEfmt ", 8, "ascii");
+  bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22); bytes.writeUInt32LE(8000, 24);
+  bytes.writeUInt32LE(8000, 28); bytes.writeUInt16LE(1, 32); bytes.writeUInt16LE(8, 34); bytes.write("data", 36, "ascii"); bytes.writeUInt32LE(samples, 40);
+  for (let index = 0; index < samples; index++) bytes[44 + index] = 128 + Math.round(60 * Math.sin(index / 4));
+  return bytes;
 }
 
 /** Replaces the injected artifact meta policy; `null` removes it (positive controls only). */
