@@ -1199,5 +1199,7 @@
   "answer_review_step_refused",
   "answer_review_step_started",
   "answer_review_step_waiting",
-  "answer_review_time_limit"
+  "answer_review_time_limit",
+  "answer_problem_report_failed",
+  "answer_problem_report_prune_failed"
 ]
