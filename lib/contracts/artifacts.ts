@@ -180,8 +180,10 @@ export function decodeArtifactDetail(value: unknown): ArtifactDetail | null {
     ...(value.publicationsNextCursor !== undefined ? { publicationsNextCursor: publications.nextCursor } : {}) };
 }
 
+// The only distinction the server draws between files: these are UTF-8 text
+// (validated, editable, possible entrypoints); every other type is opaque bytes.
 const TEXT_MIME_TYPES = new Set([
-  "text/css", "text/html", "text/javascript", "text/markdown", "text/plain",
+  "text/css", "text/csv", "text/html", "text/javascript", "text/markdown", "text/plain",
   "application/javascript", "application/json", "application/x-javascript",
   "image/svg+xml"
 ]);
@@ -201,6 +203,9 @@ export type ArtifactTextFile = Readonly<{
 }>;
 
 export type ArtifactEditPatch = Readonly<{ path: string; old_string: string; new_string: string; replace_all?: boolean }>;
+/** An edit of a text file whose bytes arrive by reference; the server applies it
+ * after resolving and verifying those bytes, in the order of `editIndex`. */
+export type ArtifactReferenceEdit = ArtifactEditPatch & Readonly<{ editIndex: number }>;
 export type ArtifactOperation = Readonly<{
   baseVersionId?: string;
   entrypoint?: string | null;
@@ -226,6 +231,8 @@ export type NormalizedArtifactOperation = Readonly<{
   files: readonly NormalizedArtifactFile[];
   intent: "create" | "update";
   kind: ArtifactKind;
+  /** Edits of by-reference text files in `files`, deferred until their bytes are resolved. */
+  referenceEdits?: readonly ArtifactReferenceEdit[];
   title: string;
   totalBytes: number;
 }>;
@@ -334,10 +341,19 @@ function normalizeFile(value: unknown): NormalizedArtifactFile {
     if (byteSize > ARTIFACT_LIMITS.maxTextFileBytes) throw new ArtifactContractError("artifact_text_limit_exceeded");
     return { byteSize, mimeType, path, text };
   }
-  if (!IMAGE_MIME_TYPES.has(mimeType) || !validId(assetRef)) {
-    throw new ArtifactContractError("artifact_asset_ref_invalid");
-  }
+  // A reference may name a file of any type; the server proves its owner,
+  // declared type, size and checksum before copying the bytes.
+  if (!validId(assetRef)) throw new ArtifactContractError("artifact_asset_ref_invalid", path);
   return { assetRef, byteSize: 0, mimeType, path };
+}
+
+/** Exact old_string replacement shared by inline and by-reference text edits. */
+export function applyArtifactTextEdit(text: string, edit: Pick<ArtifactEditPatch, "old_string" | "new_string" | "replace_all">, path: string, editIndex: number): string {
+  let count = 0;
+  for (let index = text.indexOf(edit.old_string); index !== -1; index = text.indexOf(edit.old_string, index + edit.old_string.length)) count++;
+  if (!count) throw new ArtifactContractError("artifact_edit_not_found", path, undefined, editIndex);
+  if (count !== 1 && edit.replace_all !== true) throw new ArtifactContractError("artifact_edit_ambiguous", path, count, editIndex);
+  return edit.replace_all === true ? text.split(edit.old_string).join(edit.new_string) : text.replace(edit.old_string, () => edit.new_string);
 }
 
 export function normalizeArtifactOperation(value: unknown, base?: Pick<NormalizedArtifactOperation, "kind" | "title" | "entrypoint" | "files">): NormalizedArtifactOperation {
@@ -345,7 +361,7 @@ export function normalizeArtifactOperation(value: unknown, base?: Pick<Normalize
   if (value.intent !== "create" && value.intent !== "update") throw new ArtifactContractError("artifact_operation_invalid");
   if (value.intent === "update" && !validId(value.baseVersionId)) throw new ArtifactContractError("artifact_base_version_invalid");
   if (value.intent === "create" && value.baseVersionId !== undefined) throw new ArtifactContractError("artifact_base_version_invalid");
-  if (value.intent === "create" && (value.edits !== undefined || value.delete_paths !== undefined)) throw new ArtifactContractError("artifact_operation_invalid");
+  if (value.intent === "create" && value.delete_paths !== undefined) throw new ArtifactContractError("artifact_operation_invalid");
   const kind = normalizedKind(value.kind ?? (value.intent === "update" ? base?.kind : undefined));
   const title = cleanString(value.title ?? (value.intent === "update" ? base?.title : undefined), ARTIFACT_LIMITS.maxTitleBytes);
   if (!title?.trim()) throw new ArtifactContractError("artifact_title_invalid");
@@ -365,19 +381,26 @@ export function normalizeArtifactOperation(value: unknown, base?: Pick<Normalize
   const deletions = (value.delete_paths as unknown[] | undefined) ?? [];
   if (value.intent === "update" && !supplied.length && !edits.length && !deletions.length) throw new ArtifactContractError("artifact_operation_invalid");
   const merged = new Map((value.intent === "update" ? base?.files ?? [] : []).map(file => [file.path, file]));
+  const suppliedByPath = new Map(supplied.map(file => [file.path, file]));
+  const referenceEdits: Array<{ edit: ArtifactReferenceEdit; target: NormalizedArtifactFile }> = [];
   for (const [editIndex, edit] of edits.entries()) {
     const path = isRecord(edit) ? normalizedArtifactPath(edit.path) : null;
     if (!isRecord(edit) || Object.keys(edit).some(key => !["path", "old_string", "new_string", "replace_all"].includes(key)) ||
       typeof edit.old_string !== "string" || !edit.old_string || typeof edit.new_string !== "string" || edit.old_string === edit.new_string ||
       edit.replace_all !== undefined && typeof edit.replace_all !== "boolean") throw new ArtifactContractError("artifact_edit_invalid", path ?? undefined, undefined, editIndex);
     if (utf8Bytes(edit.old_string) > ARTIFACT_LIMITS.maxTextFileBytes || utf8Bytes(edit.new_string) > ARTIFACT_LIMITS.maxTextFileBytes) throw new ArtifactContractError("artifact_edit_limit_exceeded", path ?? undefined, undefined, editIndex);
-    const file = path ? merged.get(path) : undefined;
-    if (!path || !file || file.text === undefined) throw new ArtifactContractError("artifact_edit_path_invalid", path ?? undefined, undefined, editIndex);
-    const count = file.text.split(edit.old_string).length - 1;
-    if (!count) throw new ArtifactContractError("artifact_edit_not_found", path, undefined, editIndex);
-    if (count !== 1 && edit.replace_all !== true) throw new ArtifactContractError("artifact_edit_ambiguous", path, count, editIndex);
-    const text = edit.replace_all === true ? file.text.split(edit.old_string).join(edit.new_string) : file.text.replace(edit.old_string, () => edit.new_string as string);
-    merged.set(path, normalizeFile({ path, mimeType: file.mimeType, text }));
+    // A file supplied in this call is the target before any base file. Only
+    // its by-reference text can be edited: inline text is written in full.
+    const suppliedFile = path ? suppliedByPath.get(path) : undefined;
+    const file = suppliedFile ?? (path ? merged.get(path) : undefined);
+    if (!path || !file) throw new ArtifactContractError("artifact_edit_path_invalid", path ?? undefined, undefined, editIndex);
+    const patch = { path, old_string: edit.old_string, new_string: edit.new_string, ...(edit.replace_all === true ? { replace_all: true } : {}) };
+    if (file.assetRef !== undefined && TEXT_MIME_TYPES.has(file.mimeType)) {
+      referenceEdits.push({ target: file, edit: { ...patch, editIndex } });
+      continue;
+    }
+    if (suppliedFile || file.text === undefined) throw new ArtifactContractError("artifact_edit_path_invalid", path, undefined, editIndex);
+    merged.set(path, normalizeFile({ path, mimeType: file.mimeType, text: applyArtifactTextEdit(file.text, patch, path, editIndex) }));
   }
   const requestedEntrypoint = value.entrypoint === undefined && value.intent === "update" ? base?.entrypoint : value.entrypoint;
   for (const candidate of deletions) {
@@ -410,13 +433,17 @@ export function normalizeArtifactOperation(value: unknown, base?: Pick<Normalize
   } else if (entrypoint !== null) {
     throw new ArtifactContractError("artifact_entrypoint_invalid");
   }
-  if (kind === "image" && files.some((file) => !file.assetRef)) throw new ArtifactContractError("artifact_mime_invalid");
+  if (kind === "image" && files.some((file) => !file.assetRef || !IMAGE_MIME_TYPES.has(file.mimeType))) throw new ArtifactContractError("artifact_mime_invalid");
+  // A deleted target drops its edits, as for inline text.
+  const finalFiles = new Map(files.map(file => [file.path, file]));
+  const deferred = referenceEdits.filter(({ edit, target }) => finalFiles.get(edit.path) === target).map(({ edit }) => edit);
   return {
     ...(value.baseVersionId !== undefined ? { baseVersionId: String(value.baseVersionId) } : {}),
     entrypoint,
     files,
     intent: value.intent,
     kind,
+    ...(deferred.length ? { referenceEdits: deferred } : {}),
     title: title.trim(),
     totalBytes
   };
@@ -443,4 +470,14 @@ export function artifactContentSecurityPolicy(delivery: "header" | "meta" = "hea
 
 export function isArtifactTextMime(mimeType: string): boolean {
   return TEXT_MIME_TYPES.has(mimeType.toLowerCase());
+}
+
+/** Raster types an image-kind artifact can show directly. */
+export function isArtifactImageMime(mimeType: string): boolean {
+  return IMAGE_MIME_TYPES.has(mimeType.toLowerCase());
+}
+
+/** The bare lowercase type/subtype of a stored MIME value, or null when it has no valid one. */
+export function artifactMimeEssence(value: string): string | null {
+  return normalizedMime(value.split(";")[0]!.trim());
 }

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
-import type { ArtifactOperation, ArtifactReference } from "@/lib/contracts/artifacts";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { ARTIFACT_LIMITS, type ArtifactOperation, type ArtifactReference } from "@/lib/contracts/artifacts";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
 import { textMessageContent } from "@/lib/domain/content";
 import { prisma } from "../prisma";
@@ -442,5 +442,236 @@ describe("artifact blob/render economy and frozen edits", () => {
       });
       expect(result.status).toBe("error"); expect(JSON.stringify(result)).not.toContain("Large");
     } finally { await f.cleanup(); }
+  });
+});
+
+describe("artifact files supplied by reference in PostgreSQL", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+  const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+  const MIB = 1024 * 1024;
+  type Fixture = Awaited<ReturnType<typeof fixture>>;
+  type ErrorValue = { error: string; path?: string; hint: string; excerpt?: string };
+
+  /** A chat attachment row with its stored object; `stored` lets a test corrupt the bytes. */
+  async function attach(f: Fixture, input: { bytes: Buffer; mimeType: string; fileName?: string; chatId?: string | null; userId?: string;
+    status?: "ready" | "processing" | "failed"; checksum?: string | null; byteSize?: number; stored?: Buffer; producerModelRunId?: string }) {
+    const owner = input.userId ?? f.owner.id;
+    const storageKey = `source/${owner}/${randomUUID()}`;
+    const row = await prisma.attachment.create({ data: { userId: owner, chatId: input.chatId === undefined ? f.chat.id : input.chatId,
+      fileName: input.fileName ?? "synthetic.bin", mimeType: input.mimeType, kind: input.mimeType === "text/html" ? "document" : "file",
+      status: input.status ?? "ready", ...(input.status === "failed" ? { processingErrorCode: "parser_timeout" } : {}),
+      byteSize: input.byteSize ?? input.bytes.length, checksum: input.checksum === undefined ? sha(input.bytes) : input.checksum, storageKey, metadata: {},
+      ...(input.producerModelRunId ? { producerModelRunId: input.producerModelRunId, origin: "WORKSPACE_OUTPUT" as const } : {}) } });
+    f.objects.set(storageKey, { body: input.stored ?? input.bytes, contentType: input.mimeType, storageKey });
+    return row;
+  }
+
+  /** One accepted run of the chat; each call is a separately persisted create_artifact tool call. */
+  async function acceptedRun(f: Fixture) {
+    const message = await prisma.message.create({ data: { chatId: f.chat.id, role: "user", content: textMessageContent("Make an artifact from my file") } });
+    const run = await prisma.modelRun.create({ data: { chatId: f.chat.id, userId: f.owner.id, userMessageId: message.id,
+      provider: "fake", modelId: "fixture", status: "in_progress", normalizedRequest: {} } });
+    let round = 0;
+    async function call(args: Record<string, unknown>, allowed: readonly string[] = [], reference?: ArtifactReference) {
+      round += 1;
+      const persisted = await prisma.modelRunToolCall.create({ data: { modelRunId: run.id, roundIndex: round,
+        ordinal: 0, providerCallId: `reference-${round}`, toolName: "create_artifact", arguments: {} } });
+      const request = { ...artifactReadRequest(f.chat.id, reference), imageReferences: allowed.map(attachmentId => ({
+        attachmentId, messageId: message.id, fileName: "synthetic.bin", origin: "upload" as const })) };
+      return f.service.execute({ id: `reference-${round}`, name: "create_artifact", arguments: args },
+        { userId: f.owner.id, runId: run.id, persistedToolCallId: persisted.id, request });
+    }
+    return { message, run, call };
+  }
+
+  async function cleanupRuns(f: Fixture) {
+    await prisma.attachment.deleteMany({ where: { producerModelRunId: { not: null }, userId: f.owner.id } });
+    await prisma.modelRun.deleteMany({ where: { userId: f.owner.id } });
+  }
+
+  const errorOf = (result: Awaited<ReturnType<Fixture["service"]["execute"]>>) => {
+    expect(result.status).toBe("error");
+    return (result.content[0] as { value: ErrorValue }).value;
+  };
+  const storedBundle = (f: Fixture, bundleStorageKey: string) => JSON.parse(f.objects.get(bundleStorageKey)!.body.toString()) as { files: Array<Record<string, unknown>> };
+
+  it("copies a referenced page larger than written text as a blob and renders, reads, lists and copies it as text", async () => {
+    vi.stubEnv("AIQSA_AUTH_SESSION_SECRET", "artifact-reference-read-secret");
+    const f = await fixture();
+    try {
+      const run = await acceptedRun(f);
+      const payload = Buffer.alloc(450 * 1024, 7).toString("base64");
+      const html = `<!doctype html><html><head><title>Scene</title></head><body><h1>SYNTHETIC_SCENE</h1>` +
+        `<script id="data" type="application/octet-stream">${payload}</script><script>document.title = "ready";</script></body></html>`;
+      const bytes = Buffer.from(html);
+      expect(bytes.length).toBeGreaterThan(ARTIFACT_LIMITS.maxTextFileBytes);
+      // Text extraction is still running: the stored bytes and checksum are what counts.
+      const page = await attach(f, { bytes, mimeType: "text/html", fileName: "scene.html", status: "processing" });
+      const created = await run.call({ intent: "create", kind: "html", title: "Scene", entrypoint: "index.html",
+        files: [{ path: "index.html", mimeType: "text/html", asset_ref: page.id }] }, [page.id]);
+      expect(created.status).toBe("complete");
+      const version = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: run.run.id } });
+      expect(storedBundle(f, version.bundleStorageKey).files).toEqual([{ path: "index.html", mimeType: "text/html", blob: sha(bytes), byteSize: bytes.length }]);
+      expect(version.byteSize).toBeLessThan(1024);
+      expect(await prisma.artifactBlob.findMany({ where: { ownerUserId: f.owner.id }, select: { sha256: true, byteSize: true } }))
+        .toEqual([{ sha256: sha(bytes), byteSize: bytes.length }]);
+      const projection = await f.service.getArtifactVersion({ ownerUserId: f.owner.id, artifactId: version.artifactId });
+      expect(projection?.manifest.files).toEqual([{ path: "index.html", mimeType: "text/html", byteSize: bytes.length, group: "authored" }]);
+      expect(JSON.stringify(projection)).not.toContain(page.id);
+      const privateInput = { ownerUserId: f.owner.id, artifactId: version.artifactId };
+      expect((await f.service.getPrivateBundle(privateInput))!.body.toString()).toContain(`SYNTHETIC_SCENE</h1><script id="data" type="application/octet-stream">${payload}`);
+      const read = await f.service.execute({ id: "read", name: "read_artifact", arguments: { artifact_id: version.artifactId, paths: ["index.html"] } },
+        { userId: f.owner.id, runId: "accepted-run", request: artifactReadRequest(f.chat.id, { artifactId: version.artifactId, versionId: version.id }) });
+      const first = (read.content[0] as { value: { files: Array<{ path: string; text?: string; binary?: true; offset: number }>; truncated: boolean; next_cursor?: string } }).value;
+      expect(first.files[0]).toMatchObject({ path: "index.html", offset: 0 });
+      expect(first.files[0]!.text!.startsWith("<!doctype html><html><head><title>Scene</title>")).toBe(true);
+      expect(first.files[0]!.binary).toBeUndefined();
+      expect(first).toMatchObject({ truncated: true, next_cursor: expect.any(String) });
+      const next = await f.service.execute({ id: "read-next", name: "read_artifact", arguments: { artifact_id: version.artifactId, paths: ["index.html"], cursor: first.next_cursor } },
+        { userId: f.owner.id, runId: "accepted-run", request: artifactReadRequest(f.chat.id, { artifactId: version.artifactId, versionId: version.id }) });
+      expect((next.content[0] as { value: { files: Array<{ offset: number; text: string }> } }).value.files[0]!.offset).toBe(first.files[0]!.text!.length);
+      const source = await f.service.source({ ownerUserId: f.owner.id, artifactId: version.artifactId, versionId: version.id });
+      expect(source?.files).toEqual([{ path: "index.html", mimeType: "text/html", group: "authored", byteSize: bytes.length, text: html }]);
+      const context = await f.service.contextForChat({ ownerUserId: f.owner.id, chatId: f.chat.id });
+      expect(context[0]?.files).toEqual([{ path: "index.html", mimeType: "text/html", bytes: bytes.length }]);
+      // The artifact keeps its own copy: the attachment can disappear.
+      await prisma.attachment.delete({ where: { id: page.id } }); f.objects.delete(page.storageKey);
+      const copy = await f.service.duplicate({ ownerUserId: f.owner.id, artifactId: version.artifactId });
+      expect((await f.service.getPrivateBundle({ ownerUserId: f.owner.id, artifactId: copy.id }))!.body.toString()).toContain("SYNTHETIC_SCENE");
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(1);
+    } finally { await cleanupRuns(f); await f.cleanup(); }
+  });
+
+  it("copies binary files of any type, including the run's own Workspace output, and deduplicates them per owner", async () => {
+    const f = await fixture();
+    try {
+      const run = await acceptedRun(f);
+      const gif = Buffer.from("GIF89a synthetic animation");
+      const pdf = Buffer.from("%PDF-1.7 synthetic document");
+      const mp4 = Buffer.from("\u0000\u0000\u0000\u0018ftypisom synthetic video");
+      const animation = await attach(f, { bytes: gif, mimeType: "image/gif", fileName: "loop.gif", status: "failed" });
+      const document = await attach(f, { bytes: pdf, mimeType: "application/pdf", fileName: "report.pdf" });
+      // Produced by this run and not listed as a conversation file.
+      const video = await attach(f, { bytes: mp4, mimeType: "video/mp4", fileName: "clip.mp4", producerModelRunId: run.run.id });
+      const files = [{ path: "index.html", mimeType: "text/html", text: '<img alt="Loop" src="loop.gif"><p>Files</p>' },
+        { path: "loop.gif", mimeType: "image/gif", asset_ref: animation.id }, { path: "report.pdf", mimeType: "application/pdf", asset_ref: document.id },
+        { path: "media/clip.mp4", mimeType: "video/mp4", asset_ref: video.id }];
+      expect((await run.call({ intent: "create", kind: "html", title: "Files", entrypoint: "index.html", files }, [animation.id, document.id])).status).toBe("complete");
+      const version = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: run.run.id } });
+      expect(storedBundle(f, version.bundleStorageKey).files.slice(1)).toEqual([
+        { path: "loop.gif", mimeType: "image/gif", blob: sha(gif), byteSize: gif.length },
+        { path: "report.pdf", mimeType: "application/pdf", blob: sha(pdf), byteSize: pdf.length },
+        { path: "media/clip.mp4", mimeType: "video/mp4", blob: sha(mp4), byteSize: mp4.length }
+      ]);
+      expect((await f.service.getPrivateBundle({ ownerUserId: f.owner.id, artifactId: version.artifactId }))!.body.toString())
+        .toContain(`data:image/gif;base64,${gif.toString("base64")}`);
+      expect((await run.call({ intent: "create", kind: "html", title: "Again", entrypoint: "index.html", files: files.slice(0, 2) }, [animation.id])).status).toBe("complete");
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(3);
+      expect(await prisma.artifactVersionBlob.count({ where: { blob: { ownerUserId: f.owner.id } } })).toBe(4);
+    } finally { await cleanupRuns(f); await f.cleanup(); }
+  });
+
+  it("refuses files outside the run's authority and unverifiable files without writing anything", async () => {
+    const f = await fixture();
+    const stranger = await prisma.user.create({ data: { id: `artifact-test-${randomUUID()}`, displayName: "Stranger", status: "active" } });
+    const project = await prisma.project.create({ data: { name: "Synthetic artifact Project", createdByUserId: f.owner.id,
+      createdByDisplayName: "Artifact test", grants: { create: { userId: f.owner.id, role: "OWNER" } } } });
+    try {
+      const run = await acceptedRun(f);
+      const html = Buffer.from("<p>synthetic</p>");
+      const strangerChat = await prisma.chat.create({ data: { userId: stranger.id, title: "Stranger chat" } });
+      const foreign = await attach(f, { bytes: html, mimeType: "text/html", userId: stranger.id, chatId: strangerChat.id });
+      const otherChat = await prisma.chat.create({ data: { userId: f.owner.id, title: "Other chat" } });
+      const elsewhere = await attach(f, { bytes: html, mimeType: "text/html", chatId: otherChat.id });
+      const projectKey = `source/${f.owner.id}/${randomUUID()}`;
+      f.objects.set(projectKey, { body: html, contentType: "text/html", storageKey: projectKey });
+      const projectFile = await prisma.attachment.create({ data: { projectId: project.id, uploaderUserId: f.owner.id, uploaderDisplayName: "Artifact test",
+        fileName: "project.html", mimeType: "text/html", kind: "document", status: "ready", byteSize: html.length, checksum: sha(html), storageKey: projectKey, metadata: {} } });
+      const otherMessage = await prisma.message.create({ data: { chatId: f.chat.id, role: "user", content: textMessageContent("Earlier request") } });
+      const otherRun = await prisma.modelRun.create({ data: { chatId: f.chat.id, userId: f.owner.id, userMessageId: otherMessage.id,
+        provider: "fake", modelId: "fixture", status: "complete", normalizedRequest: {} } });
+      const otherOutput = await attach(f, { bytes: html, mimeType: "text/html", producerModelRunId: otherRun.id });
+      const pdf = Buffer.from("%PDF-1.7 synthetic");
+      const mismatched = await attach(f, { bytes: pdf, mimeType: "application/pdf" });
+      const corruptedBytes = Buffer.from(pdf); corruptedBytes[0] = corruptedBytes[0]! ^ 1;
+      const corrupted = await attach(f, { bytes: pdf, mimeType: "application/pdf", stored: corruptedBytes });
+      const unchecked = await attach(f, { bytes: pdf, mimeType: "application/pdf", checksum: null });
+      const latin1 = await attach(f, { bytes: Buffer.from([0x3c, 0x70, 0x3e, 0xe9, 0x3c, 0x2f, 0x70, 0x3e]), mimeType: "text/html" });
+      const control = await attach(f, { bytes: Buffer.from("<p>bell\u0007</p>"), mimeType: "text/html" });
+      const oversized = await attach(f, { bytes: pdf, mimeType: "application/pdf", byteSize: ARTIFACT_LIMITS.maxAssetBytes + 1 });
+      const large = await Promise.all([1, 2].map(() => attach(f, { bytes: pdf, mimeType: "application/pdf", byteSize: 20 * MIB })));
+      const entry = { path: "index.html", mimeType: "text/html", text: "<p>Entry</p>" };
+      const refer = (id: string, mimeType: string, path = "file.bin") => [entry, { path, mimeType, asset_ref: id }];
+      const cases: Array<[string, unknown[], readonly string[], string, string?]> = [
+        ["another owner's file", refer(foreign.id, "text/html", "page.html"), [foreign.id], "artifact_asset_unavailable"],
+        ["another chat's file, even when listed", refer(elsewhere.id, "text/html", "page.html"), [elsewhere.id], "artifact_asset_unavailable"],
+        ["another chat's file", refer(elsewhere.id, "text/html", "page.html"), [], "artifact_asset_unavailable"],
+        ["a Project file", refer(projectFile.id, "text/html", "page.html"), [projectFile.id], "artifact_asset_unavailable"],
+        ["another run's output", refer(otherOutput.id, "text/html", "page.html"), [], "artifact_asset_unavailable"],
+        ["a different declared type", refer(mismatched.id, "text/html", "page.html"), [mismatched.id], "artifact_asset_mime_mismatch", '"application/pdf"'],
+        ["corrupted stored bytes", refer(corrupted.id, "application/pdf"), [corrupted.id], "artifact_asset_invalid"],
+        ["a file without a checksum", refer(unchecked.id, "application/pdf"), [unchecked.id], "artifact_asset_checksum_missing"],
+        ["text that is not UTF-8", refer(latin1.id, "text/html", "page.html"), [latin1.id], "artifact_text_encoding_invalid"],
+        ["text with control characters", refer(control.id, "text/html", "page.html"), [control.id], "artifact_text_invalid", "U+0007"],
+        ["a file over 24 MiB", refer(oversized.id, "application/pdf"), [oversized.id], "artifact_asset_too_large", "24.0 MiB"],
+        ["files over 32 MiB together", [entry, ...large.map((row, index) => ({ path: `part-${index}.pdf`, mimeType: "application/pdf", asset_ref: row.id }))],
+          large.map(row => row.id), "artifact_bundle_limit_exceeded"]
+      ];
+      for (const [name, files, allowed, code, hint] of cases) {
+        const value = errorOf(await run.call({ intent: "create", kind: "html", title: name, entrypoint: "index.html", files }, allowed));
+        expect(value, name).toMatchObject({ error: code, path: expect.any(String), ...(hint ? { hint: expect.stringContaining(hint) } : {}) });
+        if (code === "artifact_asset_unavailable") expect(value.hint, name).not.toMatch(/text\/html|synthetic/u);
+      }
+      expect(await prisma.artifactVersion.count({ where: { sourceModelRunId: run.run.id } })).toBe(0);
+      expect(await prisma.artifact.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+      expect([...f.objects.keys()].filter(key => key.startsWith("artifact"))).toEqual([]);
+    } finally {
+      await cleanupRuns(f);
+      await prisma.project.deleteMany({ where: { id: project.id } });
+      await prisma.user.deleteMany({ where: { id: stranger.id } });
+      await f.cleanup();
+    }
+  });
+
+  it("edits a referenced page at creation and stores every later edit of it as a new blob", async () => {
+    vi.stubEnv("AIQSA_AUTH_SESSION_SECRET", "artifact-reference-read-secret");
+    const f = await fixture();
+    try {
+      const run = await acceptedRun(f);
+      const refresh = '<meta http-equiv="refresh" content="5">';
+      const html = `<!doctype html><html><head>${refresh}<title>Original title</title></head><body><h1>Scene</h1>${"<p>filler</p>".repeat(50_000)}</body></html>`;
+      const page = await attach(f, { bytes: Buffer.from(html), mimeType: "text/html", fileName: "scene.html", status: "failed" });
+      const create = { intent: "create", kind: "html", title: "Scene", entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", asset_ref: page.id }] };
+      const refused = errorOf(await run.call(create, [page.id]));
+      expect(refused).toMatchObject({ error: "artifact_element_unsupported", path: "index.html", excerpt: expect.stringContaining(refresh) });
+      expect(html).toContain(refused.excerpt);
+      expect((await run.call({ ...create, edits: [{ path: "index.html", old_string: refused.excerpt!.slice(refused.excerpt!.indexOf("<meta"), refused.excerpt!.indexOf("<meta") + refresh.length), new_string: "" }] }, [page.id])).status).toBe("complete");
+      const first = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: run.run.id } });
+      const firstText = html.replace(refresh, "");
+      expect(storedBundle(f, first.bundleStorageKey).files).toEqual([{ path: "index.html", mimeType: "text/html", blob: sha(Buffer.from(firstText)), byteSize: Buffer.byteLength(firstText) }]);
+      // Edited bytes no longer equal the attachment, so the manifest does not name it.
+      expect(JSON.stringify(first.manifest)).not.toContain(page.id);
+      const reference = { artifactId: first.artifactId, versionId: first.id };
+      expect((await run.call({ intent: "update", base_version_id: first.id, edits: [{ path: "index.html", old_string: "Original title", new_string: "Renamed title" }] }, [], reference)).status).toBe("complete");
+      const second = await prisma.artifactVersion.findFirstOrThrow({ where: { artifactId: first.artifactId, versionNumber: 2 } });
+      const secondText = firstText.replace("Original title", "Renamed title");
+      expect(storedBundle(f, second.bundleStorageKey).files).toEqual([{ path: "index.html", mimeType: "text/html", blob: sha(Buffer.from(secondText)), byteSize: Buffer.byteLength(secondText) }]);
+      expect(storedBundle(f, first.bundleStorageKey).files[0]).toMatchObject({ blob: sha(Buffer.from(firstText)) });
+      expect((await f.service.getPrivateBundle({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: first.id }))!.body.toString()).toContain("Original title");
+      expect((await f.service.getPrivateBundle({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: second.id }))!.body.toString()).toContain("Renamed title");
+      const read = await f.service.execute({ id: "read", name: "read_artifact", arguments: { artifact_id: first.artifactId, paths: ["index.html"] } },
+        { userId: f.owner.id, runId: "accepted-run", request: artifactReadRequest(f.chat.id, { artifactId: first.artifactId, versionId: second.id }) });
+      expect(JSON.stringify(read.content)).toContain("Renamed title");
+      // An unrelated change keeps the stored page as the same deduplicated blob.
+      expect((await run.call({ intent: "update", base_version_id: second.id, files: [{ path: "notes.txt", mimeType: "text/plain", text: "notes" }] }, [], { artifactId: first.artifactId, versionId: second.id })).status).toBe("complete");
+      const third = await prisma.artifactVersion.findFirstOrThrow({ where: { artifactId: first.artifactId, versionNumber: 3 } });
+      expect(storedBundle(f, third.bundleStorageKey).files).toEqual([
+        { path: "index.html", mimeType: "text/html", blob: sha(Buffer.from(secondText)), byteSize: Buffer.byteLength(secondText) },
+        { path: "notes.txt", mimeType: "text/plain", text: "notes" }
+      ]);
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(2);
+      expect(await prisma.artifactVersionBlob.count({ where: { version: { artifactId: first.artifactId } } })).toBe(3);
+    } finally { await cleanupRuns(f); await f.cleanup(); }
   });
 });
