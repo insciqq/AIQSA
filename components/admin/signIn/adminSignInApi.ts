@@ -267,6 +267,7 @@ export function adminSignInErrorMessage(code: string): string {
     sign_in_draft_not_configured: "Save the settings first.",
     sign_in_draft_not_tested: "Test the saved settings before activating them.",
     sign_in_encryption_unavailable: "Secret storage is unavailable. Check AIQSA_ENCRYPTION_KEY.",
+    sign_in_environment_unsupported: "This server's environment cannot run this method. The card says what it needs.",
     sign_in_method_unavailable: "This sign-in method is not available on this server.",
     sign_in_policy_conflict: "The sign-in switches changed elsewhere. The page was refreshed; try again.",
     sign_in_source_changed: "Activation needs confirmation.",

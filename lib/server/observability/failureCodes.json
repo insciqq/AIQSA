@@ -203,6 +203,7 @@
   "embedding_unavailable",
   "encryption_key",
   "encryption_unavailable",
+  "environment_unsupported",
   "evidence_invalid",
   "execution_outcome_unknown",
   "execution_unavailable",

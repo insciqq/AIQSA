@@ -3,6 +3,7 @@ import type {
   AuthSignInMethodConfig,
   AuthSignInMethodSecrets
 } from "@/lib/contracts/authSignInMethods";
+import type { AuthConfig } from "../config";
 
 /**
  * A tester's verdict on one draft. `code` is content-free (`SIGN_IN_OUTCOME_CODE_PATTERN`):
@@ -25,6 +26,12 @@ export type SignInMethodTestInput<M extends AuthSignInMethod> = {
  * configured in the admin panel.
  */
 export type SignInMethodServerDefinition<M extends AuthSignInMethod> = {
+  /**
+   * Whether this installation's environment can run the method at all (the trusted header
+   * needs trusted-proxy mode). While false, a test fails with `environment_unsupported` and
+   * activation is refused; the method's handler re-checks it on every request.
+   */
+  available?(config: Pick<AuthConfig, "clientIdentityMode">): boolean;
   /**
    * The source an identity of this method is bound to (OIDC issuer, LDAP server and base, SAML
    * IdP entity id), exactly as the method's handler passes it to settlement. Activating a

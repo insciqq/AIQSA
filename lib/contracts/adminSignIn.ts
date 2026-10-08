@@ -126,6 +126,7 @@ export type AdminSignInErrorCode =
   | "sign_in_draft_not_configured"
   | "sign_in_draft_not_tested"
   | "sign_in_encryption_unavailable"
+  | "sign_in_environment_unsupported"
   | "sign_in_method_unavailable"
   | "sign_in_policy_conflict"
   | "sign_in_source_changed"

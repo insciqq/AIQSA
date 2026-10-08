@@ -19,6 +19,7 @@ import {
   secondaryButtonClassName
 } from "./authFormStyles";
 import { SecondFactorStep } from "./SecondFactorStep";
+import { TrustedHeaderSignIn, type TrustedHeaderLoginProps } from "./TrustedHeaderSignIn";
 
 type AuthLoginProps = {
   inviteToken?: string;
@@ -33,6 +34,8 @@ type AuthLoginProps = {
   registrationEnabled?: boolean;
   resetToken?: string;
   sessionExpired?: boolean;
+  /** Present while the trusted proxy header can sign people in. */
+  trustedHeader?: TrustedHeaderLoginProps;
   verifyToken?: string;
 };
 
@@ -500,6 +503,7 @@ export function AuthLogin({
   registrationEnabled = true,
   resetToken,
   sessionExpired,
+  trustedHeader,
   verifyToken
 }: AuthLoginProps) {
   const initialFeedback = initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider);
@@ -1038,6 +1042,9 @@ export function AuthLogin({
                   Choose another Yandex account to try signing in again.
                 </p>
               </div>
+            ) : null}
+            {passwordMode && trustedHeader ? (
+              <TrustedHeaderSignIn disabled={submitting} nextPath={nextPath} outcome={trustedHeader.outcome} />
             ) : null}
 
           {passwordSignInOff ? (

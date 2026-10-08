@@ -31,6 +31,7 @@ export type SignInSettingsFailureCode =
   | "active_conflict"
   | "draft_conflict"
   | "encryption_unavailable"
+  | "environment_unsupported"
   | "invalid_configuration"
   | "invalid_state"
   | "lockout_risk"
