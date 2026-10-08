@@ -1543,6 +1543,22 @@ describe("Workspace coordinator export settlement", () => {
     expect(records).toEqual([expect.objectContaining({ work_stage: step, outcome: "degraded", code: "workspace_session_lost", action: "retry" })]);
   });
 
+  it("keeps a second loss outside the confirming lookup unproven and retryable", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockRejectedValue(new WorkspaceRuntimeError("workspace_session_lost"));
+    const markLost = vi.spyOn(value.repository, "markSessionLost");
+    const failed = vi.spyOn(value.repository, "markExportFailed");
+    const records = await exportRecords(() => expect(value.coordinator.finalize({ handoff: true, runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .resolves.toEqual({ code: "workspace_output_export_failed", retryable: true, status: "failed" }));
+    expect(value.runtime.collectOutputs).toHaveBeenCalledTimes(2);
+    expect(markLost).not.toHaveBeenCalled();
+    expect(failed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "workspace_output_export_failed" }));
+    expect(records.map((record) => [record.work_stage, record.outcome, record.code])).toEqual([
+      ["collect", "degraded", "workspace_session_lost"], ["collect", "failed", "workspace_output_export_failed"]
+    ]);
+  });
+
   it.each(["retry", "collect", "confirmation"] as const)("ends cleanly without a loss verdict when the lease is gone at the %s", async (moment) => {
     const value = fixture();
     value.setRuntimeSandboxId("runtime_1");
