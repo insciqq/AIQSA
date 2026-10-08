@@ -1,5 +1,7 @@
 export type ObservabilityContext = Readonly<{
   trace_id: string; run_id?: string; job_id?: string; tool_call_id?: string; execution_index?: number;
+  /** The internal id of the user a run or job row names; never a counter dimension. */
+  user_id?: string;
 }>;
 export type ProcessRole = "app" | "memory_coordinator" | "memory_search" | "knowledge_search" | "workspace_runner" | "maintenance" | "bootstrap" | "storage_relay";
 export type Subsystem = "attachments" | "pdf" | "knowledge" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "knowledge_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry" | "dictation" | "answer_review";

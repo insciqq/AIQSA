@@ -60,12 +60,14 @@ function delta(input: Readonly<{
   };
 }
 
-function incident(input: Readonly<{ at: number; code?: string; runId?: string; traceId?: string; level?: "error" | "fatal" }>): TelemetryIncidentInput {
+function incident(input: Readonly<{
+  at: number; code?: string; runId?: string; traceId?: string; userId?: string; fingerprint?: string; level?: "error" | "fatal";
+}>): TelemetryIncidentInput {
   return {
     occurredAt: new Date(input.at), role: "app", event: "provider_operation", level: input.level ?? "error",
     appVersion: VERSION, instanceId: "a".repeat(32), code: input.code ?? "provider_http_dns_failed", subsystem: null,
-    connectionId: CONNECTION, runId: input.runId ?? null, traceId: input.traceId ?? null,
-    details: { httpStatus: 401, stage: "answer" }
+    connectionId: CONNECTION, runId: input.runId ?? null, traceId: input.traceId ?? null, userId: input.userId ?? null,
+    details: { httpStatus: 401, stage: "answer", ...(input.fingerprint ? { error_fingerprint: input.fingerprint } : {}) }
   };
 }
 
@@ -182,6 +184,63 @@ describe("Prisma telemetry store", () => {
       .toHaveLength(1);
     expect((await store.readIncidents({ connectionIds: [CONNECTION], levels: ["fatal"],
       from: new Date(base + 3_000), to: new Date(base + 3_001) })).items).toHaveLength(1);
+  });
+
+  it("keeps each incident's user, filters by it and counts distinct users and runs per fingerprint and key", async () => {
+    const base = BUCKET.getTime() + 10 * 60_000;
+    const [storm, single] = [randomBytes(6).toString("hex"), randomBytes(6).toString("hex")];
+    const users = Array.from({ length: 3 }, () => randomUUID());
+    await store.write({
+      counters: [],
+      incidents: [
+        // One fingerprint across three users and four runs, one of them without a user.
+        incident({ at: base, fingerprint: storm, userId: users[0], runId: "run-a" }),
+        incident({ at: base + 1_000, fingerprint: storm, userId: users[0], runId: "run-a" }),
+        incident({ at: base + 2_000, fingerprint: storm, userId: users[1], runId: "run-b" }),
+        incident({ at: base + 3_000, fingerprint: storm, userId: users[2], runId: "run-c" }),
+        incident({ at: base + 4_000, fingerprint: storm, runId: "run-d" }),
+        // Another one repeating for a single user, with no run.
+        incident({ at: base + 5_000, fingerprint: single, userId: users[0], code: "provider_http_server_error" }),
+        incident({ at: base + 6_000, fingerprint: single, userId: users[0], code: "provider_http_server_error" })
+      ],
+      lostObservations: 0
+    });
+    const own = await store.readIncidents({ userId: users[0]!, connectionIds: [CONNECTION] });
+    expect(own.items.map((item) => [item.userId, item.runId])).toEqual([
+      [users[0], null], [users[0], null], [users[0], "run-a"], [users[0], "run-a"]
+    ]);
+
+    const range = { from: new Date(base), to: new Date(base + 60_000) };
+    expect(await store.countIncidentReachByFingerprint({ ...range, fingerprints: [storm, single, "000000000000"] })).toEqual(new Map([
+      [storm, { incidents: 5, users: 3, runs: 4 }],
+      [single, { incidents: 2, users: 1, runs: 0 }]
+    ]));
+    expect(await store.countIncidentReachByFingerprint({ from: new Date(base + 3_000), to: range.to, fingerprints: [storm] }))
+      .toEqual(new Map([[storm, { incidents: 2, users: 1, runs: 2 }]]));
+    const keys = (await store.countIncidentReachByKey({ ...range, limit: 1_000 })).filter((item) => item.key.connectionId === CONNECTION);
+    expect(keys).toEqual([
+      { key: { event: "provider_operation", code: "provider_http_dns_failed", subsystem: null, connectionId: CONNECTION, fingerprint: storm },
+        incidents: 5, users: 3, runs: 4, firstAt: new Date(base), lastAt: new Date(base + 4_000) },
+      { key: { event: "provider_operation", code: "provider_http_server_error", subsystem: null, connectionId: CONNECTION, fingerprint: single },
+        incidents: 2, users: 1, runs: 0, firstAt: new Date(base + 5_000), lastAt: new Date(base + 6_000) }
+    ]);
+  });
+
+  it("clears in its retention pass the user ids of accounts that no longer exist", async () => {
+    const kept = await prisma.user.create({ data: { displayName: "Telemetry retention user", email: `${CONNECTION}@telemetry.example.test`,
+      role: "user", status: "active" } });
+    try {
+      const deleted = randomUUID();
+      const at = currentHour - 3 * HOUR_MS;
+      await store.write({ counters: [], incidents: [incident({ at, userId: kept.id }), incident({ at: at + 1_000, userId: deleted })],
+        lostObservations: 0 });
+      await store.deleteExpired(new Date(currentHour));
+      const rows = await prisma.$queryRaw<Array<{ userId: string | null }>>`
+        SELECT "userId" FROM "TelemetryIncident" WHERE "appVersion" = ${VERSION} ORDER BY "occurredAt"`;
+      expect(rows).toEqual([{ userId: kept.id }, { userId: null }]);
+    } finally {
+      await prisma.user.deleteMany({ where: { id: kept.id } });
+    }
   });
 
   it("deletes only rows past the retention cutoffs", async () => {
