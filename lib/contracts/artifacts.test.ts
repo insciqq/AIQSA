@@ -108,6 +108,11 @@ describe("artifact contract", () => {
     expect(meta).not.toContain("frame-ancestors");
     expect(meta).toContain("connect-src 'none'");
     expect(meta).toContain("child-src 'none'");
+    // Workers and media stay local: blob:/data: only, no network scheme.
+    for (const policy of [csp, meta]) {
+      expect(policy.split("; ").filter(directive => /^(?:worker|media|connect|child)-src /u.test(directive)).sort())
+        .toEqual(["child-src 'none'", "connect-src 'none'", "media-src blob: data:", "worker-src blob:"]);
+    }
   });
 
 });

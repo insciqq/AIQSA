@@ -24,7 +24,8 @@ export function describeArtifactTool(policy: ArtifactResourcePolicy = getArtifac
     "Write HTML, CSS and JavaScript. Prefer plain CSS; ready precompiled CSS is supported. React/JSX compilation, Tailwind Play CDN and browser/server Tailwind compilation are unavailable. " +
     "Return complete files with relative local paths, inline code, or supported external resources. " +
     `One call accepts at most ${ARTIFACT_LIMITS.maxFiles} files, ${ARTIFACT_LIMITS.maxEdits} edits and ${ARTIFACT_LIMITS.maxFiles} delete_paths. ` + resources +
-    "The viewer runs offline: no fetch/XHR/WebSocket/beacon or other network requests. Embed required data already obtained from conversation/tools as inline JSON. " +
+    "The viewer runs offline: fetch, XHR, WebSocket, EventSource, beacons, importScripts and other network requests fail, in workers too. " +
+    "Web Workers from blob: URLs and audio/video from blob: or data: URLs work. Embed required data already obtained from conversation/tools as inline JSON. " +
     "Forms may handle submit in JavaScript; never use action or formaction. HTTP(S)/mailto links and window.open ask the viewer to confirm the full address. " +
     "localStorage persists only in this viewer's browser (64 keys, 128 characters/key, 32 KiB/value, 256 KiB total, UTF-16); handle QuotaExceededError. sessionStorage is in-memory; cookies are unavailable. " +
     "Blob downloads, pointer lock, fullscreen and clipboard writes are available subject to browser/user activation rules. " +
