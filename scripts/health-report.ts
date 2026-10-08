@@ -1,6 +1,6 @@
 // Read-only, content-free health report from the persisted telemetry, run by
 // `./aiqsa.sh health` inside the app image:
-//   node --import tsx scripts/health-report.ts [--since 24h|7d|30d] [--json] [--run <reference>]
+//   node --import tsx scripts/health-report.ts [--since 24h|7d|14d|30d] [--json] [--run <reference>]
 // Exit codes: 0 report printed, 1 the database could not be read, 2 usage.
 import {
   collectHealthReport,

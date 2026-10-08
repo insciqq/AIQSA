@@ -28,7 +28,6 @@ function Incidents({ request, onChange }: Readonly<{ request: AdminHealthRunLook
       filters={filters}
       onChangeFilters={(next) => { onChange?.(next); setFilters(next); }}
       requestRunLookup={request}
-      retentionNote={false}
     />
   );
 }

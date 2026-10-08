@@ -5,6 +5,7 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 /** Counter retention (Persistence): an older previous period cannot be compared. */
 const COUNTER_RETENTION_MS = 30 * DAY_MS;
+const RANGE_DAYS: Readonly<Record<AdminHealthRange, number>> = { "24h": 1, "7d": 7, "14d": 14, "30d": 30 };
 
 export type AdminHealthWindow = Readonly<{
   range: AdminHealthRange;
@@ -16,14 +17,14 @@ export type AdminHealthWindow = Readonly<{
 }>;
 
 /**
- * Whole UTC buckets ending with the current one: 24 hours, or 7/30 days. The
+ * Whole UTC buckets ending with the current one: 24 hours, or 7/14/30 days. The
  * previous period is the same length right before; it is omitted once it
  * reaches past counter retention.
  */
 export function adminHealthWindow(range: AdminHealthRange, now: Date): AdminHealthWindow {
   const interval = range === "24h" ? "hour" : "day";
   const step = interval === "hour" ? HOUR_MS : DAY_MS;
-  const size = range === "24h" ? 24 : range === "7d" ? 7 : 30;
+  const size = range === "24h" ? 24 : RANGE_DAYS[range];
   const end = Math.floor(now.getTime() / step) * step + step;
   const start = end - size * step;
   const previousStart = start - size * step;
@@ -40,8 +41,7 @@ export function adminHealthWindow(range: AdminHealthRange, now: Date): AdminHeal
 
 /** Incidents look back exactly the range length from now. */
 export function adminHealthIncidentFrom(range: AdminHealthRange, now: Date): Date {
-  const length = range === "24h" ? DAY_MS : range === "7d" ? 7 * DAY_MS : 30 * DAY_MS;
-  return new Date(now.getTime() - length);
+  return new Date(now.getTime() - RANGE_DAYS[range] * DAY_MS);
 }
 
 /**
