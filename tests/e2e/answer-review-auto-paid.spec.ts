@@ -12,7 +12,10 @@
  *
  * The user chooses the review in the model picker (2 rounds), asks a short
  * synthetic trap question, closes the tab while the reviewer checks, and the
- * server finishes the session alone. Oracles are the persisted session, its
+ * server finishes the session alone. AIQSA_ANSWER_REVIEW_PAID_SCENARIO=revision
+ * instead asks to polish a sentence keeping a wrong percentage as written, so
+ * the reviewer has a substantive finding and the author's revision step (its
+ * decisions on the finding) runs with a real model; it requires one revision. Oracles are the persisted session, its
  * step turns and the one push attempt to an unresolvable endpoint (as in
  * answer-review-auto.spec.ts), then the reopened chat; never the models'
  * wording. The summary holds counts, codes, model ids, tokens and costs only,
@@ -59,6 +62,11 @@ const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"];
 const TRAP_QUESTION = "Answer in at most three short lines, one per question. (1) A bat and a ball cost $1.10 together, and " +
   "the bat costs $1.00 more than the ball: what does the ball cost? (2) How many letters r are in the word \"strawberry\"? " +
   "(3) Is 1001 a prime number?";
+/** The user's own figure is wrong (12 to 15 is 25%), and the author is asked to keep it. */
+const REVISION_QUESTION = "Polish the wording of this sentence for our team newsletter in one sentence, keeping every fact and " +
+  "number exactly as written: \"Our support team grew from 12 to 15 people this quarter, a 50% increase.\"";
+const scenario = paidEnv("AIQSA_ANSWER_REVIEW_PAID_SCENARIO") === "revision" ? "revision" : "trap";
+
 /** Cheap, fast tool-calling classes first. */
 const REVIEWER_PREFERENCES = [/gemini[^/]*flash/iu, /gpt[^/]*mini/iu, /flash/iu, /mini/iu];
 
@@ -111,14 +119,14 @@ function conciseSummary(summary: Readonly<Record<string, unknown>>): Record<stri
     entry.tokens += totals.totalTokens;
     entry.costUsd = Number((entry.costUsd + totals.costMicros / 1_000_000).toFixed(6));
   }
-  const { reviewSteps, revisionSteps, sessionRounds, stopReason, wallMsSendToEnd } = summary;
-  return { perModel, reviewSteps, revisionSteps, rounds: sessionRounds, stopReason, wallMsSendToEnd };
+  const { reviewSteps, revisionSteps, scenario: kind, sessionRounds, stopReason, wallMsSendToEnd } = summary;
+  return { perModel, reviewSteps, revisionSteps, rounds: sessionRounds, scenario: kind, stopReason, wallMsSendToEnd };
 }
 
 test("a real author and a real reviewer of another provider finish an automatic review with the tab closed, and notify once", async ({ browser, page }, testInfo) => {
   test.setTimeout(60 * 60_000);
   const baseURL = testInfo.project.use.baseURL;
-  const summary: Record<string, unknown> = { maxRounds: ROUNDS };
+  const summary: Record<string, unknown> = { maxRounds: ROUNDS, scenario };
   const endpoint = unresolvablePushEndpoint("answer-review-paid");
   const subscription = () => prisma.browserPushSubscription.findUnique({ where: { endpoint } });
   let chatId: string | null = null;
@@ -170,7 +178,7 @@ test("a real author and a real reviewer of another provider finish an automatic 
           `Review: ${escapeRegExp(reviewer.displayName)}, up to ${ROUNDS} rounds`, "u"));
 
         const composer = tab.getByRole("textbox", { name: "Message", exact: true });
-        await composer.fill(TRAP_QUESTION);
+        await composer.fill(scenario === "revision" ? REVISION_QUESTION : TRAP_QUESTION);
         await expect(tab.getByRole("button", { name: "Send message" })).toBeEnabled();
         await composer.press("Enter");
         const id = await activeChatId(tab);
@@ -211,6 +219,7 @@ test("a real author and a real reviewer of another provider finish an automatic 
       const revisions = await prisma.message.count({ where: { chatId: reviewedChatId, systemTurnKind: "answer_revision_request" } });
       Object.assign(summary, { reviewSteps: reviews, revisionSteps: revisions });
       expect(reviews, "at least one review step ran").toBeGreaterThanOrEqual(1);
+      if (scenario === "revision") expect(revisions, "the reviewer's finding was revised by the author").toBeGreaterThanOrEqual(1);
       const runs = await prisma.modelRun.findMany({ where: { chatId: reviewedChatId }, select: { status: true } });
       summary.runs = runs.length;
       expect(runs.filter((run) => ACTIVE_RUN_STATUSES.includes(run.status)), "no run is still active").toEqual([]);

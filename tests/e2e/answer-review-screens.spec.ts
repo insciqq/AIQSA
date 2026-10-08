@@ -169,8 +169,16 @@ async function centered(locator: Locator) {
   await locator.evaluate((element) => element.scrollIntoView({ block: "center" }));
 }
 
+/** Pages already signed in: a second sign-in would wait for a login redirect that never comes. */
+const signedIn = new WeakSet<Page>();
+
 async function openChat(page: Page, chatId: string) {
-  await signInWithLocalToken(page, `/c/${chatId}`);
+  if (signedIn.has(page)) {
+    await page.goto(`/c/${chatId}`);
+  } else {
+    await signInWithLocalToken(page, `/c/${chatId}`);
+    signedIn.add(page);
+  }
   await expect(shownAnswer(page)).toContainText(/Fake answer:|Revised answer:/u, { timeout: 30_000 });
 }
 
