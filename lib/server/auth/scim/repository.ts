@@ -278,6 +278,12 @@ async function updateUser(
   const next = change.profile(user);
   if (next.email !== planned.email) throw new ScimWriteRetry();
 
+  // An administrator's or a local-password account's email is its own: a changed address would
+  // receive its password resets and let a verified external identity with that address link in.
+  if (next.email !== user.email && (user.role === "admin" ||
+    await tx.authIdentity.count({ where: { provider: "password", userId: id } }) > 0)) {
+    throw invalidScimValue("This account's email is managed in AIQSA and cannot be changed by provisioning.", "mutability");
+  }
   if (next.email !== null && next.email !== user.email &&
     await tx.user.findUnique({ select: { id: true }, where: { email: next.email } })) {
     throw new ScimRefusal<ScimUserWriteResult>({ kind: "uniqueness" });
