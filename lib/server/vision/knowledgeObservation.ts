@@ -171,10 +171,15 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
     if (existing) return existing;
     const startedAt = performance.now();
     let snapshot: AvailableVisionAnalysisPlan["snapshot"] | undefined;
-    const observe = (code: string | undefined) => observeVisionAttempt({ stage: "grounding", startedAt, code, snapshot });
     // System Vision waits by its frozen reasoning effort, like analyze_image.
+    // Conversation images need no Workspace restore, so one bound covers this whole description.
     const timeoutMs = Math.min(Math.max(input.timeoutMs ?? (input.plan.route === "system_vision"
       ? visionAnalysisTimeoutMs(input.plan.vision) : LIMITS.timeoutMs), 1_000), 600_000);
+    let providerStartedAt: number | undefined;
+    let providerEndedAt: number | undefined;
+    const observe = (code: string | undefined) => observeVisionAttempt({ stage: "grounding", startedAt, code, snapshot,
+      phases: { preparationMs: (providerStartedAt ?? performance.now()) - startedAt, timeoutMs,
+        ...(providerStartedAt === undefined ? {} : { providerMs: (providerEndedAt ?? performance.now()) - providerStartedAt }) } });
     const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]);
     let images: readonly ConversationVisionImage[] = [];
     // Claimed: the row exists and must settle. Sent: the provider may have it.
@@ -210,14 +215,17 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
           modelId: destination.snapshot.model.upstreamModelId }) ?? null;
         bounded.throwIfAborted();
         sent = true;
+        providerStartedAt = performance.now();
         const response = await options.execute(destination.snapshot, request, { signal: bounded, timeoutMs,
           onUsage: update => { usage = mergeTokenUsage(usage, update); } });
+        providerEndedAt = performance.now();
         completed = true;
         usage = mergeTokenUsage(usage, response.usage);
         bounded.throwIfAborted();
         if (!response.finalText.trim() || response.toolCalls?.length) throw new VisionAnalysisError("vision_analysis_response_invalid");
         result = { kind: "observed", observation: boundedKnowledgeImageObservation(response.finalText) };
       } catch (error) {
+        if (providerStartedAt !== undefined) providerEndedAt ??= performance.now();
         const observed = observedFailureCode(error);
         const code = input.signal.aborted ? "vision_analysis_cancelled" : bounded.aborted ? "vision_analysis_timeout"
           : KNOWN_FAILURES.has(observed) ? observed : sent ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";

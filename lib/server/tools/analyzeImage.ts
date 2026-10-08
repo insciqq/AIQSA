@@ -1,33 +1,43 @@
 import type { AcceptedVisionAnalysisPlan, AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
+import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import type { RunTool } from "./types";
 
 export const ANALYZE_IMAGE_TOOL_NAME = "analyze_image";
+/** `timeoutMs` is the provider wait of a model that does not reason (or reasons at low effort);
+ * `preparationTimeoutMs` separately bounds authorization, capture, decoding and the dispatch claim
+ * before it, so a slow Workspace restore never spends the provider's time. */
 export const VISION_ANALYSIS_LIMITS = Object.freeze({ maxImages: 8, questionCharacters: 4000,
-  resultBytes: 16 * 1024, maxOutputTokens: 4096, timeoutMs: 60_000, callsPerRun: 8 });
+  resultBytes: 16 * 1024, maxOutputTokens: 4096, timeoutMs: 60_000, preparationTimeoutMs: 120_000, callsPerRun: 8 });
 
-/** Higher reasoning efforts think longer before answering; any other named effort keeps the base bound.
- * A reasoning model with no effort anywhere runs at its provider's default, which is not always low. */
-const VISION_ANALYSIS_DEFAULT_EFFORT_TIMEOUT_MS = 120_000;
+/** Medium and higher reasoning efforts think long on large images: 300 s covers the observed
+ * provider tail with headroom and equals the default provider response timeout. Any other named
+ * effort keeps the base bound. A reasoning model with no effort anywhere runs at its provider's
+ * default, which is not always low, so it gets the medium bound. */
+const VISION_ANALYSIS_REASONING_TIMEOUT_MS = 300_000;
 const VISION_ANALYSIS_EFFORT_TIMEOUT_MS: Readonly<Record<string, number>> = Object.freeze({
-  medium: 120_000, high: 180_000, xhigh: 180_000, max: 180_000 });
+  medium: VISION_ANALYSIS_REASONING_TIMEOUT_MS, high: VISION_ANALYSIS_REASONING_TIMEOUT_MS,
+  xhigh: VISION_ANALYSIS_REASONING_TIMEOUT_MS, max: VISION_ANALYSIS_REASONING_TIMEOUT_MS });
 
 function paramEffort(value: unknown): string | undefined {
   return typeof value === "object" && value !== null && typeof (value as { effort?: unknown }).effort === "string"
     ? (value as { effort: string }).effort : undefined;
 }
 
-/** The deadline of one System Vision dispatch, from the effort it actually
- * runs with: the plan's frozen effort, else the model's configured default.
- * Callers combine it with their run signal, which still ends it earlier. */
+/** The provider deadline of one System Vision dispatch, from the effort it
+ * actually runs with (the plan's frozen effort, else the model's configured
+ * default), never longer than the destination's own response timeout. It
+ * starts at the dispatch claim; preparation has its own allowance. Callers
+ * combine it with their run signal (Stop, Workspace or Agent turn deadline),
+ * which still ends it earlier. */
 export function visionAnalysisTimeoutMs(plan: Pick<AvailableVisionAnalysisPlan, "snapshot" | "reasoningEffort">): number {
   const model = plan.snapshot.model;
   const effort = plan.reasoningEffort ?? paramEffort(model.defaultParams.reasoning) ?? paramEffort(model.defaultParams.outputConfig) ??
     model.capabilities.defaultReasoningEffort;
-  if (effort === undefined) {
-    return model.capabilities.reasoning === false ? VISION_ANALYSIS_LIMITS.timeoutMs : VISION_ANALYSIS_DEFAULT_EFFORT_TIMEOUT_MS;
-  }
-  return Object.hasOwn(VISION_ANALYSIS_EFFORT_TIMEOUT_MS, effort)
-    ? VISION_ANALYSIS_EFFORT_TIMEOUT_MS[effort] : VISION_ANALYSIS_LIMITS.timeoutMs;
+  const bound = effort === undefined
+    ? model.capabilities.reasoning === false ? VISION_ANALYSIS_LIMITS.timeoutMs : VISION_ANALYSIS_REASONING_TIMEOUT_MS
+    : Object.hasOwn(VISION_ANALYSIS_EFFORT_TIMEOUT_MS, effort) ? VISION_ANALYSIS_EFFORT_TIMEOUT_MS[effort] : VISION_ANALYSIS_LIMITS.timeoutMs;
+  const response = effectiveProviderResponseTimeoutMs(plan.snapshot.connection, model.adapterKind === "fake" ? null : model);
+  return Number.isFinite(response) && response > 0 ? Math.min(bound, response) : bound;
 }
 
 /** One fresh schema per tool: both forms share the crop/resize/question bounds. */

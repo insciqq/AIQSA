@@ -25,12 +25,15 @@ describe("Agent MCP envelope", () => {
     } as unknown as NormalizedRunRequest;
     expect(agentMcpEnvelopeTimeoutSeconds(request)).toBe(120);
   });
-  it("lets a Workspace analyze_image run to its reasoning-effort deadline", () => {
+  it("lets a Workspace analyze_image run through its preparation allowance and reasoning-effort deadline", () => {
     const visionAnalysis = { version: 1, available: true, reasoningEffort: "high",
-      snapshot: { model: { defaultParams: {}, capabilities: {} } } } as unknown as AvailableVisionAnalysisPlan;
+      snapshot: { connection: { responseTimeoutMs: 300_000 }, model: { defaultParams: {}, capabilities: {} } } } as unknown as AvailableVisionAnalysisPlan;
     const base = { searchPlan: { options: [] }, workspace: {} };
-    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis } as unknown as NormalizedRunRequest)).toBe(210);
-    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis: { ...visionAnalysis, reasoningEffort: "low" } } as unknown as NormalizedRunRequest)).toBe(90);
+    // 120 s preparation + 300 s provider + 30 s settlement.
+    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis } as unknown as NormalizedRunRequest)).toBe(450);
+    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis: { ...visionAnalysis, reasoningEffort: "low" } } as unknown as NormalizedRunRequest)).toBe(210);
+    const capped = { ...visionAnalysis, snapshot: { ...visionAnalysis.snapshot, connection: { responseTimeoutMs: 90_000 } } };
+    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis: capped } as unknown as NormalizedRunRequest)).toBe(240);
     // No admitted analysis keeps the discovery allowance.
     expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis: { version: 1, available: false, code: "vision_model_absent" } } as unknown as NormalizedRunRequest)).toBe(60);
     expect(agentMcpEnvelopeTimeoutSeconds({ searchPlan: { options: [] }, visionAnalysis } as unknown as NormalizedRunRequest)).toBe(60);
