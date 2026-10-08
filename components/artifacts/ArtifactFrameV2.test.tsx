@@ -90,6 +90,44 @@ describe("artifact frame host", () => {
     expect(screen.getByTitle("Preview")).toHaveAttribute("srcdoc", expect.stringContaining("const initial=[]"));
     expect(screen.queryByText(/Saved state is unavailable/)).not.toBeInTheDocument();
   });
+  it("forwards only validated page navigation from its own frame, at most once per 500 ms and never under a link confirmation", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    const onNavigate = vi.fn();
+    render(<ArtifactFrameV2 body={body} artifactId="pages" title="Preview" onNavigate={onNavigate} />);
+    const iframe = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    const navigate = { type: "aiqsa_artifact_navigate", path: "docs/about.html", fragment: "team" };
+    message(iframe, navigate, "https://example.com");
+    message(iframe, navigate, "null", window);
+    for (const forged of [{ ...navigate, path: "../private.html" }, { ...navigate, path: "_vendor/0123456789ab/page.html" }, { ...navigate, trusted: true },
+      { ...navigate, fragment: "" }, { ...navigate, fragment: "x".repeat(257) }, [navigate]]) message(iframe, forged);
+    expect(onNavigate).not.toHaveBeenCalled();
+    message(iframe, navigate);
+    expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ path: "docs/about.html", fragment: "team" }, false);
+    now = 499; message(iframe, { type: "aiqsa_artifact_navigate", path: "guide.html" });
+    expect(onNavigate).toHaveBeenCalledOnce();
+    now = 1000; message(iframe, link);
+    const dialog = await screen.findByRole("dialog", { name: "Open external link?" });
+    now = 2000; message(iframe, { type: "aiqsa_artifact_navigate", path: "guide.html" });
+    expect(onNavigate).toHaveBeenCalledOnce();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    act(() => iframe.focus());
+    now = 3000; message(iframe, { type: "aiqsa_artifact_navigate", path: "guide.html" });
+    expect(onNavigate).toHaveBeenLastCalledWith({ path: "guide.html" }, true);
+  });
+  it("loads a new document for a new revision of the same page and moves focus into it only when asked", async () => {
+    const onNavigate = vi.fn();
+    const { rerender } = render(<ArtifactFrameV2 body={body} artifactId="revision" title="Preview" revision={1} onNavigate={onNavigate} />);
+    const first = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    expect(first).not.toHaveFocus();
+    const stale = first.contentWindow;
+    rerender(<ArtifactFrameV2 body={body} artifactId="revision" title="Preview" revision={2} focusOnLoad onNavigate={onNavigate} />);
+    await waitFor(() => expect(screen.getByTitle("Preview")).not.toBe(first));
+    const second = screen.getByTitle("Preview") as HTMLIFrameElement;
+    await waitFor(() => expect(second).toHaveFocus());
+    // The replaced document cannot speak for the new one.
+    act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "aiqsa_artifact_navigate", path: "a.html" }, origin: "null", source: stale })));
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
   it("uses the same link protection on public frames and does not surface private runtime repair", async () => {
     vi.stubGlobal("crypto", { randomUUID: crypto.randomUUID.bind(crypto), subtle: { digest: vi.fn().mockResolvedValue(new Uint8Array(32).fill(3).buffer) } });
     const publicKey = await publicArtifactStateKey("publication-token");

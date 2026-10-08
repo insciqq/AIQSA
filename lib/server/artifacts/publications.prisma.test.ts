@@ -200,6 +200,61 @@ describe("explicit Artifact version set persistence", () => {
     } finally { await f.cleanup(); }
   });
 
+  it("renders each page of a multi-page version once for owner views and publications, and serves pages only while published", async () => {
+    const f = await fixture();
+    try {
+      const site = (await f.service.createVersion({ ownerUserId: f.owner.id, operation: { intent: "create", kind: "html", title: "Site", entrypoint: "index.html", files: [
+        { path: "index.html", mimeType: "text/html", text: '<main>home-canary</main><a href="about.html">About</a>' },
+        { path: "about.html", mimeType: "text/html", text: '<main>about-canary</main><a href="docs/guide.html#part">Guide</a>' },
+        { path: "docs/guide.html", mimeType: "text/html", text: '<main id="part">guide-canary</main><script>fetch("../data.json")</script>' },
+        { path: "data.json", mimeType: "application/json", text: '{"visits":3}' }
+      ] } }))!;
+      const owner = { ownerUserId: f.owner.id, artifactId: site.artifactId, versionId: site.id };
+      const renders = () => prisma.artifactRender.findMany({ where: { versionId: site.id }, orderBy: { page: "asc" } });
+      // Concurrent owner views of a cold page share one render.
+      const [about, again] = await Promise.all([f.service.getPrivateBundle({ ...owner, page: "about.html" }), f.service.getPrivateBundle({ ...owner, page: "about.html" })]);
+      expect(about).toMatchObject({ page: "about.html", contentType: "text/html; charset=utf-8" });
+      expect(about!.body.toString()).toContain("about-canary"); expect(about!.body.toString()).not.toContain("home-canary");
+      expect(again!.body.equals(about!.body)).toBe(true);
+      expect((await renders()).map(render => render.page)).toEqual(["about.html"]);
+      const entry = await f.service.getPrivateBundle(owner);
+      expect(entry).toMatchObject({ page: "index.html" }); expect(entry!.body.toString()).toContain("home-canary");
+      expect((await f.service.getPrivateBundle({ ...owner, page: "index.html" }))!.body.equals(entry!.body)).toBe(true);
+      expect((await renders()).map(render => render.page)).toEqual(["", "about.html"]);
+      for (const page of ["data.json", "missing.html"]) await expect(f.service.getPrivateBundle({ ...owner, page })).rejects.toThrow("artifact_page_not_found");
+      expect(await f.service.getPrivateBundle({ ...owner, ownerUserId: "foreign-owner", page: "about.html" })).toBeNull();
+
+      // A publication reads the same cached pages and adds only the pages its viewers open.
+      const single = await f.service.publish(owner);
+      expect((await f.service.publicBundle(single.shareToken, false, undefined, "about.html"))!.body.equals(about!.body)).toBe(true);
+      const guide = await f.service.publicBundle(single.shareToken, false, undefined, "docs/guide.html");
+      expect(guide).toMatchObject({ page: "docs/guide.html", versionNumber: 1 }); expect(guide!.body.toString()).toContain("guide-canary");
+      expect((await renders()).map(render => render.page)).toEqual(["", "about.html", "docs/guide.html"]);
+      for (const page of ["data.json", "missing.html"]) expect(await f.service.publicBundle(single.shareToken, false, undefined, page)).toBeNull();
+
+      // Rendering any page again drops every page of an older renderer version.
+      await prisma.artifactRender.updateMany({ where: { versionId: site.id }, data: { rendererVersion: ARTIFACT_RENDERER_VERSION - 1 } });
+      expect((await f.service.publicBundle(single.shareToken, false, undefined, "about.html"))!.body.toString()).toContain("about-canary");
+      expect((await renders()).map(render => [render.page, render.rendererVersion])).toEqual([["about.html", ARTIFACT_RENDERER_VERSION]]);
+      const retention = createPrismaRetentionRepository(prisma);
+      const live = (await renders()).map(render => render.renderedStorageKey);
+      const jobs = await prisma.attachmentDeletionJob.findMany({ where: { storageKey: { startsWith: `artifact-renders/${f.owner.id}/` } } });
+      const claimable = await retention.findClaimableAttachmentDeletionJobIds({ claimableBefore: new Date(), limit: 1000 });
+      expect(jobs.filter(job => claimable.includes(job.id)).map(job => job.storageKey).sort())
+        .toEqual(jobs.map(job => job.storageKey).filter(key => !live.includes(key)).sort());
+      expect(jobs.filter(job => !claimable.includes(job.id)).map(job => job.storageKey)).toEqual(live);
+
+      await f.service.revoke({ ownerUserId: f.owner.id, publicationId: single.id });
+      expect(await f.service.publicBundle(single.shareToken, false, undefined, "about.html")).toBeNull();
+      expect(await f.service.publicBundle(single.shareToken)).toBeNull();
+      expect((await f.service.getPrivateBundle({ ...owner, page: "about.html" }))!.body.toString()).toContain("about-canary");
+      expect(await f.service.remove({ ownerUserId: f.owner.id, artifactId: site.artifactId })).toBe(true);
+      expect(await prisma.artifactRender.count({ where: { versionId: site.id } })).toBe(0);
+      const released = await retention.findClaimableAttachmentDeletionJobIds({ claimableBefore: new Date(), limit: 1000 });
+      expect(jobs.every(job => released.includes(job.id))).toBe(true);
+    } finally { await f.cleanup(); }
+  });
+
   it("keeps legacy single snapshots usable, denies their reissue and validates owner paging anchors", async () => {
     const f = await fixture();
     try {

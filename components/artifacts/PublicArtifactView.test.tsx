@@ -1,8 +1,8 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserLocksFixture } from "@/tests/support/browserLocks";
-import { ARTIFACT_BRIDGE_SCRIPT_OPEN, ARTIFACT_STORAGE_PLACEHOLDER } from "@/lib/contracts/artifactRuntime";
-import { ARTIFACT_PUBLIC_VERSION_HEADER, type ArtifactPublicManifest } from "@/lib/contracts/artifacts";
+import { ARTIFACT_BRIDGE_SCRIPT_OPEN, ARTIFACT_FRAGMENT_PLACEHOLDER, ARTIFACT_STORAGE_PLACEHOLDER } from "@/lib/contracts/artifactRuntime";
+import { ARTIFACT_PAGE_HEADER, ARTIFACT_PUBLIC_VERSION_HEADER, type ArtifactPublicManifest } from "@/lib/contracts/artifacts";
 import { PublicArtifactView } from "./PublicArtifactView";
 import { publicArtifactStateKey } from "./artifactBrowserStorage";
 
@@ -168,6 +168,42 @@ describe("public artifact body", () => {
     expect(await screen.findByLabelText("Public v3")).toHaveAttribute("srcdoc", expect.stringContaining('[["level","8"]]'));
     rerender(<PublicArtifactView initialManifest={value} token="reissued" />);
     await waitFor(() => expect(screen.getByLabelText("Public v3")).toHaveAttribute("srcdoc", expect.stringContaining("const initial=[]")));
+  });
+  it("opens linked pages of the displayed version in place and starts every version on its entry page", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    const value = manifest("version_set", [1, 3], 3);
+    const page = (path: string, version: number) => new Response(
+      `${ARTIFACT_BRIDGE_SCRIPT_OPEN}const initial=${ARTIFACT_STORAGE_PLACEHOLDER};const arrival=${ARTIFACT_FRAGMENT_PLACEHOLDER};</script><p>${path} of v${version}</p>`,
+      { headers: { "content-type": "text/html", [ARTIFACT_PUBLIC_VERSION_HEADER]: String(version), [ARTIFACT_PAGE_HEADER]: path } });
+    const fetch = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path.endsWith("/manifest")) return Response.json({ publication: value });
+      const selected = new URL(path, "https://app.example").searchParams.get("page");
+      return selected === "missing.html" ? new Response("", { status: 404 }) : page(selected ?? "index.html", number(init));
+    });
+    vi.stubGlobal("fetch", fetch);
+    const navigate = (data: unknown) => act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null",
+      source: (screen.getByLabelText(/^Public v/u, { selector: "iframe" }) as HTMLIFrameElement).contentWindow, data })));
+    render(<PublicArtifactView initialManifest={value} token="fixture" />);
+    expect(await screen.findByLabelText("Public v3")).toHaveAttribute("srcdoc", expect.stringContaining("index.html of v3"));
+    expect(screen.queryByRole("navigation", { name: "Artifact page" })).not.toBeInTheDocument();
+    navigate({ type: "aiqsa_artifact_navigate", path: "about.html", fragment: "contact" });
+    await waitFor(() => expect(screen.getByLabelText("Public v3")).toHaveAttribute("srcdoc", expect.stringContaining("about.html of v3")));
+    expect(fetch).toHaveBeenLastCalledWith("/api/artifact-public/fixture?page=about.html", expect.objectContaining({
+      cache: "no-store", credentials: "omit", headers: { [ARTIFACT_PUBLIC_VERSION_HEADER]: "3" } }));
+    expect((screen.getByLabelText("Public v3") as HTMLIFrameElement).srcdoc).toContain('const arrival="contact"');
+    expect(screen.getByRole("navigation", { name: "Artifact page" })).toHaveTextContent("about.html");
+    expect(screen.getByRole("button", { name: "Download" })).toBeEnabled();
+    await choose(1);
+    expect(await screen.findByLabelText("Public v1")).toHaveAttribute("srcdoc", expect.stringContaining("index.html of v1"));
+    expect(screen.queryByRole("navigation", { name: "Artifact page" })).not.toBeInTheDocument();
+    now = 1000; navigate({ type: "aiqsa_artifact_navigate", path: "missing.html" });
+    const unavailable = await screen.findByRole("alert");
+    expect(unavailable).toHaveTextContent("This page is unavailable.");
+    expect(screen.queryByLabelText(/^Public v/u, { selector: "iframe" })).not.toBeInTheDocument();
+    fireEvent.click(within(unavailable).getByRole("button", { name: "Start page" }));
+    await waitFor(() => expect(screen.getByLabelText("Public v1")).toHaveAttribute("srcdoc", expect.stringContaining("index.html of v1")));
+    expect(fetch.mock.calls.filter(([path]) => !path.endsWith("/manifest")).map(([path, init]) => [new URL(path, "https://app.example").search, number(init)]))
+      .toEqual([["", 3], ["?page=about.html", 3], ["", 1], ["?page=missing.html", 1], ["", 1]]);
   });
   it("downloads exactly the displayed version using the bounded header", async () => {
     const value = manifest("version_set", [1, 3], 3); let downloaded: HTMLAnchorElement | undefined;

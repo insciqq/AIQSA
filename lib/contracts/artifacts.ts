@@ -52,6 +52,8 @@ export type ArtifactVersionSummary = Readonly<{
   createdAt?: string;
 }>;
 export const ARTIFACT_PUBLIC_VERSION_HEADER = "X-AIQSA-Artifact-Version";
+/** The bundle path of the HTML page a content response holds (the entrypoint when none was requested). */
+export const ARTIFACT_PAGE_HEADER = "X-AIQSA-Artifact-Page";
 export const ARTIFACT_MAX_VERSION_NUMBER = 2_147_483_647;
 type PublicationBase = Readonly<{
   id: string; status: "PENDING" | "READY" | "REVOKED"; expiresAt: string | null; createdAt: string;
@@ -270,6 +272,8 @@ export type ArtifactSourceFile = Readonly<{
   mimeType: string;
   text?: string;
   binary?: true;
+  /** The text holds only the first `ARTIFACT_LIMITS.maxReadBytes` of the file; `byteSize` is the whole file. */
+  truncated?: true;
   group?: "authored" | "vendored";
   byteSize?: number;
 }>;
@@ -341,6 +345,27 @@ export function normalizedArtifactPath(value: unknown): string | null {
 /** `_vendor`, in any letter case, is the namespace of resources the server downloads. */
 export function isReservedArtifactPath(path: string): boolean {
   return path.split("/", 1)[0]!.toLowerCase() === "_vendor";
+}
+
+/** An exact authored bundle path, the only form that can name a page: never a `_vendor/` copy. */
+export function artifactPagePath(value: unknown): string | null {
+  const path = normalizedArtifactPath(value);
+  return path !== null && path === value && !isReservedArtifactPath(path) ? path : null;
+}
+
+export type ArtifactContentQuery = Readonly<{ page?: string; download?: "zip" | "file" }>;
+
+/**
+ * The only selectors of a content route: one HTML page of the version (the entry page when
+ * absent) or one download form, never both. Unknown, repeated or malformed keys yield null.
+ */
+export function decodeArtifactContentQuery(query: URLSearchParams): ArtifactContentQuery | null {
+  for (const key of new Set(query.keys())) if (key !== "page" && key !== "download" || query.getAll(key).length !== 1) return null;
+  const page = query.get("page");
+  const download = query.get("download");
+  if (download !== null && download !== "zip" && download !== "file") return null;
+  if (page !== null && (download !== null || artifactPagePath(page) === null)) return null;
+  return { ...(page !== null ? { page } : {}), ...(download !== null ? { download } : {}) };
 }
 
 function normalizedMime(value: unknown): string | null {
