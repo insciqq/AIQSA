@@ -6,6 +6,8 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../http/requestBody";
+import { logEvent } from "../observability";
+import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import {
   CHAT_TITLE_MAX_LENGTH,
@@ -450,9 +452,21 @@ export function createGetChatHandler(deps: ChatHandlerDeps) {
     }
 
     const params = await context.params;
+    // The stale-run sweep assists the read and never decides it, as on GET
+    // run: when the sweep itself fails, the history still opens.
     await deps.reconcileRuns?.({
       chatId: params.chatId,
       userId: result.session.userId
+    }).catch((error: unknown) => {
+      logEvent("run_recovery", {
+        action: "degrade",
+        db_failure: databaseFailureKind(error),
+        error,
+        outcome: "failed",
+        prisma_code: databaseFailureCode(error),
+        stage: "reconcile",
+        subsystem: "run_recovery"
+      });
     });
     const chat = await deps.repository.getChat({
       chatId: params.chatId,

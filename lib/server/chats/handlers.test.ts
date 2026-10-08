@@ -19,6 +19,8 @@ import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { ChatAssistantUpdateError } from "./assistantUpdateError";
 import { RecoveryStateInvalidError } from "../runs/recoveryStateInvalid";
 import { reconcileStaleRuns, type RunRecoveryRegistry, type RunRecoveryRepository } from "../runs/runRecovery";
+import { rememberDatabaseFailure } from "../observability/databaseFailure";
+import { captureRunObservation } from "@/tests/support/runObservation";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -364,6 +366,67 @@ describe("chat route handlers", () => {
       chat: { id: "chat-1", messages: [{ content: { blocks: [{ text: "Saved question", type: "text" }] }, id: "user-message-1" }] }
     });
     expect(failed).toEqual(["run-unreadable:tool_loop_checkpoint_invalid_in_storage"]);
+  });
+
+  it("opens the chat and logs content-free when the stale-run sweep itself fails", async () => {
+    const writer = await captureRunObservation();
+    const sweepError = new Error("PRIVATE_STALE_RUN_QUERY_CANARY");
+    rememberDatabaseFailure(sweepError, "P2028");
+    const reads: string[] = [];
+    const GET = createGetChatHandler({
+      reconcileRuns: (input) => reconcileStaleRuns({
+        providers: {},
+        registry: { has: () => false, ids: () => [], register: () => ({ release: () => undefined, signal: new AbortController().signal }) },
+        repository: {
+          findStaleActiveRunsForUser: async () => { throw sweepError; }
+        } as unknown as RunRecoveryRepository
+      }, input),
+      repository: {
+        ...historyRepositoryMethods,
+        archiveChat: async () => false,
+        createChat: async () => null,
+        createFolder: async () => null,
+        deleteFolder: async () => false,
+        getChat: async ({ chatId }) => {
+          reads.push(chatId);
+          return {
+            activeLeafMessageId: null,
+            contextStats: { approximateActiveBranchInputTokens: 0 },
+            createdAt: "2026-06-07T09:00:00.000Z",
+            defaultModelId: null,
+            defaultProvider: null,
+            folderId: null,
+            id: chatId,
+            messageCount: 0,
+            messages: [],
+            pageInfo: { activeLeafMessageId: null, beforeCursor: null, hasOlder: false, snapshotUpdatedAt: "2026-06-07T09:00:00.000Z" },
+            pinned: false,
+            title: "Busy database",
+            updatedAt: "2026-06-07T09:00:00.000Z",
+            usageStats: {
+              estimatedCostMicros: null, hasCompletedAnswer: false, incompleteRecordCount: 0,
+              knownCostRecordCount: 0, recordCount: 0, totalTokens: 0
+            }
+          };
+        },
+        listWorkspace: async () => null,
+        updateFolder: async () => null,
+        updateChat: async () => null
+      },
+      resolveAuth: auth.resolveAuth
+    });
+
+    const response = await GET(new Request("http://app.local/api/chats/chat-1", { headers: { cookie: authCookie() } }),
+      { params: { chatId: "chat-1" } });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ chat: { id: "chat-1", title: "Busy database" } });
+    expect(reads).toEqual(["chat-1"]);
+    const records = writer.records();
+    expect(records).toContainEqual(expect.objectContaining({
+      action: "degrade", event: "run_recovery", outcome: "failed", prisma_code: "P2028", stage: "reconcile"
+    }));
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
   });
 
   it("includes the latest assistant model run id in chat details", async () => {
