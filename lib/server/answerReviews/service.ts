@@ -7,6 +7,7 @@ import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { resolveChatAccess } from "../projects/access";
 import type { RunPreparationDeps } from "../runs/runPreparation";
 import {
+  canActOnAnswerReviewSession,
   decodeAnswerReviewModelRef,
   decodeAnswerReviewSessionRow,
   type AnswerReviewModelRef,
@@ -161,9 +162,16 @@ export async function startAnswerReviewRound(
   const target = await reviewTarget(deps.prisma, { activeLeafMessageId: chat.activeLeafMessageId,
     answerMessageId: input.answerMessageId, chatId: input.chatId });
   if (typeof target === "string") return refused(target);
+  // Another member's session stays theirs; one whose initiator is gone and that ended may be taken over.
+  if (target.session && !canActOnAnswerReviewSession(target.session, input.userId)) return refused("answer_review_not_initiator");
   const scope = { projectId: chat.projectId, userId: input.userId };
 
   let author: AnswerReviewModelRef | null = target.session?.authorModel ?? null;
+  if (target.session && author && target.session.userId !== input.userId) {
+    // Taking a session over: its revisions will run under the new initiator's own access.
+    author = await admittedToolModel(deps, { modelId: author.modelId, provider: author.provider }, scope);
+    if (!author) return refused("answer_review_model_unsupported");
+  }
   if (!target.session) {
     const sourceRun = await deps.prisma.modelRun.findFirst({
       orderBy: { createdAt: "desc" },
@@ -223,11 +231,13 @@ export async function startAnswerReviewRound(
       answerMessageId: input.answerMessageId, chatId: input.chatId });
     if (typeof current === "string") return refused(current);
     if (current.session) {
-      if (current.session.userId !== input.userId) return refused("answer_review_unavailable", 404);
+      if (!canActOnAnswerReviewSession(current.session, input.userId)) return refused("answer_review_not_initiator");
+      const takingOver = current.session.userId !== input.userId;
       const stepsThisRound = await tx.message.count({ where: { answerReviewRound: current.session.round,
         answerReviewSessionId: current.session.id, chatId: input.chatId, role: "user" } });
       const row = await tx.answerReviewSession.update({
         data: {
+          ...(takingOver ? { authorModel: authorRef as unknown as Prisma.InputJsonValue, userId: input.userId } : {}),
           reviewers: reviewers as unknown as Prisma.InputJsonValue,
           round: stepsThisRound > 0 ? current.session.round + 1 : current.session.round,
           state: "running",
