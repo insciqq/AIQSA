@@ -22,6 +22,7 @@ export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
   "agent_docs/RUN_CONTRACTS.md",
   "agent_docs/FRONTEND.md",
   "agent_docs/SECURITY.md",
+  "agent_docs/SIGN_IN.md",
   "agent_docs/ENV_VARIABLES.md",
   "agent_docs/TESTING.md",
   "agent_docs/AUTONOMOUS_WORKFLOW.md",

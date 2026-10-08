@@ -121,6 +121,7 @@ function createRepository(
     }),
     listDashboard: async () => baseDashboard,
     rejectUser: async () => "rejected",
+    resetUserTwoFactor: async () => 2,
     renameGroup: async (input) => ({
       accessGrants: [],
       archivedAt: null,
@@ -671,6 +672,31 @@ describe("admin route handlers", () => {
     const response = await POST(jsonRequest({ action: "delete_user", userId: "user-1" }));
     expect(response.status).toBe(202);
     await expect(response.json()).resolves.toEqual({ ok: true });
+  });
+
+  it("resets another user's two-factor sign-in and reports the ended sessions", async () => {
+    const resetUserTwoFactor = vi.fn<AdminRepository["resetUserTwoFactor"]>(async (input) => input.userId === "missing" ? null : 2);
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ resetUserTwoFactor }),
+      resolveAuth: admin.resolveAuth
+    });
+
+    const reset = await POST(jsonRequest({ action: "reset_user_two_factor", userId: "user-1" }));
+    expect(reset.status).toBe(200);
+    await expect(reset.json()).resolves.toEqual({ revoked: 2 });
+    expect(resetUserTwoFactor).toHaveBeenCalledWith({ revokedByUserId: admin.session.userId, userId: "user-1" });
+
+    const missing = await POST(jsonRequest({ action: "reset_user_two_factor", userId: "missing" }));
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toEqual({ error: "user_not_found" });
+
+    // An administrator's own factor needs a current code, like anyone's.
+    const self = await POST(jsonRequest({ action: "reset_user_two_factor", userId: admin.session.userId }));
+    expect(self.status).toBe(403);
+    await expect(self.json()).resolves.toEqual({ error: "self_two_factor_reset_forbidden" });
+    expect(resetUserTwoFactor).toHaveBeenCalledTimes(2);
   });
 
   it("approves users with selected groups", async () => {

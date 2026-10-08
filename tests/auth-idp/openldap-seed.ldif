@@ -1,0 +1,43 @@
+dn: ou=people,dc=aiqsa,dc=test
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=aiqsa,dc=test
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=lena,ou=people,dc=aiqsa,dc=test
+objectClass: inetOrgPerson
+uid: lena
+cn: Lena Researcher
+sn: Researcher
+displayName: Lena Researcher
+mail: lena@ldap.aiqsa.test
+userPassword: __PW_LENA__
+
+dn: uid=oleg,ou=people,dc=aiqsa,dc=test
+objectClass: inetOrgPerson
+uid: oleg
+cn: Oleg Operator
+sn: Operator
+displayName: Oleg Operator
+mail: oleg@ldap.aiqsa.test
+userPassword: __PW_OLEG__
+
+dn: uid=nomail,ou=people,dc=aiqsa,dc=test
+objectClass: inetOrgPerson
+uid: nomail
+cn: No Mail
+sn: Mail
+userPassword: __PW_NOMAIL__
+
+dn: cn=researchers,ou=groups,dc=aiqsa,dc=test
+objectClass: groupOfUniqueNames
+cn: researchers
+uniqueMember: uid=lena,ou=people,dc=aiqsa,dc=test
+uniqueMember: uid=oleg,ou=people,dc=aiqsa,dc=test
+
+dn: cn=ldap-admins,ou=groups,dc=aiqsa,dc=test
+objectClass: groupOfUniqueNames
+cn: ldap-admins
+uniqueMember: uid=oleg,ou=people,dc=aiqsa,dc=test

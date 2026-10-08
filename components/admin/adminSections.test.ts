@@ -23,6 +23,7 @@ describe("adminSections", () => {
       { group: "people", id: "users", label: "Users" },
       { group: "people", id: "groups", label: "Groups" },
       { group: "people", id: "limits", label: "Budgets & limits" },
+      { group: "people", id: "sign-in", label: "Sign-in" },
       { group: "people", id: "access-rules", label: "Sign-up rules" },
       { group: "people", id: "announcements", label: "Announcements" },
       { group: "platform", id: "mcp", label: "MCP servers" },

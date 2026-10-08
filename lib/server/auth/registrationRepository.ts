@@ -1,7 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { authEmailDomain, normalizeAuthDomain } from "./password";
 import { provisionActiveUser, type ProvisioningGroupInput } from "./provisioning";
-import type { CreateAuthSessionInput } from "./requestAuth";
+import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import {
   lockAuthFlowToken,
   lockAuthIdentity,
@@ -45,7 +45,7 @@ export type AcceptInviteInput = {
   inviteTokenHash: string;
   now: Date;
   passwordHash: string;
-  session: Omit<CreateAuthSessionInput, "userId">;
+  session: SignInSessionInput;
 };
 
 export type InviteAcceptanceResult = {
@@ -474,11 +474,10 @@ export function createPrismaAuthRegistrationRepository(prisma: PrismaClient): Au
           groups: groupDefaults(inviteToken.invite.defaultGroups),
           userId: user.id
         });
-        await tx.authSession.create({
-          data: {
-            ...input.session,
-            userId: user.id
-          }
+        await issueSignInSession(tx, {
+          session: input.session,
+          signInMethod: "invite",
+          userId: user.id
         });
 
         return {

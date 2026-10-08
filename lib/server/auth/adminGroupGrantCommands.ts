@@ -6,6 +6,8 @@ import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminRepository, AdminSetGroupGrantsResult } from "./adminRepositoryContract";
 import { normalizeAdminGroupName } from "./adminRepositoryInputs";
 import { serializeAdminGroup } from "./adminRepositorySerializers";
+import { applyMembershipChange } from "./groupMembership";
+import { managedMemberships } from "./signInManagement";
 
 export type AdminGroupGrantCommands = Pick<
   AdminRepository,
@@ -110,67 +112,75 @@ async function resolveGrantTarget(
   return { groupId, providerConnectionId: provider, providerModelId: null, searchStrategy: null, userId: null };
 }
 
-function reservedFullAccessName(name: string): boolean {
+export function reservedFullAccessName(name: string): boolean {
   return name.toLowerCase() === FULL_ACCESS_GROUP_NAME.toLowerCase();
+}
+
+/**
+ * Archives an active group inside the caller's transaction with the MCP side effects of losing
+ * its grants: each member's servers it granted re-resolve, and a server a member can no longer
+ * use is switched off for them. The Full access group is never archived. False when nothing
+ * was archived.
+ */
+export async function archiveActiveGroup(tx: Prisma.TransactionClient, groupId: string): Promise<boolean> {
+  const group = await tx.group.findFirst({
+    select: {
+      mcpGrants: {
+        select: { serverId: true },
+        where: { canUse: true }
+      },
+      systemRole: true,
+      users: { select: { userId: true } }
+    },
+    where: { archivedAt: null, id: groupId }
+  });
+  if (!group || group.systemRole === "full_access") return false;
+
+  await tx.group.update({
+    data: { archivedAt: new Date() },
+    where: { id: groupId }
+  });
+
+  const serverIds = [...new Set(group.mcpGrants.map((grant) => grant.serverId))];
+  for (const membership of group.users) {
+    if (serverIds.length) {
+      await tx.mcpUserServer.updateMany({
+        data: { desiredRuntimeGenerationId: null },
+        where: { serverId: { in: serverIds }, userId: membership.userId }
+      });
+    }
+    for (const serverId of serverIds) {
+      const canStillUse = await tx.mcpGrant.count({
+        where: {
+          canUse: true,
+          serverId,
+          OR: [
+            { userId: membership.userId },
+            {
+              group: {
+                archivedAt: null,
+                users: { some: { userId: membership.userId } }
+              }
+            }
+          ]
+        }
+      });
+      if (!canStillUse) {
+        await tx.mcpUserServer.updateMany({
+          data: { enabled: false },
+          where: { serverId, userId: membership.userId }
+        });
+      }
+    }
+  }
+
+  return true;
 }
 
 export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupGrantCommands {
   return {
     async archiveGroup(groupId) {
-      return prisma.$transaction(async (tx) => {
-        const group = await tx.group.findFirst({
-          select: {
-            mcpGrants: {
-              select: { serverId: true },
-              where: { canUse: true }
-            },
-            systemRole: true,
-            users: { select: { userId: true } }
-          },
-          where: { archivedAt: null, id: groupId }
-        });
-        if (!group || group.systemRole === "full_access") return false;
-
-        await tx.group.update({
-          data: { archivedAt: new Date() },
-          where: { id: groupId }
-        });
-
-        const serverIds = [...new Set(group.mcpGrants.map((grant) => grant.serverId))];
-        for (const membership of group.users) {
-          if (serverIds.length) {
-            await tx.mcpUserServer.updateMany({
-              data: { desiredRuntimeGenerationId: null },
-              where: { serverId: { in: serverIds }, userId: membership.userId }
-            });
-          }
-          for (const serverId of serverIds) {
-            const canStillUse = await tx.mcpGrant.count({
-              where: {
-                canUse: true,
-                serverId,
-                OR: [
-                  { userId: membership.userId },
-                  {
-                    group: {
-                      archivedAt: null,
-                      users: { some: { userId: membership.userId } }
-                    }
-                  }
-                ]
-              }
-            });
-            if (!canStillUse) {
-              await tx.mcpUserServer.updateMany({
-                data: { enabled: false },
-                where: { serverId, userId: membership.userId }
-              });
-            }
-          }
-        }
-
-        return true;
-      });
+      return prisma.$transaction((tx) => archiveActiveGroup(tx, groupId));
     },
     async createGroup(input) {
       const name = normalizeAdminGroupName(input.name);
@@ -334,68 +344,13 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
           if (JSON.stringify([...currentGroupIds].sort()) !== JSON.stringify(expectedGroupIds)) {
             return "user_access_stale" as const;
           }
-          const removedGroupIds = [...currentGroupIds].filter(
-            (groupId) => !activeGroupIds.has(groupId)
-          );
-          const addedGroupIds = [...activeGroupIds].filter(
-            (groupId) => !currentGroupIds.has(groupId)
-          );
-          const affectedGroupIds = [...new Set([
-            ...currentMemberships.map((membership) => membership.groupId),
-            ...activeGroupIds
-          ])];
-          const affectedMcpServers = affectedGroupIds.length
-            ? await tx.mcpGrant.findMany({
-                distinct: ["serverId"],
-                select: { serverId: true },
-                where: { canUse: true, groupId: { in: affectedGroupIds } }
-              })
-            : [];
-
-          if (removedGroupIds.length) {
-            await tx.userGroup.deleteMany({
-              where: {
-                groupId: { in: removedGroupIds },
-                userId: input.userId
-              }
-            });
+          const add = [...activeGroupIds].filter((groupId) => !currentGroupIds.has(groupId));
+          const remove = [...currentGroupIds].filter((groupId) => !activeGroupIds.has(groupId));
+          // The next sign-in or SCIM push would undo a manual change to an IdP-managed membership.
+          if ((await managedMemberships(tx, { groupIds: [...add, ...remove], userId: input.userId })).size) {
+            return "group_membership_managed" as const;
           }
-
-          for (const groupId of addedGroupIds) {
-            await tx.userGroup.create({
-              data: {
-                groupId,
-                role: "member",
-                userId: input.userId
-              }
-            });
-          }
-
-          const affectedServerIds = affectedMcpServers.map((grant) => grant.serverId);
-          if (affectedServerIds.length) {
-            await tx.mcpUserServer.updateMany({
-              data: { desiredRuntimeGenerationId: null },
-              where: { serverId: { in: affectedServerIds }, userId: input.userId }
-            });
-            for (const serverId of affectedServerIds) {
-              const canStillUse = await tx.mcpGrant.count({
-                where: {
-                  canUse: true,
-                  serverId,
-                  OR: [
-                    { userId: input.userId },
-                    ...(activeGroupIds.size ? [{ groupId: { in: [...activeGroupIds] } }] : [])
-                  ]
-                }
-              });
-              if (!canStillUse) {
-                await tx.mcpUserServer.updateMany({
-                  data: { enabled: false },
-                  where: { serverId, userId: input.userId }
-                });
-              }
-            }
-          }
+          await applyMembershipChange(tx, { add, remove, userId: input.userId });
 
           return "applied" as const;
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });

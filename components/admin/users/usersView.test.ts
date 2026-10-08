@@ -10,6 +10,7 @@ import {
   inviteStaleLabel,
   openInvites,
   parseAdminUserListFilter,
+  scimDeactivationPendingLabel,
   staleInvites,
   userAccessSummary,
   userDeletionInfo,
@@ -66,6 +67,13 @@ function invite(overrides: Partial<AdminInviteRecord>): AdminInviteRecord {
 }
 
 describe("usersView", () => {
+  it("words a pending SCIM deactivation by the Projects that still need an Owner", () => {
+    expect(scimDeactivationPendingLabel({ projectCount: 1 })).toBe("SCIM deactivation pending: 1 Project needs a new Owner");
+    expect(scimDeactivationPendingLabel({ projectCount: 3 })).toBe("SCIM deactivation pending: 3 Projects need a new Owner");
+    expect(scimDeactivationPendingLabel({ projectCount: 0 }))
+      .toBe("SCIM deactivation pending: the next identity provider retry disables the account");
+  });
+
   it("summarizes access per status and membership", () => {
     const withAccess = user({
       effectiveEntitlements: { models: [{ modelId: "a", provider: "openai" }, { modelId: "b", provider: "openai" }], providers: ["openai"], searchStrategies: ["web"] },

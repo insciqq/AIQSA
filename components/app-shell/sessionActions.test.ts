@@ -122,6 +122,18 @@ describe("signOutCurrentSession", () => {
     expect(navigate).toHaveBeenCalledWith("/login");
   });
 
+  it("continues to the identity provider's logout page the server names, and to /login otherwise", async () => {
+    const navigate = vi.fn();
+    const target = "https://idp.example/realms/main/protocol/openid-connect/logout?client_id=aiqsa&post_logout_redirect_uri=https%3A%2F%2Faiqsa.example%2Flogin";
+    await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockResolvedValue(Response.json({ redirectTo: target })), navigate });
+    expect(navigate).toHaveBeenLastCalledWith(target);
+
+    for (const redirectTo of ["javascript:alert(1)", "/relative", 42]) {
+      await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockResolvedValue(Response.json({ redirectTo })), navigate });
+      expect(navigate).toHaveBeenLastCalledWith("/login");
+    }
+  });
+
   it("keeps the user in place and preserves a stable backend code on failure", async () => {
     const fetcher = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: "unauthorized" }), {
