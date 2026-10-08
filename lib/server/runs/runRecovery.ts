@@ -312,6 +312,7 @@ import {
   observationHandlesInProviderMessages
 } from "./contextCompactionPlanner";
 import { applyContextSummaryToRequest, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
+import { toolCallKind, toolExecutionKind, type ToolCallRoutes } from "./toolCallKind";
 import {
   contextCompactionArtifact,
   contextCompactionFailureOutcome,
@@ -1224,6 +1225,16 @@ function isRecoveredMcpDiscoveryCall(
   name: string
 ): boolean {
   return name === MCP_FIND_TOOLS_NAME && context.activeMcpDiscovery !== undefined;
+}
+
+/** The live loop's family routes, read from the recovery's current state. */
+function recoveredToolCallRoutes(context: RecoveryToolContext): ToolCallRoutes {
+  return {
+    search: (name) => isRecoveredSearchCall(context, name),
+    knowledge: (name) => isRecoveredKnowledgeCall(context, name),
+    workspace: (name) => isRecoveredWorkspaceCall(context, name),
+    mcp: (name) => isRecoveredMcpDiscoveryCall(context, name) || resolveMcpRunTool(context.activeMcpSnapshot, name) !== null
+  };
 }
 
 async function currentProjectRecoveryAuthorityAllowed(
@@ -3735,15 +3746,13 @@ async function recoverCheckpointedToolLoop(
     const recoveredReserved = reservedToolCallForRequest(run.normalizedRequest);
     const outcome = await runProviderToolLoop({
       deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
+      toolCallKind: (call) => toolCallKind(run.normalizedRequest, call.name, recoveredToolCallRoutes(context)),
       toolObservation(call) {
         const persisted = persistedCalls.get(call.id);
         if (!persisted) return undefined;
         return {
           tool_call_id: persisted.id, execution_index: persisted.ordinal,
-          tool_kind: isRecoveredSearchCall(context, call.name) ? "search"
-            : isRecoveredKnowledgeCall(context, call.name) ? "knowledge"
-            : isRecoveredWorkspaceCall(context, call.name) ? "workspace"
-            : isRecoveredMcpDiscoveryCall(context, call.name) || resolveMcpRunTool(context.activeMcpSnapshot, call.name) ? "mcp" : undefined
+          tool_kind: toolExecutionKind(call.name, recoveredToolCallRoutes(context))
         };
       },
       adapter: egressAdapter,
