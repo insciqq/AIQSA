@@ -10,6 +10,7 @@ import {
 import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { safeInternalPath } from "@/lib/auth/internalPath";
 import type { OAuthLoginOutcome, OAuthProviderId } from "@/lib/auth/oauth";
+import type { SamlLoginOutcome } from "@/lib/contracts/samlSignIn";
 import {
   fieldClassName,
   focusRingClassName,
@@ -18,6 +19,7 @@ import {
   primaryButtonClassName,
   secondaryButtonClassName
 } from "./authFormStyles";
+import { SamlSignInLink, samlOutcomeFeedback, type SamlSignInOption } from "./SamlSignIn";
 import { SecondFactorStep } from "./SecondFactorStep";
 
 type AuthLoginProps = {
@@ -32,6 +34,9 @@ type AuthLoginProps = {
   /** Self-service access requests; invites work either way. */
   registrationEnabled?: boolean;
   resetToken?: string;
+  samlOutcome?: SamlLoginOutcome;
+  /** The active SAML method, offered beside the OAuth providers. */
+  samlSignIn?: SamlSignInOption;
   sessionExpired?: boolean;
   verifyToken?: string;
 };
@@ -396,12 +401,15 @@ async function postJson(
 function PasswordSignInOff({
   invited,
   nextPath,
-  oauthProviders
+  oauthProviders,
+  samlSignIn
 }: {
   invited: boolean;
   nextPath: string;
   oauthProviders: readonly OAuthProviderId[];
+  samlSignIn?: SamlSignInOption;
 }) {
+  const methods = oauthProviders.length + (samlSignIn ? 1 : 0);
   return (
     <div className={formClassName} data-testid="password-sign-in-off">
       <div className="flex items-start gap-3 border-y border-trace-subtle py-3.5">
@@ -409,15 +417,15 @@ function PasswordSignInOff({
         <p className="text-sm leading-6 text-ink-secondary" role="status">
           Password sign-in is turned off
           {invited ? ", so this invitation cannot set a password. " : ". "}
-          {oauthProviders.length
+          {methods
             ? invited
               ? "Use one of these methods, or ask the administrator who invited you."
               : "Use one of these methods."
             : "Ask an administrator how to sign in."}
         </p>
       </div>
-      {oauthProviders.length ? (
-        <div className={`grid gap-2 ${oauthProviders.length > 1 ? "sm:grid-cols-2" : ""}`}>
+      {methods ? (
+        <div className={`grid gap-2 ${methods > 1 ? "sm:grid-cols-2" : ""}`}>
           {oauthProviders.map((provider) => (
             <a className={oauthButtonClassName} href={oauthStartHref(provider, nextPath)} key={provider}>
               <span
@@ -429,6 +437,7 @@ function PasswordSignInOff({
               Continue with {oauthProviderLabel(provider)}
             </a>
           ))}
+          {samlSignIn ? <SamlSignInLink className={oauthButtonClassName} label={samlSignIn.buttonLabel} nextPath={nextPath} /> : null}
         </div>
       ) : null}
     </div>
@@ -499,10 +508,14 @@ export function AuthLogin({
   passwordLoginEnabled = true,
   registrationEnabled = true,
   resetToken,
+  samlOutcome,
+  samlSignIn,
   sessionExpired,
   verifyToken
 }: AuthLoginProps) {
-  const initialFeedback = initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider);
+  const initialFeedback = samlOutcome
+    ? samlOutcomeFeedback(samlOutcome, samlSignIn?.buttonLabel ?? "SAML")
+    : initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider);
   const proofInputKey = JSON.stringify([verifyToken ?? null, resetToken ?? null, inviteToken ?? null]);
   const previousProofInputKeyRef = useRef(proofInputKey);
   const proofGenerationRef = useRef(0);
@@ -1041,7 +1054,7 @@ export function AuthLogin({
             ) : null}
 
           {passwordSignInOff ? (
-            <PasswordSignInOff invited={Boolean(activeInviteToken)} nextPath={nextPath} oauthProviders={oauthProviders} />
+            <PasswordSignInOff invited={Boolean(activeInviteToken)} nextPath={nextPath} oauthProviders={oauthProviders} samlSignIn={samlSignIn} />
           ) : null}
 
           {mode === "password" && !passwordSignInOff ? (
@@ -1116,14 +1129,14 @@ export function AuthLogin({
                 />
               ) : null}
 
-              {oauthProviders.length ? (
+              {oauthProviders.length || samlSignIn ? (
                 <div className="space-y-4">
                   <div className="flex items-center gap-3 text-xs text-ink-muted" aria-hidden="true">
                     <span className="h-px flex-1 bg-trace-subtle" />
                     <span>or</span>
                     <span className="h-px flex-1 bg-trace-subtle" />
                   </div>
-                  <div className={`grid gap-2 ${oauthProviders.length > 1 ? "sm:grid-cols-2" : ""}`}>
+                  <div className={`grid gap-2 ${oauthProviders.length + (samlSignIn ? 1 : 0) > 1 ? "sm:grid-cols-2" : ""}`}>
                     {oauthProviders.map((provider) => (
                       <a
                         aria-disabled={submitting || undefined}
@@ -1141,6 +1154,9 @@ export function AuthLogin({
                         Continue with {oauthProviderLabel(provider)}
                       </a>
                     ))}
+                    {samlSignIn ? (
+                      <SamlSignInLink className={oauthButtonClassName} disabled={submitting} label={samlSignIn.buttonLabel} nextPath={nextPath} />
+                    ) : null}
                   </div>
                 </div>
               ) : null}

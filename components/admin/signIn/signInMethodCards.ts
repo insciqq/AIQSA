@@ -1,4 +1,5 @@
 import { GoogleSignInCard, YandexSignInCard } from "@/components/admin/signIn/OAuthClientSignInCard";
+import { SamlSignInCard } from "@/components/admin/signIn/SamlSignInCard";
 import type { AdminSignInMethodCardProps } from "@/components/admin/signIn/SignInMethodCardFrame";
 import type { AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
 import type { ComponentType } from "react";
@@ -15,5 +16,6 @@ export type AdminSignInMethodCardRegistry = {
  */
 export const adminSignInMethodCards: AdminSignInMethodCardRegistry = {
   google: GoogleSignInCard,
+  saml: SamlSignInCard,
   yandex: YandexSignInCard
 };
