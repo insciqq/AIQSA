@@ -82,6 +82,51 @@ describe("artifact sandbox bridge", () => {
     expect(h.postMessage).toHaveBeenLastCalledWith({ type: "aiqsa_artifact_runtime_error", kind: "error",
       message: "Artifact link target not found: api/private", line: 0, column: 0 }, "*");
   });
+
+  const WEBRTC_GLOBALS = ["RTCPeerConnection", "webkitRTCPeerConnection", "mozRTCPeerConnection",
+    "RTCDataChannel", "RTCIceCandidate", "RTCSessionDescription", "RTCCertificate"] as const;
+
+  /** Runs the shipped bridge source against a window pre-seeded with browser globals. */
+  function runBridge(window: Record<string, unknown>): void {
+    const document = { addEventListener: vi.fn(), getElementById: vi.fn(() => null), getElementsByName: vi.fn(() => []) };
+    new Function("window", "document", "parent", "DOMException", "URL",
+      ARTIFACT_RUNTIME_BRIDGE.replace(ARTIFACT_STORAGE_PLACEHOLDER, "[]"))(window, document, { postMessage: vi.fn() }, DOMException, URL);
+  }
+
+  it("deletes every WebRTC entry point so no peer connection or STUN channel can open", () => {
+    const window: Record<string, unknown> = { addEventListener: vi.fn(), scrollTo: vi.fn() };
+    for (const name of WEBRTC_GLOBALS) window[name] = class {};
+    // A global the bridge never touches must survive untouched.
+    const sentinel = class WebSocket {};
+    window.WebSocket = sentinel;
+    runBridge(window);
+    for (const name of WEBRTC_GLOBALS) {
+      expect(name in window, name).toBe(false);
+      expect(window[name], name).toBeUndefined();
+    }
+    expect(window.WebSocket).toBe(sentinel);
+  });
+
+  it("neutralizes a WebRTC global defined only on the prototype chain", () => {
+    // An engine may expose the constructor through the global's prototype rather
+    // than as an own property; overwriting the own slot with undefined shadows it.
+    const window: Record<string, unknown> = Object.create({ RTCPeerConnection: class {} });
+    window.addEventListener = vi.fn(); window.scrollTo = vi.fn();
+    runBridge(window);
+    expect(window.RTCPeerConnection).toBeUndefined();
+    expect((window as { localStorage?: unknown }).localStorage).toBeDefined();
+  });
+
+  it("does not throw when a WebRTC global cannot be deleted or redefined", () => {
+    const window: Record<string, unknown> = { addEventListener: vi.fn(), scrollTo: vi.fn() };
+    Object.defineProperty(window, "RTCPeerConnection", { configurable: false, writable: false, value: class {} });
+    for (const name of WEBRTC_GLOBALS.slice(1)) window[name] = class {};
+    expect(() => runBridge(window)).not.toThrow();
+    // The locked global is a stated residual; every removable one is still gone,
+    // and the bridge finished setting up (storage is defined).
+    for (const name of WEBRTC_GLOBALS.slice(1)) expect(name in window, name).toBe(false);
+    expect((window as { localStorage?: unknown }).localStorage).toBeDefined();
+  });
 });
 
 type Site = Partial<Pick<ArtifactRuntimeSite, "page" | "media">> & { files?: ArtifactRuntimeSite["files"] };
