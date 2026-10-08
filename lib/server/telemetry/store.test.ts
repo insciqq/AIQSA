@@ -76,6 +76,30 @@ describe("Prisma telemetry store", () => {
     expect(busy.db.$executeRaw).toHaveBeenCalledTimes(60);
   });
 
+  it("trims a storm's surplus by id after expiry and before the global cap, within the pass bound", async () => {
+    const ids = Array.from({ length: 2_500 }, (_, index) => `00000000-0000-4000-8000-${String(2_499 - index).padStart(12, "0")}`);
+    const { db, statements, store } = fakeDatabase(ids.map((id) => ({ id })));
+    db.$executeRaw.mockImplementation(async (statement: Prisma.Sql) => {
+      statements.push(statement);
+      const list = statement.values.find(Array.isArray);
+      return Array.isArray(list) ? list.length : 0;
+    });
+    await expect(store.deleteExpired(HOUR)).resolves.toEqual({ counters: 0, incidents: 2_500 });
+
+    const kinds = statements.map((statement) => /^\s*SELECT "id" FROM \(/u.test(statement.sql) ? "rank"
+      : /"id" = ANY/u.test(statement.sql) ? "trim"
+      : /OFFSET/u.test(statement.sql) ? "cap"
+      : /"occurredAt" </u.test(statement.sql) ? "expire" : "counters");
+    expect(kinds).toEqual(["counters", "expire", "rank", "trim", "trim", "trim", "cap"]);
+    const ranking = statements[2]!;
+    expect(ranking.sql).toContain(`"details" ->> 'error_fingerprint'`);
+    expect(ranking.sql).toMatch(/PARTITION BY "event", "code", "subsystem", "connectionId", .*date_trunc\('day', "occurredAt"\)/su);
+    expect(ranking.values).toEqual([100, 100, 20_000]);
+    const deleted = statements.slice(3, 6).map((statement) => statement.values[0] as string[]);
+    expect(deleted.map((chunk) => chunk.length)).toEqual([1_000, 1_000, 500]);
+    expect(deleted.flat()).toEqual([...ids].sort());
+  });
+
   it("rejects malformed reads before any query", async () => {
     const { db, store } = fakeDatabase();
     const range = { from: new Date(HOUR.getTime() - 86_400_000), to: HOUR };

@@ -27,6 +27,7 @@ const health: AdminHealth = {
 describe("admin health contract", () => {
   it("decodes a well-formed health response and rejects malformed shapes", () => {
     expect(decodeAdminHealthResponse({ health })).toEqual({ health });
+    expect(decodeAdminHealthResponse({ health: { ...health, range: "14d", interval: "day" } })?.health.range).toBe("14d");
     expect(decodeAdminHealthResponse({ health: { ...health, range: "1y" } })).toBeNull();
     expect(decodeAdminHealthResponse({ health: { ...health, summary: { ...health.summary, errors: -1 } } })).toBeNull();
     expect(decodeAdminHealthResponse({ health: { ...health, series: [{ ...health.series[0], counts: { providers: 1 } }] } })).toBeNull();
@@ -50,6 +51,7 @@ describe("admin health contract", () => {
     expect(filters).toEqual({ range: "7d", category: "tools", code: null, cursor: "abc_D-1", event: null, level: null, q: "run-1" });
     expect(adminHealthIncidentSearch(filters!)).toBe("range=7d&category=tools&q=run-1&cursor=abc_D-1");
     expect(parseAdminHealthIncidentFilters(new URLSearchParams(""))?.range).toBe("24h");
+    expect(parseAdminHealthIncidentFilters(new URLSearchParams("range=14d"))?.range).toBe("14d");
     expect(parseAdminHealthIncidentFilters(new URLSearchParams("q=a%20b"))).toBeNull();
     expect(parseAdminHealthIncidentFilters(new URLSearchParams("range=7d&range=30d"))).toBeNull();
   });

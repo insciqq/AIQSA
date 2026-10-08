@@ -2205,7 +2205,7 @@ Options:
                          --tail every line in that window is printed.
   --tail <n|all>         logs: last lines per container (default 200 without --since).
   --follow, -f           logs: keep streaming new lines until interrupted.
-  --since 24h|7d|30d     health: report range (default 24h).
+  --since 24h|7d|14d|30d health: report range (default 24h).
   --json                 health: machine-readable JSON instead of text.
   --run <reference>      health: look up the runs and incidents of an error reference
                          (the first 8 or more characters of a run id).
@@ -2319,7 +2319,7 @@ validate_args() {
   if (( LOGS_ERRORS && LOGS_WARNINGS )); then usage_error "--errors and --warnings are mutually exclusive."; fi
   if [[ -n $LOGS_TAIL && ! $LOGS_TAIL =~ ^(all|0|[1-9][0-9]{0,6})$ ]]; then usage_error "--tail must be a line count or all."; fi
   if [[ $COMMAND == health ]]; then
-    if [[ -n $SINCE && ! $SINCE =~ ^(24h|7d|30d)$ ]]; then usage_error "--since must be 24h, 7d or 30d for health."; fi
+    if [[ -n $SINCE && ! $SINCE =~ ^(24h|7d|14d|30d)$ ]]; then usage_error "--since must be 24h, 7d, 14d or 30d for health."; fi
     if [[ -n $SINCE && -n $HEALTH_RUN ]]; then usage_error "--run and --since are mutually exclusive."; fi
     if [[ -n $HEALTH_RUN && ! $HEALTH_RUN =~ ^[0-9A-Fa-f][0-9A-Fa-f-]{7,35}$ ]]; then
       usage_error "--run needs an error reference: at least the first 8 characters of a run id."

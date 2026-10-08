@@ -161,6 +161,19 @@ describe("admin health service", () => {
     expect(telemetry.queries.some((query) => !query.groupBy)).toBe(false);
   });
 
+  it("reads the 14-day range as daily buckets with a comparable previous period", async () => {
+    const telemetry = store({ series: [] });
+    const service = createAdminHealthService({ store: telemetry, providerNames: names, now: () => NOW });
+    const health = await service.read("14d");
+    expect(health).toMatchObject({ range: "14d", interval: "day", from: "2026-09-24T00:00:00.000Z", to: "2026-10-08T00:00:00.000Z" });
+    expect(health.series).toHaveLength(14);
+    expect(health.summary.previousErrors).toEqual(expect.any(Number));
+    expect(telemetry.queries.find((query) => query.groupBy?.includes("bucket"))).toMatchObject({ interval: "day" });
+    expect(telemetry.queries.find((query) => !query.groupBy)).toMatchObject({
+      from: new Date("2026-09-10T00:00:00.000Z"), to: new Date("2026-09-24T00:00:00.000Z")
+    });
+  });
+
   it("propagates a database failure instead of returning an empty view", async () => {
     const failing = { readCounters: vi.fn().mockRejectedValue(new Error("db down")), readIncidents: vi.fn() };
     const service = createAdminHealthService({ store: failing, providerNames: names, now: () => NOW });

@@ -163,17 +163,21 @@ describe("health report text", () => {
 
   it("says so when nothing went wrong", async () => {
     const quiet: AdminHealth = {
-      ...health, range: "7d", interval: "day", hasTelemetry: false, providers: [], series: [], errorGroups: [],
+      ...health, range: "14d", interval: "day", hasTelemetry: false, providers: [], series: [], errorGroups: [],
       summary: { ...health.summary, errors: 0, previousErrors: 0, providerFailures: 0, providerFailureRate: null, http5xx: 0,
         restarts: 0, roleStarts: [{ role: "app", starts: 1, restarts: 0 }], clientErrors: 0 }
     };
+    const read = vi.fn().mockResolvedValue(quiet);
     const report = await collectHealthReport(sources({
-      health: { read: vi.fn().mockResolvedValue(quiet), incidents: vi.fn().mockResolvedValue({ incidents: [], nextCursor: null }) },
+      health: { read, incidents: vi.fn().mockResolvedValue({ incidents: [], nextCursor: null }) },
       queues: { read: vi.fn().mockResolvedValue({ checkedAt: "2026-10-07T09:59:30.000Z", queues: [queue({ queue: "chat_titles" })] }) },
       findings: vi.fn().mockResolvedValue([])
-    }), "7d");
+    }), "14d");
+    expect(read).toHaveBeenCalledWith("14d");
+    expect(JSON.parse(JSON.stringify(report))).toMatchObject({ kind: "health", range: "14d" });
+    expect(formatHealthReport(report).split("\n")[0]).toMatch(/^AIQSA health · last 14 days · /u);
     expect(formatHealthReport(report).split("\n").slice(2)).toEqual([
-      "No problems recorded in the last 7 days.", "No telemetry at all was recorded in this range.", ""
+      "No problems recorded in the last 14 days.", "No telemetry at all was recorded in this range.", ""
     ]);
     expect(formatHealthReport({ ...report, hasTelemetry: true } satisfies HealthReport)).not.toContain("No telemetry");
   });
@@ -217,12 +221,13 @@ describe("health report arguments", () => {
   it("defaults to the shortest range and accepts both flag spellings", () => {
     expect(parseHealthReportArgs([])).toEqual({ help: false, json: false, range: "24h", run: null });
     expect(parseHealthReportArgs(["--since=30d", "--json"])).toEqual({ help: false, json: true, range: "30d", run: null });
+    expect(parseHealthReportArgs(["--since", "14d"])).toEqual({ help: false, json: false, range: "14d", run: null });
     expect(parseHealthReportArgs(["--run", "1A2B3C4D-11", "--json"])).toEqual({ help: false, json: true, range: "24h", run: "1a2b3c4d-11" });
   });
 
   it.each([
-    [["--since", "1h"], "--since must be one of 24h, 7d, 30d."],
-    [["--since"], "--since must be one of 24h, 7d, 30d."],
+    [["--since", "1h"], "--since must be one of 24h, 7d, 14d, 30d."],
+    [["--since"], "--since must be one of 24h, 7d, 14d, 30d."],
     [["--since", "7d", "--since", "7d"], "--since was given twice."],
     [["--run", "1a2b3c"], "--run needs an error reference"],
     [["--run", "1a2b3c4d", "--since", "7d"], "--run and --since are mutually exclusive."],

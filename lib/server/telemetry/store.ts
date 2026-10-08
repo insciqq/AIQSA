@@ -8,14 +8,21 @@ import {
   type TelemetryDimensions, type TelemetryIncidentInput, type TelemetryIncidentLevel, type TelemetryLevel
 } from "./aggregator";
 
-/** Retention owned by code (Persistence): counters for 30 days; incidents for
- * 14 days and never beyond the newest 50,000 rows. */
+/** Retention owned by code (Persistence): counters and incidents for 30 days;
+ * per UTC day and incident key at most 200 incidents (the day's first and
+ * latest 100); never beyond the newest 50,000 incidents. */
 export const TELEMETRY_COUNTER_RETENTION_MS = 30 * 24 * 3_600_000;
-export const TELEMETRY_INCIDENT_RETENTION_MS = 14 * 24 * 3_600_000;
+export const TELEMETRY_INCIDENT_RETENTION_MS = 30 * 24 * 3_600_000;
+export const TELEMETRY_INCIDENT_KEY_DAY_ROWS = 200;
 export const TELEMETRY_INCIDENT_MAX_ROWS = 50_000;
 const RETENTION_BATCH_ROWS = 1_000;
 const RETENTION_MAX_BATCHES = 20;
 const ROWS_PER_STATEMENT = 500;
+const KEY_DAY_EDGE_ROWS = TELEMETRY_INCIDENT_KEY_DAY_ROWS / 2;
+/** One incident key per UTC day: a repeating error. Distinct fingerprints are
+ * distinct keys; NULLs compare equal within a window partition. */
+const incidentKeyDay = Prisma.sql`"event", "code", "subsystem", "connectionId", "details" ->> 'error_fingerprint',
+  date_trunc('day', "occurredAt")`;
 
 export const TELEMETRY_GROUP_KEYS = Object.freeze(
   ["bucket", "role", "event", "level", "appVersion", "overflow", ...TELEMETRY_DIMENSIONS] as const
@@ -303,6 +310,35 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
     return total;
   };
 
+  /**
+   * Deletes a storm's surplus: per UTC day and incident key, rows with more than
+   * the edge count of rows both before and after them in one snapshot. Writers
+   * may add rows meanwhile and passes may overlap, yet no snapshot ever holds
+   * that many rows before the day's overall first ones or after its latest
+   * ones, so those always stay. One ranking per pass, then bounded deletes by
+   * id in a stable order.
+   */
+  const trimRepeatedIncidents = async (): Promise<number> => {
+    const rows = await db.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id" FROM (
+        SELECT "id",
+          row_number() OVER (PARTITION BY ${incidentKeyDay} ORDER BY "occurredAt", "id") AS "position",
+          count(*) OVER (PARTITION BY ${incidentKeyDay}) AS "rows"
+        FROM "TelemetryIncident"
+      ) AS "ranked"
+      WHERE "position" > ${KEY_DAY_EDGE_ROWS} AND "position" <= "rows" - ${KEY_DAY_EDGE_ROWS}
+      LIMIT ${RETENTION_BATCH_ROWS * RETENTION_MAX_BATCHES}
+    `);
+    const ids = rows.map((row) => row.id).sort();
+    let total = 0;
+    for (let index = 0; index < ids.length; index += RETENTION_BATCH_ROWS) {
+      total += await db.$executeRaw(Prisma.sql`
+        DELETE FROM "TelemetryIncident" WHERE "id" = ANY(${ids.slice(index, index + RETENTION_BATCH_ROWS)}::text[])
+      `);
+    }
+    return total;
+  };
+
   return Object.freeze({
     async write(batch: TelemetryBatch): Promise<void> {
       // One global key order for every writer: concurrent flushes from several
@@ -343,6 +379,9 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
             LIMIT ${RETENTION_BATCH_ROWS}
           )
         `);
+        // Age, then a storm's surplus, then the global cap: the cap stays the
+        // last resort and no longer evicts other errors' incidents for a storm.
+        const trimmed = await trimRepeatedIncidents();
         const surplus = await deleteInBatches(Prisma.sql`
           DELETE FROM "TelemetryIncident"
           WHERE "id" IN (
@@ -352,7 +391,7 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
             LIMIT ${RETENTION_BATCH_ROWS}
           )
         `);
-        return { counters, incidents: expired + surplus };
+        return { counters, incidents: expired + trimmed + surplus };
       } catch (error) {
         return retainDatabaseFailure(error);
       }
