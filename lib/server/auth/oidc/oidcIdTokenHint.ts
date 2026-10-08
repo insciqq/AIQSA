@@ -9,8 +9,12 @@ import type { SealedIdTokenHint } from "../requestAuth";
 
 type OidcConfig = AuthSignInMethodConfig<"oidc">;
 
-/** The longest ID token a session keeps; a longer one still signs in, and its session logs out without a hint. */
-export const OIDC_ID_TOKEN_HINT_MAX_LENGTH = 16 * 1024;
+/**
+ * The longest ID token a session keeps. The hint travels in the logout URL, and servers and
+ * proxies commonly refuse request lines over 8 KiB; a longer token still signs in, and its
+ * session logs out without a hint.
+ */
+export const OIDC_ID_TOKEN_HINT_MAX_LENGTH = 6 * 1024;
 
 const PURPOSE = "auth_session_id_token_hint";
 const VALUE_ID = "id_token";
