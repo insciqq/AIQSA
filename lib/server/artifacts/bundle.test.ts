@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeArtifactOperation } from "@/lib/contracts/artifacts";
-import { buildArtifactBundle, renderArtifactBundle } from "./bundle";
+import { buildArtifactBundle, decodeArtifactBundle, hydrateArtifactBundleFile, renderArtifactBundle } from "./bundle";
+import { ARTIFACT_ERROR_EXCERPT_CHARACTERS } from "./referencedFiles";
 
 describe("artifact bundle isolation", () => {
   it("rejects external HTML references and inlines local CSS and JavaScript", () => {
@@ -122,5 +123,83 @@ describe("artifact icon links", () => {
   });
   it("keeps refusing other link relations", () => {
     expect(() => buildHtml(head(`<link rel="preload" href="${png}">`))).toThrow(expect.objectContaining({ code: "artifact_external_style_unsupported" }));
+  });
+});
+
+describe("text and bytes supplied by reference", () => {
+  const referenced = (files: Array<{ path: string; mimeType: string; bytes: Buffer }>, entrypoint = "index.html") => buildArtifactBundle(
+    normalizeArtifactOperation({ intent: "create", kind: "html", title: "Referenced", entrypoint,
+      files: files.map(file => ({ path: file.path, mimeType: file.mimeType, assetRef: `ref-${file.path}` })) }), files);
+  const hydrated = (built: ReturnType<typeof referenced>, files: Array<{ path: string; bytes: Buffer }>) => ({ ...built.bundle,
+    files: built.bundle.files.map(file => hydrateArtifactBundleFile(file, files.find(item => item.path === file.path)!.bytes)) });
+
+  it("stores referenced text as a blob and renders it as text again", () => {
+    const files = [
+      { path: "index.html", mimeType: "text/html", bytes: Buffer.from('<link rel="stylesheet" href="style.css"><h1>REFERENCED_PAGE 🪿</h1><img src="loop.gif">') },
+      { path: "style.css", mimeType: "text/css", bytes: Buffer.from("h1{color:rgb(1,2,3)}") },
+      { path: "loop.gif", mimeType: "image/gif", bytes: Buffer.from("GIF89a-synthetic") },
+      { path: "report.pdf", mimeType: "application/pdf", bytes: Buffer.from("%PDF-1.7 synthetic") }
+    ];
+    const built = referenced(files);
+    expect(built.bundle.files.every(file => file.blob && file.byteSize && file.text === undefined && file.base64 === undefined)).toBe(true);
+    expect(built.bytes.toString()).not.toContain("REFERENCED_PAGE");
+    expect(decodeArtifactBundle(built.bytes).files.map(file => file.mimeType)).toEqual(["text/html", "text/css", "image/gif", "application/pdf"]);
+    const view = hydrated(built, files);
+    expect(view.files.map(file => file.text !== undefined)).toEqual([true, true, false, false]);
+    const output = renderArtifactBundle(view).body.toString();
+    expect(output).toContain("REFERENCED_PAGE 🪿");
+    expect(output).toContain("h1{color:rgb(1,2,3)}");
+    expect(output).toContain(`data:image/gif;base64,${files[2]!.bytes.toString("base64")}`);
+  });
+
+  it("refuses invalid UTF-8 and control characters in referenced text at its path", () => {
+    expect(() => referenced([{ path: "index.html", mimeType: "text/html", bytes: Buffer.from([0x3c, 0x70, 0x3e, 0xfe]) }]))
+      .toThrow(expect.objectContaining({ code: "artifact_text_encoding_invalid", path: "index.html" }));
+    const text = `<p>${"z".repeat(300)}KEEP\u0001after</p>`;
+    try {
+      referenced([{ path: "index.html", mimeType: "text/html", bytes: Buffer.from(text) }]);
+      throw new Error("expected rejection");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "artifact_text_invalid", path: "index.html", hint: expect.stringContaining("U+0001") });
+      const excerpt = (error as { excerpt: string }).excerpt;
+      expect(excerpt.endsWith("KEEP")).toBe(true);
+      expect(excerpt.length).toBe(ARTIFACT_ERROR_EXCERPT_CHARACTERS);
+    }
+  });
+
+  it("returns a bounded verbatim excerpt of the failing markup", () => {
+    const failing = (text: string) => {
+      try { referenced([{ path: "index.html", mimeType: "text/html", bytes: Buffer.from(text) }]); }
+      catch (error) { return error as { code: string; path: string; excerpt?: string }; }
+      throw new Error("expected rejection");
+    };
+    const meta = '<meta http-equiv="X-UA-Compatible" content="IE=edge">';
+    for (const separator of ["\r\n", "\r\n "]) {
+      const source = `<!doctype html>\r\n<html>\r\n<head>\r\n<title>${"t".repeat(5000)}${"🪿".repeat(30)}</title>${separator}${meta}\r\n</head><body>🪿</body></html>`;
+      const error = failing(source);
+      expect(error).toMatchObject({ code: "artifact_element_unsupported", path: "index.html" });
+      expect(error.excerpt).toContain(meta);
+      expect(source).toContain(error.excerpt);
+      expect(error.excerpt!.length).toBeLessThanOrEqual(ARTIFACT_ERROR_EXCERPT_CHARACTERS);
+      expect(/[\uD800-\uDFFF]/u.test(error.excerpt!)).toBe(false);
+    }
+    const longFrame = `<iframe title="${"w".repeat(400)}"></iframe>`;
+    const framed = failing(`<main>${longFrame}</main>`);
+    expect(framed.excerpt!.startsWith('<iframe title="www')).toBe(true);
+    expect(framed.excerpt!.length).toBe(ARTIFACT_ERROR_EXCERPT_CHARACTERS);
+    const nested = failing(`<section><div><form><button formaction="#x">Go</button></form></div></section>`);
+    expect(nested).toMatchObject({ code: "artifact_external_link_unsupported", excerpt: expect.stringContaining('<button formaction="#x">') });
+  });
+
+  it("locates errors only in the entry file it parsed", () => {
+    const stylesheet = (() => {
+      try {
+        referenced([{ path: "index.html", mimeType: "text/html", bytes: Buffer.from('<link rel="stylesheet" href="style.css">') },
+          { path: "style.css", mimeType: "text/css", bytes: Buffer.from('@import "https://example.com/a.css";') }]);
+      } catch (error) { return error as { code: string; path: string; excerpt?: string }; }
+      throw new Error("expected rejection");
+    })();
+    expect(stylesheet).toMatchObject({ code: "artifact_css_import_unsupported", path: "style.css" });
+    expect(stylesheet.excerpt).toBeUndefined();
   });
 });

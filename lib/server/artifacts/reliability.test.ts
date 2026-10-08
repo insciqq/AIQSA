@@ -28,7 +28,9 @@ describe("artifact patch, privacy and bounded output", () => {
     expect(next.files).toEqual([expect.objectContaining({ text: "<p>three</p>" }), expect.objectContaining({ assetRef: "image" })]);
     expect(() => normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", edits: [{ path: "index.html", old_string: "one", new_string: "two" }] }, base)).toThrow("artifact_edit_ambiguous");
     expect(() => normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", delete_paths: ["index.html"] }, base)).toThrow("artifact_delete_entrypoint");
-    expect(() => normalizeArtifactOperation({ intent: "create", kind: "html", title: "Bad", files: [], edits: [] })).toThrow("artifact_operation_invalid");
+    expect(() => normalizeArtifactOperation({ intent: "create", kind: "html", title: "Bad", files: [], delete_paths: [] })).toThrow("artifact_operation_invalid");
+    expect(() => normalizeArtifactOperation({ intent: "create", kind: "html", title: "Bad", entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "<p>one</p>" }],
+      edits: [{ path: "index.html", old_string: "one", new_string: "two" }] })).toThrow("artifact_edit_path_invalid");
     try {
       normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", edits: [{ path: "index.html", old_string: "one", new_string: "x".repeat(ARTIFACT_LIMITS.maxTextFileBytes + 1) }] }, base);
       throw new Error("expected rejection");

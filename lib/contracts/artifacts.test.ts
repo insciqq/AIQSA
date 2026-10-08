@@ -7,7 +7,8 @@ import {
   decodeArtifactPublicationCreate, decodeArtifactPublicationMutation, decodeArtifactPublicationRevision,
   decodeArtifactPublicationSummary, decodeArtifactPublicManifest, decodeArtifactPublicVersion, decodeArtifactVersionPage,
   decodeArtifactDetail, ARTIFACT_LIMITS,
-  normalizeArtifactOperation
+  normalizeArtifactOperation,
+  applyArtifactTextEdit, artifactMimeEssence, isArtifactImageMime, isArtifactTextMime
 } from "./artifacts";
 
 const html = (overrides: Record<string, unknown> = {}) => ({
@@ -163,5 +164,98 @@ describe("explicit versioned publication contracts", () => {
     for (const value of [null, "", "0", "01", "-1", "+1", " 1", "1 ", "1.0", "1e2", "1,2", "2147483648", "9".repeat(100)]) expect(decodeArtifactPublicVersion(value)).toBeNull();
     expect(decodeArtifactPublicVersion("2147483647")).toBe(2_147_483_647);
     expect(decodeArtifactPublicVersion("3")).toBe(3);
+  });
+});
+
+describe("files supplied by reference", () => {
+  const page = (overrides: Record<string, unknown> = {}) => ({
+    intent: "create", kind: "html", title: "Referenced", entrypoint: "index.html",
+    files: [{ path: "index.html", mimeType: "text/html", assetRef: "attachment-html" }],
+    ...overrides
+  });
+
+  it("accepts a reference to a file of any syntactically valid type and tells text from bytes", () => {
+    for (const mimeType of ["application/pdf", "video/mp4", "image/gif", "application/x-sqlite3", "model/gltf-binary",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"]) {
+      const operation = normalizeArtifactOperation(page({ files: [
+        { path: "index.html", mimeType: "text/html", assetRef: "attachment-html" },
+        { path: "data/file", mimeType, assetRef: "attachment-other" }
+      ] }));
+      expect(operation.files[1]).toEqual({ path: "data/file", mimeType, assetRef: "attachment-other", byteSize: 0 });
+    }
+    expect(normalizeArtifactOperation(page({ files: [{ path: "index.html", mimeType: "Text/HTML", assetRef: "a" }] })).files[0]!.mimeType).toBe("text/html");
+    for (const mimeType of ["text/html; charset=utf-8", "text", "text/", "/html", "text/ html", "x".repeat(120) + "/" + "y".repeat(10)]) {
+      expect(() => normalizeArtifactOperation(page({ files: [{ path: "index.html", mimeType, assetRef: "a" }] }))).toThrow("artifact_mime_invalid");
+    }
+    for (const assetRef of ["", "x".repeat(129), "bad\nid", 7]) {
+      expect(() => normalizeArtifactOperation(page({ files: [{ path: "index.html", mimeType: "text/html", assetRef }] }))).toThrow("artifact_asset_ref_invalid");
+    }
+    for (const mimeType of ["text/html", "text/css", "text/javascript", "application/javascript", "application/json", "text/plain", "text/markdown", "text/csv", "image/svg+xml"]) {
+      expect(isArtifactTextMime(mimeType)).toBe(true);
+    }
+    for (const mimeType of ["application/pdf", "image/png", "text/xml", "application/xhtml+xml", "video/mp4"]) expect(isArtifactTextMime(mimeType)).toBe(false);
+    expect(artifactMimeEssence("Text/HTML; charset=UTF-8")).toBe("text/html");
+    expect(artifactMimeEssence("not a type")).toBeNull();
+    expect([isArtifactImageMime("image/png"), isArtifactImageMime("image/gif")]).toEqual([true, false]);
+  });
+
+  it("keeps image compositions to raster image references", () => {
+    const image = { intent: "create", kind: "image", title: "Picture" };
+    expect(normalizeArtifactOperation({ ...image, files: [{ path: "a.webp", mimeType: "image/webp", assetRef: "a" }] }).files).toHaveLength(1);
+    for (const mimeType of ["image/gif", "application/pdf", "image/svg+xml"]) {
+      expect(() => normalizeArtifactOperation({ ...image, files: [{ path: "a", mimeType, assetRef: "a" }] })).toThrow("artifact_mime_invalid");
+    }
+  });
+
+  it("defers create-time edits to referenced text and refuses every other edit target", () => {
+    const edits = [{ path: "index.html", old_string: "<link rel=\"preload\">", new_string: "" },
+      { path: "index.html", old_string: "Old title", new_string: "New title", replace_all: true }];
+    const operation = normalizeArtifactOperation(page({ edits }));
+    expect(operation.files).toEqual([{ path: "index.html", mimeType: "text/html", assetRef: "attachment-html", byteSize: 0 }]);
+    expect(operation.referenceEdits).toEqual([{ ...edits[0], editIndex: 0 }, { ...edits[1], editIndex: 1 }]);
+    expect(normalizeArtifactOperation(page()).referenceEdits).toBeUndefined();
+    const reject = (overrides: Record<string, unknown>, code: string, editIndex?: number) => {
+      try { normalizeArtifactOperation(page(overrides)); throw new Error("expected rejection"); }
+      catch (error) { expect(error).toMatchObject({ code, ...(editIndex === undefined ? {} : { editIndex }) }); }
+    };
+    const files = [{ path: "index.html", mimeType: "text/html", assetRef: "attachment-html" },
+      { path: "inline.css", mimeType: "text/css", text: "body{}" }, { path: "doc.pdf", mimeType: "application/pdf", assetRef: "pdf" }];
+    reject({ files, edits: [{ path: "inline.css", old_string: "body", new_string: "main" }] }, "artifact_edit_path_invalid", 0);
+    reject({ files, edits: [edits[0], { path: "doc.pdf", old_string: "%PDF", new_string: "%PDX" }] }, "artifact_edit_path_invalid", 1);
+    reject({ edits: [{ path: "missing.html", old_string: "a", new_string: "b" }] }, "artifact_edit_path_invalid", 0);
+    reject({ edits: [{ path: "index.html", old_string: "same", new_string: "same" }] }, "artifact_edit_invalid", 0);
+    reject({ delete_paths: ["index.html"] }, "artifact_operation_invalid");
+  });
+
+  it("applies inline update edits at once and defers edits to stored text, also when it is replaced in the call", () => {
+    const base = normalizeArtifactOperation({ intent: "create", kind: "html", title: "Base", entrypoint: "index.html", files: [
+      { path: "index.html", mimeType: "text/html", text: "<p>one</p>" },
+      { path: "scene.html", mimeType: "text/html", assetRef: "base:scene" },
+      { path: "photo.png", mimeType: "image/png", assetRef: "base:photo" }
+    ] });
+    const update = { intent: "update", baseVersionId: "v1" };
+    const both = normalizeArtifactOperation({ ...update, edits: [
+      { path: "scene.html", old_string: "a", new_string: "b" }, { path: "index.html", old_string: "one", new_string: "two" }] }, base);
+    expect(both.files[0]).toMatchObject({ path: "index.html", text: "<p>two</p>" });
+    expect(both.files[1]).toEqual(base.files[1]);
+    expect(both.referenceEdits).toEqual([{ path: "scene.html", old_string: "a", new_string: "b", editIndex: 0 }]);
+    const deleted = normalizeArtifactOperation({ ...update, delete_paths: ["scene.html"], edits: [{ path: "scene.html", old_string: "a", new_string: "b" }] }, base);
+    expect(deleted.referenceEdits).toBeUndefined();
+    expect(deleted.files.map(file => file.path)).toEqual(["index.html", "photo.png"]);
+    const replaced = normalizeArtifactOperation({ ...update, files: [{ path: "scene.html", mimeType: "text/html", assetRef: "new-upload" }],
+      edits: [{ path: "scene.html", old_string: "a", new_string: "b" }] }, base);
+    expect(replaced.files.find(file => file.path === "scene.html")).toMatchObject({ assetRef: "new-upload" });
+    expect(replaced.referenceEdits).toHaveLength(1);
+    expect(() => normalizeArtifactOperation({ ...update, files: [{ path: "index.html", mimeType: "text/html", text: "<p>new</p>" }],
+      edits: [{ path: "index.html", old_string: "one", new_string: "two" }] }, base)).toThrow("artifact_edit_path_invalid");
+    expect(() => normalizeArtifactOperation({ ...update, edits: [{ path: "photo.png", old_string: "a", new_string: "b" }] }, base)).toThrow("artifact_edit_path_invalid");
+  });
+
+  it("counts exact non-overlapping matches before replacing", () => {
+    expect(applyArtifactTextEdit("aaa", { old_string: "aa", new_string: "b" }, "a.txt", 0)).toBe("ba");
+    expect(applyArtifactTextEdit("x-x-x", { old_string: "x", new_string: "$&", replace_all: true }, "a.txt", 0)).toBe("$&-$&-$&");
+    expect(applyArtifactTextEdit("one $1", { old_string: "$1", new_string: "$$" }, "a.txt", 0)).toBe("one $$");
+    expect(() => applyArtifactTextEdit("abc", { old_string: "z", new_string: "y" }, "a.txt", 2)).toThrowError(expect.objectContaining({ code: "artifact_edit_not_found", editIndex: 2 }));
+    expect(() => applyArtifactTextEdit("x x x x x", { old_string: "x", new_string: "y" }, "a.txt", 0)).toThrowError(expect.objectContaining({ code: "artifact_edit_ambiguous", count: 5 }));
   });
 });
