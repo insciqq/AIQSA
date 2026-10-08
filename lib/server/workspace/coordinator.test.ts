@@ -18,7 +18,7 @@ import {
   type WorkspaceCoordinatorRepository,
   type WorkspaceExecutionBinding
 } from "./coordinator";
-import type { WorkspaceExecutionRecord, WorkspaceExecutionRegistry } from "./executionRegistry";
+import { workspaceSyncCleanupId, type WorkspaceExecutionRecord, type WorkspaceExecutionRegistry } from "./executionRegistry";
 import type {
   WorkspaceBoundTool,
   WorkspaceRuntime,
@@ -52,6 +52,17 @@ function outputStream(content: string, relativePath: string, batchId = "f".repea
     checksum: createHash("sha256").update(content).digest("hex"), mimeType: "text/plain",
     opaqueFileId: createHash("sha256").update(relativePath).digest("hex"), relativePath
   };
+}
+
+/** Content-free export lifecycle records written while `action` runs. */
+async function exportRecords(action: () => Promise<unknown>): Promise<Record<string, unknown>[]> {
+  const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  writer.mockClear();
+  try {
+    await action();
+    return writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .filter((record) => record.event === "runtime_lifecycle" && record.stage === "export");
+  } finally { writer.mockRestore(); }
 }
 
 function memoryRegistry() {
@@ -988,16 +999,20 @@ describe("Workspace coordinator", () => {
   it("reconnects for output recovery but never replaces a lost completed-run sandbox", async () => {
     const value = fixture();
     value.setRuntimeSandboxId("runtime_lost");
-    vi.mocked(value.runtime.ensureSession).mockRejectedValueOnce(
+    vi.mocked(value.runtime.ensureSession).mockRejectedValue(
       new WorkspaceRuntimeError("workspace_session_lost")
     );
+    const lost = vi.spyOn(value.repository, "markSessionLost");
 
     await expect(value.coordinator.finalize({
       runId: value.runId,
       userId: "user_1",
       workspace: value.workspace
     })).resolves.toEqual({ code: "workspace_session_lost", retryable: false, status: "failed" });
-    expect(value.runtime.ensureSession).toHaveBeenCalledTimes(1);
+    // The second lookup by name in the same lease proves the loss; nothing is recreated.
+    expect(value.runtime.ensureSession).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(value.runtime.ensureSession).mock.calls.map(([input]) => input.runtimeSandboxId)).toEqual(["runtime_lost", "runtime_lost"]);
+    expect(lost).toHaveBeenCalledOnce();
     expect(value.runtime.collectOutputs).not.toHaveBeenCalled();
   });
 
@@ -1482,9 +1497,14 @@ describe("Workspace coordinator export settlement", () => {
   it("retires the generation advanced by confirmed disk loss during handoff", async () => {
     const value = fixture();
     value.setRuntimeSandboxId("runtime_lost");
-    vi.mocked(value.runtime.ensureSession).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_session_lost"));
-    await expect(value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace }))
-      .rejects.toMatchObject({ code: "workspace_session_lost" });
+    vi.mocked(value.runtime.ensureSession).mockRejectedValue(new WorkspaceRuntimeError("workspace_session_lost"));
+    const records = await exportRecords(() => expect(value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .rejects.toMatchObject({ code: "workspace_session_lost" }));
+    expect(records).toEqual([
+      expect.objectContaining({ work_stage: "initialize", outcome: "degraded", code: "workspace_session_lost", action: "retry", run_id: value.runId }),
+      expect.objectContaining({ work_stage: "initialize", outcome: "failed", code: "workspace_session_lost", action: "fail", run_id: value.runId })
+    ]);
+    expect(value.runtime.ensureSession).toHaveBeenCalledTimes(2);
     const binding = await value.repository.binding({ runId: value.runId, userId: "user_1" });
     expect(binding).toMatchObject({ operationGeneration: 3, operationOwner: null, runtimeSandboxId: null, sessionState: "PENDING" });
     expect(value.runtime.retireSessionOperation).toHaveBeenCalledExactlyOnceWith({
@@ -1492,6 +1512,58 @@ describe("Workspace coordinator export settlement", () => {
     });
     expect(value.runtime.collectOutputs).not.toHaveBeenCalled();
     expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" })).toHaveLength(0);
+  });
+
+  it.each(["initialize", "resume", "collect"] as const)("hands off once more in the same lease when the guest is missing at %s", async (step) => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    // A returned shell command keeps its cleanup obligation, so quiescence stops the VM.
+    await value.registry.register({ modelRunId: value.runId, modelRunToolCallId: "stored_shell",
+      runtimeExecSessionId: workspaceSyncCleanupId("stored_shell"), sessionId: value.workspace.sessionId });
+    const lost = new WorkspaceRuntimeError("workspace_session_lost");
+    const ensure = vi.mocked(value.runtime.ensureSession);
+    if (step === "initialize") ensure.mockRejectedValueOnce(lost);
+    if (step === "resume") ensure.mockResolvedValueOnce({ runtimeSandboxId: "runtime_1", sandboxName: "aiqsa-ws-session_workspace_1", state: "ready" })
+      .mockRejectedValueOnce(lost);
+    if (step === "collect") vi.mocked(value.runtime.collectOutputs).mockRejectedValueOnce(lost);
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    const markLost = vi.spyOn(value.repository, "markSessionLost");
+    const records = await exportRecords(() => expect(value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .resolves.toEqual({ status: "ready" }));
+    expect(markLost).not.toHaveBeenCalled();
+    expect(ensure).toHaveBeenCalledTimes(3);
+    // The export continues the run's own idle operation: its claim needs no receiver stop.
+    expect(ensure).toHaveBeenNthCalledWith(1, expect.objectContaining({ predecessor: { generation: 1, owner: `run:${value.runId}` } }));
+    expect(ensure.mock.calls.every(([input]) => input.runtimeSandboxId === "runtime_1")).toBe(true);
+    // Quiescence stops the VM exactly once before the capture; the retry keeps that proof.
+    const captured = vi.mocked(value.runtime.collectOutputs).mock.invocationCallOrder.at(-1)!;
+    expect(vi.mocked(value.runtime.stopSession).mock.invocationCallOrder.filter((order) => order < captured)).toHaveLength(1);
+    expect(value.registryRows).toEqual([expect.objectContaining({ modelRunToolCallId: "stored_shell", state: "LOST", stopConfirmed: true })]);
+    expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(true);
+    expect(records).toEqual([expect.objectContaining({ work_stage: step, outcome: "degraded", code: "workspace_session_lost", action: "retry" })]);
+  });
+
+  it.each(["retry", "collect", "confirmation"] as const)("ends cleanly without a loss verdict when the lease is gone at the %s", async (moment) => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    const lost = new WorkspaceRuntimeError("workspace_session_lost");
+    if (moment === "confirmation") vi.mocked(value.runtime.ensureSession).mockRejectedValue(lost);
+    else vi.mocked(value.runtime.ensureSession).mockRejectedValueOnce(lost);
+    const renew = vi.spyOn(value.repository, "renewExportLease");
+    if (moment === "retry") renew.mockResolvedValueOnce(false);
+    else renew.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const markLost = vi.spyOn(value.repository, "markSessionLost");
+    const failed = vi.spyOn(value.repository, "markExportFailed");
+    const sealed = vi.spyOn(value.repository, "sealOutputCapture");
+    const records = await exportRecords(() => expect(value.coordinator.finalize({ handoff: true, runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .resolves.toEqual({ code: "workspace_output_export_failed", retryable: true, status: "failed" }));
+    expect(value.runtime.ensureSession).toHaveBeenCalledTimes(moment === "retry" ? 1 : 2);
+    expect(markLost).not.toHaveBeenCalled();
+    expect(failed).not.toHaveBeenCalled();
+    expect(sealed).not.toHaveBeenCalled();
+    expect(value.runtime.collectOutputs).not.toHaveBeenCalled();
+    expect(records.at(-1)).toMatchObject({ work_stage: moment === "collect" ? "collect" : "initialize", outcome: "lost_lease",
+      code: "workspace_output_export_failed", action: "fail" });
   });
 
   it("releases a genuinely empty capture at handoff without queuing a transfer", async () => {
