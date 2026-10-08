@@ -2157,3 +2157,45 @@
     grid-template-rows: auto 3.5rem auto auto minmax(0, 1fr);
   }
 }
+
+/* Servers the user always allows (MCP write approval), each with Revoke. */
+.v2-settings-mcp-consents {
+  display: grid;
+  gap: 0.375rem;
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-settings-mcp-consents > h3 {
+  margin: 0;
+  color: var(--v2-color-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.v2-settings-mcp-consents > ul {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-settings-mcp-consents li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.5rem;
+}
+
+.v2-settings-mcp-consents li > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

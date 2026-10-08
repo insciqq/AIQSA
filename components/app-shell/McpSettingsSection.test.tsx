@@ -659,8 +659,10 @@ describe("McpSettingsSection", () => {
     const sheet = await openServer("Idle server");
     expect(within(sheet).getByText("Search this description")).toBeVisible();
     expect(within(sheet).getByText("idle_tool")).toBeVisible();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The catalog and the "Always allowed" list; opening details fetches nothing.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledWith("/api/me/mcp", expect.objectContaining({ cache: "no-store" }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/me/mcp-consents", expect.objectContaining({ cache: "no-store" }));
   });
 
   it("preserves personal drafts across refresh, protects closing, and settles failed saves before discarding", async () => {
