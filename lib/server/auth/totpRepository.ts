@@ -288,8 +288,11 @@ export function createPrismaSecondFactorSignInRepository(prisma: PrismaClient): 
       const { challenge } = input;
 
       return prisma.$transaction(async (tx): Promise<SecondFactorSignInResult> => {
-        // Lock order: the identity (as the first factor took it), then the factor row.
+        // Lock order: the identity (as the first factor took it), the user, then the factor
+        // row. Enrolment and the administrator reset take the user before the factor too, and
+        // the session insert needs the user row, so taking it first keeps them from deadlocking.
         await lockAuthIdentity(tx, challenge.identityId);
+        await lockAuthUser(tx, challenge.userId);
         const identity = await tx.authIdentity.findUnique({
           include: { user: true },
           where: { id: challenge.identityId }
