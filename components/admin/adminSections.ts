@@ -6,6 +6,7 @@ import {
   Boxes,
   Home,
   Layers,
+  LogIn,
   Mail,
   Megaphone,
   Search,
@@ -32,6 +33,7 @@ export type AdminSectionId =
   | "retrieval"
   | "roles"
   | "search"
+  | "sign-in"
   | "skills"
   | "usage"
   | "users"
@@ -64,6 +66,7 @@ export const adminSections = [
   { Icon: Users, group: "people", id: "users", label: "Users" },
   { Icon: Layers, group: "people", id: "groups", label: "Groups" },
   { Icon: Wallet, group: "people", id: "limits", label: "Budgets & limits" },
+  { Icon: LogIn, group: "people", id: "sign-in", label: "Sign-in" },
   { Icon: ShieldCheck, group: "people", id: "access-rules", label: "Sign-up rules" },
   { Icon: Megaphone, group: "people", id: "announcements", label: "Announcements" },
   { Icon: Wrench, group: "platform", id: "mcp", label: "MCP servers" },

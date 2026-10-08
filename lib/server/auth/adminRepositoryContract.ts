@@ -193,5 +193,7 @@ export type AdminRepository = {
   /** Grants or revokes the admin role of another active user under the active-admin lock. */
   setUserRole(input: AdminSetUserRoleInput): Promise<AdminSetUserRoleResult>;
   /** Compares active memberships and replaces them atomically, preserving unchanged roles and archived rows. */
-  setUserGroups(input: AdminSetUserGroupsInput): Promise<"applied" | "user_not_found" | "user_access_stale">;
+  setUserGroups(
+    input: AdminSetUserGroupsInput
+  ): Promise<"applied" | "group_membership_managed" | "user_not_found" | "user_access_stale">;
 };

@@ -25,6 +25,7 @@ import {
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
 import { resolveLoginRateLimitIdentity } from "./clientIdentity";
+import { refuseWhenPasswordSignInOff, type SignInPolicyReader } from "./signInPolicy";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import {
   waitForAuthResponseFloor
@@ -72,6 +73,8 @@ export type PasswordLoginHandlerDeps = {
   getConfig(): AuthConfig;
   loginRateLimiter?: LoginRateLimiter;
   repository: PasswordAuthRepository;
+  /** The password sign-in switch; absent means on. */
+  signInPolicy?: SignInPolicyReader;
   verifyPassword?: (password: string, passwordHash: string | null | undefined) => Promise<boolean>;
 };
 
@@ -83,6 +86,7 @@ export type PasswordResetRequestHandlerDeps = {
   repository: PasswordAuthRepository;
   resetRateLimiter?: LoginRateLimiter;
   responseFloorMs?: number;
+  signInPolicy?: SignInPolicyReader;
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
@@ -94,6 +98,7 @@ export type PasswordResetCompleteHandlerDeps = {
   now?: () => Date;
   repository: PasswordAuthRepository;
   resetCompleteRateLimiter?: LoginRateLimiter;
+  signInPolicy?: SignInPolicyReader;
 };
 
 const defaultLoginRateLimiter = createFixedWindowLoginRateLimiter();
@@ -432,6 +437,10 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       return json({ error: "credentials_required" }, { status: 400 });
     }
 
+    // Local passwords only: a directory sign-in sharing this form branches off above.
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
+
     const normalizedEmail = normalizeAuthEmail(credentials.email);
 
     if (!isPlausibleEmail(normalizedEmail)) {
@@ -516,6 +525,9 @@ export function createPasswordResetRequestHandler(deps: PasswordResetRequestHand
     if (contentTypeError) {
       return contentTypeError;
     }
+
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
 
     const clientIdentity = credentialClientRateLimitKey({
       config,
@@ -616,6 +628,9 @@ export function createPasswordResetCompleteHandler(deps: PasswordResetCompleteHa
     if (contentTypeError) {
       return contentTypeError;
     }
+
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
 
     const config = deps.getConfig();
     const rateLimiter = resolveLoginRateLimiter(

@@ -6,6 +6,9 @@ import {
   OAUTH_PROVIDER_IDS
 } from "@/lib/auth/oauth";
 import { getAuthConfig } from "@/lib/server/auth/config";
+import { resolveSignInMethods, type ResolvedSignInMethods } from "@/lib/server/auth/signInMethods";
+import type { SignInPolicySnapshot } from "@/lib/server/auth/signInPolicy";
+import { readSignInPolicy } from "@/lib/server/auth/signInSettings/defaultSignInSettings";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -27,9 +30,10 @@ type LoginPageProps = {
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = await searchParams;
   const config = getAuthConfig();
-  const oauthProviders = config.configured
-    ? OAUTH_PROVIDER_IDS.filter((provider) => Boolean(config.oauthProviders[provider]))
-    : [];
+  const [methods, policy]: [ResolvedSignInMethods, SignInPolicySnapshot] = config.configured
+    ? await Promise.all([resolveSignInMethods(), readSignInPolicy()])
+    : [{}, { passwordLoginEnabled: true, registrationEnabled: true }];
+  const oauthProviders = OAUTH_PROVIDER_IDS.filter((provider) => Boolean(methods[provider]));
 
   return (
     <AuthLogin
@@ -38,6 +42,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       oauthOutcome={isOAuthLoginOutcome(params.oauth) ? params.oauth : undefined}
       oauthProvider={isOAuthProviderId(params.provider) ? params.provider : undefined}
       oauthProviders={oauthProviders}
+      passwordLoginEnabled={policy.passwordLoginEnabled}
+      registrationEnabled={policy.registrationEnabled}
       resetToken={params.reset}
       sessionExpired={params.reason === "session_expired"}
       verifyToken={params.verify}

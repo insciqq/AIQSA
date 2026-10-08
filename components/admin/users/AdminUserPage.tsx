@@ -18,6 +18,11 @@ import {
 } from "@/components/admin/users/usersView";
 import { UserAvatar, UserStatusPill, sectionHeadingClass } from "@/components/admin/users/usersPrimitives";
 import { AdminUserDirectGrants, AdminUserDirectKeys } from "@/components/admin/users/AdminUserDirectAccess";
+import {
+  AdminUserManagedGroups,
+  AdminUserSignInSection,
+  useAdminUserSignIn
+} from "@/components/admin/signIn/AdminUserSignIn";
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminDashboard, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
@@ -114,6 +119,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
   const pending = user.status === "pending";
   const active = user.status === "active";
   const currentGroupIds = activeGroupIdsForUser(user, groups);
+  const signIn = useAdminUserSignIn(user.id, currentGroupIds.join(","));
   const savedGroupIds = pending ? [] : currentGroupIds;
   const groupIds = groupDraft?.groupIds ?? savedGroupIds;
   const expectedGroupIds = groupDraft?.expectedGroupIds ?? currentGroupIds;
@@ -198,6 +204,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
             {isSelf ? <p className={helpClass}>Your own memberships are managed from Groups.</p> : null}
           </>
         )}
+        <AdminUserManagedGroups groups={groups} signIn={signIn} />
       </section>
 
       <section aria-labelledby="admin-user-access-heading" className={blockClass}>
@@ -222,6 +229,8 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
       <div className="border-t border-trace-subtle">
         <AdminMcpUserAccessPanel controller={mcp} groups={groups} user={user} />
       </div>
+
+      <AdminUserSignInSection signIn={signIn} />
 
       <section aria-labelledby="admin-user-account-heading" className="flex flex-col gap-3" data-testid="admin-user-account">
         <h3 className={sectionHeadingClass} id="admin-user-account-heading">Account</h3>
