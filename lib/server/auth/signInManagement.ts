@@ -15,9 +15,21 @@ import {
 } from "@/lib/contracts/authSignInMethods";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
 import { logEvent } from "../observability";
-import { lockAuthUser } from "./transactionLocks";
+import { lockAuthIdentity, lockAuthUser } from "./transactionLocks";
 
-type ManagedMembershipTransaction = Pick<Prisma.TransactionClient, "authIdentity" | "group" | "groupExternalName">;
+type ManagedMembershipTransaction = Pick<
+  Prisma.TransactionClient,
+  "authIdentity" | "authSignInMethodSetting" | "group" | "groupExternalName"
+>;
+
+/**
+ * SCIM manages the groups it pushes only while it is enabled: once an operator turns it off,
+ * administrators edit those memberships again (nothing would push over them).
+ */
+async function scimProvisioningEnabled(client: Pick<Prisma.TransactionClient, "authSignInMethodSetting">): Promise<boolean> {
+  const setting = await client.authSignInMethodSetting.findUnique({ select: { enabled: true }, where: { method: "scim" } });
+  return setting?.enabled === true;
+}
 
 /** The sources whose identities of a user manage group memberships, in a stable order. */
 function managingSources(providers: Iterable<string>): ExternalGroupSource[] {
@@ -38,10 +50,12 @@ export async function managedMemberships(
   if (!input.groupIds.length) return managed;
   const groupIds = [...new Set(input.groupIds)];
   // Sequential: these run inside the caller's interactive transaction.
-  const scimGroups = await tx.group.findMany({
-    select: { id: true },
-    where: { id: { in: groupIds }, scimExternalId: { not: null } }
-  });
+  const scimGroups = await scimProvisioningEnabled(tx)
+    ? await tx.group.findMany({
+        select: { id: true },
+        where: { id: { in: groupIds }, scimExternalId: { not: null } }
+      })
+    : [];
   const identities = await tx.authIdentity.findMany({ select: { provider: true }, where: { userId: input.userId } });
   for (const group of scimGroups) managed.set(group.id, "scim");
   const sources = managingSources(identities.map((identity) => identity.provider));
@@ -88,7 +102,10 @@ export type SignInManagementRepository = {
   }): Promise<SignInManagementResult<AdminUserSignIn>>;
 };
 
-type ReadClient = Pick<Prisma.TransactionClient, "authIdentity" | "group" | "groupExternalName" | "user" | "userGroup">;
+type ReadClient = Pick<
+  Prisma.TransactionClient,
+  "authIdentity" | "authSignInMethodSetting" | "group" | "groupExternalName" | "user" | "userGroup"
+>;
 
 async function groupProjection(client: ReadClient, groupId: string): Promise<AdminGroupSignIn | null> {
   const group = await client.group.findUnique({
@@ -100,7 +117,7 @@ async function groupProjection(client: ReadClient, groupId: string): Promise<Adm
     where: { id: groupId }
   });
   if (!group) return null;
-  const scimManaged = group.scimExternalId !== null;
+  const scimManaged = group.scimExternalId !== null && await scimProvisioningEnabled(client);
   const sources = managingSources(group.externalNames.map((name) => name.source));
   const members = scimManaged || sources.length
     ? await client.userGroup.findMany({
@@ -234,6 +251,9 @@ export function createPrismaSignInManagementRepository(prisma: PrismaClient): Si
 
     async unlinkIdentity(input) {
       return prisma.$transaction<SignInManagementResult<AdminUserSignIn>>(async (tx) => {
+        // Settlement's lock order: the identity, then its user, so a sign-in of the same identity
+        // and its unlink wait for each other instead of deadlocking.
+        await lockAuthIdentity(tx, input.identityId);
         await lockAuthUser(tx, input.userId);
         const identities = await tx.authIdentity.findMany({
           select: { id: true, passwordHash: true, provider: true },
