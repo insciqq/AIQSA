@@ -142,7 +142,7 @@ import { RunAnswerV2, RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v
 import {
   answerReviewAuthorModelsV2,
   answerReviewAvailabilityV2,
-  answerReviewGroupProgressV2,
+  answerReviewGroupDisplayProgressV2,
   answerReviewReviewerCandidatesV2,
   groupAnswerReviewsV2,
   type AnswerReviewCatalogModelV2,
@@ -1691,9 +1691,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
    */
   const renderAnswerReviewGroup = (group: AnswerReviewGroupV2): ReactNode => {
     const runningAnswer = group.steps.find((entry) => entry.answer?.status === "streaming")?.answer ?? null;
-    const progress = answerReviewGroupProgressV2(group, runningAnswer
-      ? { artifact: presentAnswer(runningAnswer).artifact, messageId: runningAnswer.id } : undefined);
     const latestGroup = group.messages.at(-1)?.id === thread.visibleMessages.at(-1)?.id;
+    // A group the chat moved on from shows no status: the next run superseded it, whatever this page last read.
+    const progress = answerReviewGroupDisplayProgressV2(group, { latest: latestGroup, ...(runningAnswer
+      ? { live: { artifact: presentAnswer(runningAnswer).artifact, messageId: runningAnswer.id } } : {}) });
     const actionsEnabled = latestGroup && !thread.activeChatStreaming && !projectMutationReason && !thread.editingMessageId;
     const startStep = (kind: "review" | "revision") => void thread.continueAnswerReview?.(group.session.id, kind);
     return renderAnswerMessage(group.latest, {

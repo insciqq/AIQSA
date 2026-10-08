@@ -7,6 +7,7 @@ import { AnswerReviewCardV2, AnswerReviewHistoryV2, AnswerReviewStatusV2, Answer
 import {
   answerReviewAuthorModelsV2,
   answerReviewAvailabilityV2,
+  answerReviewGroupDisplayProgressV2,
   answerReviewGroupProgressV2,
   answerReviewReviewerCandidatesV2,
   groupAnswerReviewsV2,
@@ -117,6 +118,22 @@ describe("answer review status line", () => {
     status("findings", {}, sessionWire({ state: "stopped", stopReason: "budget" }));
     expect(screen.getByRole("status")).toHaveTextContent(/usage limit/u);
     expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("shows no status line for a waiting group the chat moved on from, whatever session the page last read", () => {
+    // The page still holds the session as running and waiting for Revise; a later message follows the group.
+    const group = groupOf(thread("findings"));
+    expect(answerReviewGroupDisplayProgressV2(group, { latest: true })).toMatchObject({ next: { kind: "revision" }, state: "running" });
+    const movedOn = answerReviewGroupDisplayProgressV2(group, { latest: false });
+    expect(movedOn).toMatchObject({ next: null, state: "stopped", stopReason: "superseded" });
+    render(<AnswerReviewStatusV2 actionsEnabled group={group} onRevise={vi.fn()} progress={movedOn} />);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Revise" })).toBeNull();
+    // A running step is always the chat's latest; its ended or settled groups keep what they say.
+    const running = groupOf(thread("running"));
+    expect(answerReviewGroupDisplayProgressV2(running, { latest: false })).toMatchObject({ running: { kind: "review" }, state: "running" });
+    const clean = groupOf(thread("clean", sessionWire({ state: "finished", stopReason: "clean" })));
+    expect(answerReviewGroupDisplayProgressV2(clean, { latest: false })).toMatchObject({ state: "finished", stopReason: "clean" });
   });
 
   it("shows no status line once the chat moved on or a revised round is done", () => {
