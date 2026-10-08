@@ -22,9 +22,23 @@ type SessionExpiredListener = (code: ClientSessionErrorCode) => void;
 
 const sessionExpiredListeners = new Set<SessionExpiredListener>();
 let sessionExpiredSignaled = false;
+let signOutInProgress = false;
+
+/**
+ * A sign-out revokes the session before its response names the identity provider's logout
+ * page, so other requests answer 401 meanwhile; they must not send the browser to the
+ * session-expired login ahead of that logout. Returns the function a failed sign-out calls to
+ * end the suppression; a successful one leaves the page.
+ */
+export function suppressSessionExpiredDuringSignOut(): () => void {
+  signOutInProgress = true;
+  return () => {
+    signOutInProgress = false;
+  };
+}
 
 function signalSessionExpired(code: ClientSessionErrorCode): void {
-  if (sessionExpiredSignaled) {
+  if (sessionExpiredSignaled || signOutInProgress) {
     return;
   }
 

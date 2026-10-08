@@ -1,5 +1,6 @@
 import { clearAllArtifactSavedState } from "@/components/artifacts/artifactBrowserStorage";
 import { clearSignedOutComposerDrafts } from "./composerDraftPersistence";
+import { suppressSessionExpiredDuringSignOut } from "./shellApi";
 
 export type SignOutResult =
   | {
@@ -50,6 +51,7 @@ export async function signOutCurrentSession(options: SignOutOptions): Promise<Si
   const timeoutMs = options.timeoutMs ?? DEFAULT_SIGN_OUT_TIMEOUT_MS;
   let timedOut = false;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const resumeSessionExpired = suppressSessionExpiredDuringSignOut();
 
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutId = setTimeout(() => {
@@ -86,6 +88,7 @@ export async function signOutCurrentSession(options: SignOutOptions): Promise<Si
     const result = await Promise.race([request, timeout]);
 
     if (!result.ok) {
+      resumeSessionExpired();
       return {
         error: signOutErrorMessage(result.code ?? "logout_failed"),
         ok: false
@@ -97,6 +100,7 @@ export async function signOutCurrentSession(options: SignOutOptions): Promise<Si
     navigate(result.redirectTo ?? "/login");
     return { ok: true };
   } catch {
+    resumeSessionExpired();
     return {
       error: signOutErrorMessage(timedOut ? "logout_timeout" : "network_error"),
       ok: false

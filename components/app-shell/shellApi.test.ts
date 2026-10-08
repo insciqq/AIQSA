@@ -12,6 +12,7 @@ import {
   shellReadJson,
   sseParseWarningEvent,
   subscribeToSessionExpired,
+  suppressSessionExpiredDuringSignOut,
   tokenDeltaFromEvent
 } from "./shellApi";
 
@@ -67,6 +68,20 @@ describe("shell HTTP session handling", () => {
     subscribe(lateListener);
     expect(lateListener).toHaveBeenCalledOnce();
     expect(lateListener).toHaveBeenCalledWith("session_expired");
+  });
+
+  it("does not send a signing-out page to the session-expired login; a failed sign-out resumes it", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ error: "unauthorized" }, { status: 401 }));
+    const listener = vi.fn();
+    subscribe(listener);
+
+    const resume = suppressSessionExpiredDuringSignOut();
+    await shellFetch("/api/chats");
+    expect(listener).not.toHaveBeenCalled();
+
+    resume();
+    await shellFetch("/api/chats");
+    expect(listener).toHaveBeenCalledOnce();
   });
 
   it("does not signal for authenticated authorization and server failures", async () => {
