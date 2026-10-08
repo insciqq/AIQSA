@@ -170,10 +170,10 @@ import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } fro
 import {
   executeMonitoringVerdict,
   isMonitoringVerdictCall,
-  MONITORING_VERDICT_TOOL_NAME,
-  monitoringVerdictReservedInstruction,
   monitoringVerdictTool
 } from "../tools/monitoringVerdict";
+import { answerReviewToolsForRequest, executeAnswerReviewCall, isAnswerReviewCall } from "../tools/answerReview";
+import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import {
   executeCreateScheduledTask,
   isScheduledTaskCreateCall,
@@ -246,6 +246,7 @@ import {
 import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
 import { readOnlyRunTool } from "./toolReadOnly";
 import { repeatBlockedRounds, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
+import { mcpApprovalGated, mcpApprovalRequestForCall } from "./mcpApprovalGate";
 import { executeCodexTurn } from "../agents/executor";
 import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
@@ -326,6 +327,7 @@ export type RunExecutionRepository = Pick<
   | "manageScheduledTaskForCall"
   | "saveSkillForCall"
   | "loadRunFetchUrlCalls"
+  | "loadRunMcpApprovalCards"
   | "loadRunSearchSourceUrls"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
@@ -486,6 +488,8 @@ function serializeChatUpdate(
       provider: message.provider,
       role: message.role,
       status: message.status,
+      ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
+      ...(message.answerReview ? { answerReview: message.answerReview } : {}),
       ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
       toolActivity: message.toolActivity ?? null,
       workspaceActivity: message.workspaceActivity ?? null
@@ -744,6 +748,19 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         await assertProjectRunAccessCurrent(true);
         emitTransient(controller, encoder, { type: "artifact_generation", data });
       });
+      // MCP calls refused for the initiator's approval (tool loop, guest code,
+      // Agent) each have a card; their rows are its only durable state, so the
+      // live stream forwards each new one once and the settled answer reads them.
+      const emittedApprovalCards = new Set<string>();
+      const emitApprovalCards = async () => {
+        if (!normalizedRequest.mcpApproval || !input.repository.loadRunMcpApprovalCards) return;
+        const cards = await input.repository.loadRunMcpApprovalCards({ runId, userId: input.userId });
+        for (const card of cards) {
+          if (emittedApprovalCards.has(card.approvalId)) continue;
+          emittedApprovalCards.add(card.approvalId);
+          emitTransient(controller, encoder, { type: "artifact", data: { artifactType: "mcp_approval", payload: card } });
+        }
+      };
       logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "started" });
       const workspaceTurnController = normalizedRequest.workspace
         ? new AbortController()
@@ -2239,6 +2256,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
           ...(normalizedRequest.toolCallReader ? [readToolCallTool] : []),
           ...(normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+          ...answerReviewToolsForRequest(normalizedRequest),
           ...scheduledTaskToolsForRequest(normalizedRequest),
           ...scheduledTaskManagementToolsForRequest(normalizedRequest),
           ...skillSaveToolsForRequest(normalizedRequest),
@@ -2259,6 +2277,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // write is fenced again by the run's link to that running occurrence.
         const isMonitoringCall = (name: string) => isMonitoringVerdictCall(normalizedRequest, name);
         const recordVerdict = input.repository.recordMonitoringVerdict?.bind(input.repository);
+        // An answer review step reports once: the first call that settles its
+        // card wins, and a later one (also within the same batch) is refused.
+        const isReviewCall = (name: string) => isAnswerReviewCall(normalizedRequest, name);
+        let answerReviewReported = false;
+        const executeReviewCall = (call: ModelToolCall): ToolExecutionResult => {
+          const reviewed = executeAnswerReviewCall(call, normalizedRequest, { submitted: answerReviewReported });
+          if (reviewed.status === "complete") answerReviewReported = true;
+          return reviewed;
+        };
+        const reservedToolCall = reservedToolCallForRequest(normalizedRequest);
         // Only a run admitted with the frozen markers creates or manages
         // scheduled tasks or saves a Skill; the repository fences the run's
         // scheduled origin and its call again. Each settles with its write.
@@ -2364,11 +2392,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // Every checkpoint of a v1 non-Agent run carries the rebuild record.
           allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
           deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
-          // A monitoring check's first verdict is reserved outside the business
-          // tool budgets; a repeated one counts as an ordinary call.
-          ...(normalizedRequest.monitoringVerdictTool ? { reservedCall: {
-            called: false, instruction: monitoringVerdictReservedInstruction(), name: MONITORING_VERDICT_TOOL_NAME
-          } } : {}),
+          // A monitoring check's first verdict, or an answer review step's
+          // first report, is reserved outside the business tool budgets; a
+          // repeated one counts as an ordinary call.
+          ...(reservedToolCall ? { reservedCall: { called: false, ...reservedToolCall } } : {}),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
             if (!persisted) return undefined;
@@ -2453,6 +2480,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               }
               await artifactGeneration.settled(call.id, result);
             }
+            // A claim may have gated a call, and guest code a Workspace
+            // command ran may have been refused for approval: show their cards.
+            if (results.some((settled) => {
+              const persisted = persistedCalls.get(settled.call.id);
+              return isWorkspaceCall(settled.call.name) || persisted !== undefined && mcpApprovalGated(persisted);
+            })) await emitApprovalCards();
             await persistReportedUsageForIncompleteRun();
           },
           beforeProviderRound: async ({ continuation, request: roundRequest, round }) => {
@@ -2514,14 +2547,24 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   status: "error"
                 };
               }
+              // A call the run's admission gates dispatches only by consuming
+              // a one-shot approval in its claim; the claim settles it gated otherwise.
+              const mcpApproval = mcpApprovalRequestForCall({ admission: normalizedRequest.mcpApproval, call,
+                snapshot: activeMcpSnapshot });
               const claim = await input.repository.claimToolLoopCall({
                 callId: persisted.id,
                 ...(followups ? { followupRevision: followups.revision } : {}),
+                ...(mcpApproval ? { mcpApproval } : {}),
                 runId,
                 userId: input.userId
               });
-              if (claim.kind === "settled" && repeatBlockedRounds(claim.call)) {
-                // A blocked repeat was settled with its batch: nothing runs.
+              if (claim.kind === "settled" && mcpApprovalGated(claim.call)) {
+                persistedCalls.set(call.id, claim.call);
+                repeatHistory.record(claim.call);
+              }
+              if (claim.kind === "settled" && (repeatBlockedRounds(claim.call) || mcpApprovalGated(claim.call))) {
+                // A blocked repeat or a call gated for the user's approval was
+                // settled undispatched: nothing runs.
                 const blocked = parsePersistedToolExecutionResult(call, claim.call.result);
                 return blocked ? { status: "complete", value: blocked } : {
                   error: { code: "tool_call_result_invalid", fatal: true, message: "Persisted tool result is invalid." },
@@ -2602,6 +2645,15 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
                   result: snapshot, runId, state: result.status, userId: input.userId });
                 if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Monitoring report could not be settled.");
+                return { status: "complete", value: result };
+              }
+              if (claim.kind === "ambiguous" && isReviewCall(call.name)) {
+                // A review report has no external effect: validated again, it gives the same card.
+                const result = executeReviewCall(call);
+                const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+                const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
+                  result: snapshot, runId, state: result.status, userId: input.userId });
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Review report could not be settled.");
                 return { status: "complete", value: result };
               }
               if (claim.kind === "ambiguous" && isCheckpointCall(call.name)) {
@@ -2707,6 +2759,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 }
                 if (stored) skillResultBudget.restore(stored);
                 if (stored) observationBatches.replay(persisted.roundIndex, observationWholeResultTokens(request), stored);
+                if (stored?.status === "complete" && isReviewCall(call.name)) answerReviewReported = true;
                 if (stored && isKnowledgeCall(call.name) &&
                   knowledgeEvidenceFromToolResult(stored) && input.memoryEgress &&
                   !(await input.memoryEgress.settleRecoveredToolDispatch({
@@ -2816,7 +2869,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isScheduledTaskCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
+                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isReviewCall(call.name) && !isScheduledTaskCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2960,6 +3013,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   result = executeSessionStatus(call, sessionRequest, toolBridge);
                 } else if (isMonitoringCall(call.name)) {
                   result = await executeMonitoringVerdict(call, executionContext, recordVerdict);
+                } else if (isReviewCall(call.name)) {
+                  result = executeReviewCall(call);
                 } else if (isMcpDiscoveryCall(call.name)) {
                   // Each call searches separately; the queue orders epochs.
                   result = await serializeMcpDiscovery(async () => {
@@ -3179,6 +3234,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = persistedCalls.get(call.id);
             return persisted !== undefined && repeatBlockedRounds(persisted) !== null;
           },
+          isApprovalGatedCall: (call) => {
+            const persisted = persistedCalls.get(call.id);
+            return persisted !== undefined && mcpApprovalGated(persisted);
+          },
           toolResultNoteForProvider: (entry) => {
             const persisted = persistedCalls.get(entry.call.id);
             return persisted ? repeatHistory.noteFor(persisted.id) : undefined;
@@ -3251,7 +3310,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isMemoryCall(call.name) && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isScheduledTaskCall(call.name) && !isFetchCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
+                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isReviewCall(call.name) && !isScheduledTaskCall(call.name) && !isFetchCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 const callArguments = toolLoopJson(
@@ -3260,8 +3319,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   "tool_call_arguments_invalid"
                 ) as Readonly<Record<string, ToolLoopJsonValue>>;
                 const repeatOf = repeatHistory.blockFor({ arguments: callArguments, toolName: call.name }, round, repeatContext);
+                // A blocked repeat never runs either way; otherwise an MCP
+                // call that may change data waits for the initiator's approval.
+                const mcpApproval = repeatOf ? undefined : mcpApprovalRequestForCall({ admission: normalizedRequest.mcpApproval,
+                  call: { arguments: callArguments, name: call.name }, snapshot: activeMcpSnapshot });
                 return {
                   arguments: callArguments,
+                  ...(mcpApproval ? { mcpApproval } : {}),
                   ordinal,
                   providerCallId: call.id,
                   ...(repeatOf ? { repeatBlocked: { repeatOf } } : {}),
@@ -3301,6 +3365,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               repeatHistory.record(call);
               rememberToolCallRef(call);
             }
+            if (persisted.calls.some(mcpApprovalGated)) await emitApprovalCards();
             if (searchPlanRouter) {
               let changed = false;
               for (const call of persisted.calls) {
@@ -3520,7 +3585,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.visionAnalysis !== undefined || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.scheduledTaskTool !== undefined || normalizedRequest.fetchUrl !== undefined || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.visionAnalysis !== undefined || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.answerReviewStep !== undefined || normalizedRequest.scheduledTaskTool !== undefined || normalizedRequest.fetchUrl !== undefined || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;
@@ -3581,6 +3646,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               await persistReportedUsageForIncompleteRun();
             }
           });
+          // Calls the Agent gateway refused for the initiator's approval.
+          await emitApprovalCards();
         } else if (knowledgeAnswerExecution) {
           providerResult = knowledgeAnswerExecution.result;
         } else if (hasClientTools) {

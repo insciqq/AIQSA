@@ -36,7 +36,7 @@ const catalog: McpCapabilityCatalog = { version: 1, servers: [{ description: "",
 const budgets = { version: 1, maxCalls: 3, maxConcurrent: 4, maxPerSecond: 10 } as const;
 
 function grantOf(overrides: Partial<WorkspaceCodeGatewayGrant> = {}): WorkspaceCodeGatewayGrant {
-  return { authority: { kind: "plan", snapshot: plan }, budgets, runId: "run-1", sessionId: "session-1",
+  return { authority: { kind: "plan", snapshot: plan }, budgets, chatId: "chat-1", runId: "run-1", sessionId: "session-1",
     tokenHash, userId: "user-1", ...overrides };
 }
 
@@ -259,5 +259,63 @@ describe("Workspace code MCP gateway", () => {
     expect(body.result.structuredContent).toEqual({ commits: ["c-secret-result-1"] });
     expect(deps.materialize).toHaveBeenCalled();
     expect(memory.receipts[0]).toMatchObject({ state: "complete", toolName: commits });
+  });
+
+  describe("MCP write approval", () => {
+    const interactive = { approval: { consentedServerIds: [], version: 1 as const } };
+    function approvals(consume: boolean) {
+      return {
+        consume: vi.fn<NonNullable<WorkspaceCodeMcpDependencies["approvals"]>["consume"]>(async () => consume),
+        request: vi.fn<NonNullable<WorkspaceCodeMcpDependencies["approvals"]>["request"]>(async () => "approval-1")
+      };
+    }
+
+    it("refuses a tool that may change data without the user's approval: nothing sent, a card recorded", async () => {
+      const memory = memoryStore(grantOf(interactive));
+      const store = approvals(false);
+      const deps = dependencies(memory.store, plan, { approvals: store });
+      const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "group/repo" }), tokenHash, deps));
+      expect(body.result.isError).toBe(true);
+      expect(body.result.structuredContent).toEqual({ code: "approval_required", dispatched: false,
+        message: "This MCP tool needs the user's approval in the chat. Nothing was sent." });
+      expect(body.result._meta).toEqual({ [WORKSPACE_CODE_ERROR_META]: true });
+      expect(deps.callRuntimeTool).not.toHaveBeenCalled();
+      expect(memory.receipts[0]).toMatchObject({ errorCode: "approval_required", state: "error" });
+      const scope = { chatId: "chat-1", runId: "run-1", userId: "user-1" };
+      expect(store.request).toHaveBeenCalledWith(scope, expect.objectContaining({ definitionHash, serverId: "server-gitlab",
+        serverName: "GitLab", source: "code", toolCallId: null, toolName: commits, toolTitle: "list_commits" }));
+    });
+
+    it("dispatches once a matching one-shot approval is consumed, and never asks without the marker", async () => {
+      for (const [grant, store] of [[grantOf(interactive), approvals(true)], [grantOf(), approvals(false)]] as const) {
+        const memory = memoryStore(grant);
+        const deps = dependencies(memory.store, plan, { approvals: store });
+        const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
+        expect(body.result.structuredContent).toEqual({ commits: ["c-secret-result-1"] });
+        expect(deps.callRuntimeTool).toHaveBeenCalledOnce();
+        expect(store.request).not.toHaveBeenCalled();
+      }
+    });
+
+    it("never asks for a tool its server annotates read-only, nor for a server always allowed", async () => {
+      const readOnly = snapshotOf([{ ...planTool(commits, "list_commits"), annotations: { readOnlyHint: true } } as ReturnType<typeof planTool>]);
+      for (const grant of [grantOf({ ...interactive, authority: { kind: "plan", snapshot: readOnly } }),
+        grantOf({ approval: { consentedServerIds: ["server-gitlab"], version: 1 } })]) {
+        const memory = memoryStore(grant);
+        const store = approvals(false);
+        const deps = dependencies(memory.store, grant.authority.kind === "plan" ? grant.authority.snapshot : plan, { approvals: store });
+        const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
+        expect(body.result.structuredContent).toEqual({ commits: ["c-secret-result-1"] });
+        expect(store.consume).not.toHaveBeenCalled();
+      }
+    });
+
+    it("fails closed without an approval store", async () => {
+      const memory = memoryStore(grantOf(interactive));
+      const deps = dependencies(memory.store, plan, { approvals: undefined });
+      const body = await rpcBody(await handleWorkspaceCodeMcpRequest(call(commits, { project: "a" }), tokenHash, deps));
+      expect(body.result.structuredContent).toMatchObject({ code: "approval_required", dispatched: false });
+      expect(deps.callRuntimeTool).not.toHaveBeenCalled();
+    });
   });
 });

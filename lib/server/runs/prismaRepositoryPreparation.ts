@@ -156,6 +156,12 @@ import {
   type ProjectRunAdmission
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
+import {
+  admitAnswerReviewInTransaction,
+  answerReviewMessageFields,
+  createAutoAnswerReviewSession,
+  createClaimingMessage
+} from "../answerReviews/admission";
 import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
@@ -1021,6 +1027,7 @@ export async function admitProjectRunWithClient(
       if (!lockedChat || lockedChat.archived) throw new ActiveLeafConflictError();
       if (input.chatAssistant) await applyAcceptedChatAssistant(tx, input.chatId, input.chatAssistant);
       const workspaceFollowup = await prepareWorkspaceFollowupAdmission(tx, input, false);
+      const answerReviewStep = input.admissionKind === "NORMAL_SEND" ? input.answerReviewStep : undefined;
 
       let assistantMessageId: string;
       let userMessageId: string;
@@ -1028,10 +1035,11 @@ export async function admitProjectRunWithClient(
         if (lockedChat.activeLeafMessageId !== input.expectedActiveLeafId) {
           throw new ActiveLeafConflictError();
         }
+        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, step: answerReviewStep, userId: input.userId });
         const count = await tx.message.count({ where: { chatId: input.chatId } });
         const user = await tx.user.findUnique({ select: { displayName: true }, where: { id: input.userId } });
         if (!user) throw new ActiveLeafConflictError();
-        const userMessage = await tx.message.create({
+        const userMessage = await createClaimingMessage(answerReviewStep, () => tx.message.create({
           data: {
             authorDisplayName: user.displayName,
             authorProjectRole: access.effectiveRole,
@@ -1045,9 +1053,11 @@ export async function admitProjectRunWithClient(
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,
             role: "user",
+            ...(input.admissionKind === "NORMAL_SEND" && input.systemTurnKind ? { systemTurnKind: input.systemTurnKind } : {}),
+            ...answerReviewMessageFields(answerReviewStep, "user"),
             status: "complete"
           }
-        });
+        }));
         const assistantMessage = await tx.message.create({
           data: {
             chatId: input.chatId,
@@ -1059,6 +1069,7 @@ export async function admitProjectRunWithClient(
             parentMessageId: userMessage.id,
             provider: input.provider,
             role: "assistant",
+            ...answerReviewMessageFields(answerReviewStep, "assistant"),
             status: "streaming"
           }
         });
@@ -1094,6 +1105,7 @@ export async function admitProjectRunWithClient(
         if (!sourceLeaf || lockedChat.activeLeafMessageId !== sourceLeaf) {
           throw new ActiveLeafConflictError();
         }
+        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, userId: input.userId });
         const source = await tx.message.findFirst({
           select: { parentMessageId: true, role: true },
           where: { chatId: input.chatId, id: sourceLeaf }
@@ -1170,8 +1182,11 @@ export async function admitProjectRunWithClient(
           userMessageId
         }
       });
-      // Project turns are always interactive: scheduled tasks post only into personal chats.
-      await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
+      // Project turns are always interactive (scheduled tasks post only into
+      // personal chats); a review step's server-written turn is not a message.
+      if (!answerReviewStep) await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
+      await createAutoAnswerReviewSession(tx, { auto: input.answerReviewAuto, chatId: input.chatId,
+        sourceAssistantMessageId: assistantMessageId, userId: input.userId, userMessageId });
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
         assistantMessageId,
@@ -1271,7 +1286,8 @@ async function enqueuePreparingMemoryCommand(
     userMessageId: string;
   }>
 ): Promise<boolean> {
-  if (input.admissionKind !== "NORMAL_SEND" || input.project || input.scheduledOccurrence ||
+  // A turn the server wrote for the user is never a Memory command.
+  if (input.admissionKind !== "NORMAL_SEND" || input.project || input.scheduledOccurrence || input.systemTurnKind ||
     input.normalizedRequest.agent || source.chatMemoryMode !== "NORMAL" ||
     !settings.useMemoryFacts ||
     admitMemoryAction(textFromContentBlocks(input.content)).state !== "SEMANTIC_CANDIDATE") {
@@ -1396,10 +1412,12 @@ export async function admitPreparingRunWithClient(
       // posts now, or a stored one marked so (in its chat or a branch copy).
       let scheduledPrompt: boolean;
 
+      const answerReviewStep = input.admissionKind === "NORMAL_SEND" ? input.answerReviewStep : undefined;
       if (input.admissionKind === "NORMAL_SEND") {
         if (lockedChat.activeLeafMessageId !== input.expectedActiveLeafId) {
           throw new ActiveLeafConflictError();
         }
+        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, step: answerReviewStep, userId: input.userId });
         const chat = await tx.chat.findFirst({
           select: {
             _count: { select: { messages: true } },
@@ -1494,7 +1512,7 @@ export async function admitPreparingRunWithClient(
         // The prompt a scheduled run posts keeps that fact on the message
         // itself, committed with the run's scheduled origin.
         scheduledPrompt = input.scheduledOccurrence !== undefined;
-        const userMessage = await tx.message.create({
+        const userMessage = await createClaimingMessage(answerReviewStep, () => tx.message.create({
           data: {
             chatId: input.chatId,
             content: json(input.content),
@@ -1506,9 +1524,13 @@ export async function admitPreparingRunWithClient(
             provider: input.provider,
             role: "user",
             ...(scheduledPrompt ? { scheduledTaskPrompt: true } : {}),
+            // A continuation after an MCP approval or an answer review step:
+            // the server's turn, never the user's speech.
+            ...(input.systemTurnKind ? { systemTurnKind: input.systemTurnKind } : {}),
+            ...answerReviewMessageFields(answerReviewStep, "user"),
             status: "complete"
           }
-        });
+        }));
         const assistantMessage = await tx.message.create({
           data: {
             chatId: input.chatId,
@@ -1520,6 +1542,7 @@ export async function admitPreparingRunWithClient(
             parentMessageId: userMessage.id,
             provider: input.provider,
             role: "assistant",
+            ...answerReviewMessageFields(answerReviewStep, "assistant"),
             status: "streaming"
           }
         });
@@ -1613,6 +1636,7 @@ export async function admitPreparingRunWithClient(
           lockedChat.activeLeafMessageId !== preSendSourceMessageId) {
           throw new ActiveLeafConflictError();
         }
+        await admitAnswerReviewInTransaction(tx, { chatId: input.chatId, userId: input.userId });
         if (userLeafWithoutAssistant) {
           const [sourceUser] = await tx.$queryRaw<Array<{
             scheduledTaskPrompt: boolean;
@@ -1736,9 +1760,14 @@ export async function admitPreparingRunWithClient(
           taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision,
           unavailableSources: input.admissionKind === "NORMAL_SEND" ? input.scheduledUnavailableSources ?? [] : [],
           userId: input.userId, userMessageId });
-      } else {
-        // Message limits count interactive admissions in a log that outlives the chat.
+      } else if (!answerReviewStep) {
+        // Message limits count interactive admissions in a log that outlives
+        // the chat; a review step's server-written turn is not a message.
         await recordUsageMessageAdmission(tx, { at: run.createdAt, userId: input.userId });
+      }
+      if (!scheduledOccurrence) {
+        await createAutoAnswerReviewSession(tx, { auto: input.answerReviewAuto, chatId: input.chatId,
+          sourceAssistantMessageId: assistantMessageId, userId: input.userId, userMessageId });
       }
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
@@ -1773,8 +1802,8 @@ export async function admitPreparingRunWithClient(
         userId: input.userId
       });
       await insertRunPdfAdmissions(tx, input, run.id);
-      // An unattended scheduled send is not a composer choice of the owner.
-      if (input.defaults && !scheduledOccurrence) {
+      // An unattended scheduled send, like a review step's model, is not a composer choice of the owner.
+      if (input.defaults && !scheduledOccurrence && !answerReviewStep) {
         await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
       }
       if (input.deferredPdf || workspaceFollowup) {

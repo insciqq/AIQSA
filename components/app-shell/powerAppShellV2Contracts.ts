@@ -27,6 +27,7 @@ import type {
 } from "@/lib/contracts/composerConfig";
 import type { KnowledgeBaseSummary, KnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
+import type { McpApprovalContinuationOutcome } from "@/lib/contracts/mcpApprovals";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
 import type {
@@ -203,6 +204,25 @@ export type ShellThreadView = {
    */
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
+  /**
+   * Continues the open chat after its initiator allowed a refused MCP call;
+   * an attempt that starts no run says why in the chat's notice.
+   */
+  sendMcpApprovalContinuation?(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>):
+    Promise<McpApprovalContinuationOutcome>;
+  /**
+   * "Review…" on the chat's latest answer: starts a review round with the
+   * chosen reviewers and runs them one after another; resolves once the
+   * server accepted the round (or with why it did not).
+   */
+  startAnswerReview?(input: Readonly<{
+    answerMessageId: string;
+    reviewers: readonly Readonly<{ modelId: string; provider: string }>[];
+  }>): Promise<Readonly<{ ok: true }> | Readonly<{ error: string; ok: false }>>;
+  /** Revise, or Continue review: starts a session's next step. */
+  continueAnswerReview?(sessionId: string, kind: "review" | "revision"): Promise<void>;
+  /** Stops an automatic review session and its running step. */
+  stopAnswerReview?(sessionId: string): Promise<void>;
   /** The message a search result opened in this chat; a long question shows in full. */
   revealedMessageId?: string | null;
   /**
@@ -289,6 +309,15 @@ export type BrowserNotificationsView = Readonly<{
 
 export type ShellComposerView = {
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; setEnabled(value: boolean): void }>;
+  /**
+   * The chat's automatic answer review: the choice, who may review and why it
+   * cannot run now; `save` resolves to an error message, or null when saved.
+   */
+  answerReview?: Readonly<{
+    save(config: import("@/lib/contracts/answerReviews").AnswerReviewAutoConfig): Promise<string | null>;
+    saving: boolean;
+    state: import("@/features/answer-review-v2/answerReviewModel").AnswerReviewAutoStateV2;
+  }>;
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
   browserNotifications?: BrowserNotificationsView;
@@ -307,6 +336,8 @@ export type ShellComposerView = {
     /** Personal: pinned, Featured, Yours, Shared; Project: the Project's Assistants. */
     pickerItems: AssistantSummary[];
     pickerLoading: boolean;
+    /** Loads the personal list once when nothing has loaded it yet (the composer's `/` palette); absent in a Project. */
+    loadPickerItems?(): void;
     /** Assistants of the latest personal chats, newest first (from the list response). */
     recentIds: string[];
     /**
@@ -345,6 +376,12 @@ export type ShellComposerView = {
   };
   /** Personal Chat defaults in Studio; absent inside a Project. */
   chatDefaults?: {
+    /** The automatic answer review new personal chats start with. */
+    answerReview?: {
+      candidates: readonly import("@/features/answer-review-v2/answerReviewModel").AnswerReviewCatalogModelV2[];
+      config: import("@/lib/contracts/answerReviews").AnswerReviewAutoConfig;
+      set(config: import("@/lib/contracts/answerReviews").AnswerReviewAutoConfig): void;
+    };
     /** The Assistant every new personal chat starts with. */
     assistant?: {
       /** The saved default while it is available; null when none is saved or it is unavailable. */

@@ -153,6 +153,9 @@ async function registerFixtureServer(request: APIRequestContext, url: string, us
   expect(checked.status()).toBe(200);
   expect((await request.put(`/api/admin/mcp/${server.id}/grants`, { data: { canUse: true, personalSlotKeys: [], userId } })).ok()).toBe(true);
   expect((await request.patch(`/api/me/mcp/${server.id}`, { data: { enabled: true } })).ok()).toBe(true);
+  // These scenarios test the history of real writes, not their approval: the
+  // user always allows the synthetic server, as its card's Always allow would.
+  await prisma.mcpToolConsent.create({ data: { serverId: server.id, userId } });
   return server;
 }
 
@@ -376,6 +379,7 @@ test("a real model keeps earlier tool calls across turns, attempts, context note
     fixture.setReadDelayMs(0);
     await page.goto("about:blank").catch(() => undefined);
     for (const chatId of chats) await deleteOwnedChatPermanently(page.request, chatId, { timeout: 60_000 }).catch(() => undefined);
+    if (serverId) await page.request.delete(`/api/me/mcp-consents/${serverId}`).catch(() => undefined);
     if (serverId) await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);
     await endpoint.close();
   }

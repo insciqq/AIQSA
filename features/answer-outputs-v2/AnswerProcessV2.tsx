@@ -41,7 +41,8 @@ function toolDuration(durationMs: number | undefined): string | null {
 function toolMeta(call: ToolCallV2): string {
   const parts: string[] = [];
   const duration = toolDuration(call.durationMs);
-  if (call.status === "error") parts.push("Failed");
+  if (call.approvalRequired) parts.push("Not sent · needs approval");
+  else if (call.status === "error") parts.push("Failed");
   else if (call.status === "cancelled") parts.push("Stopped");
   if (duration) parts.push(duration);
   parts.push(`round ${call.round}`);
@@ -276,7 +277,8 @@ export function AnswerProcessV2({
                 {calls.map((call, index) => (
                   <li key={call.origin === "mcp" && call.details && runId ? `${runId}:${call.details.roundIndex}:${call.details.ordinal}` : `${call.round}:${index}:${call.toolName}`}
                     className={call.origin === "mcp" && call.details && runId ? "v2-mcp-call-row" : undefined} data-status={call.status}>
-                    <ToolCallMarkV2 status={call.status} />
+                    {/* A call waiting for approval did not fail: it was never sent. */}
+                    <ToolCallMarkV2 status={call.approvalRequired ? "cancelled" : call.status} />
                     {call.origin === "mcp" && call.details && runId ? (
                       <McpCallDetailsV2 runId={runId} reference={call.details} status={call.status}
                         label={describeToolCallV2(call, call.status === "running" ? "running"

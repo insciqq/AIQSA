@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { createECDH, randomBytes, randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { createPrismaAuthSessionStore } from "../auth/prismaSessions";
@@ -156,6 +157,44 @@ describe("persisted browser push", () => {
     });
     expect(await store.claimOccurrence(occurrence.id, now)).toBeNull();
     expect(await prisma.browserPushDelivery.count({ where: { OR: [{ runId: complete.runId }, { occurrenceId: occurrence.id }] } })).toBe(2);
+  });
+
+  it("pushes no run of an automatic answer review and names its chat for the session's one end notice", async () => {
+    const userId = await owner();
+    await subscribe(userId, (await session(userId)).id);
+    const chat = await prisma.chat.create({ data: { title: "Reviewed plan", userId } });
+    const content = textMessageContent("synthetic");
+    const question = await prisma.message.create({ data: { chatId: chat.id, content, role: "user" } });
+    const answer = await prisma.message.create({ data: { chatId: chat.id, content, parentMessageId: question.id, role: "assistant",
+      status: "complete" } });
+    const completedRun = (assistantMessageId: string, userMessageId: string) => prisma.modelRun.create({ data: {
+      answerCompletedAt: new Date(), assistantMessageId, chatId: chat.id, modelId: "fixture", normalizedRequest: {}, provider: "fake",
+      status: "complete", userId, userMessageId
+    } });
+    const answerRun = await completedRun(answer.id, question.id);
+    const reviewSession = await prisma.answerReviewSession.create({ data: {
+      authorModel: { modelId: "fixture", name: "Fixture", provider: "fake" }, chatId: chat.id,
+      controls: { controls: {}, reviewerSearchPlans: [{ mode: "all_selected", optionIds: [] }], version: 1 }, maxRounds: 1, mode: "auto",
+      reviewers: [{ modelId: "reviewer", name: "Reviewer", provider: "fake" }], sourceAssistantMessageId: answer.id, userId
+    } });
+    const turn = await prisma.message.create({ data: { answerReviewRound: 1, answerReviewSessionId: reviewSession.id, answerReviewStep: 0,
+      chatId: chat.id, content, parentMessageId: answer.id, role: "user", systemTurnKind: "answer_review_request" } });
+    const stepAnswer = await prisma.message.create({ data: { answerReviewSessionId: reviewSession.id, chatId: chat.id, content,
+      parentMessageId: turn.id, role: "assistant", status: "complete" } });
+    const stepRun = await completedRun(stepAnswer.id, turn.id);
+
+    // The answer under review and every step stay quiet; the session's end notifies once instead.
+    expect(await store.claimRun(answerRun.id, new Date())).toBeNull();
+    expect(await store.claimRun(stepRun.id, new Date())).toBeNull();
+    expect(await store.loadAnswerReviewChat({ chatId: chat.id, userId }, new Date())).toEqual({ title: "Reviewed plan" });
+    // A manual review's steps are ordinary runs and keep their own pushes.
+    await prisma.answerReviewSession.update({ data: { controls: Prisma.DbNull, maxRounds: null, mode: "manual" },
+      where: { id: reviewSession.id } });
+    expect(await store.claimRun(stepRun.id, new Date())).toMatchObject({ chatId: chat.id, kind: "run", status: "complete" });
+    // Another account's chat, and an owner with notifications off, take none.
+    expect(await store.loadAnswerReviewChat({ chatId: chat.id, userId: await owner() }, new Date())).toBeNull();
+    await prisma.userSettings.update({ data: { browserNotificationsEnabled: false }, where: { userId } });
+    expect(await store.loadAnswerReviewChat({ chatId: chat.id, userId }, new Date())).toBeNull();
   });
 
   it("drops a subscription the push service reports gone or that keeps failing", async () => {

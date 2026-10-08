@@ -45,8 +45,11 @@ export type ProviderToolLoopContinuation = Readonly<{
 }>;
 
 /** Why a round answers without tools. `calls` and `rounds` are an exactly
- * reached budget; the other two also left planned calls unexecuted. */
-export type ToolSynthesisReason = ToolSynthesisMarker | "calls" | "rounds";
+ * reached budget; the others also left planned calls unexecuted.
+ * `approval_required`, like `no_progress`, is derived from persisted calls:
+ * the previous round held only calls gated for the user's approval and
+ * blocked repeats. */
+export type ToolSynthesisReason = ToolSynthesisMarker | "approval_required" | "calls" | "rounds";
 
 export type ToolSynthesisDecision = Readonly<{
   /** The transient budget signal, when a budget ended tool use. */
@@ -61,6 +64,8 @@ export type ToolSynthesisDecision = Readonly<{
  * tools (`toolChoice: "none"`) is not synthesis.
  */
 export function toolSynthesisDecision(input: Readonly<{
+  /** The previous round awaits the user's approval (`roundAwaitsApproval`). */
+  approvalRequired?: boolean;
   budgets: Pick<ToolLoopBudgets, "maxToolCalls" | "maxToolRounds">;
   continuation: Pick<ProviderToolLoopContinuation, "finalSynthesis">;
   initialToolChoice: ProviderRunRequest["toolChoice"];
@@ -72,6 +77,7 @@ export function toolSynthesisDecision(input: Readonly<{
   if (input.continuation.finalSynthesis === "budget_exhausted") {
     return { budget: { kind: "calls", limit: input.budgets.maxToolCalls }, reason: "budget_exhausted" };
   }
+  if (input.approvalRequired) return { budget: reached, reason: "approval_required" };
   if (input.continuation.finalSynthesis === "no_progress" || input.noProgress) {
     return { budget: reached, reason: "no_progress" };
   }
@@ -83,8 +89,9 @@ export function toolSynthesisDecision(input: Readonly<{
 export function toolSynthesisInstruction(reason: ToolSynthesisReason): string {
   const cause = reason === "no_progress"
     ? "repeated identical calls returned no new data"
+    : reason === "approval_required" ? "a tool call waits for the user's approval in the chat"
     : reason === "rounds" ? "the tool-round budget is exhausted" : "the tool-call budget is exhausted";
-  const unexecuted = reason === "budget_exhausted" || reason === "no_progress"
+  const unexecuted = reason === "budget_exhausted" || reason === "no_progress" || reason === "approval_required"
     ? " Some planned tool calls were not executed." : "";
   return `Tool use is now disabled for this run: ${cause}.${unexecuted} Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.`;
 }
@@ -182,6 +189,8 @@ export type ProviderToolLoopInput = Readonly<{
   }>): Promise<void> | void;
   /** True only for a persisted call blocked as a repeat without progress. */
   isRepeatBlockedCall?(call: ToolLoopCall): boolean;
+  /** True only for a persisted call gated for the user's approval. */
+  isApprovalGatedCall?(call: ToolLoopCall): boolean;
   /** A server-owned repeat note for a settled result, in the projection only. */
   toolResultNoteForProvider?(entry: ToolLoopSettledCall<ToolExecutionResult>): string | undefined;
   onProviderResult?(input: Readonly<{
@@ -440,7 +449,10 @@ export async function runProviderToolLoop(
         input.projectToolResultForProvider,
         input.toolResultNoteForProvider
       );
+      const gated = (entry: ToolLoopSettledCall<ToolExecutionResult>) => input.isApprovalGatedCall?.(entry.call) === true;
       const decision = toolSynthesisDecision({
+        approvalRequired: previousToolResults.some(gated) && previousToolResults.every(entry =>
+          gated(entry) || input.isRepeatBlockedCall?.(entry.call) === true),
         budgets: input.budgets,
         continuation,
         initialToolChoice: input.initialRequest.toolChoice,

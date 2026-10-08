@@ -15,6 +15,15 @@ import {
   type ScheduledTaskCard
 } from "../../contracts/scheduledTasks";
 import { foldSkillSaveCards } from "../../contracts/skillSaves";
+import {
+  foldAnswerReviewCards,
+  foldAnswerReviewDecisionsCards,
+  type AnswerReviewMessageWire
+} from "../../contracts/answerReviews";
+import { answerReviewStepModelName, loadAnswerReviewProjection } from "../answerReviews/repository";
+import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
+import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
+import { mcpApprovalGated } from "../runs/mcpApprovalGate";
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
 import { scheduledTaskRowSelect, toScheduledTask } from "../scheduledTasks/store";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
@@ -221,6 +230,8 @@ const assistantRunDetailSelect = {
   normalizedRequest: true,
   userId: true,
   status: true,
+  // The answer's MCP approval cards; their decisions are read here, never from events.
+  mcpToolApprovals: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
   toolCalls: {
     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
     select: {
@@ -228,6 +239,7 @@ const assistantRunDetailSelect = {
       mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
       completedAt: true,
       ordinal: true,
+      providerCallId: true,
       result: true,
       roundIndex: true,
       startedAt: true,
@@ -294,7 +306,11 @@ const hydratedMessageSelect = {
     take: 1,
     where: { scheduledOccurrenceId: { not: null } }
   },
-  status: true
+  status: true,
+  systemTurnKind: true,
+  answerReviewRound: true,
+  answerReviewSessionId: true,
+  answerReviewStep: true
 } satisfies Prisma.MessageSelect;
 
 const sessionStatusEventsSelect = {
@@ -349,6 +365,7 @@ const chatSummarySelect = {
     }
   },
   activeLeafMessageId: true,
+  answerReviewConfig: true,
   assistantId: true,
   createdAt: true,
   defaultSearchPlan: true,
@@ -399,6 +416,8 @@ type ArchivedChatSummaryRow = Prisma.ChatGetPayload<{
 }>;
 type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMessageSelect }>;
 type HydratedMessagePath = Readonly<{
+  /** Each message of an answer review session, with its session and step. */
+  answerReviews: ReadonlyMap<string, AnswerReviewMessageWire>;
   memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>;
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>;
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>;
@@ -413,6 +432,7 @@ type HydratedMessagePath = Readonly<{
 type CurrentScheduledTasks = ReadonlyMap<string, ScheduledTask>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
+  mcpToolApprovals?: readonly McpApprovalCardRow[];
   normalizedRequest?: unknown;
   answerStartedAt?: Date | null;
   createdAt?: Date;
@@ -435,6 +455,7 @@ type ArtifactSummaryRun = {
   status?: string;
   toolCalls?: readonly object[];
   updatedAt?: Date;
+  userId?: string;
   workspaceProducedAttachments?: readonly {
     byteSize: number;
     fileName: string;
@@ -475,6 +496,8 @@ type ToolActivityRun = {
     result?: unknown;
     completedAt: Date | null;
     ordinal: number;
+    /** Selected by every current reader; absent only in older fixtures. */
+    providerCallId?: string;
     roundIndex: number;
     startedAt: Date | null;
     state: string;
@@ -631,6 +654,7 @@ async function hydrateMessagePath(
 ): Promise<HydratedMessagePath> {
   if (messages.length === 0) {
     return {
+      answerReviews: new Map(),
       memoryActionsByRun: new Map(),
       memorySourcesByRun: new Map(),
       memoryStatusesByRun: new Map(),
@@ -656,14 +680,20 @@ async function hydrateMessagePath(
       : message.branchSourceModelRun?.id
         ? [message.branchSourceModelRun.id]
         : []);
-  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks] = await Promise.all([
+  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks, answerReviews] = await Promise.all([
     loadMemoryRunActions(tx, { runIds, userId }),
     loadMemoryRunSources(tx, { runIds, userId }),
     loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
-      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId)
+      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId),
+    loadAnswerReviewProjection(tx, { chatId, messages: ordered.map((message) => ({
+      answerReviewRound: message.answerReviewRound, answerReviewSessionId: message.answerReviewSessionId,
+      answerReviewStep: message.answerReviewStep, id: message.id, parentMessageId: message.parentMessageId, role: message.role,
+      stepModelName: answerReviewStepModelName(message.assistantModelRuns[0]?.normalizedRequest),
+      systemTurnKind: message.systemTurnKind
+    })), viewerUserId: userId })
   ]);
-  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, scheduledTasks };
+  return { answerReviews, memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, scheduledTasks };
 }
 
 /** The reader's current tasks among those the given answers' cards name; one read per page, none without cards. */
@@ -795,7 +825,8 @@ function serializeHydratedMessage(
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>,
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>,
   viewerUserId: string,
-  scheduledTasks: CurrentScheduledTasks
+  scheduledTasks: CurrentScheduledTasks,
+  answerReviews: ReadonlyMap<string, AnswerReviewMessageWire> = new Map()
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
@@ -809,10 +840,14 @@ function serializeHydratedMessage(
         memoryActionsByRun.get(modelRun.id) ?? null,
         memorySourcesByRun.get(modelRun.id) ?? [],
         memoryStatusesByRun.get(modelRun.id),
-        scheduledTasks
+        scheduledTasks,
+        // A branch copy shows the source answer's approval cards read-only.
+        message.assistantModelRuns.length ? viewerUserId : undefined
       )
     : null;
+  const answerReview = answerReviews.get(message.id);
   return {
+    ...(answerReview ? { answerReview } : {}),
     ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
       projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
         ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
@@ -848,6 +883,7 @@ function serializeHydratedMessage(
     } } : {}),
     ...(isScheduledTaskCheckOutcome(scheduledOutcome) ? { scheduledOutcome } : {}),
     status: message.status,
+    ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
     toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, viewerUserId) : null,
     workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
   };
@@ -889,6 +925,7 @@ function serializeChatDetail(input: {
     : null;
   return {
     activeLeafMessageId: chat.activeLeafMessageId,
+    ...storedAnswerReview(chat.answerReviewConfig),
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: projectDefaults
@@ -914,7 +951,8 @@ function serializeChatDetail(input: {
         input.messages.memorySourcesByRun,
         input.messages.memoryStatusesByRun,
         input.viewerUserId,
-        input.messages.scheduledTasks
+        input.messages.scheduledTasks,
+        input.messages.answerReviews
       )),
     pageInfo: {
       activeLeafMessageId: chat.activeLeafMessageId,
@@ -966,6 +1004,20 @@ function importProjection(chat: Pick<ChatSummaryRow, "importSource" | "importSou
     : {};
 }
 
+/** A chat's stored automatic review choice; one that no longer decodes reads as off. */
+function storedAnswerReview(value: Prisma.JsonValue | null): { answerReview?: AnswerReviewAutoConfig } {
+  const decoded = value === null ? null : decodeAnswerReviewAutoConfig(value);
+  return decoded ? { answerReview: decoded } : {};
+}
+
+function answerReviewJson(value: AnswerReviewAutoConfig | null): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  return value === null ? Prisma.DbNull : {
+    enabled: value.enabled,
+    maxRounds: value.maxRounds,
+    reviewers: value.reviewers.map(({ modelId, provider }) => ({ modelId, provider }))
+  };
+}
+
 function serializeChatSummary(
   chat: ChatSummaryRow,
   availability: WorkspaceAvailabilityService,
@@ -975,6 +1027,7 @@ function serializeChatSummary(
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     ...importProjection(chat),
     activeLeafMessageId: chat.activeLeafMessageId,
+    ...storedAnswerReview(chat.answerReviewConfig),
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
     defaultKnowledgePlan: storedKnowledgeDefault(chat.defaultKnowledgePlan),
@@ -1129,7 +1182,13 @@ export function summarizeMessageRunToolActivity(
       acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, fingerprint)
       ? { roundIndex: call.roundIndex, ordinal: call.ordinal }
       : undefined;
+    // A call refused for the user's approval was never sent; its card says why.
+    const approvalRequired = call.providerCallId !== undefined && mcpApprovalGated({ providerCallId: call.providerCallId,
+      result: (call.result ?? null) as Parameters<typeof mcpApprovalGated>[0]["result"],
+      startedAt: call.startedAt?.toISOString() ?? null, state: call.state as Parameters<typeof mcpApprovalGated>[0]["state"],
+      toolName: call.toolName });
     return {
+      ...(approvalRequired ? { approvalRequired: true as const } : {}),
       ...(details ? { details } : {}),
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
@@ -1327,7 +1386,9 @@ export function summarizeMessageRunArtifacts(
   memoryAction: MemoryActionFeedback | null = null,
   memorySources: readonly MemoryAnswerSource[] = [],
   memoryStatus?: MemoryRunPresentationStatus,
-  currentScheduledTasks?: CurrentScheduledTasks
+  currentScheduledTasks?: CurrentScheduledTasks,
+  /** The reader: only the run's initiator may decide its approval cards. */
+  viewerUserId?: string
 ): ThreadArtifactSummary | null {
   const grounding = run.events.filter((event) => event.eventType === "grounding_display")
     .map((event) => projectGroundingDisplay(event.payload))
@@ -1383,6 +1444,13 @@ export function summarizeMessageRunArtifacts(
   const scheduledTasks = answerScheduledTaskCards(artifactPayloads, currentScheduledTasks);
   const skillSaves = foldSkillSaveCards(artifactPayloads.filter((payload) => artifactType(payload) === "skill_save")
     .map(artifactInnerPayload));
+  const mcpApprovals = projectMcpApprovalCards(run.mcpToolApprovals ?? [],
+    { initiator: viewerUserId !== undefined && run.userId === viewerUserId });
+  // A review step's report: the first valid card of its run.
+  const answerReviews = foldAnswerReviewCards(artifactPayloads.filter((payload) => artifactType(payload) === "answer_review")
+    .map(artifactInnerPayload));
+  const answerReviewDecisions = foldAnswerReviewDecisionsCards(artifactPayloads
+    .filter((payload) => artifactType(payload) === "answer_review_decisions").map(artifactInnerPayload));
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
@@ -1437,6 +1505,9 @@ export function summarizeMessageRunArtifacts(
     generatedArtifacts.length === 0 &&
     scheduledTasks.length === 0 &&
     skillSaves.length === 0 &&
+    mcpApprovals.length === 0 &&
+    answerReviews.length === 0 &&
+    answerReviewDecisions.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
@@ -1469,6 +1540,9 @@ export function summarizeMessageRunArtifacts(
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks.length > 0 ? { scheduledTasks } : {}),
     ...(skillSaves.length > 0 ? { skillSaves } : {}),
+    ...(mcpApprovals.length > 0 ? { mcpApprovals } : {}),
+    ...(answerReviews.length > 0 ? { answerReviews } : {}),
+    ...(answerReviewDecisions.length > 0 ? { answerReviewDecisions } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== null ? { workDurationMs } : {})
@@ -1978,7 +2052,8 @@ export function createPrismaChatRepository(
                 messages.memorySourcesByRun,
                 messages.memoryStatusesByRun,
                 userId,
-                messages.scheduledTasks
+                messages.scheduledTasks,
+                messages.answerReviews
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
@@ -2132,7 +2207,8 @@ export function createPrismaChatRepository(
                 messages.memorySourcesByRun,
                 messages.memoryStatusesByRun,
                 userId,
-                messages.scheduledTasks
+                messages.scheduledTasks,
+                messages.answerReviews
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
@@ -2490,6 +2566,7 @@ export function createPrismaChatRepository(
     },
     updateChat: async ({
       activeLeafMessageId,
+      answerReview,
       assistantId,
       assistantOverrides,
       chatId,
@@ -2598,6 +2675,7 @@ export function createPrismaChatRepository(
           const updated = await tx.chat.update({
             data: {
               ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
+              ...(answerReview !== undefined ? { answerReviewConfig: answerReviewJson(answerReview) } : {}),
               ...assistantData,
               ...(defaultKnowledgePlan !== undefined
                 ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }
@@ -2710,11 +2788,12 @@ export function createPrismaChatRepository(
         }
 
         const hasMetadataUpdate = defaultSearchPlan !== undefined || defaultKnowledgePlan !== undefined ||
-          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined ||
+          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined || answerReview !== undefined ||
           Object.keys(assistantData).length > 0;
         const updated = hasMetadataUpdate
           ? await tx.chat.update({
               data: {
+                ...(answerReview !== undefined ? { answerReviewConfig: answerReviewJson(answerReview) } : {}),
                 ...assistantData,
                 ...(defaultKnowledgePlan !== undefined
                   ? { defaultKnowledgePlan: knowledgeDefaultJson(defaultKnowledgePlan) }

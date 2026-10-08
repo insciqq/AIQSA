@@ -155,6 +155,7 @@ describe("catalog handler", () => {
       "sendWithEnter",
       "assistantId",
       "assistantUnavailable",
+      "answerReview",
       "workspaceEnabled",
       "showCitations",
       "showReasoningBlocks",
@@ -194,6 +195,26 @@ describe("catalog handler", () => {
       clientToolCompatible: false,
       executionModes: ["model_choice"]
     });
+  });
+
+  it("projects dictation availability, and a failed read as unavailable rather than absent", async () => {
+    const handler = (resolveDictation: () => Promise<{ available: boolean; unavailableReason: "not_configured" | "unavailable" | null }>) =>
+      createCatalogHandler({
+        loadCatalogData: async () => ({
+          entitlements: { fullAccess: true, modelKeys: new Set(), providerKeys: new Set(), searchStrategies: new Set() },
+          models: defaultProviderModels,
+          searchStrategies: [],
+          settings: { defaultControlValues: {}, defaultProviderModelId: null, defaultSearchPlan: null, showCitations: true, showReasoningBlocks: false }
+        }),
+        resolveAuth: auth.resolveAuth,
+        resolveDictation
+      });
+    const read = async (GET: ReturnType<typeof createCatalogHandler>) => decodeCatalogResponse(await (await GET(
+      new Request("http://app.local/api/me/catalog", { headers: { cookie: auth.cookie } }))).json());
+    expect((await read(handler(async () => ({ available: true, unavailableReason: null }))))?.dictation)
+      .toEqual({ available: true, unavailableReason: null });
+    expect((await read(handler(async () => { throw new Error("db"); })))?.dictation)
+      .toEqual({ available: false, unavailableReason: "unavailable" });
   });
 
   it.each([

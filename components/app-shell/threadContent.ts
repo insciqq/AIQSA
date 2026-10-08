@@ -3,6 +3,8 @@ import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
 import { THREAD_SEARCH_SOURCE_MAX_ITEMS, decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { foldScheduledTaskCards } from "@/lib/contracts/scheduledTasks";
 import { foldSkillSaveCards } from "@/lib/contracts/skillSaves";
+import { foldMcpApprovalCards } from "@/lib/contracts/mcpApprovals";
+import { foldAnswerReviewCards, foldAnswerReviewDecisionsCards } from "@/lib/contracts/answerReviews";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
@@ -105,6 +107,14 @@ export function summarizeThreadArtifacts(
   const scheduledTasks = foldScheduledTaskCards(events
     .filter((event) => artifactTypeFromEvent(event) === "scheduled_task").map(artifactPayload));
   const skillSaves = foldSkillSaveCards(events.filter((event) => artifactTypeFromEvent(event) === "skill_save").map(artifactPayload));
+  // Live approval cards; the saved answer's cards carry their decisions.
+  const mcpApprovals = foldMcpApprovalCards(events.filter((event) => artifactTypeFromEvent(event) === "mcp_approval")
+    .map(artifactPayload));
+  // A review step's live report: the same first-card fold as a reload.
+  const answerReviews = foldAnswerReviewCards(events.filter((event) => artifactTypeFromEvent(event) === "answer_review")
+    .map(artifactPayload));
+  const answerReviewDecisions = foldAnswerReviewDecisionsCards(events
+    .filter((event) => artifactTypeFromEvent(event) === "answer_review_decisions").map(artifactPayload));
   // The same projections and folds as a reload, so a finished live answer
   // shows the thinking, citations and sources its saved summary will show.
   const reasoning = foldReasoningEntries(events.map((event) =>
@@ -134,6 +144,9 @@ export function summarizeThreadArtifacts(
     generatedArtifacts.length === 0 &&
     scheduledTasks.length === 0 &&
     skillSaves.length === 0 &&
+    mcpApprovals.length === 0 &&
+    answerReviews.length === 0 &&
+    answerReviewDecisions.length === 0 &&
     citations.length === 0 &&
     sources.length === 0 &&
     reasoning.entries.length === 0 &&
@@ -156,6 +169,9 @@ export function summarizeThreadArtifacts(
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks.length ? { scheduledTasks } : {}),
     ...(skillSaves.length ? { skillSaves } : {}),
+    ...(mcpApprovals.length ? { mcpApprovals } : {}),
+    ...(answerReviews.length ? { answerReviews } : {}),
+    ...(answerReviewDecisions.length ? { answerReviewDecisions } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {})
   };
@@ -184,14 +200,18 @@ export function mergeLiveThreadArtifacts(
   const citationOwner = live.citations.length > 0 ? live : saved;
   const reasoningOwner = live.reasoningText.length > 0 ? live : saved;
   const sourceOwner = live.sources.length > 0 ? live : saved;
+  // One card per approval: a saved card carries the decision, so it wins.
+  const mcpApprovals = foldMcpApprovalCards([...live.mcpApprovals ?? [], ...saved.mcpApprovals ?? []]);
   const {
     citationsTruncated: _citationsTruncated,
+    mcpApprovals: _mcpApprovals,
     reasoningTruncated: _reasoningTruncated,
     sourcesTruncated: _sourcesTruncated,
     ...merged
   } = { ...saved, ...live };
   return {
     ...merged,
+    ...(mcpApprovals.length ? { mcpApprovals } : {}),
     citations: citationOwner.citations,
     ...(citationOwner.citationsTruncated ? { citationsTruncated: true as const } : {}),
     ...(contextCompaction ? { contextCompaction } : {}),

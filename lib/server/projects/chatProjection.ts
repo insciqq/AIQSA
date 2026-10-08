@@ -1,4 +1,5 @@
 import { decodeSearchPlan } from "../../domain/search";
+import { decodeAnswerReviewAutoConfig } from "../../contracts/answerReviews";
 import { ModelRunStatus, Prisma } from "@prisma/client";
 import type { ProjectChatSummaryWire } from "@/lib/contracts/projects";
 import type {
@@ -31,6 +32,7 @@ export const projectChatSelect = {
     }
   },
   activeLeafMessageId: true,
+  answerReviewConfig: true,
   archived: true,
   createdAt: true,
   createdByDisplayName: true,
@@ -77,8 +79,10 @@ export function projectChatWire(
     defaultKnowledgePlan: chat.defaultKnowledgePlan,
     defaultModelId: chat.defaultProviderModel?.id ?? null
   });
+  const answerReview = chat.answerReviewConfig === null ? null : decodeAnswerReviewAutoConfig(chat.answerReviewConfig);
   return {
     activeRun: chat._count.modelRuns > 0,
+    ...(answerReview ? { answerReview } : {}),
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     archived: chat.archived,

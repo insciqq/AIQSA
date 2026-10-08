@@ -38,9 +38,11 @@ import {
   type RunHandlerDeps
 } from "./handlers";
 import { reconcileStaleRuns, sweepBootOrphanedRunsOnce } from "./runRecovery";
+import { answerReviewCallSubmitted } from "../tools/answerReview";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
   KnowledgeRunPlanConflictError,
@@ -2263,6 +2265,214 @@ describe("model run route handlers", () => {
       })
     ]);
   });
+
+  it("writes the continuation turn after an MCP approval from the user's own Allow, never from the body", async () => {
+    const { repository, state } = createMemoryRepository();
+    const loadMcpApprovalContinuation = vi.fn(async (input: { approvalId: string }) => input.approvalId === "approval-1"
+      ? { serverName: "Records", toolName: "delete_record" } : null);
+    repository.loadMcpApprovalContinuation = loadMcpApprovalContinuation;
+    const POST = createSendMessageHandler({ ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository });
+    const send = (systemTurn: unknown) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
+        systemTurn, text: "Text the browser must not decide" }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    for (const malformed of [{ approvalId: "approval-1", kind: "other" }, { approvalId: "a/b", kind: "mcp_approval_continuation" },
+      { approvalId: "approval-1", extra: true, kind: "mcp_approval_continuation" }, "approval-1"]) {
+      expect((await send(malformed)).status, JSON.stringify(malformed)).toBe(400);
+    }
+    const unavailable = await send({ approvalId: "approval-2", kind: "mcp_approval_continuation" });
+    expect(unavailable.status).toBe(409);
+    expect(await unavailable.json()).toEqual({ error: "mcp_approval_continuation_unavailable" });
+    expect(state.created).toBeNull();
+
+    const accepted = await send({ approvalId: "approval-1", kind: "mcp_approval_continuation" });
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(loadMcpApprovalContinuation).toHaveBeenLastCalledWith({ approvalId: "approval-1", chatId: "chat-1",
+      userId: config.bootstrapUserId });
+    expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation",
+      content: { blocks: [{ type: "text", text: "The user approved `delete_record` on `Records`. Continue the task." }] } });
+  });
+
+  it("admits an answer review step as the server's turn: it claims the step, counts no message window and takes no systemTurn", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    const answerReviewStep = {
+      preparation: { kind: "review" as const, reviewer: 0, round: 1, sessionId: "session-1", step: 0 },
+      turnKind: "answer_review_request" as const
+    };
+    // The user's own messages filled this hour's window; a step is the server's turn.
+    const windowFull = (now: Date): UsageLimitStatus => ({
+      ...NO_USAGE_LIMITS,
+      effective: { ...NO_USAGE_LIMITS.effective, messagesPerHour: { source: { kind: "installation" }, value: 2 } },
+      lastHour: { count: 2, freesAt: new Date(now.getTime() + 60_000) }
+    });
+    const usageLimits = { loadUsageLimitStatus: vi.fn(async (_userId: string, now: Date) => windowFull(now)) };
+    const POST = createSendMessageHandler({ ...authDeps, answerReviewStep, providers: { fake: createFakeProviderAdapter() }, repository,
+      usageLimits });
+    const send = (extra: Record<string, unknown> = {}) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Review the answer.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] }, ...extra }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    const withSystemTurn = await send({ systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } });
+    expect(withSystemTurn.status).toBe(400);
+    expect(state.created).toBeNull();
+
+    const accepted = await send();
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(state.created).toMatchObject({
+      answerReviewStep: { round: 1, sessionId: "session-1", step: 0 },
+      normalizedRequest: { answerReviewStep: { kind: "review", modelName: "fake-qsa", reviewer: 0, round: 1, version: 1 } },
+      systemTurnKind: "answer_review_request"
+    });
+    // The step's report is the run's own tool: settled with its card, which the answer publishes.
+    const report = state.toolCalls.find((call) => call.toolName === "submit_answer_review");
+    expect(report).toMatchObject({ state: "complete" });
+    expect(answerReviewCallSubmitted(state.created!.normalizedRequest, report!)).toBe(true);
+    expect(JSON.stringify(state.events.map((entry) => entry.event))).toContain("\"artifactType\":\"answer_review\"");
+  });
+
+  it("refuses an answer review step at a reached budget and when its step was already claimed", async () => {
+    const answerReviewStep = {
+      preparation: { kind: "review" as const, reviewer: 0, round: 1, sessionId: "session-1", step: 0 },
+      turnKind: "answer_review_request" as const
+    };
+    const capabilities = { toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true };
+    const request = () => new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Review the answer.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    });
+    const budget = createMemoryRepository(entitledFakeModel, [], null, capabilities);
+    const exhausted = await createSendMessageHandler({ ...authDeps, answerReviewStep, providers: { fake: createFakeProviderAdapter() },
+      repository: budget.repository, usageLimits: { loadUsageLimitStatus: async () => ({
+        ...NO_USAGE_LIMITS,
+        effective: { ...NO_USAGE_LIMITS.effective, monthlyBudgetMicros: { source: { kind: "user" }, value: 5_000_000 } },
+        userSpentMicros: 5_250_000
+      }) } })(request(), { params: { chatId: "chat-1" } });
+    expect(exhausted.status).toBe(429);
+    expect(await exhausted.json()).toMatchObject({ error: "usage_budget_exhausted" });
+    expect(budget.state.created).toBeNull();
+
+    const claimed = createMemoryRepository(entitledFakeModel, [], null, capabilities);
+    claimed.repository.createRun = async () => { throw new AnswerReviewStepConflictError("answer_review_step_unavailable"); };
+    const conflict = await createSendMessageHandler({ ...authDeps, answerReviewStep, providers: { fake: createFakeProviderAdapter() },
+      repository: claimed.repository })(request(), { params: { chatId: "chat-1" } });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "answer_review_step_unavailable" });
+  });
+
+  it("freezes a send's automatic review into its admission and refuses a reviewer the answer's own model", async () => {
+    const { repository, state } = createMemoryRepository({
+      modelKeys: new Set(["fake:fake-qsa", "fake:fake-reviewer"]), providerKeys: new Set(), searchStrategies: new Set()
+    }, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    const POST = createSendMessageHandler({ ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository });
+    const send = (reviewer: string) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({
+        answerReview: { maxRounds: 2, reviewers: [{ modelId: reviewer, provider: "fake",
+          searchPlan: { mode: "all_selected", optionIds: [] } }] },
+        content: { blocks: [{ text: "Check the total.", type: "text" }] }, mcp: { mode: "off" }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] }
+      }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    const own = await send("fake-qsa");
+    expect(own.status).toBe(409);
+    expect(await own.json()).toEqual({ error: "answer_review_reviewer_unavailable" });
+    expect(state.created).toBeNull();
+
+    const accepted = await send("fake-reviewer");
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(state.created).toMatchObject({ answerReviewAuto: {
+      authorModel: { modelId: "fake-qsa", provider: "fake" },
+      controls: { controls: { mcp: { mode: "off" } }, reviewerSearchPlans: [{ mode: "all_selected", optionIds: [] }], version: 1 },
+      maxRounds: 2,
+      reviewers: [{ modelId: "fake-reviewer", name: "fake-reviewer", provider: "fake" }]
+    } });
+    expect(state.created).not.toHaveProperty("answerReviewStep");
+  });
+
+  it("starts no automatic review from a review step's own send", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    const response = await createSendMessageHandler({ ...authDeps, answerReviewStep: {
+      preparation: { kind: "review", reviewer: 0, round: 1, sessionId: "session-1", step: 0 }, turnKind: "answer_review_request"
+    }, providers: { fake: createFakeProviderAdapter() }, repository })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ answerReview: { maxRounds: 1, reviewers: [{ modelId: "missing", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }] }, content: { blocks: [{ text: "Review the answer.", type: "text" }] },
+        modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(state.created).not.toHaveProperty("answerReviewAuto");
+  });
+
+  it("stops an answer review step whose provider has not answered yet, at once", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    let signal: AbortSignal | undefined;
+    // A slow reviewer: no output until the request is aborted, then the transport's abort error.
+    const heldProvider: ProviderAdapter = {
+      buildRequestPreview: () => ({ provider: "fake" }),
+      async *stream(_request, options = {}) {
+        signal = options.signal;
+        await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
+        throw options.signal?.reason ?? new DOMException("The operation was aborted.", "AbortError");
+      }
+    };
+    const send = createSendMessageHandler({ ...authDeps, answerReviewStep: {
+      preparation: { kind: "review", reviewer: 0, round: 1, sessionId: "session-1", step: 0 }, turnKind: "answer_review_request"
+    }, providers: { fake: heldProvider }, repository });
+    const cancel = createCancelModelRunHandler({ ...authDeps, providers: { fake: heldProvider }, repository });
+    const response = await send(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Review the answer.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(200);
+    for (let attempt = 0; attempt < 50 && !signal; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(signal).toBeDefined();
+
+    const started = Date.now();
+    const cancelled = await cancel(new Request("http://app.local/api/model-runs/run-1/cancel", {
+      headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { runId: "run-1" } });
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({ run: { id: "run-1", status: "cancelled" } });
+    // The step's run settled with the Stop, never waiting out the provider.
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(signal?.aborted).toBe(true);
+    const events = parseSse(await response.text());
+    expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["run_start", "message_start"]));
+    expect(state.cancelled).toMatchObject({ code: "model_run_cancelled" });
+    expect(state.completed).toBeNull();
+  });
+
+
 
   it("streams a complete fake provider SSE run and persists run artifacts", async () => {
     const { repository, state } = createMemoryRepository();

@@ -143,6 +143,11 @@ export type PersistToolLoopCallBatchInput = Readonly<{
     /** Persist the call already settled as an undispatched repeat of the two
      * equal successes of these earlier rounds (`tool_call_repeat_blocked`). */
     repeatBlocked?: Readonly<{ repeatOf: readonly [number, number] }>;
+    /** An MCP call this run's admission requires its initiator to approve:
+     * without an unconsumed one-shot approval of the same call it persists
+     * already settled as an undispatched `mcp_approval_required` error with
+     * the card's pending request; otherwise its claim consumes the approval. */
+    mcpApproval?: import("../mcp/writeApproval").McpApprovalRequest;
     runtimeGenerationFingerprint?: string | null;
     toolName: string;
     workspace?: true;

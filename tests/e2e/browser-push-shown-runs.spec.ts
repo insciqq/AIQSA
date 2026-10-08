@@ -72,8 +72,9 @@ test("an answer completed on screen skips this device's push; one completed whil
     authIdentities: { create: { emailVerifiedAt: new Date(), normalizedEmail: email,
       passwordHash: await hashPassword(password), provider: "password", providerAccountId: email } },
     accessGrants: { create: { enabled: true, providerModelId: fakeModel.id } },
+    // Tools off: their definitions alone outgrow the fake model's 8k window (context_too_large).
     settings: { create: { browserNotificationsEnabled: true, defaultProviderModelId: fakeModel.id, defaultMcpMode: "off",
-      defaultSearchPlan: { mode: "all_selected", optionIds: [] } } }
+      defaultSearchPlan: { mode: "all_selected", optionIds: [] }, defaultSkillsMode: "off", defaultWorkspaceEnabled: false } }
   } });
   await prisma.userMemorySettings.update({ where: { userId: user.id }, data: {
     learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false } });

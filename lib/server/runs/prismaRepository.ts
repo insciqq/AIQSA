@@ -25,10 +25,13 @@ import { loadEntitlementsForUser } from "../auth/dbEntitlements";
 import { prisma } from "../prisma";
 import type { ProviderConversationMessage } from "../providers/types";
 import {
+  type ConversationContextOptions,
   type ProjectRunAdmission,
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
+import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
+import { answerReviewStepModelName, loadAnswerReviewProjection } from "../answerReviews/repository";
 import {
   createPrismaMemoryRunRetrievalService,
   type MemoryRunRetrievalService
@@ -47,7 +50,7 @@ import {
   boundedMemoryAdmissionDeadlineMs,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../memory/admissionDeadline";
-import { signalRunTerminal } from "../push/runTerminalSignal";
+import { signalRunCancelled, signalRunTerminal } from "../push/runTerminalSignal";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
 import {
   admitPreparingRunWithClient,
@@ -97,6 +100,12 @@ import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskC
 import { loadScheduledTaskManagementAdmission, manageScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskManagement";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
 import {
+  loadMcpApprovalContinuation,
+  loadMcpToolConsentServerIds,
+  loadRunMcpApprovalCards,
+  mcpApprovalCardSelect
+} from "../mcp/writeApprovalRepository";
+import {
   decodeProjectDefaults,
   decodeProjectPolicy
 } from "../../contracts/projects";
@@ -135,6 +144,8 @@ type ConversationPathSelector =
   | { kind: "explicit"; leafMessageId: string };
 
 type ConversationPathRow = {
+  messageAnswerReviewSessionId?: string | null;
+  messageSystemTurnKind?: string | null;
   messageBranchFollowups?: unknown;
   followups?: readonly { id: string; ordinal: number; text: string; delivered: boolean; precedingText: string | null }[];
   chatId: string;
@@ -247,7 +258,8 @@ export function createPrismaRunRepository(
   async function loadConversationPath(
     chatId: string,
     userId: string,
-    selector: ConversationPathSelector
+    selector: ConversationPathSelector,
+    options: ConversationContextOptions = {}
   ): Promise<{ chatMatched: boolean; messages: ProviderConversationMessage[] }> {
     const access = await resolveChatAccess(prismaClient, {
       chatId,
@@ -302,6 +314,8 @@ export function createPrismaRunRepository(
           message."role",
           message."status"::text AS "status",
           message."branchFollowups",
+          message."answerReviewSessionId",
+          message."systemTurnKind"::text AS "systemTurnKind",
           ARRAY[message."id"]::text[] AS "visitedIds",
           0 AS "depth"
         FROM "selected_chat" AS chat
@@ -319,6 +333,8 @@ export function createPrismaRunRepository(
           parent."role",
           parent."status"::text AS "status",
           parent."branchFollowups",
+          parent."answerReviewSessionId",
+          parent."systemTurnKind"::text AS "systemTurnKind",
           path."visitedIds" || parent."id",
           path."depth" + 1
         FROM "ancestor_path" AS path
@@ -335,6 +351,8 @@ export function createPrismaRunRepository(
         path."role" AS "messageRole",
         path."status" AS "messageStatus",
         path."branchFollowups" AS "messageBranchFollowups",
+        path."answerReviewSessionId" AS "messageAnswerReviewSessionId",
+        path."systemTurnKind" AS "messageSystemTurnKind",
         COALESCE(clarifications.entries, '[]'::jsonb) AS "followups"
       FROM "selected_chat" AS chat
       LEFT JOIN "ancestor_path" AS path ON true
@@ -363,8 +381,44 @@ export function createPrismaRunRepository(
     }
     return {
       chatMatched: rows.length > 0,
-      messages: conversationMessagesFromPathRows(rows)
+      // Only an explicit leaf is the run's own turn (a regeneration answers it
+      // again); a send's expected leaf is the previous message and collapses.
+      messages: conversationMessagesFromPathRows(await collapsedAnswerReviewRows(rows, chatId, options,
+        selector.kind === "explicit"))
     };
+  }
+
+  /**
+   * The path as runs read it (Run contracts): each answer review session
+   * other than the run's own collapses to its source question followed by
+   * the group's latest version. `keepLeaf` keeps the path's leaf when it is
+   * the run's own turn, which a regeneration answers again even inside a
+   * session; any other leaf collapses like every member.
+   */
+  async function collapsedAnswerReviewRows(
+    rows: ConversationPathRow[],
+    chatId: string,
+    options: ConversationContextOptions,
+    keepLeaf: boolean
+  ): Promise<ConversationPathRow[]> {
+    if (!rows.some((row) => row.messageAnswerReviewSessionId)) return rows;
+    const sessions = await prismaClient.answerReviewSession.findMany({
+      select: { id: true, sourceAssistantMessageId: true },
+      where: { chatId, id: { in: [...new Set(rows.flatMap((row) => row.messageAnswerReviewSessionId ?? []))] } }
+    }).catch(retainRunPrismaCode);
+    const leaf = keepLeaf ? rows.at(-1)?.messageId : undefined;
+    const collapse = collapseAnswerReviews(rows.flatMap((row) => row.messageId ? [{
+      answerReviewSessionId: row.messageAnswerReviewSessionId ?? null,
+      id: row.messageId,
+      parentId: row.messageParentId ?? null,
+      role: row.messageRole ?? "",
+      status: row.messageStatus ?? "",
+      systemTurnKind: row.messageSystemTurnKind ?? null
+    }] : []), sessions, {
+      ...(leaf ? { keepMessageIds: new Set([leaf]) } : {}),
+      keepSessionId: options.answerReviewSessionId ?? null
+    });
+    return rows.filter((row) => !row.messageId || !collapse.removed.has(row.messageId));
   }
 
   async function loadProjectRunAdmission(
@@ -508,6 +562,9 @@ export function createPrismaRunRepository(
     loadRunFetchUrlCalls: (input) => fetchUrlOperations.loadRunFetchUrlCalls(input).catch(retainRunPrismaCode),
     loadScheduledPromptMessageIds: (input) =>
       fetchUrlOperations.loadScheduledPromptMessageIds(input).catch(retainRunPrismaCode),
+    loadMcpToolConsentServerIds: (input) => loadMcpToolConsentServerIds(prismaClient, input).catch(retainRunPrismaCode),
+    loadMcpApprovalContinuation: (input) => loadMcpApprovalContinuation(prismaClient, input).catch(retainRunPrismaCode),
+    loadRunMcpApprovalCards: (input) => loadRunMcpApprovalCards(prismaClient, input).catch(retainRunPrismaCode),
     loadScheduledTaskManagement: (input) => loadScheduledTaskManagementAdmission(prismaClient, input).catch(retainRunPrismaCode),
     manageScheduledTaskForCall: (input) => manageScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
       .catch(retainRunPrismaCode),
@@ -623,7 +680,7 @@ export function createPrismaRunRepository(
       }).catch(retainRunPrismaCode);
     },
     cancelRun: async (input) => {
-      return prismaClient.$transaction(async (tx) => {
+      const cancellation = await prismaClient.$transaction(async (tx) => {
         const lockedRun = await lockPreparingRun(tx, input.runId, input.userId);
         const updatedCount = lockedRun?.status === "preparing"
           ? Number(await settlePreparingRunInTransaction(tx, {
@@ -716,6 +773,9 @@ export function createPrismaRunRepository(
           }
         } as const;
       }).catch(retainRunPrismaCode);
+      // After commit; browser push never notifies the user's own cancellation.
+      if (cancellation.kind === "cancelled") signalRunCancelled(input.runId);
+      return cancellation;
     },
     completeRun: async (input) => {
       const usage = normalizeTokenUsage(input.usage);
@@ -1549,6 +1609,7 @@ export function createPrismaRunRepository(
                   normalizedRequest: true,
                   userId: true,
                   status: true,
+                  mcpToolApprovals: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
                   workspaceExecutions: { take: 512, orderBy: { startedAt: "desc" },
                     select: { modelRunToolCallId: true, state: true, lastErrorCode: true } },
                   workspaceRunBinding: {
@@ -1561,6 +1622,7 @@ export function createPrismaRunRepository(
                       mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
                       completedAt: true,
                       ordinal: true,
+                      providerCallId: true,
                       result: true,
                       roundIndex: true,
                       startedAt: true,
@@ -1618,6 +1680,13 @@ export function createPrismaRunRepository(
 
         const runIds = chat.messages.flatMap((message) =>
           message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
+        // A review step's turn and answer carry their session for the live transcript.
+        const answerReviews = await loadAnswerReviewProjection(tx, { chatId, messages: chat.messages.map((message) => ({
+          answerReviewRound: message.answerReviewRound, answerReviewSessionId: message.answerReviewSessionId,
+          answerReviewStep: message.answerReviewStep, id: message.id, parentMessageId: message.parentMessageId, role: message.role,
+          stepModelName: answerReviewStepModelName(message.assistantModelRuns[0]?.normalizedRequest),
+          systemTurnKind: message.systemTurnKind
+        })), viewerUserId: userId });
         const [
           { contextStats, usageStats },
           memoryActionsByRun,
@@ -1670,7 +1739,9 @@ export function createPrismaRunRepository(
                     message.content,
                     memoryActionsByRun.get(modelRun.id) ?? null,
                     memorySourcesByRun.get(modelRun.id) ?? [],
-                    memoryStatusesByRun.get(modelRun.id)
+                    memoryStatusesByRun.get(modelRun.id),
+                    undefined,
+                    userId
                   )
                 : null,
               assistantIdentity: serializeRunAssistantIdentity(modelRun),
@@ -1692,6 +1763,8 @@ export function createPrismaRunRepository(
               provider: message.provider,
               role: message.role,
               status: message.status,
+              ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
+              ...(answerReviews.get(message.id) ? { answerReview: answerReviews.get(message.id) } : {}),
               ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
                 projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
                   ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
@@ -1729,20 +1802,29 @@ export function createPrismaRunRepository(
     loadConversationContextForExpectedLeaf: async (
       chatId,
       userId,
-      expectedActiveLeafMessageId
+      expectedActiveLeafMessageId,
+      options
     ) => {
       const context = await loadConversationPath(chatId, userId, {
         kind: "expected",
         leafMessageId: expectedActiveLeafMessageId
-      });
+      }, options);
       return context.chatMatched ? context.messages : null;
     },
-    loadConversationContextForLeaf: async (chatId, userId, leafMessageId) => {
+    loadConversationContextForLeaf: async (chatId, userId, leafMessageId, options) => {
       const context = await loadConversationPath(chatId, userId, {
         kind: "explicit",
         leafMessageId
-      });
+      }, options);
       return context.messages;
+    },
+    loadSystemTurnMessageIds: async ({ chatId, messageIds }) => {
+      const ids = [...new Set(messageIds)];
+      if (ids.length === 0) return new Set();
+      const rows = await prismaClient.message.findMany({
+        select: { id: true }, where: { chatId, id: { in: ids }, role: "user", systemTurnKind: { not: null } }
+      }).catch(retainRunPrismaCode);
+      return new Set(rows.map((row) => row.id));
     },
     loadWorkspaceFileFacts: input => loadWorkspaceInboxFacts(prismaClient, input).catch(retainRunPrismaCode),
     loadAttachments: async (userId, attachmentIds, projectId, runId) => {

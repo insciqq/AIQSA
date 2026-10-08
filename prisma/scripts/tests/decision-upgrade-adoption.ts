@@ -13,7 +13,9 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "SystemModelPolicy" policy
     JOIN "DecisionUpgradePolicyFixture" original ON original.snapshot =
       (to_jsonb(policy) - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
-        - 'visionProviderModelId' - 'visionReasoningEffort')
+        - 'visionProviderModelId' - 'visionReasoningEffort'
+        - 'speechToTextConnectionId' - 'speechToTextModelId' - 'speechToTextCredentialVersionId'
+        - 'speechToTextConfiguredAt')
     WHERE policy.id = 'installation' AND "decisionAdoptionVersion" = 0 AND "decisionAdoptionReason" IS NULL) THEN
     RAISE EXCEPTION 'decision_upgrade_changed_existing_policy';
   END IF;

@@ -245,18 +245,19 @@ describe("usage limit persistence", () => {
       ...PERSONAL_USAGE_PURPOSES.map((purpose, index) => usage(member, `2033-03-0${5 + index}T00:00:00.000Z`, 500_000, purpose))
     ] });
 
+    const personal = PERSONAL_USAGE_PURPOSES.length * 500_000;
     const status = await repository.loadUsageLimitStatus(member, now);
-    expect(status).toMatchObject({ installationSpentMicros: 8_500_000, userSpentMicros: 1_500_000 });
+    expect(status).toMatchObject({ installationSpentMicros: 7_000_000 + personal, userSpentMicros: personal });
     expect(decideUsageAdmission({ ...status, interactive: true, now })).toEqual({ ok: true });
     // The admin view (and the budget alerts and attention that read it) agrees with admission.
     const view = await repository.readAdminUsageLimits(now);
-    expect(view.installationSpentMicros).toBe(8_500_000);
-    expect(view.users.find(({ userId }) => userId === member)?.monthSpentMicros).toBe(1_500_000);
+    expect(view.installationSpentMicros).toBe(7_000_000 + personal);
+    expect(view.users.find(({ userId }) => userId === member)?.monthSpentMicros).toBe(personal);
 
     // System work that fills the pooled cap refuses everyone, the user included.
     await prisma.usageEvent.create({ data: usage(member, "2033-03-10T00:00:00.000Z", 1_500_000, "memory_retrieval") });
     const capped = await repository.loadUsageLimitStatus(member, now);
-    expect(capped).toMatchObject({ installationSpentMicros: 10_000_000, userSpentMicros: 1_500_000 });
+    expect(capped).toMatchObject({ installationSpentMicros: 8_500_000 + personal, userSpentMicros: personal });
     expect(decideUsageAdmission({ ...capped, interactive: true, now })).toMatchObject({ code: "installation_budget_exhausted" });
   });
 

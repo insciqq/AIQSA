@@ -2,6 +2,11 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { InstructionPresetError } from "../instructions/store";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
+import {
+  MCP_APPROVAL_CONTINUATION_KIND,
+  MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
+  mcpApprovalContinuationText
+} from "../../contracts/mcpApprovals";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
@@ -41,10 +46,12 @@ import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDi
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
+import { resolveAnswerReviewAuto } from "../answerReviews/autoAdmission";
 import {
   materializePreparedRunData,
   preparePdfRetry,
   prepareRun,
+  type AnswerReviewStepPreparation,
   type RunPreparationDeps,
   type MaterializedPreparedRunData,
   type RunPreparationFailure
@@ -57,6 +64,7 @@ import {
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
   KnowledgeRunPlanConflictError,
@@ -87,7 +95,19 @@ export type {
   StaleRunControlRecord
 } from "./runRepositoryContract";
 
+/**
+ * Server-only: the answer review step a send of this handler admits. The
+ * send body is the server's own (its turn's text, the step's model, the
+ * chat's controls); the turn carries `turnKind` and claims the step.
+ */
+export type AnswerReviewStepSendAdmission = Readonly<{
+  preparation: AnswerReviewStepPreparation;
+  turnKind: import("../../contracts/answerReviews").AnswerReviewTurnKind;
+}>;
+
 export type RunHandlerDeps = {
+  /** Server-only: the answer review step a send of this handler admits. */
+  answerReviewStep?: AnswerReviewStepSendAdmission;
   memorySearchAdmission?: RunPreparationDeps["memorySearchAdmission"];
   memorySearch?: import("../memory/search/runtime").MemorySearchService;
   workspaceFollowup?: Readonly<{
@@ -199,6 +219,37 @@ async function readJson(
     typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
     requestBodyErrorResponse(value)
   ];
+}
+
+/**
+ * A continuation turn after an MCP approval (`systemTurn`). The turn's text
+ * is the server's, written from the user's own Allow in this chat; the body's
+ * text and attachments are ignored. Null for an ordinary send.
+ */
+async function approvalContinuationBody(
+  deps: RunHandlerDeps,
+  body: Record<string, unknown> | null,
+  chatId: string,
+  userId: string
+): Promise<Record<string, unknown> | "invalid" | "unavailable" | null> {
+  if (!body || !Object.hasOwn(body, "systemTurn")) return null;
+  const turn = body.systemTurn;
+  if (!turn || typeof turn !== "object" || Array.isArray(turn)) return "invalid";
+  const { approvalId, kind } = turn as Record<string, unknown>;
+  if (Object.keys(turn).sort().join(",") !== "approvalId,kind" || kind !== MCP_APPROVAL_CONTINUATION_KIND ||
+    typeof approvalId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(approvalId)) return "invalid";
+  const approval = await deps.repository.loadMcpApprovalContinuation?.({ approvalId, chatId, userId }) ?? null;
+  if (!approval) return "unavailable";
+  const {
+    artifactEdit: _artifactEdit,
+    artifactIntent: _artifactIntent,
+    attachmentIds: _attachmentIds,
+    content: _content,
+    systemTurn: _systemTurn,
+    text: _text,
+    ...rest
+  } = body;
+  return { ...rest, content: { blocks: [{ type: "text", text: mcpApprovalContinuationText(approval) }] } };
 }
 
 function runPreparationFailureResponse(failure: RunPreparationFailure): Response {
@@ -397,6 +448,11 @@ function isMemoryPreparingRunConflictError(
 function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConflictError {
   return error instanceof WorkspaceRunConflictError ||
     (error instanceof Error && error.name === "WorkspaceRunConflictError");
+}
+
+function isAnswerReviewStepConflictError(error: unknown): error is AnswerReviewStepConflictError {
+  return error instanceof AnswerReviewStepConflictError ||
+    (error instanceof Error && error.name === "AnswerReviewStepConflictError" && "code" in error);
 }
 
 function isScheduledOccurrenceConflictError(error: unknown): error is ScheduledOccurrenceConflictError {
@@ -648,6 +704,16 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "project_draft_conflict" }, { status: 409 });
       }
     }
+    // A review step's body is the server's own; it never also names an approval.
+    if (deps.answerReviewStep && body && Object.hasOwn(body, "systemTurn")) {
+      return Response.json({ error: "system_turn_invalid" }, { status: 400 });
+    }
+    const continuationBody = await approvalContinuationBody(deps, body, chat.id, auth.userId);
+    if (continuationBody === "invalid") return Response.json({ error: "system_turn_invalid" }, { status: 400 });
+    if (continuationBody === "unavailable") {
+      return Response.json({ error: MCP_APPROVAL_CONTINUATION_UNAVAILABLE }, { status: 409 });
+    }
+    const sendBody = continuationBody ?? body;
 
     const activeRun = await deps.repository.findRecentActiveRunForChat({
       chatId: chat.id, since: new Date(Date.now() - activeRunGateWindowMs), userId: auth.userId
@@ -666,13 +732,14 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     if (!expectedActiveLeaf.ok) {
       return Response.json({ error: "expected_active_leaf_invalid" }, { status: 400 });
     }
+    // Budgets bind every run; message windows count only the user's own messages.
     const usageRefusal = await usageLimitRefusal(deps, {
-      interactive: !deps.scheduledOccurrence, stage: "send", userId: auth.userId
+      interactive: !deps.scheduledOccurrence && !deps.answerReviewStep, stage: "send", userId: auth.userId
     });
     if (usageRefusal) return usageRefusal;
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, project: chat.project ?? null, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
-      body,
+      body: sendBody,
       skillCatalogDecision: {
         operationKey: admissionKey,
         authorizeScope: async () => {
@@ -700,7 +767,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...(projectChat ? { draftProjectChat: true } : {}),
         ...(personalChat ? { draftPersonalChat: true } : {}),
         kind: "send",
-        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {})
+        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {}),
+        ...(deps.answerReviewStep ? { answerReviewStep: deps.answerReviewStep.preparation } : {})
       },
       userId: auth.userId
     });
@@ -709,9 +777,16 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     }
 
     let preparedData = materializePreparedRunData(preparation.prepared);
+    // Automatic review of the answer: only a user's own send, never a review
+    // step, a scheduled run or an approval continuation.
+    const answerReview = deps.answerReviewStep || deps.scheduledOccurrence || continuationBody
+      ? { ok: true as const }
+      : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
+    if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
+        ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...(predecessorRunId ? { workspaceFollowup: {
           admissionKey, predecessorRunId, snapshot: acceptedRunSnapshot(preparedData)
         } } : {}),
@@ -760,6 +835,15 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ...(preparedData.scheduledUnavailableSources ? { scheduledUnavailableSources: preparedData.scheduledUnavailableSources } : {})
         } : {}),
         signal: request.signal,
+        ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
+        ...(deps.answerReviewStep ? {
+          answerReviewStep: {
+            round: deps.answerReviewStep.preparation.round,
+            sessionId: deps.answerReviewStep.preparation.sessionId,
+            step: deps.answerReviewStep.preparation.step
+          },
+          systemTurnKind: deps.answerReviewStep.turnKind
+        } : {}),
         userId: auth.userId
       });
     } catch (error) {
@@ -769,6 +853,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       if (isScheduledOccurrenceConflictError(error)) {
         return Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
       }
+      if (isAnswerReviewStepConflictError(error)) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof WorkspaceFollowupError) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
@@ -965,9 +1050,14 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const chatAssistant = preparedData.chatAssistant && retry
       ? { assistantId: preparedData.chatAssistant.assistantId, bind: false, overridesPatch: {} }
       : preparedData.chatAssistant;
+    // A regeneration or an edit with automatic review on reviews its new answer; a document retry keeps its run.
+    const answerReview = retry ? { ok: true as const }
+      : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
+    if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
+        ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(chatAssistant ? { chatAssistant } : {}),

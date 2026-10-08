@@ -9,6 +9,7 @@ import {
   type ChatWorkspaceState
 } from "./workspace";
 import { decodeSearchPlan, type SearchPlan } from "./search";
+import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "./answerReviews";
 import type { KnowledgePlan as StoredKnowledgePlan } from "./knowledge";
 import {
   decodeAssistantContent,
@@ -417,6 +418,8 @@ export type ProjectFolderWire = Readonly<{
 }>;
 
 export type ProjectChatSummaryWire = Readonly<{
+  /** The chat's automatic answer review, shared by its members; absent is off. */
+  answerReview?: AnswerReviewAutoConfig;
   defaultSearchPlan?: SearchPlan | null;
   hasContinuationSource?: boolean;
   activeRun: boolean;
@@ -764,12 +767,15 @@ export function decodeProjectChat(value: unknown): ProjectChatSummaryWire | null
   if (workspace === null) return null;
   const search = value.defaultSearchPlan == null ? null : decodeSearchPlan(value.defaultSearchPlan);
   if (search && !search.ok) return null;
+  const answerReview = value.answerReview === undefined ? undefined : decodeAnswerReviewAutoConfig(value.answerReview);
+  if (answerReview === null) return null;
   const knowledge = value.defaultKnowledgePlan === null
     ? { ok: true as const, plan: null }
     : decodeKnowledgePlan(value.defaultKnowledgePlan);
   if (!knowledge.ok) return null;
   return {
     activeRun: value.activeRun,
+    ...(answerReview ? { answerReview } : {}),
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     activeLeafMessageId: value.activeLeafMessageId,
     archived: value.archived,
