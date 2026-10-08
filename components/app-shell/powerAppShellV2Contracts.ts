@@ -221,6 +221,8 @@ export type ShellThreadView = {
   }>): Promise<Readonly<{ ok: true }> | Readonly<{ error: string; ok: false }>>;
   /** Revise, or Continue review: starts a session's next step. */
   continueAnswerReview?(sessionId: string, kind: "review" | "revision"): Promise<void>;
+  /** Stops an automatic review session and its running step. */
+  stopAnswerReview?(sessionId: string): Promise<void>;
   /** The message a search result opened in this chat; a long question shows in full. */
   revealedMessageId?: string | null;
   /**
@@ -307,6 +309,15 @@ export type BrowserNotificationsView = Readonly<{
 
 export type ShellComposerView = {
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; setEnabled(value: boolean): void }>;
+  /**
+   * The chat's automatic answer review: the choice, who may review and why it
+   * cannot run now; `save` resolves to an error message, or null when saved.
+   */
+  answerReview?: Readonly<{
+    save(config: import("@/lib/contracts/answerReviews").AnswerReviewAutoConfig): Promise<string | null>;
+    saving: boolean;
+    state: import("@/features/answer-review-v2/answerReviewModel").AnswerReviewAutoStateV2;
+  }>;
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
   browserNotifications?: BrowserNotificationsView;
@@ -365,6 +376,12 @@ export type ShellComposerView = {
   };
   /** Personal Chat defaults in Studio; absent inside a Project. */
   chatDefaults?: {
+    /** The automatic answer review new personal chats start with. */
+    answerReview?: {
+      candidates: readonly import("@/features/answer-review-v2/answerReviewModel").AnswerReviewCatalogModelV2[];
+      config: import("@/lib/contracts/answerReviews").AnswerReviewAutoConfig;
+      set(config: import("@/lib/contracts/answerReviews").AnswerReviewAutoConfig): void;
+    };
     /** The Assistant every new personal chat starts with. */
     assistant?: {
       /** The saved default while it is available; null when none is saved or it is unavailable. */

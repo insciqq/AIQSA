@@ -251,6 +251,8 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     ...(chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}),
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
+    // Always present, so a merged summary never keeps a stale choice.
+    answerReview: chat.answerReview,
     ...(chat.assistantId !== undefined ? { assistantId: chat.assistantId } : {}),
     createdAt: chat.createdAt,
     defaultKnowledgePlan: chat.defaultKnowledgePlan ?? null,

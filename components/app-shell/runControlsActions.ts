@@ -28,6 +28,7 @@ import {
   useComposerControlStore
 } from "@/components/app-shell/composerControlStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import type { AnswerReviewAutoConfig } from "@/lib/contracts/answerReviews";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
@@ -602,6 +603,11 @@ export function useRunControlsActions({
     void persistUserDefaults({ skillsMode: mode }, { noticeScope: "settings" });
   }
 
+  /** The automatic answer review new personal chats start with; open chats keep their own. */
+  function setDefaultAnswerReview(config: AnswerReviewAutoConfig) {
+    void persistUserDefaults({ answerReview: config }, { noticeScope: "settings" });
+  }
+
   function setDefaultKnowledgePlan(plan: KnowledgeSelection | null) {
     void persistUserDefaults({ knowledgePlan: plan }, { noticeScope: "settings" });
   }
@@ -725,6 +731,7 @@ export function useRunControlsActions({
     selectSearchPlan,
     selectSearchStrategy,
     setDefaultKnowledgePlan,
+    setDefaultAnswerReview,
     setDefaultAssistant,
     setDefaultMcpMode,
     setDefaultSkillsMode,
