@@ -15,6 +15,8 @@ import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspaceActivityFingerprint, WORKSPACE_ACTIVITY_RECEIPT } from "./workspaceActivityPersistence";
 import { validAcceptedAgent } from "../agents/config";
+import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
+import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import {
   Prisma,
@@ -55,7 +57,7 @@ import type {
   KnowledgeRunAdmissionSourceAuthorization
 } from "../knowledge/runAdmission";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
-import type { NormalizedRunRequest } from "../providers/types";
+import type { NormalizedRunRequest, ProviderModelCapabilities } from "../providers/types";
 import { CONTEXT_COMPACTION_LIMITS, decodeConversationContextPolicy, type BranchContextCheckpoint } from "./contextCompactionContract";
 import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer";
 import { repeatBlockedRounds, repeatBlockedToolCallResult, validRepeatRounds } from "./toolCallRepeatGuard";
@@ -418,7 +420,7 @@ function persistedToolLoopCall(call: ToolLoopCallRecord): PersistedToolLoopCall 
     ? null
     : snapshotToolLoopJson(call.result, toolLoopPersistenceLimits.resultBytes);
   if (!argumentsValue || (call.result !== null && result === null)) {
-    throw new Error("tool_loop_call_invalid_in_storage");
+    throw new RecoveryStateInvalidError("tool_loop_call_invalid_in_storage");
   }
   return {
     arguments: argumentsValue,
@@ -711,72 +713,60 @@ function finiteJson(value: unknown): boolean {
   }
 }
 
+type CapabilityKind = "boolean" | "imageInputLimits" | "optionalBoolean" |
+  "optionalPositiveInteger" | "optionalString" | "optionalStrings";
+
+// Every capability admission can freeze into an accepted snapshot. The type
+// rejects a missing or an extra key, so this decoder cannot fall behind the
+// capability shape again.
+const capabilityKinds = {
+  backgroundStreaming: "optionalBoolean",
+  codexStandaloneWebSearch: "optionalBoolean",
+  contextWindow: "optionalPositiveInteger",
+  defaultMaxOutputTokens: "optionalPositiveInteger",
+  defaultReasoningEffort: "optionalString",
+  defaultReasoningMode: "optionalString",
+  forcedToolCalling: "optionalBoolean",
+  imageEditing: "optionalBoolean",
+  imageGeneration: "optionalBoolean",
+  imageInputLimits: "imageInputLimits",
+  maxOutputTokens: "optionalPositiveInteger",
+  nativeBackground: "optionalBoolean",
+  nativeForcedToolChoice: "optionalBoolean",
+  nativeImageGeneration: "optionalBoolean",
+  nativePdfInput: "boolean",
+  nativeSearch: "boolean",
+  parallelToolCalls: "optionalBoolean",
+  pdf: "boolean",
+  reasoning: "boolean",
+  reasoningEfforts: "optionalStrings",
+  reasoningModes: "optionalStrings",
+  streaming: "optionalBoolean",
+  streamUsage: "optionalBoolean",
+  structuredOutput: "optionalBoolean",
+  toolCalling: "optionalBoolean",
+  validatedAutoToolCalling: "optionalBoolean",
+  vision: "boolean"
+} as const satisfies Record<keyof ProviderModelCapabilities, CapabilityKind>;
+
+const imageInputLimitKeys = ["imageBytes", "imageCount", "imagePixels", "payloadBytes"] as const;
+
 function validCapabilities(value: unknown): boolean {
-  if (!isRecord(value) || !onlyKnownKeys(value, new Set([
-    "backgroundStreaming",
-    "contextWindow",
-    "defaultMaxOutputTokens",
-    "defaultReasoningEffort",
-    "defaultReasoningMode",
-    "forcedToolCalling",
-    "validatedAutoToolCalling",
-    "nativeForcedToolChoice",
-    "imageEditing",
-    "imageGeneration",
-    "imageInputLimits",
-    "maxOutputTokens",
-    "nativeBackground",
-    "nativeImageGeneration",
-    "nativePdfInput",
-    "nativeSearch",
-    "parallelToolCalls",
-    "pdf",
-    "reasoning",
-    "reasoningEfforts",
-    "reasoningModes",
-    "streaming",
-    "streamUsage",
-    "structuredOutput",
-    "toolCalling",
-    "vision"
-  ]))) return false;
-  for (const key of ["nativePdfInput", "nativeSearch", "pdf", "reasoning", "vision"] as const) {
-    if (typeof value[key] !== "boolean") return false;
-  }
-  for (const key of [
-    "backgroundStreaming",
-    "forcedToolCalling",
-    "validatedAutoToolCalling",
-    "nativeForcedToolChoice",
-    "imageEditing",
-    "imageGeneration",
-    "nativeBackground",
-    "nativeImageGeneration",
-    "parallelToolCalls",
-    "streaming",
-    "streamUsage",
-    "structuredOutput",
-    "toolCalling"
-  ] as const) {
-    if (value[key] !== undefined && typeof value[key] !== "boolean") return false;
-  }
-  for (const key of ["contextWindow", "defaultMaxOutputTokens", "maxOutputTokens"] as const) {
-    if (value[key] !== undefined &&
-      (!Number.isSafeInteger(value[key]) || Number(value[key]) <= 0)) return false;
-  }
-  for (const key of ["defaultReasoningEffort", "defaultReasoningMode"] as const) {
-    if (value[key] !== undefined && typeof value[key] !== "string") return false;
-  }
-  for (const key of ["reasoningEfforts", "reasoningModes"] as const) {
-    if (value[key] !== undefined && (!Array.isArray(value[key]) ||
-      value[key].some((entry) => typeof entry !== "string"))) return false;
-  }
-  const imageLimits = value.imageInputLimits;
-  if (imageLimits !== undefined && (!isRecord(imageLimits) || value.vision !== true ||
-    !onlyKnownKeys(imageLimits, new Set(["imageBytes", "imageCount", "imagePixels", "payloadBytes"])) ||
-    ["imageBytes", "imageCount", "imagePixels", "payloadBytes"].some((key) =>
-      !Number.isSafeInteger(imageLimits[key]) || Number(imageLimits[key]) <= 0))) return false;
-  return true;
+  if (!isRecord(value) || !Object.keys(value).every((key) => Object.hasOwn(capabilityKinds, key))) return false;
+  return Object.entries(capabilityKinds).every(([key, kind]: [string, CapabilityKind]) => {
+    const entry = value[key];
+    if (kind === "boolean") return typeof entry === "boolean";
+    if (entry === undefined) return true;
+    switch (kind) {
+      case "optionalBoolean": return typeof entry === "boolean";
+      case "optionalPositiveInteger": return Number.isSafeInteger(entry) && Number(entry) > 0;
+      case "optionalString": return typeof entry === "string";
+      case "optionalStrings": return Array.isArray(entry) && entry.every((item) => typeof item === "string");
+      case "imageInputLimits": return isRecord(entry) && value.vision === true &&
+        onlyKnownKeys(entry, new Set(imageInputLimitKeys)) &&
+        imageInputLimitKeys.every((limit) => Number.isSafeInteger(entry[limit]) && Number(entry[limit]) > 0);
+    }
+  });
 }
 
 function validWorkspace(value: unknown, runId: string): boolean {
@@ -1744,10 +1734,10 @@ export function createPrismaRunToolLoopOperations(
           }
         },
         where: { id: input.runId, userId: input.userId }
-      });
+      }).catch(retainRunPrismaCode);
       if (!run || run.toolLoopState === null) return null;
       const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
-      if (!checkpoint) throw new Error("tool_loop_checkpoint_invalid_in_storage");
+      if (!checkpoint) throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
       const selection = run.knowledgeRunScope
         ? decodeKnowledgePlan(run.knowledgeRunScope.selection)
         : null;
@@ -1778,7 +1768,7 @@ export function createPrismaRunToolLoopOperations(
           binding.ordinal !== index || !/^[0-9a-f]{64}$/u.test(
             binding.vectorSpaceFingerprint.trim()
           )))) {
-        throw new Error("knowledge_run_scope_invalid_in_storage");
+        throw new RecoveryStateInvalidError("knowledge_run_scope_invalid_in_storage");
       }
       return {
         assistantMessageId: run.assistantMessageId,
@@ -1838,7 +1828,7 @@ export function createPrismaRunToolLoopOperations(
           provider: true
         },
         where: { id: input.runId }
-      });
+      }).catch(retainRunPrismaCode);
       if (!run) return null;
       if (run.chat.userId !== input.userId) {
         if (!run.chat.projectId || !(await resolveProjectAccess(prismaClient, {
@@ -1851,7 +1841,7 @@ export function createPrismaRunToolLoopOperations(
         runId: input.runId
       });
       if (!request) {
-        throw new Error("provider_dispatch_recovery_request_invalid_in_storage");
+        throw new RecoveryStateInvalidError("provider_dispatch_recovery_request_invalid_in_storage");
       }
       return request;
     },
@@ -1882,7 +1872,7 @@ export function createPrismaRunToolLoopOperations(
       });
       if (!run?.knowledgeRunScope) return null;
       const exclusions = recoveryKnowledgeExclusions(run.knowledgeRunScope.exclusions);
-      if (!exclusions) throw new Error("knowledge_run_scope_invalid_in_storage");
+      if (!exclusions) throw new RecoveryStateInvalidError("knowledge_run_scope_invalid_in_storage");
       return exclusions;
     },
     loadFocusedKnowledgeRecoveryScope: async (input) => {
@@ -1978,7 +1968,7 @@ export function createPrismaRunToolLoopOperations(
           )) ||
         run.knowledgeRunSourceBindings.some((source, ordinal) =>
           source.ordinal !== ordinal || source.sourceAlias !== `S${ordinal + 1}`)) {
-        throw new Error("knowledge_run_scope_invalid_in_storage");
+        throw new RecoveryStateInvalidError("knowledge_run_scope_invalid_in_storage");
       }
 
       let profiles;
@@ -1995,7 +1985,7 @@ export function createPrismaRunToolLoopOperations(
           vectorSpaceFingerprint: profile.vectorSpaceFingerprint.trim()
         }));
       } catch {
-        throw new Error("knowledge_run_scope_invalid_in_storage");
+        throw new RecoveryStateInvalidError("knowledge_run_scope_invalid_in_storage");
       }
       const sources = run.knowledgeRunSourceBindings.map((source) =>
         recoveryKnowledgeSourceAuthorization({
@@ -2003,7 +1993,7 @@ export function createPrismaRunToolLoopOperations(
           profileRevisionId: source.profileBinding.profileRevisionId
         }));
       if (sources.some((source) => source === null)) {
-        throw new Error("knowledge_run_scope_invalid_in_storage");
+        throw new RecoveryStateInvalidError("knowledge_run_scope_invalid_in_storage");
       }
       const bindingsByBaseId = new Map(run.knowledgeRunBindings.map((binding) => [
         binding.knowledgeBaseId,
@@ -2017,7 +2007,7 @@ export function createPrismaRunToolLoopOperations(
             return !source.authority.knowledgeBaseIds.includes(provenance.knowledgeBaseId) ||
               !binding || binding.indexGenerationId !== provenance.indexGenerationId;
           })))) {
-        throw new Error("knowledge_run_scope_invalid_in_storage");
+        throw new RecoveryStateInvalidError("knowledge_run_scope_invalid_in_storage");
       }
       return Object.freeze({
         bindings: Object.freeze(run.knowledgeRunBindings.map((binding) => Object.freeze({
