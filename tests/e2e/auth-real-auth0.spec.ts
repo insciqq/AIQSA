@@ -26,7 +26,7 @@ import {
  *
  * With AIQSA_E2E_AUTH0_DOMAIN and a Management API token in AIQSA_E2E_AUTH0_TOKEN, the spec
  * creates its own OIDC and SAML applications, a post-login Action that puts each user's
- * `app_metadata.aiqsa_groups` into the ID token's `groups` claim and the SAML `groups`
+ * `app_metadata.aiqsa_groups` into a namespaced ID token claim and the SAML `groups`
  * attribute, and synthetic database users, all named with this run's suffix; afterAll removes
  * them and restores the post-login bindings. The tenant's outbound calls need the stand's egress.
  * The token and the generated passwords are never printed, attached or asserted by value.
@@ -43,6 +43,9 @@ const SAML_BUTTON = "Auth0 SAML";
 const ENGINEERS = `engineers-${run}`;
 const ADMINS = `admins-${run}`;
 const DOMAIN = "auth0.aiqsa.test";
+// Auth0 drops a custom `groups` claim (a restricted name); its documented form is a namespaced
+// claim, whose dots AIQSA must not split as a path.
+const GROUPS_CLAIM = "https://aiqsa.example.com/groups";
 
 type Person = Readonly<{ email: string; groups: readonly string[]; name: string; password: string; verified: boolean }>;
 
@@ -121,7 +124,7 @@ async function bindGroupsAction(clientIds: readonly string[]): Promise<void> {
     "  if (!CLIENTS.has(event.client.client_id)) return;",
     "  const groups = (event.user.app_metadata || {}).aiqsa_groups;",
     "  if (!Array.isArray(groups)) return;",
-    "  api.idToken.setCustomClaim('groups', groups);",
+    `  api.idToken.setCustomClaim(${JSON.stringify(GROUPS_CLAIM)}, groups);`,
     "  if (event.transaction && event.transaction.protocol === 'samlp') api.samlResponse.setAttribute('groups', groups);",
     "};"
   ].join("\n");
@@ -268,7 +271,7 @@ test("Auth0 applications, users and the groups Action are created; the OIDC conf
     autoRedirect: false,
     buttonLabel: OIDC_BUTTON,
     clientId: oidcClient.id,
-    groupsClaimPath: "groups",
+    groupsClaimPath: GROUPS_CLAIM,
     groupsFrom: "id_token_then_userinfo",
     idpLogout: false,
     issuer: issuer(),

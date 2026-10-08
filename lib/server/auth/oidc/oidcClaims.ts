@@ -9,8 +9,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-/** The value at a dot path (`realm_access.roles`), reading only the claims' own properties. */
+/**
+ * The claim whose name is the whole path (a namespaced claim such as Auth0's
+ * `https://example.com/groups`), else the value at a dot path (`realm_access.roles`), reading
+ * only the claims' own properties.
+ */
 export function claimAtPath(claims: OidcClaims, path: string): unknown {
+  if (Object.hasOwn(claims, path)) return claims[path];
   let current: unknown = claims;
   for (const segment of path.split(".")) {
     if (!isRecord(current) || !Object.hasOwn(current, segment)) return undefined;
@@ -25,7 +30,7 @@ export function claimAtPath(claims: OidcClaims, path: string): unknown {
  */
 export function hasOidcClaimOverage(claims: OidcClaims, path: string): boolean {
   const names = claims._claim_names;
-  const root = path.split(".")[0] ?? "";
+  const root = Object.hasOwn(claims, path) ? path : path.split(".")[0] ?? "";
   return isRecord(names) && Object.hasOwn(names, root);
 }
 
