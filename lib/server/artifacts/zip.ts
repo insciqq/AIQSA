@@ -69,12 +69,13 @@ export function artifactZip(bundle: ArtifactBundle): Buffer {
     function visit(node: DefaultTreeAdapterMap["node"]): void {
       if ("tagName" in node) {
         // Elements the parser implied have no source to change.
-        const tag = node.sourceCodeLocation?.startTag;
-        if (tag && RESOURCE_ELEMENTS.has(node.tagName)) {
-          const span = (name: string) => tag.attrs?.[name];
+        const location = node.sourceCodeLocation;
+        const tag = location?.startTag;
+        if (location && tag && RESOURCE_ELEMENTS.has(node.tagName)) {
+          const span = (name: string) => location.attrs?.[name];
           const src = node.attrs.find(attr => attr.name === "src");
           const target = node.tagName === "script" && src && !scriptRuns(node) ? scriptFile(src.value, file) : undefined;
-          const end = node.sourceCodeLocation?.endTag;
+          const end = location.endTag;
           if (target?.text !== undefined && end && span("src")) {
             // A browser never loads the src of a script it does not run (the pdf.js worker
             // pattern: type="text/js-worker"), so the export carries its text inline, as pages do.
@@ -83,9 +84,9 @@ export function artifactZip(bundle: ArtifactBundle): Buffer {
           } else {
             for (const attr of node.attrs) {
               const name = attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name;
-              const location = span(name);
+              const attribute = span(name);
               const local = ["src", "href"].includes(attr.name) && /^https:\/\//iu.test(attr.value) ? vendoredPath(attr.value, file) : null;
-              if (location && local !== null) splices.push({ start: location.startOffset, end: location.endOffset, text: `${name}="${local}"` });
+              if (attribute && local !== null) splices.push({ start: attribute.startOffset, end: attribute.endOffset, text: `${name}="${local}"` });
             }
           }
           remove(span("integrity")); remove(span("crossorigin"));

@@ -123,10 +123,11 @@ describe("artifact authorized projections", () => {
     expect(source?.files[0]).toEqual({ path: "index.html", mimeType: "text/html", group: "authored", byteSize: short.length, text: short });
     const shown = source!.files[1]!;
     expect(shown).toMatchObject({ path: "data.txt", group: "authored", byteSize: Buffer.byteLength(long), truncated: true });
+    if (!("text" in shown)) throw new Error("fixture_text_missing");
     // 262144 bytes end inside an emoji: the cut steps back to the last whole character.
     expect(shown.text).toBe(`a${"🙂".repeat(65_535)}`);
-    expect(Buffer.byteLength(shown.text!)).toBeLessThanOrEqual(ARTIFACT_LIMITS.maxReadBytes);
-    expect(long.startsWith(shown.text!)).toBe(true);
+    expect(Buffer.byteLength(shown.text)).toBeLessThanOrEqual(ARTIFACT_LIMITS.maxReadBytes);
+    expect(long.startsWith(shown.text)).toBe(true);
   });
   it("delivers structural repair hints privately but propagates unexpected database failures", async () => {
     const findFirst = vi.fn(async () => null);

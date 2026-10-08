@@ -540,7 +540,9 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
         { userId: f.owner.id, runId: "accepted-run", request: artifactReadRequest(f.chat.id, { artifactId: version.artifactId, versionId: version.id }) });
       expect((next.content[0] as { value: { files: Array<{ offset: number; text: string }> } }).value.files[0]!.offset).toBe(first.files[0]!.text!.length);
       const source = await f.service.source({ ownerUserId: f.owner.id, artifactId: version.artifactId, versionId: version.id });
-      expect(source?.files).toEqual([{ path: "index.html", mimeType: "text/html", group: "authored", byteSize: bytes.length, text: html }]);
+      // The code view gets the first 256 KiB of the page (ASCII here) and its full size.
+      expect(source?.files).toEqual([{ path: "index.html", mimeType: "text/html", group: "authored", byteSize: bytes.length,
+        text: html.slice(0, ARTIFACT_LIMITS.maxReadBytes), truncated: true }]);
       const context = await f.service.contextForChat({ ownerUserId: f.owner.id, chatId: f.chat.id });
       expect(context[0]?.files).toEqual([{ path: "index.html", mimeType: "text/html", bytes: bytes.length }]);
       // The artifact keeps its own copy: the attachment can disappear.
