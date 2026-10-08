@@ -109,7 +109,7 @@ function search(
 describe("Memory lexical projection worker", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("records the bulk failure before a failed settlement without exposing private claim fields", async () => {
+  it("records the bulk failure before a failed settlement, naming only the owner among the claim's fields", async () => {
     const records: Record<string, unknown>[] = [];
     vi.spyOn(process.stdout, "write").mockImplementation(line => { records.push(JSON.parse(String(line))); return true; });
     const processingError = new OpenSearchTransportError("opensearch_bulk_item_failed");
@@ -126,7 +126,9 @@ describe("Memory lexical projection worker", () => {
       search: search({ applyMutations: vi.fn(async () => { throw processingError; }) })
     })).rejects.toBe(persistenceError);
     expect(records).toHaveLength(2);
-    expect(JSON.stringify(records)).not.toMatch(/private-user|entry-1|lease-1|PRIVATE_DATABASE/);
+    // The owner's internal id names the job's records; the entry, lease and error text never do.
+    expect(records.map((record) => record.user_id)).toEqual([claim().userId, claim().userId]);
+    expect(JSON.stringify(records)).not.toMatch(/entry-1|lease-1|PRIVATE_DATABASE/);
   });
 
   it("projects one canonical entry with opaque routing through one bulk request", async () => {

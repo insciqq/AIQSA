@@ -17,9 +17,12 @@ import {
 } from "../../../contracts/adminHealth";
 import { TELEMETRY_DURATION_BUCKETS } from "../../telemetry/aggregator";
 import { normalizeRunReference, RUN_ID_LENGTH } from "../../../contracts/runReference";
-import type { TelemetryCounterGroup, TelemetryGroupValue, TelemetryIncidentQuery, TelemetryStore } from "../../telemetry/store";
+import type {
+  TelemetryCounterGroup, TelemetryGroupValue, TelemetryIncidentQuery, TelemetryIncidentReach, TelemetryStore
+} from "../../telemetry/store";
 import {
   ADMIN_HEALTH_INCIDENT_DETAIL_KEYS,
+  adminHealthErrorGroupsWithReach,
   adminHealthFailureClass,
   adminHealthIncidentFrom,
   adminHealthP95,
@@ -35,7 +38,7 @@ export type AdminHealthProviderNames = Readonly<{
 }>;
 
 export type AdminHealthDependencies = Readonly<{
-  store: Pick<TelemetryStore, "readCounters" | "readIncidents">;
+  store: Pick<TelemetryStore, "readCounters" | "readIncidents" | "countIncidentReachByFingerprint">;
   providerNames(input: Readonly<{ connectionIds: readonly string[]; modelIds: readonly string[] }>): Promise<AdminHealthProviderNames>;
   now?: () => Date;
 }>;
@@ -197,6 +200,12 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
 
       const errorTotals = totals.filter((row) => row.group.level === "error" || row.group.level === "fatal");
       const errorGroups = foldAdminHealthErrorGroups(errorRows, errorFirstSeen, generatedAt, ADMIN_HEALTH_ERROR_GROUP_LIMIT);
+      // How many users and runs each listed failure reached, from its incidents of the same range.
+      const errorReach = errorGroups.groups.length === 0
+        ? Promise.resolve(new Map<string, TelemetryIncidentReach>())
+        : store.countIncidentReachByFingerprint({
+          from: window.from, to: window.to, fingerprints: errorGroups.groups.map((group) => group.fingerprint)
+        });
       const ofEvent = (event: string) => totals.filter((row) => row.group.event === event);
       const starts = new Map<string, number>();
       for (const row of ofEvent("process.started")) {
@@ -220,10 +229,10 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
       const accumulators = new Map<string, ProviderAccumulator>();
       foldProviders(providerRows, null, accumulators);
       foldProviders(visionRows, "vision", accumulators);
-      const names = await dependencies.providerNames({
+      const [names, reach] = await Promise.all([dependencies.providerNames({
         connectionIds: boundedIds([...accumulators.values()].map((entry) => entry.connectionId)),
         modelIds: boundedIds([...accumulators.values()].map((entry) => entry.providerModelId))
-      });
+      }), errorReach]);
       const providers = [...accumulators.entries()].map(([key, entry]): AdminHealthProviderRow => ({
         key,
         connectionId: entry.connectionId,
@@ -271,7 +280,7 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
         })),
         providers,
         providersTruncated: providerRows.length >= ROW_LIMIT || visionRows.length >= ROW_LIMIT,
-        errorGroups: errorGroups.groups,
+        errorGroups: adminHealthErrorGroupsWithReach(errorGroups.groups, reach),
         errorGroupsTruncated: errorGroups.truncated || errorRows.length >= ROW_LIMIT
       };
     },

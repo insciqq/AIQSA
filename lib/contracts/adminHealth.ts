@@ -96,6 +96,13 @@ export type AdminHealthErrorGroup = {
   firstSeenAt: string;
   /** First seen within the last day. */
   isNew: boolean;
+  /**
+   * Distinct signed-in users and runs among the failure's retained incidents in
+   * the range. Incidents are a sample (per-minute admission, daily trim), so
+   * these are lower bounds; 0 when no retained incident names one. Never ids.
+   */
+  usersAtLeast: number;
+  runsAtLeast: number;
 };
 
 export type AdminHealth = {
@@ -326,11 +333,12 @@ function decodeErrorGroup(value: unknown): AdminHealthErrorGroup | null {
   if (!isRecord(value) || typeof value.fingerprint !== "string" || !FINGERPRINT_PATTERN.test(value.fingerprint) ||
     !text(value.errorClass, 64) || !nullableText(value.site, 160) || !count(value.count) ||
     !textList(value.events, 8, 64) || !textList(value.roles, 8, 32) || !textList(value.codes, 8, 128) ||
-    !time(value.lastSeenAt) || !time(value.firstSeenAt) || typeof value.isNew !== "boolean") return null;
+    !time(value.lastSeenAt) || !time(value.firstSeenAt) || typeof value.isNew !== "boolean" ||
+    !count(value.usersAtLeast) || !count(value.runsAtLeast)) return null;
   return {
     fingerprint: value.fingerprint, errorClass: value.errorClass, site: value.site, count: value.count,
     events: value.events, roles: value.roles, codes: value.codes, lastSeenAt: value.lastSeenAt,
-    firstSeenAt: value.firstSeenAt, isNew: value.isNew
+    firstSeenAt: value.firstSeenAt, isNew: value.isNew, usersAtLeast: value.usersAtLeast, runsAtLeast: value.runsAtLeast
   };
 }
 

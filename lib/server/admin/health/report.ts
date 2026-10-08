@@ -53,7 +53,7 @@ export type HealthReport = {
   summary: AdminHealthSummary;
   /** Error and fatal records over the range per chart category. */
   errorsByCategory: Record<AdminHealthCategory, number>;
-  /** Failures by fingerprint: class and application code site, new ones first. */
+  /** Failures by fingerprint: class, application code site and at least how many users and runs they hit, new ones first. */
   errorGroups: AdminHealthErrorGroup[];
   errorGroupsTruncated: boolean;
   /** Provider rows with at least one failure, most failures first. */
@@ -339,6 +339,14 @@ function errorSection(report: HealthReport): string[] {
   ];
 }
 
+/** At least how many users and runs a failure hit, from its sampled incidents: counts, never ids. */
+function reachParts(group: AdminHealthErrorGroup): string[] {
+  return [
+    group.usersAtLeast > 0 ? `at least ${plural(group.usersAtLeast, "user")}` : null,
+    group.runsAtLeast > 0 ? `at least ${plural(group.runsAtLeast, "run")}` : null
+  ].filter((part): part is string => part !== null);
+}
+
 function failureSection(report: HealthReport): string[] {
   if (report.errorGroups.length === 0) return [];
   const shown = report.errorGroups.slice(0, TEXT_ERROR_GROUPS);
@@ -347,8 +355,8 @@ function failureSection(report: HealthReport): string[] {
     "Failures by location (class · where in AIQSA)",
     ...shown.flatMap((group) => [
       `  ${group.isNew ? "NEW " : "    "}  ${group.errorClass} · ${group.site ?? "outside application code"}`,
-      ...wrapParts([plural(group.count, "time"), ...group.events, ...group.codes, ...group.roles, `last ${minute(group.lastSeenAt)}`],
-        "        ", " · ")
+      ...wrapParts([plural(group.count, "time"), ...reachParts(group), ...group.events, ...group.codes, ...group.roles,
+        `last ${minute(group.lastSeenAt)}`], "        ", " · ")
     ]),
     ...(hidden > 0 || report.errorGroupsTruncated ? [`  and more (--json lists ${report.errorGroupsTruncated ? "the most frequent" : "every"} group)`] : [])
   ];

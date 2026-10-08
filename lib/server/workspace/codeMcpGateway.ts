@@ -175,7 +175,7 @@ export async function handleWorkspaceCodeMcpRequest(
   // open, so lost run or invocation authority also ends a call in flight.
   const assertActive = () => dependencies.store.assertActive(grant, invocationId);
   try {
-    return await runWithContext({ run_id: grant.runId }, () => withAgentLease(request, assertActive,
+    return await runWithContext({ run_id: grant.runId, user_id: grant.userId }, () => withAgentLease(request, assertActive,
       (signal) => serve(request, signal, grant, invocationId, assertActive, dependencies)));
   } catch (error) {
     return error instanceof WorkspaceCodeAccessError && error.reason === "invocation" ? invocationRefused() : refused();

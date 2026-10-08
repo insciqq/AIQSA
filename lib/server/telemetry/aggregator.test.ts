@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { EventFields } from "../observability/events";
-import { serializeEvent } from "../observability/runtime.cjs";
+import { attributeRequestUser, runInBackground, runWithContext, serializeEvent } from "../observability/runtime.cjs";
 import {
-  createTelemetryAggregator, DEFAULT_TELEMETRY_AGGREGATOR_LIMITS, TELEMETRY_DURATION_BUCKETS,
+  createTelemetryAggregator, DEFAULT_TELEMETRY_AGGREGATOR_LIMITS, TELEMETRY_DIMENSIONS, TELEMETRY_DURATION_BUCKETS,
   telemetryDurationBucket, type TelemetryAggregatorLimits
 } from "./aggregator";
 
@@ -171,12 +171,35 @@ describe("telemetry aggregation", () => {
     expect(incidents[0]).toEqual({
       occurredAt: new Date(HOUR), role: "app", event: "provider_operation", level: "error", appVersion: "0.3.7",
       instanceId: INSTANCE, code: "provider_http_dns_failed", subsystem: null, connectionId: "connection-1",
-      runId: "run-1", traceId: "b".repeat(32),
+      runId: "run-1", traceId: "b".repeat(32), userId: null,
       details: { outcome: "failed", stage: "answer", providerFamily: "openai", providerModelId: "model-1",
         httpStatus: 401, job_id: "job-1" }
     });
     // Suppressed and unadmitted incidents remain in the counters.
     expect(counters.filter((item) => item.level !== "warn").reduce((sum, item) => sum + item.count, 0)).toBe(9);
+  });
+
+  it("keeps the user id in its incident column only and never counts by user", () => {
+    expect(TELEMETRY_DIMENSIONS).not.toContain("user_id");
+    const aggregator = createTelemetryAggregator();
+    const failure = (userId: string | null, runId: string) => runInBackground(() => {
+      if (userId !== null) attributeRequestUser(userId);
+      return runWithContext({ run_id: runId }, () => Object.freeze(JSON.parse(serializeEvent("run_execution", {
+        run_id: runId, stage: "execution", outcome: "failed", code: "provider_stream_failed", providerFamily: "openai"
+      })!) as Record<string, unknown>));
+    });
+    const records = [failure("user-a", "run-1"), failure("user-b", "run-2"), failure("user-a", "run-3"), failure(null, "run-4")];
+    expect(records.map((item) => item.user_id)).toEqual(["user-a", "user-b", "user-a", undefined]);
+    for (const item of records) aggregator.observe(item);
+
+    const { counters, incidents } = aggregator.drain();
+    expect(counters).toEqual([expect.objectContaining({ event: "run_execution", level: "error", count: 4,
+      dimensions: { code: "provider_stream_failed", outcome: "failed", providerFamily: "openai", stage: "execution" } })]);
+    expect(JSON.stringify(counters)).not.toMatch(/user-|run-\d/u);
+    expect(incidents.map((incident) => [incident.runId, incident.userId])).toEqual([
+      ["run-1", "user-a"], ["run-2", "user-b"], ["run-3", "user-a"], ["run-4", null]
+    ]);
+    for (const incident of incidents) expect(incident.details).not.toHaveProperty("user_id");
   });
 
   it("folds keys beyond the bound into a per-event overflow key and counts what still does not fit", () => {

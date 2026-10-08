@@ -4168,7 +4168,7 @@ export async function createDormantPreparingRun(
     throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
   }
   try {
-    return await runWithContext({ run_id: created.runId }, async () => {
+    return await runWithContext({ run_id: created.runId, user_id: admission.userId }, async () => {
       const startedAt = Date.now();
       logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "started" });
       const result = await continuePreparingRunWithClient(prismaClient, { ...admission, signal: registration.signal }, created,

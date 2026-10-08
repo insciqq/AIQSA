@@ -2079,6 +2079,9 @@ describe("run recovery", () => {
       expect(contexts[0]?.trace_id).toBe(lifecycle[0]?.trace_id);
       expect(contexts[0]?.trace_id).not.toBe("f".repeat(32));
       expect(contexts[0]?.job_id).toBeUndefined();
+      // The recovered run's user names its recovery records.
+      expect(contexts[0]?.user_id).toBe(userId);
+      expect(lifecycle.map(record => record.user_id)).toEqual([userId, userId]);
       await invoke();
       expect(refresh).toHaveBeenCalledTimes(2);
       expect(contexts[1]?.trace_id).not.toBe(contexts[0]?.trace_id);
@@ -2105,7 +2108,8 @@ describe("run recovery", () => {
       expect(new Set(contexts.map((context) => context?.trace_id)).size).toBe(2);
       expect(contexts.every((context) => context?.job_id === undefined)).toBe(true);
       const records = writer.records();
-      expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "failed-run", outcome: "failed", prisma_code: "P1001" }));
+      expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "failed-run", outcome: "failed", prisma_code: "P1001",
+        user_id: userId }));
       expect(records).toContainEqual(expect.objectContaining({ event: "run_recovery", run_id: "recovered-run", stage: "prepare", outcome: "completed" }));
       expect(JSON.stringify(records)).not.toContain("PRIVATE_");
     } finally { writer.restore(); }

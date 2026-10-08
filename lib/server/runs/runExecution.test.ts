@@ -54,7 +54,7 @@ import { ProviderRequestTimeoutError } from "../providers/network";
 import { ProviderSearchExecutionError } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
-import { runWithContext } from "../observability";
+import { attributeRequestUser, runInBackground, runWithContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { isRunOutputArtifactEvent } from "./runOutputEvents";
@@ -9143,6 +9143,28 @@ describe("scheduled task management execution", () => {
     expect(repository.failedRuns).toEqual([]);
     expect(manageScheduledTaskForCall).toHaveBeenCalledOnce();
     expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete" })]);
+  });
+});
+
+describe("user attribution", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("names the run's own user on every run record and its failure, whoever's request carries it", async () => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield { type: "token", data: { delta: "partial" } };
+      throw new Error("openrouter_stream_truncated");
+    });
+    await runInBackground(async () => {
+      attributeRequestUser("other-user");
+      await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text();
+    });
+    expect(repository.failedRuns).toHaveLength(1);
+    const records = observation.records().filter((entry) => entry.run_id === "run-1");
+    expect(records).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed", level: "error", user_id: "user-1" }));
+    expect(records.length).toBeGreaterThan(1);
+    expect(records.every((entry) => entry.user_id === "user-1")).toBe(true);
   });
 });
 
