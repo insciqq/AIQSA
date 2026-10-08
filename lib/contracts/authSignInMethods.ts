@@ -129,31 +129,54 @@ export const oidcSignInConfigSchema = z.strictObject({
 
 export const oidcSignInSecretsSchema = z.strictObject({ clientSecret: secretValue });
 
-// LDAP (auth-ldap refines). The operator's directory owns its email addresses.
+// LDAP. The operator's directory owns its email addresses, so they link by default.
 
 const ldapAttribute = text(256);
 
-export const ldapSignInConfigSchema = z.strictObject({
-  attributes: z
-    .strictObject({
-      displayName: ldapAttribute.default("displayName"),
-      email: ldapAttribute.default("mail"),
-      groups: ldapAttribute.default("memberOf"),
-      id: ldapAttribute.default("entryUUID")
-    })
-    .default(() => ({ displayName: "displayName", email: "mail", groups: "memberOf", id: "entryUUID" })),
-  bindDn: text(1_024).nullable().default(null),
-  caCertificatePem: z.string().trim().min(1).max(65_536).nullable().default(null),
-  groupValueForm: z.enum(["cn", "dn"]).default("cn"),
-  loginUsesUsername: z.boolean().default(false),
-  startTls: z.boolean().default(false),
-  tlsRejectUnauthorized: z.boolean().default(true),
-  url: absoluteUrl(["ldap:", "ldaps:"]),
-  userSearchBase: text(1_024),
-  userSearchFilter: text(1_024).default("(mail={{username}})"),
-  ...externalGroupPolicy,
-  ...emailTrust(true)
+/** Where the escaped sign-in name goes in `userSearchFilter`. */
+export const LDAP_USERNAME_PLACEHOLDER = "{{username}}";
+
+/** One or more PEM certificates; the server parses each as X.509 before trusting it. */
+const PEM_CERTIFICATES = /^(?:-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----\s*)+$/u;
+
+/** A directory server only: scheme, host and port, no path, query or credentials. */
+const ldapServerUrl = absoluteUrl(["ldap:", "ldaps:"]).refine((value) => {
+  try {
+    const url = new URL(value);
+    return Boolean(url.hostname) && (url.pathname === "" || url.pathname === "/") && !url.search;
+  } catch {
+    return false;
+  }
 });
+
+export const ldapSignInConfigSchema = z
+  .strictObject({
+    attributes: z
+      .strictObject({
+        displayName: ldapAttribute.default("displayName"),
+        email: ldapAttribute.default("mail"),
+        groups: ldapAttribute.default("memberOf"),
+        id: ldapAttribute.default("entryUUID")
+      })
+      .default(() => ({ displayName: "displayName", email: "mail", groups: "memberOf", id: "entryUUID" })),
+    bindDn: text(1_024).nullable().default(null),
+    caCertificatePem: z.string().trim().min(1).max(65_536).regex(PEM_CERTIFICATES).nullable().default(null),
+    groupValueForm: z.enum(["cn", "dn"]).default("cn"),
+    loginUsesUsername: z.boolean().default(false),
+    startTls: z.boolean().default(false),
+    /** A sample sign-in name the tester searches for; it never binds as that user. */
+    testUsername: text(256).nullable().default(null),
+    tlsRejectUnauthorized: z.boolean().default(true),
+    url: ldapServerUrl,
+    userSearchBase: text(1_024),
+    userSearchFilter: text(1_024)
+      .refine((value) => value.includes(LDAP_USERNAME_PLACEHOLDER))
+      .default(`(mail=${LDAP_USERNAME_PLACEHOLDER})`),
+    ...externalGroupPolicy,
+    ...emailTrust(true)
+  })
+  // StartTLS upgrades a plain `ldap://` connection; `ldaps://` is TLS from the start.
+  .refine((config) => !config.startTls || config.url.toLowerCase().startsWith("ldap:"), { path: ["startTls"] });
 
 export const ldapSignInSecretsSchema = z.strictObject({ bindPassword: z.string().min(1).max(1_024).optional() });
 

@@ -1,3 +1,4 @@
+import { ldapSignInMethod } from "../ldap/defaultLdapConnect";
 import { googleSignInMethod, yandexSignInMethod } from "./oauthClientMethod";
 import type { SignInMethodServerRegistry } from "./registry";
 
@@ -8,5 +9,6 @@ import type { SignInMethodServerRegistry } from "./registry";
  */
 export const signInMethodServerRegistry: SignInMethodServerRegistry = {
   google: googleSignInMethod,
+  ldap: ldapSignInMethod,
   yandex: yandexSignInMethod
 };

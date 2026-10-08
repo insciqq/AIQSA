@@ -38,8 +38,20 @@ TOTP is optional per user and covers only the sign-ins AIQSA verifies itself: pa
 - A new secret replaces the active one only after it is confirmed, and starting that replacement, new recovery codes and turning TOTP off each need a current code or a recovery code. Password reset by email never touches the factor. An administrator reset removes the factor and its codes and ends every session of the user; it is refused for the administrator's own account.
 - Secrets live in purpose-bound envelopes under the encryption key, and recovery codes only as hashes keyed from it, so losing that key blocks password and LDAP sign-in of users with TOTP until an administrator resets their factor.
 
+## LDAP
+
+LDAP shares the login form. While password sign-in is on, an email with a usable local password keeps it (break-glass accounts); every other name, and every name while local passwords are off, goes to the directory.
+
+- An empty or whitespace password is refused before any network I/O: directories report a DN bind without a password as a successful unauthenticated bind. A bind DN without its password is refused too; without a bind DN the search is anonymous.
+- The trimmed, bounded name is RFC 4515-escaped into the filter; the search must find exactly one entry, and only the DN it returned is bound. Groups come from a `memberOf`-style attribute in DN or first-CN form.
+- An unknown name, an ambiguous search and a wrong password answer one `unauthorized` after one response floor, which a refused local password on the form also waits for; attempts share the password login's budgets. An unreachable or misconfigured directory answers `ldap_unavailable` and records its content-free code as health.
+- TLS verifies against the pasted CA, then the only anchor, or the system roots; with verification off, which the card warns about, the host name is still checked.
+- The directory owns its email addresses, so LDAP trusts them for linking by default; the card says so.
+- Identities are bound to the directory host and user search base, so scheme and port changes keep them.
+
 ## Dependencies
 
 | Dependency | Boundary/rationale |
 | --- | --- |
 | `uqr` | Zero-dependency QR encoder that turns the provisioning URI into module data in the browser, rendered as a React SVG path without markup injection; the URI never leaves the account settings page. |
+| `ldapts` | MIT LDAP client with one dependency (`ldapjs` is decommissioned), server-only. It gets a socket AIQSA already opened to a policy-checked address and verified, never reconnects, and every operation is bounded; its error messages, which can echo filters, are never logged or returned. |
