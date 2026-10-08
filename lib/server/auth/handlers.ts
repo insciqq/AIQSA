@@ -21,7 +21,8 @@ import {
   prepareAuthSession,
   revokeRequestSession,
   type AuthSessionStore,
-  type RequestAuthResolver
+  type RequestAuthResolver,
+  type SealedIdTokenHint
 } from "./requestAuth";
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
@@ -70,8 +71,12 @@ type LogoutHandlerDeps = {
   /**
    * Where the browser goes next to end the identity provider's session of a just revoked
    * session that `signInMethod` signed in (OIDC IdP logout), or null. Never fails the logout.
+   * `idTokenHint` is the ID token that session kept, read before the revocation cleared it.
    */
-  identityProviderLogout?(input: { signInMethod: string | null }): Promise<string | null>;
+  identityProviderLogout?(input: {
+    idTokenHint: SealedIdTokenHint | null;
+    signInMethod: string | null;
+  }): Promise<string | null>;
   sessions: AuthSessionStore;
 };
 
@@ -812,7 +817,16 @@ export function createLogoutHandler(deps: LogoutHandlerDeps) {
 
     const config = deps.getConfig();
     const token = deps.identityProviderLogout ? getSessionFromRequest(request) : undefined;
-    const session = token ? await deps.sessions.findSessionByTokenHash(hashToken(token)) : null;
+    const session = token ? await deps.sessions.findSessionByTokenHash(hashToken(token), { idTokenHint: true }) : null;
+    // Taken before the revocation, which clears the session's ID token hint.
+    const identityProviderSession = session
+      ? {
+          idTokenHint: session.idTokenHintEnvelope
+            ? { envelope: session.idTokenHintEnvelope, sessionId: session.id }
+            : null,
+          signInMethod: session.signInMethod ?? null
+        }
+      : null;
     // The local session is revoked first, whatever the identity provider does next.
     const revoked = await revokeRequestSession({
       request,
@@ -822,8 +836,8 @@ export function createLogoutHandler(deps: LogoutHandlerDeps) {
     const clearCookie = createSessionClearCookie({
       secure: config.cookieSecure
     });
-    const redirectTo = revoked > 0 && session && deps.identityProviderLogout
-      ? await deps.identityProviderLogout({ signInMethod: session.signInMethod ?? null }).catch(() => null)
+    const redirectTo = revoked > 0 && identityProviderSession && deps.identityProviderLogout
+      ? await deps.identityProviderLogout(identityProviderSession).catch(() => null)
       : null;
 
     if (redirectTo) {

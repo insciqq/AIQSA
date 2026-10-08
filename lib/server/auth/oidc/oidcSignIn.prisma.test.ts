@@ -1,22 +1,31 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { oidcSignInConfigSchema, type AuthSignInMethodConfig } from "@/lib/contracts/authSignInMethods";
 import { createFakeOidcProvider, type FakeOidcProvider } from "@/tests/support/fakeOidcProvider";
 import { prisma } from "../../prisma";
+import { createAdminUserSessionCommands } from "../adminUserSessionCommands";
 import { completeExternalSignIn, externalRoleManager } from "../externalIdentity";
+import { createLogoutHandler } from "../handlers";
+import { createPrismaAuthSessionStore } from "../prismaSessions";
+import { createAuthSession, type SealedIdTokenHint } from "../requestAuth";
 import { readCookie, SESSION_COOKIE_NAME } from "../session";
 import { hashToken } from "../token";
 import { createOidcClient } from "./oidcClient";
+import { OIDC_ID_TOKEN_HINT_MAX_LENGTH, openOidcIdTokenHint } from "./oidcIdTokenHint";
 import { createOidcSignInFlow } from "./oidcSignIn";
 
 const now = new Date("2026-10-08T12:00:00.000Z");
+const encryptionKey = randomBytes(32);
+const key = () => encryptionKey;
 
 type Fixture = {
   domain: string;
   email(localPart: string): string;
   group(label: string, value?: string): Promise<string>;
   idp: FakeOidcProvider;
+  /** The configuration a sign-in with these overrides runs under. */
+  oidcConfig(config?: Partial<AuthSignInMethodConfig<"oidc">>): AuthSignInMethodConfig<"oidc">;
   /** Runs one OIDC sign-in through the fake IdP, the flow and the real settlement. */
   signIn(input: {
     claims: Record<string, unknown>;
@@ -31,6 +40,8 @@ async function withOidc<T>(run: (fixture: Fixture) => Promise<T>): Promise<T> {
   const idp = await createFakeOidcProvider({ issuer: `https://idp-${id}.example.test/realms/aiqsa`, now: () => now });
   const client = createOidcClient({ fetchImpl: idp.fetch, now: () => now.getTime() });
   const groupIds: string[] = [];
+  const oidcConfig = (config: Partial<AuthSignInMethodConfig<"oidc">> = {}) =>
+    oidcSignInConfigSchema.parse({ clientId: idp.clientId, issuer: idp.issuer, ...config });
 
   try {
     return await run({
@@ -47,12 +58,14 @@ async function withOidc<T>(run: (fixture: Fixture) => Promise<T>): Promise<T> {
         return group.id;
       },
       idp,
+      oidcConfig,
       async signIn(input) {
         idp.state.nonce = `nonce-${id}`;
         idp.state.idTokenClaims = input.claims;
         const flow = createOidcSignInFlow({
           client,
-          config: oidcSignInConfigSchema.parse({ clientId: idp.clientId, issuer: idp.issuer, ...input.config }),
+          config: oidcConfig(input.config),
+          encryptionKey: key,
           secrets: { clientSecret: idp.clientSecret },
           settle: (settlement) => completeExternalSignIn(prisma, settlement)
         });
@@ -81,11 +94,31 @@ function sessionToken(cookie: string): string {
   return readCookie(cookie.split(";")[0] ?? null, SESSION_COOKIE_NAME) ?? "";
 }
 
-describe("OIDC sign-in settlement", () => {
-  afterAll(async () => {
-    await prisma.$disconnect();
+/** The session row a sign-in's cookie names, with the id token hint it stored. */
+async function signedInSession(result: { cookie?: string; status: string }) {
+  expect(result.status).toBe("active");
+  return prisma.authSession.findUniqueOrThrow({
+    select: { id: true, idTokenHintEnvelope: true, revokedAt: true, userId: true },
+    where: { tokenHash: hashToken(sessionToken(result.cookie ?? "")) }
   });
+}
 
+/** Records every id token the fake IdP issues from now on. */
+function captureIdTokens(idp: FakeOidcProvider): string[] {
+  const issued: string[] = [];
+  idp.state.idToken = async () => {
+    const token = await idp.sign(idp.standardClaims());
+    issued.push(token);
+    return token;
+  };
+  return issued;
+}
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
+
+describe("OIDC sign-in settlement", () => {
   it("creates an account bound to the issuer and subject and issues an oidc session", async () => {
     await withOidc(async (fixture) => {
       const email = fixture.email("new");
@@ -217,6 +250,101 @@ describe("OIDC sign-in settlement", () => {
       fixture.idp.state.userinfo = { sub: fixture.value("no-email") };
       await expect(fixture.signIn({ claims: { email: undefined, email_verified: undefined, sub: fixture.value("no-email") } }))
         .resolves.toEqual({ status: "email_missing" });
+    });
+  });
+});
+
+describe("OIDC id token hint for IdP logout", () => {
+  it("keeps the id token sealed to its session only while IdP logout is on and the token fits", async () => {
+    await withOidc(async (fixture) => {
+      const issued = captureIdTokens(fixture.idp);
+      const claims = { email: fixture.email("hinted"), sub: fixture.value("hinted") };
+
+      const kept = await signedInSession(await fixture.signIn({ claims, config: { idpLogout: true } }));
+      const idToken = issued.at(-1)!;
+      expect(kept.idTokenHintEnvelope).toBeTruthy();
+      for (const part of idToken.split(".")) expect(kept.idTokenHintEnvelope).not.toContain(part);
+      const config = fixture.oidcConfig({ idpLogout: true });
+      expect(openOidcIdTokenHint({ config, hint: { envelope: kept.idTokenHintEnvelope!, sessionId: kept.id }, key })).toBe(idToken);
+
+      const off = await signedInSession(await fixture.signIn({ claims, config: { idpLogout: false } }));
+      expect(off.idTokenHintEnvelope).toBeNull();
+      // A ciphertext copied to another session of the same user does not open there.
+      expect(openOidcIdTokenHint({ config, hint: { envelope: kept.idTokenHintEnvelope!, sessionId: off.id }, key })).toBeNull();
+
+      const oversized = await signedInSession(await fixture.signIn({
+        claims: { ...claims, padding: "x".repeat(OIDC_ID_TOKEN_HINT_MAX_LENGTH) },
+        config: { idpLogout: true }
+      }));
+      expect(issued.at(-1)!.length).toBeGreaterThan(OIDC_ID_TOKEN_HINT_MAX_LENGTH);
+      expect(oversized.idTokenHintEnvelope).toBeNull();
+    });
+  });
+
+  it("drops the hint whenever the session is revoked, by logout or by an administrator", async () => {
+    await withOidc(async (fixture) => {
+      const claims = { email: fixture.email("revoked"), sub: fixture.value("revoked") };
+      const loggingOut = await fixture.signIn({ claims, config: { idpLogout: true } });
+      const before = await signedInSession(loggingOut);
+      const other = await signedInSession(await fixture.signIn({ claims, config: { idpLogout: true } }));
+      expect(before.idTokenHintEnvelope).toBeTruthy();
+      expect(other.idTokenHintEnvelope).toBeTruthy();
+      const cookie = loggingOut.status === "active" ? loggingOut.cookie : "";
+      const store = createPrismaAuthSessionStore(prisma);
+      // Authenticating a request never reads the sealed token; logout asks for it.
+      expect(await store.findSessionByTokenHash(hashToken(sessionToken(cookie)))).not.toHaveProperty("idTokenHintEnvelope");
+      await expect(store.findSessionByTokenHash(hashToken(sessionToken(cookie)), { idTokenHint: true }))
+        .resolves.toMatchObject({ idTokenHintEnvelope: before.idTokenHintEnvelope });
+
+      // Logout hands the IdP step the hint it read before revoking, and the row keeps none.
+      let handed: SealedIdTokenHint | null = null;
+      const logout = createLogoutHandler({
+        getConfig: () => ({ cookieSecure: true }),
+        identityProviderLogout: async ({ idTokenHint }) => {
+          handed = idTokenHint;
+          return null;
+        },
+        sessions: store
+      });
+      const response = await logout(new Request("https://aiqsa.example/api/auth/logout", {
+        body: "{}",
+        headers: { "content-type": "application/json", cookie: cookie.split(";")[0]! },
+        method: "POST"
+      }));
+      expect(response.status).toBe(204);
+      expect(handed).toEqual({ envelope: before.idTokenHintEnvelope, sessionId: before.id });
+      await expect(prisma.authSession.findUniqueOrThrow({ select: { idTokenHintEnvelope: true, revokedAt: true }, where: { id: before.id } }))
+        .resolves.toEqual({ idTokenHintEnvelope: null, revokedAt: expect.any(Date) });
+
+      // A hint written onto a revoked session is dropped as well.
+      await prisma.authSession.update({ data: { idTokenHintEnvelope: other.idTokenHintEnvelope }, where: { id: before.id } });
+      await expect(prisma.authSession.findUniqueOrThrow({ select: { idTokenHintEnvelope: true }, where: { id: before.id } }))
+        .resolves.toEqual({ idTokenHintEnvelope: null });
+
+      const admin = await prisma.user.create({ data: { displayName: "Admin", email: fixture.email("admin"), role: "admin", status: "active" } });
+      await createAdminUserSessionCommands(prisma).revokeUserSessions({ revokedByUserId: admin.id, userId: other.userId });
+      await expect(prisma.authSession.findUniqueOrThrow({ select: { idTokenHintEnvelope: true, revokedAt: true }, where: { id: other.id } }))
+        .resolves.toEqual({ idTokenHintEnvelope: null, revokedAt: expect.any(Date) });
+    });
+  });
+
+  it("never keeps a hint on a session another method signed in", async () => {
+    await withOidc(async (fixture) => {
+      const oidc = await signedInSession(await fixture.signIn({
+        claims: { email: fixture.email("methods"), sub: fixture.value("methods") },
+        config: { idpLogout: true }
+      }));
+      const bootstrap = await createAuthSession({
+        secureCookie: true,
+        sessions: createPrismaAuthSessionStore(prisma),
+        signInMethod: "bootstrap",
+        userId: oidc.userId
+      });
+      const row = await prisma.authSession.findUniqueOrThrow({ select: { idTokenHintEnvelope: true }, where: { id: bootstrap.sessionId } });
+      expect(row.idTokenHintEnvelope).toBeNull();
+
+      await expect(prisma.authSession.update({ data: { idTokenHintEnvelope: oidc.idTokenHintEnvelope }, where: { id: bootstrap.sessionId } }))
+        .rejects.toThrow(/AuthSession_id_token_hint_check/u);
     });
   });
 });

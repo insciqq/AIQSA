@@ -1,10 +1,11 @@
 // @vitest-environment node
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { oidcSignInConfigSchema, type AuthSignInMethodConfig } from "@/lib/contracts/authSignInMethods";
 import { createFakeOidcProvider, type FakeOidcProvider } from "@/tests/support/fakeOidcProvider";
 import { createMemoryAuthSessionStore, createTestUser } from "@/tests/support/auth";
+import { SecretEnvelopeError } from "../../secrets/envelope";
 import { getAuthConfig } from "../config";
 import type { ExternalSignInResult } from "../externalIdentity";
 import { createLogoutHandler } from "../handlers";
@@ -19,6 +20,7 @@ import { createAuthSession } from "../requestAuth";
 import { readCookie, SESSION_COOKIE_NAME } from "../session";
 import { hashToken } from "../token";
 import { createOidcClient } from "./oidcClient";
+import { OIDC_ID_TOKEN_HINT_MAX_LENGTH, openOidcIdTokenHint, sealOidcIdTokenHint } from "./oidcIdTokenHint";
 import { oidcAutoRedirectPath } from "./oidcLoginRedirect";
 import { createOidcSignInFlow, oidcLogoutRedirect, type OidcSettlement } from "./oidcSignIn";
 
@@ -30,6 +32,11 @@ const config = getAuthConfig({
   AIQSA_TRUSTED_PROXY_COUNT: "1"
 });
 const now = new Date("2026-10-08T12:00:00.000Z");
+const encryptionKey = randomBytes(32);
+const key = () => encryptionKey;
+const unusableKey = () => {
+  throw new SecretEnvelopeError("secret_encryption_invalid_key");
+};
 let clientOrdinal = 0;
 
 let idp: FakeOidcProvider;
@@ -54,6 +61,7 @@ function oidcConfig(overrides: Partial<AuthSignInMethodConfig<"oidc">> = {}) {
 
 function harness(input: {
   config?: AuthSignInMethodConfig<"oidc">;
+  encryptionKey?: () => Buffer;
   settlement?: Awaited<ReturnType<OidcSettlement>>;
 } = {}) {
   const settle = vi.fn<OidcSettlement>(async () => input.settlement ?? ({ sessionId: "session-1", status: "active", userId: "user-1" } satisfies ExternalSignInResult));
@@ -62,6 +70,7 @@ function harness(input: {
     flow: createOidcSignInFlow({
       client: createOidcClient({ fetchImpl: idp.fetch, now: () => now.getTime() }),
       config: input.config ?? oidcConfig(),
+      encryptionKey: input.encryptionKey ?? key,
       secrets: { clientSecret: idp.clientSecret },
       settle
     }),
@@ -145,6 +154,43 @@ describe("OIDC through the OAuth start and callback", () => {
     // The session row stores only the token hash of the cookie it sets.
     const token = sessionCookie(response)!;
     expect(settlement.session.tokenHash).toBe(hashToken(token));
+    // IdP logout is off: the session keeps no id token.
+    expect(settlement.session).not.toHaveProperty("idTokenHint");
+  });
+
+  it("with IdP logout on, hands settlement the id token sealed to the new session's id and nothing else", async () => {
+    let issued = "";
+    idp.state.idToken = async () => (issued = await idp.sign(idp.standardClaims()));
+    const oidc = oidcConfig({ idpLogout: true });
+    const h = harness({ config: oidc });
+    const { response } = await run(h);
+    expect(sessionCookie(response)).toBeTruthy();
+
+    const settlement = h.settle.mock.calls[0]![0];
+    const hint = settlement.session.idTokenHint!;
+    expect(hint.sessionId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(openOidcIdTokenHint({ config: oidc, hint, key })).toBe(issued);
+    // Only the sealed form leaves the flow: no part of the raw token in settlement, the
+    // response or the recorded health.
+    for (const part of issued.split(".")) {
+      expect(JSON.stringify(settlement)).not.toContain(part);
+      expect(JSON.stringify([...response.headers])).not.toContain(part);
+      expect(JSON.stringify(h.recordOutcome.mock.calls)).not.toContain(part);
+    }
+  });
+
+  it("keeps no id token over 16 KiB or without a usable encryption key, and still signs in", async () => {
+    for (const input of [
+      { claims: { padding: "x".repeat(OIDC_ID_TOKEN_HINT_MAX_LENGTH) }, encryptionKey: key },
+      { claims: {}, encryptionKey: unusableKey }
+    ]) {
+      idp.state.idTokenClaims = input.claims;
+      const h = harness({ config: oidcConfig({ idpLogout: true }), encryptionKey: input.encryptionKey });
+      const { response } = await run(h);
+      expect(response.headers.get("location")).toBe("https://aiqsa.example/projects");
+      expect(sessionCookie(response)).toBeTruthy();
+      expect(h.settle.mock.calls[0]![0].session).not.toHaveProperty("idTokenHint");
+    }
   });
 
   it.each(["account_conflict", "email_missing", "not_allowed", "source_changed"] as const)(
@@ -231,17 +277,39 @@ describe("OIDC auto-redirect", () => {
 describe("OIDC IdP logout", () => {
   const user = createTestUser();
 
-  async function logout(input: { config: AuthSignInMethodConfig<"oidc">; signInMethod: string }) {
+  async function logout(input: {
+    config: AuthSignInMethodConfig<"oidc">;
+    /** The id token the session kept, sealed as a sign-in with IdP logout on seals it. */
+    idToken?: string;
+    /** The key logout opens the hint with; the sealing key by default. */
+    openKey?: () => Buffer;
+    signInMethod: string;
+    /** Puts the sealed hint on a session with another id, as a copied ciphertext would be. */
+    storedOnAnotherSession?: boolean;
+  }) {
     const sessions = createMemoryAuthSessionStore({ user });
     const created = await createAuthSession({ secureCookie: true, sessions, userId: user.id });
-    sessions.records.get(hashToken(created.token))!.signInMethod = input.signInMethod;
+    const record = sessions.records.get(hashToken(created.token))!;
+    record.signInMethod = input.signInMethod;
+    if (input.idToken) {
+      const sealed = sealOidcIdTokenHint({ config: input.config, idToken: input.idToken, key })!;
+      record.id = input.storedOnAnotherSession ? "another-session" : sealed.sessionId;
+      record.idTokenHintEnvelope = sealed.envelope;
+    }
     const client = createOidcClient({ fetchImpl: idp.fetch });
     const POST = createLogoutHandler({
       getConfig: () => ({ cookieSecure: true }),
-      identityProviderLogout: async ({ signInMethod }) => {
+      identityProviderLogout: async ({ idTokenHint, signInMethod }) => {
         // The local session is already revoked when the IdP step runs.
         expect(sessions.records.get(hashToken(created.token))?.revokedAt).toBeInstanceOf(Date);
-        return oidcLogoutRedirect({ appBaseUrl: "https://aiqsa.example", client, config: input.config, signInMethod });
+        return oidcLogoutRedirect({
+          appBaseUrl: "https://aiqsa.example",
+          client,
+          config: input.config,
+          encryptionKey: input.openKey ?? key,
+          idTokenHint,
+          signInMethod
+        });
       },
       sessions
     });
@@ -262,13 +330,45 @@ describe("OIDC IdP logout", () => {
     expect(`${target.origin}${target.pathname}`).toBe(`${idp.issuer}/protocol/openid-connect/logout`);
     expect(target.searchParams.get("client_id")).toBe(idp.clientId);
     expect(target.searchParams.get("post_logout_redirect_uri")).toBe("https://aiqsa.example/login");
+    // The session kept no id token (signed in before IdP logout was on).
     expect(target.searchParams.has("id_token_hint")).toBe(false);
   });
 
+  it("sends the id token the session kept as id_token_hint", async () => {
+    const idToken = await idp.sign(idp.standardClaims());
+    const { response, revokedAt } = await logout({ config: oidcConfig({ idpLogout: true }), idToken, signInMethod: "oidc" });
+    expect(revokedAt).toBeInstanceOf(Date);
+    const target = new URL(((await response.json()) as { redirectTo: string }).redirectTo);
+    expect(`${target.origin}${target.pathname}`).toBe(`${idp.issuer}/protocol/openid-connect/logout`);
+    expect(Object.fromEntries(target.searchParams)).toEqual({
+      client_id: idp.clientId,
+      id_token_hint: idToken,
+      post_logout_redirect_uri: "https://aiqsa.example/login"
+    });
+  });
+
+  it.each([
+    ["the encryption key changed", { openKey: () => randomBytes(32) }],
+    ["the encryption key is unusable", { openKey: unusableKey }],
+    ["the ciphertext belongs to another session", { storedOnAnotherSession: true }]
+  ])("still ends the IdP session, without the hint, when %s", async (_name, options) => {
+    const idToken = await idp.sign(idp.standardClaims());
+    const { response, revokedAt } = await logout({ config: oidcConfig({ idpLogout: true }), idToken, signInMethod: "oidc", ...options });
+    expect(revokedAt).toBeInstanceOf(Date);
+    expect(response.status).toBe(200);
+    const target = new URL(((await response.json()) as { redirectTo: string }).redirectTo);
+    expect(Object.fromEntries(target.searchParams)).toEqual({
+      client_id: idp.clientId,
+      post_logout_redirect_uri: "https://aiqsa.example/login"
+    });
+  });
+
   it("logs out locally only for other sign-in methods or with IdP logout off", async () => {
+    const idToken = await idp.sign(idp.standardClaims());
     for (const input of [
       { config: oidcConfig({ idpLogout: true }), signInMethod: "password" },
-      { config: oidcConfig({ idpLogout: false }), signInMethod: "oidc" }
+      // A hint kept while IdP logout was on goes nowhere once it is off.
+      { config: oidcConfig({ idpLogout: false }), idToken, signInMethod: "oidc" }
     ]) {
       const { response, revokedAt } = await logout(input);
       expect(revokedAt).toBeInstanceOf(Date);
