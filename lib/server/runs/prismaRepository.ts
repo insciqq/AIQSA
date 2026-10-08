@@ -50,7 +50,7 @@ import {
   boundedMemoryAdmissionDeadlineMs,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../memory/admissionDeadline";
-import { signalRunTerminal } from "../push/runTerminalSignal";
+import { signalRunCancelled, signalRunTerminal } from "../push/runTerminalSignal";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
 import {
   admitPreparingRunWithClient,
@@ -680,7 +680,7 @@ export function createPrismaRunRepository(
       }).catch(retainRunPrismaCode);
     },
     cancelRun: async (input) => {
-      return prismaClient.$transaction(async (tx) => {
+      const cancellation = await prismaClient.$transaction(async (tx) => {
         const lockedRun = await lockPreparingRun(tx, input.runId, input.userId);
         const updatedCount = lockedRun?.status === "preparing"
           ? Number(await settlePreparingRunInTransaction(tx, {
@@ -773,6 +773,9 @@ export function createPrismaRunRepository(
           }
         } as const;
       }).catch(retainRunPrismaCode);
+      // After commit; browser push never notifies the user's own cancellation.
+      if (cancellation.kind === "cancelled") signalRunCancelled(input.runId);
+      return cancellation;
     },
     completeRun: async (input) => {
       const usage = normalizeTokenUsage(input.usage);

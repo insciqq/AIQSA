@@ -100,6 +100,7 @@ import {
   type MessageSystemTurnKind
 } from "./mcpApprovals";
 import {
+  decodeAnswerReviewAutoConfig,
   decodeAnswerReviewMessageWire,
   foldAnswerReviewCards,
   foldAnswerReviewDecisionsCards,
@@ -399,6 +400,8 @@ export type ThreadCitation = {
 };
 
 export type WorkspaceChatSummary = {
+  /** The chat's automatic answer review; absent is off. */
+  answerReview?: import("./answerReviews").AnswerReviewAutoConfig;
   titlePending?: boolean;
   hasContinuationSource?: boolean;
   /**
@@ -670,6 +673,8 @@ export type CreateChatRequestWire = {
 };
 
 export type UpdateChatRequestWire = {
+  /** The chat's automatic answer review choice; null turns it off. */
+  answerReview?: import("./answerReviews").AnswerReviewAutoConfig | null;
   /** Binds the Assistant for the next messages; null removes it. Either clears the overrides. */
   assistantId?: string | null;
   assistantOverrides?: ChatAssistantOverridesPatch;
@@ -694,6 +699,7 @@ export type ChatRouteServerErrorCode =
   | MutationOriginErrorCode
   | ChatAssistantErrorCode
   | "active_run_in_progress"
+  | "answer_review_invalid"
   | "archived_chat_cursor_invalid"
   | "chat_page_cursor_invalid"
   | "chat_page_stale"
@@ -1490,6 +1496,8 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
   const defaultKnowledgePlan = decodeKnowledgeDefault(value.defaultKnowledgePlan);
   const search = value.defaultSearchPlan == null ? null : decodeSearchPlan(value.defaultSearchPlan);
   if (search && !search.ok) return null;
+  const answerReview = value.answerReview === undefined ? undefined : decodeAnswerReviewAutoConfig(value.answerReview);
+  if (answerReview === null) return null;
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
   const projectId = value.projectId === undefined ? null : nullableId(value.projectId);
@@ -1518,6 +1526,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
 
   return {
     activeLeafMessageId,
+    ...(answerReview ? { answerReview } : {}),
     ...(assistantId !== undefined ? { assistantId } : {}),
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),

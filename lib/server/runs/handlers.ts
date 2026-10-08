@@ -46,6 +46,7 @@ import type { KnowledgeProviderDispatchLifecycle } from "../knowledge/providerDi
 import type { MemoryToolEgressReceiptService } from "../memory/egress/receipts";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
 import { activeRunControllerRegistry, createRunExecutionResponse } from "./runExecution";
+import { resolveAnswerReviewAuto } from "../answerReviews/autoAdmission";
 import {
   materializePreparedRunData,
   preparePdfRetry,
@@ -776,9 +777,16 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     }
 
     let preparedData = materializePreparedRunData(preparation.prepared);
+    // Automatic review of the answer: only a user's own send, never a review
+    // step, a scheduled run or an approval continuation.
+    const answerReview = deps.answerReviewStep || deps.scheduledOccurrence || continuationBody
+      ? { ok: true as const }
+      : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
+    if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRun({
+        ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...(predecessorRunId ? { workspaceFollowup: {
           admissionKey, predecessorRunId, snapshot: acceptedRunSnapshot(preparedData)
         } } : {}),
@@ -1042,9 +1050,14 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const chatAssistant = preparedData.chatAssistant && retry
       ? { assistantId: preparedData.chatAssistant.assistantId, bind: false, overridesPatch: {} }
       : preparedData.chatAssistant;
+    // A regeneration or an edit with automatic review on reviews its new answer; a document retry keeps its run.
+    const answerReview = retry ? { ok: true as const }
+      : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
+    if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
+        ...(answerReview.auto ? { answerReviewAuto: answerReview.auto } : {}),
         ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(chatAssistant ? { chatAssistant } : {}),

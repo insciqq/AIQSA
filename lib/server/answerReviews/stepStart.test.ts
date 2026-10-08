@@ -135,6 +135,23 @@ describe("answer review step start", () => {
       step: 1 }, turnKind: "answer_revision_request" });
   });
 
+  it("shows the round's second reviewer the first one's review", async () => {
+    const second = { modelId: "model-c", name: "Gemini", provider: "connection-c" };
+    const state = newState({ chat: { activeLeafMessageId: "step-answer-0", assistantId: null, projectId: null }, messages: stepRows(),
+      claimed: { id: "turn-1", userModelRuns: [{ assistantMessageId: "step-answer-1", id: "run-1" }] },
+      session: sessionRow({ reviewers: [reviewer, second] }) });
+    const started = await startAnswerReviewStep({ prisma: fakePrisma(state).prisma, sendDeps },
+      input({ expectedActiveLeafId: "step-answer-0" }));
+    expect(started).toMatchObject({ ok: true, runId: "run-1" });
+    expect(sent[0]?.body).toMatchObject({ modelId: "model-c", provider: "connection-c" });
+    const text = (sent[0]?.body.content as { blocks: { text: string }[] }).blocks[0]!.text;
+    expect(text).toContain("Earlier reviews of this answer in this round");
+    expect(text).toContain("Review 1 (GPT-5): 1 finding.");
+    expect(text).toContain('[R1.1.F1] (high) claim: "It is 42."');
+    expect(stepOf(sent[0])).toEqual({ preparation: { kind: "review", reviewer: 1, round: 1, sessionId: "session-1", step: 1 },
+      turnKind: "answer_review_request" });
+  });
+
   it("refuses another user's session, a step that is not next, a moved leaf or an Assistant chat without sending", async () => {
     const cases: Array<readonly [string, number, State, AnswerReviewStepStartInput]> = [
       ["answer_review_unavailable", 404, newState(), input({ userId: "user-2" })],

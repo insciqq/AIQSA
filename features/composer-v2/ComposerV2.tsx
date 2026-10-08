@@ -345,6 +345,11 @@ export type ComposerV2Props = Readonly<{
   sessionKey?: string;
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; onToggle(value: boolean): void }>;
   activeRun?: boolean;
+  /**
+   * The chat's automatic answer review, configured from the model picker's
+   * row (no chip of its own): its summary, and why it is unavailable here.
+   */
+  answerReview?: Readonly<{ disabledReason?: string | null; onOpen(): void; summary: string }> | null;
   artifactEdit?: ComposerArtifactEdit | null;
   artifactCreate?: boolean;
   artifactUnavailableReason?: string | null;
@@ -610,6 +615,7 @@ export function ComposerV2({
   sessionKey = "composer",
   agent,
   activeRun = false,
+  answerReview = null,
   artifactEdit = null,
   artifactCreate = false,
   artifactUnavailableReason = null,
@@ -1897,6 +1903,13 @@ export function ComposerV2({
                 </div>
               ) : layer === "model" ? (
                 <ModelLayer
+                  answerReview={answerReview ? {
+                    ...answerReview,
+                    onOpen: () => {
+                      answerReview.onOpen();
+                      closeLayer();
+                    }
+                  } : null}
                   config={config}
                   groups={groupedModels}
                   parametersSummary={modelParametersSummary}
@@ -2527,6 +2540,7 @@ function ModelProvenanceLine({
 }
 
 function ModelLayer({
+  answerReview = null,
   config,
   groups,
   onMakeDefault,
@@ -2541,6 +2555,7 @@ function ModelLayer({
   selectedModelId,
   selectedProvider
 }: Readonly<{
+  answerReview?: ComposerV2Props["answerReview"];
   config: ComposerConfig | null;
   groups: Array<{ models: CatalogModel[]; provider: CatalogProvider }>;
   onMakeDefault?(model: CatalogModel): void;
@@ -2579,6 +2594,25 @@ function ModelLayer({
           ) : null}
           <UiV2Icon name="chevron-right" />
         </button>
+      ) : null}
+      {answerReview ? (
+        <button
+          className="v2-composer-model-parameters v2-focusable"
+          data-testid="composer-v2-model-answer-review"
+          disabled={Boolean(answerReview.disabledReason)}
+          type="button"
+          onClick={answerReview.onOpen}
+        >
+          <UiV2Icon name="shield" />
+          <span>Answer review</span>
+          <span className="v2-composer-model-parameters-summary">
+            {answerReview.disabledReason ? "Unavailable" : answerReview.summary}
+          </span>
+          <UiV2Icon name="chevron-right" />
+        </button>
+      ) : null}
+      {answerReview?.disabledReason ? (
+        <p className="v2-composer-model-note" data-testid="composer-v2-model-answer-review-reason">{answerReview.disabledReason}</p>
       ) : null}
       <p className="v2-composer-model-note">
         Applies to your next message.

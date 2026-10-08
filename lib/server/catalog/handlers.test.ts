@@ -155,6 +155,7 @@ describe("catalog handler", () => {
       "sendWithEnter",
       "assistantId",
       "assistantUnavailable",
+      "answerReview",
       "workspaceEnabled",
       "showCitations",
       "showReasoningBlocks",

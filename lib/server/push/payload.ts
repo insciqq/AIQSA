@@ -1,3 +1,4 @@
+import { answerReviewStopCopy } from "../../contracts/answerReviews";
 import type { BrowserPushMessage } from "../../contracts/browserPush";
 import { scheduledTaskOutcomeCopy, scheduledTaskSourceLines } from "../scheduledTasks/notifications";
 import type { BrowserPushEvent } from "./store";
@@ -24,6 +25,19 @@ function chatPath(chatId: string): string {
  * or any identifier other than the chat id in the path.
  */
 export function browserPushMessage(event: BrowserPushEvent): BrowserPushMessage {
+  if (event.kind === "answer_review") {
+    return {
+      body: event.answerFailed
+        ? "The answer did not complete"
+        : event.stopReason === "clean" || event.stopReason === "max_rounds"
+          ? `Reviewed answer ready · ${event.rounds} ${event.rounds === 1 ? "round" : "rounds"}`
+          : `Answer ready · ${answerReviewStopCopy(event.stopReason)}`,
+      tag: `aiqsa-chat-${event.chatId}`,
+      title: cleanTitle(event.title, "AIQSA chat"),
+      url: chatPath(event.chatId),
+      v: 1
+    };
+  }
   if (event.kind === "run") {
     return {
       body: event.status === "complete" ? "Answer ready" : "The answer did not complete",
