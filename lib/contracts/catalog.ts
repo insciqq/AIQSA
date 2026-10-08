@@ -6,6 +6,7 @@ import {
 } from "./chatDefaults";
 import type { ErrorResponse, SessionErrorCode } from "./http";
 import type { KnowledgeSelection } from "./knowledge";
+import { decodeCatalogDictation, type CatalogDictation } from "./speechToText";
 import {
   decodeSearchPlan,
   type SearchAdapterKind,
@@ -190,6 +191,8 @@ export const CATALOG_ATTACHMENT_LIMIT_CEILINGS: Readonly<CatalogAttachmentLimits
 export type Catalog = {
   attachmentLimits?: CatalogAttachmentLimits;
   defaults: CatalogDefaults;
+  /** Voice dictation for this account; absent on Project catalogs and older wires (no microphone). */
+  dictation?: CatalogDictation;
   models: CatalogModel[];
   providers: CatalogProvider[];
   searchStrategies: CatalogSearchStrategy[];
@@ -461,6 +464,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const catalog = value.catalog;
   const defaults = catalog.defaults;
   const hasAttachmentLimits = Object.prototype.hasOwnProperty.call(catalog, "attachmentLimits");
+  const dictation = catalog.dictation === undefined ? undefined : decodeCatalogDictation(catalog.dictation);
   const attachmentLimits = hasAttachmentLimits
     ? decodeCatalogAttachmentLimits(catalog.attachmentLimits)
     : undefined;
@@ -510,6 +514,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     providers.some((provider) => provider === null) ||
     searchStrategies.some((strategy) => strategy === null) ||
     (hasAttachmentLimits && attachmentLimits === null) ||
+    dictation === null ||
     defaults.searchPlan === undefined ||
     defaults.organizationSearchPlan === undefined ||
     !decodedSearchPlan.ok ||
@@ -535,6 +540,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
 
   return {
     ...(attachmentLimits ? { attachmentLimits } : {}),
+    ...(dictation ? { dictation } : {}),
     defaults: {
       ...answerSound,
       assistantId: defaultAssistant.assistantId,

@@ -286,6 +286,7 @@ enum UsagePurpose {
   chat_answer
   web_search
   image_generation
+  speech_to_text
   chat_title
   chat_summary
   chat_vision
@@ -1478,6 +1479,14 @@ model SystemModelPolicy {
   decisionConfiguredAt    DateTime?
   /// Per-feature administrator overrides; defaults require independent qualification.
   decisionFeaturesJson    Json           @default("{}")
+  /// Speech to text: a connection and an upstream model id, no ProviderModel row.
+  /// Set only by a passing administrator Test & save; the tested default-key
+  /// version binds the evidence, so a replaced key needs a new test.
+  speechToTextConnectionId        String?
+  speechToTextModelId             String?   @db.VarChar(256)
+  speechToTextCredentialVersionId String?
+  /// Set by every explicit save or clear; also the role's own concurrency fence.
+  speechToTextConfiguredAt        DateTime?
   /// Existing installations are marked pending by the forward migration only.
   decisionAdoptionVersion Int            @default(1)
   /// Claimed before external verification; restarts never replay ambiguous probes.

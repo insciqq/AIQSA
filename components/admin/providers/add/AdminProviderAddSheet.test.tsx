@@ -422,7 +422,8 @@ describe("AdminProviderAddSheet", () => {
     expect(models).toHaveTextContent("reasoning · 128k context");
     expect(within(models).getByLabelText(/text-embedding-3-large/)).toBeDisabled();
     expect(models).toHaveTextContent("embeddings");
-    expect(models).toHaveTextContent("not supported");
+    expect(within(models).getByLabelText(/whisper-1/)).toBeDisabled();
+    expect(models).toHaveTextContent("speech to text · set in Defaults & roles");
     expect(within(dialog).getByRole("button", { name: "Look again" })).toBeInTheDocument();
     expect(calls.find(({ url }) => url.endsWith("/discover"))?.body).toEqual({
       allowPrivateNetwork: false,

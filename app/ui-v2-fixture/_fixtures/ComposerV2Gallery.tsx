@@ -54,6 +54,7 @@ export type ComposerGalleryState =
   | "chips-off"
   | "chips-off-pinned"
   | "chips-agent"
+  | "commands"
   | "workspace-running"
   | "workspace-failed"
   | "default"
@@ -549,6 +550,8 @@ function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
 
 const INITIAL_LAYER_TRIGGERS: Readonly<Record<Exclude<ComposerV2Layer, null>, string>> = {
   add: 'button[aria-label="Add"]',
+  // The `/` palette opens from typing, never from a trigger.
+  commands: 'textarea',
   files: 'button[aria-label="Add"]',
   knowledge: 'button[aria-label="Choose Knowledge"]',
   model: '[data-testid="header-model-trigger"]',
@@ -603,6 +606,12 @@ const galleryPersonalMcpServers: ComposerConfig["mcpServers"] = [
   }
 ];
 
+const GALLERY_PALETTE_SKILLS = [
+  { description: "Condense the sources into a short brief", id: "summarize-sources", name: "Summarize sources" },
+  { description: "Decisions, owners and next steps from notes", id: "meeting-notes", name: "Meeting notes" },
+  { description: "Check claims against the attached documents", id: "fact-check", name: "Fact check" }
+] as const;
+
 export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalleryState }) {
   const wideChips = state === "chips-wide" || state === "chips-wide-comments";
   const reasoningFixture = wideChips || state.startsWith("reasoning");
@@ -644,7 +653,9 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
             ) });
   const [workspaceEnabled, setWorkspaceEnabled] = useState(!offChips);
   const [agentEnabled, setAgentEnabled] = useState(false);
-  const allCapabilities = chipFixture || ["capabilities", "workspace-running", "workspace-failed"].includes(state);
+  const allCapabilities = chipFixture || ["capabilities", "commands", "workspace-running", "workspace-failed"].includes(state);
+  // The `/` palette state pins from a small Skill list, as the Skill library would.
+  const [palettePins, setPalettePins] = useState<string[]>([]);
   const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме"
     : state === "load-all-refused" ? "Сверь открытые задачи во всех подключённых системах" : "");
   // Assistant states mirror the composer store: a change marks an adjustable
@@ -920,7 +931,12 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 internetEnabled: false, loading: false, onToggle: setWorkspaceEnabled,
                 sessionState: state === "workspace-failed" || offChips ? "failed" : "ready", commandRunning: state === "workspace-running" || wideChips } : undefined}
               skillsMode={skillsMode}
-              selectedSkillIds={wideChips || state === "chips-off-pinned"
+              paletteSkills={state === "commands" ? {
+                items: GALLERY_PALETTE_SKILLS,
+                pin: (id) => setPalettePins((current) => current.includes(id) ? current : [...current, id]),
+                state: "ready"
+              } : null}
+              selectedSkillIds={state === "commands" ? palettePins : wideChips || state === "chips-off-pinned"
                 ? Array.from({ length: 32 }, (_, index) => `skill-${index}`)
                 : allCapabilities && !chipFixture ? ["one", "two", "three"] : []}
               knowledgePlanSource={knowledgePlanSource}

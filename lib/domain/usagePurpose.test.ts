@@ -10,6 +10,9 @@ describe("usage purpose", () => {
     expect(USAGE_PURPOSES.filter(isPersonalUsagePurpose)).toEqual([...PERSONAL_USAGE_PURPOSES]);
     expect(USAGE_PURPOSES.filter((purpose) => !isPersonalUsagePurpose(purpose))).toEqual([...SYSTEM_USAGE_PURPOSES]);
     expect(isPersonalUsagePurpose("memory_processing")).toBe(false);
+    // Dictation is the user's own request: it counts toward their budget, not a run's attributions.
+    expect(isPersonalUsagePurpose("speech_to_text")).toBe(true);
+    expect(isRunUsageAttributionPurpose("speech_to_text")).toBe(false);
     expect(isPersonalUsagePurpose("other")).toBe(false);
   });
 
