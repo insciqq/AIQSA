@@ -381,26 +381,32 @@ export function createPrismaRunRepository(
     }
     return {
       chatMatched: rows.length > 0,
-      messages: conversationMessagesFromPathRows(await collapsedAnswerReviewRows(rows, chatId, options))
+      // Only an explicit leaf is the run's own turn (a regeneration answers it
+      // again); a send's expected leaf is the previous message and collapses.
+      messages: conversationMessagesFromPathRows(await collapsedAnswerReviewRows(rows, chatId, options,
+        selector.kind === "explicit"))
     };
   }
 
   /**
    * The path as runs read it (Run contracts): each answer review session
    * other than the run's own collapses to its source question followed by
-   * the group's latest version; the leaf, the run's own turn, always stays.
+   * the group's latest version. `keepLeaf` keeps the path's leaf when it is
+   * the run's own turn, which a regeneration answers again even inside a
+   * session; any other leaf collapses like every member.
    */
   async function collapsedAnswerReviewRows(
     rows: ConversationPathRow[],
     chatId: string,
-    options: ConversationContextOptions
+    options: ConversationContextOptions,
+    keepLeaf: boolean
   ): Promise<ConversationPathRow[]> {
     if (!rows.some((row) => row.messageAnswerReviewSessionId)) return rows;
     const sessions = await prismaClient.answerReviewSession.findMany({
       select: { id: true, sourceAssistantMessageId: true },
       where: { chatId, id: { in: [...new Set(rows.flatMap((row) => row.messageAnswerReviewSessionId ?? []))] } }
     }).catch(retainRunPrismaCode);
-    const leaf = rows.at(-1)?.messageId;
+    const leaf = keepLeaf ? rows.at(-1)?.messageId : undefined;
     const collapse = collapseAnswerReviews(rows.flatMap((row) => row.messageId ? [{
       answerReviewSessionId: row.messageAnswerReviewSessionId ?? null,
       id: row.messageId,
