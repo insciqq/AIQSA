@@ -41,7 +41,8 @@ test.skip(!realIdpEnabled, REAL_IDP_SKIP_REASON);
 test.skip(standMode === "trusted", "Authentik's SCIM pushes bypass the header proxy; run this spec on the direct stand");
 test.describe.configure({ mode: "serial" });
 // Traces would record the generated Authentik passwords typed into its login form.
-test.use({ trace: "off" });
+// Traces would record IdP passwords; a failure screenshot shows at most a username.
+test.use({ screenshot: "only-on-failure", trace: "off" });
 
 const prisma = new PrismaClient();
 const run = randomSuffix();
@@ -131,7 +132,11 @@ async function authentikSignIn(browser: Browser, person: Person): Promise<{ cont
   const { context, page } = await loginPage(browser, "/login?local=1");
   await page.getByRole("link", { name: "Continue with Authentik" }).click();
   const uid = page.locator('input[name="uidField"]');
-  await expect(uid).toBeVisible({ timeout: 60_000 });
+  await expect(uid).toBeVisible({ timeout: 60_000 }).catch((error: unknown) => {
+    // Content-free: where the browser ended up, and the sign-in outcome code if AIQSA refused.
+    const url = new URL(page.url());
+    throw new Error(`authentik_login_not_reached host=${url.host} path=${url.pathname} oauth=${url.searchParams.get("oauth") ?? "-"}`, { cause: error });
+  });
   await uid.fill(person.username);
   const password = page.locator('input[name="password"]');
   // Some flows ask for the password on the identification page, others on the next stage.

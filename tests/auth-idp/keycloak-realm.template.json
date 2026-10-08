@@ -12,13 +12,13 @@
   "roles": { "realm": [ { "name": "aiqsa-admin" }, { "name": "aiqsa-user" } ] },
   "users": [
     { "username": "alice", "email": "alice@idp.aiqsa.test", "emailVerified": true, "enabled": true, "firstName": "Alice", "lastName": "Engineer",
-      "groups": ["/engineers"], "realmRoles": ["aiqsa-user"], "credentials": [{ "type": "password", "value": "__PW_ALICE__", "temporary": false }] },
+      "groups": ["/engineers"], "realmRoles": ["default-roles-aiqsa", "aiqsa-user"], "credentials": [{ "type": "password", "value": "__PW_ALICE__", "temporary": false }] },
     { "username": "bob", "email": "bob@idp.aiqsa.test", "emailVerified": true, "enabled": true, "firstName": "Bob", "lastName": "Outsider",
-      "groups": ["/contractors"], "credentials": [{ "type": "password", "value": "__PW_BOB__", "temporary": false }] },
+      "groups": ["/contractors"], "realmRoles": ["default-roles-aiqsa"], "credentials": [{ "type": "password", "value": "__PW_BOB__", "temporary": false }] },
     { "username": "carol", "email": "carol@local.aiqsa.test", "emailVerified": false, "enabled": true, "firstName": "Carol", "lastName": "Unverified",
-      "groups": ["/engineers"], "credentials": [{ "type": "password", "value": "__PW_CAROL__", "temporary": false }] },
+      "groups": ["/engineers"], "realmRoles": ["default-roles-aiqsa"], "credentials": [{ "type": "password", "value": "__PW_CAROL__", "temporary": false }] },
     { "username": "dave", "email": "dave@idp.aiqsa.test", "emailVerified": true, "enabled": true, "firstName": "Dave", "lastName": "Admin",
-      "groups": ["/engineers", "/admins"], "realmRoles": ["aiqsa-admin"], "credentials": [{ "type": "password", "value": "__PW_DAVE__", "temporary": false }] }
+      "groups": ["/engineers", "/admins"], "realmRoles": ["default-roles-aiqsa", "aiqsa-admin"], "credentials": [{ "type": "password", "value": "__PW_DAVE__", "temporary": false }] }
   ],
   "clients": [
     {

@@ -35,7 +35,8 @@ import {
 test.skip(!realIdpEnabled, REAL_IDP_SKIP_REASON);
 test.describe.configure({ mode: "serial" });
 // Traces would record the stand passwords typed into Keycloak's form.
-test.use({ trace: "off" });
+// Traces would record IdP passwords; a failure screenshot shows at most a username.
+test.use({ screenshot: "only-on-failure", trace: "off" });
 
 const prisma = new PrismaClient();
 const run = randomSuffix();
@@ -204,7 +205,8 @@ test("alice and dave sign in through Keycloak SAML with the groups attribute and
   const dave = await prisma.user.findFirstOrThrow({
     where: { authIdentities: { some: { normalizedEmail: keycloakUsers.dave.email, provider: "saml" } } }
   });
-  expect(dave.role).toBe("admin");
+  const daveSync = await prisma.authIdentity.findFirst({ select: { lastSyncWarning: true }, where: { provider: "saml", userId: dave.id } });
+  expect(dave.role, `content-free sync warning: ${daveSync?.lastSyncWarning ?? "none"}`).toBe("admin");
   expect(dave.roleManagedBy).toBe(`saml:${standEnv("AIQSA_E2E_KEYCLOAK_ISSUER")}`);
   await attachEvidence(testInfo, "saml-sign-in", { aliceMember, aliceSessions: await samlSessions(keycloakUsers.alice.email), daveAdmin: true });
 });

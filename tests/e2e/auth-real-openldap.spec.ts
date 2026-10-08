@@ -33,7 +33,8 @@ import {
 test.skip(!realIdpEnabled, REAL_IDP_SKIP_REASON);
 test.describe.configure({ mode: "serial" });
 // Traces would record the stand passwords typed into the login form.
-test.use({ trace: "off" });
+// Traces would record IdP passwords; a failure screenshot shows at most a username.
+test.use({ screenshot: "only-on-failure", trace: "off" });
 
 const prisma = new PrismaClient();
 const run = randomSuffix();
@@ -181,7 +182,8 @@ test("a blank password and filter injection are refused without signing anyone i
     codes.push(`${response.status()}:${body.error}`);
   }
   await context.close();
-  await attachEvidence(testInfo, "openldap-refusals", { attempts: attempts.length, codes: codes.join(",") });
+  await attachEvidence(testInfo, "openldap-refusals", { attempts: attempts.length, credentialsRequired: codes.filter((code) => code === "400:credentials_required").length,
+    unauthorized: codes.filter((code) => code === "401:unauthorized").length });
 });
 
 test("TOTP on a directory account: the next sign-in asks for a code, a recovery code works once, an administrator reset clears it", async ({ browser }, testInfo) => {
