@@ -21,6 +21,20 @@ import {
   standEnv,
   standEnvPresent
 } from "./support/realIdp";
+import {
+  assignPasswordOnlyPolicy,
+  createOktaPeople,
+  createOktaSamlApp,
+  expectSignedIn,
+  okta,
+  OKTA_HIDDEN,
+  OKTA_PREFIX,
+  oktaOrigin,
+  oktaSignIn,
+  removeOkta,
+  watchSamlResponse,
+  type OktaPerson
+} from "./support/okta";
 
 /**
  * Okta (Workforce Identity, Integrator Free Plan) as a cloud OIDC and SAML IdP (opt-in).
@@ -41,13 +55,10 @@ const prisma = new PrismaClient();
 const run = randomSuffix();
 const OIDC_BUTTON = "Okta";
 const SAML_BUTTON = "Okta SAML";
-const PREFIX = "aiqsa-e2e-";
-const USERS = `${PREFIX}users-${run}`;
-const ENGINEERS = `${PREFIX}engineers-${run}`;
-const ADMINS = `${PREFIX}admins-${run}`;
+const USERS = `${OKTA_PREFIX}users-${run}`;
+const ENGINEERS = `${OKTA_PREFIX}engineers-${run}`;
+const ADMINS = `${OKTA_PREFIX}admins-${run}`;
 const DOMAIN = "okta.aiqsa.test";
-
-type Person = Readonly<{ email: string; groups: readonly string[]; name: string; password: string }>;
 
 const generatedPassword = () => `${randomBytes(15).toString("base64url")}Aa1!`;
 const people = {
@@ -56,7 +67,7 @@ const people = {
   // SAML-only people: an account OIDC created first would test email linking, not SAML.
   dina: { email: `dina-${run}@${DOMAIN}`, groups: [USERS, ENGINEERS, ADMINS], name: "Dina", password: generatedPassword() },
   eli: { email: `eli-${run}@${DOMAIN}`, groups: [USERS, ENGINEERS], name: "Eli", password: generatedPassword() }
-} satisfies Record<string, Person>;
+} satisfies Record<string, OktaPerson>;
 const emails = Object.values(people).map((person) => person.email);
 
 const created = {
@@ -72,75 +83,9 @@ let restoreSaml: (() => Promise<void>) | null = null;
 let samlAppId = "";
 let groupId = "";
 
-// Okta requires app visibility; the test apps stay off the users' dashboards.
-const HIDDEN = { autoSubmitToolbar: false, hide: { iOS: true, web: true } };
-
-const oktaOrigin = () => new URL(standEnv("AIQSA_E2E_OKTA_ORG")).origin;
 const issuer = () => `${oktaOrigin()}/oauth2/default`;
 
-/** The Okta management API; failures name only the method, path, status and Okta's error code. */
-async function okta<T = Record<string, unknown>>(method: string, path: string, body?: unknown, accept = "application/json"): Promise<T> {
-  const response = await fetch(`${oktaOrigin()}/api/v1${path}`, {
-    body: body === undefined ? undefined : JSON.stringify(body),
-    headers: { accept, authorization: `SSWS ${standEnv("AIQSA_E2E_OKTA_TOKEN")}`, "content-type": "application/json" },
-    method
-  });
-  if (!response.ok) {
-    const detail = await response.json().catch(() => ({})) as { errorCauses?: Array<{ errorSummary?: string }>; errorCode?: string; errorSummary?: string };
-    const summary = [detail.errorSummary, ...(detail.errorCauses ?? []).map((cause) => cause.errorSummary)].join(" ")
-      .replace(/[^A-Za-z0-9 .,:_-]/gu, "").slice(0, 200);
-    throw new Error(`okta ${method} ${path.split("?")[0]} -> ${response.status} ${detail.errorCode ?? ""} ${summary}`);
-  }
-  if (response.status === 204) return {} as T;
-  return (accept === "application/json" ? await response.json() : await response.text()) as T;
-}
-
-/** Okta deletes a user or an app only once it is deactivated. */
-async function remove(kind: "apps" | "users", id: string): Promise<void> {
-  await okta("POST", `/${kind}/${id}/lifecycle/deactivate`).catch(() => undefined);
-  await okta("DELETE", `/${kind}/${id}`).catch(() => undefined);
-}
-
-/**
- * Okta's sign-in widget (Identity Engine): identifier, then password, possibly an optional
- * authenticator enrollment to skip. Waits until the browser leaves Okta.
- */
-async function oktaSignIn(page: Page, person: Person): Promise<void> {
-  const identifier = page.locator('input[name="identifier"]');
-  const passcode = page.locator('input[name="credentials.passcode"]');
-  const submit = page.locator('input[type="submit"], button[type="submit"]').first();
-  const skip = page.getByRole("link", { name: /^(Skip|Set up later|Remind me later)$/u })
-    .or(page.getByRole("button", { name: /^(Skip|Set up later|Remind me later)$/u }));
-  const left = () => new URL(page.url()).origin !== oktaOrigin();
-  const deadline = Date.now() + 90_000;
-  let identified = false;
-  let verified = false;
-  while (!left()) {
-    if (Date.now() > deadline) {
-      const message = (await page.locator(".o-form-error-container, [role=alert]").allInnerTexts().catch(() => []))
-        .join(" ").replace(/[^A-Za-z ]/gu, "").slice(0, 160);
-      throw new Error(`okta_login_not_left path=${new URL(page.url()).pathname} identified=${identified} verified=${verified} error=${message || "-"}`);
-    }
-    if (!verified && await passcode.isVisible().catch(() => false)) {
-      if (await identifier.isVisible().catch(() => false) && !identified) {
-        await identifier.fill(person.email);
-        identified = true;
-      }
-      await passcode.fill(person.password);
-      await submit.click();
-      verified = true;
-    } else if (!identified && await identifier.isVisible().catch(() => false)) {
-      await identifier.fill(person.email);
-      await submit.click();
-      identified = true;
-    } else if (await skip.first().isVisible().catch(() => false)) {
-      await skip.first().click();
-    }
-    await page.waitForTimeout(1_000);
-  }
-}
-
-async function signIn(browser: Browser, button: string, person: Person): Promise<{ context: BrowserContext; facts: () => string; page: Page }> {
+async function signIn(browser: Browser, button: string, person: OktaPerson): Promise<{ context: BrowserContext; facts: () => string; page: Page }> {
   const { context, page } = await loginPage(browser, "/login?local=1");
   const facts = watchSamlResponse(page);
   await page.getByRole("link", { exact: true, name: `Continue with ${button}` }).click();
@@ -148,35 +93,7 @@ async function signIn(browser: Browser, button: string, person: Person): Promise
   return { context, facts, page };
 }
 
-/** Content-free facts about the SAML response the browser posts to /saml/acs: no values, only shapes. */
-function watchSamlResponse(page: Page): () => string {
-  let facts = "no_acs_post";
-  page.on("request", (request) => {
-    if (request.method() !== "POST" || !new URL(request.url()).pathname.endsWith("/saml/acs")) return;
-    const encoded = new URLSearchParams(request.postData() ?? "").get("SAMLResponse") ?? "";
-    const xml = Buffer.from(encoded, "base64").toString("utf8");
-    const nameId = /<(?:[\w-]+:)?NameID\b([^>]*)>([^<]*)</u.exec(xml);
-    const format = /Format="[^"]*:([A-Za-z-]+)"/u.exec(nameId?.[1] ?? "")?.[1] ?? "-";
-    facts = [
-      `nameId=${nameId ? "yes" : "no"}`,
-      `format=${format}`,
-      `length=${nameId?.[2]?.trim().length ?? 0}`,
-      `encryptedId=${/EncryptedID\b/u.test(xml)}`,
-      `encryptedAssertion=${/EncryptedAssertion\b/u.test(xml)}`,
-      `assertions=${(xml.match(/<(?:[\w-]+:)?Assertion\b/gu) ?? []).length}`
-    ].join(" ");
-  });
-  return () => facts;
-}
 
-/** The app shell after a sign-in; a refusal names the method's content-free failure code. */
-async function expectSignedIn(page: Page, method: "oidc" | "saml", facts: () => string = () => "-"): Promise<void> {
-  const shell = page.getByTestId("app-shell");
-  await expect(shell.or(page.locator("[role=alert]:not(#__next-route-announcer__)"))).toBeVisible({ timeout: 60_000 });
-  if (await shell.isVisible()) return;
-  const health = await prisma.authSignInMethodSetting.findUnique({ select: { lastFailureCode: true }, where: { method } });
-  throw new Error(`${method}_sign_in_refused url=${new URL(page.url()).search.replace(/[^a-z0-9=&_]/gu, "")} code=${health?.lastFailureCode ?? "-"} ${facts()}`);
-}
 
 async function userBy(provider: "oidc" | "saml", email: string) {
   return prisma.user.findFirst({
@@ -200,8 +117,8 @@ test.afterAll(async ({ browser }) => {
     await disableMethod(admin.context.request, "saml").catch(() => undefined);
     await admin.context.close();
   } finally {
-    for (const appId of created.appIds) await remove("apps", appId);
-    for (const userId of created.userIds) await remove("users", userId);
+    for (const appId of created.appIds) await removeOkta("apps", appId);
+    for (const userId of created.userIds) await removeOkta("users", userId);
     for (const id of created.groupIds.values()) await okta("DELETE", `/groups/${id}`).catch(() => undefined);
     if (created.policyId) await okta("DELETE", `/policies/${created.policyId}`).catch(() => undefined);
     if (created.asPolicyId) await okta("DELETE", `/authorizationServers/default/policies/${created.asPolicyId}`).catch(() => undefined);
@@ -224,24 +141,15 @@ test("Okta groups, users, applications and policies are created; the OIDC config
   const acsUrl = await samlCard.getByLabel("ACS URL (Reply URL)").inputValue();
   const spEntityId = await samlCard.getByLabel("SP entity ID (Audience)").inputValue();
 
-  for (const name of [USERS, ENGINEERS, ADMINS]) {
-    const group = await okta<{ id: string }>("POST", "/groups", { profile: { description: "AIQSA e2e", name } });
-    created.groupIds.set(name, group.id);
-  }
-  for (const person of Object.values(people)) {
-    const user = await okta<{ id: string }>("POST", "/users?activate=true", {
-      credentials: { password: { value: person.password } },
-      groupIds: person.groups.map((name) => created.groupIds.get(name)!),
-      profile: { email: person.email, firstName: person.name, lastName: run, login: person.email }
-    });
-    created.userIds.push(user.id);
-  }
+  const oktaPeople = await createOktaPeople([USERS, ENGINEERS, ADMINS], Object.values(people), run);
+  created.groupIds = oktaPeople.groupIds;
+  created.userIds.push(...oktaPeople.userIds.values());
 
   const oidc = await okta<{ credentials: { oauthClient: { client_id: string; client_secret: string } }; id: string }>("POST", "/apps", {
     credentials: { oauthClient: { autoKeyRotation: true, token_endpoint_auth_method: "client_secret_basic" } },
     label: `AIQSA e2e OIDC ${run}`,
     name: "oidc_client",
-    visibility: HIDDEN,
+    visibility: OKTA_HIDDEN,
     settings: {
       oauthClient: {
         application_type: "web",
@@ -255,54 +163,12 @@ test("Okta groups, users, applications and policies are created; the OIDC config
     signOnMode: "OPENID_CONNECT"
   });
   created.appIds.push(oidc.id);
-  const groupStatement = (name: string) => ({
-    filterType: "REGEX",
-    filterValue: `${PREFIX}.*`,
-    name,
-    namespace: "urn:oasis:names:tc:SAML:2.0:attrname-format:unspecified",
-    type: "GROUP"
-  });
-  const saml = await okta<{ id: string }>("POST", "/apps", {
-    label: `AIQSA e2e SAML ${run}`,
-    settings: {
-      signOn: {
-        assertionSigned: true,
-        attributeStatements: [
-          { name: "email", namespace: "urn:oasis:names:tc:SAML:2.0:attrname-format:unspecified", type: "EXPRESSION", values: ["user.email"] },
-          groupStatement("groups")
-        ],
-        audience: spEntityId,
-        authnContextClassRef: "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
-        destination: acsUrl,
-        digestAlgorithm: "SHA256",
-        honorForceAuthn: true,
-        idpIssuer: "http://www.okta.com/${org.externalKey}",
-        recipient: acsUrl,
-        requestCompressed: false,
-        responseSigned: true,
-        signatureAlgorithm: "RSA_SHA256",
-        ssoAcsUrl: acsUrl,
-        subjectNameIdFormat: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
-        // Okta's default: the NameID is the app username (the Okta username unless the app overrides it).
-        subjectNameIdTemplate: "${user.userName}"
-      }
-    },
-    signOnMode: "SAML_2_0",
-    visibility: HIDDEN
-  });
-  created.appIds.push(saml.id);
-  samlAppId = saml.id;
+  const samlId = await createOktaSamlApp(`AIQSA e2e SAML ${run}`, acsUrl, spEntityId);
+  created.appIds.push(samlId);
+  samlAppId = samlId;
   for (const appId of created.appIds) await okta("PUT", `/apps/${appId}/groups/${created.groupIds.get(USERS)!}`, {});
 
-  // New apps get the "Any two factors" policy; these synthetic users have a password only.
-  const policy = await okta<{ id: string }>("POST", "/policies", { name: `AIQSA e2e ${run}`, type: "ACCESS_POLICY" });
-  created.policyId = policy.id;
-  await okta("POST", `/policies/${policy.id}/rules`, {
-    actions: { appSignOn: { access: "ALLOW", verificationMethod: { constraints: [{ knowledge: { types: ["password"] } }], factorMode: "1FA", reauthenticateIn: "PT2H", type: "ASSURANCE" } } },
-    name: "Password only",
-    type: "ACCESS_POLICY"
-  });
-  for (const appId of created.appIds) await okta("PUT", `/apps/${appId}/policies/${policy.id}`, {});
+  created.policyId = await assignPasswordOnlyPolicy(`AIQSA e2e ${run}`, created.appIds);
 
   // The default authorization server ships without an access policy and without a groups claim.
   const asPolicy = await okta<{ id: string }>("POST", "/authorizationServers/default/policies", {
@@ -328,7 +194,7 @@ test("Okta groups, users, applications and policies are created; the OIDC config
     group_filter_type: "REGEX",
     name: "groups",
     status: "ACTIVE",
-    value: `${PREFIX}.*`,
+    value: `${OKTA_PREFIX}.*`,
     valueType: "GROUPS"
   });
   created.asClaimId = claim.id;
@@ -399,7 +265,7 @@ test("an administrator pastes Okta's SAML metadata into the card; SAML sign-ins 
   await context.close();
 
   const eli = await signIn(browser, SAML_BUTTON, people.eli);
-  await expectSignedIn(eli.page, "saml", eli.facts);
+  await expectSignedIn(prisma, eli.page, "saml", eli.facts);
   await eli.context.close();
   const eliUser = await userBy("saml", people.eli.email);
   expect(eliUser, "eli's SAML identity").toBeTruthy();
@@ -409,7 +275,7 @@ test("an administrator pastes Okta's SAML metadata into the card; SAML sign-ins 
   expect(eliUser!.role).toBe("user");
 
   const dina = await signIn(browser, SAML_BUTTON, people.dina);
-  await expectSignedIn(dina.page, "saml", dina.facts);
+  await expectSignedIn(prisma, dina.page, "saml", dina.facts);
   await dina.page.screenshot({ path: testInfo.outputPath("okta-saml-signed-in-desktop.png") });
   await dina.context.close();
   const dinaUser = await userBy("saml", people.dina.email);
