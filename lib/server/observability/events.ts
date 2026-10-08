@@ -85,6 +85,8 @@ export type EventFields = {
     tool_kind: ToolKind; stage: "admission" | "execution" | "request" | "result" | "grounding";
     outcome: "started" | "completed" | "failed" | "cancelled" | "degraded";
     duration_ms?: number; attempt?: number; code?: string; reason?: Reason; httpStatus?: number;
+    /** Vision phase timings: before the dispatch claim, the provider wait after it, and its deadline. */
+    preparation_duration_ms?: number; provider_duration_ms?: number; timeout_ms?: number;
     action?: LifecycleAction; count?: number;
   }>;
   /** Local tool search statistics; never the query or tool names. */
