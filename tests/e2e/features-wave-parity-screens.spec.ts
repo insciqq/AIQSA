@@ -9,6 +9,7 @@ import { encryptProviderCredentialSecret } from "../../lib/server/providers/cred
 import { getSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { scrollMessage } from "./shell/thread";
+import { forEachCaptureTheme } from "./support/capture";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
 import { createWriteApprovalFixture, startMutableMcpEndpoint } from "./support/mutableMcpEndpoint";
@@ -17,11 +18,13 @@ import { createWriteApprovalFixture, startMutableMcpEndpoint } from "./support/m
  * Inspection screenshots of the surfaces the features-wave-parity wave adds:
  * answer read aloud, composer dictation and its Speech to text admin row, the
  * composer `/` palette and the MCP "Always allowed" consents in Settings.
- * Each surface is its own test per viewport and writes viewport shots named
- * `<surface>-<viewport>.png` into the test's output directory. Layout checks
- * run after each shot and fail softly, so a broken layout fails the spec
- * without hiding the remaining shots. Speech, the microphone and speech to
- * text are local stubs; no turn is sent and nothing reaches a provider.
+ * Each surface is its own test per viewport and writes viewport shots in the
+ * light and the dark theme, named `<surface>-<theme>-<viewport>.png`, into the
+ * test's output directory. Layout checks run after each pair of shots and fail
+ * softly, so a broken layout fails the spec without hiding the remaining
+ * shots. Speech, the microphone and speech to text are local stubs; no turn is
+ * sent and nothing reaches a provider. The answer review surfaces need their
+ * own fixture stand: answer-review-screens.spec.ts.
  */
 
 test.use({
@@ -56,8 +59,11 @@ test.beforeAll(async ({ playwright }, testInfo) => {
   }
 });
 
+/** The state as it is, in both themes (the theme attributes switch in place, as captureState does). */
 async function shot(page: Page, testInfo: TestInfo, surface: string, viewport: Viewport) {
-  await page.screenshot({ fullPage: false, path: testInfo.outputPath(`${surface}-${viewport.name}.png`) });
+  await forEachCaptureTheme(page, async (theme) => {
+    await page.screenshot({ fullPage: false, path: testInfo.outputPath(`${surface}-${theme}-${viewport.name}.png`) });
+  });
 }
 
 /** Runs a layout check as a soft assertion: the test fails, later shots are still taken. */
