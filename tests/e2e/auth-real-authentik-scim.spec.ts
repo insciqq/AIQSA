@@ -134,7 +134,11 @@ async function authentikSignIn(browser: Browser, person: Person): Promise<{ cont
   const callbackErrors: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname.endsWith("/api/auth/oauth/oidc/callback")) callbackErrors.push(url.searchParams.get("error") ?? "none");
+    if (url.pathname.endsWith("/api/auth/oauth/oidc/callback")) {
+      // The IdP's own description of a protocol error, reduced to words.
+      const description = (url.searchParams.get("error_description") ?? "").replace(/[^A-Za-z ]/gu, "").slice(0, 120);
+      callbackErrors.push(`${url.searchParams.get("error") ?? "none"}(${description})`);
+    }
   });
   await page.getByRole("link", { name: "Continue with Authentik" }).click();
   const uid = page.locator('input[name="uidField"]');
@@ -144,7 +148,7 @@ async function authentikSignIn(browser: Browser, person: Person): Promise<{ cont
     const health = await prisma.authSignInMethodSetting.findUnique({ select: { lastFailureCode: true }, where: { method: "oidc" } });
     throw new Error(
       `authentik_login_not_reached host=${url.host} path=${url.pathname} oauth=${url.searchParams.get("oauth") ?? "-"} ` +
-        `health=${health?.lastFailureCode ?? "-"} callback=${callbackErrors.join(",").replace(/[^a-z_,]/gu, "") || "-"}`,
+        `health=${health?.lastFailureCode ?? "-"} callback=${callbackErrors.join(",") || "-"}`,
       { cause: error }
     );
   });
