@@ -2272,6 +2272,42 @@ describe("run recovery", () => {
       expect(installed.calls()[0]).toMatchObject({ state: "running", result: null });
     });
 
+    it("accounts a saved Search result once when tool observations are Off and an invalid request ends the run", async () => {
+      const execution: SearchExecutionEvidence = { displayName: "OpenAI Search", invocationId: "invocation-1", modelId: "search-model",
+        optionId: "openai-native-web-search", provider: "openai_compatible", revisionId: "search-revision-1", status: "complete",
+        findings: "Saved findings", sources: [{ rank: 1, title: "Saved source", url: "https://example.test/saved" }],
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } };
+      const saved = { callId: "provider-call-1", name: "search_engine_1", status: "complete" as const,
+        content: searchToolResultContent([execution]),
+        rawPreview: { searchResultVersion: SEARCH_TOOL_RESULT_VERSION, searchExecutions: [execution] } };
+      const search = vi.fn<ProviderSearchAdapter["search"]>();
+      const answerStream = vi.fn<ProviderAdapter["stream"]>();
+      const harness = createHarness({
+        providers: { openai: { buildRequestPreview: () => ({}), stream: answerStream } },
+        searchProviders: { openai_compatible: { buildRequestPreview: () => ({}), search } }
+      });
+      const storedCall: PersistedToolLoopCall = { ...persistedRecoveryCall("complete"), arguments: { query: "current sources" },
+        mcpBinding: null, result: snapshotToolExecutionResult(saved, toolLoopPersistenceLimits.resultBytes), toolName: "search_engine_1",
+        usageAccountedAt: null };
+      installCheckpointState(harness, {
+        ...checkpointedRun({ calls: [storedCall], phase: "tools_running", providerToolMessages: [{
+          arguments: JSON.stringify(storedCall.arguments), call_id: storedCall.providerCallId, name: storedCall.toolName, type: "function_call"
+        }] }),
+        normalizedRequest: { ...normalizedClientSearchRequest(), toolObservationVersion: 0 }
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+      invalidRequest(harness);
+      const deps = { ...harness.deps, observations: memoryToolObservations().service(), workspace: invalidWorkspace() };
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      expect(search).not.toHaveBeenCalled();
+      expect(answerStream).not.toHaveBeenCalled();
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        usageAttributions: [expect.objectContaining({ modelId: "search-model", operationCount: 1, provider: "openai_compatible",
+          purpose: "web_search", usage: expect.objectContaining({ inputTokens: 5, outputTokens: 2 }) })]
+      })]);
+    });
+
     it.each([false, true])("settles a recoverable error-status round with an invalid record keeping its usage (recorded %s)", async (recorded) => {
       const harness = createHarness({ controls: [control({ status: "error" })], providers: {} });
       invalidRequest(harness);

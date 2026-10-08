@@ -5039,8 +5039,8 @@ const RECOVERY_STATE_INVALID_MESSAGE =
 /**
  * Usage of the lost executor's settled tool calls that recovery never
  * accounted, read from records that decode on their own: a Search call's
- * immutable usage receipt, and a Knowledge call's saved result in a run with
- * a Knowledge scope. Nothing is executed or disclosed; a record that does not
+ * immutable usage receipt or, without one, its saved Search result, and a
+ * Knowledge call's saved result in a run with a Knowledge scope. Nothing is executed or disclosed; a record that does not
  * decode is skipped, and a failed read propagates.
  */
 async function unaccountedToolUsage(
@@ -5051,14 +5051,17 @@ async function unaccountedToolUsage(
   const unaccounted = run.calls.filter((call) => call.usageAccountedAt == null);
   const observations = unaccounted.length > 0 ? deps.observations ?? await defaultToolObservations() : null;
   for (const call of unaccounted) {
+    const saved = (call.state === "complete" || call.state === "error") && !isRunEndedToolCallResult(call.result)
+      ? parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result) : null;
+    // One source per call: its usage receipt, or without one the executions
+    // its saved Search result reports (tool observations Off).
     const executions = await billedSearchExecutions({ observations,
-      producer: { runId: run.id, userId: run.userId, toolCallId: call.id }, result: null })
+      producer: { runId: run.id, userId: run.userId, toolCallId: call.id }, result: null,
+      ...(saved ? { unrecorded: saved } : {}) })
       .catch((error: unknown) => { if (observationRestoreRefused(error)) return []; throw error; });
     usage.push(...executions.flatMap((execution) => searchExecutionUsage(execution) ?? []));
-    if (run.knowledgeScope && deps.knowledgeExecutor?.accepts(call.toolName) &&
-      (call.state === "complete" || call.state === "error") && !isRunEndedToolCallResult(call.result)) {
-      const result = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result);
-      if (result) usage.push(...knowledgeUsageAttributionsFromToolResult(result));
+    if (saved && run.knowledgeScope && deps.knowledgeExecutor?.accepts(call.toolName)) {
+      usage.push(...knowledgeUsageAttributionsFromToolResult(saved));
     }
   }
   return usage;

@@ -54,6 +54,7 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
         status: "cancelled"
       })),
       findUniqueOrThrow: vi.fn(async () => ({ assistantMessageId, chatId, id: runId })),
+      update: vi.fn(async () => ({ id: runId })),
       updateMany: vi.fn(async () => ({ count: 1 }))
     },
     modelRunEvent: {
@@ -180,6 +181,37 @@ describe("Prisma run terminal cancellation integration", () => {
       await expect(lost.repository.failRun(lost.runId, lost.assistantMessageId, { code: "run_failed", message: "Run failed" }))
         .resolves.toBe(false);
       expect(signalled).toEqual([failed.runId]);
+    } finally {
+      registerRunTerminalListener(null);
+    }
+  });
+
+  it("reports a committed recovered failure to browser push once, never a lost or rolled-back one", async () => {
+    const signalled: string[] = [];
+    registerRunTerminalListener((runId) => signalled.push(runId));
+    const settlement = (harness: ReturnType<typeof repositoryCancellationHarness>) => harness.repository.settleRecoveredRunError({
+      error: { code: "run_recovery_failed", message: "Recovered failure" }, outputEvents: [], runId: harness.runId,
+      usageAttributions: [], userId: harness.userId
+    });
+    try {
+      const settled = repositoryCancellationHarness("fail");
+      settled.transaction.mockImplementationOnce(async (consume) => {
+        const result = await consume(settled.tx);
+        expect(signalled).toEqual([]);
+        return result;
+      });
+      await expect(settlement(settled)).resolves.toBe(true);
+      expect(signalled).toEqual([settled.runId]);
+
+      const lost = repositoryCancellationHarness("fail");
+      lost.tx.$queryRaw.mockResolvedValueOnce([]);
+      await expect(settlement(lost)).resolves.toBe(false);
+
+      const rolledBack = repositoryCancellationHarness("fail");
+      const rollback = new Error("synthetic rollback");
+      rolledBack.transaction.mockRejectedValueOnce(rollback);
+      await expect(settlement(rolledBack)).rejects.toBe(rollback);
+      expect(signalled).toEqual([settled.runId]);
     } finally {
       registerRunTerminalListener(null);
     }
