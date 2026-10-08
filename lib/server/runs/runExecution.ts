@@ -58,7 +58,7 @@ import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservabi
 import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { logEvent, runWithContext } from "../observability";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
-import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
+import { logRunPersistence, runDatabaseFailureCode, runDatabaseFailureKind } from "./runObservability";
 import type {
   ProviderAdapter,
   ProviderConversationMessage,
@@ -560,8 +560,9 @@ class RunPipelineError extends Error {
   readonly httpStatus?: number;
 
   constructor(code: string, message: string, report?: ProviderStreamSafetyReport, imageFailure?: ImageFailureEvidence,
-    httpStatus?: number) {
-    super(message);
+    httpStatus?: number, cause?: unknown) {
+    // The cause is kept only for content-free database diagnostics.
+    super(message, cause === undefined ? undefined : { cause });
     this.code = code;
     if (report) this.report = report;
     if (imageFailure) this.imageFailure = imageFailure;
@@ -3405,7 +3406,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
             streamSafetyReport,
             outcome.failure.imageFailure,
-            outcome.failure.httpStatus
+            outcome.failure.httpStatus,
+            outcome.failure.cause
           );
         }
         let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | undefined;
@@ -3777,7 +3779,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           provider_code: error instanceof KnowledgeAnswerProviderError ? error.providerCode : undefined,
           abort_source: abortController.signal.aborted ? "stop" : workspaceTurnTimedOut ? "workspace_deadline"
             : originalFailure.abort_source === "provider_deadline" ? "provider_deadline" : undefined,
-          timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error)
+          timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error),
+          db_failure: runDatabaseFailureKind(error)
         });
         if (cancelled) {
           await compactionPublisher.terminate("unknown").catch(() => undefined);
