@@ -1272,5 +1272,7 @@
   "skill_result_too_large",
   "skill_too_large_for_context",
   "skill_unknown",
-  "skill_workspace_unavailable"
+  "skill_workspace_unavailable",
+  "answer_problem_report_failed",
+  "answer_problem_report_prune_failed"
 ]

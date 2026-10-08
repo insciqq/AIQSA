@@ -87,6 +87,10 @@ export type EventFields = {
   run_stop_admission: Readonly<{ run_id?: string; outcome: "accepted" | "not_found" | "not_cancelable" | "unauthorized" | "failed"; prisma_code?: string }>;
   run_http_failed: CaughtError & Readonly<{ stage: "send" | "regenerate" | "cancel"; code?: string; reason?: Reason; prisma_code?: string }>;
   run_abort_delivery: Readonly<{ run_id: string; outcome: "delivered" | "already_aborted" | "not_running"; abort_source: "stop" }>;
+  /** A user's report on an answer: its reason and whether it was new, never the comment. */
+  answer_problem_report: Readonly<{
+    reason: "wrong_or_made_up" | "did_not_follow_request" | "error_or_broken" | "too_slow" | "other"; outcome: "created" | "updated";
+  }>;
   job_enqueued: Readonly<{ job_id: string; subsystem: "attachments" | "knowledge" | "memory" | "pdf" | "chat_title" }>;
   job_attempt: LifecycleFields;
   job_persistence: Omit<LifecycleFields, "outcome"> & Readonly<{ outcome: "confirmed" | "not_applied" | "unconfirmed" }>;

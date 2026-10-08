@@ -114,6 +114,15 @@ enum AnswerReviewStopReason {
   time_limit
 }
 
+/// Why a user reported an answer (`AnswerProblemReport`); stable codes.
+enum AnswerProblemReportReason {
+  wrong_or_made_up
+  did_not_follow_request
+  error_or_broken
+  too_slow
+  other
+}
+
 enum ModelRunStatus {
   preparing
   queued
@@ -918,6 +927,7 @@ model User {
   chatContinuations ChatContinuation[]
   scheduledTasks ScheduledTask[]
   answerReviewSessions AnswerReviewSession[] @relation("AnswerReviewInitiator")
+  answerProblemReports AnswerProblemReport[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -3701,6 +3711,7 @@ model Message {
   /// The migration uses column-scoped SET NULL so deleting a session never clears chatId.
   answerReviewSession      AnswerReviewSession? @relation("AnswerReviewSessionMessages", fields: [chatId, answerReviewSessionId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Message_chatId_answerReviewSessionId_fkey")
   answerReviewSources      AnswerReviewSession[] @relation("AnswerReviewSource")
+  problemReports           AnswerProblemReport[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@unique([answerReviewSessionId, answerReviewRound, answerReviewStep])
@@ -3748,6 +3759,33 @@ model AnswerReviewSession {
   @@unique([chatId, sourceAssistantMessageId])
   @@index([chatId, state])
   @@index([mode, state])
+  @@index([userId])
+}
+
+/// A user's report that a persisted answer went wrong, for administrators
+/// (Control Center Health): one per user and answer, updated in place. It
+/// holds a reason and the user's optional comment, never the question or the
+/// answer. The application prunes it 90 days after its last change.
+model AnswerProblemReport {
+  id        String                    @id @default(uuid())
+  chatId    String
+  messageId String
+  /// The answer's run, for the administrator's run lookup. The migration uses
+  /// column-scoped SET NULL so deleting the run never clears chatId.
+  runId     String?
+  userId    String
+  reason    AnswerProblemReportReason
+  /// User text only administrators see; never logged or sent to telemetry.
+  comment   String?                   @db.VarChar(1000)
+  createdAt DateTime                  @default(now())
+  updatedAt DateTime                  @updatedAt
+  message   Message                   @relation(fields: [chatId, messageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "AnswerProblemReport_message_fkey")
+  run       ModelRun?                 @relation(fields: [chatId, runId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "AnswerProblemReport_run_fkey")
+  user      User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([chatId, runId])
+  @@index([updatedAt])
   @@index([userId])
 }
 
@@ -3955,6 +3993,7 @@ model ModelRun {
   workspaceCaptureReferences   WorkspaceCaptureReference[]
   scheduledTaskOccurrences     ScheduledTaskOccurrence[]
   browserPushDelivery          BrowserPushDelivery?
+  problemReports               AnswerProblemReport[]
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
