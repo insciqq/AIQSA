@@ -52,6 +52,7 @@ export type ScimOutcomeCode =
   | "invalid_request"
   | "last_admin"
   | "owner_transfer_required"
+  | "request_failed"
   | "token_invalid"
   | "uniqueness";
 
@@ -342,6 +343,7 @@ export function createScimHandler(deps: ScimHandlerDeps) {
     } catch (error) {
       if (!(error instanceof ScimRequestError)) {
         logEvent("service_operation", { code: "scim_request_failed", error, outcome: "failed", stage: "write", subsystem: "admin" });
+        await recordOutcome(scim, "request_failed");
         return scimError(500, "The request could not be completed.");
       }
       outcome = { code: "invalid_request", response: scimError(error.status, error.detail, error.scimType) };

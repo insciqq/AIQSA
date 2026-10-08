@@ -45,7 +45,11 @@ export async function decideSessionIssuance(
   input: { secondFactor?: SecondFactorProof; signInMethod: AuthSessionSignInMethod; userId: string }
 ): Promise<SessionIssuanceDecision> {
   if (input.signInMethod !== "bootstrap") {
-    const user = await tx.user.findUnique({ select: { scimDeactivatedAt: true }, where: { id: input.userId } });
+    // A shared lock on the account row: SCIM locks the row before it records a deactivation
+    // and revokes sessions, so a session is either issued first and revoked by it, or refused.
+    const [user] = await tx.$queryRaw<Array<{ scimDeactivatedAt: Date | null }>>`
+      SELECT "scimDeactivatedAt" FROM "User" WHERE "id" = ${input.userId} FOR SHARE
+    `;
     if (user?.scimDeactivatedAt) return { kind: "refused" };
   }
 

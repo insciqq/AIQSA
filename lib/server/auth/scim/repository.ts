@@ -57,7 +57,10 @@ export type ScimRepository = {
   createUser(input: ScimUserInput, now: Date): Promise<ScimUserWriteResult>;
   /** SCIM DELETE never erases: the account is deactivated. */
   deactivateUser(id: string, now: Date): Promise<ScimUserWriteResult>;
-  /** Archives the group and clears its SCIM link; the Full access group is only unlinked. */
+  /**
+   * Archives the group under a name that frees the original and clears its SCIM link; the Full
+   * access group is only unlinked.
+   */
   deleteGroup(id: string): Promise<ScimGroupWriteResult>;
   getGroup(id: string, members: boolean): Promise<ScimGroupRecord | null>;
   getUser(id: string): Promise<ScimUserRecord | null>;
@@ -84,6 +87,8 @@ class ScimWriteRetry extends Error {
 }
 
 const WRITE_ATTEMPTS = 3;
+/** `normalizeAdminGroupName`'s bound, so an administrator can still rename an archived group. */
+const GROUP_NAME_MAX_LENGTH = 80;
 const USER_TRANSACTION = { maxWait: 10_000, timeout: 15_000 } as const;
 // Up to SCIM_MEMBER_CHANGES_MAX membership changes, each with its MCP side effects. Serializable,
 // like the administrator's membership editor, so a manual edit that raced a SCIM link or push
@@ -335,6 +340,15 @@ async function linkGroup(tx: Prisma.TransactionClient, group: LockedGroup, exter
   await tx.group.update({ data: { scimExternalId: next }, where: { id: group.id } });
 }
 
+/**
+ * The name a group SCIM deleted keeps in the archive: the IdP may push a group of the same name
+ * again later, which then becomes a new group without the archived one's grants.
+ */
+function archivedGroupName(group: { id: string; name: string }): string {
+  const suffix = ` (archived ${group.id.slice(0, 8)})`;
+  return `${group.name.slice(0, GROUP_NAME_MAX_LENGTH - suffix.length).trimEnd()}${suffix}`;
+}
+
 async function currentMembers(tx: Prisma.TransactionClient, groupId: string): Promise<Set<string>> {
   const memberships = await tx.userGroup.findMany({ select: { userId: true }, where: { groupId } });
   return new Set(memberships.map((membership) => membership.userId));
@@ -552,8 +566,12 @@ export function createPrismaScimRepository(prisma: PrismaClient): ScimRepository
       return writeGroup(async (tx) => {
         const group = await lockActiveGroup(tx, id);
         if (!group) throw new ScimRefusal<ScimGroupWriteResult>({ kind: "not_found" });
-        if (group.systemRole !== "full_access") await archiveActiveGroup(tx, group.id);
-        await tx.group.update({ data: { scimExternalId: null }, where: { id: group.id } });
+        if (group.systemRole === "full_access") {
+          await tx.group.update({ data: { scimExternalId: null }, where: { id: group.id } });
+        } else {
+          await archiveActiveGroup(tx, group.id);
+          await tx.group.update({ data: { name: archivedGroupName(group), scimExternalId: null }, where: { id: group.id } });
+        }
         return { groupId: group.id, kind: "ok" };
       });
     }

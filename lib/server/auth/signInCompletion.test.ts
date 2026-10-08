@@ -33,10 +33,11 @@ function sessionTransaction(factor: typeof confirmedFactor | null = null, scimDe
     create,
     findFactor,
     tx: {
+      // The seam's shared lock on the account row, which reads a pending SCIM deactivation.
+      $queryRaw: vi.fn(async () => [{ scimDeactivatedAt }]),
       authRecoveryCode: { count: vi.fn(async () => 2) },
       authSession: { create },
-      authTotpFactor: { findUnique: findFactor },
-      user: { findUnique: vi.fn(async () => ({ scimDeactivatedAt })) }
+      authTotpFactor: { findUnique: findFactor }
     }
   };
 }

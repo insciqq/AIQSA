@@ -168,17 +168,19 @@ function signInBlocked(user: Pick<User, "scimDeactivatedAt" | "status">): boolea
 }
 
 /**
- * The SCIM link rule: an account SCIM provisioned links its first identity of the method SCIM
- * links users to by email, even when that method does not trust unverified emails, because the
- * same IdP that pushed the account vouches for its email. Only while SCIM is active, only for
- * that method's provider, and only while the account has no identity of that provider.
+ * The SCIM link rule: an account SCIM provisioned that has no sign-in identity yet links its
+ * first identity of the method SCIM links users to by email, even when that method does not
+ * trust unverified emails, because the IdP that pushed the account vouches for its email. Only
+ * while SCIM is active and only for that method's provider. Never for an administrator or an
+ * account that already signs in some other way: an unverified email must not take over a real
+ * account, even one SCIM linked by its email.
  */
 async function scimProvisionedLink(
   tx: Prisma.TransactionClient,
   input: ExternalIdentityInput,
-  user: Pick<User, "id" | "scimExternalId">
+  user: Pick<User, "id" | "role" | "scimExternalId">
 ): Promise<boolean> {
-  if (user.scimExternalId === null || !["ldap", "oidc", "saml"].includes(input.provider)) {
+  if (user.scimExternalId === null || user.role === "admin" || !["ldap", "oidc", "saml"].includes(input.provider)) {
     return false;
   }
 
@@ -192,9 +194,7 @@ async function scimProvisionedLink(
     return false;
   }
 
-  const identities = await tx.authIdentity.count({ where: { provider: input.provider, userId: user.id } });
-
-  return identities === 0;
+  return (await tx.authIdentity.count({ where: { userId: user.id } })) === 0;
 }
 
 /**

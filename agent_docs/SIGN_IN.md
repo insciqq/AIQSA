@@ -40,12 +40,12 @@ TOTP is optional per user and covers only the sign-ins AIQSA verifies itself: pa
 
 ## SCIM Provisioning
 
-SCIM 2.0 under `/scim/v2` is an admin-level integration: its client sees every user and active group by AIQSA id, and `DELETE` never erases. Bearer tokens are shown once and stored as hashes; the body is bounded before the lookup, and a missing, unknown or revoked token or SCIM being off gets the same 401, rate-limited per source. `userName` is the account email.
+SCIM 2.0 under `/scim/v2` is an admin-level integration: its client sees every user and active group by AIQSA id, and `DELETE` never erases. Bearer tokens are shown once and stored as hashes; after a bounded body read, every token failure or SCIM being off gets the same 401, rate-limited per source. `userName` is the account email.
 
-- A user or group a SCIM write touches becomes SCIM-managed (`scimExternalId`: the client's externalId, else its own id). POST links an unmanaged account with the same email, or group with the same name, instead of duplicating it; a linked group keeps its grants and takes the pushed members. Creating groups is SCIM's exception to never auto-creating them. Full access links only by its exact name and is never renamed or archived.
+- A user or group a SCIM write touches becomes SCIM-managed (`scimExternalId`: the client's externalId, else its own id). POST links an unmanaged account with the same email, or group with the same name; a linked group keeps its grants and takes the pushed members. Creating groups is SCIM's exception to never auto-creating them; a deleted group is archived under a name that frees the original. Full access links only by its exact name and is never renamed or archived.
 - Memberships change through the shared membership service, at most 1 000 per request, serializable against the administrators' editor.
-- Deactivation revokes sessions and inbound MCP grants at once and records `scimDeactivatedAt`, keeping `disableUser`'s guards without an acting administrator: the last administrator who can still sign in stays, and a sole direct Project Owner stays `active` (409, shown to administrators) until ownership moves and the IdP retries. Meanwhile the completion seam refuses every sign-in except the bootstrap token. Reactivation re-enables only accounts SCIM disabled; an administrator's disable or denial wins (409).
-- The one exception to email trust: an account SCIM provisioned links its first identity of the method chosen on the SCIM card by email, even when that method does not trust unverified emails.
+- Deactivation revokes sessions and inbound MCP grants at once and records `scimDeactivatedAt`, with `disableUser`'s guards: the last administrator who can still sign in stays, and a sole direct Project Owner stays `active` (409, shown to administrators) until ownership moves and the IdP retries; meanwhile only the bootstrap token signs in and scheduled tasks pause. Reactivation re-enables only accounts SCIM disabled; an administrator's disable or denial wins (409).
+- The one exception to email trust: an account SCIM provisioned with no sign-in identity yet, not an administrator, links its first identity of the method chosen on the SCIM card by email even when that method does not trust unverified emails.
 
 ## Dependencies
 
