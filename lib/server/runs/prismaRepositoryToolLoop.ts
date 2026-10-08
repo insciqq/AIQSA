@@ -101,12 +101,14 @@ import {
   activeMessageStatuses,
   activeToolLoopRun,
   activeToolLoopRunSql,
+  boundRunSettlementLockWait,
   isRecoveredRunTerminalPayload,
   dispatchableModelRunStatuses,
   isRecord,
   json,
   lockRunSettlementScope,
-  projectRunRecoveryAuthority
+  projectRunRecoveryAuthority,
+  retryRollbackSafeSettlement
 } from "./prismaRepositoryShared";
 export { isRecoveredRunTerminalPayload } from "./prismaRepositoryShared";
 
@@ -2207,7 +2209,12 @@ export function createPrismaRunToolLoopOperations(
       const usage = sumTokenUsage(usageAttributions.map((attribution) => attribution.usage));
       const estimatedCostMicros = sumEstimatedCostMicros(usageAttributions.map((attribution) => attribution.estimatedCostMicros));
 
-      return prismaClient.$transaction(async (tx) => {
+      // The whole write is idempotent: it replaces the run's attribution rows
+      // and re-applies the same checkpoint entries, so a transaction rolled
+      // back by a bounded lock wait or expiry can run again without duplicate
+      // usage. No provider or tool work is repeated here.
+      return retryRollbackSafeSettlement(() => prismaClient.$transaction(async (tx) => {
+        await boundRunSettlementLockWait(tx);
         // Match admission/settlement lock order before taking the run lock.
         // Concurrent Agent discovery inserts a provider binding referencing
         // this run while usage rows also reference its User and Chat.
@@ -2296,7 +2303,7 @@ export function createPrismaRunToolLoopOperations(
           }
         }
         return true;
-      });
+      })).catch(retainRunPrismaCode);
     },
     resetToolLoopAssistantDraft: async (input) => {
       if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||
