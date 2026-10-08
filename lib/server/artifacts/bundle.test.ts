@@ -89,3 +89,38 @@ describe("structural artifact resource validation", () => {
     expect(() => buildHtml(source)).toThrow(expect.objectContaining({ code, path: "index.html", hint: expect.any(String), message: code }));
   });
 });
+
+describe("artifact icon links", () => {
+  const png = "data:image/png;base64,iVBORw0KGgo=";
+  const head = (link: string) => `<!doctype html><html><head>${link}</head><body></body></html>`;
+  it.each([
+    `<link rel="icon" href="${png}">`,
+    '<link rel="Shortcut Icon" href="data:image/x-icon;base64,AAABAA==">',
+    '<link rel="apple-touch-icon" href="data:image/gif;base64,R0lGODlh">',
+    `<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><text y='1em'>A</text></svg>">`
+  ])("keeps an inline image icon: %s", link => {
+    const output = renderArtifactBundle(buildHtml(head(link)).bundle).body.toString("utf8");
+    expect(output).toMatch(/<link rel="[^"]+" href="data:image\/[a-z.+-]+;base64,[A-Za-z0-9+/=]+">/u);
+  });
+  it("inlines an included image file as the icon", () => {
+    const operation = normalizeArtifactOperation({ intent: "create", kind: "html", title: "Icon", entrypoint: "index.html", files: [
+      { path: "index.html", mimeType: "text/html", text: head('<link rel="icon" href="icons/app.svg">') },
+      { path: "icons/app.svg", mimeType: "image/svg+xml", text: '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>' }
+    ] });
+    const output = renderArtifactBundle(buildArtifactBundle(operation, []).bundle).body.toString("utf8");
+    expect(output).toContain('<link rel="icon" href="data:image/svg+xml;base64,');
+    expect(output).not.toContain("icons/app.svg");
+  });
+  it.each([
+    '<link rel="icon" href="https://example.com/favicon.png">',
+    '<link rel="icon" href="//example.com/favicon.png">',
+    '<link rel="icon" href="missing.png">',
+    '<link rel="icon" href="data:text/html;base64,PGI+">',
+    '<link rel="icon" href="data:image/svg+xml,<svg><script>alert(1)</script></svg>">'
+  ])("rejects an icon that is not an inline or included image: %s", link => {
+    expect(() => buildHtml(head(link))).toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported", path: "index.html" }));
+  });
+  it("keeps refusing other link relations", () => {
+    expect(() => buildHtml(head(`<link rel="preload" href="${png}">`))).toThrow(expect.objectContaining({ code: "artifact_external_style_unsupported" }));
+  });
+});
