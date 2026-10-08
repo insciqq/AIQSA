@@ -187,6 +187,16 @@ describe("answer review step start", () => {
     expect(transient.updateMany).not.toHaveBeenCalled();
   });
 
+  it("returns the admitted step's run stream at once, never waiting for the run", async () => {
+    // A run that never finishes: reading its body would never end either.
+    respond = () => new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" }, status: 200 });
+    const started = await startAnswerReviewStep({ prisma: fakePrisma(newState()).prisma, sendDeps }, input());
+    expect(started).toMatchObject({ ok: true, runId: "run-0" });
+    expect(started.response.headers.get("content-type")).toBe("text/event-stream");
+    expect(started.response.bodyUsed).toBe(false);
+    await started.response.body?.cancel();
+  }, 2_000);
+
   it("reports a step by its claimed turn, never by the response alone", async () => {
     const cancel = vi.fn(async () => undefined);
     respond = () => {
