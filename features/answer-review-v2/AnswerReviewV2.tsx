@@ -104,6 +104,7 @@ export function AnswerReviewStatusV2({
   onRevise,
   onStop,
   progress,
+  stopUnavailableReason = null,
   stopping = false
 }: Readonly<{
   actionsEnabled: boolean;
@@ -112,21 +113,30 @@ export function AnswerReviewStatusV2({
   onRevise?(): void;
   onStop?(): void;
   progress: AnswerReviewProgress;
+  /** Why the running step cannot be stopped yet, as the answer's own Stop says (its run is not acknowledged yet). */
+  stopUnavailableReason?: string | null;
   stopping?: boolean;
 }>) {
-  const text = answerReviewStatusTextV2(group, progress);
-  if (!text) return null;
+  const settledText = answerReviewStatusTextV2(group, progress);
+  if (!settledText) return null;
+  const text = progress.running && stopping ? `Review · round ${progress.running.round} · Stopping…` : settledText;
   const clean = progress.state === "finished" && progress.stopReason === "clean";
   const canAct = actionsEnabled && group.session.canAct === true && progress.state === "running" && !progress.running;
+  const stopReasonId = `answer-review-stop-${group.session.id}`;
   return (
     <div className="v2-answer-review-status" data-testid="answer-review-status" data-state={progress.running ? "running"
       : progress.state} role="status">
       <UiV2Icon name={progress.running ? "shield" : clean ? "check" : progress.state === "stopped" ? "alert" : "shield"} />
       <span>{text}</span>
       {progress.running && onStop ? (
-        <UiV2Button icon="stop" disabled={stopping} aria-busy={stopping || undefined} onClick={onStop} type="button">
+        <UiV2Button icon="stop" disabled={stopping || Boolean(stopUnavailableReason)} aria-busy={stopping || undefined}
+          aria-describedby={stopUnavailableReason ? stopReasonId : undefined} onClick={onStop}
+          title={stopUnavailableReason ?? undefined} type="button">
           {stopping ? "Stopping…" : "Stop"}
         </UiV2Button>
+      ) : null}
+      {progress.running && onStop && stopUnavailableReason ? (
+        <span className="v2-sr-only" id={stopReasonId}>{stopUnavailableReason}</span>
       ) : null}
       {canAct && progress.next?.kind === "revision" && onRevise ? (
         <UiV2Button icon="wand" onClick={onRevise} tone="primary" type="button">Revise</UiV2Button>

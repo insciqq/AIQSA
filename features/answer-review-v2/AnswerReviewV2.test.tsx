@@ -97,6 +97,24 @@ describe("answer review status line", () => {
     expect(screen.queryByRole("button", { name: "Revise" })).toBeNull();
   });
 
+  it("offers Stop on a running step once its run is acknowledged, and says when it is stopping", () => {
+    const onStop = vi.fn();
+    // The optimistic step has no acknowledged run yet: a Stop then would be dropped.
+    const { rerender } = status("running", { onStop, stopUnavailableReason: "The run is not yet acknowledged by the server." });
+    const stop = screen.getByRole("button", { name: "Stop" });
+    expect(stop).toBeDisabled();
+    expect(stop).toHaveAccessibleDescription("The run is not yet acknowledged by the server.");
+    fireEvent.click(stop);
+    expect(onStop).not.toHaveBeenCalled();
+    const group = groupOf(thread("running"));
+    rerender(<AnswerReviewStatusV2 actionsEnabled group={group} onStop={onStop} progress={answerReviewGroupProgressV2(group)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(onStop).toHaveBeenCalledOnce();
+    rerender(<AnswerReviewStatusV2 actionsEnabled group={group} onStop={onStop} progress={answerReviewGroupProgressV2(group)} stopping />);
+    expect(screen.getByRole("status")).toHaveTextContent("Review · round 1 · Stopping…");
+    expect(screen.getByRole("button", { name: "Stopping…" })).toBeDisabled();
+  });
+
   it("offers Revise after findings to the initiator only", () => {
     const onRevise = vi.fn();
     const { unmount } = status("findings", { onRevise });
