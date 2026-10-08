@@ -1272,6 +1272,9 @@ model AuthSession {
   createdByUserAgent String?
   /// How the sign-in was proven (`AUTH_SESSION_SIGN_IN_METHODS`); null before it was recorded.
   signInMethod       String?   @db.VarChar(32)
+  /// OIDC sign-ins while IdP logout is on: the ID token sealed to this session (`oidcIdTokenHint.ts`),
+  /// sent only as `id_token_hint` when it signs out. Only `oidc` sessions; revocation clears it (trigger).
+  idTokenHintEnvelope String?
   lastSeenAt         DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt

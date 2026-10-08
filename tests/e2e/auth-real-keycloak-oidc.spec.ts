@@ -347,18 +347,26 @@ test("auto-redirect sends /login to Keycloak, ?local=1 stays, and signing out en
   }).toPass({ timeout: 30_000 });
 
   await accountMenu.getByRole("menuitem", { name: "Sign out", exact: true }).click();
-  await expect(page).toHaveURL((url) => url.origin === keycloakOrigin && url.pathname.endsWith("/protocol/openid-connect/logout"), { timeout: 30_000 });
-  // Without an id_token_hint Keycloak asks before it ends its session.
-  await page.screenshot({ path: testInfo.outputPath("oidc-idp-logout-confirm-desktop.png") });
-  await page.locator("#kc-logout").click();
+  await expect(page).toHaveURL((url) => url.origin === keycloakOrigin, { timeout: 30_000 });
+  // The session kept its id token, so Keycloak ends its session without asking; it asks
+  // only without an id_token_hint. Then /login redirects back to Keycloak.
+  const credentials = page.locator("#kc-form-login");
+  const confirm = page.locator("#kc-logout");
+  await expect.poll(async () => (await credentials.isVisible()) || (await confirm.isVisible()), { timeout: 60_000 }).toBe(true);
+  const askedToConfirm = !(await credentials.isVisible());
+  if (askedToConfirm) {
+    await page.screenshot({ path: testInfo.outputPath("oidc-idp-logout-confirm-desktop.png") });
+    await confirm.click();
+  }
   // Back at /login, which redirects again: Keycloak now asks for credentials.
-  await expect(page.locator("#kc-form-login")).toBeVisible({ timeout: 60_000 });
+  await expect(credentials).toBeVisible({ timeout: 60_000 });
   const activeSessions = await prisma.authSession.count({ where: { revokedAt: null, signInMethod: "oidc", userId: aliceId } });
   expect(sessionsBefore - activeSessions).toBe(1);
   expect((await context.cookies()).some((cookie) => cookie.name === "aiqsa_session")).toBe(false);
   await context.close();
   await attachEvidence(testInfo, "oidc-redirect-logout", {
     activeSessionsAfterLogout: activeSessions,
+    askedToConfirm,
     autoRedirect: true,
     idpAsksForCredentialsAfterLogout: true
   });

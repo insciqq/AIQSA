@@ -7,7 +7,7 @@ Scope: Identity, secrets, untrusted content, runtime trust, exposure, and depend
 
 Mutations use same-origin/Sec-Fetch checks and bounded bodies. Session tokens are opaque, hashed, HttpOnly. Public shares always require dynamic no-store/noindex/no-referrer responses. Crawlers can fetch shares for noindex; never advertise bearer URLs. Project streams never use URL tokens; events carry minimal invalidation identity.
 
-Auth flows use enumeration-safe outcomes and transactional one-winner proofs. Password verification stays server-owned. Login OAuth binds provider/state/PKCE and trusted callback origins; [Sign-in](SIGN_IN.md) owns external identity rules. Never persist or log provider login tokens/codes/verifiers/raw responses.
+Auth flows use enumeration-safe outcomes and transactional one-winner proofs. Password verification stays server-owned. Login OAuth binds provider/state/PKCE and trusted callback origins; [Sign-in](SIGN_IN.md) owns external identity rules. Never persist or log provider login tokens/codes/verifiers/raw responses; Sign-in owns the one exception, the encrypted OIDC ID token kept for IdP logout.
 
 Rate-limit identities use installation-secret, domain-separated HMACs. Explicit proxy trust requires fixed reviewed hops; use their rightmost forwarded suffix and fail closed on unresolvable identity. Otherwise authenticate launcher-stamped socket peers, ignoring forwarding. Network ranges prove no identity. Multi-replica auth admission is unsupported.
 
