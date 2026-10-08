@@ -18,6 +18,7 @@ import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { agentFailureMessage } from "../agents/failures";
 import { agentCodexVersionRetired } from "../agents/config";
+import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import { knowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
@@ -5009,6 +5010,65 @@ async function failRetiredContextPolicyRun(
   }).catch(() => undefined);
 }
 
+const RECOVERY_STATE_INVALID_MESSAGE =
+  "This answer was interrupted, and its saved progress could not be read to resume it. Your message is saved; regenerate to try again.";
+
+/**
+ * Ends a run whose accepted recovery record was read but fails its decoder:
+ * rereading cannot change it, and nothing may be dispatched, refreshed or
+ * executed from it. A provider response the lost executor started is
+ * cancelled; usage already recorded stays as it is. The terminal writers are
+ * the ordinary guarded recovery ones, followed by Workspace settlement.
+ */
+async function failInvalidRecoveryStateRun(
+  deps: RunRecoveryDeps,
+  runId: string,
+  userId: string,
+  invalid: RecoveryStateInvalidError
+): Promise<void> {
+  const control = await loadRecoveryRunControl(deps, runId, userId);
+  if (!control?.assistantMessageId || !isRefreshableRun(control)) return;
+  if (control.providerResponseId) {
+    const runtime = await resolveAnswerRuntime(deps, runId, control.provider).catch(() => null);
+    await runtime?.adapter.cancel?.(control.providerResponseId).catch(() => undefined);
+  }
+  const error = { code: invalid.code, message: RECOVERY_STATE_INVALID_MESSAGE };
+  // A recoverable error-status round is not dispatchable, so it settles
+  // through the recovered-error writer, without usage attributions.
+  const failed = control.status === "error"
+    ? await settleRecoveredError(deps.repository, { error, outputEvents: [], runId, usageAttributions: [], userId })
+    : await failRecoveredRun(deps.repository, runId, control.assistantMessageId, error, { recoveryTerminal: true });
+  if (!failed) return;
+  await deps.workspace?.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) })
+    .catch((settleError: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
+      code: observedFailureCode(settleError), prisma_code: databaseFailureCode(settleError), action: "retry" }));
+}
+
+/**
+ * Runs one stale run's recovery outside a refresh claim. An invalid stored
+ * record ends that run under a fresh claim; every other failure propagates and
+ * leaves the run for a later attempt.
+ */
+async function recoverOrEndInvalidRun(
+  deps: RunRecoveryDeps,
+  runId: string,
+  userId: string,
+  operation: () => Promise<void>
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    if (!(error instanceof RecoveryStateInvalidError)) throw error;
+    const registration = deps.registry.register(runId);
+    if (!registration) return;
+    try {
+      await failInvalidRecoveryStateRun(deps, runId, userId, error);
+    } finally {
+      registration.release();
+    }
+  }
+}
+
 async function refreshProviderRunOnceRegistered(
   deps: RunRecoveryDeps,
   runId: string,
@@ -5981,6 +6041,9 @@ async function refreshProviderRunOnce(
   if (!registration) return;
   try {
     await refreshProviderRunOnceRegistered(deps, runId, userId, registration.signal);
+  } catch (error) {
+    if (!(error instanceof RecoveryStateInvalidError) || registration.signal.aborted) throw error;
+    await failInvalidRecoveryStateRun(deps, runId, userId, error);
   } finally {
     registration.release();
   }
@@ -6049,7 +6112,7 @@ export async function reconcileInstallationRuns(
   await Promise.allSettled(candidates.map((run) => {
     if (deps.registry.has(run.id)) return;
     // Observe each rejection before allSettled preserves independent progress.
-    return observeRecoveryRun(run.id, async () => {
+    return observeRecoveryRun(run.id, () => recoverOrEndInvalidRun(deps, run.id, run.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, run.userId);
       if (control && !(await projectRecoveryAuthorityAllowsProceed(
         deps,
@@ -6099,7 +6162,7 @@ export async function reconcileInstallationRuns(
       await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: run.userId, onActivity: recoveredWorkspaceActivity(deps, run.id) })
         .catch((error: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
           code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" }));
-    });
+    }));
   }));
 }
 
@@ -6126,7 +6189,10 @@ export async function reconcileStaleRuns(
       continue;
     }
 
-    await observeRecoveryRun(run.id, async () => {
+    // One run's failure stops neither the other stale runs nor the request
+    // that started this pass (a send, a chat read): observeRecoveryRun has
+    // logged it, and the run stays for a later attempt.
+    await observeRecoveryRun(run.id, () => recoverOrEndInvalidRun(deps, run.id, input.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, input.userId);
       if (control && !(await projectRecoveryAuthorityAllowsProceed(
         deps,
@@ -6186,6 +6252,6 @@ export async function reconcileStaleRuns(
       await deps.workspace?.settle({ outcome: "failed", runId: run.id, userId: input.userId, onActivity: recoveredWorkspaceActivity(deps, run.id) })
         .catch((error: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
           code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" }));
-    });
+    })).catch(() => undefined);
   }
 }
