@@ -3,10 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { agentLimits } from "../agents/config";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
-import type { NormalizedRunRequest } from "../providers/types";
+import type { NormalizedRunRequest, ProviderModelCapabilities } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { createKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { appendRunOutputEvents, createPrismaRunToolLoopOperations } from "./prismaRepositoryToolLoop";
+import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import { runAttributionUsageWhere } from "./prismaRepositoryUsage";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT } from "./workspaceActivityPersistence";
@@ -718,6 +719,62 @@ describe("provider dispatch recovery request loading", () => {
       await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
         .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
     }
+  });
+
+  it("round-trips every admitted model capability through recovery", async () => {
+    // Required<> makes this fixture fail to compile when a capability is added
+    // without teaching the recovery decoder about it.
+    const capabilities: Required<ProviderModelCapabilities> = {
+      backgroundStreaming: true, codexStandaloneWebSearch: false, contextWindow: 200_000,
+      defaultMaxOutputTokens: 4096, defaultReasoningEffort: "medium", defaultReasoningMode: "auto",
+      forcedToolCalling: true, imageEditing: false, imageGeneration: true,
+      imageInputLimits: { imageBytes: 1048576, imageCount: 4, imagePixels: 4000000, payloadBytes: 5000000 },
+      maxOutputTokens: 8192, nativeBackground: true, nativeForcedToolChoice: false, nativeImageGeneration: false,
+      nativePdfInput: true, nativeSearch: false, parallelToolCalls: true, pdf: true, reasoning: true,
+      reasoningEfforts: ["low", "medium"], reasoningModes: ["auto"], streaming: true, streamUsage: true,
+      structuredOutput: true, toolCalling: true, validatedAutoToolCalling: true, vision: true
+    };
+    let accepted: unknown = { ...normalizedRequest, modelCapabilities: capabilities };
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const load = () => operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
+    await expect(load()).resolves.toEqual(accepted);
+    const { codexStandaloneWebSearch: _omitted, ...withoutSearch } = capabilities;
+    for (const modelCapabilities of [withoutSearch, { ...capabilities, codexStandaloneWebSearch: true },
+      { ...normalizedRequest.modelCapabilities, codexStandaloneWebSearch: false }]) {
+      accepted = { ...normalizedRequest, modelCapabilities };
+      const loaded = await load();
+      expect(loaded).toEqual(accepted);
+      expect(loaded?.modelCapabilities).toEqual(modelCapabilities);
+    }
+    for (const patch of [{ codexStandaloneWebSearch: null }, { codexStandaloneWebSearch: "false" },
+      { codexStandaloneWebSearch: 0 }, { codexStandaloneWebSearch: 1 }, { codexStandaloneWebSearch: {} },
+      { unknownCapability: true }, { constructor: true }]) {
+      accepted = { ...normalizedRequest, modelCapabilities: { ...capabilities, ...patch } };
+      const rejection = load();
+      await expect(rejection).rejects.toBeInstanceOf(RecoveryStateInvalidError);
+      await expect(rejection).rejects.toMatchObject({ code: "provider_dispatch_recovery_request_invalid_in_storage" });
+    }
+  });
+
+  it("keeps a failed read distinct from an invalid stored recovery record", async () => {
+    const readFailure = Object.assign(new Error("synthetic read failure"), { code: "P2024" });
+    const failing = createPrismaRunToolLoopOperations({ modelRun: {
+      findFirst: vi.fn(async () => { throw readFailure; }),
+      findUnique: vi.fn(async () => { throw readFailure; })
+    } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    await expect(failing.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
+      .rejects.toBe(readFailure);
+    await expect(failing.loadCheckpointedToolLoopRun({ runId: "run-one", userId: "owner-one" }))
+      .rejects.toBe(readFailure);
+    const corrupted = createPrismaRunToolLoopOperations({ modelRun: {
+      findFirst: vi.fn(async () => ({ toolLoopState: { phase: "unknown" } }))
+    } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const rejection = corrupted.loadCheckpointedToolLoopRun({ runId: "run-one", userId: "owner-one" });
+    await expect(rejection).rejects.toBeInstanceOf(RecoveryStateInvalidError);
+    await expect(rejection).rejects.toMatchObject({ code: "tool_loop_checkpoint_invalid_in_storage" });
   });
 
   it.each([
