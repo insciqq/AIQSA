@@ -790,7 +790,7 @@ async function activateEmptyHybridGeneration(
     expectedMemoryRevision: current.memoryRevision,
     expectedSettingsRevision: current.settingsRevision,
     operation: "REEMBED"
-  });
+  }, "embedding_setup");
   const deadline = Date.now() + SEMANTIC_INDEX_TIMEOUT_MS;
   while (Date.now() < deadline) {
     ensure(coordinator.child.exitCode === null, "semantic_index",
