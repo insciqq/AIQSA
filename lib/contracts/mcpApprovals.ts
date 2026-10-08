@@ -23,9 +23,13 @@ export type McpApprovalState = "allowed_once" | "allowed_server" | "denied" | "p
  * bounded catalog snapshots. `canDecide` is set only for the run's initiator
  * (other Project members see the card read-only); `details` names the
  * refused tool-loop call whose redacted request the initiator may expand.
+ * `canContinue` marks an Allow whose continuation may still start: the one
+ * the decision starts can fail before any run exists (another answer
+ * running, a usage limit), so the initiator retries it from the card.
  */
 export type McpApprovalCard = Readonly<{
   approvalId: string;
+  canContinue?: true;
   canDecide?: true;
   details?: Readonly<{ ordinal: number; roundIndex: number }>;
   serverName: string;
@@ -37,6 +41,10 @@ export type McpApprovalCard = Readonly<{
 /** The kind of the server-written user turn that continues after an approval. */
 export const MCP_APPROVAL_CONTINUATION_KIND = "mcp_approval_continuation";
 export type MessageSystemTurnKind = typeof MCP_APPROVAL_CONTINUATION_KIND;
+/** The send refusal of a continuation whose approval expired or was used. */
+export const MCP_APPROVAL_CONTINUATION_UNAVAILABLE = "mcp_approval_continuation_unavailable";
+/** What one attempt to start the continuation did: only a started run spends it. */
+export type McpApprovalContinuationOutcome = "not_started" | "started" | "unavailable";
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -49,10 +57,14 @@ const SOURCES: readonly unknown[] = ["agent", "code", "model"];
 const STATES: readonly unknown[] = ["allowed_once", "allowed_server", "denied", "pending"];
 
 export function decodeMcpApprovalCard(value: unknown): McpApprovalCard | null {
-  if (!record(value) || !only(value, ["approvalId", "canDecide", "details", "serverName", "source", "state", "toolName"]) ||
+  if (!record(value) || !only(value, ["approvalId", "canContinue", "canDecide", "details", "serverName", "source", "state",
+    "toolName"]) ||
     !id(value.approvalId) || !display(value.serverName) || !display(value.toolName) ||
     !SOURCES.includes(value.source) || !STATES.includes(value.state) ||
-    (value.canDecide !== undefined && value.canDecide !== true)) return null;
+    (value.canDecide !== undefined && value.canDecide !== true) ||
+    // Only an Allow continues.
+    (value.canContinue !== undefined && (value.canContinue !== true ||
+      (value.state !== "allowed_once" && value.state !== "allowed_server")))) return null;
   let details: McpApprovalCard["details"];
   if (value.details !== undefined) {
     if (value.source !== "model" || !record(value.details) || !only(value.details, ["ordinal", "roundIndex"]) ||
@@ -61,6 +73,7 @@ export function decodeMcpApprovalCard(value: unknown): McpApprovalCard | null {
   }
   return {
     approvalId: value.approvalId,
+    ...(value.canContinue === true ? { canContinue: true as const } : {}),
     ...(value.canDecide === true ? { canDecide: true as const } : {}),
     ...(details ? { details } : {}),
     serverName: value.serverName,

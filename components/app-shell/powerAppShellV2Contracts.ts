@@ -27,6 +27,7 @@ import type {
 } from "@/lib/contracts/composerConfig";
 import type { KnowledgeBaseSummary, KnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
+import type { McpApprovalContinuationOutcome } from "@/lib/contracts/mcpApprovals";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
 import type {
@@ -203,8 +204,12 @@ export type ShellThreadView = {
    */
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
-  /** Continues the open chat after its initiator allowed a refused MCP call. */
-  sendMcpApprovalContinuation?(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>): Promise<void>;
+  /**
+   * Continues the open chat after its initiator allowed a refused MCP call;
+   * an attempt that starts no run says why in the chat's notice.
+   */
+  sendMcpApprovalContinuation?(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>):
+    Promise<McpApprovalContinuationOutcome>;
   /** The message a search result opened in this chat; a long question shows in full. */
   revealedMessageId?: string | null;
   /**
