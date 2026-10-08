@@ -774,7 +774,7 @@ async function startHybridRebuild(
     expectedMemoryRevision: settings.memoryRevision,
     expectedSettingsRevision: settings.settingsRevision,
     operation: "REEMBED"
-  });
+  }, "embedding_setup");
   return status.jobId;
 }
 
