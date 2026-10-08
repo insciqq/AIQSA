@@ -81,6 +81,29 @@ async function measureOverflow(page: Page): Promise<CaptureShot["overflow"]> {
 }
 
 /**
+ * Runs `body` once per theme with the page switched to it, at its current
+ * size and state (an open menu stays open), for specs with their own sizes and
+ * file names; the theme found on entry is restored.
+ */
+export async function forEachCaptureTheme(
+  page: Page,
+  body: (theme: CaptureTheme) => Promise<void>,
+  themes: readonly CaptureTheme[] = CAPTURE_THEMES
+): Promise<void> {
+  const originalTheme = await readTheme(page);
+  try {
+    for (const theme of themes) {
+      await writeTheme(page, { colorScheme: theme, theme });
+      await settle(page, 100);
+      await body(theme);
+    }
+  } finally {
+    await writeTheme(page, originalTheme).catch(() => undefined);
+    await settle(page, 0).catch(() => undefined);
+  }
+}
+
+/**
  * Captures `name` as `<name>-<theme>-<width>x<height>.png` for every theme
  * and size. Any overflow is also added to the test's annotations.
  */
