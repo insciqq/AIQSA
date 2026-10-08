@@ -56,6 +56,7 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   /** Why an answer stream ended before its completion event. */
   stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
 }>;
+export type PushTransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "unknown";
 export type EventFields = {
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
@@ -78,7 +79,7 @@ export type EventFields = {
   run_http_failed: CaughtError & Readonly<{ stage: "send" | "regenerate" | "cancel"; code?: string; reason?: Reason; prisma_code?: string }>;
   run_abort_delivery: Readonly<{ run_id: string; outcome: "delivered" | "already_aborted" | "not_running"; abort_source: "stop" }>;
   job_enqueued: Readonly<{ job_id: string; subsystem: "attachments" | "knowledge" | "memory" | "pdf" | "chat_title" }>;
-  job_attempt: LifecycleFields;
+  job_attempt: LifecycleFields & Readonly<{ category?: PushTransportFailureCategory }>;
   job_persistence: Omit<LifecycleFields, "outcome"> & Readonly<{ outcome: "confirmed" | "not_applied" | "unconfirmed" }>;
   run_recovery: LifecycleFields;
   runtime_lifecycle: LifecycleFields;

@@ -29,6 +29,17 @@ class Sink extends EventEmitter {
 afterEach(() => { setProcessRole("app"); vi.restoreAllMocks(); });
 
 describe("bounded observability runtime", () => {
+  it.each(["dns", "connect", "tls", "timeout", "reset", "network_unreachable", "unknown"] as const)(
+    "keeps the closed push failure category %s without transport content", (category) => {
+      const fields = { category, code: "push_transport_failed", outcome: "failed", stage: "dispatch", subsystem: "push" } as const;
+      const event = record("job_attempt", { ...fields, endpoint: "PRIVATE_ENDPOINT", host: "PRIVATE_HOST", ip: "PRIVATE_IP",
+        headers: "PRIVATE_HEADERS", body: "PRIVATE_BODY", keys: "PRIVATE_KEYS", subscriptionId: "PRIVATE_ID" } as never);
+      expect(event).toMatchObject(fields);
+      expect(JSON.stringify(event)).not.toContain("PRIVATE_");
+      expect(record("job_attempt", { ...fields, category: "PRIVATE_ERROR" } as never)).not.toHaveProperty("category");
+    }
+  );
+
   it("projects local tool search counts without the query or tool names", () => {
     const fields = { outcome: "completed", duration_ms: 3, mode: "keywords", candidate_count: 180,
       result_count: 4, loaded_count: 3, already_loaded_count: 1, unknown_name_count: 0 } as const;
