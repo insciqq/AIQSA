@@ -10,6 +10,7 @@ import {
   type Page,
   type TestInfo
 } from "@playwright/test";
+import { LOCAL_PRIVATE_MCP_DRAFT } from "../../../prisma/local-seed-fixtures";
 import type { AuthSignInMethod } from "../../../lib/contracts/authSignInMethods";
 import { SESSION_COOKIE_NAME } from "../../../lib/server/auth/constants";
 import { authenticateWithLocalToken } from "./localAuth";
@@ -285,10 +286,12 @@ export type SyntheticMcpServer = Readonly<{ revisionId: string; serverId: string
  */
 export async function syntheticMcpServer(prisma: PrismaClient, label: string, groupId: string): Promise<SyntheticMcpServer> {
   const namespace = `real_idp_${label}_${randomSuffix()}`.replace(/[^a-z0-9_]/gu, "_");
-  const server = await prisma.mcpServer.create({ data: { displayName: `Real IdP ${label}`, enabled: true, namespace } });
+  // A valid stored draft: the admin MCP catalog refuses to list servers whose stored draft fails validation.
+  const draft = { ...LOCAL_PRIVATE_MCP_DRAFT, source: { kind: "remote", url: `https://${namespace.replaceAll("_", "-")}.mcp-fixture.invalid/mcp` } };
+  const server = await prisma.mcpServer.create({ data: { displayName: `Real IdP ${label}`, draft, enabled: true, namespace } });
   const revision = await prisma.mcpRevision.create({
     data: {
-      configuration: {},
+      configuration: draft,
       draftHash: "a".repeat(64),
       identityHash: `real-idp-${label}`,
       revisionNumber: 1,

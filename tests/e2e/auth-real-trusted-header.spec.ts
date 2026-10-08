@@ -174,6 +174,9 @@ test("behind the proxy the browser signs in automatically with header groups; a 
   await page.screenshot({ path: testInfo.outputPath("trusted-header-signed-in-desktop.png") });
 
   // Another identity at the proxy replaces the session; its groups make it an administrator.
+  // An open app page would see its requests refused for the old session and sign in again on its
+  // own, racing the explicit navigation below; leave it first.
+  await page.goto("about:blank");
   await setStandIdentity(context, UMA, `${STAFF},${ADMINS}`);
   await context.setExtraHTTPHeaders({ "X-Forwarded-For": "203.0.113.20" });
   await page.goto(`${proxyUrl()}/api/auth/trusted-header?next=%2F`);
