@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
+import { isMcpApprovalAdmission, type McpApprovalAdmission } from "../mcp/writeApproval";
 import { toolActivityDescriptors } from "../tools/activityDescriptors";
 import {
   WORKSPACE_CODE_GATEWAY_ENV,
@@ -195,8 +196,11 @@ export type WorkspaceCodeAuthority =
 
 /** A personal run's code authority: Project runs never hold a code bearer. */
 export type WorkspaceCodeGatewayGrant = Readonly<{
+  /** The run's frozen MCP write-approval marker; absent for a scheduled task's run. */
+  approval?: McpApprovalAdmission;
   authority: WorkspaceCodeAuthority;
   budgets: NormalizedWorkspaceCodeMcp;
+  chatId: string;
   runId: string;
   sessionId: string;
   tokenHash: string;
@@ -259,7 +263,9 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
     async load(tokenHash) {
       const [row] = await prisma.$queryRaw<Array<{
         agent: boolean;
+        approval: Prisma.JsonValue | null;
         catalog: Prisma.JsonValue | null;
+        chatId: string;
         mcp: Prisma.JsonValue | null;
         project: boolean;
         runId: string;
@@ -269,11 +275,12 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         workspace: Prisma.JsonValue | null;
       }>>(Prisma.sql`
         SELECT code_grant."modelRunId" AS "runId", code_grant."workspaceSessionId" AS "sessionId",
-          run."userId", run."status"::text AS "status", chat."projectId" IS NOT NULL AS "project",
+          run."userId", run."chatId", run."status"::text AS "status", chat."projectId" IS NOT NULL AS "project",
           (run."normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof(run."normalizedRequest" -> 'agent') <> 'null' AS "agent",
           run."normalizedRequest" -> 'workspace' AS "workspace",
           run."normalizedRequest" -> 'mcp' AS "mcp",
-          run."normalizedRequest" #> '{mcpDiscovery,catalog}' AS "catalog"
+          run."normalizedRequest" #> '{mcpDiscovery,catalog}' AS "catalog",
+          run."normalizedRequest" -> 'mcpApproval' AS "approval"
         FROM "WorkspaceCodeGrant" AS code_grant
         JOIN "ModelRun" AS run ON run."id" = code_grant."modelRunId"
         JOIN "Chat" AS chat ON chat."id" = run."chatId"
@@ -286,7 +293,10 @@ export function createPrismaWorkspaceCodeGatewayStore(prisma: PrismaClient): Wor
         mcp: authority?.kind === "plan" ? authority.snapshot : null,
         mcpDiscovery: authority?.kind === "catalog" ? { catalog: authority.catalog } : null });
       if (eligibility.kind !== "eligible" || !authority) return null;
-      return { authority, budgets: eligibility.budgets, runId: row.runId, sessionId: row.sessionId, tokenHash, userId: row.userId };
+      // A marker the server wrote but cannot read fails closed: no code call is admitted.
+      if (row.approval !== null && !isMcpApprovalAdmission(row.approval)) return null;
+      return { ...(row.approval !== null ? { approval: row.approval as McpApprovalAdmission } : {}), authority,
+        budgets: eligibility.budgets, chatId: row.chatId, runId: row.runId, sessionId: row.sessionId, tokenHash, userId: row.userId };
     },
 
     async assertActive(grant, invocationId) {
