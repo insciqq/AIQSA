@@ -1,3 +1,4 @@
+import { LdapSignInCard } from "@/components/admin/signIn/LdapSignInCard";
 import { GoogleSignInCard, YandexSignInCard } from "@/components/admin/signIn/OAuthClientSignInCard";
 import { OidcSignInCard } from "@/components/admin/signIn/OidcSignInCard";
 import { TrustedHeaderSignInCard } from "@/components/admin/signIn/TrustedHeaderSignInCard";
@@ -17,6 +18,7 @@ export type AdminSignInMethodCardRegistry = {
  */
 export const adminSignInMethodCards: AdminSignInMethodCardRegistry = {
   google: GoogleSignInCard,
+  ldap: LdapSignInCard,
   oidc: OidcSignInCard,
   trusted_header: TrustedHeaderSignInCard,
   yandex: YandexSignInCard

@@ -4,6 +4,7 @@ import type {
   AdminSignInMethodStatus
 } from "@/lib/contracts/adminSignIn";
 import type { AuthSessionSignInMethod, AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
+import { ldapFailureMessages, ldapTestMessage } from "./ldapSignInView";
 import { oidcFailureMessages, oidcTestMessages } from "./oidcSignInMessages";
 
 export const signInMethodLabels: Record<AuthSignInMethod | AuthSessionSignInMethod, string> = {
@@ -52,10 +53,11 @@ const testMessages: Record<string, string> = {
 
 /** A tester's code in words; method testers may add their own codes, shown as they are. */
 export function signInTestMessage(code: string): string {
-  return testMessages[code] ?? `Test result: ${code}.`;
+  return testMessages[code] ?? ldapTestMessage(code) ?? `Test result: ${code}.`;
 }
 
 const failureMessages: Record<string, string> = {
+  ...ldapFailureMessages,
   account_conflict: "an identity could not be linked to an existing account",
   email_missing: "the provider sent no usable email",
   exchange_failed: "the provider rejected the sign-in or could not be reached",

@@ -61,6 +61,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
 
   return (
     <AuthLogin
+      directorySignIn={methods.ldap ? { loginUsesUsername: methods.ldap.config.loginUsesUsername } : undefined}
       inviteToken={params.invite}
       nextPath={nextPath}
       oauthOutcome={isOAuthLoginOutcome(params.oauth) ? params.oauth : undefined}
