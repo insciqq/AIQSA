@@ -182,7 +182,7 @@ async function auth0SignIn(page: Page, person: Person): Promise<void> {
 
 async function signIn(browser: Browser, button: string, person: Person): Promise<{ context: BrowserContext; page: Page }> {
   const { context, page } = await loginPage(browser, "/login?local=1");
-  await page.getByRole("link", { name: `Continue with ${button}` }).click();
+  await page.getByRole("link", { exact: true, name: `Continue with ${button}` }).click();
   await auth0SignIn(page, person);
   return { context, page };
 }
@@ -381,7 +381,7 @@ test("auto-redirect sends /login to Auth0, ?local=1 stays, and signing out ends 
 
   const local = await loginPage(browser, "/login?local=1");
   await expect(local.page.getByLabel("Password", { exact: true })).toBeVisible();
-  await expect(local.page.getByRole("link", { name: `Continue with ${OIDC_BUTTON}` })).toBeVisible();
+  await expect(local.page.getByRole("link", { exact: true, name: `Continue with ${OIDC_BUTTON}` })).toBeVisible();
   await local.context.close();
 
   const context = await standContext(browser);
