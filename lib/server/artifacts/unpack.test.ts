@@ -55,6 +55,17 @@ describe("artifact archive unpacking", () => {
       .toEqual({ rootFolder: null, skippedEntries: 0, skippedFiles: [] });
   });
 
+  it("removes the site's folder when only skipped files lie beside it", async () => {
+    const unpacked = await unpackArtifactArchive(zip({ ".gitignore": "node_modules", "site/index.html": "<p>x</p>", "site/css/a.css": "p{}", "blank.png": "" }), "site.zip");
+    expect(unpacked.files.map(file => file.path)).toEqual(["css/a.css", "index.html"]);
+    expect(unpacked.report).toEqual({ rootFolder: "site", skippedEntries: 2, skippedFiles: [".gitignore", "blank.png"] });
+    // A path check still names the file by its place in the archive.
+    expect(await refusal(zip({ ".gitignore": "x", "site/index.html": "<p>x</p>", "site/my page.html": "x" }))).toMatchObject({ code: "artifact_zip_path_unsupported", path: "site/my page.html" });
+    // A retained root file keeps the folder.
+    expect((await unpackArtifactArchive(zip({ "site/index.html": "<p>x</p>", "README.md": "x" }), "site.zip")).files.map(file => file.path))
+      .toEqual(["README.md", "site/index.html"]);
+  });
+
   it("names at most a bounded number of skipped files and counts every one", async () => {
     const hidden = Object.fromEntries(Array.from({ length: ARTIFACT_UNPACK_SKIPPED_FILES + 5 }, (_, index) => [`.cache/file-${String(index).padStart(2, "0")}`, "x"]));
     const unpacked = await unpackArtifactArchive(zip({ "index.html": "<p>x</p>", ...hidden }), "site.zip");

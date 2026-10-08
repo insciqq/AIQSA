@@ -329,9 +329,10 @@ function siteHarness(attachments: Array<{ id: string; bytes: Buffer; mimeType: s
     artifactVersion: {
       findUnique: async () => null,
       findUniqueOrThrow: async ({ where }: { where: { id: string } }) => versions.get(where.id),
-      // A new tool call has no persisted version; other lookups name a version id.
+      // Recovery looks up the version of a persisted tool call; other lookups name a version id.
       findFirst: async ({ where }: { where: Record<string, unknown> }) => {
-        const row = where.sourceToolCallId === undefined && typeof where.id === "string" ? versions.get(where.id) : undefined;
+        const row = where.sourceToolCallId !== undefined ? [...versions.values()].find(version => version.sourceToolCallId === where.sourceToolCallId)
+          : typeof where.id === "string" ? versions.get(where.id) : undefined;
         return row && (where.status === undefined || row.status === where.status) ? row : null;
       },
       create: async ({ data }: { data: Record<string, unknown> }) => {
@@ -376,7 +377,10 @@ function siteHarness(attachments: Array<{ id: string; bytes: Buffer; mimeType: s
   };
   const bundleOf = (versionId: string) => decodeArtifactBundle(objects.get(String(versions.get(versionId)!.bundleStorageKey))!);
   const manifestOf = (versionId: string) => versions.get(versionId)!.manifest as { files: Array<Record<string, unknown>>; report?: unknown };
-  return { run, service, versions, blobs, bindings, findMany, getObject, bundleOf, manifestOf };
+  /** Crash recovery of the n-th call: the same lookup by persisted tool call. */
+  const recover = (n: number) => service.restore({ id: `call-${n}`, name: "create_artifact", arguments: {} },
+    { userId: "owner", runId: "run", persistedToolCallId: `persisted-${n}`, request: { chatId: "chat" } } as unknown as ToolExecutionContext);
+  return { run, recover, service, versions, blobs, bindings, findMany, getObject, bundleOf, manifestOf };
 }
 const resultValue = (result: Awaited<ReturnType<ReturnType<typeof createArtifactService>["execute"]>>) =>
   (result.content[0] as { value: Record<string, unknown> }).value;
@@ -504,5 +508,37 @@ describe("websites unpacked from a referenced archive", () => {
     expect(context!.files.slice(0, 12).map(file => file.path)).toEqual(["index.html", "about.html", "app.js", ...Array.from({ length: 8 }, (_, index) => `extra/${index}.txt`), "img/0.png"]);
     expect(context!.files[11]).toEqual({ path: "img/0.png", mimeType: "image/png", bytes: 10, binary: true, asset_ref: "base:0" });
     expect(context!.files_omitted).toBe(9);
+  });
+});
+
+describe("render notes in the tool result", () => {
+  it("reports the build's notes for an ordinary create, keeps them out of the card and recovers the identical receipt", async () => {
+    const h = siteHarness([]);
+    const result = await h.run({ entrypoint: "index.html", files: [
+      { path: "index.html", mimeType: "text/html", text: '<link rel="preload" href="app.js"><a href="about.html">About</a><a href="gone.html">Gone</a>' },
+      { path: "about.html", mimeType: "text/html", text: "<p>About</p><iframe></iframe>" }
+    ] });
+    expect(result.status).toBe("complete");
+    const renderNotes = { removedLinks: [{ page: "index.html", rel: "preload", href: "app.js" }], missingLinks: [{ page: "index.html", href: "gone.html", path: "gone.html" }],
+      invalidPages: [{ page: "about.html", code: "artifact_element_unsupported" }], omitted: 0 };
+    expect(resultValue(result).render_notes).toEqual({ removed_links: renderNotes.removedLinks, missing_links: renderNotes.missingLinks,
+      invalid_pages: renderNotes.invalidPages, hint: expect.stringContaining("invalid_pages") });
+    expect(resultValue(result)).not.toHaveProperty("unpacked");
+    expect(result.artifacts).toEqual([{ type: "artifact", data: { artifactType: "generated_artifact", payload: expect.not.objectContaining({ render_notes: expect.anything() }) } }]);
+    expect(h.manifestOf("version-1").report).toEqual({ renderNotes });
+    expect(await h.recover(1)).toEqual(result);
+    // A clean build stores no report and keeps the compact receipt.
+    const clean = await h.run({ entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "<p>Clean</p>" }] });
+    expect(resultValue(clean)).not.toHaveProperty("render_notes");
+    expect(h.manifestOf("version-2")).not.toHaveProperty("report");
+  });
+
+  it("joins render notes with an unpacked site's report", async () => {
+    const archive = zip({ ".gitignore": "x", "site/index.html": '<a href="missing.html">Missing</a>' });
+    const h = siteHarness([{ id: "zip", bytes: archive, mimeType: "application/zip" }]);
+    const result = await h.run({ files: [{ path: "site.zip", mimeType: "application/zip", asset_ref: "zip", unpack: true }] });
+    expect(resultValue(result)).toMatchObject({ unpacked: { root_folder: "site", skipped_files: [".gitignore"], paths: ["index.html"] },
+      render_notes: { missing_links: [{ page: "index.html", href: "missing.html", path: "missing.html" }], hint: expect.stringContaining("missing_links") } });
+    expect(await h.recover(1)).toEqual(result);
   });
 });
