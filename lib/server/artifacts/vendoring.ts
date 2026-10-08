@@ -8,6 +8,7 @@ import { ArtifactToolError } from "./errors";
 import { assertArtifactSingleModule } from "./modulePolicy";
 import { artifactResourceText, createArtifactResourceFetcher, verifyArtifactIntegrity, type ArtifactResourceFetcher } from "./resourceFetch";
 import { ARTIFACT_RESOURCE_LIMITS, artifactResourceByteLimit, artifactResourceUrlSpelling, type ArtifactResourceClass, type ArtifactResourcePolicy } from "./resourcePolicy";
+import { artifactSourceSpan, withArtifactErrorExcerpt } from "./referencedFiles";
 
 export type ArtifactVendorMetadata = Readonly<{
   sourceUrl: string;
@@ -16,7 +17,9 @@ export type ArtifactVendorMetadata = Readonly<{
   byteSize: number;
   resourceClass: ArtifactResourceClass;
 }>;
-type ResourceRef = { url: string; kind: ArtifactResourceClass; path: string; integrity?: string; module?: boolean; googleFontCss?: boolean };
+type ResourceRef = { url: string; kind: ArtifactResourceClass; path: string; integrity?: string; module?: boolean; googleFontCss?: boolean;
+  /** Source location in a file supplied by reference, which the model has not seen. */
+  span?: { startOffset: number; endOffset: number } };
 const tooLarge = (path: string): never => { throw new ArtifactToolError("artifact_resource_too_large", { path,
   hint: "Use at most 16 external resources, 16 MiB total, and CSS imports no more than two levels deep." }); };
 
@@ -28,14 +31,21 @@ function collectReferences(operation: NormalizedArtifactOperation): ResourceRef[
   const references: ResourceRef[] = [];
   for (const file of operation.files) {
     if (file.text === undefined || !["text/html", "image/svg+xml"].includes(file.mimeType)) continue;
+    const text = file.text;
+    const referenced = file.assetRef !== undefined;
     function visit(node: DefaultTreeAdapterMap["node"]): void {
+      try { visitNode(node); }
+      catch (error) { throw referenced ? withArtifactErrorExcerpt(error, text, artifactSourceSpan(node), file.path) : error; }
+    }
+    function visitNode(node: DefaultTreeAdapterMap["node"]): void {
       if ("tagName" in node) {
         const attr = (name: string) => node.attrs.find(item => item.name === name)?.value;
         const kind = node.tagName === "script" ? "script" : node.tagName === "link" && attr("rel")?.toLowerCase() === "stylesheet" ? "style"
           : ["img", "image"].includes(node.tagName) ? "image" : null;
         const url = kind ? attr(node.tagName === "link" || node.tagName === "image" ? "href" : "src") : undefined;
         if (url && /^https:\/\//iu.test(url) && kind) references.push({ url: canonicalUrl(url), kind, path: file.path,
-          ...(attr("integrity") !== undefined ? { integrity: attr("integrity") } : {}), module: attr("type")?.toLowerCase() === "module" });
+          ...(attr("integrity") !== undefined ? { integrity: attr("integrity") } : {}), module: attr("type")?.toLowerCase() === "module",
+          ...(referenced ? { span: artifactSourceSpan(node) } : {}) });
         // Check spelling before canonicalization can erase traversal.
         if (url && /^https:\/\//iu.test(url) && !artifactResourceUrlSpelling(url)) {
           throw new ArtifactToolError("artifact_resource_host_not_allowed", { path: file.path, hint: "Use a direct exact versioned HTTPS URL without traversal, userinfo or fragments." });
@@ -47,7 +57,7 @@ function collectReferences(operation: NormalizedArtifactOperation): ResourceRef[
       if ("childNodes" in node) node.childNodes.forEach(visit);
       if ("content" in node) visit(node.content);
     }
-    visit(parse(file.text));
+    visit(parse(text, { sourceCodeLocationInfo: referenced }));
   }
   return references;
 }
@@ -147,8 +157,12 @@ export async function vendorArtifactResources(operation: NormalizedArtifactOpera
     if (reference.module) assertArtifactSingleModule(artifactResourceText(bytes, reference.path), reference.path);
     return file;
   }
+  const referencedTexts = new Map(operation.files.flatMap(file => file.assetRef !== undefined && file.text !== undefined ? [[file.path, file.text] as const] : []));
   try {
-    await Promise.all(references.map(reference => load(reference)));
+    await Promise.all(references.map(reference => load(reference).catch((error: unknown) => {
+      const text = referencedTexts.get(reference.path);
+      throw text === undefined ? error : withArtifactErrorExcerpt(error, text, reference.span, reference.path);
+    })));
     if (signal.aborted) throw new ArtifactToolError("artifact_resource_unreachable", { hint: "The resource download was cancelled or timed out." });
     function checkDepth(url: string, depth: number): void {
       if (depth > ARTIFACT_RESOURCE_LIMITS.cssDepth) tooLarge(operation.entrypoint ?? "index.html");

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { StorageAdapter } from "../uploads/storage";
 import { ARTIFACT_LIMITS } from "@/lib/contracts/artifacts";
-import { ARTIFACT_MAX_RENDER_BYTES, ARTIFACT_RENDERER_VERSION, decodeArtifactBundle, hydrateArtifactBundleFile, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleAsset } from "./bundle";
+import { ARTIFACT_MAX_RENDER_BYTES, ARTIFACT_RENDERER_VERSION, decodeArtifactBundle, hydrateArtifactBundleFile, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleAsset, type ArtifactBundleFile } from "./bundle";
 import { ARTIFACT_RESOURCE_LIMITS } from "./resourcePolicy";
 
 export const artifactChecksum = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -22,10 +22,9 @@ export function createArtifactObjects(db: PrismaClient, storage: StorageAdapter)
     return decodeArtifactBundle(object.body);
   }
 
-  async function hydrate(ownerUserId: string, versionId: string, bundle: ArtifactBundle, options: { vendorTextOnly?: boolean } = {}): Promise<ArtifactBundle> {
-    if (!bundle.files.some(file => file.blob)) return bundle;
-    const textVendor = (file: ArtifactBundle["files"][number]) => file.vendor && ["script", "style"].includes(file.vendor.resourceClass);
-    if (options.vendorTextOnly && !bundle.files.some(textVendor)) return bundle;
+  /** Read and verify blob bytes; `only` limits which blob files are materialized. */
+  async function hydrate(ownerUserId: string, versionId: string, bundle: ArtifactBundle, options: { only?: (file: ArtifactBundleFile) => boolean } = {}): Promise<ArtifactBundle> {
+    if (!bundle.files.some(file => file.blob && (!options.only || options.only(file)))) return bundle;
     const references = await db.artifactVersionBlob.findMany({ where: { versionId, blob: { ownerUserId } }, include: { blob: true } });
     let total = bundle.files.reduce((sum, file) => sum + (file.text === undefined ? 0 : Buffer.byteLength(file.text)), 0);
     for (const file of bundle.files) if (file.blob) {
@@ -37,7 +36,7 @@ export function createArtifactObjects(db: PrismaClient, storage: StorageAdapter)
     // Sequential reads avoid multiplying the complete bundle's memory by fanout.
     const files = [];
     for (const file of bundle.files) {
-      if (!file.blob || options.vendorTextOnly && !textVendor(file)) { files.push(file); continue; }
+      if (!file.blob || options.only && !options.only(file)) { files.push(file); continue; }
       const reference = references.find(reference => reference.path === file.path)!.blob;
       const object = await storage.getObject(reference.storageKey, { maxBytes: reference.byteSize });
       if (object.body.byteLength !== reference.byteSize || artifactChecksum(object.body) !== reference.sha256) throw new Error("artifact_blob_unavailable");

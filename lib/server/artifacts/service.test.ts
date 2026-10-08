@@ -10,6 +10,28 @@ import { artifactTool, describeArtifactTool } from "../tools/artifact";
 import { buildArtifactBundle, decodeArtifactBundle } from "./bundle";
 import { vendorArtifactResources } from "./vendoring";
 
+const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const inlinePage = { path: "index.html", mimeType: "text/html", text: "<p>Files</p>" };
+/** Runs create_artifact up to persistence: every reference check and the build must pass to reach the transaction. */
+function referenceHarness(rows: Array<Record<string, unknown>>, objects: Map<string, Buffer | Error>) {
+  const findMany = vi.fn(async (_query: unknown) => rows);
+  const getObject = vi.fn(async (key: string, _options?: unknown) => {
+    const value = objects.get(key);
+    if (value instanceof Error) throw value;
+    if (!value) throw new Error("unexpected_object_read");
+    return { body: Buffer.from(value), storageKey: key, contentType: "application/octet-stream" };
+  });
+  const transaction = vi.fn(async () => { throw new Error("stop_before_persistence"); });
+  const db = { artifactVersion: { findFirst: async () => null, findUnique: async () => null }, chat: { findFirst: async () => ({ id: "chat" }) },
+    attachment: { findMany }, $transaction: transaction } as unknown as PrismaClient;
+  const service = createArtifactService(db, { getObject } as unknown as StorageAdapter);
+  const run = (files: unknown[], extra: Record<string, unknown> = {}) => service.execute({ id: "call", name: "create_artifact", arguments: {
+    intent: "create", kind: "html", title: "From files", entrypoint: "index.html", files, ...extra
+  } }, { userId: "owner", runId: "run", persistedToolCallId: "persisted",
+    request: { chatId: "chat", imageReferences: [{ attachmentId: "html" }, { attachmentId: "image" }] } } as unknown as ToolExecutionContext);
+  return { findMany, getObject, transaction, run };
+}
+
 describe("artifact authorized projections", () => {
   afterEach(() => vi.unstubAllEnvs());
   it("hydrates vendor code, keeps provenance private and duplicates exact owner blobs with downloads disabled", async () => {
@@ -179,6 +201,77 @@ describe("artifact authorized projections", () => {
       id: { in: ["visible", "archived", "foreign", "deleted", "visible"] },
       userId: "owner", projectId: null, archived: false, permanentDeletionAt: null
     }, select: { id: true } });
+  });
+
+  it("resolves references only under the run's chat authority and copies verified bytes whatever the extraction status", async () => {
+    const page = Buffer.from("<h1>Uploaded page</h1>");
+    const { findMany, getObject, run } = referenceHarness([
+      { id: "html", mimeType: "TEXT/HTML; charset=utf-8", storageKey: "k-html", byteSize: page.length, checksum: sha(page), status: "failed" }
+    ], new Map([["k-html", page]]));
+    await expect(run([{ path: "index.html", mimeType: "text/html", asset_ref: "html" }, { path: "copy.html", mimeType: "text/html", asset_ref: "html" }]))
+      .rejects.toThrow("stop_before_persistence");
+    expect(findMany).toHaveBeenCalledWith({ where: { id: { in: ["html"] }, userId: "owner", projectId: null, chatId: "chat",
+      OR: [{ id: { in: ["html", "image"] } }, { producerModelRunId: "run" }] },
+    select: { id: true, mimeType: true, storageKey: true, byteSize: true, checksum: true, status: true } });
+    expect(getObject).toHaveBeenCalledTimes(1);
+    expect(getObject).toHaveBeenCalledWith("k-html", { maxBytes: page.length });
+  });
+
+  it.each([
+    ["an id outside the run's authority", [], [{ path: "index.html", mimeType: "text/html", asset_ref: "html" }], "artifact_asset_unavailable", "never invent"],
+    ["a declared type that differs", [{ id: "html", mimeType: "application/pdf", byteSize: 10, checksum: "a".repeat(64), status: "ready" }],
+      [{ path: "index.html", mimeType: "text/html", asset_ref: "html" }], "artifact_asset_mime_mismatch", '"application/pdf"'],
+    ["a file without a stored checksum", [{ id: "doc", mimeType: "application/pdf", byteSize: 10, checksum: null, status: "ready" }],
+      [inlinePage, { path: "doc.pdf", mimeType: "application/pdf", asset_ref: "doc" }], "artifact_asset_checksum_missing", "attach the file again"],
+    ["a legacy image that is not ready", [{ id: "image", mimeType: "image/png", byteSize: 10, checksum: null, status: "processing" }],
+      [inlinePage, { path: "photo.png", mimeType: "image/png", asset_ref: "image" }], "artifact_asset_checksum_missing", "attach the file again"],
+    ["an empty file", [{ id: "doc", mimeType: "application/pdf", byteSize: 0, checksum: "a".repeat(64), status: "ready" }],
+      [inlinePage, { path: "doc.pdf", mimeType: "application/pdf", asset_ref: "doc" }], "artifact_asset_invalid", "empty"],
+    ["a file over the per-file limit", [{ id: "clip", mimeType: "video/mp4", byteSize: 25 * 1024 * 1024, checksum: "a".repeat(64), status: "ready" }],
+      [inlinePage, { path: "clip.mp4", mimeType: "video/mp4", asset_ref: "clip" }], "artifact_asset_too_large", "25.0 MiB"],
+    ["files over the bundle limit", ["one", "two"].map(id => ({ id, mimeType: "video/mp4", byteSize: 20 * 1024 * 1024, checksum: "a".repeat(64), status: "ready" })),
+      [inlinePage, { path: "one.mp4", mimeType: "video/mp4", asset_ref: "one" }, { path: "two.mp4", mimeType: "video/mp4", asset_ref: "two" }], "artifact_bundle_limit_exceeded", "32 MiB"]
+  ])("refuses %s before reading any object", async (_name, rows, files, code, hint) => {
+    const { getObject, transaction, run } = referenceHarness(rows.map(row => ({ storageKey: `k-${String(row.id)}`, ...row })), new Map());
+    const result = await run(files);
+    expect(result).toMatchObject({ status: "error", content: [{ type: "json", value: { error: code, path: expect.any(String), hint: expect.stringContaining(hint) } }] });
+    expect(getObject).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses corrupted, truncated and missing objects but leaves storage outages unexpected", async () => {
+    const bytes = Buffer.from("%PDF-1.7 synthetic");
+    const row = { id: "doc", mimeType: "application/pdf", storageKey: "k-doc", byteSize: bytes.length, checksum: sha(bytes), status: "processing" };
+    const files = [inlinePage, { path: "doc.pdf", mimeType: "application/pdf", asset_ref: "doc" }];
+    const corrupted = Buffer.from(bytes); corrupted[0] = corrupted[0]! ^ 1;
+    for (const stored of [corrupted, bytes.subarray(1), Object.assign(new Error("gone"), { code: "ENOENT" })]) {
+      const result = await referenceHarness([row], new Map([["k-doc", stored]])).run(files);
+      expect(result).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "artifact_asset_invalid", path: "doc.pdf" } }] });
+    }
+    await expect(referenceHarness([row], new Map([["k-doc", new Error("storage_unavailable")]])).run(files)).rejects.toThrow("storage_unavailable");
+    await expect(referenceHarness([row], new Map([["k-doc", bytes]])).run(files)).rejects.toThrow("stop_before_persistence");
+  });
+
+  it("edits a referenced page before validation and locates markup it cannot accept", async () => {
+    const page = Buffer.from(`<head>${"<!-- filler -->".repeat(50)}<meta http-equiv="refresh" content="1"></head><h1>Scene</h1>`);
+    const harness = () => referenceHarness([{ id: "html", mimeType: "text/html", storageKey: "k-html", byteSize: page.length, checksum: sha(page), status: "ready" }],
+      new Map([["k-html", page]]));
+    const files = [{ path: "index.html", mimeType: "text/html", asset_ref: "html" }];
+    const refused = await harness().run(files);
+    expect(refused).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "artifact_element_unsupported", path: "index.html",
+      excerpt: expect.stringContaining('<meta http-equiv="refresh" content="1">') } }] });
+    await expect(harness().run(files, { edits: [{ path: "index.html", old_string: '<meta http-equiv="refresh" content="1">', new_string: "" }] }))
+      .rejects.toThrow("stop_before_persistence");
+    // A resource the server cannot vendor is located in a page the model has not seen.
+    const tracked = Buffer.from(`<p>${"x".repeat(300)}</p><script src="https://example.com/tracker.js"></script><h1>Scene</h1>`);
+    const external = await referenceHarness([{ id: "html", mimeType: "text/html", storageKey: "k-html", byteSize: tracked.length, checksum: sha(tracked), status: "ready" }],
+      new Map([["k-html", tracked]])).run(files);
+    expect(external).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "artifact_resource_host_not_allowed", path: "index.html",
+      excerpt: expect.stringContaining('<script src="https://example.com/tracker.js">') } }] });
+    const invalid = Buffer.from([0x3c, 0x70, 0x3e, 0xc0]);
+    const undecodable = await referenceHarness([{ id: "html", mimeType: "text/html", storageKey: "k-html", byteSize: invalid.length, checksum: sha(invalid), status: "ready" }],
+      new Map([["k-html", invalid]])).run(files);
+    expect(undecodable).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "artifact_text_encoding_invalid", path: "index.html" } }] });
   });
 
   it("requires the owned chat binding and distinguishes stale owned versions from unavailable targets", async () => {
