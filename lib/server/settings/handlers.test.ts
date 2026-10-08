@@ -335,6 +335,7 @@ describe("settings handler", () => {
       "answerSoundEnabled",
       "answerSoundId",
       "browserNotificationsEnabled",
+      "defaultAnswerReview",
       "defaultAssistantId",
       "defaultAssistantUnavailable",
       "defaultControlValues",
@@ -404,6 +405,58 @@ describe("settings handler", () => {
     expect((await send({
       defaultKnowledgePlan: { baseIds: [], inheritedFrom: "project", mode: "inherited", sourceIds: [], version: 1 }
     })).status).toBe(400);
+  });
+
+  it("persists the automatic review new chats start with, from the user's own tool-calling models only", async () => {
+    const data = baseSettingsData();
+    // Catalog identities as installations mint them (no dots); the fixture's templates carry upstream names.
+    const template = data.models.find((model) => model.modelId === "gpt-5.5")!;
+    data.models = [...data.models, { ...template, modelId: "model-review" }];
+    data.entitlements = { ...data.entitlements, modelKeys: new Set([...data.entitlements.modelKeys, "openai:model-review"]) };
+    let captured: UserSettingsUpdate | null = null;
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => {
+        captured = update;
+        return updated({ ...data.settings, ...update } as UserSettingsRecord);
+      }
+    });
+    const send = (body: unknown) => PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify(body),
+      headers: { cookie: authCookie() },
+      method: "PATCH"
+    }));
+    const config = { enabled: true, maxRounds: 2, reviewers: [{ modelId: "model-review", provider: "openai" }] };
+    const saved = await send({ defaultAnswerReview: config });
+    expect(saved.status).toBe(200);
+    expect(captured).toEqual({ defaultAnswerReview: config });
+    await expect(saved.json()).resolves.toMatchObject({ settings: { defaultAnswerReview: config } });
+
+    for (const invalid of [
+      { enabled: true, maxRounds: 2, reviewers: [{ modelId: "gpt-hidden", provider: "openai" }] },
+      { enabled: true, maxRounds: 2, reviewers: [] },
+      { enabled: true, maxRounds: 9, reviewers: [{ modelId: "model-review", provider: "openai" }] },
+      null
+    ]) {
+      const refused = await send({ defaultAnswerReview: invalid });
+      expect(refused.status, JSON.stringify(invalid)).toBe(400);
+      expect(await refused.json()).toEqual({ error: "default_answer_review_invalid" });
+    }
+  });
+
+  it("reports automatic review off for new chats until a default is saved", async () => {
+    const data = baseSettingsData();
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => updated({ ...data.settings, ...update } as UserSettingsRecord)
+    });
+    const response = await PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify({ sendWithEnter: true }), headers: { cookie: authCookie() }, method: "PATCH"
+    }));
+    await expect(response.json()).resolves.toMatchObject({ settings: { defaultAnswerReview: { enabled: false, maxRounds: 3,
+      reviewers: [] } } });
   });
 
   it("drops unsupported per-model draft fields without dropping valid fields", async () => {

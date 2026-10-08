@@ -34,6 +34,36 @@ function props(overrides: Partial<Parameters<typeof ComposerV2>[0]> = {}) {
   } satisfies Parameters<typeof ComposerV2>[0];
 }
 
+describe("composer field height", () => {
+  it("refits when the field's width changes, not only when the draft or the window does", () => {
+    const callbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    try {
+      render(<ComposerV2 {...props()} />);
+      const field = screen.getByRole("textbox", { name: "Message" });
+      let width = 300;
+      Object.defineProperty(field, "clientWidth", { configurable: true, get: () => width });
+      const observe = () => callbacks.at(-1)!([], {} as ResizeObserver);
+      field.style.height = "999px";
+      observe();
+      // The measured width is the one the last fit saw (jsdom reports 0 at mount), so a new width refits.
+      expect(field.style.height).toBe("36px");
+      field.style.height = "999px";
+      observe();
+      expect(field.style.height).toBe("999px");
+      width = 180;
+      observe();
+      expect(field.style.height).toBe("36px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("comment-aware composer send controls", () => {
   it("allows comment-only sends and counts the entire built follow-up", () => {
     const comments = [{ id: "one", quote: "Selected fragment", text: "My comment" }];

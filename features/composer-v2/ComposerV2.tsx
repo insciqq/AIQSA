@@ -35,6 +35,22 @@ import {
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
 import { UsageLimitNoticeV2 } from "./UsageLimitNoticeV2";
+import { useComposerDictationV2 } from "./dictation/ComposerDictationV2";
+import type { CatalogDictation } from "@/lib/contracts/speechToText";
+import {
+  ComposerCommandPaletteV2,
+  useComposerCommandPaletteV2
+} from "./command-palette/ComposerCommandPaletteV2";
+import {
+  buildComposerPaletteEntries,
+  type ComposerPaletteAssistantSource,
+  type ComposerPaletteSkillSource
+} from "./command-palette/paletteEntries";
+import {
+  composerPaletteQuery,
+  opensComposerPalette,
+  type ComposerPaletteEntry
+} from "./command-palette/paletteModel";
 import { SavedFilePickerV2 } from "@/features/attachments-v2/SavedFilePickerV2";
 import {
   attachmentItemBlocksSend,
@@ -84,7 +100,7 @@ import {
 } from "react";
 
 export type ComposerV2Layer =
-  "add" | "files" | "knowledge" | "model" | "reasoning" | "search" | "tools" | "skills" | "workspace" | null;
+  "add" | "commands" | "files" | "knowledge" | "model" | "reasoning" | "search" | "tools" | "skills" | "workspace" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -98,6 +114,7 @@ export type ComposerV2LayerController = Readonly<{
 
 const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   add: "Add",
+  commands: "Commands",
   files: "Saved files",
   knowledge: "Knowledge",
   model: "Choose model",
@@ -109,6 +126,7 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
 };
 const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
   add: "Add",
+  commands: "Commands",
   files: "Saved files",
   knowledge: "Knowledge",
   model: "Model",
@@ -122,6 +140,7 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
    inside the composer frame. */
 const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   add: 300,
+  commands: 384,
   files: 380,
   knowledge: 380,
   model: 380,
@@ -205,7 +224,7 @@ function layerAnchorLeft(
   composer: HTMLElement | null,
   kind: Exclude<ComposerV2Layer, null>
 ): number {
-  if (!composer || kind === "add" || kind === "model") return 0;
+  if (!composer || kind === "add" || kind === "commands" || kind === "model") return 0;
   const composerBox = composer.getBoundingClientRect();
   const openerBox = opener.getBoundingClientRect();
   const max = Math.max(0, composerBox.width - LAYER_WIDTH_PX[kind]);
@@ -318,6 +337,7 @@ function measureLayerPlacement(
 }
 
 const EMPTY_MODELS: readonly CatalogModel[] = [];
+const NO_PALETTE_ENTRIES: readonly ComposerPaletteEntry[] = [];
 const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
 
 export type ComposerV2Props = Readonly<{
@@ -325,6 +345,13 @@ export type ComposerV2Props = Readonly<{
   sessionKey?: string;
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; onToggle(value: boolean): void }>;
   activeRun?: boolean;
+  /**
+   * The chat's automatic answer review, configured from the model picker's
+   * row (no chip of its own): its summary, and why it is unavailable here.
+   */
+  answerReview?: Readonly<{ disabledReason?: string | null; onOpen(): void; summary: string }> | null;
+  /** Why the running work cannot be stopped from here (another member's review); Stop stays disabled with it. */
+  stopUnavailableReason?: string | null;
   artifactEdit?: ComposerArtifactEdit | null;
   artifactCreate?: boolean;
   artifactUnavailableReason?: string | null;
@@ -338,9 +365,16 @@ export type ComposerV2Props = Readonly<{
   attachmentItems?: readonly ComposerAttachmentItemV2[];
   attachmentLimitUsage?: AttachmentLimitUsage | null;
   attachmentPolicy?: ComposerAttachmentPolicy;
+  /**
+   * Entries other features add to the `/` palette (they keep their own
+   * handlers and availability); the palette lists them in their section.
+   */
+  commandPaletteEntries?: readonly ComposerPaletteEntry[];
   config: ComposerConfig | null;
   configError?: boolean;
   disabledReason?: string | null;
+  /** Voice dictation from the account catalog; absent or not configured shows no microphone. */
+  dictation?: CatalogDictation | null;
   draft: string;
   comments?: readonly PendingComposerComment[];
   /** The latest text and comments exceed the browser record bound; a reload restores the last stored copy. */
@@ -380,6 +414,10 @@ export type ComposerV2Props = Readonly<{
   /** Settings → Connections, for a personal connection that needs attention. */
   onOpenPersonalMcpSettings?(): void;
   onOpenSkillLibrary?(): void;
+  /** The header Assistant selector's choices for the `/` palette; absent lists no Assistants. */
+  paletteAssistants?: ComposerPaletteAssistantSource | null;
+  /** The Skills the `/` palette can pin ("Always use"); absent lists no Skills. */
+  paletteSkills?: ComposerPaletteSkillSource | null;
   /** Detaches an inherited Project plan before manual selection. */
   onOverrideKnowledgePlan?(): void;
   onOpenModelParameters?(): void;
@@ -579,6 +617,8 @@ export function ComposerV2({
   sessionKey = "composer",
   agent,
   activeRun = false,
+  answerReview = null,
+  stopUnavailableReason = null,
   artifactEdit = null,
   artifactCreate = false,
   artifactUnavailableReason = null,
@@ -588,9 +628,11 @@ export function ComposerV2({
   attachmentItems = [],
   attachmentLimitUsage = null,
   attachmentPolicy = DEFAULT_COMPOSER_ATTACHMENT_POLICY,
+  commandPaletteEntries,
   config,
   configError = false,
   disabledReason = null,
+  dictation = null,
   draft,
   comments = [],
   draftTooLargeToKeep = false,
@@ -611,6 +653,8 @@ export function ComposerV2({
   onOpenModelParameters,
   onOpenSkillLibrary,
   onOverrideKnowledgePlan,
+  paletteAssistants = null,
+  paletteSkills = null,
   onRemoveAttachment,
   onRemoveArtifactEdit,
   onRejectedFiles,
@@ -670,6 +714,8 @@ export function ComposerV2({
   const plusTriggerRef = useRef<HTMLButtonElement>(null);
   const knowledgeTriggerRef = useRef<HTMLButtonElement>(null);
   const searchTriggerRef = useRef<HTMLButtonElement>(null);
+  const mcpTriggerRef = useRef<HTMLButtonElement>(null);
+  const [paletteSessionKey, setPaletteSessionKey] = useState<string | null>(null);
   const layerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
@@ -746,6 +792,7 @@ export function ComposerV2({
      edit, a disabled hint) rather than a bare "Unavailable" or the row's
      ordinary description. The "+" button itself is off while a response runs. */
   const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
+  const dictationUi = useComposerDictationV2({ blockedReason: inputBlockedReason, dictation, draft, onDraftChange, sessionKey, textareaRef });
   const artifactMenuReason = artifactReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
   const workspaceToggleReason = workspace?.loading
     ? "Checking Workspace availability…"
@@ -856,14 +903,23 @@ export function ComposerV2({
     if (!textarea) return;
     // Grow with the draft; the stylesheet's `max-height` and `min-height`
     // (which differ per surface and viewport) bound the box, so the measure
-    // repeats when the viewport changes.
+    // repeats when the viewport changes, and when the field's own width
+    // changes because neighbouring controls (such as dictation) grow or shrink.
+    let width = textarea.clientWidth;
     const fit = () => {
+      width = textarea.clientWidth;
       textarea.style.height = "auto";
       textarea.style.height = `${Math.max(36, textarea.scrollHeight)}px`;
     };
     fit();
     window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
+    const observer = typeof ResizeObserver === "undefined" ? null
+      : new ResizeObserver(() => { if (textarea.clientWidth !== width) fit(); });
+    observer?.observe(textarea);
+    return () => {
+      window.removeEventListener("resize", fit);
+      observer?.disconnect();
+    };
   }, [draft]);
 
   useEffect(() => {
@@ -888,7 +944,8 @@ export function ComposerV2({
     if (!layer) return;
     let cancelled = false;
     queueMicrotask(() => {
-      if (cancelled || !layerRef.current) return;
+      // The `/` palette keeps focus in the message field.
+      if (cancelled || !layerRef.current || layer === "commands") return;
       const target = layer === "model"
         ? layerRef.current.querySelector<HTMLElement>("[data-v2-model-search]") ??
           layerRef.current.querySelector<HTMLElement>('[data-testid="composer-v2-model-parameters"]')
@@ -912,7 +969,8 @@ export function ComposerV2({
       if (
         layerRef.current?.contains(target) ||
         plusTriggerRef.current?.contains(target) ||
-        openerRef.current?.contains(target)
+        openerRef.current?.contains(target) ||
+        (layer === "commands" && textareaRef.current?.contains(target))
       ) {
         return;
       }
@@ -990,7 +1048,11 @@ export function ComposerV2({
       // is detached: the layer then belongs to the Add trigger.
       const trigger = opener?.isConnected && composer.contains(opener) ? opener : plusTriggerRef.current;
       if (trigger) setLayerLeft(layerAnchorLeft(trigger, composer, layer));
-      const next = measureLayerPlacement(composer, trigger, layerRef.current);
+      const measured = measureLayerPlacement(composer, trigger, layerRef.current);
+      // The `/` palette never covers the field it filters from.
+      const next = layer === "commands" && measured.side === "over"
+        ? { ...measured, side: measured.spaceAbove >= measured.spaceBelow ? "above" as const : "below" as const }
+        : measured;
       setLayerPlacement(current => sameLayerPlacement(current, next) ? current : next);
     };
     if (!externallyAnchored) reposition();
@@ -1383,6 +1445,146 @@ export function ComposerV2({
     setExternalAnchor(null);
   }
 
+  // The `/` palette (command-palette/): a layer over the same handlers and
+  // blocking reasons as the "+" menu, the chips and the header selectors.
+  // It lives while the whole draft is its command, in the chat it opened in,
+  // and never while a response runs or the field is blocked.
+  const paletteAllowed = !inputDisabled && !activeRun;
+  const paletteQuery = composerPaletteQuery(draft);
+  const paletteValid = paletteQuery !== null && paletteAllowed && paletteSessionKey === sessionKey;
+  if (layer === "commands" && !paletteValid) setLayer(null);
+  const paletteOpen = layer === "commands" && paletteValid;
+  const paletteListboxId = `${layerId}-commands-list`;
+  const openFromPalette = (next: Exclude<ComposerV2Layer, null>, trigger: HTMLButtonElement | null) => {
+    const opener = trigger ?? plusTriggerRef.current;
+    if (opener) openLayer(next, opener);
+  };
+  const paletteEntries = paletteOpen ? buildComposerPaletteEntries({
+    skills: paletteSkills ? {
+      source: paletteSkills,
+      pinnedIds: selectedSkillIds,
+      assistantAlwaysIds: includedSkills.filter((skill) => skill.mode !== "available").map(({ id }) => id),
+      assistantName: boundAssistant?.name ?? null,
+      effectiveIds: effectiveSkillIds
+    } : null,
+    actions: {
+      artifact: {
+        detail: "Page, slides, game or chart",
+        disabledReason: artifactMenuReason,
+        run: () => onCreateArtifact?.()
+      },
+      attach: {
+        detail: uploadLimitHint ?? "XLSX · DOCX · PDF · images",
+        disabledReason: attachmentSelectionDisabled ? inputBlockedReason ?? "Unavailable" : null,
+        run: () => fileInputRef.current?.click()
+      },
+      skillLibrary: onOpenSkillLibrary
+        ? { detail: "Choose Auto loading or Always use", disabledReason: null, run: onOpenSkillLibrary }
+        : null,
+      knowledge: {
+        detail: "Base or document for this chat",
+        disabledReason: knowledgeFixed || !knowledgeAvailable ? addKnowledgeReason ?? "Base or document for this chat" : null,
+        run: () => openFromPalette("knowledge", knowledgeTriggerRef.current)
+      },
+      knowledgeBases: knowledgeAvailable ? (config?.knowledgeBases ?? []).map((base) => {
+        const selected = selectedKnowledgeSet.has(base.id);
+        const current = selected && knowledgeControlsLocked;
+        const atLimit = !selected && explicitSelectionAtLimit;
+        const disabledReason = current ? null : knowledgeControlsLocked
+          ? addKnowledgeReason ?? "Managed by the Project"
+          : atLimit
+            ? `Selection limit · ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES} resources`
+            : base.archived && !selected ? knowledgeBaseReason(base) : null;
+        return {
+          current,
+          detail: `Knowledge base · ${knowledgeBaseReason(base)}`,
+          disabledReason,
+          id: base.id,
+          name: base.name,
+          run: () => toggleKnowledge(base),
+          selected
+        };
+      }) : [],
+      mcp: {
+        detail: `Mode: ${mcpModeLabel}`,
+        disabledReason: null,
+        run: () => openFromPalette("tools", mcpTriggerRef.current)
+      },
+      search: searchChipVisible ? {
+        detail: searchDescription.replace(/^Search: /u, ""),
+        disabledReason: onSelectSearchOptionIds ? null : "Unavailable",
+        run: () => openFromPalette("search", searchTriggerRef.current)
+      } : null,
+      searchOff: selectedSearchOptionIds.length > 0 && onSelectSearchOptionIds ? {
+        detail: "No web search in your next messages",
+        disabledReason: searchFixed ? assistantRowNoticeText(searchProvenance) ?? "Fixed by the Assistant" : null,
+        run: () => onSelectSearchOptionIds([])
+      } : null,
+      workspace: workspace ? {
+        detail: "Applies to future messages. Existing files are preserved.",
+        disabledReason: workspaceToggleDisabled
+          ? workspaceToggleReason ?? (workspace.busy ? "Saving Workspace…" : "Unavailable")
+          : null,
+        enabled: workspace.enabled,
+        run: () => workspace.onToggle(!workspace.enabled)
+      } : null,
+      agent: agent ? {
+        detail: "Codex carries out your task in Workspace",
+        disabledReason: agentDisabledReason,
+        enabled: agent.enabled,
+        run: () => {
+          agent.onToggle(!agent.enabled);
+          setAgentNotice({ sessionKey, kind: "mode" });
+        }
+      } : null
+    },
+    models: onSelectModel ? {
+      fixedReason: modelProvenance?.kind === "fixed" ? `Fixed by ${modelProvenance.assistantName}` : null,
+      models,
+      providerNames: new Map(providers.map((provider) => [provider.id, provider.name] as const)),
+      select: onSelectModel,
+      selectedModelId,
+      selectedProvider
+    } : null,
+    assistants: paletteAssistants,
+    extra: commandPaletteEntries
+  }) : NO_PALETTE_ENTRIES;
+  const palette = useComposerCommandPaletteV2({
+    entries: paletteEntries,
+    listboxId: paletteListboxId,
+    onChoose: choosePaletteEntry,
+    onClose: () => setLayer(null),
+    onSearchSkills: paletteSkills?.search,
+    open: paletteOpen,
+    query: paletteQuery ?? ""
+  });
+  const paletteLoadAssistants = paletteAssistants?.load;
+  useEffect(() => {
+    if (paletteOpen) paletteLoadAssistants?.();
+  }, [paletteLoadAssistants, paletteOpen]);
+  const paletteNote = paletteOpen && paletteSkills && paletteSkills.items.length === 0
+    ? paletteSkills.state === "error"
+      ? "Skills could not be loaded."
+      : paletteSkills.state === "loading" || paletteSkills.state === "idle" ? "Loading Skills…" : null
+    : null;
+
+  /* Choosing removes the `/query` text and closes the palette without moving
+     focus; the entry may open another layer, which then owns focus. */
+  function choosePaletteEntry(entry: ComposerPaletteEntry) {
+    setLayer(null);
+    onDraftChange("");
+    entry.run();
+  }
+
+  function openCommandPalette() {
+    // The field stays the palette's opener and keeps focus: no focus return.
+    openerRef.current = null;
+    setExternalAnchor(null);
+    setLayerLeft(0);
+    setPaletteSessionKey(sessionKey);
+    setLayer("commands");
+  }
+
   return (
     <div className="v2-composer-wrap" data-testid="composer-v2">
       <div
@@ -1463,6 +1665,7 @@ export function ComposerV2({
           </div>
         ) : null}
         {agentStatus ? <p className="v2-composer-status" role="status">{agentStatus}</p> : null}
+        {dictationUi.status}
         <div className="v2-composer-entry">
           <label className="v2-composer-input-label" htmlFor={`${layerId}-input`}>
             Message
@@ -1475,9 +1678,25 @@ export function ComposerV2({
             value={draft}
             disabled={inputDisabled}
             aria-describedby={bootstrapReason ? statusId : undefined}
+            role={paletteOpen ? "combobox" : undefined}
+            aria-activedescendant={paletteOpen && palette.activeEntry ? palette.optionId(palette.activeEntry) : undefined}
+            aria-autocomplete={paletteOpen ? "list" : undefined}
+            aria-controls={paletteOpen ? paletteListboxId : undefined}
+            aria-expanded={paletteOpen ? true : undefined}
             placeholder={followupMode ? "Follow up…" : artifactCreate ? "Describe the page, slides, game or chart…" : artifactEdit ? "Describe the change…" : "Ask anything…"}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={submitFromKeyboard}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (paletteAllowed && opensComposerPalette(draft, value)) openCommandPalette();
+              onDraftChange(value);
+            }}
+            onKeyDown={(event) => {
+              if (paletteOpen && palette.handleKeyDown(event)) return;
+              submitFromKeyboard(event);
+            }}
+            onBlur={(event) => {
+              const next = event.relatedTarget;
+              if (layer === "commands" && !(next instanceof Node && layerRef.current?.contains(next))) setLayer(null);
+            }}
             onPaste={pasteFiles}
           />
 
@@ -1552,7 +1771,7 @@ export function ComposerV2({
                     description={knowledgeDescription} descriptionId={`${layerId}-knowledge-description`} />
                 </button>
               ) : null}
-              <button className="v2-composer-indicator v2-focusable" type="button"
+              <button ref={mcpTriggerRef} className="v2-composer-indicator v2-focusable" type="button"
                 data-quiet={effectiveMcpSelection.mode === "load_all" || effectiveMcpSelection.mode === "exact" ? undefined : ""} data-glyph="tool"
                 data-off={effectiveMcpSelection.mode === "off" || undefined} data-mcp-mode={effectiveMcpSelection.mode}
                 data-provenance={toolsProvenance?.marker ? "assistant" : undefined}
@@ -1601,6 +1820,7 @@ export function ComposerV2({
 
             <span className="v2-composer-spacer" />
             <span className="v2-composer-run-action" data-followup={followupMode || undefined}>
+              {dictationUi.control}
               <RunComposerActionV2
                 active={activeRun}
                 followup={followupMode}
@@ -1609,6 +1829,7 @@ export function ComposerV2({
                 runId={runId}
                 sendDisabled={sendDisabled}
                 sendDisabledReason={sendDisabledReason}
+                stopUnavailableReason={stopUnavailableReason}
                 stopping={stopping}
               />
             </span>
@@ -1616,7 +1837,28 @@ export function ComposerV2({
 
         </div>
 
-        {layer ? portalLayer(
+        {paletteOpen ? (
+          /* No scrim or sheet header: the palette sits beside the field it
+             filters from, and the field keeps focus. */
+          <div
+            ref={layerRef}
+            className="v2-composer-layer"
+            data-kind="commands"
+            data-placement={layerPlacement.side === "below" ? "below" : undefined}
+            id={`${layerId}-commands`}
+            style={{
+              "--v2-composer-layer-space-above": `${layerPlacement.spaceAbove}px`,
+              "--v2-composer-layer-space-below": `${layerPlacement.spaceBelow}px`
+            } as CSSProperties}
+          >
+            <ComposerCommandPaletteV2
+              listboxId={paletteListboxId}
+              note={paletteNote}
+              state={palette}
+              onRun={choosePaletteEntry}
+            />
+          </div>
+        ) : layer && layer !== "commands" ? portalLayer(
           <>
             <button
               className="v2-composer-layer-backdrop"
@@ -1665,6 +1907,13 @@ export function ComposerV2({
                 </div>
               ) : layer === "model" ? (
                 <ModelLayer
+                  answerReview={answerReview ? {
+                    ...answerReview,
+                    onOpen: () => {
+                      answerReview.onOpen();
+                      closeLayer();
+                    }
+                  } : null}
                   config={config}
                   groups={groupedModels}
                   parametersSummary={modelParametersSummary}
@@ -2295,6 +2544,7 @@ function ModelProvenanceLine({
 }
 
 function ModelLayer({
+  answerReview = null,
   config,
   groups,
   onMakeDefault,
@@ -2309,6 +2559,7 @@ function ModelLayer({
   selectedModelId,
   selectedProvider
 }: Readonly<{
+  answerReview?: ComposerV2Props["answerReview"];
   config: ComposerConfig | null;
   groups: Array<{ models: CatalogModel[]; provider: CatalogProvider }>;
   onMakeDefault?(model: CatalogModel): void;
@@ -2347,6 +2598,25 @@ function ModelLayer({
           ) : null}
           <UiV2Icon name="chevron-right" />
         </button>
+      ) : null}
+      {answerReview ? (
+        <button
+          className="v2-composer-model-parameters v2-focusable"
+          data-testid="composer-v2-model-answer-review"
+          disabled={Boolean(answerReview.disabledReason)}
+          type="button"
+          onClick={answerReview.onOpen}
+        >
+          <UiV2Icon name="shield" />
+          <span>Answer review</span>
+          <span className="v2-composer-model-parameters-summary">
+            {answerReview.disabledReason ? "Unavailable" : answerReview.summary}
+          </span>
+          <UiV2Icon name="chevron-right" />
+        </button>
+      ) : null}
+      {answerReview?.disabledReason ? (
+        <p className="v2-composer-model-note" data-testid="composer-v2-model-answer-review-reason">{answerReview.disabledReason}</p>
       ) : null}
       <p className="v2-composer-model-note">
         Applies to your next message.

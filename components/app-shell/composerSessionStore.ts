@@ -1,3 +1,4 @@
+import type { AnswerReviewAutoConfig } from "@/lib/contracts/answerReviews";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { create } from "zustand";
 import { randomUUID } from "@/lib/browser/randomUUID";
@@ -52,6 +53,11 @@ export type ComposerSessionSnapshot = {
     draftChanged?: boolean;
   }> | null;
   agentEnabled?: boolean;
+  /**
+   * A blank chat's automatic answer review, chosen before its first send;
+   * absent follows the Settings default. A saved chat keeps its own.
+   */
+  answerReview?: AnswerReviewAutoConfig | null;
   artifactCreate: Readonly<{ intent: "create" }> | null;
   artifactEdit: ComposerArtifactEdit | null;
   attachments: ComposerAttachment[];
@@ -116,6 +122,7 @@ export type ComposerSessionPatch = Partial<
     | "operationError"
     | "workspaceEnabled"
     | "agentEnabled"
+    | "answerReview"
     | "artifactEdit"
     | "artifactCreate"
     | "followupSubmission"
@@ -326,6 +333,7 @@ function patchedSession(
   const workspaceChanged = hasOwn(patch, "workspaceEnabled") &&
     (patch.workspaceEnabled !== current.workspaceEnabled || !current.workspaceInitialized);
   const agentChanged = hasOwn(patch, "agentEnabled") && patch.agentEnabled !== current.agentEnabled;
+  const answerReviewChanged = hasOwn(patch, "answerReview") && patch.answerReview !== current.answerReview;
   const artifactEditChanged = hasOwn(patch, "artifactEdit") && patch.artifactEdit !== current.artifactEdit;
   const artifactCreateChanged = hasOwn(patch, "artifactCreate") && patch.artifactCreate !== current.artifactCreate;
   const followupChanged = hasOwn(patch, "followupSubmission") && patch.followupSubmission !== current.followupSubmission;
@@ -339,7 +347,8 @@ function patchedSession(
     !editingMessageChanged &&
     !errorChanged &&
     !retryabilityChanged &&
-    !workspaceChanged && !agentChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged
+    !workspaceChanged && !agentChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged &&
+    !answerReviewChanged
   ) {
     return current;
   }
@@ -350,6 +359,7 @@ function patchedSession(
     ...(!followupChanged && draftChanged && current.followupSubmission
       ? { followupSubmission: { ...current.followupSubmission, draftChanged: true } } : {}),
     ...(agentChanged ? { agentEnabled: patch.agentEnabled ?? false } : {}),
+    ...(answerReviewChanged ? { answerReview: patch.answerReview ?? null } : {}),
     ...(artifactEditChanged ? { artifactEdit: patch.artifactEdit ?? null } : {}),
     ...(artifactCreateChanged ? { artifactCreate: patch.artifactCreate ?? null } : {}),
     ...(attachmentsChanged ? { attachments: [...(patch.attachments ?? [])] } : {}),

@@ -20,7 +20,7 @@ import {
   startNewChat,
   turnWorkspaceOn
 } from "./support/workspace";
-import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
+import { prepareWorkspaceFakeContext, waitForWorkspaceExport } from "./support/workspaceFixture";
 
 const prisma = new PrismaClient();
 const liveEnabled = process.env.AIQSA_WORKSPACE_LIVE_E2E === "DISPOSABLE";
@@ -279,7 +279,8 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
       "sleep 300; echo late > /workspace/project/sync-after-stop.txt · exit not observed",
       { timeout: 30_000 }
     );
-    await expect(liveActivity).toContainText("Workspace work stopped");
+    // Stop-to-STOPPED settlement takes about ten seconds on the KVM stand.
+    await expect(liveActivity).toContainText("Workspace work stopped", { timeout: 30_000 });
     await expect(workspaceDetails(page)).not.toHaveAccessibleName(/Running a command/u, { timeout: 30_000 });
     await page.waitForTimeout(13_000);
     const stoppedSession = await prisma.workspaceSession.findUniqueOrThrow({
@@ -302,6 +303,8 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     expect(outputFiles.get("public.txt")?.toString("utf8")).toBe("public-ok\n");
     expect(outputFiles.get("private-blocked.txt")?.toString("utf8")).toBe("private-blocked\n");
 
+    // The answer is published before its Workspace handoff retires the session.
+    await waitForWorkspaceExport(prisma, onlineChatId);
     const onlineSession = await prisma.workspaceSession.findUniqueOrThrow({
       where: { chatId: onlineChatId }
     });

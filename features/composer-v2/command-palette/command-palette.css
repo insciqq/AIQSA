@@ -1,0 +1,113 @@
+/*
+ * The `/` palette is a composer layer that never covers the message field:
+ * at every width it opens above the composer (or below it when only that
+ * side has room), spans the composer, has no scrim and keeps the caret, and
+ * so the touch keyboard, in the field. ComposerV2 measures the room on each
+ * side; the cap keeps 1rem of it free. The selectors outrank the phone
+ * bottom-sheet rules of composer.css.
+ */
+.v2-composer .v2-composer-layer[data-kind="commands"] {
+  position: absolute;
+  top: auto;
+  right: 0;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  width: auto;
+  max-height: min(20rem, calc(var(--v2-composer-layer-space-above, 50dvh) - 1rem));
+  padding: 0.375rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  animation: v2-overlay-enter var(--v2-motion-fast) both;
+}
+
+.v2-composer .v2-composer-layer[data-kind="commands"][data-placement="below"] {
+  top: calc(100% + 0.5rem);
+  bottom: auto;
+  max-height: min(20rem, calc(var(--v2-composer-layer-space-below, 50dvh) - 1rem));
+}
+
+.v2-composer-palette-list {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.v2-composer-palette-heading {
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2;
+  user-select: none;
+}
+
+.v2-composer-palette-option {
+  display: grid;
+  min-height: 2.5rem;
+  grid-template-columns: 1rem minmax(0, 1fr) 1rem;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-text);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.v2-composer-palette-option[data-active] {
+  background: var(--v2-color-hover);
+  box-shadow: inset 2px 0 0 var(--v2-color-accent);
+}
+
+.v2-composer-palette-option[aria-disabled="true"] {
+  cursor: default;
+}
+
+.v2-composer-palette-option[data-disabled] {
+  color: var(--v2-color-text3);
+  opacity: 0.72;
+}
+
+.v2-composer-palette-option > .v2-icon:first-child {
+  color: var(--v2-color-text2);
+}
+
+.v2-composer-palette-check {
+  color: var(--v2-color-accent);
+}
+
+.v2-composer-palette-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.0625rem;
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.v2-composer-palette-label,
+.v2-composer-palette-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-composer-palette-detail {
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
+.v2-composer-palette-note {
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  color: var(--v2-color-text3);
+  font-size: 0.8125rem;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .v2-composer-palette-option {
+    min-height: 2.75rem;
+  }
+}

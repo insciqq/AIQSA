@@ -217,6 +217,8 @@ export type RunChatUpdateRecord = {
     provider: string | null;
     role: string;
     status: string;
+    systemTurnKind?: ChatMessageWire["systemTurnKind"];
+    answerReview?: ChatMessageWire["answerReview"];
     toolActivity?: ThreadToolActivity | null;
     workspaceActivity?: ThreadWorkspaceActivity | null;
   }[];
@@ -460,6 +462,42 @@ export class ScheduledOccurrenceConflictError extends Error {
   }
 }
 
+/** An answer review step's admission found its session no longer running, or its step already claimed. */
+export class AnswerReviewStepConflictError extends Error {
+  readonly code: "answer_review_ended" | "answer_review_step_unavailable";
+
+  constructor(code: "answer_review_ended" | "answer_review_step_unavailable") {
+    super(code);
+    this.code = code;
+    this.name = "AnswerReviewStepConflictError";
+  }
+}
+
+/**
+ * A send that is a step of an answer review session (server-only, never a
+ * request field): its turn claims the step once, both of its messages carry
+ * the session, and the session must still be running.
+ */
+export type AnswerReviewStepAdmission = Readonly<{ round: number; sessionId: string; step: number }>;
+
+/** Which answer review session a run belongs to: its own chain stays whole in its context. */
+export type ConversationContextOptions = Readonly<{ answerReviewSessionId?: string | null }>;
+
+/**
+ * A send or regeneration with automatic answer review on, resolved on the
+ * server before admission: the answer's model and the admitted reviewers with
+ * their display snapshots, the rounds, and the controls frozen for every step.
+ * The admitting transaction creates the answer's automatic session with them
+ * and stores the chat's choice.
+ */
+export type AnswerReviewAutoAdmission = Readonly<{
+  authorModel: Readonly<{ modelId: string; name: string; provider: string }>;
+  /** `AnswerReviewAutoControls`: the send's step controls and each reviewer's Search. */
+  controls: Readonly<Record<string, unknown>>;
+  maxRounds: 1 | 2 | 3;
+  reviewers: readonly Readonly<{ modelId: string; name: string; provider: string }>[];
+}>;
+
 /** Exact accepted Assistant provenance persisted with the run. */
 export type AcceptedAssistantRun = {
   assistantId: string;
@@ -598,12 +636,24 @@ export type CreateRunInput = {
   /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
   scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
   signal?: AbortSignal;
+  /** The user message is a turn the server wrote for the user (`Message.systemTurnKind`). */
+  systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
+  /**
+   * An answer review step: the turn claims its step in the admitting
+   * transaction, writes no message-window row, keeps the owner's saved
+   * composer controls and queues no Memory command. Set with `systemTurnKind`.
+   */
+  answerReviewStep?: AnswerReviewStepAdmission;
+  /** Automatic answer review of this send's answer. */
+  answerReviewAuto?: AnswerReviewAutoAdmission;
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
 };
 
 export type CreateRegenerationRunInput = {
+  /** Automatic answer review of the new answer (never of a turn the server wrote). */
+  answerReviewAuto?: AnswerReviewAutoAdmission;
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: never;
   chatPdfAdmissions?: readonly ChatPdfAttachmentAdmission[];
@@ -794,6 +844,10 @@ export type RunRepository = {
     callId: string;
     /** The clarification revision used by the provider that planned this call. */
     followupRevision?: number;
+    /** The call needs its run initiator's approval: the claim consumes one
+     * matching one-shot approval in its transaction, or settles the call as
+     * an undispatched `mcp_approval_required` error with a pending request. */
+    mcpApproval?: import("../mcp/writeApproval").McpApprovalRequest;
     runId: string;
     userId: string;
   }): Promise<ClaimToolLoopCallResult>;
@@ -926,15 +980,22 @@ export type RunRepository = {
     };
   } | null>;
   loadConversationContext(chatId: string, userId: string): Promise<ProviderConversationMessage[]>;
+  /**
+   * The branch path to the leaf as the model reads it: every answer review
+   * session on it but `options.answerReviewSessionId` reads as its source
+   * question followed by the group's latest version.
+   */
   loadConversationContextForExpectedLeaf(
     chatId: string,
     userId: string,
-    expectedActiveLeafMessageId: string | null
+    expectedActiveLeafMessageId: string | null,
+    options?: ConversationContextOptions
   ): Promise<ProviderConversationMessage[] | null>;
   loadConversationContextForLeaf(
     chatId: string,
     userId: string,
-    leafMessageId: string
+    leafMessageId: string,
+    options?: ConversationContextOptions
   ): Promise<ProviderConversationMessage[]>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
   /** Internal recovery lookup. It deliberately does not depend on the
@@ -1089,6 +1150,25 @@ export type RunRepository = {
   loadScheduledPromptMessageIds?(input: Readonly<{
     chatId: string; messageIds: readonly string[]; userId: string;
   }>): Promise<ReadonlySet<string>>;
+  /**
+   * Which of these messages of the chat are turns the server wrote for the
+   * user (`Message.systemTurnKind`): their text authorizes no `fetch_url` link.
+   */
+  loadSystemTurnMessageIds?(input: Readonly<{
+    chatId: string; messageIds: readonly string[]; userId: string;
+  }>): Promise<ReadonlySet<string>>;
+  /** The servers among `serverIds` the user always allows (MCP write approval), read at admission. */
+  loadMcpToolConsentServerIds?(input: Readonly<{ serverIds: readonly string[]; userId: string }>): Promise<readonly string[]>;
+  /**
+   * The approval a continuation turn names, while it may continue: the
+   * user's own Allow in this chat within the approval window; null otherwise.
+   */
+  loadMcpApprovalContinuation?(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
+    serverName: string; toolName: string;
+  }> | null>;
+  /** The approval cards of a run, as its initiator's live stream shows them. */
+  loadRunMcpApprovalCards?(input: Readonly<{ runId: string; userId: string }>): Promise<
+    readonly import("../../contracts/mcpApprovals").McpApprovalCard[]>;
   /**
    * Whether the owner has a saved scheduled task a chat answer may manage
    * (null: none), and the task whose own chat `chatId` is: the one that posts

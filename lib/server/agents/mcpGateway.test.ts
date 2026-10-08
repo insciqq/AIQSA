@@ -449,6 +449,45 @@ describe("Agent MCP discovery surface", () => {
     expect(JSON.stringify(events)).not.toContain("PRIVATE_TOOL_TAIL");
   });
 
+  it.each([false, true])("asks the initiator before a write tool runs; nothing is sent until an approval is consumed (approved: %s)", async (approved) => {
+    const prepared = { arguments: { id: "r-1" }, definitionHash: "d".repeat(64), serverId: "server-1",
+      descriptor: { annotations: { destructiveHint: true }, description: null, input_schema: { type: "object" }, name: "delete_record",
+        server_name: "Records", tool_id: "fixture_delete", tool_version: "a".repeat(64) } };
+    const dispatch = vi.fn(async () => ({ text: ["deleted"], isError: false, unsupportedContentTypes: [] }));
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: async () => prepared,
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    const settleTool = vi.fn(async () => {}), onFailure = vi.fn();
+    const toolId = "fixture_delete", toolVersion = "a".repeat(64);
+    const store = { mcpTools: async () => [{ toolId, version: toolVersion }], toolCall: async () => "call", settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
+    const request = { agent: { mcpMode: "auto" }, chatId: "chat-1", mcpApproval: { consentedServerIds: [], version: 1 },
+      searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest;
+    const approvals = { consume: vi.fn(async () => approved), request: vi.fn(async () => "approval-1") };
+    const handler = await createAgentMcpGateway({ approvals, request, store, runId: "run", userId: "user", incarnation: "incarnation",
+      signal: new AbortController().signal, onFailure, onUsage: async () => {} });
+    const result = await rpcResult(await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "call_tool",
+        arguments: { tool_id: toolId, tool_version: toolVersion, arguments: { id: "r-1" } } } }) })));
+    const scope = { chatId: "chat-1", runId: "run", userId: "user" };
+    expect(approvals.consume).toHaveBeenCalledWith(scope, expect.objectContaining({ definitionHash: "d".repeat(64), serverId: "server-1",
+      toolName: toolId }));
+    if (approved) {
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(approvals.request).not.toHaveBeenCalled();
+      expect(result.isError).not.toBe(true);
+    } else {
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual({ code: "approval_required", dispatched: false,
+        message: "This MCP tool needs the user's approval in the chat. Nothing was sent." });
+      expect(approvals.request).toHaveBeenCalledWith(scope, expect.objectContaining({ serverName: "Records", source: "agent",
+        toolCallId: "call", toolName: toolId, toolTitle: "delete_record" }));
+      expect(settleTool).toHaveBeenCalledWith("call", "error", { code: "approval_required" });
+      // A refusal is the user's decision to make, never a run failure.
+      expect(onFailure).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["result_unsupported", "agent_mcp_outcome_unknown"] as const)("explains %s without confusing a rejected response with an unknown action", async (code) => {
     const failure = code === "result_unsupported" ? new hub.McpHubServiceError(code, {
       cause: new McpClientSessionError({ code: "mcp_call_result_too_large", operation: "call_tool" })

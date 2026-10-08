@@ -1,3 +1,4 @@
+import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "./answerReviews";
 import { decodeAnswerSoundPreferences, type AnswerSoundPreferences } from "./answerSound";
 import {
   decodeOptionalChatDefaults,
@@ -6,6 +7,7 @@ import {
 } from "./chatDefaults";
 import type { ErrorResponse, SessionErrorCode } from "./http";
 import type { KnowledgeSelection } from "./knowledge";
+import { decodeCatalogDictation, type CatalogDictation } from "./speechToText";
 import {
   decodeSearchPlan,
   type SearchAdapterKind,
@@ -132,6 +134,8 @@ export type CatalogSearchStrategy = CatalogWireSearchStrategy;
 export type CatalogSearchStrategyKind = CatalogSearchStrategy["kind"];
 
 export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
+  /** Automatic answer review a new chat starts with; absent on older wires means off. */
+  answerReview?: AnswerReviewAutoConfig;
   /** Personal default Assistant while it is available; see `ChatDefaultAssistant`. */
   assistantId?: string | null;
   /** A saved default Assistant is no longer available and is not applied. */
@@ -190,6 +194,8 @@ export const CATALOG_ATTACHMENT_LIMIT_CEILINGS: Readonly<CatalogAttachmentLimits
 export type Catalog = {
   attachmentLimits?: CatalogAttachmentLimits;
   defaults: CatalogDefaults;
+  /** Voice dictation for this account; absent on Project catalogs and older wires (no microphone). */
+  dictation?: CatalogDictation;
   models: CatalogModel[];
   providers: CatalogProvider[];
   searchStrategies: CatalogSearchStrategy[];
@@ -461,6 +467,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const catalog = value.catalog;
   const defaults = catalog.defaults;
   const hasAttachmentLimits = Object.prototype.hasOwnProperty.call(catalog, "attachmentLimits");
+  const dictation = catalog.dictation === undefined ? undefined : decodeCatalogDictation(catalog.dictation);
   const attachmentLimits = hasAttachmentLimits
     ? decodeCatalogAttachmentLimits(catalog.attachmentLimits)
     : undefined;
@@ -501,7 +508,9 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     assistantId: defaults.assistantId,
     assistantUnavailable: defaults.assistantUnavailable
   });
+  const answerReview = defaults.answerReview === undefined ? undefined : decodeAnswerReviewAutoConfig(defaults.answerReview);
   if (
+    answerReview === null ||
     !chatDefaults ||
     !defaultAssistant ||
     (defaults.workspaceEnabled !== undefined && typeof defaults.workspaceEnabled !== "boolean") ||
@@ -510,6 +519,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     providers.some((provider) => provider === null) ||
     searchStrategies.some((strategy) => strategy === null) ||
     (hasAttachmentLimits && attachmentLimits === null) ||
+    dictation === null ||
     defaults.searchPlan === undefined ||
     defaults.organizationSearchPlan === undefined ||
     !decodedSearchPlan.ok ||
@@ -535,8 +545,10 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
 
   return {
     ...(attachmentLimits ? { attachmentLimits } : {}),
+    ...(dictation ? { dictation } : {}),
     defaults: {
       ...answerSound,
+      ...(answerReview ? { answerReview } : {}),
       assistantId: defaultAssistant.assistantId,
       assistantUnavailable: defaultAssistant.assistantUnavailable,
       browserNotificationsEnabled: defaults.browserNotificationsEnabled ?? true,

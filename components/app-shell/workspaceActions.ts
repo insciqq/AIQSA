@@ -245,6 +245,7 @@ export function useWorkspaceActions({
       ...(detail.importSource ? { importSource: detail.importSource } : {}),
       ...(detail.importSourceModel ? { importSourceModel: detail.importSourceModel } : {}),
       activeLeafMessageId: detail.activeLeafMessageId,
+      answerReview: detail.answerReview,
       createdAt: detail.createdAt,
       defaultKnowledgePlan: detail.defaultKnowledgePlan ?? null,
       ...(detail.defaultSearchPlan ? { defaultSearchPlan: detail.defaultSearchPlan } : {}),

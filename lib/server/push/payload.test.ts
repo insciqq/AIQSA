@@ -54,6 +54,21 @@ describe("browser push message", () => {
       .toBe("Scheduled task finished\nCould not check: a source was unavailable.\nTracker is unavailable.");
   });
 
+  it("names an automatic answer review's end once: the reviewed answer, how it stopped, or the failed answer", () => {
+    const ended = { answerFailed: false, chatId: "chat-1", kind: "answer_review" as const, rounds: 2, state: "finished" as const,
+      stopReason: "max_rounds" as const, title: "Trip plan", userId: "owner-1" };
+    expect(browserPushMessage(ended)).toEqual({ body: "Reviewed answer ready · 2 rounds", tag: "aiqsa-chat-chat-1", title: "Trip plan",
+      url: "/c/chat-1", v: 1 });
+    expect(browserPushMessage({ ...ended, rounds: 1, stopReason: "clean" }).body).toBe("Reviewed answer ready · 1 round");
+    expect(browserPushMessage({ ...ended, state: "stopped", stopReason: "budget" }).body)
+      .toBe("Answer ready · Stopped: usage limit reached");
+    expect(browserPushMessage({ ...ended, stopReason: "disagreement" }).body)
+      .toBe("Answer ready · Stopped: the reviewers repeat findings the author rejected");
+    expect(browserPushMessage({ ...ended, answerFailed: true, rounds: 0, state: "stopped", stopReason: "error" }).body)
+      .toBe("The answer did not complete");
+    expect(JSON.stringify(browserPushMessage(ended))).not.toContain("owner-1");
+  });
+
   it("cleans and bounds titles and falls back when empty", () => {
     const long = browserPushMessage({ chatId: "c", kind: "run", status: "complete", title: `A\u0000b\n${"x".repeat(300)}`, userId: "u" });
     expect(long.title.startsWith("A b ")).toBe(true);

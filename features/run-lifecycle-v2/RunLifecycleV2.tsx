@@ -408,6 +408,8 @@ export type RunComposerActionV2Props = Readonly<{
   runId: string | null;
   sendDisabled?: boolean;
   sendDisabledReason?: string | null;
+  /** Why this viewer cannot stop the running work (it is someone else's); Stop stays visible and disabled. */
+  stopUnavailableReason?: string | null;
   stopping?: boolean;
 }>;
 
@@ -419,6 +421,7 @@ export function RunComposerActionV2({
   runId,
   sendDisabled = false,
   sendDisabledReason = null,
+  stopUnavailableReason = null,
   stopping = false
 }: RunComposerActionV2Props) {
   const unavailableDescriptionId = useId();
@@ -444,10 +447,10 @@ export function RunComposerActionV2({
     );
   }
 
-  const unavailable = !runId || !onStop;
-  const unavailableReason = !runId
+  const unavailable = !runId || !onStop || Boolean(stopUnavailableReason);
+  const unavailableReason = stopUnavailableReason ?? (!runId
     ? "The run is not yet acknowledged by the server."
-    : "Stopping this run is unavailable.";
+    : "Stopping this run is unavailable.");
   return (
     <>
       {followup ? <UiV2IconButton icon="arrow-up" label="Send follow-up"

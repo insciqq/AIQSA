@@ -29,6 +29,8 @@ Workspace cards expose bounded output/relative paths, never runtime identities. 
 
 Each answer shows artifacts' latest successful versions once, in first-appearance order. Historical cards and explicit selections never follow global current versions. Code previews stay bounded and inert until READY; thumbnails never execute scripts. Runtime repairs enter drafts through private tab state.
 
+A reviewed answer is one block: its latest version, a quiet status line of the review's progress or outcome, and a collapsed history of earlier versions, reviews and decisions. Versions are answer content, not a receipt row; the review's server-written turns never render as user speech, and step models appear by display name. Automatic review is a per-chat choice in the model picker, shown as a glyph in the header model chip, never a composer chip; while it runs the composer waits with Stop, and only its end notifies.
+
 Workspace is a persistent chat toggle projecting availability, session and read-only internet policy. Its chip and other controls wrap whole; no More menu or horizontal scrolling hides capabilities. Only enabled Workspace admits opaque uploads. Stop preserves files; branching/regeneration never rolls them back. Reset confirms filesystem loss while preserving messages, attachments and outputs. Download workspace is a separate non-LLM action. Saved-file reuse is explicit; matching names imply no version chain.
 A continuation carrying Workspace projects its seed as pending, restored, skipped (source disk gone) or failed with a bounded reason. Failed/skipped copies open an empty Workspace, never claiming files survived; the private seed never appears as an attachment or staged input.
 

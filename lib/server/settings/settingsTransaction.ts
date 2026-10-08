@@ -26,6 +26,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function serializeSettings(settings: {
+  defaultAnswerReview: unknown;
   defaultAssistantId: string | null;
   defaultControlValues: unknown;
   defaultKnowledgePlan: unknown;
@@ -43,6 +44,7 @@ function serializeSettings(settings: {
 }): UserSettingsRecord {
   const defaultProviderModelId = settings.defaultProviderModel?.id ?? null;
   return {
+    defaultAnswerReview: settings.defaultAnswerReview,
     defaultAssistantId: settings.defaultAssistantId,
     defaultControlValues: settings.defaultControlValues,
     defaultKnowledgePlan: settings.defaultKnowledgePlan,
@@ -65,6 +67,7 @@ function settingsUpdateData(
   currentControlValues: unknown
 ): Prisma.UserSettingsUpdateInput {
   const {
+    defaultAnswerReview,
     defaultAssistantId,
     defaultControlValues,
     defaultKnowledgePlan,
@@ -77,6 +80,11 @@ function settingsUpdateData(
   const updatesKnowledgePlan = Object.prototype.hasOwnProperty.call(update, "defaultKnowledgePlan");
   const data: Prisma.UserSettingsUpdateInput = {
     ...rest,
+    ...(defaultAnswerReview !== undefined ? { defaultAnswerReview: {
+      enabled: defaultAnswerReview.enabled,
+      maxRounds: defaultAnswerReview.maxRounds,
+      reviewers: defaultAnswerReview.reviewers.map(({ modelId, provider }) => ({ modelId, provider }))
+    } } : {}),
     ...(updatesSearchPlan && normalizedSearchPlan === null
       ? { defaultSearchPlan: Prisma.DbNull }
       : normalizedSearchPlan !== undefined
@@ -211,6 +219,7 @@ export async function applySettingsUpdateInTransaction(
   const settings = await tx.userSettings.update({
     data: settingsUpdateData(update, lockedSettings.defaultControlValues),
     select: {
+      defaultAnswerReview: true,
       defaultAssistantId: true,
       defaultControlValues: true,
       defaultKnowledgePlan: true,

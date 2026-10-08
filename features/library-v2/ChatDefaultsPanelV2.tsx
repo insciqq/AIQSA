@@ -7,7 +7,8 @@ import { SettingsRowV2 } from "@/features/settings-v2/SettingsV2";
 import { SettingsSelectV2 } from "@/features/settings-v2/SettingsSelectV2";
 import { SectionHeading } from "./LibraryV2";
 import type { LibraryTabIdV2 } from "./contracts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AnswerReviewSettingsDialogV2 } from "@/features/answer-review-v2/AnswerReviewSettingsDialogV2";
 
 type ChatDefaultsView = Pick<ShellComposerView, "catalog" | "chatDefaults" | "makeModelDefault" | "useOrganizationModelDefault"> & {
   knowledge: Pick<ShellComposerView["knowledge"], "bases">;
@@ -32,7 +33,44 @@ export function ChatDefaultsPanelV2({ composer, onNavigate }: Readonly<{
       onResetSearchPlan={defaults.resetSearchPlan} searchPreferenceSource={defaults.searchPreferenceSource}
       onOpenMcp={() => onNavigate("mcp")} onOpenSkills={() => onNavigate("skills")}
     /> : <p className="v2-settings-note" role="status">Defaults are unavailable until the model catalog loads.</p>}
+    {defaults?.answerReview ? <AnswerReviewDefaultRowV2 view={defaults.answerReview} /> : null}
   </section>;
+}
+
+type AnswerReviewDefaultView = NonNullable<NonNullable<ChatDefaultsView["chatDefaults"]>["answerReview"]>;
+
+/* Chat defaults › Answer review: off unless chosen; a new personal chat
+   starts with it, chats you already have keep their own choice. */
+function AnswerReviewDefaultRowV2({ view }: Readonly<{ view: AnswerReviewDefaultView }>) {
+  const [open, setOpen] = useState(false);
+  const { config } = view;
+  const names = config.reviewers.map((pick) => view.candidates.find((model) =>
+    model.provider === pick.provider && model.modelId === pick.modelId)?.displayName ?? "Unavailable model");
+  const rounds = `up to ${config.maxRounds} ${config.maxRounds === 1 ? "round" : "rounds"}`;
+  return (
+    <SettingsRowV2
+      description="Other models check each answer of a new chat and its model revises it, on the server. Off unless you turn it on."
+      testId="settings-default-answer-review"
+      title="Answer review"
+    >
+      <span className="v2-settings-row-description" data-testid="settings-default-answer-review-summary">
+        {config.enabled ? `On · ${names.join(", ")} · ${rounds}` : "Off"}
+      </span>
+      <UiV2Button onClick={() => setOpen(true)}>Change…</UiV2Button>
+      {open ? (
+        <AnswerReviewSettingsDialogV2
+          candidates={view.candidates}
+          initial={config}
+          mode="defaults"
+          onCancel={() => setOpen(false)}
+          onSave={(next) => {
+            view.set(next);
+            setOpen(false);
+          }}
+        />
+      ) : null}
+    </SettingsRowV2>
+  );
 }
 
 /* Chat defaults › Default model: the personal default from the picker, or the

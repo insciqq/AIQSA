@@ -34,7 +34,24 @@ import {
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { mergeThreadMessages } from "@/components/app-shell/runState";
-import { effectiveActiveLeafId } from "@/components/app-shell/threadPath";
+import { effectiveActiveLeafId, visibleMessagePath } from "@/components/app-shell/threadPath";
+import {
+  ANSWER_REVIEW_MAX_REVIEWERS,
+  ANSWER_REVIEW_REQUEST_KIND,
+  ANSWER_REVISION_REQUEST_KIND,
+  answerReviewRefusalCopy,
+  decodeAnswerReviewStartResponse,
+  type AnswerReviewAutoConfig,
+  type AnswerReviewSendRequest,
+  type AnswerReviewSessionWire,
+  type AnswerReviewStepKind,
+  type AnswerReviewStepWire
+} from "@/lib/contracts/answerReviews";
+import {
+  answerReviewGroupProgressV2,
+  groupAnswerReviewsV2,
+  type AnswerReviewGroupV2
+} from "@/features/answer-review-v2/answerReviewModel";
 import { selectThreadSnapshot, useThreadStore } from "@/components/app-shell/threadStore";
 import type {
   Catalog,
@@ -65,12 +82,24 @@ import {
 } from "@/components/app-shell/composerAssistantState";
 import type { AssistantIdentity, AssistantRowKey } from "@/lib/contracts/assistants";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
+import {
+  MCP_APPROVAL_CONTINUATION_KIND,
+  MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
+  mcpApprovalContinuationText,
+  type McpApprovalContinuationOutcome
+} from "@/lib/contracts/mcpApprovals";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 
 type MutableRef<T> = { current: T };
 
 type MessageRunControlSnapshot = {
   agentEnabled: boolean;
+  /**
+   * The chat's automatic answer review for this send, when it is on and can
+   * run: each reviewer with the Search reconciled for its model, as a manual
+   * step sends it. Absent from Assistant chats.
+   */
+  answerReview: AnswerReviewSendRequest | null;
   contextConfigurationKey: string;
   /**
    * The chat's Assistant at capture: its id and `{name, avatar}` (null without
@@ -104,6 +133,8 @@ type MessageRunControlSnapshot = {
 
 type MessageRunActionsInput = {
   activeChat: WorkspaceChatSummary | null;
+  /** The chat's automatic answer review a send carries now (on and able to run), or null. */
+  answerReviewForSend?(): AnswerReviewAutoConfig | null;
   activeChatDetailLoading: boolean;
   activeChatId: string | null;
   activeChatIdRef: MutableRef<string | null>;
@@ -221,11 +252,21 @@ const ASSISTANT_CHANGED_SEND_COPY =
 const ASSISTANT_CHANGED_RUN_COPY =
   "The chat's Assistant changed before this could start. Check the Assistant and try again.";
 
+/** Why the continuation after an MCP approval started no run; the card's Continue retries it. */
+function mcpApprovalContinuationRetryCopy(reason: string): string {
+  const sentence = reason.trim();
+  return `${/[.!?)]$/u.test(sentence) ? sentence : `${sentence}.`} The answer did not continue. ` +
+    "Use Continue on the approval card to try again.";
+}
+const MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY =
+  "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval.";
+
 /** Chats whose run is waiting for a change of the chat's Assistant to settle. */
 const runsAwaitingAssistant = new Set<string>();
 
 export function useMessageRunActions({
   activeChat,
+  answerReviewForSend,
   activeChatDetailLoading,
   activeChatId,
   activeChatIdRef,
@@ -313,8 +354,28 @@ export function useMessageRunActions({
         }
       : undefined;
     const searchPreferenceOptionIds = [...selectedSearchOptionIds];
+    const searchOptions = (catalog?.searchStrategies ?? []).map((option) => ({
+      ...option,
+      ...(option.executionModes
+        ? { executionModes: [...option.executionModes] }
+        : {})
+    }));
+    const review = controls.assistant ? null : answerReviewForSend?.() ?? null;
+    const reviewers = review?.reviewers.flatMap((reviewer) => {
+      const reviewerModel = catalog?.models.find((candidate) =>
+        candidate.provider === reviewer.provider && candidate.modelId === reviewer.modelId);
+      return reviewerModel ? [{
+        modelId: reviewer.modelId,
+        provider: reviewer.provider,
+        // The reviewer searches as a manual step of this chat would: the chat's Search, reconciled for its model.
+        searchPlan: reconcileModelSearchPlan(reviewerModel, searchPreferenceOptionIds, searchPlanMode, searchOptions)
+      }] : [];
+    }) ?? [];
 
     return {
+      answerReview: review && reviewers.length === review.reviewers.length
+        ? { maxRounds: review.maxRounds, reviewers }
+        : null,
       contextConfigurationKey: composerContextConfigurationKey(controls, {
         agentEnabled: session.agentEnabled,
         memoryMode: chat?.pendingInitialMemoryMode ?? chat?.memoryMode ?? composerSessionModeFromKey(sessionKey), workspaceEnabled
@@ -346,12 +407,7 @@ export function useMessageRunActions({
         optionIds: searchPreferenceOptionIds
       },
       searchPreferenceSource: catalog?.defaults.searchPreferenceSource ?? "personal",
-      searchOptions: (catalog?.searchStrategies ?? []).map((option) => ({
-        ...option,
-        ...(option.executionModes
-          ? { executionModes: [...option.executionModes] }
-          : {})
-      })),
+      searchOptions,
       skillIds: selectedSkills.map((skill) => skill.id),
       toolsOverride: toolsOverride(model),
       workspaceEnabled
@@ -484,6 +540,19 @@ export function useMessageRunActions({
     };
   }
 
+  /** A send's automatic review; the server freezes it into the answer's session. */
+  function answerReviewPayload(snapshot: MessageRunControlSnapshot): { answerReview?: AnswerReviewSendRequest } {
+    return snapshot.answerReview ? { answerReview: snapshot.answerReview } : {};
+  }
+
+  /**
+   * An answer that an automatic review follows is not the one to announce:
+   * the session's end notifies once (`useAnswerReviewFollowV2`).
+   */
+  function answerNotifier(snapshot: MessageRunControlSnapshot): () => Promise<void> {
+    return snapshot.answerReview ? async () => undefined : notifyAnswerReady;
+  }
+
   /** A change of the chat's Assistant or of its values is queued or in flight. */
   function assistantUpdatePending(chatId: string | null): chatId is string {
     return Boolean(chatId && chatAssistantUpdates?.hasPendingUpdate(chatId));
@@ -582,7 +651,7 @@ export function useMessageRunActions({
       createStreamTokenBuffer,
       failurePrefix: "edit_run_failed",
       fetchRun,
-      notifyAnswerReady,
+      notifyAnswerReady: answerNotifier(runControlSnapshot),
       optimisticAssistantMessageId: assistantId,
       primeAnswerSound,
       reconcileMessageIds({ currentRunId, messageIds }) {
@@ -609,7 +678,8 @@ export function useMessageRunActions({
         return shellFetch(`/api/messages/${editedUserMessageId}/regenerate`, {
           body: JSON.stringify({
             admissionId,
-            ...runControlPayload(runControlSnapshot, Boolean(activeChat?.projectId))
+            ...runControlPayload(runControlSnapshot, Boolean(activeChat?.projectId)),
+            ...answerReviewPayload(runControlSnapshot)
           }),
           headers: {
             "content-type": "application/json"
@@ -711,12 +781,12 @@ export function useMessageRunActions({
    * (also after a draft chat returns to its blank route). A result arriving
    * after navigation to another chat stays silent.
    */
-  function noticeRejectedRun(chatId: string, result: MessageRunLifecycleResult) {
+  function noticeRejectedRun(chatId: string, result: MessageRunLifecycleResult, describe = (reason: string) => reason) {
     if (!result.failed || result.cancelled || activeChatIdRef.current !== chatId) return;
     const reason = assistantChangedRefusal(chatId, result)
       ? ASSISTANT_CHANGED_RUN_COPY
       : result.rejectionMessage ?? result.failureMessage;
-    if (reason) setNotice({ chatId, kind: "error", text: reason });
+    if (reason) setNotice({ chatId, kind: "error", text: describe(reason) });
   }
 
   /**
@@ -1008,11 +1078,14 @@ export function useMessageRunActions({
       const projectDraftForSend = currentChatSummary?.pendingProjectDraft ?? null;
       const personalDraftForSend = currentChatSummary?.pendingPersonalDraft ?? null;
       startedFromBlankWorkspace = startedFromBlankWorkspace || Boolean(projectDraftForSend);
-      const sendControlPayload = runControlPayload(
-        runControlSnapshot,
-        Boolean(currentChatSummary?.projectId),
-        Boolean(personalDraftForSend || projectDraftForSend)
-      );
+      const sendControlPayload = {
+        ...runControlPayload(
+          runControlSnapshot,
+          Boolean(currentChatSummary?.projectId),
+          Boolean(personalDraftForSend || projectDraftForSend)
+        ),
+        ...answerReviewPayload(runControlSnapshot)
+      };
 
       const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
       if (activeSend && !activeSend.answerComplete) {
@@ -1067,7 +1140,7 @@ export function useMessageRunActions({
         createStreamTokenBuffer,
         failurePrefix: "send_failed",
         fetchRun,
-        notifyAnswerReady,
+        notifyAnswerReady: answerNotifier(runControlSnapshot),
         onAnswerPublished(runId) {
           useComposerSessionStore.getState().finishSend(sendToken, "succeeded", null, true, runId);
         },
@@ -1454,6 +1527,362 @@ export function useMessageRunActions({
     }
   }
 
+  /**
+   * The continuation turn after the initiator allowed a refused MCP call: an
+   * ordinary send of the open chat with its current controls, as Regenerate
+   * uses them, whose text the server writes from the approval. The composer
+   * draft stays untouched; the turn shows as a compact chip. An attempt that
+   * starts no run says why; Continue on the card retries it.
+   */
+  async function sendMcpApprovalContinuation(
+    card: Readonly<{ approvalId: string; serverName: string; toolName: string }>
+  ): Promise<McpApprovalContinuationOutcome> {
+    const chatId = useWorkspaceStore.getState().activeChatId;
+    const notStarted = (reason: string): McpApprovalContinuationOutcome => {
+      setNotice({ ...(chatId ? { chatId } : {}), kind: "error", text: mcpApprovalContinuationRetryCopy(reason) });
+      return "not_started";
+    };
+    if (!chatId || chatId !== activeChatIdRef.current) return notStarted("The chat changed before the answer could continue.");
+    const activeSend = useRunLifecycleStore.getState().activeStreams[chatId];
+    if (activeSend && !activeSend.answerComplete) return notStarted("Another answer is still running in this chat.");
+    if (assistantUpdatePending(chatId) && !(await settleAssistantBeforeRun(chatId))) {
+      return notStarted("The chat's Assistant change is still being saved.");
+    }
+    const runControlSnapshot = captureRunControlSnapshot();
+    const assistantBlockReason = runControlSnapshot.assistant?.blockReason;
+    if (assistantBlockReason) return notStarted(assistantBlockReason);
+    if (!runControlSnapshot.model) return notStarted("No available model is selected for this chat.");
+    if (hasUnreconciledOptimisticLeaf(chatId) && !(await reconcileBeforeRunMutation(chatId))) {
+      return notStarted("The chat's previous answer could not be reconciled yet.");
+    }
+    const chatSummary = useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chatId);
+    const thread = selectThreadSnapshot(useThreadStore.getState(), chatId);
+    const parentLeafForSend = effectiveActiveLeafId(thread.messages, thread.activeLeafId) ??
+      chatSummary?.activeLeafMessageId ?? null;
+    if (!parentLeafForSend) return notStarted("The chat's latest answer could not be found.");
+    try {
+      await persistActiveLeaf(chatId, parentLeafForSend);
+    } catch (error) {
+      notStarted(errorMessage(error));
+      await reconcileBranchConflict(chatId, error instanceof Error ? error.message : undefined);
+      return "not_started";
+    }
+    clearNoticeForChat?.(chatId);
+    const userMessage: ThreadMessage = {
+      content: mcpApprovalContinuationText(card),
+      id: `user-${Date.now()}`,
+      modelId: runControlSnapshot.modelId,
+      parentMessageId: parentLeafForSend,
+      provider: runControlSnapshot.provider,
+      role: "user",
+      status: "complete",
+      systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND
+    };
+    const assistantId = `assistant-${Date.now()}`;
+    const assistantMessage: ThreadMessage = {
+      content: "",
+      id: assistantId,
+      modelId: runControlSnapshot.modelId,
+      parentMessageId: userMessage.id,
+      provider: runControlSnapshot.provider,
+      ...optimisticAnswerIdentity(runControlSnapshot),
+      role: "assistant",
+      status: "streaming"
+    };
+    mergeStreamChatMessages(chatId, [userMessage, assistantMessage]);
+    updateStreamChatActiveLeaf(chatId, assistantId);
+    if (activeChatIdRef.current === chatId) resetThreadToLatest();
+    const admissionId = randomUUID();
+    const controls = runControlPayload(runControlSnapshot, Boolean(chatSummary?.projectId));
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef,
+      activeStreamAbortRef,
+      chatId,
+      consumeRunStream,
+      contextConfigurationKey: runControlSnapshot.contextConfigurationKey,
+      createStreamTokenBuffer,
+      failurePrefix: "send_failed",
+      fetchRun,
+      notifyAnswerReady,
+      optimisticAssistantMessageId: assistantId,
+      primeAnswerSound,
+      reconcileMessageIds({ currentRunId, messageIds }) {
+        const persistedUserId = messageIds.userMessageId;
+        const persistedAssistantId = messageIds.assistantMessageId;
+        if (persistedAssistantId) updateStreamChatActiveLeaf(chatId, persistedAssistantId, assistantId);
+        updateStreamChatMessages(chatId, (current) => current.map((message) => {
+          if (persistedUserId && message.id === userMessage.id) return { ...message, id: persistedUserId };
+          if (persistedAssistantId && message.id === assistantId) {
+            return { ...message, id: persistedAssistantId, parentMessageId: persistedUserId ?? message.parentMessageId,
+              runId: currentRunId ?? message.runId };
+          }
+          return message;
+        }));
+      },
+      refreshActiveChat,
+      request(signal) {
+        return shellFetch(`/api/chats/${chatId}/messages`, {
+          body: JSON.stringify({
+            admissionId,
+            expectedActiveLeafId: parentLeafForSend,
+            systemTurn: { approvalId: card.approvalId, kind: MCP_APPROVAL_CONTINUATION_KIND },
+            ...controls
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+          signal
+        });
+      },
+      settleFailedRunState({ kind }) {
+        if (kind === "rejected") {
+          rollbackOptimisticRun({
+            chatId,
+            expectedParentMessageId: parentLeafForSend,
+            optimisticAssistantMessageId: assistantId,
+            optimisticUserMessageId: userMessage.id,
+            previousLeafId: parentLeafForSend
+          });
+        }
+      }
+    });
+    await reconcileBranchConflict(chatId, result.failureCode);
+    if (result.failureCode === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) {
+      // Expired or already used by a run: retrying cannot help.
+      if (activeChatIdRef.current === chatId) setNotice({ chatId, kind: "error", text: MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY });
+      return "unavailable";
+    }
+    if (result.failed && !result.cancelled && result.rejectionMessage !== undefined) {
+      // The server refused the turn before any run existed (another answer
+      // running, a usage limit, a moved branch): Continue retries it.
+      noticeRejectedRun(chatId, result, mcpApprovalContinuationRetryCopy);
+      return "not_started";
+    }
+    noticeRejectedRun(chatId, result);
+    return "started";
+  }
+
+  /** The answer review group of `sessionId` on the chat's active path, as the transcript shows it. */
+  function answerReviewGroupInThread(chatId: string, sessionId: string): AnswerReviewGroupV2 | null {
+    const thread = selectThreadSnapshot(useThreadStore.getState(), chatId);
+    for (const item of groupAnswerReviewsV2(visibleMessagePath(thread.messages, thread.activeLeafId))) {
+      if (item.kind === "review" && item.group.session.id === sessionId) return item.group;
+    }
+    return null;
+  }
+
+  /** Shows a session the server just started or extended on its messages, before the next re-read. */
+  function attachAnswerReviewSession(chatId: string, session: AnswerReviewSessionWire) {
+    updateStreamChatMessages(chatId, (messages) => messages.map((message) =>
+      message.id === session.sourceAssistantMessageId
+        ? { ...message, answerReview: { ...message.answerReview, session } }
+        : message.answerReview?.session.id === session.id
+          ? { ...message, answerReview: { ...message.answerReview, session } }
+          : message));
+  }
+
+  /**
+   * One step of an answer review session: an ordinary run of a turn the
+   * server writes, answered by the step's model with the chat's current
+   * controls (Search as that model supports it). Its turn shows no bubble.
+   * True when the step's run started and settled without failing.
+   */
+  async function startAnswerReviewStep(chatId: string, sessionId: string, kind: AnswerReviewStepKind): Promise<boolean> {
+    const notStarted = (text: string) => {
+      setNotice({ chatId, kind: "error", text });
+      return false;
+    };
+    if (chatId !== activeChatIdRef.current) return false;
+    const activeSend = useRunLifecycleStore.getState().activeStreams[chatId];
+    if (activeSend) return notStarted("Another answer is still running in this chat.");
+    if (assistantUpdatePending(chatId) && !(await settleAssistantBeforeRun(chatId))) {
+      return notStarted("The chat's Assistant change is still being saved.");
+    }
+    if (hasUnreconciledOptimisticLeaf(chatId) && !(await reconcileBeforeRunMutation(chatId))) {
+      return notStarted("The chat's previous answer could not be reconciled yet.");
+    }
+    const group = answerReviewGroupInThread(chatId, sessionId);
+    const next = group ? answerReviewGroupProgressV2(group).next : null;
+    if (!group || !next || next.kind !== kind) return notStarted(answerReviewRefusalCopy("answer_review_step_unavailable")!);
+    const thread = selectThreadSnapshot(useThreadStore.getState(), chatId);
+    const leaf = effectiveActiveLeafId(thread.messages, thread.activeLeafId);
+    if (!leaf || leaf !== group.messages.at(-1)?.id) return notStarted(answerReviewRefusalCopy("answer_review_not_latest")!);
+    const model = next.kind === "review" ? group.session.reviewers[next.reviewer] : group.session.author;
+    if (!model) return notStarted(answerReviewRefusalCopy("answer_review_step_unavailable")!);
+    try {
+      await persistActiveLeaf(chatId, leaf);
+    } catch (error) {
+      notStarted(errorMessage(error));
+      await reconcileBranchConflict(chatId, error instanceof Error ? error.message : undefined);
+      return false;
+    }
+    clearNoticeForChat?.(chatId);
+    const runControlSnapshot = captureRunControlSnapshot();
+    const chatSummary = useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chatId);
+    const catalog = resolveCatalog ? resolveCatalog() : useWorkspaceStore.getState().catalog;
+    const stepModel = modelForCurrentSelection(undefined, model.provider, model.modelId, catalog);
+    // The chat's controls, never its composer model, params or prompt: the server writes the turn.
+    const {
+      controlDefaults: _controlDefaults,
+      modelId: _modelId,
+      params: _params,
+      provider: _provider,
+      tools: _tools,
+      ...controls
+    } = runControlPayload(runControlSnapshot, Boolean(chatSummary?.projectId)) as Record<string, unknown>;
+    const stepControls = {
+      ...controls,
+      searchPlan: reconcileModelSearchPlan(stepModel, runControlSnapshot.searchPreferencePlan.optionIds,
+        runControlSnapshot.searchPreferencePlan.mode, runControlSnapshot.searchOptions),
+      ...toolsOverride(stepModel)
+    };
+    const step: AnswerReviewStepWire = next.kind === "review"
+      ? { kind: "review", modelName: model.name, reviewer: next.reviewer, round: next.round, step: next.step }
+      : { kind: "revision", modelName: model.name, round: next.round, step: next.step };
+    const answerReview = { session: group.session, step };
+    const userMessage: ThreadMessage = {
+      answerReview,
+      content: "",
+      id: `user-${Date.now()}`,
+      modelId: model.modelId,
+      parentMessageId: leaf,
+      provider: model.provider,
+      role: "user",
+      status: "complete",
+      systemTurnKind: kind === "review" ? ANSWER_REVIEW_REQUEST_KIND : ANSWER_REVISION_REQUEST_KIND
+    };
+    const assistantId = `assistant-${Date.now()}`;
+    mergeStreamChatMessages(chatId, [userMessage, {
+      answerReview,
+      assistantIdentity: null,
+      content: "",
+      id: assistantId,
+      modelId: model.modelId,
+      parentMessageId: userMessage.id,
+      provider: model.provider,
+      role: "assistant",
+      status: "streaming"
+    }]);
+    updateStreamChatActiveLeaf(chatId, assistantId);
+    if (activeChatIdRef.current === chatId) resetThreadToLatest();
+    const admissionId = randomUUID();
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef,
+      activeStreamAbortRef,
+      chatId,
+      consumeRunStream,
+      contextConfigurationKey: runControlSnapshot.contextConfigurationKey,
+      createStreamTokenBuffer,
+      failurePrefix: "send_failed",
+      fetchRun,
+      notifyAnswerReady,
+      optimisticAssistantMessageId: assistantId,
+      primeAnswerSound,
+      reconcileMessageIds({ currentRunId, messageIds }) {
+        const persistedUserId = messageIds.userMessageId;
+        const persistedAssistantId = messageIds.assistantMessageId;
+        if (persistedAssistantId) updateStreamChatActiveLeaf(chatId, persistedAssistantId, assistantId);
+        updateStreamChatMessages(chatId, (current) => current.map((message) => {
+          if (persistedUserId && message.id === userMessage.id) return { ...message, id: persistedUserId };
+          if (persistedAssistantId && message.id === assistantId) {
+            return { ...message, id: persistedAssistantId, parentMessageId: persistedUserId ?? message.parentMessageId,
+              runId: currentRunId ?? message.runId };
+          }
+          return message;
+        }));
+      },
+      refreshActiveChat,
+      request(signal) {
+        return shellFetch(`/api/answer-reviews/${encodeURIComponent(sessionId)}/steps`, {
+          body: JSON.stringify({ admissionId, controls: stepControls, expectedActiveLeafId: leaf, kind }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+          signal
+        });
+      },
+      settleFailedRunState({ kind: failure }) {
+        if (failure === "rejected") {
+          rollbackOptimisticRun({
+            chatId,
+            expectedParentMessageId: leaf,
+            optimisticAssistantMessageId: assistantId,
+            optimisticUserMessageId: userMessage.id,
+            previousLeafId: leaf
+          });
+        }
+      }
+    });
+    await reconcileBranchConflict(chatId, result.failureCode);
+    noticeRejectedRun(chatId, result, (reason) => answerReviewRefusalCopy(result.failureCode) ?? reason);
+    // The session's state (a stop on a refusal, a finished round) is the server's: read it again.
+    if (activeChatIdRef.current === chatId) {
+      await refreshActiveChat(chatId, { forceDetail: true, preserveControls: true, resumeRuns: false }).catch(() => null);
+    }
+    return !result.failed && !result.cancelled;
+  }
+
+  /**
+   * Runs a session's steps from `kind`: a review step, and after it the
+   * round's further reviewers in this tab (a reload offers Continue review
+   * instead); a revision is one step.
+   */
+  async function runAnswerReviewSteps(chatId: string, sessionId: string, kind: AnswerReviewStepKind): Promise<void> {
+    for (let attempt = 0; attempt < ANSWER_REVIEW_MAX_REVIEWERS; attempt += 1) {
+      if (!(await startAnswerReviewStep(chatId, sessionId, kind)) || kind === "revision") return;
+      const group = answerReviewGroupInThread(chatId, sessionId);
+      if (!group || answerReviewGroupProgressV2(group).next?.kind !== "review" || activeChatIdRef.current !== chatId) return;
+    }
+  }
+
+  /**
+   * "Review…" on the chat's latest answer: starts a round of a new manual
+   * session, or of the session whose latest version it is, then runs its
+   * reviewers. Resolves once the server accepted the round.
+   */
+  async function startAnswerReview(input: Readonly<{
+    answerMessageId: string;
+    reviewers: readonly Readonly<{ modelId: string; provider: string }>[];
+  }>): Promise<Readonly<{ ok: true }> | Readonly<{ error: string; ok: false }>> {
+    const chatId = useWorkspaceStore.getState().activeChatId;
+    if (!chatId || chatId !== activeChatIdRef.current) return { error: "The chat changed before the review could start.", ok: false };
+    if (useRunLifecycleStore.getState().activeStreams[chatId]) return { error: "Wait for the current answer to finish.", ok: false };
+    const thread = selectThreadSnapshot(useThreadStore.getState(), chatId);
+    const chatSummary = useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chatId);
+    const leaf = effectiveActiveLeafId(thread.messages, thread.activeLeafId) ?? chatSummary?.activeLeafMessageId ?? null;
+    if (!leaf) return { error: "The chat's latest answer could not be found.", ok: false };
+    let session: AnswerReviewSessionWire | null = null;
+    let code: string | null = null;
+    try {
+      const response = await shellFetch(`/api/chats/${encodeURIComponent(chatId)}/answer-reviews`, {
+        // Exactly the identities: an earlier session's reviewer also carries a display name the request refuses.
+        body: JSON.stringify({ answerMessageId: input.answerMessageId, expectedActiveLeafId: leaf,
+          reviewers: input.reviewers.map(({ modelId, provider }) => ({ modelId, provider })) }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      });
+      const body: unknown = await response.json().catch(() => null);
+      session = response.ok ? decodeAnswerReviewStartResponse(body) : null;
+      code = typeof body === "object" && body !== null && typeof (body as Record<string, unknown>).error === "string"
+        ? (body as Record<string, string>).error : null;
+    } catch (error) {
+      return { error: errorMessage(error), ok: false };
+    }
+    if (!session) {
+      await reconcileBranchConflict(chatId, code ?? undefined);
+      return { error: answerReviewRefusalCopy(code) ?? (code === "active_leaf_changed"
+        ? "The chat changed. Open its latest answer and try again." : "The review could not start. Try again."), ok: false };
+    }
+    attachAnswerReviewSession(chatId, session);
+    void runAnswerReviewSteps(chatId, session.id, "review");
+    return { ok: true };
+  }
+
+  /** Revise, or Continue review after a reload: the session's next step and, for reviews, the round's rest. */
+  async function continueAnswerReview(sessionId: string, kind: AnswerReviewStepKind): Promise<void> {
+    const chatId = useWorkspaceStore.getState().activeChatId;
+    if (!chatId) return;
+    await runAnswerReviewSteps(chatId, sessionId, kind);
+  }
+
   async function regenerateMessage(messageId: string) {
     const chatIdForRegenerate = activeChatId;
     if (!chatIdForRegenerate) {
@@ -1490,10 +1919,17 @@ export function useMessageRunActions({
     }
     const regenerationParentMessageId =
       original.role === "assistant" ? original.parentMessageId : original.id;
-    const regenerateControlPayload = runControlPayload(
-      runControlSnapshot,
-      Boolean(activeChat?.projectId)
-    );
+    // A turn the server wrote (an approval continuation) is never reviewed.
+    const regeneratesUserSpeech = !threadBeforeRegenerate.messages.find((message) =>
+      message.id === regenerationParentMessageId)?.systemTurnKind;
+    const reviewedSnapshot = regeneratesUserSpeech ? runControlSnapshot : { ...runControlSnapshot, answerReview: null };
+    const regenerateControlPayload = {
+      ...runControlPayload(
+        runControlSnapshot,
+        Boolean(activeChat?.projectId)
+      ),
+      ...answerReviewPayload(reviewedSnapshot)
+    };
     const retryPdfPreparation = original.pdfPreparation?.some(({ phase }) => phase === "failed" || phase === "cancelled") === true;
 
     const assistantId = `assistant-regen-${Date.now()}`;
@@ -1522,7 +1958,7 @@ export function useMessageRunActions({
       createStreamTokenBuffer,
       failurePrefix: "regenerate_failed",
       fetchRun,
-      notifyAnswerReady,
+      notifyAnswerReady: answerNotifier(reviewedSnapshot),
       optimisticAssistantMessageId: assistantId,
       primeAnswerSound,
       reconcileMessageIds({ currentRunId, messageIds }) {
@@ -1582,9 +2018,12 @@ export function useMessageRunActions({
   }
 
   return {
+    continueAnswerReview,
     submitFollowup: submitRunFollowup,
     refreshInterruptedRun,
     regenerateMessage,
+    sendMcpApprovalContinuation,
+    startAnswerReview,
     sendStarterPrompt,
     submitMessageEdit: editMessageBranch,
     submitComposer

@@ -54,6 +54,7 @@ function harness(options: Readonly<{
       return event;
     }),
     deleteSubscription: vi.fn(),
+    loadAnswerReviewChat: vi.fn(async ({ chatId }: { chatId: string }) => events.has(`review:${chatId}`) ? { title: "Trip plan" } : null),
     listTargets: vi.fn(async () => options.targets ?? []),
     recordDelivery: vi.fn(async (target, outcome) => { recorded.push([target.id, outcome]); }),
     saveSubscription: vi.fn()
@@ -200,6 +201,37 @@ describe("browser push sender", () => {
     wake();
     await h.sender.idle();
     expect(h.requests.map((request) => request.endpoint.toString())).toEqual([laptop.target.endpoint]);
+  });
+
+  it("sends an automatic review's end after the grace, skipping devices that showed its last step's end", async () => {
+    const phone = device("phone");
+    const laptop = device("laptop");
+    const sleeps: number[] = [];
+    let wake: () => void = () => undefined;
+    const h = harness({
+      events: new Map([["review:chat-1", runEvent]]),
+      sleep: (ms) => new Promise((resolve) => { sleeps.push(ms); wake = resolve; }),
+      targets: [phone.target, laptop.target]
+    });
+    h.sender.notifyAnswerReview({ answerFailed: false, chatId: "chat-1", lastRunId: "run-step", rounds: 1, sessionId: "session-1",
+      state: "finished", stopReason: "clean", userId: "owner-1" });
+    await vi.waitFor(() => expect(sleeps).toEqual([RUN_PUSH_GRACE_MS]));
+    h.sender.runShown("run-step", phone.target.sessionId);
+    wake();
+    await h.sender.idle();
+    expect(h.store.loadAnswerReviewChat).toHaveBeenCalledWith({ chatId: "chat-1", userId: "owner-1" }, expect.any(Date));
+    expect(h.requests.map((request) => request.endpoint.toString())).toEqual([laptop.target.endpoint]);
+    expect(laptop.open(h.requests[0]!.body)).toEqual({ body: "Reviewed answer ready · 1 round", tag: "aiqsa-chat-chat-1",
+      title: "Trip plan", url: "/c/chat-1", v: 1 });
+  });
+
+  it("sends no review end for a chat that takes no push (Project, temporary, notifications off)", async () => {
+    const h = harness({ events: new Map(), targets: [device("phone").target] });
+    h.sender.notifyAnswerReview({ answerFailed: false, chatId: "chat-9", lastRunId: null, rounds: 1, sessionId: "session-9",
+      state: "finished", stopReason: "clean", userId: "owner-1" });
+    await h.sender.idle();
+    expect(h.store.listTargets).not.toHaveBeenCalled();
+    expect(h.requests).toHaveLength(0);
   });
 
   it("skips a device for a shown run only while the report is fresh", async () => {

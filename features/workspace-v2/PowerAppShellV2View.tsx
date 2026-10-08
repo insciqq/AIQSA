@@ -71,8 +71,13 @@ import type { PersonalMcpConnection } from "@/components/app-shell/personalMcpAp
 import { ensurePersonalMcpLoaded, usePersonalMcpStore } from "@/components/app-shell/personalMcpStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import {
+  refreshSkillLibrary,
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
+import type {
+  ComposerPaletteAssistantSource,
+  ComposerPaletteSkillSource
+} from "@/features/composer-v2/command-palette/paletteEntries";
 import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
 import { pinSkillForNextTurn } from "@/components/app-shell/skillPinActions";
 import type { PowerAppShellV2Props, ShellComposerView, ShellWorkspacePaneActions } from "@/components/app-shell/powerAppShellV2Contracts";
@@ -91,6 +96,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
+import { useAnswerReadAloud } from "@/features/read-aloud/useAnswerReadAloud";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
@@ -117,6 +123,7 @@ import {
   AnswerOutputsV2,
   ArtifactGenerationCardsV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { McpApprovalContinuationTurnV2 } from "@/features/answer-outputs-v2/McpApprovalCardV2";
 import {
   AnswerIdentityChipV2,
   answerIdentityV2,
@@ -132,6 +139,24 @@ import {
   type NewChatMode
 } from "@/features/navigation-v2/NavigationV2";
 import { RunAnswerV2, RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
+import {
+  answerReviewAuthorModelsV2,
+  answerReviewAutoChipV2,
+  answerReviewAutoRunningV2,
+  answerReviewAutoSummaryV2,
+  answerReviewAutoWaitV2,
+  answerReviewAvailabilityV2,
+  answerReviewGroupDisplayProgressV2,
+  answerReviewGroupProgressV2,
+  answerReviewReviewerCandidatesV2,
+  groupAnswerReviewsV2,
+  type AnswerReviewCatalogModelV2,
+  type AnswerReviewGroupV2
+} from "@/features/answer-review-v2/answerReviewModel";
+import { AnswerReviewSettingsDialogV2 } from "@/features/answer-review-v2/AnswerReviewSettingsDialogV2";
+import type { ComposerPaletteEntry } from "@/features/composer-v2/command-palette/paletteModel";
+import { AnswerReviewHistoryV2, AnswerReviewStatusV2, AnswerReviewTurnV2 } from "@/features/answer-review-v2/AnswerReviewV2";
+import { AnswerReviewDialogV2, type AnswerReviewReviewerPick } from "@/features/answer-review-v2/AnswerReviewDialogV2";
 import { KnowledgeCitationControl } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   presentRunLifecycleV2,
@@ -576,6 +601,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   /** Groups of monitoring checks with no update the reader opened, by group id. */
   const [openScheduledChecks, setOpenScheduledChecks] = useState<ReadonlySet<string>>(() => new Set());
+  // The reviewer picker of "Review…": the answer it reviews, its offer and the round being started.
+  const [answerReviewDialog, setAnswerReviewDialog] = useState<Readonly<{
+    answerMessageId: string;
+    candidates: readonly AnswerReviewCatalogModelV2[];
+    initial: readonly AnswerReviewReviewerPick[];
+  }> | null>(null);
+  const [answerReviewStarting, setAnswerReviewStarting] = useState(false);
+  const [answerReviewError, setAnswerReviewError] = useState<string | null>(null);
+  // The chat's automatic review settings, opened from the model picker's row or `/review`.
+  const [answerReviewSettingsOpen, setAnswerReviewSettingsOpen] = useState(false);
+  const [answerReviewSettingsError, setAnswerReviewSettingsError] = useState<string | null>(null);
+  const [answerReviewStoppingId, setAnswerReviewStoppingId] = useState<string | null>(null);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -597,9 +634,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const mcpServers = useMcpSettingsStore((state) => state.servers);
   const personalConnections = usePersonalMcpStore((state) => state.connections);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
+  const skillCatalogState = useSkillLibraryStore((state) => state.loadState);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
   const navigationFolders = useWorkspaceStore((state) => state.navigationFolders);
+  // Dictation is an account feature: the personal catalog decides it, also in Project chats.
+  const dictation = useWorkspaceStore((state) => state.catalog?.dictation ?? null);
   // Server-verified capability gate for the direct "Delete…" entries; the
   // deletion confirm surface and its semantics stay unchanged.
   const permanentChatDeletionAvailable = useMemorySettingsStore(
@@ -758,6 +798,29 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   });
   const latestMessage = thread.visibleMessages.at(-1);
   function openSkillLibrary() { setSkillLibraryScope(skillScopeKey); }
+  // The composer's `/` palette pins through the Skill library's own selection
+  // path and switches Assistants as the header selector does.
+  const pinPaletteSkill = (skillId: string) => selectManualSkills([...selectedSkills.map((skill) => skill.id), skillId]);
+  const paletteSkills: ComposerPaletteSkillSource = projectContext ? {
+    items: (activeProject?.resources ?? []).flatMap((resource) => resource.type === "skill" && resource.available
+      ? [{ id: resource.resourceId, name: resource.label, description: resource.description ?? "" }] : []),
+    pin: pinPaletteSkill,
+    state: activeProject ? "ready" : workspace.projects.syncState === "error" ? "error" : "loading"
+  } : {
+    items: (skillCatalog?.skills ?? []).filter((skill) => !skill.archived)
+      .map(({ description, id, name }) => ({ description, id, name })),
+    pin: pinPaletteSkill,
+    search: (query) => { void refreshSkillLibrary(false, query).catch(() => undefined); },
+    state: skillCatalogState
+  };
+  const paletteAssistants: ComposerPaletteAssistantSource = {
+    choose: composer.assistant.choose,
+    currentId: composer.assistant.current?.state === "bound" ? composer.assistant.current.id : null,
+    items: composer.assistant.pickerItems,
+    ...(composer.assistant.loadPickerItems ? { load: composer.assistant.loadPickerItems } : {}),
+    openPicker: () => composer.assistant.setPickerOpen(true),
+    pending: composer.assistant.pending
+  };
   const assistantAvailableSkills = assistantIncludedSkills ? assistantIncludedSkills.filter(skill => skill.mode === "available" && !selectedSkills.some(selected => selected.id === skill.id)).length : undefined;
   const continuationEligible = Boolean(workspace.pane.actions.openContinuedChat && session.activeChatId && latestMessage?.role === "assistant" &&
     latestMessage.status === "complete" && !thread.activeChatStreaming && !thread.activeChatDetailLoading &&
@@ -1036,10 +1099,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       locked: provenance.locked,
       name: modelName,
       onToggle: (anchor) => composerLayerController.current?.toggle("model", anchor),
+      review: composer.answerReview ? answerReviewAutoChipV2(composer.answerReview.state) : null,
       title: provenance.title
     };
   }, [
     chatAssistant,
+    composer.answerReview,
     composer.catalog,
     composer.catalogError,
     composer.currentModel,
@@ -1047,13 +1112,59 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     composerLayerHost,
     thread.activeChatStreaming
   ]);
+  // The chat's latest answer review while the server still drives it: the composer waits for it, and its
+  // initiator's Stop ends it; another member of a Project chat waits without a Stop.
+  const autoReviewGroup = (() => {
+    const last = groupAnswerReviewsV2(thread.visibleMessages).at(-1);
+    return last?.kind === "review" && answerReviewAutoRunningV2(last.group, answerReviewGroupProgressV2(last.group))
+      ? last.group : null;
+  })();
+  const autoReviewWait = autoReviewGroup ? answerReviewAutoWaitV2(autoReviewGroup) : null;
+  const stopAnswerReview = (sessionId: string) => {
+    if (!thread.stopAnswerReview || answerReviewStoppingId) return;
+    setAnswerReviewStoppingId(sessionId);
+    void thread.stopAnswerReview(sessionId).finally(() => setAnswerReviewStoppingId(null));
+  };
+  const answerReviewView = composer.answerReview ?? null;
+  const openAnswerReviewSettings = () => {
+    setAnswerReviewSettingsError(null);
+    setAnswerReviewSettingsOpen(true);
+  };
+  // `/review`: with the chat's reviewers at hand it turns review on or off; otherwise it opens the settings.
+  const answerReviewPaletteEntries: readonly ComposerPaletteEntry[] = answerReviewView ? [{
+    detail: answerReviewView.state.config.enabled
+      ? answerReviewAutoSummaryV2(answerReviewView.state)
+      : "Off · another model checks each answer",
+    disabledReason: answerReviewView.state.blockedReason,
+    icon: "shield",
+    id: "answer-review",
+    keywords: ["review", "answer review", "reviewer", "check answer"],
+    label: "Review answers",
+    run: () => {
+      const { config, reviewers } = answerReviewView.state;
+      if (config.enabled || (reviewers.length > 0 && reviewers.length === config.reviewers.length)) {
+        void answerReviewView.save({ ...config, enabled: !config.enabled }).then((error) => {
+          if (error) openAnswerReviewSettings();
+        });
+      } else {
+        openAnswerReviewSettings();
+      }
+    },
+    section: "actions"
+  }] : [];
   const canSubmitFollowup = Boolean(latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
     !activeProjectChat?.archived && (!projectContext || activeProject?.status === "ACTIVE" && activeProject.capabilities.mutateChats) && composer.submitFollowup);
   const composerSurface = (
     <ComposerV2
       sessionKey={skillScopeKey}
       usageLimitsAccountId={session.accountId}
-      activeRun={thread.activeChatStreaming && !thread.answerComplete}
+      activeRun={(thread.activeChatStreaming && !thread.answerComplete) || Boolean(autoReviewGroup)}
+      answerReview={answerReviewView ? {
+        disabledReason: answerReviewView.state.blockedReason,
+        onOpen: openAnswerReviewSettings,
+        summary: answerReviewAutoSummaryV2(answerReviewView.state)
+      } : null}
+      commandPaletteEntries={answerReviewPaletteEntries}
       skillsMode={skillsMode}
       onSelectSkillsMode={mode => useComposerControlStore.getState().setSkillsMode(mode)}
       artifactEdit={composerArtifactEdit}
@@ -1083,6 +1194,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       disabledReason={thread.editingMessageId
         ? "Finish or cancel the inline edit first."
         : composer.composerDisabledHint}
+      dictation={dictation}
       draft={composer.draft}
       comments={composerComments}
       draftTooLargeToKeep={composerDraftTooLarge}
@@ -1109,6 +1221,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onOpenModelParameters={() => setRunSetupOpen(true)}
       onOpenSkillLibrary={openSkillLibrary}
       onOverrideKnowledgePlan={composer.knowledge.override}
+      paletteAssistants={paletteAssistants}
+      paletteSkills={paletteSkills}
       onRemoveAttachment={id => { if (!cancelWorkspaceUpload(id)) composer.composerActions.removeAttachment(id); }}
       onRejectedFiles={(files) => composer.composerActions.rejectAttachments(files.map((file) => file.name))}
       onRetryAttachment={id => { if (!retryWorkspaceUpload(id)) composer.composerActions.retryAttachment?.(id); }}
@@ -1122,14 +1236,19 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onSelectSearchPlanMode={mode => composer.selectSearchPlan(composer.selectedSearchOptionIds, mode)}
       onResetSearchPlan={composer.useOrganizationSearchDefault}
       onSend={() => void composer.submitComposer()}
-      onFollowup={canSubmitFollowup
+      onFollowup={canSubmitFollowup && !autoReviewGroup
           ? runId => void composer.submitFollowup?.(runId) : undefined}
       followupSending={Boolean(followupSubmission?.inFlight)}
-      onStop={() => void composer.stopCurrentRun(thread.currentRunId)}
-      stopping={composer.stopping}
+      onStop={() => {
+        if (!autoReviewGroup) void composer.stopCurrentRun(thread.currentRunId);
+        else if (!autoReviewWait?.stopUnavailableReason) stopAnswerReview(autoReviewGroup.session.id);
+      }}
+      stopUnavailableReason={autoReviewWait?.stopUnavailableReason ?? null}
+      stopping={composer.stopping || Boolean(autoReviewGroup && answerReviewStoppingId === autoReviewGroup.session.id)}
       onUploadFiles={(files) => composer.uploadFiles(files)}
       onReuseFile={composer.reuseFile}
-      runId={thread.currentRunId}
+      // A review between its steps has no run of its own: its Stop ends the session.
+      runId={thread.currentRunId ?? (autoReviewGroup ? `answer-review:${autoReviewGroup.session.id}` : null)}
       knowledgePlanSource={composer.knowledge.planSource}
       mcpSelection={mcpSelection}
       selectedKnowledgeSelection={composer.knowledge.selection}
@@ -1165,6 +1284,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerOperationError = (
     <>
       <BackgroundRunStatusV2 onCheck={thread.checkBackgroundRun} waiting={Boolean(thread.backgroundRunWaiting)} />
+      {autoReviewWait ? (
+        <div className="v2-live-composer-error v2-live-background-run" data-testid="answer-review-composer-status" role="status">
+          <span>{autoReviewWait.notice}</span>
+        </div>
+      ) : null}
       <ComposerOperationErrorV2
         error={composer.operationError}
         live={composer.operationErrorLive}
@@ -1240,6 +1364,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     />
   ) : null;
   const messageById = new Map(thread.visibleMessages.map((message) => [message.id, message]));
+  const readAloud = useAnswerReadAloud({
+    chatKey: session.activeChatId,
+    hasMessage: (id) => messageById.has(id),
+    runActive: thread.activeChatStreaming
+  });
   const previousAnswerById = previousVisibleAnswersV2(thread.visibleMessages);
   const liveTail = thread.visibleMessages.at(-1);
   const readingAnchorMessageId = liveTail?.role === "assistant"
@@ -1251,9 +1380,18 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     role: message.role,
     streaming: message.status === "streaming"
   });
+  // An answer review session reads as one answer: its latest version stands
+  // for the group in the transcript and renders the group's history with it.
+  const answerReviewGroups = new Map<string, AnswerReviewGroupV2>();
+  const reviewedTranscript = groupAnswerReviewsV2(thread.visibleMessages).map((item) => {
+    if (item.kind === "message") return item.message;
+    answerReviewGroups.set(item.group.latest.id, item.group);
+    return item.group.latest;
+  });
+  const latestAnswerReviewSession = [...answerReviewGroups.values()].at(-1)?.session ?? null;
   // Consecutive monitoring checks with no update fold into one quiet row; opening it shows them unchanged below.
   const scheduledCheckGroups = new Map<string, number>();
-  const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
+  const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(reviewedTranscript).flatMap((item) => {
     if (item.kind === "message") return [conversationMessage(item.message)];
     scheduledCheckGroups.set(item.id, item.checks);
     const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
@@ -1267,6 +1405,39 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const presentAnswer = (source: ThreadMessage) => presentAnswerV2(source, thread);
   const announcedPresentation = announcedPresentationV2(liveTail, thread);
 
+  const reviewModels: readonly AnswerReviewCatalogModelV2[] = composer.catalog?.models ?? [];
+  /** "Review…" on an answer: offered on the chat's latest answer only, disabled with its reason. */
+  const reviewActionFor = (answer: ThreadMessage, latest: boolean): Pick<ConversationMessageActionsV2, "onReview" |
+    "reviewDisabledReason"> => {
+    if (answer.role !== "assistant" || answer.status !== "complete") return {};
+    const authorModels = answerReviewAuthorModelsV2(answer, reviewModels);
+    const candidates = answerReviewReviewerCandidatesV2(reviewModels, authorModels);
+    const availability = answerReviewAvailabilityV2({
+      activeRun: thread.activeChatStreaming || Boolean(autoReviewGroup),
+      agentEnabled: composer.agent?.enabled === true,
+      answer,
+      assistantChat: composer.assistant.current?.state === "bound",
+      authorModels,
+      candidates,
+      knowledgeEnabled: composer.knowledge.selection.mode !== "none",
+      latest,
+      mutationReason: projectMutationReason ?? (thread.editingMessageId ? "Finish or cancel the inline edit first." : null)
+    });
+    if (!thread.startAnswerReview) return {};
+    return {
+      onReview: () => {
+        setAnswerReviewError(null);
+        setAnswerReviewDialog({
+          answerMessageId: answer.id,
+          candidates,
+          // Until Settings holds a default, the chat's most recent choice of reviewers.
+          initial: answer.answerReview?.session.reviewers ?? latestAnswerReviewSession?.reviewers ?? []
+        });
+      },
+      reviewDisabledReason: availability.available ? null : availability.reason
+    };
+  };
+
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const editMutationReason = thread.editingMessageId
       ? "Finish or cancel the inline edit first."
@@ -1279,8 +1450,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const question = message.parentMessageId ? messageById.get(message.parentMessageId) : null;
     const regenerateUnavailable = message.role === "assistant" &&
       (question === null || (question !== undefined && question.role !== "user"));
+    // A step of the chat's automatic review is the run in progress: its initiator's Stop ends the review and frees the chat.
     const disabledReason = thread.activeChatStreaming
-      ? "Wait for the current answer to finish."
+      ? autoReviewWait?.actionsReason ?? "Wait for the current answer to finish."
       : projectMutationReason ?? editMutationReason ??
         (regenerateUnavailable ? "There is no question before this answer to answer again." : null);
     return {
@@ -1294,13 +1466,40 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ...(message.role === "user" ? {
         onEdit: () => thread.handleEditMessage(message)
       } : {
+        ...(readAloud && messageText(message).trim() ? {
+          onReadAloud: () => readAloud.toggle(message.id, messageText(message)),
+          readingAloud: readAloud.activeId === message.id
+        } : {}),
         onRegenerate: () => thread.handleRegenerateMessage(message.id),
-        regenerateDisabled: mutationBlocked || regenerateUnavailable
+        regenerateDisabled: mutationBlocked || regenerateUnavailable,
+        ...reviewActionFor(message, message.id === latestMessage?.id)
       })
     };
   };
 
+  /**
+   * A review group's actions act on its answer: copy, read and branch from
+   * its latest version (a branch copies the question and that version, never
+   * the review), regenerate or delete from its source answer (a new branch,
+   * or the whole group), and review it again.
+   */
+  const reviewGroupActionsFor = (group: AnswerReviewGroupV2): ConversationMessageActionsV2 => {
+    const latest = group.messages.at(-1)?.id === thread.visibleMessages.at(-1)?.id;
+    const base = actionsFor(group.latest);
+    const source = group.source;
+    return {
+      ...base,
+      ...(source ? {
+        onDelete: () => thread.handleDeleteMessage(source.id),
+        onRegenerate: () => thread.handleRegenerateMessage(source.id)
+      } : { onDelete: undefined, onRegenerate: undefined }),
+      ...reviewActionFor(group.latest, latest)
+    };
+  };
+
   const renderMessage = (message: ConversationMessageV2): ReactNode => {
+    const reviewGroup = answerReviewGroups.get(message.id);
+    if (reviewGroup) return renderAnswerReviewGroup(reviewGroup);
     const checks = scheduledCheckGroups.get(message.id);
     if (checks !== undefined) {
       return (
@@ -1329,6 +1528,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onCheckout={branches.checkoutBranch}
       />
     );
+    if (source.role === "user" && source.systemTurnKind === "mcp_approval_continuation") {
+      // The server-written turn after an approval is not the user's speech.
+      return <McpApprovalContinuationTurnV2 anchorId={source.id} content={messageText(source)} />;
+    }
+    if (source.role === "user" && source.systemTurnKind) {
+      // A review step's server-written turn outside its group (a copy without
+      // its session) is never shown as the user's speech either.
+      return <AnswerReviewTurnV2 anchorId={source.id} kind={source.systemTurnKind} />;
+    }
     if (source.role === "user") {
       // Owner-only quiet line of the files sent with this exact message,
       // rendered from the labels the thread snapshot already exposes.
@@ -1371,6 +1579,39 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         />
       );
     }
+    return renderAnswerMessage(source, { actions, pagerSlot });
+  };
+
+  /**
+   * One answer as the transcript renders it. A review group passes its own
+   * actions, status line and history; an answer inside the history passes no
+   * actions and a leading label.
+   */
+  const renderAnswerMessage = (source: ThreadMessage, options: Readonly<{
+    actions: ConversationMessageActionsV2 | null;
+    afterOutputs?: ReactNode;
+    leading?: ReactNode;
+    notice?: ReactNode;
+    pagerMessageId?: string;
+    pagerSlot?: ReactNode;
+  }>): ReactNode => {
+    const actions = options.actions ?? undefined;
+    // An answer inside a review history is a step's own run: it is never
+    // regenerated or retried on its own, only through its session.
+    const inHistory = options.actions === null;
+    const pagerMessageId = options.pagerMessageId ?? source.id;
+    const pagerSlot = options.pagerSlot ?? (
+      <BranchPagerSlotV2
+        disabledReason={thread.activeChatStreaming
+          ? "Wait for the current answer to finish."
+          : projectMutationReason ?? (thread.editingMessageId
+              ? "Finish or cancel the inline edit first."
+              : null)}
+        graph={branches.graph}
+        messageId={pagerMessageId}
+        onCheckout={branches.checkoutBranch}
+      />
+    );
     const { artifact, events, ownsLiveRun, presentation, transportLost } = presentAnswer(source);
     const toolActivity = presentToolActivityV2(events, source.toolActivity ?? null,
       !transportLost && (source.status === "complete" || source.status === "error" || source.status === "cancelled"));
@@ -1395,15 +1636,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     // fold (Thinking → Steps → Memory) sits above the text with the
     // memory-saved notice under it; the actions row below carries the pager,
     // the Sources chip and the verbs.
-    const leadingSlot = activeChatSummary?.hasContinuationSource && !source.runId &&
+    const identityLead = activeChatSummary?.hasContinuationSource && !source.runId &&
       source.parentMessageId === thread.visibleMessages[0]?.id && thread.visibleMessages[0]?.parentMessageId === null ? (
       <a className="v2-chat-continuation-source v2-focusable"
         href={`/api/chats/${encodeURIComponent(activeChatSummary.id)}/continuation-source`}>Previous chat</a>
     ) : identity ? <AnswerIdentityChipV2 identity={identity} /> : null;
+    const leadingSlot = options.leading ? <>{options.leading}{identityLead}</> : identityLead;
     const command = source.parentMessageId ? memoryCommands.get(source.parentMessageId) : undefined;
     // A background command owns the notice slot; its failed, unknown, stale
     // and rejected outcomes stay silent instead of reviving older feedback.
-    const noticeSlot = command && memoryCommandIsVisible(command) ? (
+    const memoryNotice = command && memoryCommandIsVisible(command) ? (
       <MemoryCommandStatusV2 command={command} onOpenMemory={settings.openMemory} />
     ) : command && (command.operation !== "UNKNOWN" ||
       ["FAILED", "UNKNOWN", "STALE"].includes(command.status)) ? null
@@ -1414,6 +1656,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onOpenMemorySettings={settings.openMemory}
       />
     ) : null;
+    const noticeSlot = options.notice ? <>{options.notice}{memoryNotice}</> : memoryNotice;
     const knowledgeHandles = new Set(
       artifact?.knowledgeCitations?.map((citation) => citation.handle) ?? []
     );
@@ -1438,6 +1681,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 artifact={artifact}
                 live={!settled}
                 canSaveFiles={!projectContext && !temporarySession}
+                runId={source.runId ?? null}
+                latestAnswer={source.id === latestMessage?.id}
+                onContinueAfterMcpApproval={thread.sendMcpApprovalContinuation}
                 onEditArtifact={projectContext || temporarySession ? undefined : generated => editArtifact(generated)}
                 onEditScheduledTask={projectContext || temporarySession || !settings.studio ? undefined
                   : (taskId) => openScheduledTaskEditorV2(taskId, (after) => settings.studio?.open("scheduled", after))}
@@ -1459,6 +1705,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onOpen={(draftId, source) => { if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, draftId }, source); }}
                 onOpenArtifact={(generated, source) => { if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source); }}
               /> : null}
+              {options.afterOutputs}
             </>}
         anchorId={source.id}
         artifact={artifact}
@@ -1469,16 +1716,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         leadingSlot={leadingSlot}
         noticeSlot={noticeSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
-        onRegenerate={() => thread.handleRegenerateMessage(source.id)}
-        onRetry={() => {
+        onRegenerate={inHistory ? undefined : () => thread.handleRegenerateMessage(source.id)}
+        onRetry={inHistory ? undefined : () => {
           if (isMcpAutoDiscoveryFailureCode(presentation.failure?.code)) {
             retryAutoMcpDiscoveryV2(() => thread.handleRegenerateMessage(source.id));
             return;
           }
           thread.handleRegenerateMessage(source.id);
         }}
-        onSelectModel={() => setRunSetupOpen(true)}
-        onUseLoadAll={() => applyLoadAllAfterMcpDiscoveryFailureV2(
+        onSelectModel={inHistory ? undefined : () => setRunSetupOpen(true)}
+        onUseLoadAll={inHistory ? undefined : () => applyLoadAllAfterMcpDiscoveryFailureV2(
           () => thread.handleRegenerateMessage(source.id)
         )}
         pdfPreparation={source.pdfPreparation}
@@ -1495,7 +1742,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ) : null
           : undefined}
         showReasoning={composer.showReasoningBlocks}
-        toolbarLeading={branches.graph && branchPagerForMessageV2(branches.graph, source.id)
+        toolbarLeading={options.actions && branches.graph && branchPagerForMessageV2(branches.graph, pagerMessageId)
           ? pagerSlot
           : null}
         toolActivity={toolActivity}
@@ -1504,6 +1751,51 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       />
       </>
     );
+  };
+
+  /**
+   * A review session as one answer: its status line above the latest
+   * version, which keeps the ordinary answer anatomy, and its collapsed
+   * history below. Versions are answer content, so the settled answer grows
+   * no receipt row: the history holds earlier versions and the steps.
+   */
+  const renderAnswerReviewGroup = (group: AnswerReviewGroupV2): ReactNode => {
+    const runningAnswer = group.steps.find((entry) => entry.answer?.status === "streaming")?.answer ?? null;
+    const latestGroup = group.messages.at(-1)?.id === thread.visibleMessages.at(-1)?.id;
+    // Like the answer's own Stop: a step's run is stoppable once the server acknowledged it. Until then the
+    // optimistic step has no run id and a Stop would be dropped, so the button waits with its reason.
+    const stepRunId = runningAnswer && latestGroup ? thread.currentRunId ?? thread.interruptedRun?.runId ?? null : null;
+    // A group the chat moved on from shows no status: the next run superseded it, whatever this page last read.
+    const progress = answerReviewGroupDisplayProgressV2(group, { latest: latestGroup, ...(runningAnswer
+      ? { live: { artifact: presentAnswer(runningAnswer).artifact, messageId: runningAnswer.id } } : {}) });
+    const actionsEnabled = latestGroup && !thread.activeChatStreaming && !projectMutationReason && !thread.editingMessageId;
+    const startStep = (kind: "review" | "revision") => void thread.continueAnswerReview?.(group.session.id, kind);
+    return renderAnswerMessage(group.latest, {
+      actions: reviewGroupActionsFor(group),
+      afterOutputs: (
+        <AnswerReviewHistoryV2
+          defaultOpen={progress.stopReason === "approval_required" || progress.stopReason === "disagreement"}
+          group={group}
+          renderAnswer={(message, leading) => renderAnswerMessage(message, { actions: null, leading })}
+        />
+      ),
+      notice: (
+        <AnswerReviewStatusV2
+          actionsEnabled={actionsEnabled && Boolean(thread.continueAnswerReview)}
+          group={group}
+          onContinue={() => startStep("review")}
+          onRevise={() => startStep("revision")}
+          onStop={() => {
+            if (stepRunId) void composer.stopCurrentRun(stepRunId);
+          }}
+          onStopSession={thread.stopAnswerReview ? () => stopAnswerReview(group.session.id) : undefined}
+          progress={progress}
+          stopUnavailableReason={stepRunId ? null : "The run is not yet acknowledged by the server."}
+          stopping={composer.stopping || answerReviewStoppingId === group.session.id}
+        />
+      ),
+      pagerMessageId: group.source?.id ?? group.latest.id
+    });
   };
 
   // The account menu always opens the account's own Settings, also in a Project.
@@ -1895,6 +2187,44 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
               title={session.activeChatTitle}
             />
+            {answerReviewSettingsOpen && answerReviewView ? (
+              <AnswerReviewSettingsDialogV2
+                busy={answerReviewView.saving}
+                candidates={answerReviewView.state.candidates}
+                error={answerReviewSettingsError}
+                initial={answerReviewView.state.config}
+                mode="chat"
+                onCancel={() => setAnswerReviewSettingsOpen(false)}
+                onSave={(config) => {
+                  setAnswerReviewSettingsError(null);
+                  void answerReviewView.save(config).then((error) => {
+                    if (error) setAnswerReviewSettingsError(error);
+                    else setAnswerReviewSettingsOpen(false);
+                  });
+                }}
+                unavailableReason={answerReviewView.state.unavailableReason}
+              />
+            ) : null}
+            {answerReviewDialog ? (
+              <AnswerReviewDialogV2
+                busy={answerReviewStarting}
+                candidates={answerReviewDialog.candidates}
+                error={answerReviewError}
+                initial={answerReviewDialog.initial}
+                onCancel={() => setAnswerReviewDialog(null)}
+                onStart={(reviewers) => {
+                  if (!thread.startAnswerReview) return;
+                  setAnswerReviewStarting(true);
+                  setAnswerReviewError(null);
+                  void thread.startAnswerReview({ answerMessageId: answerReviewDialog.answerMessageId, reviewers })
+                    .then((result) => {
+                      if (result.ok) setAnswerReviewDialog(null);
+                      else setAnswerReviewError(result.error);
+                    })
+                    .finally(() => setAnswerReviewStarting(false));
+                }}
+              />
+            ) : null}
             <ConversationV2
               composerSlot={conversationMessages.length === 0 ? (
                 <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>

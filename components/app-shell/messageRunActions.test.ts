@@ -12,6 +12,9 @@ import type { ConsumeMessageRunStream } from "./messageRunLifecycle";
 import { assistantControlDefaults, useMessageRunActions } from "./messageRunActions";
 import { chatRouteForState } from "./chatRoute";
 import { useRunLifecycleStore } from "./runLifecycleStore";
+import { useRunLifecycleActions } from "./runLifecycleActions";
+import { visibleMessagePath } from "./threadPath";
+import { answerReviewGroupDisplayProgressV2, groupAnswerReviewsV2 } from "@/features/answer-review-v2/answerReviewModel";
 import {
   selectRunSurface,
   useRunSurfaceStore
@@ -238,6 +241,7 @@ function useMessageRunActionsForTest(input: {
   activeChat?: WorkspaceChatSummary | null;
   activeChatId?: string | null;
   activeChatStreaming?: boolean;
+  answerReviewForSend?: Parameters<typeof useMessageRunActions>[0]["answerReviewForSend"];
   attachments: ComposerAttachment[];
   buildControlDraft?: () => SavedControlDraft;
   buildParams?: () => Record<string, unknown>;
@@ -316,6 +320,7 @@ function useMessageRunActionsForTest(input: {
 
   const actions = useMessageRunActions({
     activeChat,
+    ...(input.answerReviewForSend ? { answerReviewForSend: input.answerReviewForSend } : {}),
     activeChatDetailLoading: false,
     activeChatId,
     activeChatIdRef,
@@ -1910,6 +1915,37 @@ describe("message run actions", () => {
       expect(actions.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
       expect(actions.session(actions.sourceSessionKey).draft).toBe("Keep this draft");
     });
+  });
+
+  it("carries the chat's automatic review with each reviewer's Search for its model and leaves the answer unannounced", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const reviewerModel: CatalogModel = { ...mixedSearchModel, displayName: "Reviewer", modelId: "reviewer",
+      searchOptionCompatibility: { [clientSearchOptionId]: { clientToolCompatible: true, executionModes: ["all_selected"] } },
+      searchStrategyIds: ["search-disabled", clientSearchOptionId] };
+    const catalog = { ...mixedSearchCatalog("personal"), models: [mixedSearchModel, reviewerModel] };
+    const review = { enabled: true, maxRounds: 2 as const, reviewers: [{ modelId: "reviewer", provider: reviewerModel.provider }] };
+    const actions = useMessageRunActionsForTest({ answerReviewForSend: () => review, attachments: [], draft: "Check the total",
+      model: mixedSearchModel, resolveCatalog: () => catalog });
+    useComposerControlStore.setState({ selectedModelId: mixedSearchModel.modelId,
+      selectedSearchOptionIds: [hostedSearchOptionId, clientSearchOptionId], searchPlanMode: "all_selected" });
+
+    await actions.submitComposer();
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body.answerReview).toEqual({ maxRounds: 2, reviewers: [{ modelId: "reviewer", provider: reviewerModel.provider,
+      searchPlan: { mode: "all_selected", optionIds: [clientSearchOptionId] } }] });
+    // The review's end notifies once; the answer it reviews does not.
+    expect(actions.notifyAnswerReady).not.toHaveBeenCalled();
+  });
+
+  it("sends no review when the chat's review is off and announces the answer as usual", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ answerReviewForSend: () => null, attachments: [], draft: "Plain question" });
+    await actions.submitComposer();
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body).not.toHaveProperty("answerReview");
   });
 
   it("materializes an ordinary explicit Knowledge plan in the run request", async () => {
@@ -4460,5 +4496,178 @@ describe("assistantControlDefaults", () => {
     }, plainModel)).toEqual({ maxOutputTokens: "4096", temperature: "0.4" });
     expect(assistantControlDefaults({ maxOutputTokens: "0", temperature: " " }, model)).toEqual({});
     expect(assistantControlDefaults({ maxOutputTokens: "12.5", temperature: "warm" }, model)).toEqual({});
+  });
+});
+
+describe("continuation after an MCP approval", () => {
+  const card = { approvalId: "approval-1", serverName: "Records", toolName: "delete_record" };
+  const retry = "The answer did not continue. Use Continue on the approval card to try again.";
+
+  beforeEach(() => {
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+  });
+
+  it("sends the server's turn after the latest answer and reports a started run", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Kept draft" });
+    prepareRegenerationThread();
+
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("started");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/chats/chat-a/messages");
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ expectedActiveLeafId: "assistant-original",
+      systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } });
+    expect(body).not.toHaveProperty("content");
+    expect(body).not.toHaveProperty("text");
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Kept draft" });
+  });
+
+  it("says why it did not start while another answer runs, and sends nothing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    prepareRegenerationThread();
+    useRunLifecycleStore.getState().streamStarted({ assistantMessageId: "assistant-other", chatId: "chat-a" });
+
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("not_started");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.setNotice).toHaveBeenCalledWith({ chatId: "chat-a", kind: "error",
+      text: `Another answer is still running in this chat. ${retry}` });
+  });
+
+  it("says why it did not start without a runnable model or a latest answer", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const withoutModel = useMessageRunActionsForTest({ attachments: [], draft: "", model: null });
+    prepareRegenerationThread();
+    expect(await withoutModel.sendMcpApprovalContinuation(card)).toBe("not_started");
+    expect(withoutModel.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error",
+      text: `No available model is selected for this chat. ${retry}` });
+
+    const withoutAnswer = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    expect(await withoutAnswer.sendMcpApprovalContinuation(card)).toBe("not_started");
+    expect(withoutAnswer.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error",
+      text: `The chat's latest answer could not be found. ${retry}` });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rolls a refused turn back and points to Continue, unless the approval is gone", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => Response.json({ error: "active_run_in_progress" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    prepareRegenerationThread();
+
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("not_started");
+    expect(actions.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error", text: expect.stringMatching(
+      /^Another response is still running\..* The answer did not continue\. Use Continue on the approval card to try again\.$/u) });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages.map((message) => message.id))
+      .toEqual(["user-original", "assistant-original"]);
+
+    fetchMock.mockImplementation(async () => Response.json({ error: "mcp_approval_continuation_unavailable" }, { status: 409 }));
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("unavailable");
+    expect(actions.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error",
+      text: "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval." });
+  });
+});
+
+describe("answer review steps", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const session = {
+    author: { modelId: "author-model", name: "GPT-5.5", provider: "openai" },
+    canAct: true,
+    id: "session-1",
+    maxRounds: null,
+    mode: "manual",
+    reviewers: [{ modelId: "reviewer-model", name: "Fixture Reviewer", provider: "connection-r" }],
+    round: 1,
+    sourceAssistantMessageId: "answer-1",
+    state: "running",
+    stopReason: null
+  } as const;
+
+  /** The group of the chat's review session as the transcript reads it, with its running step's answer. */
+  function reviewGroup() {
+    const thread = selectThreadSnapshot(useThreadStore.getState(), "chat-a");
+    const item = groupAnswerReviewsV2(visibleMessagePath(thread.messages, thread.activeLeafId))
+      .find((entry) => entry.kind === "review");
+    if (!item || item.kind !== "review") throw new Error("no review group");
+    return item.group;
+  }
+
+  it("stops a running review step through the real cancellation endpoint and shows it stopped", async () => {
+    let streamSignal: AbortSignal | undefined;
+    let acknowledge!: () => void;
+    const acknowledged = new Promise<void>((resolve) => { acknowledge = resolve; });
+    const actions = useMessageRunActionsForTest({
+      attachments: [],
+      async consumeRunStream({ onMessageIds, onRunId, signal }) {
+        // The step's run is admitted and announced; its slow reviewer has not answered yet.
+        await acknowledged;
+        onRunId("run-s");
+        onMessageIds({ assistantMessageId: "step-answer", userMessageId: "step-turn" }, "run-s");
+        streamSignal = signal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) resolve();
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return { failed: false, receivedChatUpdate: false, runId: "run-s", terminalStatus: "cancelled" };
+      }
+    });
+    useThreadStore.getState().replaceThread("chat-a", {
+      activeLeafId: "answer-1",
+      messages: [
+        { content: "Question", id: "question-1", parentMessageId: null, role: "user", status: "complete" },
+        { content: "Answer", id: "answer-1", modelId: "gpt-5.5", parentMessageId: "question-1", provider: "openai", role: "assistant",
+          runId: "run-a", status: "complete" }
+      ],
+      usageStats: null
+    });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/chats/chat-a/answer-reviews" && init?.method === "POST") return Response.json({ session });
+      if (url === "/api/answer-reviews/session-1/steps" && init?.method === "POST") {
+        return new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" }, status: 200 });
+      }
+      if (url === "/api/model-runs/run-s/cancel" && init?.method === "POST") {
+        return Response.json({ run: { id: "run-s", status: "cancelled" } });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lifecycle = useRunLifecycleActions({
+      activeChatId: "chat-a",
+      activeChatIdRef: actions.activeChatIdRef,
+      activeStreamAbortRef: actions.activeStreamAbortRef,
+      notifyAnswerReady: vi.fn(async () => undefined),
+      refreshActiveChat: actions.refreshActiveChat,
+      setNotice: vi.fn()
+    });
+
+    await expect(actions.startAnswerReview({ answerMessageId: "answer-1",
+      reviewers: [{ modelId: "reviewer-model", provider: "connection-r" }] })).resolves.toEqual({ ok: true });
+    // Before the server acknowledges the step's run a Stop has no run to cancel and is dropped:
+    // the status line therefore keeps its Stop disabled until then.
+    await vi.waitFor(() => expect(useRunLifecycleStore.getState().activeStreams["chat-a"]).toMatchObject({ runId: null }));
+    await lifecycle.stopCurrentRun(undefined);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/cancel"))).toBe(false);
+    acknowledge();
+    await vi.waitFor(() => expect(useRunLifecycleStore.getState().activeStreams["chat-a"]).toMatchObject({ runId: "run-s" }));
+    await vi.waitFor(() => expect(reviewGroup().steps[0]?.answer).toMatchObject({ id: "step-answer", status: "streaming" }));
+    expect(answerReviewGroupDisplayProgressV2(reviewGroup(), { latest: true }).running).toMatchObject({ kind: "review" });
+
+    // The status line's Stop: the running step's own run, through the ordinary Stop.
+    await lifecycle.stopCurrentRun(reviewGroup().steps[0]?.answer?.runId ?? undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/model-runs/run-s/cancel", { method: "POST" });
+    expect(streamSignal?.aborted).toBe(true);
+    expect(reviewGroup().steps[0]?.answer).toMatchObject({ id: "step-answer", status: "cancelled" });
+    expect(answerReviewGroupDisplayProgressV2(reviewGroup(), { latest: true })).toMatchObject({
+      running: null, state: "stopped", stopReason: "user_stopped"
+    });
   });
 });

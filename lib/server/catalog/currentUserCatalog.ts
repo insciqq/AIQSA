@@ -22,10 +22,17 @@ import {
   type ChatDefaults
 } from "../../contracts/chatDefaults";
 import { decodeKnowledgePlan } from "../../contracts/knowledge";
+import {
+  ANSWER_REVIEW_AUTO_DEFAULT,
+  decodeAnswerReviewAutoConfig,
+  type AnswerReviewAutoConfig
+} from "../../contracts/answerReviews";
 import { supportsAgentAdapter } from "../providers/agentResponses";
 
 export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   browserNotificationsEnabled?: boolean;
+  /** Automatic answer review new chats start with; absent or unreadable is off. */
+  defaultAnswerReview?: unknown;
   /** Saved personal default Assistant, before any availability check. */
   defaultAssistantId?: string | null;
   /** Whether the saved default Assistant is available to the user now; absent means not checked. */
@@ -42,6 +49,13 @@ export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
   showCitations: boolean;
   showReasoningBlocks: boolean;
 };
+
+/** The automatic answer review new chats start with: the saved one, else off with no reviewers. */
+export function resolveAnswerReviewDefault(settings: Pick<CatalogSettingsRecord, "defaultAnswerReview">): AnswerReviewAutoConfig {
+  const saved = settings.defaultAnswerReview === null || settings.defaultAnswerReview === undefined
+    ? null : decodeAnswerReviewAutoConfig(settings.defaultAnswerReview);
+  return saved ?? ANSWER_REVIEW_AUTO_DEFAULT;
+}
 
 /** Personal chat defaults from the settings row; unreadable values fall back to the installation defaults. */
 export function resolveChatDefaults(
@@ -257,6 +271,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       searchPreferenceSource: searchPreference.source,
       ...resolveChatDefaults(input.settings),
       ...catalogDefaultAssistant(input.settings),
+      answerReview: resolveAnswerReviewDefault(input.settings),
       workspaceEnabled: input.settings.defaultWorkspaceEnabled ?? true,
       showCitations: input.settings.showCitations,
       showReasoningBlocks: input.settings.showReasoningBlocks
