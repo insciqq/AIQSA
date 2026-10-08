@@ -340,7 +340,9 @@ function specEnvironment({ caPath, extraEnv, mode, secrets }) {
     `AIQSA_E2E_AD_CA_FILE=${caPath}`,
     "AIQSA_E2E_HEADER_PROXY_URL=http://127.0.0.1:8088",
     "AIQSA_E2E_SCIM_BASE_FROM_IDP=http://router:3000/scim/v2",
-    ...(mode === "trusted" ? ["AIQSA_TRUST_PROXY_HEADERS=true", "AIQSA_TRUSTED_PROXY_COUNT=1"] : [])
+    ...(mode === "trusted"
+      ? ["AIQSA_TRUST_PROXY_HEADERS=true", "AIQSA_TRUSTED_PROXY_COUNT=1", "AIQSA_E2E_APP_BASE_URL=http://127.0.0.1:8088"]
+      : [])
   ];
   return `${[...lines, ...extraEnv].join("\n")}\n`;
 }
