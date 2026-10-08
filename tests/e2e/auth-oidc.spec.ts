@@ -89,7 +89,7 @@ test("the login page offers the OIDC button and explains an unreachable provider
 
   await button.click();
   await expect(page).toHaveURL(/\/login\?oauth=failed&provider=oidc&next=%2Fprojects$/u);
-  await expect(page.getByRole("alert")).toContainText(`${LABEL} sign-in could not be completed. Try again or use email and password. (oauth_failed)`);
+  await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText(`${LABEL} sign-in could not be completed. Try again or use email and password. (oauth_failed)`);
   await page.context().close();
 });
 
@@ -98,14 +98,14 @@ test("the login page explains the source_changed and email_missing outcomes", as
   const page = await anonymousPage(browser);
   await expect(async () => {
     await page.goto("/login?oauth=source_changed&provider=oidc");
-    await expect(page.getByRole("alert")).toContainText(LABEL, { timeout: 1_000 });
+    await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText(LABEL, { timeout: 1_000 });
   }).toPass({ timeout: 15_000 });
-  await expect(page.getByRole("alert")).toContainText("linked through a previous sign-in configuration. Ask an administrator to unlink it");
-  await expect(page.getByRole("alert")).toContainText("(oauth_source_changed)");
+  await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText("linked through a previous sign-in configuration. Ask an administrator to unlink it");
+  await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText("(oauth_source_changed)");
 
   await page.goto("/login?oauth=email_missing&provider=oidc");
-  await expect(page.getByRole("alert")).toContainText(`${LABEL} did not share an email address for this account.`);
-  await expect(page.getByRole("alert")).toContainText("(oauth_email_missing)");
+  await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText(`${LABEL} did not share an email address for this account.`);
+  await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText("(oauth_email_missing)");
   await page.context().close();
 });
 
@@ -118,7 +118,7 @@ test("auto-redirect sends /login to the provider, with ?local=1 and outcomes as 
     await page.goto("/login");
     await expect(page).toHaveURL(/\/login\?oauth=failed&provider=oidc/u, { timeout: 1_000 });
   }).toPass({ timeout: 15_000 });
-  await expect(page.getByRole("alert")).toContainText("(oauth_failed)");
+  await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText("(oauth_failed)");
 
   const redirect = await page.request.get("/login?next=%2Fprojects", { maxRedirects: 0 });
   expect([303, 307, 308]).toContain(redirect.status());
@@ -131,7 +131,7 @@ test("auto-redirect sends /login to the provider, with ?local=1 and outcomes as 
 
   await page.goto("/login?reason=session_expired");
   await expect(page).toHaveURL(/\/login\?reason=session_expired$/u);
-  await expect(page.getByRole("alert")).toContainText("(session_expired)");
+  await expect(page.locator("[role=alert]:not(#__next-route-announcer__)")).toContainText("(session_expired)");
   await page.context().close();
 });
 
