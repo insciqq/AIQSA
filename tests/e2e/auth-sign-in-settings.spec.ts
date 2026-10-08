@@ -68,7 +68,9 @@ test("admin configures Google with draft, test and activate, and the login page 
   await google.getByLabel("Client secret").fill(GOOGLE_SECRET);
   await expect(google.getByRole("button", { name: "Activate" })).toBeDisabled();
   await google.getByRole("button", { name: "Save" }).click();
-  await expect(google.getByLabel("Client secret")).toHaveValue("");
+  // Polled as a boolean: a failing value assertion would print the secret. The first save also
+  // waits for the route to compile on a fresh dev server.
+  await expect.poll(async () => (await google.getByLabel("Client secret").inputValue()) === "", { timeout: 60_000 }).toBe(true);
   await expect(google.getByText(/Stored\. Leave blank to keep it/)).toBeVisible();
   await google.getByRole("button", { name: "Test" }).click();
   await expect(google.getByTestId("admin-sign-in-test")).toContainText("Test passed");
