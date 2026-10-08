@@ -13,7 +13,9 @@ DO $$ BEGIN
     JOIN "SemanticDecisionsPolicyFixture" AS original ON original.snapshot =
       (to_jsonb(policy) - 'decisionProviderModelId' - 'decisionConfiguredAt' - 'decisionFeaturesJson'
         - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
-        - 'visionProviderModelId' - 'visionReasoningEffort')
+        - 'visionProviderModelId' - 'visionReasoningEffort'
+        - 'speechToTextConnectionId' - 'speechToTextModelId' - 'speechToTextCredentialVersionId'
+        - 'speechToTextConfiguredAt')
     WHERE policy.id = 'installation' AND "decisionProviderModelId" IS NULL
       AND "decisionConfiguredAt" IS NULL AND "decisionFeaturesJson" = '{}') THEN
     RAISE EXCEPTION 'optional_decisions_changed_existing_policy_or_enabled_unqualified_feature';
