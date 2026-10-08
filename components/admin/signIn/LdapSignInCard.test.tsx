@@ -123,6 +123,16 @@ describe("LDAP admin card", () => {
     expect(within(card).getByTestId("admin-sign-in-ldap-tls-warning")).toHaveTextContent("anyone on the network path");
   });
 
+  it("warns when administrator groups compare first CNs, and not for full DNs", async () => {
+    const { card } = await renderCard();
+
+    expect(within(card).queryByTestId("admin-sign-in-ldap-cn-admin-warning")).toBeNull();
+    fireEvent.change(within(card).getByLabelText("Administrator groups"), { target: { value: "aiqsa-admins" } });
+    expect(within(card).getByTestId("admin-sign-in-ldap-cn-admin-warning")).toHaveTextContent("compare full group DNs");
+    fireEvent.change(within(card).getByLabelText("Group values"), { target: { value: "dn" } });
+    expect(within(card).queryByTestId("admin-sign-in-ldap-cn-admin-warning")).toBeNull();
+  });
+
   it("shows a passed tester result in words", async () => {
     const config: AuthSignInMethodConfig<"ldap"> = {
       adminGroups: [],
