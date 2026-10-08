@@ -43,21 +43,28 @@ export function useAdminUserSignIn(userId: string, membershipKey: string): Admin
     };
   }, []);
 
-  const refresh = useCallback(async () => {
-    const generation = ++generationRef.current;
-    const result = await requestAdminUserSignIn(userId);
-    if (!mountedRef.current || generation !== generationRef.current) return;
+  const apply = useCallback((result: Awaited<ReturnType<typeof requestAdminUserSignIn>>) => {
     if (result.ok) {
       setUser(result.data);
       setError(null);
     } else {
       setError(adminSignInErrorMessage(result.error));
     }
-  }, [userId]);
+  }, []);
 
+  const refresh = useCallback(async () => {
+    const generation = ++generationRef.current;
+    const result = await requestAdminUserSignIn(userId);
+    if (mountedRef.current && generation === generationRef.current) apply(result);
+  }, [apply, userId]);
+
+  // Membership changes can make a membership managed, so the page passes a key of them.
   useEffect(() => {
-    void refresh();
-  }, [membershipKey, refresh]);
+    const generation = ++generationRef.current;
+    void requestAdminUserSignIn(userId).then((result) => {
+      if (mountedRef.current && generation === generationRef.current) apply(result);
+    });
+  }, [apply, membershipKey, userId]);
 
   const unlink = useCallback(async (identityId: string, confirmLastSignInMethod: boolean) => {
     setBusy(true);
