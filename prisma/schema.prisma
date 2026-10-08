@@ -68,6 +68,12 @@ enum MessageStatus {
   error
 }
 
+/// A user message the server wrote for the user, never the user's own
+/// speech: Memory, chat titles and message search skip it.
+enum MessageSystemTurnKind {
+  mcp_approval_continuation
+}
+
 enum ModelRunStatus {
   preparing
   queued
@@ -300,6 +306,23 @@ enum ModelRunToolCallState {
   complete
   error
   cancelled
+}
+
+/// Where an MCP call refused for lack of the user's approval came from.
+enum McpToolApprovalSource {
+  model
+  code
+  agent
+}
+
+enum McpToolApprovalDecision {
+  allow_once
+  allow_server
+  deny
+}
+
+enum McpToolConsentScope {
+  server_always
 }
 
 enum ProviderUnassignedPolicy {
@@ -896,6 +919,8 @@ model User {
   mcpOAuthConnections                 McpOAuthConnection[]
   mcpOwnedServers                     McpServer[]               @relation("McpServerOwner")
   mcpUserServers                      McpUserServer[]
+  mcpToolConsents                     McpToolConsent[]
+  mcpToolApprovals                    McpToolApproval[]
   modelPolicyUpdates                  ModelPolicy[]                      @relation("ModelPolicyUpdater")
   providerCredentialAssignments       ProviderUserCredentialAssignment[]
   projectAssistantBindingsAdded       ProjectAssistantBinding[]          @relation("ProjectAssistantBindingAdder")
@@ -3464,6 +3489,8 @@ model Message {
   /// with the scheduled run and kept by branch copies: every answer to it stays out
   /// of Personal Memory and never creates a scheduled task.
   scheduledTaskPrompt    Boolean           @default(false)
+  /// A user message the server wrote (`MessageSystemTurnKind`); a CHECK keeps it on user messages.
+  systemTurnKind         MessageSystemTurnKind?
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
   assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")
@@ -3661,6 +3688,7 @@ model ModelRun {
   chat                         Chat                                @relation(fields: [chatId], references: [id], onDelete: Cascade)
   events                       ModelRunEvent[]
   mcpRunBindings               McpRunBinding[]
+  mcpToolApprovals             McpToolApproval[]
   knowledgeRunBindings         KnowledgeRunBinding[]
   knowledgeRunProfileBindings  KnowledgeRunProfileBinding[]
   knowledgeRunSourceBindings   KnowledgeRunSourceBinding[]
@@ -3812,6 +3840,8 @@ model McpServer {
   revisions            McpRevision[]        @relation("McpServerRevisions")
   sharedRuntime        McpSharedRuntime?
   userServers          McpUserServer[]
+  toolConsents         McpToolConsent[]
+  toolApprovals        McpToolApproval[]
   owner                User?                @relation("McpServerOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
 
   @@index([enabled, archivedAt])
@@ -3938,6 +3968,62 @@ model McpUserServer {
   @@index([userId, enabled])
   @@index([discoveredOAuthConnectionId])
   @@index([discoveredRevisionId])
+}
+
+/// "Always allow for this server": the user's standing consent to MCP tools
+/// of one server (installation or personal, both `McpServer`) that may change
+/// data. Interactive runs freeze the consents at admission, so a revocation
+/// applies to runs admitted after it.
+model McpToolConsent {
+  id        String              @id @default(uuid())
+  userId    String
+  serverId  String
+  scope     McpToolConsentScope @default(server_always)
+  createdAt DateTime            @default(now())
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  server    McpServer           @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serverId])
+  @@index([serverId])
+}
+
+/// One MCP call refused for lack of its run initiator's approval: the card's
+/// request and, once decided, the decision. An Allow once is a one-shot
+/// approval: one later run of the same chat may dispatch one call with the
+/// same server, tool, definition and canonical arguments before `expiresAt`;
+/// a tool-loop call consumes it in its claim transaction. Content-free:
+/// digests and display names, never arguments or results.
+model McpToolApproval {
+  id              String                   @id @default(uuid())
+  userId          String
+  chatId          String
+  modelRunId      String
+  /// The refused call of the run's tool loop or Agent gateway; null for guest code.
+  toolCallId      String?
+  source          McpToolApprovalSource
+  serverId        String
+  serverName      String                   @db.VarChar(160)
+  /// The namespaced tool name the run called.
+  toolName        String                   @db.VarChar(256)
+  toolTitle       String                   @db.VarChar(160)
+  definitionHash  String                   @db.Char(64)
+  argumentsDigest String                   @db.Char(64)
+  decision        McpToolApprovalDecision?
+  decisionNonce   String?                  @db.VarChar(128)
+  decidedAt       DateTime?
+  expiresAt       DateTime?
+  consumedAt      DateTime?
+  consumedByRunId String?
+  createdAt       DateTime                 @default(now())
+  user            User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  modelRun        ModelRun                 @relation(fields: [userId, chatId, modelRunId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "McpToolApproval_modelRun_fkey")
+  toolCall        ModelRunToolCall?        @relation(fields: [modelRunId, toolCallId], references: [modelRunId, id], onDelete: NoAction, onUpdate: Restrict, map: "McpToolApproval_toolCall_fkey")
+  server          McpServer                @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([modelRunId, createdAt])
+  @@index([userId, chatId, serverId, toolName, argumentsDigest])
+  @@index([modelRunId, toolCallId])
+  @@index([serverId])
 }
 
 /// The installation-owned runtime Project runs use for one server: no user,
@@ -4232,6 +4318,7 @@ model ModelRunToolCall {
   workspaceExecution         WorkspaceExecution?
   skillBindings              ModelRunSkillBinding[]
   codeInvocations            WorkspaceCodeInvocation[]
+  mcpToolApprovals           McpToolApproval[]
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
