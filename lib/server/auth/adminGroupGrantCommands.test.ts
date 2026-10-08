@@ -232,8 +232,13 @@ describe("Full access admin group guards", () => {
       return input.data;
     });
     const transaction = {
+      authIdentity: {
+        findMany: vi.fn(async () => [])
+      },
       group: {
-        findMany: vi.fn(async () => [{ id: "full-access" }, { id: "add-group" }])
+        // The SCIM lookup of managed memberships asks for groups with a SCIM id; none has one.
+        findMany: vi.fn(async (input: { where: { scimExternalId?: unknown } }) =>
+          input.where.scimExternalId ? [] : [{ id: "full-access" }, { id: "add-group" }])
       },
       mcpGrant: {
         findMany: vi.fn(async () => [])
@@ -278,6 +283,68 @@ describe("Full access admin group guards", () => {
       ["archived-group", "auditor"],
       ["add-group", "member"]
     ]));
+  });
+});
+
+describe("IdP-managed memberships", () => {
+  function managedTransaction(input: { identities: { provider: string }[]; names: { groupId: string; source: string }[]; scimGroupIds: string[] }) {
+    const create = vi.fn();
+    const deleteMany = vi.fn();
+    return {
+      create,
+      deleteMany,
+      transaction: {
+        authIdentity: { findMany: vi.fn(async () => input.identities) },
+        group: {
+          findMany: vi.fn(async (query: { where: { scimExternalId?: unknown } }) =>
+            query.where.scimExternalId
+              ? input.scimGroupIds.map((id) => ({ id }))
+              : [{ id: "kept" }, { id: "idp-team" }, { id: "scim-team" }])
+        },
+        groupExternalName: { findMany: vi.fn(async () => input.names) },
+        mcpGrant: { findMany: vi.fn(async () => []) },
+        user: { findUnique: vi.fn(async () => ({ id: "person" })) },
+        userGroup: { create, deleteMany, findMany: vi.fn(async () => [{ groupId: "kept" }]) }
+      }
+    };
+  }
+
+  it("refuses to add a membership a source manages for a user with an identity of that source", async () => {
+    const { create, deleteMany, transaction } = managedTransaction({
+      identities: [{ provider: "oidc" }],
+      names: [{ groupId: "idp-team", source: "oidc" }],
+      scimGroupIds: []
+    });
+
+    await expect(createAdminGroupGrantCommands(transactionalClient(transaction)).setUserGroups({
+      expectedGroupIds: ["kept"],
+      groupIds: ["kept", "idp-team"],
+      userId: "person"
+    })).resolves.toBe("group_membership_managed");
+    expect(create).not.toHaveBeenCalled();
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("refuses manual changes of SCIM groups and allows unmanaged ones", async () => {
+    const scim = managedTransaction({ identities: [], names: [], scimGroupIds: ["scim-team"] });
+    await expect(createAdminGroupGrantCommands(transactionalClient(scim.transaction)).setUserGroups({
+      expectedGroupIds: ["kept"],
+      groupIds: ["kept", "scim-team"],
+      userId: "person"
+    })).resolves.toBe("group_membership_managed");
+
+    // An external name for a source the user has no identity with does not manage the membership.
+    const unmanaged = managedTransaction({
+      identities: [{ provider: "google" }],
+      names: [{ groupId: "idp-team", source: "oidc" }],
+      scimGroupIds: []
+    });
+    await expect(createAdminGroupGrantCommands(transactionalClient(unmanaged.transaction)).setUserGroups({
+      expectedGroupIds: ["kept"],
+      groupIds: ["kept", "idp-team"],
+      userId: "person"
+    })).resolves.toBe("applied");
+    expect(unmanaged.create).toHaveBeenCalledWith({ data: { groupId: "idp-team", role: "member", userId: "person" } });
   });
 });
 

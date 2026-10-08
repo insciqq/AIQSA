@@ -960,3 +960,79 @@ describe("OAuth route handlers", () => {
     expect(response.headers.get("location")).toBe("https://aiqsa.example/");
   });
 });
+
+describe("OAuth handlers with admin-panel configuration", () => {
+  const unconfigured = getAuthConfig({
+    AIQSA_APP_BASE_URL: "https://aiqsa.example",
+    AIQSA_AUTH_SESSION_SECRET: "oauth-handler-test-secret",
+    AIQSA_TRUST_PROXY_HEADERS: "1",
+    AIQSA_TRUSTED_PROXY_COUNT: "1"
+  });
+
+  it("starts with the resolved client even without environment credentials, and 404s without one", async () => {
+    const resolveProvider = vi.fn(async (provider: "google" | "yandex") => provider === "google"
+      ? { config: { clientId: "admin-client.apps.googleusercontent.com", clientSecret: "admin-secret" } }
+      : null);
+    const start = createOAuthStartHandler({ getConfig: () => unconfigured, resolveProvider });
+
+    const response = await start(new Request("https://aiqsa.example/api/auth/oauth/google"), { params: { provider: "google" } });
+    const location = new URL(response.headers.get("location")!);
+    expect(response.status).toBe(303);
+    expect(location.searchParams.get("client_id")).toBe("admin-client.apps.googleusercontent.com");
+    expect(location.searchParams.get("redirect_uri")).toBe("https://aiqsa.example/api/auth/oauth/google/callback");
+
+    const missing = await start(new Request("https://aiqsa.example/api/auth/oauth/yandex"), { params: { provider: "yandex" } });
+    expect(missing.status).toBe(404);
+  });
+
+  it("exchanges with the resolved client and records the content-free outcome", async () => {
+    const flow = await startFlow();
+    const recordOutcome = vi.fn(async (_code: string) => undefined);
+    const exchangeCode = vi.fn<typeof exchangeOAuthCode>(async () => ({
+      displayName: "OAuth User",
+      email: "oauth.user@example.com",
+      providerAccountId: "provider-subject"
+    }));
+    const callback = (status: "active" | "account_conflict" | "pending") => createOAuthCallbackHandler({
+      exchangeCode,
+      getConfig: () => config,
+      now: () => now,
+      repository: repository(status).repository,
+      resolveProvider: async () => ({ config: { clientId: "admin-client", clientSecret: "admin-secret" }, recordOutcome }),
+      sessions: createMemoryAuthSessionStore({ user: createTestUser({ id: "oauth-user" }) })
+    });
+
+    await callback("active")(callbackRequest({
+      code: "authorization-code",
+      flowToken: flow.flowToken,
+      provider: "google",
+      state: flow.location.searchParams.get("state")!
+    }), { params: { provider: "google" } });
+
+    expect(exchangeCode).toHaveBeenCalledWith(expect.objectContaining({
+      config: { clientId: "admin-client", clientSecret: "admin-secret" }
+    }));
+    expect(recordOutcome).toHaveBeenLastCalledWith("accepted");
+
+    for (const [status, code] of [["account_conflict", "account_conflict"], ["pending", "accepted"]] as const) {
+      const next = await startFlow({ seed: status });
+      await callback(status)(callbackRequest({
+        code: "authorization-code",
+        flowToken: next.flowToken,
+        provider: "google",
+        state: next.location.searchParams.get("state")!
+      }), { params: { provider: "google" } });
+      expect(recordOutcome).toHaveBeenLastCalledWith(code);
+    }
+
+    exchangeCode.mockRejectedValueOnce(new Error("invalid_client: secret rejected"));
+    const failing = await startFlow({ seed: "failing" });
+    await callback("active")(callbackRequest({
+      code: "authorization-code",
+      flowToken: failing.flowToken,
+      provider: "google",
+      state: failing.location.searchParams.get("state")!
+    }), { params: { provider: "google" } });
+    expect(recordOutcome).toHaveBeenLastCalledWith("exchange_failed");
+  });
+});

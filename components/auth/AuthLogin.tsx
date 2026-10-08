@@ -27,6 +27,10 @@ type AuthLoginProps = {
   oauthOutcome?: OAuthLoginOutcome;
   oauthProvider?: OAuthProviderId;
   oauthProviders?: OAuthProviderId[];
+  /** The installation's password sign-in switch; off hides every password form. */
+  passwordLoginEnabled?: boolean;
+  /** Self-service access requests; invites work either way. */
+  registrationEnabled?: boolean;
   resetToken?: string;
   sessionExpired?: boolean;
   verifyToken?: string;
@@ -268,9 +272,11 @@ function authErrorMessage(code: string, operation: PendingAction): string {
     invalid_or_expired_reset_token: "This reset link is invalid or expired.",
     invalid_or_expired_verification_token: "This verification link is invalid or expired.",
     network_error: "Could not reach the server. Check your connection and try again.",
+    password_login_disabled: "Password sign-in is turned off on this server. Use another sign-in method.",
     password_too_long: "Choose a shorter password.",
     password_too_short: "Use at least 8 characters.",
     rate_limited: "Too many attempts. Wait a bit before trying again.",
+    registration_disabled: "Access requests are turned off. Ask an administrator for an invite.",
     registration_not_allowed: "This email or domain is not allowed to request access.",
     registration_required: "Enter an email address to request access.",
     invite_token_password_required: "Open the invite link and choose a password.",
@@ -382,6 +388,53 @@ async function postJson(
   };
 }
 
+/**
+ * Stands where the password form was while password sign-in is off: the reason and the
+ * sign-in methods that remain. Invite links land here too, since an invitation sets a
+ * password.
+ */
+function PasswordSignInOff({
+  invited,
+  nextPath,
+  oauthProviders
+}: {
+  invited: boolean;
+  nextPath: string;
+  oauthProviders: readonly OAuthProviderId[];
+}) {
+  return (
+    <div className={formClassName} data-testid="password-sign-in-off">
+      <div className="flex items-start gap-3 border-y border-trace-subtle py-3.5">
+        <span className="mt-2 size-1.5 shrink-0 rounded-full bg-ink-muted" aria-hidden="true" />
+        <p className="text-sm leading-6 text-ink-secondary" role="status">
+          Password sign-in is turned off
+          {invited ? ", so this invitation cannot set a password. " : ". "}
+          {oauthProviders.length
+            ? invited
+              ? "Use one of these methods, or ask the administrator who invited you."
+              : "Use one of these methods."
+            : "Ask an administrator how to sign in."}
+        </p>
+      </div>
+      {oauthProviders.length ? (
+        <div className={`grid gap-2 ${oauthProviders.length > 1 ? "sm:grid-cols-2" : ""}`}>
+          {oauthProviders.map((provider) => (
+            <a className={oauthButtonClassName} href={oauthStartHref(provider, nextPath)} key={provider}>
+              <span
+                aria-hidden="true"
+                className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
+              >
+                {oauthProviderInitial(provider)}
+              </span>
+              Continue with {oauthProviderLabel(provider)}
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PasswordVisibilityButton({
   disabled,
   inputId,
@@ -443,6 +496,8 @@ export function AuthLogin({
   oauthOutcome,
   oauthProvider,
   oauthProviders = [],
+  passwordLoginEnabled = true,
+  registrationEnabled = true,
   resetToken,
   sessionExpired,
   verifyToken
@@ -528,7 +583,9 @@ export function AuthLogin({
     if (mode === "register") {
       return activeInviteToken
         ? {
-            description: "This one-time invitation confirms your email. Choose your name and password to enter AIQSA.",
+            description: passwordLoginEnabled
+              ? "This one-time invitation confirms your email. Choose your name and password to enter AIQSA."
+              : "This one-time invitation is for your email address.",
             eyebrow: "Invitation",
             title: "Create your account"
           }
@@ -928,6 +985,7 @@ export function AuthLogin({
   }
 
   const passwordMode = mode === "password";
+  const passwordSignInOff = !passwordLoginEnabled && (passwordMode || mode === "register");
 
   return (
     <main className="v2-auth-root" data-testid="auth-root">
@@ -982,7 +1040,11 @@ export function AuthLogin({
               </div>
             ) : null}
 
-          {mode === "password" ? (
+          {passwordSignInOff ? (
+            <PasswordSignInOff invited={Boolean(activeInviteToken)} nextPath={nextPath} oauthProviders={oauthProviders} />
+          ) : null}
+
+          {mode === "password" && !passwordSignInOff ? (
             <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} method="post" noValidate onSubmit={submitPassword}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="email">
@@ -1101,7 +1163,7 @@ export function AuthLogin({
             />
           ) : null}
 
-          {mode === "register" ? (
+          {mode === "register" && !passwordSignInOff ? (
             <form
               aria-busy={submitting}
               className={`${formClassName} sm:[@media(max-height:45rem)]:mt-3 sm:[@media(max-height:45rem)]:grid sm:[@media(max-height:45rem)]:grid-cols-2 sm:[@media(max-height:45rem)]:gap-x-3 sm:[@media(max-height:45rem)]:gap-y-3 sm:[@media(max-height:45rem)]:space-y-0`}
@@ -1387,7 +1449,7 @@ export function AuthLogin({
 
         <footer className="v2-auth-footer">
           <p>Self-hosted · your data stays on your infrastructure</p>
-          {passwordMode ? (
+          {passwordMode && passwordLoginEnabled ? (
             <div className="v2-auth-footer-links">
               <button
                 className="v2-auth-link"
@@ -1397,14 +1459,16 @@ export function AuthLogin({
               >
                 Reset password
               </button>
-              <button
-                className="v2-auth-link"
-                disabled={submitting}
-                onClick={() => switchMode("register")}
-                type="button"
-              >
-                {registerLabel}
-              </button>
+              {registrationEnabled || activeInviteToken ? (
+                <button
+                  className="v2-auth-link"
+                  disabled={submitting}
+                  onClick={() => switchMode("register")}
+                  type="button"
+                >
+                  {registerLabel}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </footer>

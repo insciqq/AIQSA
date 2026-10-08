@@ -23,6 +23,8 @@ import {
 } from "@/components/admin/groups/groupsView";
 import { AdminMcpGroupAccessPanel } from "@/components/admin/mcp/AdminMcpGrantPanels";
 import { cardClass } from "@/components/admin/mcp/mcpPrimitives";
+import { AdminGroupExternalNames, useAdminGroupSignIn } from "@/components/admin/signIn/AdminGroupExternalNames";
+import { membershipManagerLabel } from "@/components/admin/signIn/signInView";
 import type { AdminGroupsController } from "@/components/admin/useAdminGroupsController";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { formatShortDay, userInitials } from "@/components/admin/users/usersView";
@@ -30,6 +32,7 @@ import { UserAvatar, UsersTag, sectionHeadingClass } from "@/components/admin/us
 import { UiV2Button, UiV2Icon, UiV2ProviderMark, UiV2Switch } from "@/components/ui-v2";
 import type { AdminCatalog, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import type { AdminMembershipManager } from "@/lib/contracts/adminSignIn";
 import { useEffect, useRef, type ReactNode } from "react";
 
 export type AdminGroupPageProviders = Readonly<{
@@ -78,11 +81,13 @@ function CapabilityChip({ children }: Readonly<{ children: string }>) {
   );
 }
 
-function MembersSection({ controller, disabled, editable, group, users }: Readonly<{
+function MembersSection({ controller, disabled, editable, group, managed, users }: Readonly<{
   controller: AdminGroupsController;
   disabled: boolean;
   editable: boolean;
   group: AdminGroup;
+  /** Members whose membership an IdP or SCIM manages; it cannot be removed here. */
+  managed: ReadonlyMap<string, AdminMembershipManager>;
   users: readonly AdminUserRecord[];
 }>) {
   const members = groupMembers(users, group.id);
@@ -124,7 +129,9 @@ function MembersSection({ controller, disabled, editable, group, users }: Readon
                       .join(" · ")}
                   </p>
                 </div>
-                {editable ? (
+                {managed.has(user.id) ? (
+                  <UsersTag>Managed by {membershipManagerLabel(managed.get(user.id)!)}</UsersTag>
+                ) : editable ? (
                   <UiV2Button
                     disabled={disabled}
                     onClick={() => void controller.actions.setMembership(group, user.id, false)}
@@ -433,6 +440,7 @@ export function AdminGroupPage({
   users
 }: AdminGroupPageProps) {
   const articleRef = useRef<HTMLElement>(null);
+  const signIn = useAdminGroupSignIn(group.id, groupMembers(users, group.id).map((user) => user.id).join(","));
   const fullAccess = isFullAccessGroup(group);
   const archived = group.archivedAt !== null;
   const editable = !archived;
@@ -484,7 +492,16 @@ export function AdminGroupPage({
         </p>
       ) : null}
 
-      <MembersSection controller={controller} disabled={controller.actionsDisabled} editable={editable} group={group} users={users} />
+      <MembersSection
+        controller={controller}
+        disabled={controller.actionsDisabled}
+        editable={editable}
+        group={group}
+        managed={signIn.managedMembers}
+        users={users}
+      />
+
+      <AdminGroupExternalNames disabled={controller.actionsDisabled || archived} signIn={signIn} />
 
       {fullAccess ? (
         <section aria-label="Access" className="flex min-w-0 flex-col gap-3" data-testid="admin-group-full-access">

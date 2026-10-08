@@ -391,3 +391,42 @@ describe("two-factor enrolment API", () => {
     await expect(response.json()).resolves.toEqual({ error: "two_factor_unavailable" });
   });
 });
+
+describe("second-factor route and the password sign-in switch", () => {
+  function handler(passwordLoginEnabled: boolean) {
+    const repository = signInRepository();
+    const POST = createSecondFactorSignInHandler({
+      getConfig: () => config,
+      getKeys: () => keys,
+      rateLimiter: createFixedWindowLoginRateLimiter({ clock: () => 0, maxAttempts: 10 }),
+      repository,
+      signInPolicy: async () => ({ passwordLoginEnabled, registrationEnabled: true })
+    });
+    return { POST, repository };
+  }
+
+  it("refuses a password challenge while password sign-in is off, before checking the code", async () => {
+    const { POST, repository } = handler(false);
+
+    const response = await POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, { cookie: await challengeCookie() }));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "password_login_disabled" });
+    expect(setCookies(response)).toEqual([`${SECOND_FACTOR_COOKIE_NAME}=; Path=/api/auth/second-factor; HttpOnly; SameSite=Lax; Max-Age=0`]);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(repository.completeSecondFactorSignIn).not.toHaveBeenCalled();
+  });
+
+  it("still redeems an LDAP challenge and a password challenge while passwords are on", async () => {
+    const off = handler(false);
+    const ldap = await off.POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, {
+      cookie: await challengeCookie({ signInMethod: "ldap" })
+    }));
+    expect(ldap.status).toBe(200);
+    expect(off.repository.completeSecondFactorSignIn).toHaveBeenCalledTimes(1);
+
+    const on = handler(true);
+    const password = await on.POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, { cookie: await challengeCookie() }));
+    expect(password.status).toBe(200);
+  });
+});
