@@ -60,6 +60,27 @@ describe("answer review in the model picker and the header chip", () => {
     expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull();
   });
 
+  it("offers its initiator the review's Stop and another member of a Project chat none", () => {
+    const onStop = vi.fn();
+    const composer = (stopUnavailableReason: string | null) => (
+      <ComposerV2 activeRun config={composerGalleryConfig} draft="" onDraftChange={vi.fn()} onSelectModel={vi.fn()} onStop={onStop}
+        runId="answer-review:session-1" selectedModelId="gpt-5.2" selectedProvider="openai-work"
+        stopUnavailableReason={stopUnavailableReason} />
+    );
+    const { rerender } = render(composer(null));
+    fireEvent.click(screen.getByRole("button", { name: "Stop answer" }));
+    expect(onStop).toHaveBeenCalledExactlyOnceWith("answer-review:session-1");
+
+    rerender(composer("Only the member who started this review can stop it."));
+    const stop = screen.getByRole("button", { name: "Stop answer" });
+    expect(stop).toBeDisabled();
+    expect(stop).toHaveAccessibleDescription("Only the member who started this review can stop it.");
+    fireEvent.click(stop);
+    expect(onStop).toHaveBeenCalledOnce();
+    // The chat stays busy for every viewer: nothing can be sent while the review runs.
+    expect(screen.queryByRole("button", { name: "Send message" })).toBeNull();
+  });
+
   it("disables the row with its reason where review is unavailable", () => {
     render(<HeaderAndComposer answerReview={{ disabledReason: "Review is off while Agent is on.", onOpen: vi.fn(), summary: "On" }} />);
     fireEvent.click(screen.getByTestId("header-model-trigger"));
