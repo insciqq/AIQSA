@@ -117,6 +117,19 @@ describe("accepted PDF answer continuation", () => {
     expect(createRunExecutionResponse).toHaveBeenCalledOnce();
   });
 
+  it.each(["preparing", "streaming"])("hands the run's admission time to execution only when it was not resumed (%s)", async (status) => {
+    const h = fixture();
+    const createdAt = new Date("2026-10-09T10:00:00.000Z");
+    Object.assign(h.loaded.modelRun, { createdAt });
+    if (status === "streaming") {
+      Object.assign(h.loaded, { state: "answer_ready" });
+      Object.assign(h.loaded.modelRun, { status, normalizedRequest: h.normalized });
+    }
+    await h.run();
+    const { created } = vi.mocked(createRunExecutionResponse).mock.calls[0]![0];
+    expect(created.acceptedAt).toEqual(status === "preparing" ? createdAt : undefined);
+  });
+
   it.each(["preparing", "streaming"])("uses the original-only notice during %s continuation", async (status) => {
     const h = fixture(true);
     Object.assign(h.loaded.modelRun.chatPdfAttachments[0]!, { state: "original_only", documentArtifactId: null });

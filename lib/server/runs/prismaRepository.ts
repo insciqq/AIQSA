@@ -930,6 +930,7 @@ export function createPrismaRunRepository(
       }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
         memoryAdmissionDeadlineMs).catch(retainRunPrismaCode);
       return {
+        acceptedAt: created.acceptedAt,
         assistantMessageId: created.assistantMessageId,
         ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.deferredWorkspace ? { deferredWorkspace: true as const } : {}),
@@ -950,6 +951,7 @@ export function createPrismaRunRepository(
       }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
         memoryAdmissionDeadlineMs).catch(retainRunPrismaCode);
       return {
+        acceptedAt: created.acceptedAt,
         assistantMessageId: created.assistantMessageId,
         ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.materializedRequest
