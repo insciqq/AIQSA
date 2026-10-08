@@ -2164,16 +2164,27 @@ describe("run recovery", () => {
       } finally { writer.restore(); }
     });
 
-    it("ends a refreshed run whose accepted request is invalid without dispatching or charging it", async () => {
+    const lostAnswer = expect.objectContaining({ modelId: "gpt-test", operationCount: 1, provider: "openai",
+      purpose: "chat_answer", usage: expect.objectContaining({ completeness: "unavailable" }) });
+    const invalidRequest = (harness: ReturnType<typeof createHarness>) => {
+      harness.repository.loadProviderDispatchRecoveryRequest = async () => {
+        throw new RecoveryStateInvalidError("provider_dispatch_recovery_request_invalid_in_storage");
+      };
+    };
+
+    it("ends a dispatched run whose accepted request is invalid and accounts the lost answer once", async () => {
       const refresh = vi.fn();
       const cancel = vi.fn(async () => ({}));
       const adapter = { ...providerWithRefresh(refresh), cancel };
       const stream = vi.spyOn(adapter, "stream");
       const harness = createHarness({ providers: { openai: adapter } });
-      harness.repository.loadProviderDispatchRecoveryRequest = async () => {
-        throw new RecoveryStateInvalidError("provider_dispatch_recovery_request_invalid_in_storage");
+      invalidRequest(harness);
+      const statusAtUsage: string[] = [];
+      const recordRunUsageEvents = harness.repository.recordRunUsageEvents;
+      harness.repository.recordRunUsageEvents = async (input) => {
+        statusAtUsage.push(harness.state.run.status);
+        return recordRunUsageEvents(input);
       };
-      const recordUsage = vi.spyOn(harness.repository, "recordRunUsageEvents");
       const workspace = invalidWorkspace();
       await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
       expect(harness.state.failed).toEqual([{ assistantMessageId: "assistant-1", error: {
@@ -2183,30 +2194,64 @@ describe("run recovery", () => {
       expect(workspace.settle).toHaveBeenCalledExactlyOnceWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
       expect(stream).not.toHaveBeenCalled();
       expect(refresh).not.toHaveBeenCalled();
-      expect(recordUsage).not.toHaveBeenCalled();
+      // One unknown operation, written only after the terminal write applied.
+      expect(statusAtUsage).toEqual(["error"]);
+      expect(harness.state.usageAttributions).toEqual([[lostAnswer]]);
     });
 
-    it("settles a recoverable error-status round with an invalid record without touching its usage", async () => {
-      const harness = createHarness({ controls: [control({ providerResponseId: null, status: "error" })], providers: {} });
-      harness.repository.loadProviderDispatchRecoveryRequest = async () => {
-        throw new RecoveryStateInvalidError("provider_dispatch_recovery_request_invalid_in_storage");
+    it("accounts nothing for an invalid run that was never dispatched", async () => {
+      const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: {} });
+      invalidRequest(harness);
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace: invalidWorkspace() }, runId, userId);
+      expect(harness.state.failed).toHaveLength(1);
+      expect(harness.state.usageAttributions).toEqual([]);
+    });
+
+    it("accounts a dispatched answer whose checkpoint is the invalid record as one unknown operation", async () => {
+      const harness = createHarness({ providers: {}, staleRuns: [staleControl()] });
+      harness.repository.loadCheckpointedToolLoopRun = async () => {
+        throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
       };
+      await reconcileStaleRuns({ ...harness.deps, workspace: invalidWorkspace() },
+        { now: new Date("2026-07-12T10:00:01.000Z"), userId });
+      expect(harness.state.failed).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_checkpoint_invalid_in_storage" }) })]);
+      expect(harness.state.usageAttributions).toEqual([[lostAnswer]]);
+    });
+
+    it("keeps the run when its checkpoint cannot be read before accounting", async () => {
+      const harness = createHarness({ providers: {} });
+      invalidRequest(harness);
+      const readFailure = new Error("synthetic read failure");
+      harness.repository.loadCheckpointedToolLoopRun = async () => { throw readFailure; };
+      await expect(refreshProviderRunIfNeeded(harness.deps, runId, userId)).rejects.toBe(readFailure);
+      expect(harness.state.failed).toEqual([]);
+      expect(harness.state.usageAttributions).toEqual([]);
+    });
+
+    it.each([false, true])("settles a recoverable error-status round with an invalid record keeping its usage (recorded %s)", async (recorded) => {
+      const harness = createHarness({ controls: [control({ status: "error" })], providers: {} });
+      invalidRequest(harness);
+      const answer = { modelId: "gpt-test", operationCount: 1, provider: "openai", purpose: "chat_answer" as const,
+        recordedAt: "2026-07-12T09:00:00.000Z", usage: normalizeTokenUsage({ inputTokens: 2, outputTokens: 3 }) };
+      harness.repository.loadRunUsageAttributions = async () => recorded ? [answer] : [];
       const workspace = invalidWorkspace();
       await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
       expect(harness.state.recoveredErrors).toEqual([{ error: expect.objectContaining({
         code: "provider_dispatch_recovery_request_invalid_in_storage" }), outputEvents: [], runId, usageAttributions: [], userId }]);
       expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
       expect(workspace.settle).toHaveBeenCalledOnce();
+      // A recorded answer is never counted a second time.
+      expect(harness.state.usageAttributions).toEqual(recorded ? [] : [[lostAnswer]]);
     });
 
-    it("leaves a run whose terminal write did not apply to its winner", async () => {
+    it("leaves a run whose terminal write did not apply to its winner, accounting nothing", async () => {
       const harness = createHarness({ failRun: false, providers: {} });
-      harness.repository.loadProviderDispatchRecoveryRequest = async () => {
-        throw new RecoveryStateInvalidError("provider_dispatch_recovery_request_invalid_in_storage");
-      };
+      invalidRequest(harness);
       const workspace = invalidWorkspace();
       await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
       expect(workspace.settle).not.toHaveBeenCalled();
+      expect(harness.state.usageAttributions).toEqual([]);
     });
 
     it("keeps an unclassified failure of the accepted request for a later attempt", async () => {
