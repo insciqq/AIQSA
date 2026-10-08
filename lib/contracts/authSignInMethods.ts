@@ -206,9 +206,12 @@ export const ldapSignInConfigSchema = z
 
 export const ldapSignInSecretsSchema = z.strictObject({ bindPassword: z.string().min(1).max(1_024).optional() });
 
-// SAML (auth-saml refines).
+// SAML. The IdP is pinned by its entity id and its signing certificates: one PEM block per
+// entry, several while the IdP rotates its key.
 
 const samlAttribute = text(1_024);
+const SAML_PEM_CERTIFICATE = /^-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----$/u;
+const samlCertificate = z.string().trim().min(1).max(16_384).regex(SAML_PEM_CERTIFICATE);
 
 export const samlSignInConfigSchema = z
   .strictObject({
@@ -217,7 +220,11 @@ export const samlSignInConfigSchema = z
     displayNameAttribute: samlAttribute.nullable().default(null),
     emailAttribute: samlAttribute.default("email"),
     groupsAttribute: samlAttribute.nullable().default(null),
-    idpCertificates: z.array(z.string().trim().min(1).max(16_384)).min(1).max(4),
+    idpCertificates: z
+      .array(samlCertificate)
+      .min(1)
+      .max(4)
+      .refine((certificates) => new Set(certificates).size === certificates.length),
     idpEntityId: text(1_024),
     idpMetadataUrl: httpUrl.nullable().default(null),
     idpSsoUrl: httpUrl,

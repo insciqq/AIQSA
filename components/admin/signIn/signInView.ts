@@ -6,6 +6,7 @@ import type {
 import type { AuthSessionSignInMethod, AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
 import { ldapFailureMessages, ldapTestMessage } from "./ldapSignInView";
 import { oidcFailureMessages, oidcTestMessages } from "./oidcSignInMessages";
+import { samlFailureMessages, samlTestMessages } from "./samlSignInView";
 
 export const signInMethodLabels: Record<AuthSignInMethod | AuthSessionSignInMethod, string> = {
   bootstrap: "Bootstrap token",
@@ -38,6 +39,7 @@ export function signInStatusPresentation(status: AdminSignInMethodStatus): SignI
 }
 
 const testMessages: Record<string, string> = {
+  ...samlTestMessages,
   client_id_format_invalid: "The client ID does not look like one this provider issues.",
   client_secret_format_invalid: "The client secret has an unexpected format: spaces or too short.",
   environment_unsupported: "This server's environment cannot run this method; see above for what it needs.",
@@ -58,6 +60,7 @@ export function signInTestMessage(code: string): string {
 
 const failureMessages: Record<string, string> = {
   ...ldapFailureMessages,
+  ...samlFailureMessages,
   account_conflict: "an identity could not be linked to an existing account",
   email_missing: "the provider sent no usable email",
   exchange_failed: "the provider rejected the sign-in or could not be reached",

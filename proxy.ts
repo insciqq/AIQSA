@@ -41,6 +41,8 @@ const publicPrefixes = [
   "/api/auth/invite",
   "/api/auth/password-reset",
   "/api/auth/register",
+  // SAML start and completion; the completion step's proof is the start's binding cookie.
+  "/api/auth/saml",
   // Session-free by design: the signed challenge cookie of a verified first factor is the
   // only credential; no session exists before the second factor.
   "/api/auth/second-factor",
@@ -60,6 +62,11 @@ const publicPrefixes = [
   "/oauth/register",
   "/oauth/revoke",
   "/oauth/token",
+  // The IdP's cross-site form POST and the SP metadata it reads; outside `/api`, so the
+  // mutation origin guard does not apply: the signed response is the proof, and the session
+  // waits for the initiating browser at /api/auth/saml/complete.
+  "/saml/acs",
+  "/saml/metadata",
   "/mcp"
 ];
 
