@@ -769,6 +769,52 @@ for (const viewport of [
   });
 }
 
+for (const viewport of [
+  { height: 900, name: "desktop", width: 1440 },
+  { height: 1180, name: "tablet-portrait", width: 820 },
+  { height: 844, name: "phone-portrait", width: 390 },
+  { height: 390, name: "phone-landscape", width: 844 }
+] as const) {
+  test(`v2 reviewed answer groups its versions under one answer · ${viewport.name}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ height: viewport.height, width: viewport.width });
+    await page.goto("/ui-v2-fixture?fixture=answer-review&state=collapsed");
+    const gallery = page.getByTestId("ui-v2-answer-review-gallery");
+    // The server-written turns are never bubbles: one question, one answer block.
+    await expect(gallery.locator('article[data-role="user"]')).toHaveCount(1);
+    await expect(gallery.getByText(/Answer (review|revision) request/u)).toHaveCount(0);
+    await expect(gallery).toContainText("opened in March 2021");
+    const toggle = gallery.getByRole("button", { name: "Review history · 1 round" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(gallery.getByTestId("answer-review-status")).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ fullPage: false, path: testInfo.outputPath(`answer-review-${viewport.name}-collapsed.png`) });
+
+    await page.goto("/ui-v2-fixture?fixture=answer-review&state=expanded");
+    const history = page.getByTestId("answer-review-history");
+    await expect(history).toContainText("Version 1");
+    await expect(history.getByTestId("answer-review-card")).toContainText("Review by GPT-5: 2 findings");
+    await expect(history.getByTestId("answer-review-decisions")).toHaveText(/Decisions: 1 accepted, 1 rejected/u);
+    await expect(history).toContainText("Version 2 is the answer shown above.");
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ fullPage: true, path: testInfo.outputPath(`answer-review-${viewport.name}-expanded.png`) });
+
+    await page.goto("/ui-v2-fixture?fixture=answer-review&state=running");
+    const live = page.getByTestId("answer-review-status");
+    await expect(live).toContainText("Review · round 1 · GPT-5 is checking…");
+    await expect(live.getByRole("button", { name: "Stop" })).toBeVisible();
+    await expectWithinViewport(page, live);
+    await page.screenshot({ fullPage: false, path: testInfo.outputPath(`answer-review-${viewport.name}-running.png`) });
+
+    await page.goto("/ui-v2-fixture?fixture=answer-review&state=findings");
+    await expect(page.getByTestId("answer-review-status")).toContainText("2 findings to evaluate");
+    await expect(page.getByTestId("answer-review-status").getByRole("button", { name: "Revise" })).toBeVisible();
+    await page.goto("/ui-v2-fixture?fixture=answer-review&state=clean");
+    await expect(page.getByTestId("answer-review-status")).toContainText("No substantive issues");
+    await expect(page.getByRole("button", { name: "Revise" })).toHaveCount(0);
+  });
+}
+
+
 test("v2 branch drawer switches only the future leaf and restores trigger focus", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.goto("/ui-v2-fixture?fixture=branches&state=default");

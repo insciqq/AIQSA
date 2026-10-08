@@ -210,6 +210,17 @@ export type ShellThreadView = {
    */
   sendMcpApprovalContinuation?(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>):
     Promise<McpApprovalContinuationOutcome>;
+  /**
+   * "Review…" on the chat's latest answer: starts a review round with the
+   * chosen reviewers and runs them one after another; resolves once the
+   * server accepted the round (or with why it did not).
+   */
+  startAnswerReview?(input: Readonly<{
+    answerMessageId: string;
+    reviewers: readonly Readonly<{ modelId: string; provider: string }>[];
+  }>): Promise<Readonly<{ ok: true }> | Readonly<{ error: string; ok: false }>>;
+  /** Revise, or Continue review: starts a session's next step. */
+  continueAnswerReview?(sessionId: string, kind: "review" | "revision"): Promise<void>;
   /** The message a search result opened in this chat; a long question shows in full. */
   revealedMessageId?: string | null;
   /**

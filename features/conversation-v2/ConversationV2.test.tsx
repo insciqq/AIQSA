@@ -332,6 +332,34 @@ describe("Conversation v2", () => {
     expect(onReadAloud).toHaveBeenCalledTimes(2);
   });
 
+  it("offers Review… in the More menu and shows why it is unavailable", async () => {
+    const onReview = vi.fn();
+    const turn = (reviewDisabledReason: string | null) => (
+      <ConversationTurnV2
+        actions={{ onBranchFromHere: vi.fn(), onDelete: vi.fn(), onRegenerate: vi.fn(), onReview, reviewDisabledReason }}
+        content="Reviewable answer"
+        role="assistant"
+      />
+    );
+    const { rerender } = render(turn(null));
+    // The row keeps its verbs; Review lives in the menu, before Delete and its separator.
+    const more = screen.getByRole("button", { name: "More answer actions" });
+    fireEvent.click(more);
+    const menu = screen.getByRole("menu", { name: "Answer menu" });
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Branch from here", "Review…", "Delete"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Review…" }));
+    expect(onReview).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menu", { name: "Answer menu" })).toBeNull();
+
+    rerender(turn("Wait for the current answer to finish."));
+    fireEvent.click(screen.getByRole("button", { name: "More answer actions" }));
+    const disabled = within(screen.getByRole("menu", { name: "Answer menu" })).getByRole("menuitem", { name: /^Review…/u });
+    expect(disabled).toBeDisabled();
+    expect(disabled).toHaveTextContent("Wait for the current answer to finish.");
+    fireEvent.click(disabled);
+    expect(onReview).toHaveBeenCalledOnce();
+  });
+
   it("gives an answer with only Read aloud a More menu, and none without it", () => {
     const { rerender } = render(
       <ConversationTurnV2 actions={{ onCopy: vi.fn(), onReadAloud: vi.fn() }} content="Answer" role="assistant" />

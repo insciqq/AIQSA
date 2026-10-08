@@ -142,6 +142,11 @@ async function renderFixture(query: UiV2FixtureQuery) {
     const { AnswerOutputsV2Gallery } = await import("./_fixtures/AnswerOutputsV2Gallery");
     return <AnswerOutputsV2Gallery state={state} />;
   }
+  if (query.fixture === "answer-review") {
+    const state = fixtureState(query.state, ["clean", "collapsed", "expanded", "findings", "running"] as const, "collapsed");
+    const { AnswerReviewV2Gallery } = await import("./_fixtures/AnswerReviewV2Gallery");
+    return <AnswerReviewV2Gallery state={state} />;
+  }
   if (query.fixture === "branches") {
     const state = fixtureState(
       query.state,
