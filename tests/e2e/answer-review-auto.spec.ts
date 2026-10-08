@@ -1,8 +1,9 @@
-import { createECDH, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
 import { runAccountMenuAction } from "./shell/page";
+import { chooseAnswerReview, composerChips, grantPush, modelPicker, unresolvablePushEndpoint } from "./support/answerReviewAuto";
 import {
   openAnswerReviewStand,
   REVIEWER_NAME,
@@ -68,45 +69,9 @@ async function countAnswerAlerts(page: Page): Promise<void> {
 
 const answerAlerts = (page: Page) => page.evaluate(() => (window as unknown as AlertWindow).__answerAlerts);
 
-/** The composer's chips by name: turning review on adds none. */
-function composerChips(page: Page): Promise<string[]> {
-  return page.getByTestId("composer-v2").locator(".v2-composer-indicator")
-    .evaluateAll((chips) => chips.map((chip) => chip.getAttribute("aria-label") ?? chip.textContent?.trim() ?? ""));
-}
-
-function modelPicker(page: Page): Locator {
-  return page.getByRole("dialog", { name: "Choose model" });
-}
-
 /** Turns the chat's automatic review on with the fixture reviewer (or off) from the model picker's row. */
-async function chooseReview(page: Page, input: Readonly<{ enabled: boolean; rounds?: 1 | 2 | 3 }>): Promise<void> {
-  await page.getByTestId("header-model-trigger").click();
-  const row = modelPicker(page).getByTestId("composer-v2-model-answer-review");
-  await expect(row).toBeEnabled();
-  await row.click();
-  await expect(modelPicker(page)).toHaveCount(0);
-  const dialog = page.getByRole("dialog", { name: "Answer review", exact: true });
-  await expect(dialog).toBeVisible();
-  const toggle = dialog.getByRole("switch", { name: /Review answers automatically/u });
-  if (await toggle.getAttribute("aria-checked") !== String(input.enabled)) await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-checked", String(input.enabled));
-  if (input.enabled) {
-    // Only the fixture reviewer: the stand may offer other tool-calling models.
-    for (const box of await dialog.getByRole("checkbox", { checked: true }).all()) {
-      if (!(await box.locator("xpath=..").innerText()).includes(REVIEWER_NAME)) await box.uncheck();
-    }
-    await dialog.getByRole("checkbox", { name: REVIEWER_NAME }).check();
-    const rounds = input.rounds ?? 3;
-    const label = rounds === 1 ? "1 round" : `Up to ${rounds}`;
-    await dialog.locator("label.v2-answer-review-round", { hasText: label }).click();
-    await expect(dialog.getByRole("radio", { name: label })).toBeChecked();
-    await expect(dialog.getByTestId("answer-review-cost-hint")).toContainText(`Up to ${rounds * 2} extra answers per question`);
-  }
-  await dialog.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(dialog).toHaveCount(0, { timeout: 15_000 });
-  const glyph = page.getByTestId("header-model-review");
-  if (input.enabled) await expect(glyph).toHaveAttribute("data-state", "on");
-  else await expect(glyph).toHaveCount(0);
+function chooseReview(page: Page, input: Readonly<{ enabled: boolean; rounds?: 1 | 2 | 3 }>): Promise<void> {
+  return chooseAnswerReview(page, { ...input, reviewer: REVIEWER_NAME });
 }
 
 /**
@@ -145,46 +110,10 @@ const stepTurns = (chatId: string, kind: "answer_review_request" | "answer_revis
 const composerStatus = (page: Page) => page.getByTestId("answer-review-composer-status");
 const checking = new RegExp(`Review · round 1 of 3 · ${REVIEWER_NAME} is checking…`, "u");
 
-/** A granted push stack whose subscription the real server stores; its endpoint never resolves. */
-async function grantPush(page: Page, endpoint: string): Promise<void> {
-  const ecdh = createECDH("prime256v1");
-  ecdh.generateKeys();
-  const device = { endpoint, expirationTime: null,
-    keys: { auth: randomBytes(16).toString("base64url"), p256dh: ecdh.getPublicKey().toString("base64url") } };
-  await page.addInitScript(({ subscription }) => {
-    class GrantedNotification {
-      static readonly permission: NotificationPermission = "granted";
-      static requestPermission(): Promise<NotificationPermission> {
-        return Promise.resolve("granted");
-      }
-    }
-    Object.defineProperty(window, "Notification", { configurable: true, value: GrantedNotification, writable: true });
-    type Subscription = Readonly<{ options: Readonly<{ applicationServerKey: ArrayBuffer }>; toJSON(): unknown; unsubscribe(): Promise<boolean> }>;
-    let current: Subscription | null = null;
-    const pushManager = {
-      getSubscription: async () => current,
-      subscribe: async (options: PushSubscriptionOptionsInit) => {
-        current = {
-          options: { applicationServerKey: (options.applicationServerKey as Uint8Array).slice().buffer },
-          toJSON: () => subscription,
-          unsubscribe: async () => { current = null; return true; }
-        };
-        return current;
-      }
-    };
-    const registration = { pushManager, scope: `${location.origin}/` };
-    const container = { getRegistration: async () => registration, ready: Promise.resolve(registration), register: async () => registration };
-    Object.defineProperty(navigator, "serviceWorker", { configurable: true, get: () => container });
-    if (!("PushManager" in window)) {
-      Object.defineProperty(window, "PushManager", { configurable: true, value: function PushManager() {}, writable: true });
-    }
-  }, { subscription: device });
-}
-
 test("a review the user left runs on the server, and its end is the one notification", async ({ browser }, testInfo) => {
   test.setTimeout(360_000);
   const baseURL = testInfo.project.use.baseURL;
-  const endpoint = `https://push.invalid/aiqsa-answer-review-${randomUUID()}`;
+  const endpoint = unresolvablePushEndpoint("answer-review");
   const settings = await prisma.userSettings.findUniqueOrThrow({ select: { browserNotificationsEnabled: true }, where: { userId } });
   await prisma.userSettings.update({ data: { browserNotificationsEnabled: true }, where: { userId } });
   const subscription = () => prisma.browserPushSubscription.findUnique({ where: { endpoint } });
