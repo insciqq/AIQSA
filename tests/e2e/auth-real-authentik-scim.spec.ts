@@ -132,10 +132,15 @@ async function authentikSignIn(browser: Browser, person: Person): Promise<{ cont
   const { context, page } = await loginPage(browser, "/login?local=1");
   await page.getByRole("link", { name: "Continue with Authentik" }).click();
   const uid = page.locator('input[name="uidField"]');
-  await expect(uid).toBeVisible({ timeout: 60_000 }).catch((error: unknown) => {
-    // Content-free: where the browser ended up, and the sign-in outcome code if AIQSA refused.
+  await expect(uid).toBeVisible({ timeout: 60_000 }).catch(async (error: unknown) => {
+    // Content-free: where the browser ended up, the outcome code, and the method's health code.
     const url = new URL(page.url());
-    throw new Error(`authentik_login_not_reached host=${url.host} path=${url.pathname} oauth=${url.searchParams.get("oauth") ?? "-"}`, { cause: error });
+    const health = await prisma.authSignInMethodSetting.findUnique({ select: { lastFailureCode: true }, where: { method: "oidc" } });
+    throw new Error(
+      `authentik_login_not_reached host=${url.host} path=${url.pathname} oauth=${url.searchParams.get("oauth") ?? "-"} ` +
+        `health=${health?.lastFailureCode ?? "-"}`,
+      { cause: error }
+    );
   });
   await uid.fill(person.username);
   const password = page.locator('input[name="password"]');
