@@ -1,5 +1,6 @@
 import { adoptMemoryModelRecommendation } from "../lib/server/bootstrap/memoryRecommendationAdoption";
 import { Prisma, PrismaClient } from "@prisma/client";
+import { aiqsaPostgresRuntimeUrl } from "../lib/server/postgresRuntimeOptions";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
 import { ensureFullAccessGroup } from "../lib/server/auth/fullAccessGroup";
 import { synchronizeCodeOwnedCatalog } from "../lib/server/bootstrap/codeOwnedCatalog";
@@ -21,7 +22,9 @@ import {
 } from "./local-seed-fixtures";
 import { runOptionalLocalDevProfile } from "./local-dev-profile";
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasourceUrl: aiqsaPostgresRuntimeUrl(process.env.DATABASE_URL)
+});
 
 const ids = {
   group: "00000000-0000-4000-8000-000000000010",
