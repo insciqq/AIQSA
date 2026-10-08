@@ -70,7 +70,31 @@ type LogoutHandlerDeps = {
   sessions: AuthSessionStore;
 };
 
+/**
+ * A directory sign-in sharing the password form (LDAP). It answers the request itself, or hands
+ * an email with a usable local password back to the local password (break-glass accounts keep
+ * precedence), whose failures then wait for the directory's response floor.
+ */
+export type DirectoryPasswordSignIn = (input: {
+  /** One attempt under the password-login account budgets; a refusal is the 429 to return. */
+  admitAccount(accountKey: string): Promise<Response | null>;
+  config: AuthConfig;
+  identifier: string;
+  localPasswordUsable(normalizedEmail: string): Promise<boolean>;
+  password: string;
+  passwordLoginEnabled(): Promise<boolean>;
+  request: Request;
+  /** After a verified sign-in: clears the account's budgets, gives back this source attempt. */
+  signedIn(accountKey: string): Promise<void>;
+}) => Promise<
+  | { kind: "answered"; response: Response }
+  | { kind: "inactive" }
+  | { kind: "local"; waitForFloor(): Promise<void> }
+>;
+
 export type PasswordLoginHandlerDeps = {
+  /** LDAP on the same form; absent means local passwords only. */
+  directorySignIn?: DirectoryPasswordSignIn;
   getConfig(): AuthConfig;
   loginRateLimiter?: LoginRateLimiter;
   repository: PasswordAuthRepository;
@@ -438,7 +462,45 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       return json({ error: "credentials_required" }, { status: 400 });
     }
 
-    // Local passwords only: a directory sign-in sharing this form branches off above.
+    // Success clears only the account's keys. The source budget merely gets back the
+    // attempt this login used, so logging into an own account never restores the
+    // budget a source spent on other accounts.
+    const releaseAccountBudgets = async (accountKey: string) => {
+      await Promise.all([
+        loginRateLimiter.reset(accountKey),
+        ...(source ? [loginRateLimiter.reset(accountSourceRateLimitKey(accountKey, source))] : []),
+        ...(clientRateLimitKey ? [loginRateLimiter.release(clientRateLimitKey)] : [])
+      ]);
+    };
+    const directory = deps.directorySignIn
+      ? await deps.directorySignIn({
+          async admitAccount(accountKey) {
+            const decision = await admitPasswordLoginAccount(loginRateLimiter, { accountKey, source });
+            return decision.allowed ? null : rateLimitedResponse(decision);
+          },
+          config,
+          identifier: credentials.email,
+          async localPasswordUsable(email) {
+            const identity = await deps.repository.findPasswordIdentityByEmail(email);
+            return isActiveVerifiedPasswordIdentity(identity) && Boolean(identity.passwordHash);
+          },
+          password: credentials.password,
+          passwordLoginEnabled: async () => (await refuseWhenPasswordSignInOff(deps.signInPolicy)) === null,
+          request,
+          signedIn: releaseAccountBudgets
+        })
+      : { kind: "inactive" as const };
+
+    if (directory.kind === "answered") {
+      return directory.response;
+    }
+
+    const localUnauthorized = async () => {
+      if (directory.kind === "local") await directory.waitForFloor();
+      return unauthorized();
+    };
+
+    // Local passwords only: a directory sign-in sharing this form branched off above.
     const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
     if (passwordSignInOff) return passwordSignInOff;
 
@@ -468,7 +530,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     const passwordOk = await verifyPassword(credentials.password, usablePasswordHash);
 
     if (!identity?.passwordHash || !passwordOk || !isActiveVerifiedPasswordIdentity(identity)) {
-      return unauthorized();
+      return localUnauthorized();
     }
 
     const session = prepareAuthSession({
@@ -482,17 +544,10 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     });
 
     if (!currentCredential) {
-      return unauthorized();
+      return localUnauthorized();
     }
 
-    // Success clears only the account's keys. The source budget merely gets back the
-    // attempt this login used, so logging into an own account never restores the
-    // budget a source spent on other accounts.
-    await Promise.all([
-      loginRateLimiter.reset(rateLimitKey),
-      ...(source ? [loginRateLimiter.reset(accountSourceRateLimitKey(rateLimitKey, source))] : []),
-      ...(clientRateLimitKey ? [loginRateLimiter.release(clientRateLimitKey)] : [])
-    ]);
+    await releaseAccountBudgets(rateLimitKey);
 
     // A verified password of a user with TOTP creates no session, only a challenge that the
     // second-factor route redeems; its own limits bound the code guesses.

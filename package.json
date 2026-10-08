@@ -111,6 +111,7 @@
     "gpt-tokenizer": "4.0.0",
     "jose": "6.2.3",
     "katex": "0.18.1",
+    "ldapts": "9.2.0",
     "linkedom": "0.18.13",
     "lucide-react": "0.468.0",
     "markdown-it": "15.0.2",

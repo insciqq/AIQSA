@@ -1,3 +1,4 @@
+import { LdapSignInCard } from "@/components/admin/signIn/LdapSignInCard";
 import { GoogleSignInCard, YandexSignInCard } from "@/components/admin/signIn/OAuthClientSignInCard";
 import type { AdminSignInMethodCardProps } from "@/components/admin/signIn/SignInMethodCardFrame";
 import type { AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
@@ -15,5 +16,6 @@ export type AdminSignInMethodCardRegistry = {
  */
 export const adminSignInMethodCards: AdminSignInMethodCardRegistry = {
   google: GoogleSignInCard,
+  ldap: LdapSignInCard,
   yandex: YandexSignInCard
 };
