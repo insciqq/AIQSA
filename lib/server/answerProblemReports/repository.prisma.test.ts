@@ -34,18 +34,29 @@ type Fixture = Readonly<{
   streamingId: string;
 }>;
 
-/** A question and its settled answer; a Project chat's question names its author, as the database requires. */
+/**
+ * A question and its settled answer. In a Project chat the question names its
+ * author and the run its Project binding, as the database requires.
+ */
 async function exchange(chatId: string, userId: string, connectionId: string, modelId: string,
-  author?: Readonly<{ displayName: string; role: "OWNER" | "MANAGER" | "CONTRIBUTOR" | "VIEWER" }>): Promise<Chat> {
+  project?: Readonly<{ authorDisplayName: string; id: string; role: "OWNER" | "MANAGER" | "CONTRIBUTOR" | "VIEWER" }>): Promise<Chat> {
   const questionId = randomUUID();
   const answerId = randomUUID();
   const runId = randomUUID();
   await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic question"), id: questionId, role: "user",
-    ...(author ? { authorDisplayName: author.displayName, authorProjectRole: author.role, authorUserId: userId } : {}) } });
+    ...(project ? { authorDisplayName: project.authorDisplayName, authorProjectRole: project.role, authorUserId: userId } : {}) } });
   await prisma.message.create({ data: { chatId, content: textMessageContent("Synthetic answer"), id: answerId, parentMessageId: questionId,
     role: "assistant", status: "complete" } });
-  await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId, normalizedRequest: {},
-    provider: connectionId, status: "complete", userId, userMessageId: questionId } });
+  await prisma.$transaction(async (tx) => {
+    await tx.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId, normalizedRequest: {},
+      provider: connectionId, status: "complete", userId, userMessageId: questionId } });
+    if (project) {
+      const revisions = await tx.project.findUniqueOrThrow({ where: { id: project.id } });
+      await tx.projectRunBinding.create({ data: { acceptedRole: project.role, accessRevision: revisions.accessRevision,
+        initiatorUserId: userId, instructionsRevision: revisions.instructionsRevision, memoryRevision: revisions.memoryRevision,
+        modelRunId: runId, personalMemoryDisabled: true, policyRevision: revisions.policyRevision, projectId: project.id } });
+    }
+  });
   await prisma.providerRunBinding.create({ data: { connectionId, credentialSource: "default", executionSnapshot: {},
     modelRunId: runId, providerModelId: modelId, role: "answer" } });
   return { answerId, chatId, questionId, runId };
@@ -79,7 +90,8 @@ async function withFixture<T>(execute: (fixture: Fixture) => Promise<T>): Promis
     const sharedChat = await prisma.chat.create({ data: { createdByDisplayName: "Owner", createdByUserId: owner.id,
       memoryMode: "EXCLUDED", projectId: project.id, title: "Problem report Project fixture", userId: null } });
     chatIds.push(sharedChat.id);
-    const projectChat = await exchange(sharedChat.id, owner.id, connectionId, modelId, { displayName: "Owner", role: "OWNER" });
+    const projectChat = await exchange(sharedChat.id, owner.id, connectionId, modelId,
+      { authorDisplayName: "Owner", id: project.id, role: "OWNER" });
     return await execute({ admin: admin.id, member: member.id, owner: owner.id, personal, projectChat, projectId: project.id,
       streamingId });
   } finally {
