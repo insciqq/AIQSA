@@ -17,13 +17,16 @@ import {
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { useState } from "react";
 import { AnswerOutputsV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { McpApprovalCardsV2, McpApprovalContinuationTurnV2 } from "@/features/answer-outputs-v2/McpApprovalCardV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import {
   KnowledgeCitationControl,
   KnowledgeCitationViewerProvider
 } from "@/features/citations-v2/KnowledgeCitationViewer";
+import { mcpApprovalContinuationText, type McpApprovalCard } from "@/lib/contracts/mcpApprovals";
 
 export type AnswerOutputsGalleryState =
+  | "approval"
   | "citation-assistant"
   | "citation-personal"
   | "citation-project"
@@ -172,6 +175,43 @@ const memoryArtifact: ThreadArtifactSummary = {
   workDurationMs: 8_300
 };
 
+/* MCP write approval: a refused call per source and every decided state.
+   Decisions resolve locally; the request preview is the initiator's only. */
+const approvalCards: McpApprovalCard[] = [
+  { approvalId: "approval-model", canDecide: true, details: { ordinal: 0, roundIndex: 1 }, serverName: "Records vault",
+    source: "model", state: "pending", toolName: "delete_record" },
+  { approvalId: "approval-code", canDecide: true, serverName: "Records vault", source: "code", state: "pending",
+    toolName: "archive_records_with_a_rather_long_tool_name" },
+  { approvalId: "approval-member", serverName: "Shared tracker", source: "model", state: "pending", toolName: "close_issue" },
+  { approvalId: "approval-once", serverName: "Records vault", source: "model", state: "allowed_once", toolName: "update_record" },
+  { approvalId: "approval-server", serverName: "Calendar", source: "agent", state: "allowed_server", toolName: "create_event" },
+  { approvalId: "approval-denied", serverName: "Records vault", source: "model", state: "denied", toolName: "purge_records" }
+];
+
+const approvalMessages: ConversationMessageV2[] = [
+  { content: "Delete record r-17 and archive the old ones.", id: "answer-outputs-question", role: "user" },
+  { content: "I wanted to delete record r-17 and archive the old records. Both need your approval in the cards below.",
+    id: "answer-outputs-answer", role: "assistant" },
+  { content: mcpApprovalContinuationText({ serverName: "Records vault", toolName: "update_record" }),
+    id: "answer-outputs-continuation", role: "user" },
+  { content: "Record r-12 is updated.", id: "answer-outputs-continued", role: "assistant" }
+];
+
+function ApprovalOutput() {
+  return (
+    <McpApprovalCardsV2
+      cards={approvalCards}
+      decide={async ({ approvalId, decision }) => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const card = approvalCards.find((candidate) => candidate.approvalId === approvalId)!;
+        return { approvalId, serverName: card.serverName, source: card.source, toolName: card.toolName,
+          state: decision === "allow_once" ? "allowed_once" : decision === "allow_server" ? "allowed_server" : "denied" };
+      }}
+      runId="answer-outputs-run"
+    />
+  );
+}
+
 const memoryToolActivity: ThreadToolActivity = {
   calls: [
     { durationMs: 640, round: 1, status: "complete", toolName: "search_knowledge" },
@@ -181,6 +221,7 @@ const memoryToolActivity: ThreadToolActivity = {
 
 function artifactFor(state: AnswerOutputsGalleryState): ThreadArtifactSummary | null {
   switch (state) {
+    case "approval":
     case "empty":
       return null;
     case "reasoning":
@@ -246,8 +287,10 @@ export function AnswerOutputsV2Gallery({
                 ? visualMessages
                 : state === "memory"
                   ? memoryMessages
-                  : messages}
-              renderMessage={(message) => message.role === "user" ? (
+                  : state === "approval" ? approvalMessages : messages}
+              renderMessage={(message) => message.id === "answer-outputs-continuation" ? (
+                <McpApprovalContinuationTurnV2 anchorId={message.id} content={message.content} />
+              ) : message.role === "user" ? (
                 <ConversationTurnV2
                   actions={{
                     onCopy: () => undefined,
@@ -265,7 +308,12 @@ export function AnswerOutputsV2Gallery({
                     onMore: () => undefined,
                     onRegenerate: () => undefined
                   }}
-                  actionsSlot={<AnswerOutputsV2 artifact={artifact} />}
+                  actionsSlot={(
+                    <>
+                      {state === "approval" && message.id === "answer-outputs-answer" ? <ApprovalOutput /> : null}
+                      <AnswerOutputsV2 artifact={artifact} />
+                    </>
+                  )}
                   anchorId={message.id}
                   artifact={artifact}
                   content={message.content}

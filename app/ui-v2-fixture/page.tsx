@@ -126,6 +126,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
     const state = fixtureState(
       query.state,
       [
+        "approval",
         "citation-assistant",
         "citation-personal",
         "citation-project",
