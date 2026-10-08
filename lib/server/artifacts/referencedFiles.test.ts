@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ARTIFACT_LIMITS, normalizeArtifactOperation } from "@/lib/contracts/artifacts";
+import { artifactToolError } from "./errors";
 import {
   ARTIFACT_ERROR_EXCERPT_CHARACTERS,
   artifactErrorExcerpt,
@@ -96,6 +97,16 @@ describe("text supplied by reference", () => {
       .toThrowError(expect.objectContaining({ code, path: "index.html" }));
   });
 
+  it("bounds every edit's result before building it, so replace_all chains cannot grow past the limit", () => {
+    const grow = { path: "index.html", old_string: "a", new_string: "b".repeat(512 * 1024), replace_all: true };
+    const next = { path: "index.html", old_string: "b", new_string: "c", replace_all: true };
+    expect(() => materializeArtifactReferences(operation([grow, next]), assets("a".repeat(1000))))
+      .toThrowError(expect.objectContaining({ code: "artifact_text_limit_exceeded", path: "index.html", editIndex: 0 }));
+    const fits = materializeArtifactReferences(operation([{ ...grow, new_string: "b".repeat(1024) }]), assets("a".repeat(1000)));
+    expect(fits.assets[0]!.bytes.byteLength).toBe(1000 * 1024);
+    expect(fits.assets[0]!.bytes.byteLength).toBeLessThan(ARTIFACT_LIMITS.maxAssetBytes);
+  });
+
   it("refuses non-UTF-8 referenced text before applying edits", () => {
     const source = [{ path: "index.html", mimeType: "text/html", bytes: Buffer.from([0xc3, 0x28]) }, assets("")[1]!];
     expect(() => materializeArtifactReferences(operation(), source)).toThrowError(expect.objectContaining({ code: "artifact_text_encoding_invalid", path: "index.html" }));
@@ -104,7 +115,12 @@ describe("text supplied by reference", () => {
   it("bounds edited text by the referenced-file limit and the bundle by its total", () => {
     const grown = `${"x".repeat(1023)}#`.repeat(12 * 1024);
     expect(() => materializeArtifactReferences(operation([{ path: "index.html", old_string: "#", new_string: "#".repeat(2048), replace_all: true }]), assets(grown)))
-      .toThrowError(expect.objectContaining({ code: "artifact_text_limit_exceeded", path: "index.html", hint: expect.stringContaining(`${ARTIFACT_LIMITS.maxAssetBytes / MIB} MiB`) }));
+      .toThrowError(expect.objectContaining({ code: "artifact_text_limit_exceeded", path: "index.html", editIndex: 0 }));
+    try {
+      materializeArtifactReferences(operation([{ path: "index.html", old_string: "#", new_string: "#".repeat(2048), replace_all: true }]), assets(grown));
+    } catch (error) {
+      expect(artifactToolError(error)).toMatchObject({ code: "artifact_text_limit_exceeded", hint: expect.stringContaining(`${ARTIFACT_LIMITS.maxAssetBytes / MIB} MiB`) });
+    }
     const half = `${"y".repeat(16 * MIB - 1)}#`;
     const pair = normalizeArtifactOperation({ intent: "create", kind: "html", title: "Pair", entrypoint: "index.html",
       files: [{ path: "index.html", mimeType: "text/html", assetRef: "a" }, { path: "other.txt", mimeType: "text/plain", assetRef: "b" }],

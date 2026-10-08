@@ -347,12 +347,20 @@ function normalizeFile(value: unknown): NormalizedArtifactFile {
   return { assetRef, byteSize: 0, mimeType, path };
 }
 
-/** Exact old_string replacement shared by inline and by-reference text edits. */
-export function applyArtifactTextEdit(text: string, edit: Pick<ArtifactEditPatch, "old_string" | "new_string" | "replace_all">, path: string, editIndex: number): string {
+/**
+ * Exact old_string replacement shared by inline and by-reference text edits.
+ * The result is bounded before it is built: UTF-8 never takes fewer bytes than
+ * UTF-16 code units, so a chain of replace_all edits cannot grow past maxBytes.
+ */
+export function applyArtifactTextEdit(text: string, edit: Pick<ArtifactEditPatch, "old_string" | "new_string" | "replace_all">, path: string, editIndex: number,
+  maxBytes: number = ARTIFACT_LIMITS.maxTextFileBytes): string {
   let count = 0;
   for (let index = text.indexOf(edit.old_string); index !== -1; index = text.indexOf(edit.old_string, index + edit.old_string.length)) count++;
   if (!count) throw new ArtifactContractError("artifact_edit_not_found", path, undefined, editIndex);
   if (count !== 1 && edit.replace_all !== true) throw new ArtifactContractError("artifact_edit_ambiguous", path, count, editIndex);
+  if (text.length + count * (edit.new_string.length - edit.old_string.length) > maxBytes) {
+    throw new ArtifactContractError("artifact_text_limit_exceeded", path, undefined, editIndex);
+  }
   return edit.replace_all === true ? text.split(edit.old_string).join(edit.new_string) : text.replace(edit.old_string, () => edit.new_string);
 }
 
