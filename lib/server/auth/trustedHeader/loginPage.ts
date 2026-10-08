@@ -54,3 +54,11 @@ export async function hasActiveSessionToken(token: string | undefined): Promise<
   ]);
   return (await resolveAuthToken(token, { sessions: createPrismaAuthSessionStore(prisma) })) !== null;
 }
+
+/**
+ * Where signing out of a trusted-header session lands: the login page kept on screen, since a
+ * plain `/login` would sign the browser straight back in while the proxy still vouches for it.
+ */
+export function trustedHeaderLogoutRedirect(input: { appBaseUrl: string; signInMethod: string | null }): string | null {
+  return input.signInMethod === "trusted_header" ? new URL("/login?local=1", input.appBaseUrl).toString() : null;
+}
