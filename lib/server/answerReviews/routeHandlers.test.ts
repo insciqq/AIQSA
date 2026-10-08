@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestAuth } from "@/tests/support/auth";
 import { createAnswerReviewRoundHandler } from "./roundHandler";
 import { createAnswerReviewStepHandler } from "./stepHandler";
+import { createAnswerReviewStopHandler } from "./stopHandler";
 import type { AnswerReviewServiceDeps } from "./service";
 import type { AnswerReviewStepStartDeps } from "./stepStart";
 
 const startRound = vi.hoisted(() => vi.fn());
 const startStep = vi.hoisted(() => vi.fn());
+const stopSession = vi.hoisted(() => vi.fn());
 vi.mock("./service", async (importOriginal) => ({ ...await importOriginal<typeof import("./service")>(), startAnswerReviewRound: startRound }));
 vi.mock("./stepStart", async (importOriginal) => ({ ...await importOriginal<typeof import("./stepStart")>(), startAnswerReviewStep: startStep }));
 
@@ -17,7 +19,8 @@ const steps = {} as AnswerReviewStepStartDeps;
 const resolveAuth = async (request: Request) => await auth.resolveAuth(request) ?? inactive.resolveAuth(request);
 const handlers = {
   POST_ROUND: createAnswerReviewRoundHandler({ resolveAuth, service: () => service }),
-  POST_STEP: createAnswerReviewStepHandler({ resolveAuth, steps: () => steps })
+  POST_STEP: createAnswerReviewStepHandler({ resolveAuth, steps: () => steps }),
+  POST_STOP: createAnswerReviewStopHandler({ driver: () => ({ stop: stopSession }), resolveAuth })
 };
 const author = { modelId: "model-a", name: "Claude", provider: "connection-a" };
 const session = { authorModel: author, chatId: "chat-1", id: "session-1", maxRounds: null, mode: "manual" as const,
@@ -34,6 +37,7 @@ const stepBody = { admissionId: "admission-1", controls: { timeZone: "Europe/Ber
 beforeEach(() => {
   startRound.mockReset();
   startStep.mockReset();
+  stopSession.mockReset();
 });
 
 describe("answer review routes", () => {
@@ -97,6 +101,37 @@ describe("answer review routes", () => {
     const badId = await handlers.POST_STEP(post("/api/answer-reviews/a.b/steps", stepBody), { params: { sessionId: "a.b" } });
     expect(badId.status).toBe(404);
     expect(startStep).not.toHaveBeenCalled();
+  });
+
+  it("stops an automatic session for its initiator and returns it", async () => {
+    stopSession.mockResolvedValue({ session: { ...session, maxRounds: 3, mode: "auto", state: "stopped", stopReason: "user_stopped" } });
+    const response = await handlers.POST_STOP(post("/api/answer-reviews/session-1/stop", {}), { params: { sessionId: "session-1" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({ session: { author, canAct: true, id: "session-1", maxRounds: 3, mode: "auto",
+      reviewers: session.reviewers, round: 1, sourceAssistantMessageId: "answer-1", state: "stopped", stopReason: "user_stopped" } });
+    expect(stopSession).toHaveBeenCalledWith({ sessionId: "session-1", userId: "user-1" });
+  });
+
+  it("answers another user's, a missing and a malformed session alike, and refuses without an active session", async () => {
+    stopSession.mockResolvedValue(null);
+    const missing = await handlers.POST_STOP(post("/api/answer-reviews/session-1/stop", {}), { params: { sessionId: "session-1" } });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: "answer_review_unavailable" });
+    const badId = await handlers.POST_STOP(post("/api/answer-reviews/a.b/stop", {}), { params: { sessionId: "a.b" } });
+    expect(badId.status).toBe(404);
+    expect(await badId.json()).toEqual({ error: "answer_review_unavailable" });
+    expect(stopSession).toHaveBeenCalledOnce();
+    const anonymous = await handlers.POST_STOP(post("/api/answer-reviews/session-1/stop", {}, null), { params: { sessionId: "session-1" } });
+    expect(anonymous.status).toBe(401);
+    const disabled = await handlers.POST_STOP(post("/api/answer-reviews/session-1/stop", {}, inactive.cookie),
+      { params: { sessionId: "session-1" } });
+    expect(disabled.status).toBe(403);
+    expect(stopSession).toHaveBeenCalledOnce();
+    stopSession.mockRejectedValue(new Error("database down"));
+    const failed = await handlers.POST_STOP(post("/api/answer-reviews/session-1/stop", {}), { params: { sessionId: "session-1" } });
+    expect(failed.status).toBe(503);
+    expect(await failed.json()).toEqual({ error: "answer_review_unavailable" });
   });
 
   it("answers a database failure with a neutral unavailability", async () => {

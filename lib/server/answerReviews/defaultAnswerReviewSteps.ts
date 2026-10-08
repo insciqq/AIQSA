@@ -8,13 +8,13 @@ const globalForAnswerReviews = globalThis as typeof globalThis & {
   __aiqsaAnswerReviewSendDeps?: AnswerReviewStepStartDeps["sendDeps"];
 };
 
-/** One set of send services per process, shared by every route bundle, built on first use. */
-function sendDeps(): AnswerReviewStepStartDeps["sendDeps"] {
+/** One set of send services per process, shared by every route bundle and the automatic driver, built on first use. */
+export function defaultAnswerReviewSendDeps(): AnswerReviewStepStartDeps["sendDeps"] {
   globalForAnswerReviews.__aiqsaAnswerReviewSendDeps ??= createDefaultSendMessageDeps();
   return globalForAnswerReviews.__aiqsaAnswerReviewSendDeps;
 }
 
 export const answerReviewStepHandler = createAnswerReviewStepHandler({
   resolveAuth: resolveRequestAuth,
-  steps: () => ({ prisma, sendDeps: sendDeps() })
+  steps: () => ({ prisma, sendDeps: defaultAnswerReviewSendDeps() })
 });

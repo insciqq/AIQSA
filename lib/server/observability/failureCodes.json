@@ -1175,5 +1175,11 @@
   "transcription_request_timed_out",
   "transcription_response_invalid",
   "transcription_response_too_large",
-  "answer_review_unavailable"
+  "answer_review_unavailable",
+  "answer_review_driver_failed",
+  "answer_review_session_ended",
+  "answer_review_step_refused",
+  "answer_review_step_started",
+  "answer_review_step_waiting",
+  "answer_review_time_limit"
 ]
