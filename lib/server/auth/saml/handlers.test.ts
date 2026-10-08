@@ -10,6 +10,7 @@ import {
   samlTestResponse,
   signSamlTestAssertion
 } from "@/tests/support/samlIdp";
+import { captureSignInRecords } from "@/tests/support/signInRecords";
 import { getAuthConfig } from "../config";
 import type { ExternalSignInResult } from "../externalIdentity";
 import { createFixedWindowLoginRateLimiter } from "../rateLimit";
@@ -393,6 +394,36 @@ describe("SAML assertion consumer service and completion", () => {
     expect([first.headers.get("location"), second.headers.get("location")].filter((location) => location === COMPLETE_URL)).toHaveLength(1);
     expect(sessionCookie(await saml.finish(cookie))).toEqual(expect.any(String));
     expect(saml.completeSignIn).toHaveBeenCalledTimes(1);
+  });
+
+  it("records each SAML attempt once, where it ends, without the asserted identity", async () => {
+    const saml = setup();
+    const refused = setup({ result: { status: "not_allowed" } });
+    const failing = setup({ throws: true });
+    const signInThrough = async (harness: ReturnType<typeof setup>) => {
+      const { cookie, relayState, requestId } = await harness.begin();
+      expect((await harness.post({ RelayState: relayState!, SAMLResponse: samlResponse(requestId) })).headers.get("location"))
+        .toBe(COMPLETE_URL);
+      return harness.finish(cookie);
+    };
+
+    const records = await captureSignInRecords(async () => {
+      expect(sessionCookie(await signInThrough(saml))).toEqual(expect.any(String));
+      expect(loginOutcome(await saml.post({ SAMLResponse: samlResponse(null) })).saml).toBe("failed");
+      expect(loginOutcome(await saml.finish(null)).saml).toBe("browser_mismatch");
+      expect(loginOutcome(await signInThrough(refused)).saml).toBe("not_allowed");
+      expect(loginOutcome(await signInThrough(failing)).saml).toBe("failed");
+    });
+
+    expect(records.map(({ code, level, outcome, sign_in_method, step }) => ({ code, level, outcome, sign_in_method, step }))).toEqual([
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "saml", step: "callback" },
+      { code: "unsolicited_response", level: "error", outcome: "failed", sign_in_method: "saml", step: "callback" },
+      { code: "browser_mismatch", level: "warn", outcome: "failed", sign_in_method: "saml", step: "callback" },
+      { code: "not_allowed", level: "warn", outcome: "refused", sign_in_method: "saml", step: "callback" },
+      { code: "sign_in_failed", level: "error", outcome: "failed", sign_in_method: "saml", step: "callback" }
+    ]);
+    expect(records[4]).toMatchObject({ error_class: "Error" });
+    expect(JSON.stringify(records)).not.toMatch(/Ada|example\.test|synthetic|staff|admins|idp\./iu);
   });
 });
 
