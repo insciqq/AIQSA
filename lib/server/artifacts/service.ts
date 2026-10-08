@@ -14,7 +14,7 @@ import {
 } from "@/lib/contracts/artifacts";
 import { createShareToken, hashShareToken } from "@/lib/server/shares/tokens";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "@/lib/server/uploads/storage";
-import { artifactBlobIsText, buildArtifactBundle, bundleFileBytes, decodeArtifactBundle, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleAsset, type ArtifactBundleFile } from "./bundle";
+import { artifactBlobIsText, buildArtifactBundleAsync, bundleFileBytes, decodeArtifactBundle, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleAsset, type ArtifactBundleFile } from "./bundle";
 import { vendorArtifactResources } from "./vendoring";
 import type { ArtifactResourceFetcher } from "./resourceFetch";
 import { ARTIFACT_WRITE_LEASE_MS } from "./lifecycle";
@@ -266,7 +266,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     const stored = { ...operation, files: operation.files.map(file => referenced.edited.has(file.path) || file.assetRef !== undefined && unpacked?.assets.has(file.assetRef)
       ? { ...file, assetRef: inheritedAssetRef(file.path) } : file) };
     const assets = [...referenced.assets, ...vendors.assets];
-    const built = buildArtifactBundle(stored, assets, vendors.files);
+    const built = await buildArtifactBundleAsync(stored, assets, vendors.files, { signal: input.signal });
     const renderNotes = artifactRenderNotes(built.notes);
     const report: ArtifactVersionReport | undefined = unpacked || renderNotes
       ? { ...(unpacked ? { unpacked: unpacked.report } : {}), ...(renderNotes ? { renderNotes } : {}) } : undefined;
@@ -770,7 +770,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     const operation = normalizeArtifactOperation({ intent: "create", title, kind: row.kind, entrypoint: row.entrypoint ?? undefined,
       files: bundle.files.filter(file => !file.vendor).map(file => file.blob === undefined && file.text !== undefined ? { path: file.path, mimeType: file.mimeType, text: file.text }
         : { path: file.path, mimeType: file.mimeType, assetRef: inheritedAssetRef(file.path) }) }, undefined, { stored: true });
-    const built = buildArtifactBundle(operation, assets, bundle.files.filter(file => file.vendor).map(file => ({
+    const built = await buildArtifactBundleAsync(operation, assets, bundle.files.filter(file => file.vendor).map(file => ({
       path: file.path, mimeType: file.mimeType, blob: file.blob!, byteSize: file.byteSize!, vendor: file.vendor!
     })));
     const reserved = await db.$transaction(async tx => {

@@ -36,7 +36,7 @@ describe("artifact tool results", () => {
 
   it("reports render notes with a repair hint and keeps the card compact", () => {
     const renderNotes = { removedLinks: [{ page: "index.html", rel: "preload", href: "/app.js" }], missingLinks: [{ page: "index.html", href: "about.html", path: "about.html" }],
-      invalidPages: [{ page: "docs/bad.html", code: "artifact_element_unsupported" }], omitted: 3 };
+      invalidPages: [{ page: "docs/bad.html", code: "artifact_element_unsupported" }], omitted: 3, unvalidatedPages: 0 };
     const result = artifactToolResult(call, version([{ path: "index.html", byteSize: 1 }], { renderNotes }));
     const value = (result.content[0] as { value: Record<string, unknown> }).value;
     expect(value.render_notes).toEqual({ removed_links: renderNotes.removedLinks, missing_links: renderNotes.missingLinks, invalid_pages: renderNotes.invalidPages, omitted: 3,
@@ -49,11 +49,12 @@ describe("artifact tool results", () => {
   });
 
   it("reports only the findings of a build that has any", () => {
-    const clean = { pages: ["index.html", "about.html"], removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0 };
+    const clean = { pages: ["index.html", "about.html"], removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: 0 };
     expect(artifactRenderNotes(clean)).toBeUndefined();
-    expect(artifactRenderNotes({ ...clean, omitted: 1 })).toEqual({ removedLinks: [], missingLinks: [], invalidPages: [], omitted: 1 });
+    expect(artifactRenderNotes({ ...clean, omitted: 1 })).toEqual({ removedLinks: [], missingLinks: [], invalidPages: [], omitted: 1, unvalidatedPages: 0 });
     const invalidPages = [{ page: "about.html", code: "artifact_element_unsupported" }];
-    expect(artifactRenderNotes({ ...clean, invalidPages })).toEqual({ removedLinks: [], missingLinks: [], invalidPages, omitted: 0 });
+    expect(artifactRenderNotes({ ...clean, invalidPages })).toEqual({ removedLinks: [], missingLinks: [], invalidPages, omitted: 0, unvalidatedPages: 0 });
+    expect(artifactRenderNotes({ ...clean, unvalidatedPages: 7 })).toEqual({ removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: 7 });
   });
 
   it("stays within the persisted result bound at the largest report", () => {
@@ -64,7 +65,7 @@ describe("artifact tool results", () => {
       unpacked: { rootFolder: "r".repeat(512), skippedEntries: 2_000, skippedFiles: Array.from({ length: ARTIFACT_UNPACK_SKIPPED_FILES }, () => "s".repeat(512)) },
       renderNotes: { removedLinks: Array.from({ length: 32 }, () => ({ page: note, rel: note, href: note })),
         missingLinks: Array.from({ length: 32 }, () => ({ page: note, href: note, path: note })),
-        invalidPages: Array.from({ length: 32 }, () => ({ page: note, code: note })), omitted: 99 }
+        invalidPages: Array.from({ length: 32 }, () => ({ page: note, code: note })), omitted: 99, unvalidatedPages: ARTIFACT_LIMITS.maxBundleFiles - 1 }
     };
     expect(decodeArtifactVersionReport({ report })).toEqual(report);
     const result = artifactToolResult(call, version(files, report));
@@ -80,11 +81,25 @@ describe("artifact tool results", () => {
       { renderNotes: { removedLinks: [{ page: "a", rel: "preload" }], missingLinks: [], invalidPages: [], omitted: 0 } },
       { renderNotes: { removedLinks: [], missingLinks: Array.from({ length: 33 }, () => ({ page: "a", href: "b", path: "c" })), invalidPages: [], omitted: 0 } },
       { renderNotes: { removedLinks: [], missingLinks: [], omitted: 0 } },
-      { renderNotes: { removedLinks: [], missingLinks: [], invalidPages: [{ page: "a", code: "x".repeat(257) }], omitted: 0 } }]) {
+      { renderNotes: { removedLinks: [], missingLinks: [], invalidPages: [{ page: "a", code: "x".repeat(257) }], omitted: 0 } },
+      { renderNotes: { removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: -1 } },
+      { renderNotes: { removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: "2" } },
+      { renderNotes: { removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: ARTIFACT_LIMITS.maxBundleFiles + 1 } }]) {
       expect(decodeArtifactVersionReport({ report })).toBeUndefined();
     }
     expect(decodeArtifactVersionReport({ report: { renderNotes: { removedLinks: [{ page: "a", rel: "preload", href: "b", extra: 1 }], missingLinks: [],
       invalidPages: [{ page: "c", code: "artifact_element_unsupported" }], omitted: 2 } } }))
-      .toEqual({ renderNotes: { removedLinks: [{ page: "a", rel: "preload", href: "b" }], missingLinks: [], invalidPages: [{ page: "c", code: "artifact_element_unsupported" }], omitted: 2 } });
+      .toEqual({ renderNotes: { removedLinks: [{ page: "a", rel: "preload", href: "b" }], missingLinks: [], invalidPages: [{ page: "c", code: "artifact_element_unsupported" }], omitted: 2, unvalidatedPages: 0 } });
+    expect(decodeArtifactVersionReport({ report: { renderNotes: { removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: 3 } } }))
+      .toEqual({ renderNotes: { removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: 3 } });
+  });
+
+  it("reports pages left for validation when opened, with a hint, and reads the same receipt back", () => {
+    const renderNotes = { removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0, unvalidatedPages: 12 };
+    const result = artifactToolResult(call, version([{ path: "index.html", byteSize: 1 }], { renderNotes }));
+    expect((result.content[0] as { value: Record<string, unknown> }).value.render_notes).toEqual({ unvalidated_pages: 12,
+      hint: expect.stringMatching(/unvalidated_pages.*checked when opened/u) });
+    const stored = decodeArtifactVersionReport(JSON.parse(JSON.stringify({ report: { renderNotes } })));
+    expect(artifactToolResult(call, version([{ path: "index.html", byteSize: 1 }], stored))).toEqual(result);
   });
 });

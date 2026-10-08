@@ -2,7 +2,7 @@ import type { Buffer } from "node:buffer";
 import { ARTIFACT_LIMITS, isArtifactTextMime, isReservedArtifactPath, normalizedArtifactPath, type NormalizedArtifactFile } from "@/lib/contracts/artifacts";
 import { ArtifactToolError } from "./errors";
 import { artifactTextFromBytes } from "./referencedFiles";
-import { ARTIFACT_ZIP_LIMITS, ArtifactZipError, readZipArchive, type ArtifactZipErrorCode } from "./zipReader";
+import { ARTIFACT_ZIP_LIMITS, ARTIFACT_ZIP_PATH_LIMITS, ArtifactZipError, readZipArchive, type ArtifactZipErrorCode } from "./zipReader";
 
 const MIB = 1024 * 1024;
 /** Skipped files named in a report; `skippedEntries` counts every one. */
@@ -45,6 +45,8 @@ const ZIP_HINTS: ReadonlyMap<ArtifactZipErrorCode, string> = new Map<ArtifactZip
   ["artifact_zip_size_mismatch", `The archive's declared sizes do not match its contents; it is damaged. ${REZIP}`],
   ["artifact_zip_crc_mismatch", `The archive's checksums do not match its contents; it is damaged. ${REZIP}`],
   ["artifact_zip_path_invalid", `The archive has an unsafe or malformed path (.., an absolute or drive path, a backslash or a control character). ${REZIP}`],
+  ["artifact_zip_path_too_long", `Archive paths may take at most ${ARTIFACT_ZIP_PATH_LIMITS.maxNameBytes} bytes and ${ARTIFACT_ZIP_PATH_LIMITS.maxSegments} folder levels; ` +
+    "leave out deep folders the pages do not use (node_modules, .git) or shorten the names, then zip the site again."],
   ["artifact_zip_symlink", "Symbolic links are unsupported; replace the link with the file itself and zip the site again (zip -r without -y)."],
   ["artifact_zip_duplicate_path", "The archive holds the same path twice, counting letter case and a file named like a folder; rename one and zip the site again."]
 ]);

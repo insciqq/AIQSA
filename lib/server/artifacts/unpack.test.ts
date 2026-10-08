@@ -130,7 +130,7 @@ describe("artifact archive refusals", () => {
     "artifact_zip_invalid", "artifact_zip_zip64_unsupported", "artifact_zip_multidisk_unsupported", "artifact_zip_empty",
     "artifact_zip_compression_unsupported", "artifact_zip_encrypted", "artifact_zip_entry_limit_exceeded", "artifact_zip_entry_too_large",
     "artifact_zip_total_too_large", "artifact_zip_compression_ratio_exceeded", "artifact_zip_size_mismatch", "artifact_zip_crc_mismatch",
-    "artifact_zip_path_invalid", "artifact_zip_symlink", "artifact_zip_duplicate_path"
+    "artifact_zip_path_invalid", "artifact_zip_path_too_long", "artifact_zip_symlink", "artifact_zip_duplicate_path"
   ] satisfies ArtifactZipErrorCode[])("gives %s a repair hint and keeps its path or the archive label", code => {
     const named = artifactZipToolError(new ArtifactZipError(code, "site/a.css"), "upload.zip");
     expect(named).toBeInstanceOf(ArtifactToolError);
