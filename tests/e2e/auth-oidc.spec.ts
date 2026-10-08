@@ -41,6 +41,12 @@ async function activate(overrides: Partial<AuthSignInMethodConfig<"oidc">> = {})
     draftSecretGeneration: generation,
     draftVersion: version,
     enabled: true,
+    // A new active version starts without the previous version's health, as activation does.
+    healthActiveVersion: null,
+    lastAcceptedAt: null,
+    lastAttemptAt: null,
+    lastFailureAt: null,
+    lastFailureCode: null,
     secretGenerationCounter: generation
   };
   await prisma.authSignInMethodSetting.upsert({ create: { method: "oidc", ...data }, update: data, where: { method: "oidc" } });
