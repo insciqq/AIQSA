@@ -186,6 +186,33 @@ describe("AdminSignInSection", () => {
     expect(calls.at(-1)?.body).toEqual({ action: "activate", confirmSourceChange: true, expectedActiveVersion: 0, expectedDraftVersion: 2 });
   });
 
+  it("shows in the card why the method the administrator signed in with stays on", async () => {
+    const active = method("google", {
+      active: { activatedAt: "2026-10-08T12:01:00.000Z", config: { clientId: GOOGLE_CLIENT }, enabled: true, secrets: { clientSecret: true }, version: 1 },
+      draft: { config: { clientId: GOOGLE_CLIENT }, matchesActive: true, secrets: { clientSecret: true }, test: null, version: 1 },
+      status: "active_admin"
+    });
+    const calls = mockApi((call) => call.url === "/api/admin/sign-in/methods/google"
+      ? Response.json({ error: "password_login_lockout_risk" }, { status: 409 })
+      : null, overview({
+      currentSessionSignInMethod: "google",
+      methods: [active],
+      policy: { passwordLoginEnabled: false, registrationEnabled: true, updatedAt: null, version: 1 }
+    }));
+    const { confirmations, feedback } = renderSection();
+    const google = await screen.findByTestId("admin-sign-in-card-google");
+
+    fireEvent.click(within(google).getByRole("button", { name: "Disable" }));
+    await confirmations[0]!.onConfirm();
+
+    expect(calls.at(-1)?.body).toEqual({ action: "disable", expectedActiveVersion: 1 });
+    const message = await within(google).findByTestId("admin-sign-in-message");
+    expect(message).toHaveTextContent("Google stays on: password sign-in is off and you signed in with Google");
+    expect(message).toHaveTextContent("AIQSA_BOOTSTRAP_AUTH_TOKEN");
+    expect(feedback.reportNotice).not.toHaveBeenCalled();
+    expect(within(google).getByTestId("admin-sign-in-status")).toHaveTextContent("Active (admin)");
+  });
+
   it("explains the lockout guard when password sign-in cannot be turned off", async () => {
     const calls = mockApi((call) => call.url === "/api/admin/sign-in/policy"
       ? Response.json({ error: "password_login_lockout_risk" }, { status: 409 })

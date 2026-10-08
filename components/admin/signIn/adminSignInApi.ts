@@ -234,6 +234,13 @@ export function changeAdminUserSignIn(userId: string, body: AdminUserSignInReque
 
 const BREAK_GLASS = "If every other way in fails, the bootstrap token (AIQSA_BOOTSTRAP_AUTH_TOKEN) remains the break-glass sign-in.";
 
+/** Disable refused: password sign-in is off and the administrator signed in with this method. */
+export function adminSignInDisableLockoutMessage(label: string): string {
+  return `${label} stays on: password sign-in is off and you signed in with ${label}, so disabling it could leave ` +
+    "no administrator a way back in. Sign in through another active method first, or turn password sign-in back on. " +
+    BREAK_GLASS;
+}
+
 export function adminSignInErrorMessage(code: string): string {
   const messages: Record<string, string> = {
     external_name_duplicate: "This group already has that external name for this source.",

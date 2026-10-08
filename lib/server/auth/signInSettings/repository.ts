@@ -68,11 +68,19 @@ export type SignInSettingsRepository = {
     now: Date;
     requiresTest: boolean;
   }): Promise<SignInSettingsResult<AuthSignInMethodSetting>>;
+  /**
+   * Turns an admin configuration off. While password sign-in is off, the method the acting
+   * session signed in with stays on unless its environment fallback keeps it active.
+   */
   disable(input: {
     actorUserId: string;
+    /** Methods whose environment fallback is configured (Google and Yandex). */
+    environmentMethods: ReadonlySet<string>;
     expectedActiveVersion: number;
     method: AuthSignInMethod;
     now: Date;
+    /** The acting administrator's current session, for the lockout guard. */
+    sessionId: string;
   }): Promise<SignInSettingsResult<AuthSignInMethodSetting>>;
   /** Enabled rows, the only ones sign-in reads. */
   loadEnabled(): Promise<AuthSignInMethodSetting[]>;
@@ -286,9 +294,22 @@ export function createPrismaSignInSettingsRepository(input: {
 
     async disable(request) {
       return prisma.$transaction<SignInSettingsResult<AuthSignInMethodSetting>>(async (tx) => {
+        // Lock order shared with updatePolicy: the policy row first, then the method row.
+        const policy = await tx.$queryRaw<{ passwordLoginEnabled: boolean }[]>`
+          SELECT "passwordLoginEnabled" FROM "AuthSignInPolicy" WHERE "id" = ${SIGN_IN_POLICY_ID} FOR SHARE
+        `;
         const current = await lockSetting(tx, request.method);
         if (current.activeVersion !== request.expectedActiveVersion) return failure("active_conflict");
         if (current.activeConfig === null || !current.enabled) return failure("not_configured");
+        if (policy[0]?.passwordLoginEnabled === false && !request.environmentMethods.has(request.method)) {
+          // With passwords off, the acting administrator's own way in stays on; the bootstrap
+          // token remains the break-glass sign-in.
+          const session = await tx.authSession.findUnique({
+            select: { signInMethod: true },
+            where: { id: request.sessionId }
+          });
+          if (session?.signInMethod === request.method) return failure("lockout_risk");
+        }
         const updated = await tx.authSignInMethodSetting.update({
           data: {
             activeVersion: current.activeVersion + 1,

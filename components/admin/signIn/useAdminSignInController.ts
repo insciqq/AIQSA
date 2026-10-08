@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  adminSignInDisableLockoutMessage,
   adminSignInErrorMessage,
   requestAdminSignIn,
   runAdminSignInMethodAction,
@@ -30,8 +31,11 @@ export type AdminSignInController = Readonly<{
   actions: Readonly<{
     /** Activates the saved draft; a changed identity source asks for confirmation first. */
     activate(method: AuthSignInMethod): Promise<AdminSignInOutcome>;
-    /** Turns an admin configuration off after confirmation; the environment fallback applies again. */
-    requestDisable(method: AuthSignInMethod): void;
+    /**
+     * Turns an admin configuration off after confirmation; the environment fallback applies
+     * again. A refusal goes to `onFailure` for the card to show.
+     */
+    requestDisable(method: AuthSignInMethod, onFailure?: (message: string) => void): void;
     refresh(): Promise<void>;
     saveDraft(method: AuthSignInMethod, draft: AdminSignInDraftInput): Promise<AdminSignInOutcome>;
     setPolicy(next: Readonly<{ passwordLoginEnabled: boolean; registrationEnabled: boolean }>): Promise<AdminSignInOutcome>;
@@ -195,7 +199,7 @@ export function useAdminSignInController({
 
     refresh: load,
 
-    requestDisable: (method) => {
+    requestDisable: (method, onFailure) => {
       const label = signInMethodLabels[method];
       const current = methodState(method);
       requestConfirmation({
@@ -214,8 +218,10 @@ export function useAdminSignInController({
             });
             if (!mountedRef.current) return { message: "", ok: false };
             if (!result.ok) {
-              const outcome = failed(result.error);
-              if (!outcome.ok) onNotice(outcome.message);
+              const outcome = result.error === "password_login_lockout_risk"
+                ? { message: adminSignInDisableLockoutMessage(label), ok: false as const }
+                : failed(result.error);
+              if (!outcome.ok) (onFailure ?? onNotice)(outcome.message);
               return outcome;
             }
             replaceMethod(result.data.method);
