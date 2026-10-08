@@ -287,16 +287,17 @@ describe("chat route handlers", () => {
     }));
     const failed: string[] = [];
     const recoveryRepository = {
-      failRun: async (runId: string, _assistantMessageId: string, error: { code: string }) => {
-        failed.push(`${runId}:${error.code}`);
-        return true;
-      },
       findStaleActiveRunsForUser: async (input: { chatId?: string; userId: string }) =>
         input.userId === config.bootstrapUserId && input.chatId === "chat-1" ? stale : [],
       getRunControlForUser: async (runId: string) => stale.find((run) => run.id === runId) ?? null,
       loadCheckpointedToolLoopRun: async ({ runId }: { runId: string }) => {
         if (runId === "run-unreadable") throw new RecoveryStateInvalidError("tool_loop_checkpoint_invalid_in_storage");
         throw new Error("synthetic database timeout");
+      },
+      loadRunUsageAttributions: async () => [],
+      settleRecoveredRunError: async (input: { error: { code: string }; runId: string }) => {
+        failed.push(`${input.runId}:${input.error.code}`);
+        return true;
       }
     } as unknown as RunRecoveryRepository;
     const registry: RunRecoveryRegistry = {
