@@ -31,6 +31,34 @@ describe("artifact source groups", () => {
     fireEvent.keyDown(screen.getByRole("tab", { name: "_vendor/1234567890123/example.js" }), { key: "End" });
     expect(screen.getByText("This resource is bundled with the artifact. Download the ZIP to save it.")).toBeVisible();
   });
+  it("shows only the start of a long file with the way to the full file, and names binary files by their kind", async () => {
+    const start = "<script>".repeat(32 * 1024);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ versionId: "version", files: [
+      { path: "index.html", mimeType: "text/html", text: start, truncated: true, group: "authored", byteSize: 21_171_025 },
+      { path: "report.pdf", mimeType: "application/pdf", binary: true, group: "authored", byteSize: 2048 },
+      { path: "clip.mp4", mimeType: "video/mp4", binary: true, group: "authored", byteSize: 4096 },
+      { path: "photo.png", mimeType: "image/png", binary: true, group: "authored", byteSize: 1024 }
+    ] })));
+    const { container } = render(<ArtifactCodeV2 artifactId="artifact/1" versionId="version" />);
+    const note = await screen.findByRole("note");
+    expect(note).toHaveTextContent("Showing the first 256 KB of 20.2 MB. Download the ZIP for the full file.");
+    expect(screen.getByRole("link", { name: "Download the ZIP" })).toHaveAttribute("href", "/api/artifacts/artifact%2F1/versions/version/content?download=zip");
+    // Copying the visible start would pass for the whole file.
+    expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+    expect(container.querySelector("code")?.textContent).toBe(start);
+    expect(highlightCodeBlock).not.toHaveBeenCalled();
+    for (const [name, message] of [["report.pdf", "This file is part of the artifact."], ["clip.mp4", "This file is part of the artifact."], ["photo.png", "This image is part of the artifact."]]) {
+      fireEvent.click(screen.getByRole("tab", { name }));
+      expect(screen.getByRole("tabpanel")).toHaveTextContent(`${message} Download the ZIP to save the original.`);
+    }
+  });
+  it("refuses a truncation mark on anything but text", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ versionId: "version", files: [
+      { path: "photo.png", mimeType: "image/png", binary: true, truncated: true, byteSize: 1 }
+    ] })));
+    render(<ArtifactCodeV2 artifactId="artifact" versionId="version" />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("The code could not be read.");
+  });
   it("does not present malformed source metadata as a valid empty group", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ versionId: "version", files: [
       { path: "index.html", mimeType: "text/html", text: "body", group: "unknown", byteSize: -1 }

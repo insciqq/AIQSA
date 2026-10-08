@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { createArtifactContentHandler, createArtifactDuplicateHandler, createPublicArtifactHandler, createPublicArtifactManifestHandler,
   createArtifactPublishHandler, createArtifactPublicationMutationHandler, createArtifactPublicationReissueHandler, createArtifactRevokeHandler } from "./handlers";
+import { ArtifactToolError } from "./errors";
 import { ArtifactPublicBusyError } from "./objects";
 import type { ArtifactService } from "./service";
 
@@ -30,7 +31,7 @@ describe("artifact delivery boundaries", () => {
     expect((await handler(request, { params: { artifactToken: "bad" } })).status).toBe(404);
     expect(publicBundle).not.toHaveBeenCalled();
     const response = await handler(request, context);
-    expect(publicBundle).toHaveBeenCalledWith(context.params.artifactToken, true, undefined);
+    expect(publicBundle).toHaveBeenCalledWith(context.params.artifactToken, true, undefined, undefined);
     expect(response.headers.get("content-disposition")).toContain("filename*=UTF-8''");
     publicBundle.mockRejectedValueOnce(new Error("private storage path"));
     const failed = await handler(request, context);
@@ -39,6 +40,66 @@ describe("artifact delivery boundaries", () => {
     const busy = await handler(request, context);
     expect(busy.status).toBe(429); expect(busy.headers.get("retry-after")).toBe("1");
     await expect(busy.json()).resolves.toEqual({ error: "rate_limit_exceeded" });
+  });
+  it("selects one validated page of a private version with the entry page's headers, and refuses other selectors", async () => {
+    const page = { ...download, contentType: "text/html; charset=utf-8", fileName: "page.html", page: "docs/guide.html" };
+    const getPrivateBundle = vi.fn(async () => page);
+    const getPrivateZip = vi.fn();
+    const handler = createArtifactContentHandler({ resolveAuth: auth, service: { getPrivateBundle, getPrivateZip } as unknown as ArtifactService });
+    const context = { params: { artifactId: "a", versionId: "v" } };
+    const response = await handler(new Request(`https://app.example/api/artifacts/a/versions/v/content?page=${encodeURIComponent("docs/guide.html")}`), context);
+    expect(response.status).toBe(200);
+    expect(getPrivateBundle).toHaveBeenCalledWith({ artifactId: "a", versionId: "v", ownerUserId: "owner", page: "docs/guide.html" });
+    expect(response.headers.get("X-AIQSA-Artifact-Page")).toBe("docs/guide.html");
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toContain("connect-src 'none'");
+    for (const search of ["?page=../index.html", "?page=_vendor/0123456789ab/a.html", "?page=a.html&page=b.html", "?page=a.html&download=file",
+      "?page=a.html&download=zip", "?download=other", "?theme=dark"]) {
+      const refused = await handler(new Request(`https://app.example/api/artifacts/a/versions/v/content${search}`), context);
+      expect(refused.status, search).toBe(400);
+      expect(await refused.json()).toEqual({ error: "artifact_content_query_invalid" });
+    }
+    expect(getPrivateBundle).toHaveBeenCalledOnce(); expect(getPrivateZip).not.toHaveBeenCalled();
+    getPrivateBundle.mockRejectedValueOnce(new ArtifactToolError("artifact_page_not_found", { path: "missing.html", hint: "private hint" }));
+    const missing = await handler(new Request("https://app.example/api/artifacts/a/versions/v/content?page=missing.html"), context);
+    expect(missing.status).toBe(404); expect(await missing.json()).toEqual({ error: "artifact_page_not_found" });
+    // A page that breaks the artifact rules fails with its own code, never as an empty page.
+    getPrivateBundle.mockRejectedValueOnce(new ArtifactToolError("artifact_element_unsupported", { path: "broken.html", hint: "private hint" }));
+    const broken = await handler(new Request("https://app.example/api/artifacts/a/versions/v/content?page=broken.html"), context);
+    expect(broken.status).toBe(400); expect(await broken.json()).toEqual({ error: "artifact_element_unsupported" });
+    getPrivateBundle.mockRejectedValueOnce(new ArtifactPublicBusyError());
+    const busy = await handler(new Request("https://app.example/api/artifacts/a/versions/v/content"), context);
+    expect(busy.status).toBe(429); expect(busy.headers.get("retry-after")).toBe("1");
+    getPrivateBundle.mockResolvedValueOnce(null as never);
+    const unknown = await handler(new Request("https://app.example/api/artifacts/a/versions/v/content"), context);
+    expect(unknown.status).toBe(404); expect(unknown.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+  });
+  it("serves a published page only for exact page selectors and answers every other one like an unknown token", async () => {
+    const token = "p".repeat(43);
+    const publicBundle = vi.fn(async () => ({ ...download, contentType: "text/html; charset=utf-8", fileName: "page.html", versionNumber: 2, page: "about.html" }));
+    const publicZip = vi.fn();
+    const handler = createPublicArtifactHandler({ publicBundle, publicZip } as unknown as ArtifactService);
+    const context = { params: { artifactToken: token } };
+    const response = await handler(new Request(`https://app.example/api/artifact-public/${token}?page=about.html`, { headers: { "X-AIQSA-Artifact-Version": "2" } }), context);
+    expect(response.status).toBe(200);
+    expect(publicBundle).toHaveBeenCalledWith(token, false, 2, "about.html");
+    expect(response.headers.get("X-AIQSA-Artifact-Page")).toBe("about.html");
+    expect(response.headers.get("X-AIQSA-Artifact-Version")).toBe("2");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow, noarchive");
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    for (const search of ["?page=../about.html", "?page=", "?page=_vendor/0123456789ab/a.html", "?page=a.html&page=b.html", "?page=a.html&download=file",
+      "?download=zip&page=a.html", "?page=a.html&utm=1"]) {
+      const refused = await handler(new Request(`https://app.example/api/artifact-public/${token}${search}`), context);
+      expect(refused.status, search).toBe(404);
+      expect(refused.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(await refused.json()).toEqual({ error: "artifact_not_found" });
+    }
+    expect(publicBundle).toHaveBeenCalledOnce(); expect(publicZip).not.toHaveBeenCalled();
+    publicBundle.mockResolvedValueOnce(null as never);
+    const missing = await handler(new Request(`https://app.example/api/artifact-public/${token}?page=missing.html`), context);
+    expect(missing.status).toBe(404); expect(await missing.json()).toEqual({ error: "artifact_not_found" });
   });
   it("duplicates only under the current owner and returns the library projection", async () => {
     const artifact = { id: "new-artifact", currentVersionId: "new-version", publicationCount: 0, sourceChatId: null };
@@ -72,8 +133,8 @@ describe("versioned publication HTTP contracts", () => {
       expect(response.headers.get("cache-control")).toContain("no-store");
       expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     }
-    expect(publicBundle).toHaveBeenCalledWith(token, false, 3);
-    expect(publicBundle).toHaveBeenCalledWith(token, true, 3);
+    expect(publicBundle).toHaveBeenCalledWith(token, false, 3, undefined);
+    expect(publicBundle).toHaveBeenCalledWith(token, true, 3, undefined);
     expect(publicZip).toHaveBeenCalledWith(token, 3);
     publicBundle.mockClear(); publicZip.mockClear();
     for (const selector of ["0", "01", "1e2", "-1", "2147483648", "1, 3", "9".repeat(200)]) {

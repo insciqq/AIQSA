@@ -9,6 +9,7 @@ import { artifactDownloadName } from "./downloadName";
 import { ARTIFACT_WRITE_LEASE_MS } from "./lifecycle";
 import { boundedArtifactWork, ArtifactPublicBusyError, type createArtifactObjects } from "./objects";
 import { renderArtifactBundle } from "./bundle";
+import { artifactRenderBytes, artifactRenderExtension, artifactRequestedPage } from "./pages";
 import { artifactZip } from "./zip";
 
 export function publicManifestFromPrivate(value: unknown): ArtifactManifest {
@@ -236,19 +237,23 @@ export function createArtifactPublications(db: PrismaClient, objects: ReturnType
       { mode: "VERSION_SET", members: { some: { versionId: row.id, version: { status: "READY" } } } }
     ] }] }, select: { id: true } });
   }
-  async function publicBundle(token: string, mainFile = false, versionNumber?: number) {
+  /** A published page (the entry page without `page`); any page that is not an HTML page of the version is null. */
+  async function publicBundle(token: string, mainFile = false, versionNumber?: number, page?: string) {
     try {
       const row = await resolvePublic(token, versionNumber);
       if (!row || !await stillPublic(token, row)) return null;
-      const rendered = mainFile && row.kind === "svg"
-        ? await boundedArtifactWork(async () => renderArtifactBundle(await objects.hydrate(row.ownerUserId, row.id, await objects.readBundle(row)), true))
-        : await objects.rendered(row);
+      const manifest = publicManifestFromPrivate(row.manifest);
+      const selected = artifactRequestedPage(manifest, page);
+      const bytes = artifactRenderBytes(manifest);
+      const rendered = mainFile && row.kind === "svg" && selected === undefined
+        ? await boundedArtifactWork(async () => renderArtifactBundle(await objects.hydrate(row.ownerUserId, row.id, await objects.readBundle(row)), true), bytes)
+        : await objects.rendered(row, { page: selected, bytes });
       if (!await stillPublic(token, row)) return null;
-      const extension = mainFile && row.kind === "svg" ? "svg" : rendered.contentType.startsWith("image/")
-        ? rendered.contentType === "image/jpeg" ? "jpg" : rendered.contentType.split("/")[1]! : "html";
       // Source file metadata remains a positive projection; private provenance
       // and storage identities never cross the anonymous boundary.
-      return { ...rendered, fileName: artifactDownloadName(row.title, extension).utf8, title: row.title, kind: row.kind, versionNumber: row.versionNumber, manifest: publicManifestFromPrivate(row.manifest) };
+      return { body: rendered.body, contentType: rendered.contentType, fileName: artifactDownloadName(row.title, artifactRenderExtension(rendered.contentType)).utf8,
+        title: row.title, kind: row.kind, versionNumber: row.versionNumber, manifest,
+        page: rendered.contentType.startsWith("text/html") ? selected ?? manifest.entrypoint : null };
     } catch (error) { if (error instanceof ArtifactPublicBusyError) throw error; return null; }
   }
   async function publicZip(token: string, versionNumber?: number) {
@@ -260,7 +265,7 @@ export function createArtifactPublications(db: PrismaClient, objects: ReturnType
         const body = artifactZip(bundle);
         if (!await stillPublic(token, row)) return null;
         return { body, contentType: "application/zip", fileName: artifactDownloadName(row.title, "zip").utf8, title: row.title, versionNumber: row.versionNumber };
-      });
+      }, artifactRenderBytes(publicManifestFromPrivate(row.manifest)));
     } catch (error) { if (error instanceof ArtifactPublicBusyError) throw error; return null; }
   }
   return { publication, versionPage, publicationPage, publishSet, mutatePublication, reissue, revoke, publicManifest, publicMetadata, publicBundle, publicZip };

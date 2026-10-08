@@ -1,15 +1,53 @@
 import { deflateRawSync } from "node:zlib";
 import { posix } from "node:path";
-import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
-import { bundleFileBytes, type ArtifactBundle, type ArtifactBundleFile } from "./bundle";
+import { serialize, type DefaultTreeAdapterMap } from "parse5";
+import { bundleFileBytes, localResourcePath, type ArtifactBundle, type ArtifactBundleFile } from "./bundle";
 import { parseArtifactCss } from "./css";
+import { parseArtifactHtml } from "./htmlParse";
 import { crc32 } from "../../domain/crc32";
 
 export { crc32 } from "../../domain/crc32";
 
+type Element = DefaultTreeAdapterMap["element"];
+/** The JavaScript MIME type essences of the HTML standard: a script of any other type is a data block. */
+const JAVASCRIPT_TYPES = new Set(["application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript",
+  "text/ecmascript", "text/javascript", "text/javascript1.0", "text/javascript1.1", "text/javascript1.2", "text/javascript1.3",
+  "text/javascript1.4", "text/javascript1.5", "text/jscript", "text/livescript", "text/x-ecmascript", "text/x-javascript"]);
+
+/** Whether a browser runs this script element, and so would load its `src`; HTML's type-string rules. */
+function scriptRuns(node: Element): boolean {
+  const attribute = (name: string) => node.attrs.find(attr => attr.name === name)?.value;
+  const type = attribute("type");
+  const language = attribute("language");
+  if (type === "" || type === undefined && !language) return true;
+  const value = (type === undefined ? `text/${language}` : type.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/gu, "")).toLowerCase();
+  return value === "module" || JAVASCRIPT_TYPES.has(value);
+}
+
 /** Bounded, normalized bundle paths only; no filesystem or archive extraction. */
 export function artifactZip(bundle: ArtifactBundle): Buffer {
   const resources = new Map(bundle.files.filter(file => file.vendor).map(file => [file.vendor!.sourceUrl, file]));
+  const byPath = new Map(bundle.files.map(file => [file.path, file]));
+  /** The file a script src names, by the renderer's rules: a local path, else a vendored URL. */
+  function scriptFile(value: string, from: ArtifactBundleFile): ArtifactBundleFile | undefined {
+    const path = localResourcePath(value, from.path);
+    const local = path ? byPath.get(path) : undefined;
+    if (local) return local;
+    try { return resources.get(new URL(value).href); } catch { return undefined; }
+  }
+  /**
+   * A browser never loads the src of a script it does not run (the pdf.js worker pattern:
+   * `type="text/js-worker"`), so the exported page carries that text inline, as the renderer does.
+   */
+  function inlineDataBlock(node: Element, from: ArtifactBundleFile): boolean {
+    const source = node.attrs.find(attr => attr.name === "src");
+    if (!source || scriptRuns(node)) return false;
+    const target = scriptFile(source.value, from);
+    if (target?.text === undefined) return false;
+    node.attrs = node.attrs.filter(attr => !["src", "integrity", "crossorigin"].includes(attr.name));
+    node.childNodes = [{ nodeName: "#text", value: target.text.replace(/<\/script/giu, "<\\/script"), parentNode: node }];
+    return true;
+  }
   function relative(value: string, from: ArtifactBundleFile): string {
     if (value.startsWith("#") || value.startsWith("data:")) return value;
     const base = from.vendor?.resolvedUrl ?? from.vendor?.sourceUrl;
@@ -26,9 +64,10 @@ export function artifactZip(bundle: ArtifactBundle): Buffer {
       return parsed.text();
     }
     if (!["text/html", "image/svg+xml"].includes(file.mimeType)) return file.text!;
-    const document = parse(file.text!);
+    const document = parseArtifactHtml(file.text!);
     function visit(node: DefaultTreeAdapterMap["node"]): void {
       if ("tagName" in node) {
+        if (node.tagName === "script" && inlineDataBlock(node, file)) return;
         if (["script", "link", "img", "image"].includes(node.tagName)) {
           for (const attr of node.attrs) if (["src", "href"].includes(attr.name) && /^https:\/\//iu.test(attr.value)) attr.value = relative(attr.value, file);
           node.attrs = node.attrs.filter(attr => !["integrity", "crossorigin"].includes(attr.name));

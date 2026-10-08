@@ -75,7 +75,7 @@ function localPath(value: string, from: string): string | null {
 }
 
 /** A resource reference selects its file without a cache-busting `?query` or a `#fragment`. */
-function localResourcePath(value: string, from: string): string | null {
+export function localResourcePath(value: string, from: string): string | null {
   const end = value.search(/[?#]/u);
   return localPath(end < 0 ? value : value.slice(0, end), from);
 }
