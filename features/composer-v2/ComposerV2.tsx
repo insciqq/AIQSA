@@ -350,6 +350,8 @@ export type ComposerV2Props = Readonly<{
    * row (no chip of its own): its summary, and why it is unavailable here.
    */
   answerReview?: Readonly<{ disabledReason?: string | null; onOpen(): void; summary: string }> | null;
+  /** Why the running work cannot be stopped from here (another member's review); Stop stays disabled with it. */
+  stopUnavailableReason?: string | null;
   artifactEdit?: ComposerArtifactEdit | null;
   artifactCreate?: boolean;
   artifactUnavailableReason?: string | null;
@@ -616,6 +618,7 @@ export function ComposerV2({
   agent,
   activeRun = false,
   answerReview = null,
+  stopUnavailableReason = null,
   artifactEdit = null,
   artifactCreate = false,
   artifactUnavailableReason = null,
@@ -1826,6 +1829,7 @@ export function ComposerV2({
                 runId={runId}
                 sendDisabled={sendDisabled}
                 sendDisabledReason={sendDisabledReason}
+                stopUnavailableReason={stopUnavailableReason}
                 stopping={stopping}
               />
             </span>

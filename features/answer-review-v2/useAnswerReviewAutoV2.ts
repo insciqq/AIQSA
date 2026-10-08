@@ -103,9 +103,10 @@ export function useAnswerReviewAutoV2(input: Readonly<{
  * Follows the open chat's automatic answer review: while its latest group's
  * session runs and no run of the chat is being watched, the chat is read
  * again every `ANSWER_REVIEW_FOLLOW_MS`, so each step the server starts
- * shows live (and its Stop works) as the chat's run. A session this page saw
- * running announces its end once, like an answer (`notifyAnswerReady`),
- * unless the user stopped it or moved on.
+ * shows live (and its Stop works) as the chat's run, for every member who
+ * views it. A session the viewer started and this page saw running announces
+ * its end once, like an answer (`notifyAnswerReady`), unless the user
+ * stopped it or moved on; another member's review ends without a sound.
  */
 export function useAnswerReviewFollowV2(input: Readonly<{
   chatId: string | null;
@@ -136,7 +137,7 @@ export function useAnswerReviewFollowV2(input: Readonly<{
         const progress = answerReviewGroupProgressV2(item.group);
         const id = item.group.session.id;
         if (progress.state === "running") {
-          seenRunning.add(id);
+          if (item.group.session.canAct === true) seenRunning.add(id);
           if (index === items.length - 1) follow = true;
         } else if (seenRunning.has(id) && !announced.has(id)) {
           announced.add(id);
@@ -144,7 +145,13 @@ export function useAnswerReviewFollowV2(input: Readonly<{
         }
       });
       const watched = Boolean(useRunLifecycleStore.getState().activeStreams[chatId]);
-      if (!follow || watched || timer !== null) return;
+      if (!follow || watched) {
+        // The review ended, or the chat's run is watched and read by its own owner: no read is due.
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        return;
+      }
+      if (timer !== null) return;
       timer = setTimeout(() => {
         timer = null;
         if (disposed) return;
