@@ -1045,6 +1045,7 @@ export async function admitProjectRunWithClient(
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,
             role: "user",
+            ...(input.admissionKind === "NORMAL_SEND" && input.systemTurnKind ? { systemTurnKind: input.systemTurnKind } : {}),
             status: "complete"
           }
         });
@@ -1506,6 +1507,8 @@ export async function admitPreparingRunWithClient(
             provider: input.provider,
             role: "user",
             ...(scheduledPrompt ? { scheduledTaskPrompt: true } : {}),
+            // A continuation after an MCP approval: the server's turn, never the user's speech.
+            ...(input.systemTurnKind ? { systemTurnKind: input.systemTurnKind } : {}),
             status: "complete"
           }
         });
