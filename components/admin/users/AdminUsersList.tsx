@@ -8,6 +8,7 @@ import {
   ADMIN_USERS_PAGE_SIZE,
   activeGroupIdsForUser,
   formatLastSeen,
+  scimDeactivationPendingLabel,
   userAccessSummary,
   userInitials,
   visibleAdminUserFilters,
@@ -178,6 +179,11 @@ function UserRow({
         </p>
       </div>
       <div className="relative z-[1] col-start-2 flex min-w-0 flex-wrap items-center gap-1 xl:col-start-auto">
+        {user.scimDeactivationPending ? (
+          <span className="contents" data-testid="admin-user-scim-pending-tag">
+            <UsersTag dot tone="caution">{scimDeactivationPendingLabel(user.scimDeactivationPending)}</UsersTag>
+          </span>
+        ) : null}
         {pending ? (
           <GroupSelect
             disabled={disabled}

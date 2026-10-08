@@ -13,6 +13,7 @@ import {
   activeGroupIdsForUser,
   hasModelAccess,
   isFullAccessMember,
+  scimDeactivationPendingLabel,
   userDeletionInfo,
   userInitials
 } from "@/components/admin/users/usersView";
@@ -166,6 +167,18 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
         </div>
         <UserStatusPill status={user.status} />
       </header>
+
+      {user.scimDeactivationPending ? (
+        <p
+          className="rounded-[10px] border border-caution/25 bg-caution/5 px-3 py-2.5 text-xs leading-5 text-ink-secondary"
+          data-testid="admin-user-scim-pending"
+          role="status"
+        >
+          <span className="font-semibold text-caution">{scimDeactivationPendingLabel(user.scimDeactivationPending)}.</span>{" "}
+          The identity provider deactivated this account: its sessions and connected apps are revoked and it cannot sign
+          in. Give its Projects another Owner; the identity provider&apos;s next retry then disables the account.
+        </p>
+      ) : null}
 
       <section aria-labelledby="admin-user-groups-heading" className={blockClass} data-testid="admin-user-groups">
         <h3 className={sectionHeadingClass} id="admin-user-groups-heading">Groups</h3>
