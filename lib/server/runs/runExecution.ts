@@ -701,7 +701,8 @@ async function persistPlanSearchExecution(input: Readonly<{
 }
 
 export function createRunExecutionResponse(input: RunExecutionInput): Response {
-  return runWithContext({ run_id: input.created.runId }, () => createBoundRunExecutionResponse(input));
+  // The run's own user (a Project run's initiator) names its records, whoever's request carries it.
+  return runWithContext({ run_id: input.created.runId, user_id: input.userId }, () => createBoundRunExecutionResponse(input));
 }
 
 function createBoundRunExecutionResponse(input: RunExecutionInput): Response {

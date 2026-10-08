@@ -139,6 +139,9 @@ function addBounded(set: Set<string>, value: string | null): void {
   if (value !== null && set.size < LIST_LIMIT) set.add(value);
 }
 
+/** A failure group from the counters, before its incidents' reach is read. */
+export type AdminHealthErrorGroupFold = Omit<AdminHealthErrorGroup, "usersAtLeast" | "runsAtLeast">;
+
 /**
  * Failures grouped by fingerprint from counter rows of the range (grouped by
  * fingerprint, class, site, event, role and code) and the first occurrence of
@@ -150,7 +153,7 @@ export function foldAdminHealthErrorGroups(
   firstSeen: readonly ErrorGroupRow[],
   now: Date,
   limit: number
-): Readonly<{ groups: AdminHealthErrorGroup[]; truncated: boolean }> {
+): Readonly<{ groups: AdminHealthErrorGroupFold[]; truncated: boolean }> {
   const folds = new Map<string, ErrorGroupFold>();
   for (const row of rows) {
     const fingerprint = groupText(row, "error_fingerprint");
@@ -180,7 +183,7 @@ export function foldAdminHealthErrorGroups(
     if (fold) fold.firstSeenAt = Math.min(fold.firstSeenAt, row.firstSeenAt.getTime());
   }
   const newSince = now.getTime() - ADMIN_HEALTH_NEW_ERROR_MS;
-  const groups = [...folds.values()].map((fold): AdminHealthErrorGroup => ({
+  const groups = [...folds.values()].map((fold): AdminHealthErrorGroupFold => ({
     fingerprint: fold.fingerprint,
     errorClass: [...fold.classes.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]![0],
     site: fold.site,
@@ -194,4 +197,20 @@ export function foldAdminHealthErrorGroups(
   })).sort((left, right) => Number(right.isNew) - Number(left.isNew) || right.count - left.count ||
     right.lastSeenAt.localeCompare(left.lastSeenAt) || left.fingerprint.localeCompare(right.fingerprint));
   return { groups: groups.slice(0, limit), truncated: groups.length > limit };
+}
+
+/**
+ * Each failure with how many distinct users and runs its retained incidents of
+ * the range name (`countIncidentReachByFingerprint`): lower bounds, since
+ * incidents are sampled; none when no retained incident names one.
+ */
+export function adminHealthErrorGroupsWithReach(
+  groups: readonly AdminHealthErrorGroupFold[],
+  reach: ReadonlyMap<string, Readonly<{ users: number; runs: number }>>
+): AdminHealthErrorGroup[] {
+  return groups.map((group) => ({
+    ...group,
+    usersAtLeast: reach.get(group.fingerprint)?.users ?? 0,
+    runsAtLeast: reach.get(group.fingerprint)?.runs ?? 0
+  }));
 }

@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { isLoopbackHostname } from "../../auth/clientIdentity";
 import { hashToken } from "../../auth/token";
+import { attributeRequestUser } from "../../observability";
 import {
   decodeDynamicClientRegistration,
   registeredRedirectUriMatches,
@@ -495,12 +496,15 @@ export function createInboundMcpOAuthService(input: Readonly<{
       if (!validRawCredential(token)) return null;
       const authority = inboundMcpResourceAuthority(input.configuration.issuer, resource);
       if (!authority) return null;
-      return input.repository.resolveAccessToken({
+      const resolved = await input.repository.resolveAccessToken({
         issuer: input.configuration.issuer,
         now: clock(),
         ...authority,
         tokenHash: hashToken(token)
       });
+      // An inbound MCP request's records name the grant's owner from here on.
+      if (resolved) attributeRequestUser(resolved.userId);
+      return resolved;
     },
 
     revokeConnectedApp(userId, grantId) {

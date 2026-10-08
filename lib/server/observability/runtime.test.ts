@@ -6,9 +6,10 @@ import { Writable } from "node:stream";
 import { createContext, runInContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { version } from "../../../package.json";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import {
-  MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, bindContext, createTraceId, createWriter,
-  getContext, registerRouteTemplates, runInBackground, runWithContext,
+  MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, attributeRequestUser, bindContext, createTraceId, createWriter,
+  getContext, registerRouteTemplates, reportReadiness, runInBackground, runWithContext,
   serializeEvent, setProcessRole, writeEmergencyFailure
 } from "./runtime.cjs";
 
@@ -130,10 +131,67 @@ describe("bounded observability runtime", () => {
 
   it("generates nonzero lowercase trace ids and immutable allowlisted contexts", () => {
     for (let index = 0; index < 100; index += 1) expect(createTraceId()).toMatch(/^(?!0{32}$)[a-f0-9]{32}$/);
-    runWithContext({ trace_id: "0".repeat(32), run_id: "run-1", user_id: "secret-canary" } as never, () => {
+    runWithContext({ trace_id: "0".repeat(32), run_id: "run-1", user_id: "secret-canary@example.test", email: "secret-canary" } as never, () => {
       expect(getContext()).toEqual({ trace_id: expect.stringMatching(/^(?!0{32}$)[a-f0-9]{32}$/), run_id: "run-1" });
       expect(Object.isFrozen(getContext())).toBe(true);
     });
+  });
+
+  it("binds a row's user, attributes a request once to the user it authenticated as, and never to process facts", async () => {
+    const failure = () => record("run_http_failed", { stage: "send" });
+    const observation = await captureRunObservation();
+    runInBackground(() => {
+      expect(failure()).not.toHaveProperty("user_id");
+      // Frames and callbacks derived before authentication share their root's attribution.
+      const derived = runWithContext({ run_id: "run-1" }, () => bindContext(() => failure()));
+      attributeRequestUser("user@example.test");
+      expect(failure()).not.toHaveProperty("user_id");
+      attributeRequestUser("user-a");
+      attributeRequestUser("user-b");
+      expect(failure()).toMatchObject({ user_id: "user-a", level: "error" });
+      expect(derived()).toMatchObject({ run_id: "run-1", user_id: "user-a" });
+      expect(getContext()).not.toHaveProperty("user_id");
+      // A run or job row's owner wins inside its frame; a new root starts with no user.
+      runWithContext({ run_id: "run-2", user_id: "owner-1" }, () => {
+        expect(getContext()).toMatchObject({ run_id: "run-2", user_id: "owner-1" });
+        expect(failure()).toMatchObject({ user_id: "owner-1" });
+        runWithContext({ tool_call_id: "call-1" }, () => expect(failure()).toMatchObject({ user_id: "owner-1" }));
+      });
+      runInBackground(() => {
+        expect(failure()).not.toHaveProperty("user_id");
+        attributeRequestUser("user-c");
+        expect(failure()).toMatchObject({ user_id: "user-c" });
+      });
+      expect(failure()).toMatchObject({ user_id: "user-a" });
+      reportReadiness("not_ready", "unknown", 41);
+    });
+    attributeRequestUser("user-d");
+    expect(failure()).not.toHaveProperty("user_id");
+    const readiness = observation.records().find((entry) => entry.event === "readiness.changed" && entry.issue_count === 41);
+    expect(readiness).toBeDefined();
+    expect(readiness).not.toHaveProperty("user_id");
+    expect(readiness).not.toHaveProperty("trace_id");
+  });
+
+  it("never attributes one root's records to another root's user, however their work interleaves", async () => {
+    const failure = () => record("run_http_failed", { stage: "send" }).user_id as string | undefined;
+    const authenticated: string[] = [];
+    const observed = await Promise.all(["user-a", "user-b"].map((userId, index) => runInBackground(async () => {
+      const derived = runWithContext({ run_id: `run-${index}` }, () => bindContext(failure));
+      // The first request authenticates while the second one is still waiting.
+      for (let step = 0; step < 2 + index * 3; step += 1) await tick();
+      const beforeOwn = failure();
+      attributeRequestUser(userId);
+      authenticated.push(userId);
+      for (let step = 0; step < 4 - index * 3; step += 1) await tick();
+      const background = await runInBackground(async () => { await tick(); return failure(); });
+      return { beforeOwn, after: failure(), derived: derived(), background };
+    })));
+    expect(authenticated).toEqual(["user-a", "user-b"]);
+    expect(observed).toEqual([
+      { beforeOwn: undefined, after: "user-a", derived: "user-a", background: undefined },
+      { beforeOwn: undefined, after: "user-b", derived: "user-b", background: undefined }
+    ]);
   });
 
   it("emits bounded single-line positive projections without touching raw objects", () => {

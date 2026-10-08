@@ -7978,9 +7978,13 @@ model TelemetryIncident {
   connectionId String?  @db.VarChar(128)
   runId        String?  @db.VarChar(128)
   traceId      String?  @db.Char(32)
+  /// The user the record's request, run or job belonged to. No foreign key:
+  /// account deletion clears it, and a write never fails on a deleted account.
+  userId       String?  @db.VarChar(128)
   details      Json
 
   @@index([occurredAt, id])
   @@index([runId])
   @@index([traceId])
+  @@index([userId])
 }

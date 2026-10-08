@@ -63,15 +63,15 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
       if (!runtime.agentResponses || runtime.agentResponses.snapshot.model.upstreamModelId !== normalized.modelId) throw new Error("denied");
       const transport = runtime.agentResponses;
       const createGateway = path === "v1/alpha/search" ? createAgentSearchGateway : createAgentModelGateway;
-      return await runWithContext({ run_id: binding.modelRunId }, () => withAgentLease(request, store.assertLeaseActive, (signal) =>
+      return await runWithContext({ run_id: binding.modelRunId, user_id: userId }, () => withAgentLease(request, store.assertLeaseActive, (signal) =>
         createGateway({ configuration, transport, store, signal, onFailure, onUsage })(request)));
     }
     if (request.method === "POST" && path === "mcp") {
-      return await withAgentLease(request, store.assertLeaseActive, async (signal) => {
+      return await runWithContext({ user_id: userId }, () => withAgentLease(request, store.assertLeaseActive, async (signal) => {
         const handler = await createAgentMcpGateway({ request: normalized, runId: binding.modelRunId, store, userId,
           incarnation: tokenHash, signal, onFailure, onUsage });
         return handler(request);
-      });
+      }));
     }
     return new Response(null, { status: 405, headers: { allow: "POST" } });
   } catch {

@@ -23,6 +23,7 @@ import {
   revokeAllInboundMcpGrants,
   revokeInboundMcpGrantsForUser
 } from "../memoryMcp/oauth/repository";
+import { clearTelemetryIncidentUser } from "../telemetry/store";
 
 export type AdminUserSessionCommands = Pick<
   AdminRepository,
@@ -187,6 +188,7 @@ export function createAdminUserSessionCommands(
             return "deletion_pending" as const;
           }
 
+          await clearTelemetryIncidentUser(tx, user.id);
           await tx.user.delete({
             where: {
               id: user.id

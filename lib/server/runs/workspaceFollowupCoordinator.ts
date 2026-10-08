@@ -80,7 +80,7 @@ export function createWorkspaceFollowupCoordinator(deps: WorkspaceFollowupCoordi
       while (active.size < 4) {
         const claim = await deps.repository.claim(new Date(), deps.registry.ids());
         if (!claim) break;
-        const work = runWithContext({ run_id: claim.runId }, () => processClaim(claim))
+        const work = runWithContext({ run_id: claim.runId, user_id: claim.userId }, () => processClaim(claim))
           .catch((error: unknown) => report(error, "release"))
           .finally(() => { active.delete(work); schedule(0); });
         active.add(work);
@@ -96,7 +96,7 @@ export function createWorkspaceFollowupCoordinator(deps: WorkspaceFollowupCoordi
   return { kick, async runOne(): Promise<boolean> {
     const claim = await deps.repository.claim(new Date(), deps.registry.ids());
     if (!claim) return false;
-    await runInBackground(() => runWithContext({ run_id: claim.runId }, () => processClaim(claim)));
+    await runInBackground(() => runWithContext({ run_id: claim.runId, user_id: claim.userId }, () => processClaim(claim)));
     return true;
   } };
 }

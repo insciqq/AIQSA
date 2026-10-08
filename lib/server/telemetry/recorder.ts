@@ -24,7 +24,7 @@ export type TelemetryRecorder = Readonly<{
 }>;
 
 export type TelemetryRecorderOptions = Readonly<{
-  store: TelemetryStore;
+  store: Pick<TelemetryStore, "write" | "deleteExpired">;
   /** Only the application process prunes. */
   retention: boolean;
   aggregator?: TelemetryAggregator;

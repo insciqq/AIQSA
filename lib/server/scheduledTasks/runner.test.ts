@@ -6,6 +6,7 @@ import type {
   ScheduledTaskSchedule
 } from "../../contracts/scheduledTasks";
 import type { SmtpProductMessage } from "../email/definitions";
+import { getContext } from "../observability";
 import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
 import type { ScheduledTaskSend } from "./admission";
 import type { ScheduledTaskRunCatalog } from "./catalog";
@@ -503,6 +504,20 @@ describe("scheduled task runner", () => {
     expect(task.chatId).toBe(chatIds[2]);
     expect(h.forTask(task).map((row) => row.chatId)).toEqual(chatIds);
     expect(manual).toMatchObject({ chatId: chatIds[2], state: "COMPLETED", trigger: "manual" });
+  });
+
+  it("names each occurrence's owner on its records, its run's admission included", async () => {
+    const h = harness();
+    const owners: Array<string | undefined> = [];
+    h.setReply(() => {
+      owners.push(getContext()?.user_id);
+      return { runStatus: "complete" };
+    });
+    h.addTask();
+    h.addTask({ userId: "owner-2" });
+    await h.tick();
+    expect(owners.sort()).toEqual(["owner-1", "owner-2"]);
+    expect(getContext()).toBeUndefined();
   });
 
   it("gives a same-chat run only the previous result of the current prompt", async () => {

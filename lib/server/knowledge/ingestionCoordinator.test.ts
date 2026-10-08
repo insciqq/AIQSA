@@ -105,7 +105,9 @@ describe("Knowledge ingestion coordinator", () => {
       expect(resumed).toEqual(processed);
       expect(processed.get("work-first")?.trace_id).not.toBe(processed.get("work-second")?.trace_id);
       for (const [jobId, context] of processed) {
-        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId });
+        // Each job's records name the owner of its Source.
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId,
+          user_id: jobId.replace("work-", "owner-") });
         expect(context?.trace_id).not.toBe(request.trace_id);
         expect(beats.get(jobId)).toEqual(context);
       }

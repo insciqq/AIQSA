@@ -191,7 +191,7 @@ export class AttachmentProcessingCoordinator {
         return;
       }
       await runInBackground(() => runWithContext(
-        { job_id: claim.jobId },
+        { job_id: claim.jobId, user_id: claim.ownerUserId },
         () => this.#processClaim(claim)
       ));
     }

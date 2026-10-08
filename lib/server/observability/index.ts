@@ -1,5 +1,5 @@
 export {
-  bindContext, createTraceId, getContext, logEvent, registerRouteTemplates,
+  attributeRequestUser, bindContext, createTraceId, getContext, logEvent, registerRouteTemplates,
   runInBackground, runWithContext, setProcessRole, writeEmergencyFailure,
   announceProcess, reportSubsystemFailure, reportSubsystemHealthy, reportReadiness
 } from "./runtime.cjs";

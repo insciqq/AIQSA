@@ -1,4 +1,5 @@
 import type { AuthSessionSignInMethod } from "@/lib/contracts/authSignInMethods";
+import { attributeRequestUser } from "../observability";
 import { hashToken } from "./token";
 import {
   createSessionSetCookie,
@@ -141,6 +142,8 @@ export async function resolveAuthToken(
   if (!session || session.revokedAt || asDate(session.expiresAt) <= now || !isActiveUser(session.user)) {
     return null;
   }
+  // The request's records name the user its session resolved to from here on.
+  attributeRequestUser(session.userId);
 
   return {
     expiresAt: asDate(session.expiresAt),
