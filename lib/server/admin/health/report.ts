@@ -214,7 +214,7 @@ export function parseHealthReportArgs(argv: readonly string[]): HealthReportArgs
 
 // --- Text
 
-const RANGE_COPY: Readonly<Record<AdminHealthRange, string>> = { "24h": "24 hours", "7d": "7 days", "30d": "30 days" };
+const RANGE_COPY: Readonly<Record<AdminHealthRange, string>> = { "24h": "24 hours", "7d": "7 days", "14d": "14 days", "30d": "30 days" };
 const SEVERITY_TAG = { bad: "BAD ", neutral: "INFO", warn: "WARN" } as const;
 
 function minute(iso: string): string {

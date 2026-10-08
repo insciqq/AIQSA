@@ -6,7 +6,7 @@ import type { ErrorResponse } from "./http";
  * It carries counts, stable codes, enumerations and provider display names,
  * never user content, raw errors, secrets or internal job/tool identities.
  */
-export const adminHealthRanges = ["24h", "7d", "30d"] as const;
+export const adminHealthRanges = ["24h", "7d", "14d", "30d"] as const;
 export type AdminHealthRange = (typeof adminHealthRanges)[number];
 export const defaultAdminHealthRange: AdminHealthRange = "24h";
 
