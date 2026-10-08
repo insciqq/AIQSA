@@ -15,8 +15,10 @@ import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUs
 import { ImageInputError } from "./inputError";
 import { logEvent, type EventFields } from "../observability";
 import { observedFailureCode } from "../providers/providerObservability";
+import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
 
 const MAX_IMAGE_CALLS_PER_RUN = 4;
+const USAGE_WRITE_RETRY_DELAYS_MS = [100, 250] as const;
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -29,6 +31,36 @@ type ImageExecutionOptions = {
   beforeSettlement?: (tx: Prisma.TransactionClient) => Promise<void>;
   onResult?: (tx: Prisma.TransactionClient, result: ToolExecutionResult) => Promise<void>;
 };
+
+/** Connection loss, pool exhaustion, or an expired, timed-out, conflicting or
+ * deadlocked statement: the write did not commit, or its outcome is unknown. */
+function transientUsageWriteFailure(error: unknown): boolean {
+  return databaseFailureKind(error) !== undefined ||
+    ["P1001", "P1002", "P1008", "P1017", "P2024", "P2028"].includes(databaseFailureCode(error));
+}
+
+/** Writes the one usage row of a paid dispatch, retrying a transient failure
+ * a bounded number of times. Its only unique column is the tool-call link, so
+ * a conflict on a repeat proves an earlier ambiguous attempt committed. */
+async function writeImageUsage(write: () => Promise<unknown>): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await write();
+      return;
+    } catch (error) {
+      if (attempt > 0 && databaseFailureCode(error) === "P2002") return;
+      const delay = USAGE_WRITE_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !transientUsageWriteFailure(error)) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+function databaseFields(error: unknown): Pick<EventFields["image_execution"], "prisma_code" | "db_failure"> {
+  const code = databaseFailureCode(error);
+  const kind = databaseFailureKind(error);
+  return { ...(code === "unknown" ? {} : { prisma_code: code }), ...(kind ? { db_failure: kind } : {}) };
+}
 
 function result(call: ModelToolCall, image: ThreadGeneratedImage): ToolExecutionResult {
   return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: {
@@ -208,7 +240,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         // token prices on the reported tokens. The tool call's unique link keeps
         // it to one row, also proving the paid dispatch to any retry. The row
         // keeps the completeness its reported tokens prove.
-        const recordUsage = (usage: ImageGenerationUsage) => {
+        const recordUsage = (usage: ImageGenerationUsage) => writeImageUsage(() => {
           const tokens = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens };
           return prisma.usageEvent.create({ data: {
             imageGeneration: true, imageToolCallId: toolCallId, purpose: "image_generation",
@@ -218,15 +250,20 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             ...storedTokenUsage(tokens),
             estimatedCostMicros: providerModelUsageCostMicros({ basis: costBasis, reportedCostUsd: usage.costUsd ?? null,
               usage: tokens }) } });
-        };
+        });
         let generated: Awaited<ReturnType<typeof adapter.generate>>;
         try {
           stage = "provider";
           generated = await adapter.generate({ prompt: args.prompt, images, parameters, signal });
         } catch (error) {
           // A completed response whose image was rejected was still paid for;
-          // the provider failure stays the reported outcome.
-          if (error instanceof ImageGenerationError && error.usage) await recordUsage(error.usage).catch(() => undefined);
+          // the provider failure stays the reported outcome, and a usage row
+          // still unwritten after the retries is reported, not swallowed.
+          if (error instanceof ImageGenerationError && error.usage) {
+            await recordUsage(error.usage).catch((usageError: unknown) => logEvent("image_execution", {
+              stage: "usage", code: "image_usage_unrecorded", duration_ms: performance.now() - startedAt,
+              error: usageError, ...databaseFields(usageError) }));
+          }
           throw error;
         }
         stage = "usage";
@@ -278,7 +315,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       } catch (error) {
         const code = observedFailureCode(error);
         logEvent("image_execution", { stage, code: code === "unknown" ? "tool_call_failed" : code,
-          duration_ms: performance.now() - startedAt, error,
+          duration_ms: performance.now() - startedAt, error, ...databaseFields(error),
           ...(error instanceof ImageGenerationError && error.finishReason ? { finish_reason: error.finishReason } : {}) });
         throw error;
       }

@@ -62,6 +62,7 @@ export type EventFields = {
     stage: "input" | "binding" | "run" | "references" | "reference_read" | "reference_validation" | "authorization" |
       "dispatch_claim" | "usage" | "provider" | "storage" | "publication";
     code: string; duration_ms: number; finish_reason?: "safety" | "blocked" | "other";
+    prisma_code?: string; db_failure?: DatabaseFailureKind;
   }>;
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;

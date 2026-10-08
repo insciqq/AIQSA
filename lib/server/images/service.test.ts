@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import sharp from "sharp";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import { captureRunObservation } from "@/tests/support/runObservation";
@@ -12,6 +12,7 @@ import type { StorageAdapter } from "../uploads/storage";
 
 const access = vi.hoisted(() => ({ value: null as ChatAccess | null }));
 vi.mock("../projects/access", () => ({ resolveChatAccess: vi.fn(async () => access.value) }));
+vi.mock("../providers/credentialSecrets", () => ({ decryptProviderCredentialSecret: vi.fn(() => "fixture-secret") }));
 
 const { createPrismaImageGenerationService } = await import("./service");
 
@@ -271,5 +272,80 @@ describe("image edit preflight", () => {
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference|secret.example|sk-secret/);
     expect(h.fetchFn).not.toHaveBeenCalled();
     expect(h.usage).not.toHaveBeenCalled();
+  });
+});
+
+describe("paid image usage write", () => {
+  beforeEach(() => { access.value = personal; });
+
+  const prismaError = (code: string) => new Prisma.PrismaClientKnownRequestError("PRIVATE database detail", { code, clientVersion: "fixture" });
+  const reported = { input_tokens: 3, output_tokens: 11, total_tokens: 14, cost: 0.04 };
+
+  async function dispatchHarness(answer: "image" | "missing") {
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).png().toBuffer();
+    const usage = vi.fn<(input: unknown) => Promise<unknown>>();
+    const storageBoundary = new Error("fixture_storage_boundary");
+    const prisma = { providerRunBinding: { findFirst: vi.fn(async () => ({ executionSnapshot: mixedToolsImagePlan.snapshot })) },
+      attachment: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
+      modelRun: { findFirst: vi.fn(async () => ({ assistantMessageId: "assistant", status: "streaming" })) },
+      modelRunToolCall: { findFirst: vi.fn(async () => ({ id: "tool" })), count: vi.fn(async () => 0) },
+      providerModel: { findFirst: vi.fn(async () => ({ id: "model" })), findUnique: vi.fn(async () => null) },
+      providerCredentialVersion: { findFirst: vi.fn(async () => ({ id: "key", credentialId: "image-key", secretEnvelope: "envelope" })) },
+      usageEvent: { create: usage, findUnique: vi.fn(async () => null) },
+      attachmentDeletionJob: { create: vi.fn(async () => { throw storageBoundary; }), updateMany: vi.fn(async () => ({ count: 0 })) } };
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json(answer === "image"
+      ? { data: [{ b64_json: png.toString("base64") }], usage: reported } : { data: [], usage: reported }));
+    const service = createPrismaImageGenerationService(prisma as unknown as PrismaClient, {} as StorageAdapter,
+      { fetchFn, encryptionKey: () => Buffer.alloc(32) });
+    const call = { id: "call", name: "generate_image", arguments: { prompt: "PRIVATE prompt", image_ids: [] } };
+    const context = { runId: "run", userId: USER, persistedToolCallId: "tool", request: { chatId: "chat", imagePlan: mixedToolsImagePlan } };
+    const execute = () => service.execute(call, context, undefined, { beforeDispatch: async () => undefined });
+    return { usage, fetchFn, storageBoundary, execute };
+  }
+
+  it("retries a transient write once and continues with one recorded row", async () => {
+    const h = await dispatchHarness("image");
+    h.usage.mockRejectedValueOnce(prismaError("P1017")).mockResolvedValueOnce({ id: "usage" });
+    await expect(h.execute()).rejects.toBe(h.storageBoundary);
+    expect(h.fetchFn).toHaveBeenCalledOnce();
+    expect(h.usage).toHaveBeenCalledTimes(2);
+    expect(h.usage.mock.calls[1]![0]).toMatchObject({ data: { imageToolCallId: "tool", inputTokens: 3, outputTokens: 11, totalTokens: 14 } });
+  });
+
+  it("treats a unique conflict on the repeat as the earlier attempt's committed row", async () => {
+    const h = await dispatchHarness("image");
+    h.usage.mockRejectedValueOnce(prismaError("P1001")).mockRejectedValueOnce(prismaError("P2002"));
+    await expect(h.execute()).rejects.toBe(h.storageBoundary);
+    expect(h.usage).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a first-attempt conflict or a non-transient failure", async () => {
+    for (const code of ["P2002", "P2003"]) {
+      const h = await dispatchHarness("image");
+      const failure = prismaError(code);
+      h.usage.mockRejectedValueOnce(failure);
+      await expect(h.execute()).rejects.toBe(failure);
+      expect(h.usage).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("retries a rejected answer's usage and records it without changing the provider failure", async () => {
+    const h = await dispatchHarness("missing");
+    h.usage.mockRejectedValueOnce(prismaError("P2024")).mockResolvedValueOnce({ id: "usage" });
+    await expect(h.execute()).rejects.toMatchObject({ code: "image_output_missing" });
+    expect(h.usage).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the provider failure and logs one content-free line when every write fails", async () => {
+    const h = await dispatchHarness("missing");
+    h.usage.mockRejectedValue(prismaError("P1001"));
+    const observation = await captureRunObservation();
+    await expect(h.execute()).rejects.toMatchObject({ code: "image_output_missing" });
+    expect(h.usage).toHaveBeenCalledTimes(3);
+    const records = observation.records().filter((record) => record.event === "image_execution");
+    expect(records.filter((record) => record.stage === "usage")).toEqual([expect.objectContaining({
+      code: "image_usage_unrecorded", prisma_code: "P1001" })]);
+    expect(records.filter((record) => record.stage === "provider")).toEqual([expect.objectContaining({ code: "image_output_missing" })]);
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|images\.example|fixture-secret/);
   });
 });
