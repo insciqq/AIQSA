@@ -101,6 +101,37 @@ const LINKS = `<!doctype html><html><head><title>Links</title></head><body>
 <a id="missing" href="nowhere.html">Missing</a>
 </body></html>`;
 
+// Real-site patterns: a cache-busted script, an image path literal that the renderer
+// turns into a data: URL before fetch reads it, and a worker script from the bundle
+// whose own network attempts stay blocked.
+function realSiteFiles(trap: RuntimeServer): ArtifactBundleFile[] {
+  const worker = `${PROBE_OUTCOME_SOURCE}
+const trap = ${JSON.stringify(trap.origin)};
+onmessage = event => Promise.all([
+  outcome("fetch", done => fetch(trap + "/trap/local-worker-fetch").then(() => done("ok"), error => done("rejected:" + error.name))),
+  outcome("relative", done => fetch("data.json").then(() => done("ok"), error => done("rejected:" + error.name))),
+  outcome("xhr", done => { const request = new XMLHttpRequest(); request.onload = () => done("ok"); request.onerror = () => done("error"); request.open("GET", trap + "/trap/local-worker-xhr"); request.send(); }),
+  outcome("importScripts", done => { importScripts(trap + "/trap/local-worker-import"); done("ok"); }),
+  outcome("websocket", done => { const socket = new WebSocket(${JSON.stringify(trap.wsOrigin)} + "/trap/local-worker-ws"); socket.onopen = () => done("ok"); socket.onerror = () => done("error"); })
+]).then(results => postMessage({ sum: event.data + 1, results: Object.fromEntries(results) }));`;
+  const probe = `<!doctype html><html><head><title>Real site</title><script src="app.js?v=3"></script></head><body><script>
+${PROBE_OUTCOME_SOURCE}
+Promise.all([
+  outcome("script", done => done(String(window.appVersion))),
+  outcome("literalImage", done => fetch("../img/a.png").then(response => response.arrayBuffer()
+    .then(bytes => done(response.status + ":" + response.headers.get("content-type") + ":" + bytes.byteLength)), error => done("rejected:" + error.name))),
+  outcome("worker", done => {
+    const worker = new Worker(new URL("worker.js", document.baseURI), { name: "local" });
+    worker.onmessage = event => done(JSON.stringify(event.data));
+    worker.onerror = event => { event.preventDefault(); done("error"); };
+    worker.postMessage(41);
+  }, 8000)
+]).then(results => parent.postMessage({ type: "aiqsa_probe", name: "real-site", ...Object.fromEntries(results) }, "*"));
+</script></body></html>`;
+  return [...files(probe), { path: "app/app.js", mimeType: "text/javascript", text: "window.appVersion = 3;" },
+    { path: "app/worker.js", mimeType: "text/javascript", text: worker }];
+}
+
 type Message = { type?: string } & Record<string, unknown>;
 const messages = (page: Page) => page.evaluate(() => (window as unknown as { __artifactMessages: Message[] }).__artifactMessages);
 async function waitForMessage(page: Page, type: string): Promise<Message> {
@@ -148,6 +179,23 @@ for (const mode of modes) {
     const { result } = await waitForProbe(page, "trap");
     for (const channel of ["fetch", "xhr", "image", "audio"]) expect(result[channel], channel).not.toBe("ok");
     expect(result.belowBase).toBe("404");
+    await page.waitForTimeout(750);
+    expect(trap.hits).toEqual([]);
+    expect(host.hits).toEqual([]);
+  });
+
+  test(`${mode.name}: a cache-busted script, a fetched image literal and a bundle worker work while the worker's network stays closed`, async ({ page }) => {
+    const trap = mode.trap();
+    await page.goto(host.hostPage(renderArtifactPage(realSiteFiles(trap), "app/index.html"), mode.policies()));
+    const { messages: seen, result } = await waitForProbe(page, "real-site");
+    expect(result).toMatchObject({ script: "3", literalImage: `200:image/png:${Buffer.from(PNG, "base64").length}` });
+    const worker = JSON.parse(String(result.worker)) as { sum: number; results: Record<string, string> };
+    expect(worker.sum).toBe(42);
+    expect(Object.keys(worker.results).sort()).toEqual(["fetch", "importScripts", "relative", "websocket", "xhr"]);
+    for (const [channel, outcome] of Object.entries(worker.results)) expect(outcome, channel).not.toBe("ok");
+    // Firefox reports the worker's blocked importScripts to the page; nothing else may fail.
+    const errors = seen.filter(message => (message as Message)?.type === "aiqsa_artifact_runtime_error") as Message[];
+    expect(errors.filter(error => error.kind !== "csp" || error.blocked !== trap.origin)).toEqual([]);
     await page.waitForTimeout(750);
     expect(trap.hits).toEqual([]);
     expect(host.hits).toEqual([]);

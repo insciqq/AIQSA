@@ -101,6 +101,48 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
     return { path, fragment, absolute, file: files.get(path) };
   };
   const lookup = value => { try { return locate(value); } catch { return null; } };
+  const binaryBytes = binary => {
+    const data = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) data[index] = binary.charCodeAt(index);
+    return data;
+  };
+  // A data: URL carries its own bytes, yet connect-src 'none' blocks reading it, so
+  // fetch and XHR decode it here with the Fetch data: URL rules and make no request.
+  // Returns null for any other URL and { mime, bytes: null } for an invalid data: URL.
+  const token = "[\\w!#$%&'*+.^|~\\x60-]+";
+  const mimeEssence = new RegExp("^(" + token + "/" + token + ")[\\t\\n\\f\\r ]*(;.*)?$");
+  const mimeParameter = new RegExp("^[\\t\\n\\f\\r ]*(" + token + ")=(.*)$");
+  const dataRequest = value => {
+    let href = "";
+    try {
+      const raw = String(value);
+      if (!/^[\u0000-\u0020]*data:/i.test(raw)) return null;
+      href = new URL(raw).href;
+    } catch { return null; }
+    if (!href.startsWith("data:")) return null;
+    const hash = href.indexOf("#");
+    const rest = href.slice(5, hash < 0 ? href.length : hash);
+    const comma = rest.indexOf(",");
+    if (comma < 0) return { mime: "", bytes: null };
+    let mime = rest.slice(0, comma).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "");
+    let binary = rest.slice(comma + 1).replace(/%([0-9A-Fa-f]{2})/g, (match, hex) => String.fromCharCode(parseInt(hex, 16)));
+    if (/;\u0020*base64$/i.test(mime)) {
+      mime = mime.replace(/;\u0020*base64$/i, "");
+      try { binary = atob(binary); } catch { return { mime: "", bytes: null }; }
+    }
+    if (mime.startsWith(";")) mime = "text/plain" + mime;
+    const essence = mimeEssence.exec(mime);
+    if (essence) {
+      const parameters = [], names = new Set();
+      for (const parameter of (essence[2] || "").split(";")) {
+        const match = mimeParameter.exec(parameter);
+        if (!match || names.has(match[1].toLowerCase())) continue;
+        names.add(match[1].toLowerCase()); parameters.push(";" + match[1].toLowerCase() + "=" + match[2]);
+      }
+      mime = essence[1].toLowerCase() + parameters.join("");
+    } else mime = "text/plain;charset=US-ASCII";
+    return { mime, bytes: binaryBytes(binary) };
+  };
   let blockNodes = null;
   const decoded = new Map(), blobs = new Map(), addresses = new Map();
   // Base64 blocks are decoded lazily, once per file, on first use.
@@ -116,13 +158,7 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
       }
       const text = blockNodes.get(path)?.textContent;
       if (typeof text !== "string") return null;
-      let data;
-      if (typeof Uint8Array.fromBase64 === "function") data = Uint8Array.fromBase64(text);
-      else {
-        const binary = atob(text);
-        data = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index++) data[index] = binary.charCodeAt(index);
-      }
+      const data = typeof Uint8Array.fromBase64 === "function" ? Uint8Array.fromBase64(text) : binaryBytes(atob(text));
       decoded.set(path, data);
       return data;
     } catch { return null; }
@@ -153,18 +189,23 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
   try {
     const nativeFetch = window.fetch;
     if (typeof nativeFetch === "function") window.fetch = function fetch(input, init) {
-      let target = null, method = "GET", signal = null;
+      let target = null, data = null, method = "GET", signal = null;
       try {
         const request = typeof Request === "function" && input instanceof Request ? input : null;
-        target = lookup(request ? request.url : input);
-        if (target) {
+        data = dataRequest(request ? request.url : input);
+        target = data ? null : lookup(request ? request.url : input);
+        if (target || data) {
           method = String(init?.method ?? request?.method ?? "GET").toUpperCase();
           signal = init?.signal ?? request?.signal ?? null;
         }
-      } catch { target = null; }
-      if (!target) return nativeFetch.apply(window, arguments);
+      } catch { target = null; data = null; }
+      if (!target && !data) return nativeFetch.apply(window, arguments);
       return new Promise((resolve, reject) => {
         if (signal?.aborted) return reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        if (data) {
+          if (!data.bytes) return reject(new TypeError("Invalid data: URL"));
+          return resolve(new Response(method === "HEAD" ? null : data.bytes, { status: 200, statusText: "OK", headers: { "content-type": data.mime } }));
+        }
         if (method !== "GET" && method !== "HEAD") return reject(new TypeError("Artifact files are read-only; " + method + " is unavailable"));
         if (!target.file) return resolve(new Response(null, { status: 404, statusText: "Not Found" }));
         const body = target.file.kind === "block" ? blobFor(target) : null;
@@ -178,11 +219,13 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
   try {
     const XHR = window.XMLHttpRequest;
     if (typeof XHR === "function") {
-      const proto = XHR.prototype, states = new WeakMap();
+      const proto = XHR.prototype, states = new WeakMap(), overrides = new WeakMap();
       const fire = (request, type, loaded = 0, total = 0) => request.dispatchEvent(type !== "readystatechange" && typeof ProgressEvent === "function"
         ? new ProgressEvent(type, { lengthComputable: total > 0, loaded, total }) : new Event(type));
       const opened = state => { if (state.readyState !== 1 || state.sent) throw new DOMException("The object's state must be OPENED.", "InvalidStateError"); };
       const reset = state => { state.status = 0; state.statusText = ""; state.headers = null; state.data = null; state.text = undefined; state.object = undefined; };
+      // The response MIME type: an overrideMimeType() value wins over the content type.
+      const responseMime = state => overrides.get(state.request) ?? state.headers?.get("content-type") ?? "";
       const local = (name, action) => {
         const native = proto[name];
         if (typeof native === "function") proto[name] = function () {
@@ -194,15 +237,20 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
       proto.open = function (method, url) {
         const previous = states.get(this);
         if (previous) clearTimeout(previous.timer);
-        const target = lookup(url);
+        const data = dataRequest(url);
+        const target = data ? { data } : lookup(url);
         if (!target) { states.delete(this); return nativeOpen.apply(this, arguments); }
-        const state = { target, method: String(method).toUpperCase(), async: arguments.length < 3 || !!arguments[2], readyState: 1, sent: false, timer: 0 };
+        const state = { request: this, target, method: String(method).toUpperCase(), async: arguments.length < 3 || !!arguments[2], readyState: 1, sent: false, timer: 0 };
         reset(state);
         states.set(this, state);
         fire(this, "readystatechange");
       };
       local("setRequestHeader", opened);
-      local("overrideMimeType", () => {});
+      const nativeOverride = proto.overrideMimeType;
+      if (typeof nativeOverride === "function") proto.overrideMimeType = function (mime) {
+        overrides.set(this, String(mime));
+        if (!states.has(this)) return nativeOverride.apply(this, arguments);
+      };
       local("send", function (state) {
         opened(state);
         state.sent = true;
@@ -211,7 +259,8 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
         const complete = () => {
           if (stale()) return;
           const { target, method } = state;
-          const error = method !== "GET" && method !== "HEAD" ? "Artifact files are read-only; " + method + " is unavailable"
+          const error = target.data ? (target.data.bytes ? null : "Invalid data: URL")
+            : method !== "GET" && method !== "HEAD" ? "Artifact files are read-only; " + method + " is unavailable"
             : target.file && (target.file.kind !== "block" || !bytes(target.path)) ? unavailable(target, "XMLHttpRequest") : null;
           if (error) {
             state.readyState = 4; state.sent = false; reset(state);
@@ -219,9 +268,11 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
             fire(request, "readystatechange"); fire(request, "error"); fire(request, "loadend");
             return;
           }
-          const data = target.file ? bytes(target.path) : new Uint8Array(0);
-          state.status = target.file ? 200 : 404; state.statusText = target.file ? "OK" : "Not Found";
-          state.headers = new Map(target.file ? [["content-length", String(data.length)], ["content-type", target.file.mime]] : []);
+          const found = !!(target.data || target.file);
+          const data = target.data ? target.data.bytes : target.file ? bytes(target.path) : new Uint8Array(0);
+          state.status = found ? 200 : 404; state.statusText = found ? "OK" : "Not Found";
+          state.headers = new Map(target.data ? [["content-type", target.data.mime]]
+            : target.file ? [["content-length", String(data.length)], ["content-type", target.file.mime]] : []);
           state.data = method === "HEAD" ? new Uint8Array(0) : data;
           const size = state.data.length;
           if (state.async) {
@@ -245,7 +296,14 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
       });
       local("getResponseHeader", (state, name) => state.headers?.get(String(name).toLowerCase()) ?? null);
       local("getAllResponseHeaders", state => state.headers ? [...state.headers].map(([key, value]) => key + ": " + value + "\r\n").join("") : "");
-      const text = state => state.text ??= new TextDecoder().decode(state.data);
+      // Text decodes with the charset of the response MIME type (UTF-8 by default); JSON is always UTF-8.
+      const text = state => {
+        if (state.text !== undefined) return state.text;
+        const charset = /;[\t\n\f\r ]*charset=[\t\n\f\r ]*"?([^";\t\n\f\r ]+)/i.exec(responseMime(state));
+        let decoder;
+        try { decoder = new TextDecoder(charset ? charset[1] : "utf-8"); } catch { decoder = new TextDecoder(); }
+        return state.text = decoder.decode(state.data);
+      };
       const getter = (name, read) => {
         const descriptor = Object.getOwnPropertyDescriptor(proto, name);
         if (descriptor?.get) Object.defineProperty(proto, name, { ...descriptor, get() {
@@ -267,13 +325,38 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
         if (type === "" || type === "text") return state.readyState >= 3 && state.data ? text(state) : "";
         if (state.readyState !== 4 || !state.data) return null;
         if (state.object === undefined) {
-          if (type === "json") { try { state.object = JSON.parse(text(state)); } catch { state.object = null; } }
+          if (type === "json") { try { state.object = JSON.parse(new TextDecoder().decode(state.data)); } catch { state.object = null; } }
           else if (type === "arraybuffer") state.object = state.data.slice().buffer;
-          else if (type === "blob") state.object = new Blob([state.data], { type: state.headers.get("content-type") || "" });
+          else if (type === "blob") state.object = new Blob([state.data], { type: responseMime(state) });
           else state.object = null;
         }
         return state.object;
       });
+    }
+  } catch {}
+
+  // A worker script from the bundle starts from a cached blob: URL of its file, with the
+  // caller's options. The worker inherits this page's policy and runs without the bridge;
+  // any other address goes to the browser's constructor, which the policy blocks.
+  try {
+    const NativeWorker = window.Worker;
+    const scripts = ["text/javascript", "application/javascript", "application/x-javascript"];
+    if (typeof NativeWorker === "function") {
+      const Worker = function Worker(url) {
+        if (!new.target) throw new TypeError("Failed to construct 'Worker': Please use the 'new' operator.");
+        const args = [...arguments];
+        const target = args.length ? lookup(url) : null;
+        if (target && !target.file) fail("Artifact worker script not found: " + (target.path || clean(url, 200)));
+        else if (target?.file.kind === "block" && !scripts.includes(target.file.mime)) fail("Artifact file " + target.path + " is not JavaScript, so a Worker cannot run it");
+        else if (target) {
+          const address = target.file.kind === "block" ? addressFor(target) : null;
+          if (address) args[0] = address; else unavailable(target, "a Worker");
+        }
+        return Reflect.construct(NativeWorker, args, new.target);
+      };
+      Worker.prototype = NativeWorker.prototype;
+      Object.setPrototypeOf(Worker, NativeWorker);
+      window.Worker = Worker;
     }
   } catch {}
 
