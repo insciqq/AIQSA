@@ -1,4 +1,4 @@
-import { normalizedArtifactPath } from "./artifacts";
+import { isReservedArtifactPath, normalizedArtifactPath } from "./artifacts";
 
 export type ArtifactRuntimeError = Readonly<{
   kind: "error" | "unhandledrejection" | "csp";
@@ -92,7 +92,7 @@ export function parseArtifactNavigateMessage(value: unknown): ArtifactNavigateMe
   const withFragment = Object.hasOwn(input, "fragment");
   if (input.type !== "aiqsa_artifact_navigate" || !exactFields(input, withFragment ? ["type", "path", "fragment"] : ["type", "path"])) return null;
   const path = normalizedArtifactPath(input.path);
-  if (!path || path !== input.path || path.split("/")[0] === "_vendor") return null;
+  if (!path || path !== input.path || isReservedArtifactPath(path)) return null;
   if (!withFragment) return { path };
   return typeof input.fragment === "string" && input.fragment.length > 0 && clean(input.fragment, ARTIFACT_NAVIGATE_FRAGMENT_LIMIT)
     ? { path, fragment: input.fragment } : null;
