@@ -13,6 +13,14 @@ describe("OIDC claims", () => {
     expect(claimAtPath({ a: "text" }, "a.length")).toBeUndefined();
   });
 
+  it("reads a namespaced claim whose name contains dots before trying it as a dot path", () => {
+    const claims = { "https://aiqsa.example.com/groups": ["staff"], https: { "//aiqsa": { example: { "com/groups": ["nested"] } } } };
+    expect(claimAtPath(claims, "https://aiqsa.example.com/groups")).toEqual(["staff"]);
+    expect(extractOidcGroups(claims, "https://aiqsa.example.com/groups")).toEqual(["staff"]);
+    expect(extractOidcGroups({ "https://aiqsa.example.com/groups": "staff" }, "https://aiqsa.example.com/groups")).toEqual(["staff"]);
+    expect(extractOidcGroups({}, "https://aiqsa.example.com/groups")).toBeNull();
+  });
+
   it.each([
     ["a string", { groups: "team" }, ["team"]],
     ["an array with non-strings ignored and duplicates merged", { groups: ["a", 1, null, "", "b", "a", { x: 1 }] }, ["a", "b"]],

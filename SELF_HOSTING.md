@@ -132,7 +132,7 @@ Written from Microsoft's documentation, not checked against a tenant.
 - *Token configuration*: *Add groups claim* with *Group ID* in the ID token, and the optional ID token claim `email`; users without an email cannot sign in.
 - For **Sign out at the provider**, also add the post-logout URI (`https://aiqsa.example.com/login`) as a Web redirect URI.
 
-On the card: **Issuer** `https://login.microsoftonline.com/<tenant-id>/v2.0` (the multi-tenant `common`, `organizations` and `consumers` issuers are refused), **Client ID** = the Application (client) ID, the secret, **Groups claim** `groups`. Entra sends group object IDs (GUIDs), so enter GUIDs in Allowed and Administrator groups and as OIDC external names. Above 200 groups Entra sends an overage pointer instead of the list; AIQSA does not query Microsoft Graph and treats the groups as missing, so prefer *Groups assigned to the application*. Entra sends no `email_verified`: linking existing accounts needs **Trust unverified email** (only for a tenant whose addresses you control) or SCIM.
+On the card: **Issuer** `https://login.microsoftonline.com/<tenant-id>/v2.0` (the multi-tenant `common`, `organizations` and `consumers` issuers are refused), **Client ID** = the Application (client) ID, the secret, **Groups claim** `groups`. Entra sends group object IDs (GUIDs), so enter GUIDs in Allowed and Administrator groups and as OIDC external names. Above 200 groups Entra sends an overage pointer instead of the list; AIQSA does not query Microsoft Graph and treats the groups as missing, so prefer *Groups assigned to the application* (assigning groups to an application needs Entra ID P1 or P2). Entra sends no `email_verified`: linking existing accounts needs **Trust unverified email** (only for a tenant whose addresses you control) or SCIM.
 
 **SCIM** needs a separate enterprise application: *Enterprise applications → New application → Create your own application* (non-gallery), *Provisioning → Automatic*, **Tenant URL** = the SCIM card's base URL, **Secret Token** = a SCIM token, *Test Connection*, then start provisioning for the assigned users and groups. Entra maps `userPrincipalName` to `userName` by default, and `userName` becomes the AIQSA email: map `mail` instead when they differ. Set the SCIM card's link method to OIDC.
 
@@ -159,6 +159,22 @@ Keycloak sends `email_verified` from the user's *Email verified* flag.
 **OIDC.** Create an application with an *OAuth2/OpenID Provider*: confidential client, the card's redirect URI, the *authorization code* grant type (without it Authentik answers the sign-in with `invalid_request`), and a **Signing Key** such as the bundled self-signed certificate. Without a signing key Authentik signs ID tokens with HS256, which AIQSA refuses. On the card: **Issuer** `https://authentik.example.com/application/o/<application-slug>/`, with the trailing slash. The `groups` claim (group names) comes with the default `profile` scope. The default `email` scope sends `email_verified: false`, so linking existing accounts needs **Trust unverified email**, a custom scope mapping that reports the address as verified, or SCIM.
 
 **SCIM.** Create a *SCIM Provider* with **URL** = the SCIM card's base URL and **Token** = a SCIM token, and add it to the application as a *Backchannel provider*. Authentik's default user mapping sends the username as `userName`; AIQSA then takes the primary email, but a mapping that sends the email as `userName` keeps both sides on one key. Set the SCIM card's link method to OIDC so the first Authentik sign-in links the pushed account.
+
+### Auth0
+
+**OIDC.** Create a *Regular Web Application* with the card's redirect URI in **Allowed Callback URLs** and its post-logout URI in **Allowed Logout URLs**, and enable the connections people sign in with. On the card: **Issuer** `https://<tenant>.<region>.auth0.com/` with the trailing slash (or your custom domain), the client ID and secret. Auth0 sends `email_verified`. It adds no groups to tokens and drops a custom claim named `groups`, so add a post-login Action that sets a namespaced claim, and enter its whole name as **Groups claim** (`https://aiqsa.example.com/groups` below):
+
+```js
+exports.onExecutePostLogin = async (event, api) => {
+  const groups = event.authorization?.roles ?? []; // or a list kept in app_metadata
+  api.idToken.setCustomClaim("https://aiqsa.example.com/groups", groups);
+  if (event.transaction?.protocol === "samlp") api.samlResponse.setAttribute("groups", groups);
+};
+```
+
+With **IdP logout** on, signing out of AIQSA shows Auth0's logout prompt (AIQSA keeps no ID token that would let Auth0 skip it) and then returns to AIQSA's login page.
+
+**SAML.** Use a separate application. Under *Addons → SAML2 Web App* set **Application Callback URL** to the SAML card's ACS URL and the settings `{"audience": "<SP entity ID>", "mappings": {"email": "email", "name": "displayName"}, "nameIdentifierFormat": "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"}`; the Action above adds the `groups` attribute. On the SAML card load `https://<tenant>.<region>.auth0.com/samlp/metadata/<client-id>` and set **Email attribute** `email`, **Display name attribute** `displayName` and **Groups attribute** `groups`.
 
 ### Okta
 
