@@ -51,7 +51,7 @@ type Element = DefaultTreeAdapterMap["element"];
 const BLOCKED_ELEMENTS = new Set(["iframe", "frame", "frameset", "object", "embed", "base", "portal"]);
 const SVG_ELEMENTS = new Set(["svg", "g", "defs", "symbol", "use", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "tspan", "title", "desc", "linearGradient", "radialGradient", "stop", "clipPath", "mask", "pattern", "image", "filter", "feGaussianBlur", "feOffset", "feBlend", "feColorMatrix", "feMerge", "feMergeNode"]);
 const RESOURCE_ATTRIBUTES = new Set(["src", "href", "poster", "background", "data", "action", "formaction"]);
-export const ARTIFACT_RENDERER_VERSION = 4;
+export const ARTIFACT_RENDERER_VERSION = 5;
 export const ARTIFACT_MAX_RENDER_BYTES = 64 * 1024 * 1024;
 
 function invalid(code: string, path: string, hint: string): never {
@@ -62,6 +62,15 @@ function localPath(value: string, from: string): string | null {
   if (!value || /[\u0000-\u0020\u007f\\:#?%]/u.test(value) || value.startsWith("/")) return null;
   const resolved = posix.normalize(posix.join(posix.dirname(from), value));
   return resolved.startsWith("../") ? null : resolved;
+}
+
+const ICON_DATA_URL = /^data:image\/(?:png|jpeg|webp|gif|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/]+=*$/iu;
+const ICON_HINT = "Use a data: image (PNG, JPEG, WebP, GIF, SVG or ICO) or an included image file as the icon href.";
+
+/** Browsers match rel tokens case-insensitively; only plain icon relations are inert images. */
+function iconRel(value: string | undefined): boolean {
+  const tokens = (value ?? "").toLowerCase().split(/[\t\n\f\r ]+/u).filter(Boolean).sort().join(" ");
+  return ["icon", "icon shortcut", "apple-touch-icon"].includes(tokens);
 }
 
 function imageDataUrl(value: string): boolean {
@@ -310,6 +319,14 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
       : entry!.text!;
   const document = parse(source);
   const from = entry?.path ?? "index.html";
+  function iconHref(value: string): string {
+    // Icons load through img-src; keep them inline like other images.
+    if (ICON_DATA_URL.test(value)) return value;
+    if (/^data:/iu.test(value)) return cssImageDataUrl(value, from) ?? invalid("artifact_external_image_unsupported", from, ICON_HINT);
+    const path = localPath(value, from);
+    const file = path ? files.get(path) : undefined;
+    return file?.mimeType.startsWith("image/") ? dataUrl(file) : invalid("artifact_external_image_unsupported", from, ICON_HINT);
+  }
   function visit(node: HtmlNode): void {
     if ("tagName" in node) {
       let inlinedStyle = false;
@@ -328,7 +345,9 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
       const type = node.attrs.find(attr => attr.name === "type")?.value.toLowerCase();
       if (node.tagName === "script" && ["importmap", "text/babel", "text/jsx", "text/tsx"].includes(type ?? "")) invalid("artifact_module_graph_unsupported", from, "Use plain JavaScript or a self-contained UMD/IIFE build; browser compilers and import maps are unsupported.");
       const reference = node.attrs.find((attr) => attr.name === (node.tagName === "script" ? "src" : "href"));
-      if ((node.tagName === "script" || node.tagName === "link") && reference) {
+      const iconLink = node.tagName === "link" && !!reference && iconRel(node.attrs.find(attr => attr.name === "rel")?.value);
+      if (iconLink) reference!.value = iconHref(reference!.value);
+      else if ((node.tagName === "script" || node.tagName === "link") && reference) {
         const script = node.tagName === "script";
         if (!script && node.attrs.find(attr => attr.name === "rel")?.value.toLowerCase() !== "stylesheet") invalid("artifact_external_style_unsupported", from, "Only static stylesheet links are supported.");
         const file = resolve(reference.value, from, script ? "artifact_external_script_unsupported" : "artifact_external_style_unsupported");
@@ -350,7 +369,7 @@ export function renderArtifactBundle(bundle: ArtifactBundle, mainFile = false): 
         if (["srcdoc", "srcset", "ping"].includes(attr.name)) invalid("artifact_element_unsupported", from, "Replace the unsupported attribute with a direct reference to an included file.");
         if (attr.name === "style") attr.value = css(attr.value, from);
         if (RESOURCE_ATTRIBUTES.has(attr.name)) {
-          if (attr.value.startsWith("#")) continue;
+          if (attr.value.startsWith("#") || iconLink && attr === reference) continue;
           if (node.tagName === "a" && attr.name === "href") {
             const link = parseArtifactLink(attr.value);
             if (!link) invalid("artifact_external_link_unsupported", from, "Use an http, https or mailto link no longer than 2048 characters.");

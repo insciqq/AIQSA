@@ -437,8 +437,10 @@ export function artifactContentSecurityPolicy(delivery: "header" | "meta" = "hea
   // as an ignored policy error in srcdoc's meta element.
   return "default-src 'none'; base-uri 'none'; form-action 'none'; " +
     (delivery === "header" ? "frame-ancestors 'none'; " : "") +
-    "img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
-    "font-src data:; connect-src 'none'; child-src 'none'; object-src 'none'; worker-src 'none'";
+    "img-src data: blob:; media-src blob: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
+    // Workers inherit this document's policy, so blob: workers keep connect-src
+    // 'none'. child-src still blocks nested frames; worker-src governs workers.
+    "font-src data:; connect-src 'none'; child-src 'none'; object-src 'none'; worker-src blob:";
 }
 
 export function isArtifactTextMime(mimeType: string): boolean {
