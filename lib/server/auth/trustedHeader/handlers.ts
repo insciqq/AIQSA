@@ -21,6 +21,7 @@ import {
 import { createSessionClearCookie, getSessionFromRequest } from "../session";
 import type { SignInHealthRecorder } from "../signInSettings/health";
 import type { ResolvedSignInMethod } from "../signInMethods";
+import { observeSignInStep } from "../signInTelemetry";
 import { hashToken } from "../token";
 import {
   readTrustedHeaderEmail,
@@ -68,38 +69,41 @@ function outcomeUrl(appBaseUrl: string, nextPath: string, outcome: TrustedHeader
  * the proxy, not the request, sets the identity, so it can only sign its sender into their own.
  */
 export function createTrustedHeaderSignInHandler(deps: TrustedHeaderSignInDeps) {
-  return async function GET(request: Request): Promise<Response> {
+  return observeSignInStep({ method: "trusted_header", step: "callback" }, async (attempt, request: Request): Promise<Response> => {
     const config = deps.getConfig();
     const nextPath = safeInternalPath(new URL(request.url).searchParams.get("next"), config.appBaseUrl);
     const refuse = (outcome: TrustedHeaderLoginOutcome, cookies: readonly string[] = []) =>
       redirect(outcomeUrl(config.appBaseUrl, nextPath, outcome), cookies);
 
     if (!config.configured || config.clientIdentityMode !== "trusted_proxy") {
-      return refuse("unavailable");
+      return config.configured
+        ? attempt.end(refuse("unavailable"), "refused", "environment_unsupported")
+        : attempt.end(refuse("unavailable"), "failed", "auth_not_configured");
     }
 
     const method = await deps.resolveMethod();
-    if (!method) return refuse("unavailable");
+    if (!method) return attempt.end(refuse("unavailable"), "refused", "sign_in_method_disabled");
     const record = async (code: string) => {
       await deps.recordOutcome?.(method, code);
     };
 
     const read = readTrustedHeaderIdentity(request.headers, method.config);
     if (read.status !== "identity") {
-      await record(read.status === "missing" ? "header_missing" : "header_invalid");
-      return refuse(read.status);
+      const code = read.status === "missing" ? "header_missing" : "header_invalid";
+      await record(code);
+      return attempt.end(refuse(read.status), "failed", code);
     }
 
     const limiter = resolveLoginRateLimiter(deps.loginRateLimiter, defaultTestRateLimiter);
     const client = resolveLoginRateLimitIdentity(request, config);
-    if (client.status === "unavailable") return refuse("failed");
+    if (client.status === "unavailable") return attempt.end(refuse("failed"), "failed", "auth_admission_unavailable");
     const rateLimitKey = client.status === "available" ? `trusted-header:client:${client.key}` : null;
     if (rateLimitKey) {
       const decision = await limiter.check(rateLimitKey);
       if (!decision.allowed) {
         const response = refuse("failed");
         response.headers.set("retry-after", String(decision.retryAfterSeconds));
-        return response;
+        return attempt.end(response, "refused", "rate_limited");
       }
     }
     const succeeded = async (cookies: readonly string[] = []) => {
@@ -114,7 +118,7 @@ export function createTrustedHeaderSignInHandler(deps: TrustedHeaderSignInDeps) 
 
     if (token && current) {
       if ((await deps.repository.findLinkedUserId(read.identity.email)) === current.userId) {
-        return succeeded();
+        return attempt.end(await succeeded(), "succeeded", "accepted");
       }
       // The proxy now vouches for someone else in this browser.
       replaced = await deps.repository.revokeReplacedSession({ now, tokenHash: hashToken(token) });
@@ -133,7 +137,7 @@ export function createTrustedHeaderSignInHandler(deps: TrustedHeaderSignInDeps) 
 
       if (result.status === "active") {
         await record("accepted");
-        return succeeded([prepared.cookie]);
+        return attempt.end(await succeeded([prepared.cookie]), "succeeded", "accepted");
       }
       if (result.status === "second_factor_required") {
         // The completion seam asks only password and LDAP sign-ins for a second factor.
@@ -142,12 +146,16 @@ export function createTrustedHeaderSignInHandler(deps: TrustedHeaderSignInDeps) 
 
       // A pending account is the method working as configured.
       await record(result.status === "pending" ? "accepted" : result.status);
-      return refuse(result.status === "email_missing" ? "invalid" : result.status, cleared);
-    } catch {
+      return attempt.end(
+        refuse(result.status === "email_missing" ? "invalid" : result.status, cleared),
+        "refused",
+        result.status === "pending" ? "account_pending" : result.status
+      );
+    } catch (error) {
       await record("sign_in_failed");
-      return refuse("failed", cleared);
+      return attempt.end(refuse("failed", cleared), "failed", "sign_in_failed", error);
     }
-  };
+  });
 }
 
 function probeError(error: AdminTrustedHeaderProbeErrorCode, status: number): Response {

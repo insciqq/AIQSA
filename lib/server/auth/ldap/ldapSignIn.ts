@@ -95,14 +95,18 @@ export function createLdapPasswordFormSignIn(deps: LdapPasswordFormDeps): Direct
       return { kind: "local", waitForFloor };
     }
 
+    const { attempt } = input;
+    attempt.method = "ldap";
     const username = ldapUsername(input.identifier);
-    if (!username) return refused(json({ error: "unauthorized" }, { status: 401 }));
+    if (!username) return attempt.end(await refused(json({ error: "unauthorized" }, { status: 401 })), "failed", "invalid_credentials");
     // Never sent: a blank password would be an unauthenticated bind many directories accept.
-    if (isBlankLdapPassword(input.password)) return answered(json({ error: "credentials_required" }, { status: 400 }));
+    if (isBlankLdapPassword(input.password)) {
+      return attempt.end(answered(json({ error: "credentials_required" }, { status: 400 })), "refused", "request_invalid");
+    }
 
     const accountKey = ldapLoginRateLimitKey(username);
     const limited = await input.admitAccount(accountKey);
-    if (limited) return answered(limited);
+    if (limited) return attempt.end(answered(limited), "refused", "rate_limited");
 
     const result = await (deps.authenticate ?? authenticateLdapUser)({
       config: ldap.config,
@@ -113,10 +117,12 @@ export function createLdapPasswordFormSignIn(deps: LdapPasswordFormDeps): Direct
       username
     });
 
-    if (result.kind === "rejected") return refused(json({ error: "unauthorized" }, { status: 401 }));
+    if (result.kind === "rejected") {
+      return attempt.end(await refused(json({ error: "unauthorized" }, { status: 401 })), "failed", "invalid_credentials");
+    }
     if (result.kind === "unavailable") {
       await deps.recordOutcome(ldap, result.code);
-      return refused(json({ error: "ldap_unavailable" }, { status: 503 }));
+      return attempt.end(await refused(json({ error: "ldap_unavailable" }, { status: 503 })), "failed", result.code);
     }
 
     const now = deps.now?.() ?? new Date();
@@ -142,26 +148,26 @@ export function createLdapPasswordFormSignIn(deps: LdapPasswordFormDeps): Direct
       // A pending account is the directory working as configured.
       await deps.recordOutcome(ldap, settled.status === "pending" ? "accepted" : settled.status);
       const error = settled.status === "pending" ? "account_pending" : settled.status;
-      return answered(json({ error }, { status: SETTLEMENT_REFUSALS[settled.status] }));
+      return attempt.end(answered(json({ error }, { status: SETTLEMENT_REFUSALS[settled.status] })), "refused", error);
     }
 
     await Promise.all([deps.recordOutcome(ldap, "accepted"), input.signedIn(accountKey)]);
 
     if (settled.status === "second_factor_required") {
-      return answered(json(
+      return attempt.end(answered(json(
         { status: "second_factor_required" },
         {
           headers: {
             "set-cookie": await createSecondFactorChallengeCookie(settled.challenge, { config: input.config, now })
           }
         }
-      ));
+      )), "succeeded", "second_factor_required");
     }
 
     const user = await deps.findUser(settled.userId);
-    if (!user) return refused(json({ error: "unauthorized" }, { status: 401 }));
+    if (!user) return attempt.end(await refused(json({ error: "unauthorized" }, { status: 401 })), "failed", "sign_in_failed");
 
-    return answered(json(
+    return attempt.end(answered(json(
       {
         user: {
           displayName: user.displayName,
@@ -172,6 +178,6 @@ export function createLdapPasswordFormSignIn(deps: LdapPasswordFormDeps): Direct
         }
       },
       { headers: { "set-cookie": session.cookie } }
-    ));
+    )), "succeeded", "accepted");
   };
 }

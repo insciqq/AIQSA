@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { TwoFactorStatusWire } from "@/lib/contracts/twoFactor";
 import { createMemoryPasswordAuthRepository, createTestAuth, createTestPasswordIdentity } from "@/tests/support/auth";
+import { captureSignIns } from "@/tests/support/signInRecords";
 import { getAuthConfig } from "./config";
 import { createPasswordLoginHandler } from "./handlers";
 import type { PasswordAuthRepository } from "./passwordRepository";
@@ -428,5 +429,58 @@ describe("second-factor route and the password sign-in switch", () => {
     const on = handler(true);
     const password = await on.POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, { cookie: await challengeCookie() }));
     expect(password.status).toBe(200);
+  });
+});
+
+describe("second-factor sign-in telemetry", () => {
+  it("records a wrong code after correct credentials as a failed second-factor step of that method", async () => {
+    const passwordLogin = createPasswordLoginHandler({
+      getConfig: () => config,
+      loginRateLimiter: createFixedWindowLoginRateLimiter(),
+      repository: {
+        ...createMemoryPasswordAuthRepository({ identity: createTestPasswordIdentity({ passwordHash: "hash" }) }),
+        createSessionForCurrentPassword: async () => ({ challenge: subject, kind: "second_factor_required" })
+      },
+      verifyPassword: async () => true
+    });
+    let accepted = false;
+    const { POST } = secondFactorHandler({
+      complete: async () => accepted ? { kind: "session", user: signedInUser } : { kind: "invalid_code" }
+    });
+    const secondFactor = (cookie: string) => POST(jsonRequest("/api/auth/second-factor", { code: "000 000" }, { cookie }));
+
+    const signIns = await captureSignIns(async () => {
+      expect((await passwordLogin(jsonRequest("/api/auth/login", { email: "operator@aiqsa.local", password: "correct" }))).status)
+        .toBe(200);
+      expect((await secondFactor(await challengeCookie())).status).toBe(401);
+      accepted = true;
+      expect((await secondFactor(await challengeCookie({ signInMethod: "ldap" }))).status).toBe(200);
+      expect((await secondFactor(`${SECOND_FACTOR_COOKIE_NAME}=forged`)).status).toBe(401);
+    });
+
+    expect(signIns).toEqual([
+      { code: "second_factor_required", level: "info", outcome: "succeeded", sign_in_method: "password", step: "credentials" },
+      { code: "invalid_code", level: "warn", outcome: "failed", sign_in_method: "password", step: "second_factor" },
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "ldap", step: "second_factor" },
+      // An unreadable challenge cannot tell the method.
+      { code: "challenge_expired", level: "warn", outcome: "failed", step: "second_factor" }
+    ]);
+  });
+
+  it("records an unusable encryption key as an error", async () => {
+    const { POST } = secondFactorHandler({
+      getKeys: () => {
+        throw new SecretEnvelopeError("secret_encryption_invalid_key");
+      }
+    });
+
+    const signIns = await captureSignIns(async () => {
+      const response = await POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, { cookie: await challengeCookie() }));
+      expect(response.status).toBe(503);
+    });
+
+    expect(signIns).toEqual([
+      { code: "two_factor_unavailable", level: "error", outcome: "failed", sign_in_method: "password", step: "second_factor" }
+    ]);
   });
 });
