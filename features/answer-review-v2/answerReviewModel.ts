@@ -141,6 +141,21 @@ export function answerReviewGroupProgressV2(
   });
 }
 
+/**
+ * The group's progress as the transcript shows it. A group the chat moved on
+ * from (no longer the latest of the path) waits for nothing: the next run's
+ * admission superseded its session on the server, whatever session this page
+ * last read. It keeps its history and shows no status line or action.
+ */
+export function answerReviewGroupDisplayProgressV2(
+  group: AnswerReviewGroupV2,
+  options: Readonly<{ latest: boolean; live?: Readonly<{ artifact: ThreadArtifactSummary | null; messageId: string }> }>
+): AnswerReviewProgress {
+  const progress = answerReviewGroupProgressV2(group, options.live);
+  if (options.latest || progress.state !== "running" || progress.running) return progress;
+  return { ...progress, next: null, settle: false, state: "stopped", stopReason: "superseded" };
+}
+
 /** The display name of a step's model: its frozen snapshot, else the session's reference. */
 export function answerReviewStepModelNameV2(session: AnswerReviewSessionWire, step: AnswerReviewStepWire): string {
   if (step.modelName) return step.modelName;
