@@ -6,7 +6,7 @@ import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
-import { RunSettlementError, isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
+import { RunSettlementError, WorkspaceHandoffFailure, isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 import { isWorkspaceOperationFailureCode, workspaceOperationFailureMessage } from "@/lib/contracts/workspaceFailure";
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
@@ -3690,12 +3690,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               assistantMessageId: input.created.assistantMessageId, runId
             } });
             // The published answer is immutable. Run completion still requires
-            // captured outputs and retirement of the previous guest authority.
+            // captured outputs and retirement of the previous guest authority;
+            // their failure keeps the answer and ends the run terminally. Stop
+            // and the turn deadline keep their own outcome.
             const handoff = await input.workspace!.handoff({
               onActivity: onWorkspaceActivity, runId, signal, userId: input.userId,
               workspace: normalizedRequest.workspace!
-            });
-            if (handoff.status !== "ready") throw new WorkspaceRuntimeError("workspace_operation_stale");
+            }).catch((error: unknown) => { throw signal.aborted ? error : new WorkspaceHandoffFailure(error); });
+            if (handoff.status !== "ready") throw new WorkspaceHandoffFailure(new WorkspaceRuntimeError("workspace_operation_stale"));
             throwIfAborted(signal);
             await assertProjectRunAccessCurrent(true);
           } } : {}),
@@ -3847,7 +3849,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             : isRecord(failure) && isProviderStreamSafetyCode(failure.code)
               ? failure.code
               : null);
-        const settlement = runSettlementFailure(failure);
+        const settlement = failure instanceof WorkspaceHandoffFailure
+          ? { code: failure.code, message: failure.message } : runSettlementFailure(failure);
         const observedCode = observedFailure(failure).code;
         const failureCode = settlement?.code ?? contractFailureCode ?? routingCode ??
           (knowledgeAnswerAttempted
@@ -3897,7 +3900,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             runId,
             input.created.assistantMessageId,
             imageFailure ? { ...payload, imageFailure } : payload,
-            safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode || isRunPersistenceFailureCode(failureCode) ||
+            failure instanceof WorkspaceHandoffFailure ||
+              safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode || isRunPersistenceFailureCode(failureCode) ||
               isToolSynthesisFailure(failureCode) ||
               isMcpAutoDiscoveryFailureCode(failureCode) ||
               failureCode === "memory_answer_model_tools_retired" ||

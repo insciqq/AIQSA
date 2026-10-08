@@ -9,7 +9,8 @@ import { prisma } from "@/lib/server/prisma";
 import { getWorkspaceConfig } from "./config";
 import { createPrismaWorkspaceCoordinatorRepository, createWorkspaceCoordinator, WORKSPACE_EXPORT_MAX_ATTEMPTS, type WorkspaceExportLease } from "./coordinator";
 import type { WorkspaceOutputIdentity } from "./outputManifest";
-import { createPrismaWorkspaceExecutionRegistry } from "./executionRegistry";
+import { createPrismaWorkspaceExecutionRegistry, workspaceSyncCleanupId } from "./executionRegistry";
+import { WorkspaceRuntimeError } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 import { createWorkspaceLifecycleService } from "./lifecycle";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
@@ -493,6 +494,72 @@ describe("Prisma Workspace export lease", () => {
       exportCompletedAt: null, exportLeaseToken: null, exportLeaseExpiresAt: null });
     expect(await prisma.message.findUniqueOrThrow({ where: { id: answer.id } })).toEqual(answer);
     expect((await prisma.modelRun.findUniqueOrThrow({ where: { id: fixture.runId } })).status).toBe("complete");
+  });
+
+  it.each(["initialize", "resume"] as const)("hands off outputs after the guest is briefly missing at %s, within one lease", async (step) => {
+    const userId = `${TEST_USER_PREFIX}${randomUUID()}`;
+    await prisma.user.create({ data: { displayName: "Workspace Export Lease Test", id: userId, status: "active" } });
+    const chat = await prisma.chat.create({ data: { title: "Export retry", userId, workspaceEnabled: true } });
+    const question = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Export a report"),
+      role: "user", status: "complete" } });
+    const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Done"),
+      parentMessageId: question.id, role: "assistant", status: "complete" } });
+    const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, modelId: "fake-qsa",
+      normalizedRequest: {}, provider: "fake", status: "streaming", userId, userMessageId: question.id } });
+    const operation = { generation: 1, owner: `run:${run.id}` };
+    const session = await prisma.workspaceSession.create({ data: { chatId: chat.id, expiresAt: new Date(Date.now() + config.retentionSeconds * 1_000),
+      imageRef: config.imageRef, internetEnabled: false, operationOwner: operation.owner, policyRevision: 1,
+      sandboxName: `aiqsa-ws-${randomUUID()}`, state: "RUNNING", version: operation.generation } });
+    const raw = new DeterministicWorkspaceRuntime(config);
+    const runtime = fenceDeterministicWorkspaceRuntime(raw);
+    const live = await runtime.ensureSession({ cpus: 1, diskMiB: config.diskMiB, imageRef: config.imageRef, internetEnabled: false,
+      memoryMiB: 1024, operation, runtimeSandboxId: null, sandboxName: session.sandboxName, sessionId: session.id });
+    const guest = { operation, runtimeSandboxId: live.runtimeSandboxId, sessionId: session.id };
+    try {
+      await prisma.workspaceSession.update({ data: { runtimeSandboxId: live.runtimeSandboxId }, where: { id: session.id } });
+      const catalog = await runtime.loadBoundTools(guest);
+      await prisma.workspaceRunBinding.create({ data: { guestUsedAt: new Date(), imageRef: config.imageRef, internetEnabled: false,
+        mcpVersion: catalog.mcpVersion, modelRunId: run.id, outputDirectory: workspaceRunOutputDirectory(run.id), policyRevision: 1,
+        runtimeVersion: catalog.runtimeVersion, toolCatalogHash: catalog.hash, toolDefinitions: JSON.parse(JSON.stringify(catalog.tools)),
+        workspaceSessionId: session.id } });
+      await runtime.callBoundTool({ ...guest, arguments: { content: "report", path: `${workspaceRunOutputDirectory(run.id)}/report.txt` },
+        modelRunId: run.id, modelRunToolCallId: randomUUID(), originalName: "sandbox_fs_write" });
+      // A returned shell command keeps its cleanup obligation, so quiescence stops the VM.
+      const shell = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: run.id, ordinal: 0,
+        providerCallId: `call_${randomUUID()}`, roundIndex: 1, state: "complete", toolName: namespacedWorkspaceToolName("sandbox_shell"),
+        workspaceRunBindingId: run.id } });
+      const registry = createPrismaWorkspaceExecutionRegistry(prisma);
+      expect(await registry.register({ modelRunId: run.id, modelRunToolCallId: shell.id, operation,
+        runtimeExecSessionId: workspaceSyncCleanupId(shell.id), sessionId: session.id })).toBe("registered");
+      const stop = vi.spyOn(raw, "stopSession");
+      const collect = vi.spyOn(raw, "collectOutputs");
+      const ensure = raw.ensureSession.bind(raw);
+      let missing = 0;
+      vi.spyOn(raw, "ensureSession").mockImplementation(async (input) => {
+        // Unknown once: at the export's first lookup, or right after its own stop.
+        if (missing === 0 && (step === "initialize" || stop.mock.calls.length > 0)) {
+          missing += 1;
+          throw new WorkspaceRuntimeError("workspace_session_lost");
+        }
+        return ensure(input);
+      });
+      const coordinator = createWorkspaceCoordinator({ config, registry, repository, runtime, storage: createMemoryStorageAdapter() });
+      await expect(coordinator.finalize({ handoff: true, runId: run.id, userId })).resolves.toEqual({ status: "pending" });
+      expect(missing).toBe(1);
+      // The claim continued the run's idle operation without a stop; quiescence stopped the VM once before the capture.
+      const captured = collect.mock.invocationCallOrder.at(-1)!;
+      expect(stop.mock.invocationCallOrder.filter((order) => order < captured)).toHaveLength(1);
+      expect(await bindingState(run.id)).toMatchObject({ exportAttemptCount: 0, exportLeaseToken: null, exportState: "PENDING",
+        lastExportErrorCode: null });
+      expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: session.id } })).toMatchObject({
+        lastErrorCode: null, operationOwner: null, runtimeSandboxId: live.runtimeSandboxId, state: "STOPPED", version: 2 });
+      expect(await prisma.workspaceExecution.findMany({ select: { lastErrorCode: true, state: true }, where: { modelRunId: run.id } }))
+        .toEqual([{ lastErrorCode: "workspace_execution_stopped", state: "LOST" }]);
+      expect(await repository.outputHandoffReady({ runId: run.id, sessionId: session.id })).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      await raw.removeSession({ runtimeSandboxId: live.runtimeSandboxId, sessionId: session.id });
+    }
   });
 
   it.each(["reset", "archive"] as const)("rejects a delayed live-export claim while %s owns the session", async (kind) => {

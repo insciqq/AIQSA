@@ -1,5 +1,6 @@
 import * as workspaceCheckpoints from "../workspace/checkpoints";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
@@ -2669,7 +2670,7 @@ describe("run execution", () => {
     ]);
   });
 
-  it.each(["ready", "failed", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
+  it.each(["ready", "failed", "lost", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
     const boundary = deferred<void>();
     const repository = createRepository({ completionWins: outcome !== "completion_lost" });
     const providerCalls = vi.fn();
@@ -2678,6 +2679,7 @@ describe("run execution", () => {
     const handoff = vi.fn(async () => {
       await boundary.promise;
       if (outcome === "failed") throw new Error("synthetic_handoff_failure");
+      if (outcome === "lost") throw new WorkspaceRuntimeError("workspace_session_lost");
       return { status: "ready" as const };
     });
     const workspace = {
@@ -2720,6 +2722,13 @@ describe("run execution", () => {
       ]);
       expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
       if (outcome === "completion_lost") expect(repository.recordedRunUsageEvents).toHaveLength(1);
+      if (outcome === "failed" || outcome === "lost") {
+        // The saved answer ends terminally with the same plain text as recovery.
+        const error = { code: outcome === "lost" ? "workspace_session_lost" : "workspace_output_export_failed",
+          message: "The answer was saved, but Workspace could not finish preparing its files." };
+        expect(repository.failedRuns).toEqual([{ assistantMessageId: "assistant-1", error, options: { recoveryTerminal: true }, runId: "run-1" }]);
+        expect(events).toContainEqual({ type: "error", data: error });
+      } else expect(repository.failedRuns).toEqual([]);
     } finally { boundary.resolve(); await text; }
   });
 
