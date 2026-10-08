@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Prisma, PrismaClient } from "@prisma/client";
@@ -119,20 +120,21 @@ type Stand = Readonly<{ chatIds: Set<string>; endpoint: ReviewerEndpoint }>;
 let stand: Stand | null = null;
 let connectionId: string | null = null;
 let restoreDefaults: (() => Promise<void>) | null = null;
-let restorePolicies: (() => Promise<void>) | null = null;
+let restorePolicies: ((tx: Prisma.TransactionClient) => Promise<void>) | null = null;
 
 test.beforeAll(async ({ browser }, testInfo) => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
   const endpoint = await startReviewerEndpoint();
   stand = { chatIds: new Set(), endpoint };
   restoreDefaults = await snapshotComposerDefaults(prisma, userId);
   const policy = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   const roles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-  restorePolicies = async () => {
-    await prisma.modelPolicy.update({ data: { defaultProviderModelId: policy.defaultProviderModelId,
+  // The custom setup's bootstrap makes a new deployment the installation's default and roles where none is set.
+  restorePolicies = async (tx) => {
+    await tx.modelPolicy.update({ data: { defaultProviderModelId: policy.defaultProviderModelId,
       reasoningEffort: policy.reasoningEffort, version: policy.version }, where: { id: "installation" } });
-    await prisma.systemModelPolicy.update({ data: { chatPdfProviderModelId: roles.chatPdfProviderModelId,
+    await tx.systemModelPolicy.update({ data: { chatPdfProviderModelId: roles.chatPdfProviderModelId,
       chatPdfReasoningEffort: roles.chatPdfReasoningEffort, providerModelId: roles.providerModelId,
       reasoningEffort: roles.reasoningEffort, version: roles.version }, where: { id: "installation" } });
   };
@@ -151,15 +153,47 @@ test.beforeAll(async ({ browser }, testInfo) => {
     const model = await prisma.providerModel.findFirstOrThrow({ where: { connectionId } });
     expect(model.displayName).toBe(reviewerName);
     expect((model.capabilities as Prisma.JsonObject).toolCalling, "the reviewer fixture must verify tool calling").toBe(true);
+    // A cold dev server compiles each new route on its first request, the step route with the whole run
+    // pipeline: warm both here so the cases time the review, not the compiler.
+    for (const path of [`/api/chats/${randomUUID()}/answer-reviews`, "/api/answer-reviews/route-warmup/steps"]) {
+      const warmed = await page.request.post(path, { data: {}, timeout: 240_000 });
+      expect([400, 404], path).toContain(warmed.status());
+    }
   } finally {
     await page.close();
   }
 });
 
 test.afterAll(async () => {
+  await restoreDefaults?.();
   if (connectionId) {
     const id = connectionId;
     await prisma.$transaction(async (tx) => {
+      // References first, as the admin deletion of a deployment clears them: the restored policies, then any
+      // default or role still naming the fixture (ModelPolicy and the roles restrict deleting the model).
+      await restorePolicies?.(tx);
+      const modelIds = (await tx.providerModel.findMany({ select: { id: true }, where: { connectionId: id } }))
+        .map((model) => model.id);
+      await tx.userSettings.updateMany({ data: { defaultProviderModelId: null }, where: { defaultProviderModelId: { in: modelIds } } });
+      await tx.modelPolicy.updateMany({ data: { defaultProviderModelId: null, reasoningEffort: null },
+        where: { defaultProviderModelId: { in: modelIds } } });
+      await tx.memoryUtilityModelPolicy.updateMany({ data: { assignmentSource: "OPERATOR", providerModelId: null, reasoningEffort: null },
+        where: { providerModelId: { in: modelIds } } });
+      for (const field of ["providerModelId", "rerankerProviderModelId", "visionProviderModelId", "chatPdfProviderModelId",
+        "chatPdfNativeProviderModelId", "chatTitleProviderModelId"] as const) {
+        await tx.systemModelPolicy.updateMany({
+          data: {
+            [field]: null,
+            ...(field === "providerModelId" ? { reasoningEffort: null } : {}),
+            ...(field === "chatTitleProviderModelId" ? { chatTitleReasoningEffort: null } : {}),
+            ...(field === "visionProviderModelId" ? { visionReasoningEffort: null } : {}),
+            ...(field === "chatPdfProviderModelId" ? { chatPdfReasoningEffort: null } : {}),
+            ...(field === "chatPdfNativeProviderModelId" ? { chatPdfNativeReasoningEffort: null } : {})
+          },
+          where: { [field]: { in: modelIds } }
+        });
+      }
+      await tx.chat.updateMany({ data: { defaultProviderModelId: null }, where: { defaultProviderModelId: { in: modelIds } } });
       const runs = await tx.modelRun.findMany({ select: { chatId: true, id: true }, where: { providerRunBindings: { some: { connectionId: id } } } });
       const chatIds = [...new Set([...runs.map((run) => run.chatId), ...(stand?.chatIds ?? [])])];
       await tx.providerRunBinding.deleteMany({ where: { connectionId: id } });
@@ -180,8 +214,6 @@ test.afterAll(async () => {
       await tx.providerConnection.delete({ where: { id } });
     });
   }
-  await restorePolicies?.();
-  await restoreDefaults?.();
   await stand?.endpoint.close();
   await prisma.$disconnect();
 });
@@ -215,16 +247,27 @@ async function startReview(page: Page): Promise<void> {
   }
   await dialog.getByRole("checkbox", { name: reviewerName }).check();
   await dialog.getByRole("button", { name: "Start review" }).click();
-  await expect(dialog).toHaveCount(0);
+  // The dialog closes once the round is accepted; the step's progress shows in the status line.
+  await expect(dialog).toHaveCount(0, { timeout: 30_000 });
 }
 
 const status = (page: Page) => page.getByTestId("answer-review-status");
+
+/** The signed-in user's default model and the installation's: review steps never change either. */
+async function defaultModels() {
+  const [settings, policy] = await Promise.all([
+    prisma.userSettings.findUniqueOrThrow({ select: { defaultProviderModelId: true }, where: { userId } }),
+    prisma.modelPolicy.findUniqueOrThrow({ select: { defaultProviderModelId: true }, where: { id: "installation" } })
+  ]);
+  return { installation: policy.defaultProviderModelId, user: settings.defaultProviderModelId };
+}
 
 test("a review's finding is decided and revised into Version 2, and the next turn reads only the latest version", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   await page.setViewportSize({ height: 900, width: 1440 });
   const question = "Check the quarterly total of 12, 15 and 14 [AIQSA_REVIEW_E2E:findings]";
   const chatId = await answeredChat(page, question);
+  const defaultsBefore = await defaultModels();
   await startReview(page);
   await expect(status(page)).toHaveText(/Review · round 1 · 1 finding to evaluate/u, { timeout: 60_000 });
   // The server-written turns are never user bubbles.
@@ -240,6 +283,8 @@ test("a review's finding is decided and revised into Version 2, and the next tur
   await status(page).getByRole("button", { name: "Revise" }).click();
   await expect(shownAnswer(page)).toContainText("Revised answer: the figure is verified and its source is named.", { timeout: 60_000 });
   await expect(status(page)).toHaveCount(0);
+  // The steps ran the reviewer's and the author's models without making either a default.
+  expect(await defaultModels()).toEqual(defaultsBefore);
   await page.reload();
   // Version 2 is the answer; the history is collapsed and holds Version 1, the review and the decisions.
   await expect(shownAnswer(page)).toContainText("Revised answer: the figure is verified and its source is named.", { timeout: 30_000 });
@@ -266,6 +311,20 @@ test("a review's finding is decided and revised into Version 2, and the next tur
   await expect(page.getByTestId("answer-review-status")).toHaveCount(0);
   expect(await prisma.answerReviewSession.findFirstOrThrow({ where: { chatId } })).toMatchObject({ state: "stopped",
     stopReason: "superseded" });
+
+  // A branch from that later answer copies the question, Version 2 and the answer: never the review.
+  await shownAnswer(page).getByRole("button", { name: "More answer actions" }).click();
+  await page.getByRole("menu", { name: "Answer menu" }).getByRole("menuitem", { name: "Branch from here" }).click();
+  await expect.poll(() => page.evaluate(() => window.location.pathname), { timeout: 30_000 }).not.toContain(chatId);
+  stand!.chatIds.add(await activeChatId(page));
+  const branch = page.getByTestId("conversation-thread");
+  await expect(branch.locator('article[data-role="assistant"]')).toHaveCount(2, { timeout: 30_000 });
+  await expect(branch.locator('article[data-role="user"]')).toHaveCount(2);
+  await expect(branch.locator('article[data-role="assistant"]').first()).toContainText("Revised answer: the figure is verified");
+  await expect(branch.locator('article[data-role="assistant"]').last()).toContainText("Fake answer: Thanks, what comes next?");
+  await expect(branch.locator("[data-system-turn]")).toHaveCount(0);
+  await expect(page.getByTestId("answer-review-history")).toHaveCount(0);
+  await expect(branch).not.toContainText(/Answer (review|revision) request|Review submitted/u);
 });
 
 test("a clean review shows No substantive issues and offers no Revise", async ({ page }) => {
