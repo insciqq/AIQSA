@@ -86,8 +86,10 @@ export type AnswerReviewDecisionsCard = Readonly<{
 export type AnswerReviewModelWire = Readonly<{ modelId: string; name: string; provider: string }>;
 
 /**
- * A session as the transcript shows it. `canAct` marks the initiator, who
- * alone starts its steps; others (Project members) see it read-only.
+ * A session as the transcript shows it. `canAct` marks a viewer who may act
+ * on it: its initiator, who alone starts its steps, or any member once the
+ * initiator's account is gone and the session ended (a new round takes it
+ * over). Others (Project members) see it read-only.
  */
 export type AnswerReviewSessionWire = Readonly<{
   author: AnswerReviewModelWire;
@@ -145,9 +147,13 @@ export const ANSWER_REVIEW_REFUSALS = [
   "answer_review_model_unsupported",
   "answer_review_reviewer_unavailable",
   "answer_review_ended",
-  "answer_review_step_unavailable"
+  "answer_review_step_unavailable",
+  "answer_review_not_initiator"
 ] as const;
 export type AnswerReviewRefusal = (typeof ANSWER_REVIEW_REFUSALS)[number];
+
+/** Why another member's review cannot be continued, on the refusal and on the disabled "Review…". */
+export const ANSWER_REVIEW_NOT_INITIATOR_COPY = "Only the member who started this review can continue it.";
 
 const REFUSAL_COPY: Readonly<Record<AnswerReviewRefusal, string>> = {
   answer_review_agent_unsupported: "Review isn't available while Agent is on. Turn Agent off to review this answer.",
@@ -157,6 +163,7 @@ const REFUSAL_COPY: Readonly<Record<AnswerReviewRefusal, string>> = {
   answer_review_invalid: "This review request is invalid.",
   answer_review_knowledge_unsupported: "Review isn't available with Knowledge: Knowledge answers stay bound to their sources.",
   answer_review_model_unsupported: "This answer's model can't use tools, so it can't take part in a review.",
+  answer_review_not_initiator: ANSWER_REVIEW_NOT_INITIATOR_COPY,
   answer_review_not_latest: "Only the latest answer can be reviewed.",
   answer_review_reviewer_unavailable: "A chosen reviewer model is unavailable or can't use tools. Choose another one.",
   answer_review_step_unavailable: "This review step already ran or isn't next. Refresh the chat to see the review.",

@@ -204,7 +204,7 @@ describe("answer review availability", () => {
       [{ answer: { ...answer, artifactSummary: artifact({ generatedImages: [{ attachmentId: "i", fileName: "x.png" }] as never }) } },
         /generated images/u],
       [{ candidates: [] }, /No other model/u],
-      [{ answer: { ...answer, answerReview: { session: sessionWire({ canAct: undefined }) } } }, /person who started this review/u]
+      [{ answer: { ...answer, answerReview: { session: sessionWire({ canAct: undefined }) } } }, /member who started this review/u]
     ] as const) {
       const result = answerReviewAvailabilityV2({ ...base, ...overrides } as AnswerReviewAvailabilityInput);
       expect(result.available, String(reason)).toBe(false);

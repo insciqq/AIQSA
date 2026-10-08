@@ -1,5 +1,6 @@
 import {
   ANSWER_REVIEW_MAX_REVIEWERS,
+  ANSWER_REVIEW_NOT_INITIATOR_COPY,
   answerReviewStopCopy,
   type AnswerReviewCard,
   type AnswerReviewDecisionsCard,
@@ -236,9 +237,7 @@ export function answerReviewAvailabilityV2(input: AnswerReviewAvailabilityInput)
   if (input.activeRun) return unavailable("Wait for the current answer to finish.");
   if (!input.latest) return unavailable("Only the latest answer can be reviewed.");
   if (answer.status !== "complete") return unavailable("Only a finished answer can be reviewed.");
-  if (answer.answerReview && !answer.answerReview.session.canAct) {
-    return unavailable("Only the person who started this review can continue it.");
-  }
+  if (answer.answerReview && !answer.answerReview.session.canAct) return unavailable(ANSWER_REVIEW_NOT_INITIATOR_COPY);
   if (input.agentEnabled) return unavailable("Turn Agent off to review this answer.");
   if (input.knowledgeEnabled || (answer.artifactSummary?.knowledgeCitations?.length ?? 0) > 0 || answer.artifactSummary?.knowledgeState) {
     return unavailable("Review isn't available with Knowledge: Knowledge answers stay bound to their sources.");
