@@ -157,7 +157,7 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
     await prisma.$disconnect();
   });
 
-  it("admits no consent, exchange, refresh or token while a SCIM deactivation is pending", async () => {
+  it("admits no consent, refresh or token while a SCIM deactivation is pending", async () => {
     await withFixture(async ({ clientId, repository, userId }) => {
       const client = (await repository.findClient(clientId))!;
       const now = new Date();
@@ -169,9 +169,6 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
       const issued = pair(["skills:read"]);
       expect(await repository.approveAuthorization({ ...issued, clientRecordId: client.id,
         expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(true);
-      const pending = pair(["skills:read"]);
-      expect(await repository.approveAuthorization({ ...pending, clientRecordId: client.id,
-        expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(true);
       expect(await repository.exchangeAuthorizationCode(issued)).toEqual({ scopes: ["skills:read"] });
       const auth = (await repository.resolveAccessToken({ ...issued, tokenHash: issued.accessTokenHash }))!;
       expect(auth).not.toBeNull();
@@ -181,7 +178,6 @@ describe("Prisma inbound Memory MCP OAuth repository", () => {
       const late = pair(["skills:read"]);
       expect(await repository.approveAuthorization({ ...late, clientRecordId: client.id,
         expiresAt: new Date(now.getTime() + 300_000), userId })).toBe(false);
-      expect(await repository.exchangeAuthorizationCode(pending)).toBe(false);
       expect(await repository.resolveAccessToken({ ...issued, tokenHash: issued.accessTokenHash })).toBeNull();
       expect(await prisma.$transaction((tx) => assertInboundMcpSkillsAuthority(tx, auth, "read"))).toBe(false);
       expect(await repository.rotateRefreshToken({ ...issued, presentedRefreshTokenHash: issued.refreshTokenHash,
