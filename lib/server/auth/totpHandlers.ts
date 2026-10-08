@@ -11,6 +11,7 @@ import {
   type LoginRateLimiter
 } from "./rateLimit";
 import { prepareAuthSession, type RequestAuthResolver } from "./requestAuth";
+import { refuseWhenPasswordSignInOff, type SignInPolicyReader } from "./signInPolicy";
 import {
   clearSecondFactorChallengeCookie,
   readSecondFactorChallengeToken,
@@ -28,6 +29,8 @@ export type SecondFactorSignInHandlerDeps = {
   now?: () => Date;
   rateLimiter?: LoginRateLimiter;
   repository: SecondFactorSignInRepository;
+  /** The password sign-in switch; absent means on. */
+  signInPolicy?: SignInPolicyReader;
 };
 
 export type TwoFactorHandlerDeps = {
@@ -136,6 +139,17 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
 
     if (!challenge) {
       return challengeExpired();
+    }
+
+    // A password challenge issued before password sign-in was switched off cannot finish it;
+    // a directory (LDAP) challenge can.
+    if (challenge.signInMethod === "password") {
+      const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+      if (passwordSignInOff) {
+        passwordSignInOff.headers.set("cache-control", "private, no-store, max-age=0");
+        passwordSignInOff.headers.append("set-cookie", clearSecondFactorChallengeCookie(config.cookieSecure));
+        return passwordSignInOff;
+      }
     }
 
     const accountKey = secondFactorAccountKey(challenge.userId);
