@@ -228,13 +228,17 @@ export type AnswerReviewAvailabilityInput = Readonly<{
 
 export type AnswerReviewAvailability = Readonly<{ available: true }> | Readonly<{ available: false; reason: string }>;
 
+/** The id the browser gives an answer before the server's arrives (the run actions' optimistic messages). */
+const OPTIMISTIC_ANSWER_ID = /^assistant-(?:regen-)?\d+$/u;
+
 /** Whether "Review…" is offered on an answer, and why not. */
 export function answerReviewAvailabilityV2(input: AnswerReviewAvailabilityInput): AnswerReviewAvailability {
   const unavailable = (reason: string): AnswerReviewAvailability => ({ available: false, reason });
   const { answer } = input;
   if (input.assistantChat) return unavailable("Review isn't available in Assistant chats yet: the Assistant fixes the model.");
   if (input.mutationReason) return unavailable(input.mutationReason);
-  if (input.activeRun) return unavailable("Wait for the current answer to finish.");
+  // A just-finished answer the server has not yet named is no answer the server can review.
+  if (input.activeRun || OPTIMISTIC_ANSWER_ID.test(answer.id)) return unavailable("Wait for the current answer to finish.");
   if (!input.latest) return unavailable("Only the latest answer can be reviewed.");
   if (answer.status !== "complete") return unavailable("Only a finished answer can be reviewed.");
   if (answer.answerReview && !answer.answerReview.session.canAct) return unavailable(ANSWER_REVIEW_NOT_INITIATOR_COPY);

@@ -14,6 +14,14 @@ function sameModel(left: AnswerReviewReviewerPick, right: AnswerReviewReviewerPi
 }
 
 /**
+ * Exactly the identity a round request names. An earlier session's reviewer
+ * also carries its display name, which the request's strict decoding refuses.
+ */
+function pickOf(model: AnswerReviewReviewerPick): AnswerReviewReviewerPick {
+  return { modelId: model.modelId, provider: model.provider };
+}
+
+/**
  * The small picker that starts a review round: one or two other models that
  * can use tools, in the order chosen (the second reviewer sees the first's
  * review). The author's own model is never offered.
@@ -37,8 +45,9 @@ export function AnswerReviewDialogV2({
   const titleId = useId();
   const descriptionId = useId();
   const [selected, setSelected] = useState<AnswerReviewReviewerPick[]>(() => {
-    const kept = initial.filter((pick) => candidates.some((model) => sameModel(model, pick))).slice(0, ANSWER_REVIEW_PICK_LIMIT);
-    return kept.length ? kept : candidates[0] ? [{ modelId: candidates[0].modelId, provider: candidates[0].provider }] : [];
+    const kept = initial.filter((pick) => candidates.some((model) => sameModel(model, pick))).slice(0, ANSWER_REVIEW_PICK_LIMIT)
+      .map(pickOf);
+    return kept.length ? kept : candidates[0] ? [pickOf(candidates[0])] : [];
   });
   const close = () => {
     if (!busy) onCancel();
@@ -47,7 +56,7 @@ export function AnswerReviewDialogV2({
   if (!portalReady) return null;
   const toggle = (model: AnswerReviewCatalogModelV2) => setSelected((current) => current.some((pick) => sameModel(pick, model))
     ? current.filter((pick) => !sameModel(pick, model))
-    : current.length < ANSWER_REVIEW_PICK_LIMIT ? [...current, { modelId: model.modelId, provider: model.provider }] : current);
+    : current.length < ANSWER_REVIEW_PICK_LIMIT ? [...current, pickOf(model)] : current);
   return createPortal(
     <div className="v2-answer-review-dialog-scrim" data-testid="answer-review-dialog" role="presentation" onMouseDown={close}>
       <div
@@ -91,7 +100,7 @@ export function AnswerReviewDialogV2({
         {error ? <p className="v2-answer-review-dialog-error" role="alert">{error}</p> : null}
         <div className="v2-answer-review-dialog-actions">
           <UiV2Button disabled={busy} onClick={close} ref={initialFocusRef} type="button">Cancel</UiV2Button>
-          <UiV2Button busy={busy} disabled={selected.length === 0} onClick={() => onStart(selected)} tone="primary" type="button">
+          <UiV2Button busy={busy} disabled={selected.length === 0} onClick={() => onStart(selected.map(pickOf))} tone="primary" type="button">
             Start review
           </UiV2Button>
         </div>
