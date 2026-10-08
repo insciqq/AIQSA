@@ -231,6 +231,31 @@ export function answerReviewAutoRunningV2(group: AnswerReviewGroupV2, progress: 
   return group.session.mode === "auto" && progress.state === "running" && !progress.awaitingAnswer;
 }
 
+/** How the chat waits for a running automatic review, by who views it. */
+export type AnswerReviewAutoWaitV2 = Readonly<{
+  /** Why the chat's message actions wait while a step runs. */
+  actionsReason: string;
+  /** The composer's line while the review runs. */
+  notice: string;
+  /** Null when the viewer started the review and its Stop ends it; otherwise why the composer offers no Stop. */
+  stopUnavailableReason: string | null;
+}>;
+
+/**
+ * The chat is busy while an automatic review runs, for every viewer. Only its
+ * initiator may stop it (the server refuses anyone else): another member of a
+ * Project chat waits for it, with no Stop.
+ */
+export function answerReviewAutoWaitV2(group: AnswerReviewGroupV2): AnswerReviewAutoWaitV2 {
+  return group.session.canAct === true
+    ? { actionsReason: "Stop the review first.", notice: "Review in progress — Stop to send now", stopUnavailableReason: null }
+    : {
+        actionsReason: "Wait for the other member's review to finish.",
+        notice: "Another member's review is in progress",
+        stopUnavailableReason: "Only the member who started this review can stop it."
+      };
+}
+
 /** A catalog model as the review picker needs it. */
 export type AnswerReviewCatalogModelV2 = Readonly<{
   capabilities: Readonly<{ toolCalling?: boolean }>;

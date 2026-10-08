@@ -1,15 +1,19 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useThreadStore } from "@/components/app-shell/threadStore";
 import type { AnswerReviewAutoConfig, AnswerReviewSessionWire, AnswerReviewStepWire } from "@/lib/contracts/answerReviews";
 import type { ThreadMessage } from "@/lib/contracts/chats";
+import { resetRunLifecycleStoreForTest, resetThreadStoreForTest } from "@/tests/support/appShellStores";
 import { AnswerReviewSettingsDialogV2 } from "./AnswerReviewSettingsDialogV2";
 import { AnswerReviewStatusV2 } from "./AnswerReviewV2";
+import { ANSWER_REVIEW_FOLLOW_MS, useAnswerReviewFollowV2 } from "./useAnswerReviewAutoV2";
 import {
   answerReviewAutoChipV2,
   answerReviewAutoCostHintV2,
   answerReviewAutoRunningV2,
   answerReviewAutoStateV2,
   answerReviewAutoSummaryV2,
+  answerReviewAutoWaitV2,
   answerReviewGroupProgressV2,
   answerReviewStatusTextV2,
   groupAnswerReviewsV2,
@@ -162,6 +166,68 @@ describe("automatic review status line", () => {
     const between = group(autoThread("between", sessionWire({ canAct: undefined })));
     render(<AnswerReviewStatusV2 actionsEnabled group={between} onStopSession={vi.fn()} progress={answerReviewGroupProgressV2(between)} />);
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  });
+
+  it("keeps the chat waiting for every viewer, and offers Stop only to the review's initiator", () => {
+    expect(answerReviewAutoWaitV2(group(autoThread("between")))).toEqual({ actionsReason: "Stop the review first.",
+      notice: "Review in progress — Stop to send now", stopUnavailableReason: null });
+    expect(answerReviewAutoWaitV2(group(autoThread("between", sessionWire({ canAct: undefined }))))).toEqual({
+      actionsReason: "Wait for the other member's review to finish.", notice: "Another member's review is in progress",
+      stopUnavailableReason: "Only the member who started this review can stop it." });
+  });
+});
+
+/** The open chat's follow, as the shell mounts it. */
+function Follow({ notify, refresh }: Readonly<{ notify(): Promise<void>; refresh(...args: unknown[]): Promise<unknown> }>) {
+  useAnswerReviewFollowV2({ chatId: "chat-1", notifyAnswerReady: notify, refreshActiveChat: refresh });
+  return null;
+}
+
+function show(messages: readonly ThreadMessage[]) {
+  act(() => useThreadStore.getState().replaceThread("chat-1", { activeLeafId: messages.at(-1)!.id, messages: [...messages],
+    usageStats: null }));
+}
+
+describe("following a running automatic review", () => {
+  beforeEach(() => {
+    resetThreadStoreForTest();
+    resetRunLifecycleStoreForTest();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ["its initiator hears its end once", sessionWire(), 1],
+    ["another member of a Project chat sees it end without a sound", sessionWire({ canAct: undefined }), 0]
+  ] as const)("reads the chat again while it runs, and %s", async (_case, session, rings) => {
+    const notify = vi.fn(async () => undefined);
+    const refresh = vi.fn(async () => null);
+    show(autoThread("between", session));
+    render(<Follow notify={notify} refresh={refresh} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ANSWER_REVIEW_FOLLOW_MS);
+    });
+    expect(refresh).toHaveBeenCalledWith("chat-1", { forceDetail: true, preserveControls: true, resumeRuns: true });
+    const ended = sessionWire({ ...session, state: "finished", stopReason: "clean" });
+    show(autoThread("between", ended));
+    show(autoThread("between", ended));
+    expect(notify).toHaveBeenCalledTimes(rings);
+    // An ended review is not read again.
+    refresh.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ANSWER_REVIEW_FOLLOW_MS * 2);
+    });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("rings nothing when its initiator stopped it", async () => {
+    const notify = vi.fn(async () => undefined);
+    show(autoThread("between"));
+    render(<Follow notify={notify} refresh={vi.fn(async () => null)} />);
+    show(autoThread("between", sessionWire({ state: "stopped", stopReason: "user_stopped" })));
+    expect(notify).not.toHaveBeenCalled();
   });
 });
 

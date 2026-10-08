@@ -144,6 +144,7 @@ import {
   answerReviewAutoChipV2,
   answerReviewAutoRunningV2,
   answerReviewAutoSummaryV2,
+  answerReviewAutoWaitV2,
   answerReviewAvailabilityV2,
   answerReviewGroupDisplayProgressV2,
   answerReviewGroupProgressV2,
@@ -1111,12 +1112,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     composerLayerHost,
     thread.activeChatStreaming
   ]);
-  // The chat's latest answer review while the server still drives it: the composer waits for it and Stop ends it.
+  // The chat's latest answer review while the server still drives it: the composer waits for it, and its
+  // initiator's Stop ends it; another member of a Project chat waits without a Stop.
   const autoReviewGroup = (() => {
     const last = groupAnswerReviewsV2(thread.visibleMessages).at(-1);
     return last?.kind === "review" && answerReviewAutoRunningV2(last.group, answerReviewGroupProgressV2(last.group))
       ? last.group : null;
   })();
+  const autoReviewWait = autoReviewGroup ? answerReviewAutoWaitV2(autoReviewGroup) : null;
   const stopAnswerReview = (sessionId: string) => {
     if (!thread.stopAnswerReview || answerReviewStoppingId) return;
     setAnswerReviewStoppingId(sessionId);
@@ -1236,7 +1239,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onFollowup={canSubmitFollowup && !autoReviewGroup
           ? runId => void composer.submitFollowup?.(runId) : undefined}
       followupSending={Boolean(followupSubmission?.inFlight)}
-      onStop={() => autoReviewGroup ? stopAnswerReview(autoReviewGroup.session.id) : void composer.stopCurrentRun(thread.currentRunId)}
+      onStop={() => {
+        if (!autoReviewGroup) void composer.stopCurrentRun(thread.currentRunId);
+        else if (!autoReviewWait?.stopUnavailableReason) stopAnswerReview(autoReviewGroup.session.id);
+      }}
+      stopUnavailableReason={autoReviewWait?.stopUnavailableReason ?? null}
       stopping={composer.stopping || Boolean(autoReviewGroup && answerReviewStoppingId === autoReviewGroup.session.id)}
       onUploadFiles={(files) => composer.uploadFiles(files)}
       onReuseFile={composer.reuseFile}
@@ -1277,9 +1284,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const composerOperationError = (
     <>
       <BackgroundRunStatusV2 onCheck={thread.checkBackgroundRun} waiting={Boolean(thread.backgroundRunWaiting)} />
-      {autoReviewGroup ? (
+      {autoReviewWait ? (
         <div className="v2-live-composer-error v2-live-background-run" data-testid="answer-review-composer-status" role="status">
-          <span>Review in progress — Stop to send now</span>
+          <span>{autoReviewWait.notice}</span>
         </div>
       ) : null}
       <ComposerOperationErrorV2
@@ -1443,9 +1450,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const question = message.parentMessageId ? messageById.get(message.parentMessageId) : null;
     const regenerateUnavailable = message.role === "assistant" &&
       (question === null || (question !== undefined && question.role !== "user"));
-    // A step of the chat's automatic review is the run in progress: Stop ends the review and frees the chat.
+    // A step of the chat's automatic review is the run in progress: its initiator's Stop ends the review and frees the chat.
     const disabledReason = thread.activeChatStreaming
-      ? autoReviewGroup ? "Stop the review first." : "Wait for the current answer to finish."
+      ? autoReviewWait?.actionsReason ?? "Wait for the current answer to finish."
       : projectMutationReason ?? editMutationReason ??
         (regenerateUnavailable ? "There is no question before this answer to answer again." : null);
     return {
