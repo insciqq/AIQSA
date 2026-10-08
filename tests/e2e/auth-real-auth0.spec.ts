@@ -141,6 +141,14 @@ async function bindGroupsAction(clientIds: readonly string[]): Promise<void> {
   await auth0("PATCH", "/actions/triggers/post-login/bindings", {
     bindings: [...created.bindings, { display_name: `aiqsa-e2e-groups-${run}`, ref: { type: "action_id", value: action.id } }]
   });
+  // Deployment and binding apply asynchronously: a login right after them runs without the Action.
+  await expect.poll(async () => {
+    const state = await auth0<{ all_changes_deployed?: boolean; deployed_version?: { status?: string } }>("GET", `/actions/actions/${action.id}`);
+    return state.all_changes_deployed === true && state.deployed_version?.status === "built";
+  }, { timeout: 120_000 }).toBe(true);
+  await expect.poll(async () => (await auth0<{ bindings: Array<{ action?: { id?: string } }> }>("GET", "/actions/triggers/post-login/bindings"))
+    .bindings.some((binding) => binding.action?.id === action.id), { timeout: 60_000 }).toBe(true);
+  await new Promise((resolve) => setTimeout(resolve, 20_000));
 }
 
 /**
