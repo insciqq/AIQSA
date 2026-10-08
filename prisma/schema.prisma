@@ -72,6 +72,32 @@ enum MessageStatus {
 /// speech: Memory, chat titles and message search skip it.
 enum MessageSystemTurnKind {
   mcp_approval_continuation
+  answer_review_request
+  answer_revision_request
+}
+
+/// How an answer review session advances: by the user's actions or by itself.
+enum AnswerReviewMode {
+  manual
+  auto
+}
+
+enum AnswerReviewState {
+  running
+  finished
+  stopped
+}
+
+enum AnswerReviewStopReason {
+  clean
+  max_rounds
+  disagreement
+  budget
+  approval_required
+  user_stopped
+  superseded
+  review_unreadable
+  error
 }
 
 enum ModelRunStatus {
@@ -877,6 +903,7 @@ model User {
   instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
   scheduledTasks ScheduledTask[]
+  answerReviewSessions AnswerReviewSession[] @relation("AnswerReviewInitiator")
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -3298,6 +3325,7 @@ model Chat {
   /// The migration uses column-scoped SET NULL so task deletion never clears userId.
   scheduledTask                   ScheduledTask?            @relation("ScheduledTaskCreatedChats", fields: [userId, scheduledTaskId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   scheduledTaskCarryovers         ScheduledTaskCarryover[]
+  answerReviewSessions            AnswerReviewSession[]
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
@@ -3500,6 +3528,13 @@ model Message {
   scheduledTaskPrompt    Boolean           @default(false)
   /// A user message the server wrote (`MessageSystemTurnKind`); a CHECK keeps it on user messages.
   systemTurnKind         MessageSystemTurnKind?
+  /// A step of an answer review session: its server-written turn and that
+  /// turn's answer. Deleting the session clears only this column.
+  answerReviewSessionId  String?
+  /// The step's round and ordinal in it (reviewers first, then the revision),
+  /// set on its turn only: one turn per step, a unique claim.
+  answerReviewRound      Int?
+  answerReviewStep       Int?
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
   assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")
@@ -3513,12 +3548,49 @@ model Message {
   userModelRuns          ModelRun[]        @relation("UserMessageRun")
   scheduledTaskOccurrences ScheduledTaskOccurrence[]
   scheduledTaskCarryovers  ScheduledTaskCarryover[]
+  /// The migration uses column-scoped SET NULL so deleting a session never clears chatId.
+  answerReviewSession      AnswerReviewSession? @relation("AnswerReviewSessionMessages", fields: [chatId, answerReviewSessionId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Message_chatId_answerReviewSessionId_fkey")
+  answerReviewSources      AnswerReviewSession[] @relation("AnswerReviewSource")
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
+  @@unique([answerReviewSessionId, answerReviewRound, answerReviewStep])
   @@index([chatId, parentMessageId])
   @@index([chatId, createdAt])
   @@index([authorUserId])
   @@index([branchSourceModelRunId])
+}
+
+/// Cross-model answer review of one answer: reviewer models critique it and
+/// its author model revises it, each step an ordinary run of a turn the
+/// server writes (`Message.answerReviewSessionId`). Model references are
+/// frozen `{ provider, modelId, name }` catalog identities with their display
+/// snapshot; `reviewers` holds the current round's one or two, in order.
+model AnswerReviewSession {
+  id                       String                  @id @default(uuid())
+  chatId                   String
+  /// The initiator, who alone starts steps; null once the account is deleted.
+  userId                   String?
+  sourceAssistantMessageId String
+  mode                     AnswerReviewMode
+  authorModel              Json
+  reviewers                Json
+  /// Null for a manual session: the user adds rounds.
+  maxRounds                Int?
+  round                    Int                     @default(1)
+  state                    AnswerReviewState       @default(running)
+  stopReason               AnswerReviewStopReason?
+  createdAt                DateTime                @default(now())
+  updatedAt                DateTime                @updatedAt
+  chat                     Chat                    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  /// A deleted initiator leaves the session and its steps, read-only, in their chat.
+  user                     User?                   @relation("AnswerReviewInitiator", fields: [userId], references: [id], onDelete: SetNull)
+  sourceAssistantMessage   Message                 @relation("AnswerReviewSource", fields: [chatId, sourceAssistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "AnswerReviewSession_source_fkey")
+  messages                 Message[]               @relation("AnswerReviewSessionMessages")
+
+  @@unique([chatId, id])
+  @@unique([chatId, sourceAssistantMessageId])
+  @@index([chatId, state])
+  @@index([userId])
 }
 
 /// Content-free claim/result identity. Provider work is never replayed automatically.

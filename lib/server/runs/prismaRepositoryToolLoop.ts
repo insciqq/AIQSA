@@ -62,6 +62,7 @@ import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer"
 import { repeatBlockedRounds, repeatBlockedToolCallResult, validRepeatRounds } from "./toolCallRepeatGuard";
 import { mcpApprovalGated, mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
 import { isMcpApprovalAdmission, isMcpApprovalRequest, type McpApprovalRequest } from "../mcp/writeApproval";
+import { isAnswerReviewStepMarker } from "../tools/answerReview";
 import { consumeMcpApproval, countAvailableMcpApprovals, requestMcpApproval } from "../mcp/writeApprovalRepository";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
@@ -639,6 +640,7 @@ export type PrismaRunToolLoopOperations = Pick<
 const normalizedRequestKeys = new Set([
   "followupContextReserveTokens",
   "agent",
+  "answerReviewStep",
   "artifactTool",
   "artifactToolDescription",
   "artifactResourcePolicy",
@@ -1092,6 +1094,8 @@ function decodeProviderDispatchRecoveryRequest(
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     (value.monitoringVerdictTool !== undefined && value.monitoringVerdictTool !== true) ||
+    (value.answerReviewStep !== undefined && (!isAnswerReviewStepMarker(value.answerReviewStep) ||
+      value.monitoringVerdictTool !== undefined)) ||
     (value.scheduledTaskTool !== undefined && !isScheduledTaskToolSettings(value.scheduledTaskTool)) ||
     (value.scheduledTaskManagementTool !== undefined && (value.scheduledTaskTool === undefined ||
       !isScheduledTaskManagementSettings(value.scheduledTaskManagementTool))) ||

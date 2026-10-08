@@ -107,6 +107,59 @@ function scriptedMcpResult(request: ProviderRunRequest, question: string): Provi
   return { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) };
 }
 
+/**
+ * Test-only answer review scenario, named in the chat's question:
+ * `[AIQSA_REVIEW_E2E:clean]` makes a reviewer report no issues,
+ * `[AIQSA_REVIEW_E2E:findings]` one high-severity finding,
+ * `[AIQSA_REVIEW_E2E:skip]` a reviewer that never reports, and
+ * `[AIQSA_REVIEW_E2E:mcp:<tool>:<id>]` a reviewer that first calls the run's
+ * MCP tool `<tool>` with `{ "id": "<id>" }`. An author asked to revise records
+ * a decision on every finding key of its turn (`reject` in the directive
+ * rejects them) and writes a revised answer. Without a directive a reviewer
+ * reports no issues.
+ */
+const REVIEW_TEST_DIRECTIVE = /\[AIQSA_REVIEW_E2E:(clean|findings|skip|reject|mcp:([a-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64}))\]/u;
+const REVIEW_FINDING_KEY = /\[(R\d{1,4}\.[12]\.[A-Za-z0-9_-]{1,24})\]/gu;
+
+function scriptedAnswerReviewResult(request: ProviderRunRequest, question: string): ProviderRunResult | null {
+  const reviewer = request.tools?.some((tool) => tool.name === "submit_answer_review") === true;
+  const author = request.tools?.some((tool) => tool.name === "record_review_decisions") === true;
+  if (!reviewer && !author) return null;
+  const match = textConversationForRequest(request).filter((message) => message.role === "user")
+    .map((message) => REVIEW_TEST_DIRECTIVE.exec(message.content)).find((found) => found !== null) ?? null;
+  const scenario = match?.[1] ?? "clean";
+  const results = fakeToolResults(request);
+  const call = (toolCall: ModelToolCall): ProviderRunResult => ({ finalProviderResponsePreview: { finishReason: "tool_calls",
+    provider: "fake" }, finalText: "", toolCalls: [toolCall], usage: fakeUsage(question, "") });
+  const answer = (finalText: string): ProviderRunResult => ({ finalProviderResponsePreview: { finishReason: "stop",
+    provider: "fake" }, finalText, usage: fakeUsage(question, finalText) });
+  if (reviewer) {
+    const mcpTool = match?.[2] ? request.tools?.find((tool) => tool.capability === "mcp" && tool.name.includes(`_${match[2]}_`)) : undefined;
+    const offset = mcpTool ? 1 : 0;
+    if (mcpTool && results.length === 0) {
+      return call({ arguments: { id: match![3]! }, id: `fake-review-mcp-${match![3]}`, name: mcpTool.name });
+    }
+    if (scenario === "skip") return answer("The answer looks fine to me.");
+    if (results.length === offset) {
+      const findings = scenario === "findings" || scenario === "reject" ? [{
+        claim: "The answer states the result without checking it.", evidence: null, id: "F1",
+        problem: "The key figure is not verified against a source.", repeatsFindingId: null, severity: "high",
+        suggestion: "Verify the figure and state where it comes from."
+      }] : [];
+      return call({ arguments: { findings, verdict: findings.length ? "changes_needed" : "clean" }, id: "fake-submit-review",
+        name: "submit_answer_review" });
+    }
+    return answer(scenario === "findings" || scenario === "reject" ? "Review submitted: one finding." : "Review submitted: no substantive issues.");
+  }
+  if (results.length === 0) {
+    const keys = [...question.matchAll(REVIEW_FINDING_KEY)].map((found) => found[1]!);
+    return call({ arguments: { decisions: [...new Set(keys)].map((findingId) => ({ decision: scenario === "reject" ? "rejected" : "accepted",
+      findingId, reason: scenario === "reject" ? "The figure is already verified." : "The figure needed a source." })) },
+      id: "fake-record-decisions", name: "record_review_decisions" });
+  }
+  return answer("Revised answer: the figure is verified and its source is named.");
+}
+
 function workspaceTool(request: ProviderRunRequest, originalName: string): RunTool | null {
   return request.tools?.find((tool) =>
     tool.capability === "workspace" && tool.name.includes(`_${originalName.slice(0, 24)}_`)) ?? null;
@@ -588,8 +641,8 @@ export function createFakeProviderAdapter(): ProviderAdapter {
     },
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const question = textFromContentBlocks(request.content) || "empty question";
-      const scripted = scriptedWorkspaceResult(request, question) ?? scriptedFetchUrlResult(request, question) ??
-        scriptedMcpResult(request, question);
+      const scripted = scriptedAnswerReviewResult(request, question) ?? scriptedWorkspaceResult(request, question) ??
+        scriptedFetchUrlResult(request, question) ?? scriptedMcpResult(request, question);
       if (scripted) {
         throwIfAborted(options.signal);
         if ((scripted.toolCalls?.length ?? 0) === 0) {

@@ -6620,3 +6620,70 @@ describe("image model admission by chat scope", () => {
     expect(analyzed.providerRequest.tools?.find((tool) => tool.name === "generate_image")?.description).toContain("editing unavailable");
   });
 });
+
+describe("answer review step admission", () => {
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+  const review = { kind: "review", reviewer: 0, round: 1, sessionId: "session-1", step: 0 } as const;
+  const revision = { findingKeys: ["R1.1.F1"], kind: "revision", round: 1, sessionId: "session-1", step: 1 } as const;
+  function stepDeps(input: Readonly<{ toolCalling?: boolean }> = {}) {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true } });
+    const loadContext = vi.fn(harness.deps.repository.loadConversationContextForExpectedLeaf);
+    const deps: RunPreparationDeps = { ...harness.deps, images: imageModels(),
+      repository: { ...harness.deps.repository, createScheduledTaskForCall: vi.fn(), loadConversationContextForExpectedLeaf: loadContext } };
+    return { deps, loadContext };
+  }
+  function stepInput(
+    body: Readonly<Record<string, unknown>> = toolBody,
+    step: NonNullable<SendRunPreparationSource["answerReviewStep"]> = review,
+    chat: Partial<SendRunPreparationSource["chat"]> = {}
+  ): RunPreparationInput {
+    const input = sendInput(body, chat);
+    if (input.source.kind !== "send") throw new Error("invalid send fixture");
+    return { ...input, source: { ...input.source, answerReviewStep: step } };
+  }
+  const toolNames = (prepared: PreparedRun) => prepared.providerRequest.tools?.map((tool) => tool.name) ?? [];
+
+  it("offers a review step its one report tool with frozen facts and none of the owner's write exceptions", async () => {
+    const { deps, loadContext } = stepDeps();
+    const prepared = preparedFrom(await prepareRun(deps, stepInput()));
+    expect(prepared.normalizedRequest.answerReviewStep).toEqual({ ...review, modelName: "openai-tool-model", version: 1 });
+    expect(toolNames(prepared)).toContain("submit_answer_review");
+    for (const absent of ["record_review_decisions", "create_scheduled_task", "generate_image", "create_artifact"]) {
+      expect(toolNames(prepared), absent).not.toContain(absent);
+    }
+    expect(prepared.normalizedRequest.scheduledTaskTool).toBeUndefined();
+    // The step's model is the session's, never a composer choice to remember.
+    expect(prepared.defaults).toBeNull();
+    // Its own session's chain stays whole in the context it reads.
+    expect(loadContext).toHaveBeenCalledWith("chat-1", "user-1", "prior-user-message", { answerReviewSessionId: "session-1" });
+  });
+
+  it("offers a revision step the decisions tool only", async () => {
+    const prepared = preparedFrom(await prepareRun(stepDeps().deps, stepInput(toolBody, revision)));
+    expect(prepared.normalizedRequest.answerReviewStep).toMatchObject({ findingKeys: ["R1.1.F1"], kind: "revision" });
+    expect(toolNames(prepared)).toContain("record_review_decisions");
+    expect(toolNames(prepared)).not.toContain("submit_answer_review");
+  });
+
+  it("refuses a step whose model cannot call tools, an Agent, Assistant or Knowledge run before anything is accepted", async () => {
+    const { deps } = stepDeps();
+    const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
+      ["answer_review_model_unsupported", stepDeps({ toolCalling: false }).deps, stepInput()],
+      ["answer_review_model_unsupported", deps, stepInput({ ...toolBody, tools: "none" })],
+      ["answer_review_agent_unsupported", deps, stepInput({ ...toolBody, agentEnabled: true, workspace: { enabled: true } })],
+      ["answer_review_assistant_unsupported", deps, stepInput(toolBody, review, { assistantId: "assistant-1" })],
+      ["answer_review_knowledge_unsupported", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
+        stepInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })]
+    ];
+    for (const [code, caseDeps, input] of cases) {
+      await expect(prepareRun(caseDeps, input), code).resolves.toMatchObject({ code, ok: false, status: 409 });
+    }
+  });
+
+  it("keeps an ordinary send without the step's tools or marker", async () => {
+    const prepared = preparedFrom(await prepareRun(stepDeps().deps, sendInput(toolBody)));
+    expect(prepared.normalizedRequest.answerReviewStep).toBeUndefined();
+    expect(toolNames(prepared)).not.toContain("submit_answer_review");
+    expect(toolNames(prepared)).not.toContain("record_review_decisions");
+  });
+});

@@ -50,6 +50,7 @@ import {
   materializePreparedRunData,
   preparePdfRetry,
   prepareRun,
+  type AnswerReviewStepPreparation,
   type RunPreparationDeps,
   type MaterializedPreparedRunData,
   type RunPreparationFailure
@@ -62,6 +63,7 @@ import {
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
+  AnswerReviewStepConflictError,
   AssistantRunConflictError,
   AttachmentLinkConflictError,
   KnowledgeRunPlanConflictError,
@@ -92,7 +94,19 @@ export type {
   StaleRunControlRecord
 } from "./runRepositoryContract";
 
+/**
+ * Server-only: the answer review step a send of this handler admits. The
+ * send body is the server's own (its turn's text, the step's model, the
+ * chat's controls); the turn carries `turnKind` and claims the step.
+ */
+export type AnswerReviewStepSendAdmission = Readonly<{
+  preparation: AnswerReviewStepPreparation;
+  turnKind: import("../../contracts/answerReviews").AnswerReviewTurnKind;
+}>;
+
 export type RunHandlerDeps = {
+  /** Server-only: the answer review step a send of this handler admits. */
+  answerReviewStep?: AnswerReviewStepSendAdmission;
   memorySearchAdmission?: RunPreparationDeps["memorySearchAdmission"];
   memorySearch?: import("../memory/search/runtime").MemorySearchService;
   workspaceFollowup?: Readonly<{
@@ -435,6 +449,11 @@ function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConfl
     (error instanceof Error && error.name === "WorkspaceRunConflictError");
 }
 
+function isAnswerReviewStepConflictError(error: unknown): error is AnswerReviewStepConflictError {
+  return error instanceof AnswerReviewStepConflictError ||
+    (error instanceof Error && error.name === "AnswerReviewStepConflictError" && "code" in error);
+}
+
 function isScheduledOccurrenceConflictError(error: unknown): error is ScheduledOccurrenceConflictError {
   return error instanceof ScheduledOccurrenceConflictError ||
     (error instanceof Error && error.name === "ScheduledOccurrenceConflictError");
@@ -684,6 +703,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "project_draft_conflict" }, { status: 409 });
       }
     }
+    // A review step's body is the server's own; it never also names an approval.
+    if (deps.answerReviewStep && body && Object.hasOwn(body, "systemTurn")) {
+      return Response.json({ error: "system_turn_invalid" }, { status: 400 });
+    }
     const continuationBody = await approvalContinuationBody(deps, body, chat.id, auth.userId);
     if (continuationBody === "invalid") return Response.json({ error: "system_turn_invalid" }, { status: 400 });
     if (continuationBody === "unavailable") {
@@ -708,8 +731,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     if (!expectedActiveLeaf.ok) {
       return Response.json({ error: "expected_active_leaf_invalid" }, { status: 400 });
     }
+    // Budgets bind every run; message windows count only the user's own messages.
     const usageRefusal = await usageLimitRefusal(deps, {
-      interactive: !deps.scheduledOccurrence, stage: "send", userId: auth.userId
+      interactive: !deps.scheduledOccurrence && !deps.answerReviewStep, stage: "send", userId: auth.userId
     });
     if (usageRefusal) return usageRefusal;
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, project: chat.project ?? null, memoryMode: chat.memoryMode ?? null });
@@ -742,7 +766,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...(projectChat ? { draftProjectChat: true } : {}),
         ...(personalChat ? { draftPersonalChat: true } : {}),
         kind: "send",
-        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {})
+        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {}),
+        ...(deps.answerReviewStep ? { answerReviewStep: deps.answerReviewStep.preparation } : {})
       },
       userId: auth.userId
     });
@@ -803,6 +828,14 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         } : {}),
         signal: request.signal,
         ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
+        ...(deps.answerReviewStep ? {
+          answerReviewStep: {
+            round: deps.answerReviewStep.preparation.round,
+            sessionId: deps.answerReviewStep.preparation.sessionId,
+            step: deps.answerReviewStep.preparation.step
+          },
+          systemTurnKind: deps.answerReviewStep.turnKind
+        } : {}),
         userId: auth.userId
       });
     } catch (error) {
@@ -812,6 +845,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       if (isScheduledOccurrenceConflictError(error)) {
         return Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
       }
+      if (isAnswerReviewStepConflictError(error)) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof WorkspaceFollowupError) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });

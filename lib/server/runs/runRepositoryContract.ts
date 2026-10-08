@@ -218,6 +218,7 @@ export type RunChatUpdateRecord = {
     role: string;
     status: string;
     systemTurnKind?: ChatMessageWire["systemTurnKind"];
+    answerReview?: ChatMessageWire["answerReview"];
     toolActivity?: ThreadToolActivity | null;
     workspaceActivity?: ThreadWorkspaceActivity | null;
   }[];
@@ -461,6 +462,27 @@ export class ScheduledOccurrenceConflictError extends Error {
   }
 }
 
+/** An answer review step's admission found its session no longer running, or its step already claimed. */
+export class AnswerReviewStepConflictError extends Error {
+  readonly code: "answer_review_ended" | "answer_review_step_unavailable";
+
+  constructor(code: "answer_review_ended" | "answer_review_step_unavailable") {
+    super(code);
+    this.code = code;
+    this.name = "AnswerReviewStepConflictError";
+  }
+}
+
+/**
+ * A send that is a step of an answer review session (server-only, never a
+ * request field): its turn claims the step once, both of its messages carry
+ * the session, and the session must still be running.
+ */
+export type AnswerReviewStepAdmission = Readonly<{ round: number; sessionId: string; step: number }>;
+
+/** Which answer review session a run belongs to: its own chain stays whole in its context. */
+export type ConversationContextOptions = Readonly<{ answerReviewSessionId?: string | null }>;
+
 /** Exact accepted Assistant provenance persisted with the run. */
 export type AcceptedAssistantRun = {
   assistantId: string;
@@ -601,6 +623,12 @@ export type CreateRunInput = {
   signal?: AbortSignal;
   /** The user message is a turn the server wrote for the user (`Message.systemTurnKind`). */
   systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
+  /**
+   * An answer review step: the turn claims its step in the admitting
+   * transaction, writes no message-window row, keeps the owner's saved
+   * composer controls and queues no Memory command. Set with `systemTurnKind`.
+   */
+  answerReviewStep?: AnswerReviewStepAdmission;
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   workspaceEnabled?: boolean;
@@ -933,15 +961,22 @@ export type RunRepository = {
     };
   } | null>;
   loadConversationContext(chatId: string, userId: string): Promise<ProviderConversationMessage[]>;
+  /**
+   * The branch path to the leaf as the model reads it: every answer review
+   * session on it but `options.answerReviewSessionId` reads as its source
+   * question followed by the group's latest version.
+   */
   loadConversationContextForExpectedLeaf(
     chatId: string,
     userId: string,
-    expectedActiveLeafMessageId: string | null
+    expectedActiveLeafMessageId: string | null,
+    options?: ConversationContextOptions
   ): Promise<ProviderConversationMessage[] | null>;
   loadConversationContextForLeaf(
     chatId: string,
     userId: string,
-    leafMessageId: string
+    leafMessageId: string,
+    options?: ConversationContextOptions
   ): Promise<ProviderConversationMessage[]>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
   /** Internal recovery lookup. It deliberately does not depend on the
@@ -1094,6 +1129,13 @@ export type RunRepository = {
    * (`Message.scheduledTaskPrompt`): their text authorizes no `fetch_url` link.
    */
   loadScheduledPromptMessageIds?(input: Readonly<{
+    chatId: string; messageIds: readonly string[]; userId: string;
+  }>): Promise<ReadonlySet<string>>;
+  /**
+   * Which of these messages of the chat are turns the server wrote for the
+   * user (`Message.systemTurnKind`): their text authorizes no `fetch_url` link.
+   */
+  loadSystemTurnMessageIds?(input: Readonly<{
     chatId: string; messageIds: readonly string[]; userId: string;
   }>): Promise<ReadonlySet<string>>;
   /** The servers among `serverIds` the user always allows (MCP write approval), read at admission. */
