@@ -45,6 +45,7 @@ describe("admin health projection", () => {
     expect(adminHealthEventCategory("run_recovery")).toBe("background");
     expect(adminHealthEventCategory("job_attempt")).toBe("background");
     expect(adminHealthEventCategory("tool_execution")).toBe("tools");
+    expect(adminHealthEventCategory("tool_call")).toBe("tools");
     expect(adminHealthEventCategory("process.failure")).toBe("other");
   });
 

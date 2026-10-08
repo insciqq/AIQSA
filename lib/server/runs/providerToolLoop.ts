@@ -3,6 +3,7 @@ import { localSettlementError } from "./settlementFailure";
 import { observeContextEstimate } from "./contextEstimateObservability";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
+import type { ToolCallKind } from "../observability";
 import { providerContextRejection } from "../providers/providerObservability";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type {
@@ -164,6 +165,7 @@ export type ProviderToolLoopInput = Readonly<{
   allowContextRebuild?: boolean;
   deferToolUntilBatchEnd?(call: ToolLoopCall): boolean;
   toolObservation?(call: ToolLoopCall): ToolLoopObservation | undefined;
+  toolCallKind?(call: ToolLoopCall): ToolCallKind;
   adapter: ProviderAdapter;
   bridge: ProviderToolBridge;
   budgets: ToolLoopBudgets;
@@ -417,6 +419,7 @@ export async function runProviderToolLoop(
   return continueToolLoop({
     deferToolUntilBatchEnd: input.deferToolUntilBatchEnd,
     toolObservation: input.toolObservation,
+    toolCallKind: input.toolCallKind,
     afterToolBatch: input.afterToolBatch,
     budgets: input.budgets,
     ...(reserved ? {

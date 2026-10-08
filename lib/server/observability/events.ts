@@ -24,6 +24,10 @@ export type SubsystemFailure = CaughtError & Readonly<{
   scope_id?: string;
 }>;
 export type ToolKind = "search" | "knowledge" | "mcp" | "workspace" | "vision";
+/** The family of one model tool call (`tool_call` only); the families with
+ * their own executor records keep the narrower `ToolKind`. */
+export type ToolCallKind = ToolKind | "fetch_url" | "artifact" | "image_generation" | "skill" | "scheduled_task" |
+  "session_status" | "workspace_image" | "answer_review" | "memory" | "monitoring" | "tool_history" | "other";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "knowledge_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
   engine_index?: number; operation_index?: number;
@@ -84,6 +88,11 @@ export type EventFields = {
     outcome: "started" | "completed" | "failed" | "cancelled" | "degraded";
     duration_ms?: number; attempt?: number; code?: string; reason?: Reason; httpStatus?: number;
     action?: LifecycleAction; count?: number;
+  }>;
+  /** One terminal record per settled model tool call; never its name, arguments or result. */
+  tool_call: CaughtError & Readonly<{
+    tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled";
+    code?: string; duration_ms?: number; error_category?: "unexpected";
   }>;
   /** Local tool search statistics; never the query or tool names. */
   mcp_discovery: Readonly<{
