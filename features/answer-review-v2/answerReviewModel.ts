@@ -1,14 +1,21 @@
 import {
   ANSWER_REVIEW_MAX_REVIEWERS,
   ANSWER_REVIEW_NOT_INITIATOR_COPY,
+  answerReviewExtraAnswers,
   answerReviewStopCopy,
+  type AnswerReviewAutoConfig,
   type AnswerReviewCard,
   type AnswerReviewDecisionsCard,
   type AnswerReviewSessionWire,
   type AnswerReviewStepWire
 } from "@/lib/contracts/answerReviews";
 import type { ThreadArtifactSummary, ThreadMessage } from "@/lib/contracts/chats";
-import { answerReviewProgress, type AnswerReviewProgress, type AnswerReviewStepFacts } from "@/lib/domain/answerReviewProgress";
+import {
+  answerReviewProgress,
+  type AnswerReviewProgress,
+  type AnswerReviewSourceFacts,
+  type AnswerReviewStepFacts
+} from "@/lib/domain/answerReviewProgress";
 
 /** One step of a group: its server-written turn (never shown as speech) and that turn's answer. */
 export type AnswerReviewGroupStepV2 = Readonly<{
@@ -117,10 +124,23 @@ export function answerReviewStepFactsV2(
     ...(artifact?.mcpApprovals?.some((card) => card.state === "pending") ? { approvalPending: true as const } : {}),
     ...(entry.step.kind === "revision" && answerReviewDecisionsOf(artifact) ? { decisions: true as const } : {}),
     kind: entry.step.kind,
-    ...(review ? { review: { findings: review.findings.length, verdict: review.verdict } } : {}),
+    ...(review ? { review: {
+      findings: review.findings.length,
+      repeats: review.findings.filter((finding) => finding.repeatsFindingId !== undefined).length,
+      verdict: review.verdict
+    } } : {}),
     round: entry.step.round,
     status: stepStatus(entry.answer),
     step: entry.step.step
+  };
+}
+
+/** An automatic session's answer as the transcript has it: the same facts the server reads. */
+function answerReviewSourceFactsV2(source: ThreadMessage, artifact: ThreadArtifactSummary | null): AnswerReviewSourceFacts {
+  return {
+    ...(artifact?.mcpApprovals?.some((card) => card.state === "pending") ? { approvalPending: true as const } : {}),
+    ...((artifact?.generatedImages?.length ?? 0) > 0 ? { imageOutput: true as const } : {}),
+    status: stepStatus(source)
   };
 }
 
@@ -129,14 +149,17 @@ export function answerReviewGroupProgressV2(
   group: AnswerReviewGroupV2,
   live?: Readonly<{ artifact: ThreadArtifactSummary | null; messageId: string }>
 ): AnswerReviewProgress {
+  const artifactOf = (message: ThreadMessage | null) => live && message?.id === live.messageId
+    ? live.artifact : message?.artifactSummary ?? null;
   return answerReviewProgress({
     maxRounds: group.session.maxRounds,
     mode: group.session.mode,
     reviewerCount: group.session.reviewers.length,
     round: group.session.round,
+    ...(group.session.mode === "auto" && group.source
+      ? { source: answerReviewSourceFactsV2(group.source, artifactOf(group.source)) } : {}),
     state: group.session.state,
-    steps: group.steps.map((entry) => answerReviewStepFactsV2(entry,
-      live && entry.answer?.id === live.messageId ? live.artifact : entry.answer?.artifactSummary ?? null)),
+    steps: group.steps.map((entry) => answerReviewStepFactsV2(entry, artifactOf(entry.answer))),
     stopReason: group.session.stopReason
   });
 }
@@ -172,26 +195,40 @@ export function answerReviewRoundCountV2(group: AnswerReviewGroupV2): number {
  * round; an ended session names how it ended; a waiting one says what is next.
  */
 export function answerReviewStatusTextV2(group: AnswerReviewGroupV2, progress: AnswerReviewProgress): string | null {
+  // An automatic session counts its rounds ("round 2 of 3").
+  const round = (value: number) => group.session.mode === "auto" && group.session.maxRounds !== null
+    ? `round ${value} of ${group.session.maxRounds}` : `round ${value}`;
   const running = progress.running;
   if (running) {
     const entry = group.steps.find((candidate) => candidate.step.round === running.round && candidate.step.step === running.step);
     const name = entry ? answerReviewStepModelNameV2(group.session, entry.step) : "A model";
     return running.kind === "review"
-      ? `Review · round ${running.round} · ${name} is checking…`
-      : `Review · round ${running.round} · ${name} is revising…`;
+      ? `Review · ${round(running.round)} · ${name} is checking…`
+      : `Review · ${round(running.round)} · ${name} is revising…`;
   }
   // A session the chat moved on from ended as the user chose: its history stays, no status line.
   if (progress.state !== "running") {
     return progress.stopReason && progress.stopReason !== "superseded" ? answerReviewStopCopy(progress.stopReason) : null;
   }
+  // The answer itself shows its progress; its review starts when it is ready.
+  if (progress.awaitingAnswer) return null;
+  if (group.session.mode === "auto" && progress.next) {
+    const reviewer = progress.next.kind === "review" ? group.session.reviewers[progress.next.reviewer]?.name : group.session.author.name;
+    return `Review · ${round(progress.next.round)} · ${reviewer ?? "A model"} is starting…`;
+  }
   if (progress.next?.kind === "revision") {
     const findings = progress.reviews.findings;
-    return `Review · round ${progress.next.round} · ${findings} ${findings === 1 ? "finding" : "findings"} to evaluate`;
+    return `Review · ${round(progress.next.round)} · ${findings} ${findings === 1 ? "finding" : "findings"} to evaluate`;
   }
   if (progress.next?.kind === "review") {
-    return `Review · round ${progress.next.round} · ${progress.reviews.done} of ${progress.reviews.total} reviews`;
+    return `Review · ${round(progress.next.round)} · ${progress.reviews.done} of ${progress.reviews.total} reviews`;
   }
   return null;
+}
+
+/** An automatic session the server still drives: its status line offers Stop, the composer waits for it. */
+export function answerReviewAutoRunningV2(group: AnswerReviewGroupV2, progress: AnswerReviewProgress): boolean {
+  return group.session.mode === "auto" && progress.state === "running" && !progress.awaitingAnswer;
 }
 
 /** A catalog model as the review picker needs it. */
@@ -270,3 +307,95 @@ export function answerReviewAvailabilityV2(input: AnswerReviewAvailabilityInput)
 }
 
 export const ANSWER_REVIEW_PICK_LIMIT = ANSWER_REVIEW_MAX_REVIEWERS;
+
+/** Automatic review in this chat now: the chat's choice, who may review, and why it cannot run. */
+export type AnswerReviewAutoStateV2 = Readonly<{
+  /** Why review is unavailable in this chat (Agent, an Assistant, Knowledge, the model): it cannot be set here. */
+  blockedReason: string | null;
+  /** Tool-calling models other than the answer's: who may review. */
+  candidates: readonly AnswerReviewCatalogModelV2[];
+  config: AnswerReviewAutoConfig;
+  /** The chosen reviewers the composer can still offer, in order. */
+  reviewers: readonly AnswerReviewCatalogModelV2[];
+  /** What the next send carries: the chat's review when it is on and can run; null otherwise. */
+  send: AnswerReviewAutoConfig | null;
+  /** Why the chosen review does not run now: the chat's block, or a chosen reviewer that is gone; null when it runs. */
+  unavailableReason: string | null;
+}>;
+
+export function answerReviewAutoStateV2(input: Readonly<{
+  agentEnabled: boolean;
+  assistantChat: boolean;
+  authorModel: AnswerReviewCatalogModelV2 | undefined;
+  config: AnswerReviewAutoConfig;
+  knowledgeEnabled: boolean;
+  models: readonly AnswerReviewCatalogModelV2[];
+}>): AnswerReviewAutoStateV2 {
+  const author = input.authorModel;
+  const candidates = answerReviewReviewerCandidatesV2(input.models, author ? [author] : []);
+  const reviewers = input.config.reviewers.flatMap((pick) =>
+    candidates.filter((model) => model.provider === pick.provider && model.modelId === pick.modelId));
+  const blockedReason = input.assistantChat
+    ? "Review isn't available in Assistant chats yet: the Assistant fixes the model."
+    : input.agentEnabled
+      ? "Review is off while Agent is on."
+      : input.knowledgeEnabled
+        ? "Review isn't available with Knowledge: Knowledge answers stay bound to their sources."
+        : !author
+          ? "Choose a model first."
+          : author.capabilities.toolCalling !== true
+            ? "This model can't use tools, so it can't revise after a review."
+            : candidates.length === 0
+              ? "No other model that can use tools is available to review."
+              : null;
+  // Nothing is substituted: a chosen reviewer that is gone, or is now the answer's model, stops the review here.
+  const unavailableReason = blockedReason ?? (input.config.enabled && reviewers.length < input.config.reviewers.length
+    ? "A chosen reviewer is unavailable or is this answer's model. Choose another one." : null);
+  return {
+    blockedReason,
+    candidates,
+    config: input.config,
+    reviewers,
+    send: input.config.enabled && !unavailableReason && reviewers.length > 0 ? input.config : null,
+    unavailableReason
+  };
+}
+
+/** "On · 2 reviewers · up to 3 rounds", "Off" or "Unavailable": the model picker's row. */
+export function answerReviewAutoSummaryV2(state: AnswerReviewAutoStateV2): string {
+  if (!state.config.enabled) return "Off";
+  if (!state.send) return "Unavailable";
+  const reviewers = state.reviewers.length;
+  return `On · ${reviewers} ${reviewers === 1 ? "reviewer" : "reviewers"} · up to ${state.config.maxRounds} ` +
+    `${state.config.maxRounds === 1 ? "round" : "rounds"}`;
+}
+
+/**
+ * The header model chip's review glyph: shown while the chat's review is on,
+ * with the reviewers' count, and its label for the tooltip and screen
+ * readers ("Review: GPT-5, Claude, up to 3 rounds"); an unavailable review
+ * says why. Null while review is off.
+ */
+export function answerReviewAutoChipV2(state: AnswerReviewAutoStateV2): Readonly<{
+  count: number;
+  label: string;
+  state: "on" | "unavailable";
+}> | null {
+  if (!state.config.enabled) return null;
+  if (!state.send) {
+    return { count: state.reviewers.length, label: `Review on but not running: ${state.unavailableReason ?? "no reviewer"}`,
+      state: "unavailable" };
+  }
+  const rounds = `up to ${state.config.maxRounds} ${state.config.maxRounds === 1 ? "round" : "rounds"}`;
+  return { count: state.reviewers.length, label: `Review: ${state.reviewers.map((model) => model.displayName).join(", ")}, ${rounds}`,
+    state: "on" };
+}
+
+/**
+ * The cost hint of a review choice: each round adds the reviewers' answers
+ * and a revision, so up to rounds × (reviewers + 1) extra answers.
+ */
+export function answerReviewAutoCostHintV2(config: Pick<AnswerReviewAutoConfig, "maxRounds" | "reviewers">): string {
+  const answers = answerReviewExtraAnswers(config);
+  return `Up to ${answers} extra ${answers === 1 ? "answer" : "answers"} per question`;
+}

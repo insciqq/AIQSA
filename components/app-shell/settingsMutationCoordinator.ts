@@ -1,6 +1,7 @@
 import { responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import { shellFetch } from "@/components/app-shell/shellApi";
 import type { CatalogDefaults } from "@/lib/contracts/catalog";
+import { ANSWER_REVIEW_AUTO_DEFAULT } from "@/lib/contracts/answerReviews";
 import type { SearchPlan } from "@/lib/domain/search";
 import {
   decodeUpdateSettingsResponse,
@@ -109,6 +110,7 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
     "personalModelDefault"
   );
   return {
+    ...(patch.answerReview !== undefined ? { defaultAnswerReview: patch.answerReview } : {}),
     ...(patch.answerSoundEnabled !== undefined ? { answerSoundEnabled: patch.answerSoundEnabled } : {}),
     ...(patch.answerSoundId !== undefined ? { answerSoundId: patch.answerSoundId } : {}),
     ...(patch.browserNotificationsEnabled !== undefined ? { browserNotificationsEnabled: patch.browserNotificationsEnabled } : {}),
@@ -169,6 +171,7 @@ function reconciledPatch(
   settings: UserSettingsWire
 ): SettingsDefaultsPatch {
   const patch: SettingsDefaultsPatch = {};
+  if (sent.answerReview !== undefined) patch.answerReview = settings.defaultAnswerReview ?? ANSWER_REVIEW_AUTO_DEFAULT;
   if (sent.answerSoundEnabled !== undefined) patch.answerSoundEnabled = settings.answerSoundEnabled;
   if (sent.answerSoundId !== undefined) patch.answerSoundId = settings.answerSoundId;
   if (sent.browserNotificationsEnabled !== undefined) patch.browserNotificationsEnabled = settings.browserNotificationsEnabled;

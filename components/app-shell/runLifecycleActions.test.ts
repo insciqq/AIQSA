@@ -300,6 +300,28 @@ describe("run lifecycle actions", () => {
     expect(notifyAnswerReady).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["a step of a running automatic review", "auto", "running", { kind: "review", reviewer: 0, round: 1, step: 0 }, 0],
+    ["the answer a running automatic review follows", "auto", "running", undefined, 0],
+    ["a manual review's step", "manual", "running", { kind: "review", reviewer: 0, round: 1, step: 0 }, 1],
+    ["an answer whose automatic review already ended", "auto", "stopped", undefined, 1]
+  ] as const)("announces %s accordingly when its resumed run completes", async (_case, mode, state, step, notifications) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(runResponse("complete"))));
+    const { actions, notifyAnswerReady } = useRunLifecycleActionsForTest();
+    const model = { modelId: "fake-model", name: "Fake", provider: "fake" };
+    useThreadStore.getState().replaceThread("chat-1", { activeLeafId: "assistant-1", messages: [
+      message({ content: "Question", id: "user-1" }),
+      message({ answerReview: { session: { author: model, id: "session-1", maxRounds: mode === "auto" ? 3 : null, mode,
+        reviewers: [model], round: 1, sourceAssistantMessageId: "assistant-1", state,
+        stopReason: state === "running" ? null : "user_stopped" }, ...(step ? { step } : {}) },
+      id: "assistant-1", parentMessageId: "user-1", role: "assistant", runId: "run-1", status: "streaming" })
+    ], usageStats: null });
+
+    await actions.resumeChatRun(streamingChat());
+
+    expect(notifyAnswerReady).toHaveBeenCalledTimes(notifications);
+  });
+
   it("treats a proven missing run as terminal and releases only its source gate", async () => {
     vi.stubGlobal(
       "fetch",

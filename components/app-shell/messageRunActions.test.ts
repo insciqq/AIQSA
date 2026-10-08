@@ -241,6 +241,7 @@ function useMessageRunActionsForTest(input: {
   activeChat?: WorkspaceChatSummary | null;
   activeChatId?: string | null;
   activeChatStreaming?: boolean;
+  answerReviewForSend?: Parameters<typeof useMessageRunActions>[0]["answerReviewForSend"];
   attachments: ComposerAttachment[];
   buildControlDraft?: () => SavedControlDraft;
   buildParams?: () => Record<string, unknown>;
@@ -319,6 +320,7 @@ function useMessageRunActionsForTest(input: {
 
   const actions = useMessageRunActions({
     activeChat,
+    ...(input.answerReviewForSend ? { answerReviewForSend: input.answerReviewForSend } : {}),
     activeChatDetailLoading: false,
     activeChatId,
     activeChatIdRef,
@@ -1913,6 +1915,37 @@ describe("message run actions", () => {
       expect(actions.setNotice).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
       expect(actions.session(actions.sourceSessionKey).draft).toBe("Keep this draft");
     });
+  });
+
+  it("carries the chat's automatic review with each reviewer's Search for its model and leaves the answer unannounced", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const reviewerModel: CatalogModel = { ...mixedSearchModel, displayName: "Reviewer", modelId: "reviewer",
+      searchOptionCompatibility: { [clientSearchOptionId]: { clientToolCompatible: true, executionModes: ["all_selected"] } },
+      searchStrategyIds: ["search-disabled", clientSearchOptionId] };
+    const catalog = { ...mixedSearchCatalog("personal"), models: [mixedSearchModel, reviewerModel] };
+    const review = { enabled: true, maxRounds: 2 as const, reviewers: [{ modelId: "reviewer", provider: reviewerModel.provider }] };
+    const actions = useMessageRunActionsForTest({ answerReviewForSend: () => review, attachments: [], draft: "Check the total",
+      model: mixedSearchModel, resolveCatalog: () => catalog });
+    useComposerControlStore.setState({ selectedModelId: mixedSearchModel.modelId,
+      selectedSearchOptionIds: [hostedSearchOptionId, clientSearchOptionId], searchPlanMode: "all_selected" });
+
+    await actions.submitComposer();
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body.answerReview).toEqual({ maxRounds: 2, reviewers: [{ modelId: "reviewer", provider: reviewerModel.provider,
+      searchPlan: { mode: "all_selected", optionIds: [clientSearchOptionId] } }] });
+    // The review's end notifies once; the answer it reviews does not.
+    expect(actions.notifyAnswerReady).not.toHaveBeenCalled();
+  });
+
+  it("sends no review when the chat's review is off and announces the answer as usual", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ answerReviewForSend: () => null, attachments: [], draft: "Plain question" });
+    await actions.submitComposer();
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body).not.toHaveProperty("answerReview");
   });
 
   it("materializes an ordinary explicit Knowledge plan in the run request", async () => {

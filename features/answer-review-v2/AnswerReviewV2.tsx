@@ -11,6 +11,7 @@ import {
 } from "@/lib/contracts/answerReviews";
 import type { AnswerReviewProgress } from "@/lib/domain/answerReviewProgress";
 import {
+  answerReviewAutoRunningV2,
   answerReviewCardOf,
   answerReviewDecisionsOf,
   answerReviewRoundCountV2,
@@ -103,6 +104,7 @@ export function AnswerReviewStatusV2({
   onContinue,
   onRevise,
   onStop,
+  onStopSession,
   progress,
   stopUnavailableReason = null,
   stopping = false
@@ -112,6 +114,8 @@ export function AnswerReviewStatusV2({
   onContinue?(): void;
   onRevise?(): void;
   onStop?(): void;
+  /** Stops an automatic session and its running step (its initiator only). */
+  onStopSession?(): void;
   progress: AnswerReviewProgress;
   /** Why the running step cannot be stopped yet, as the answer's own Stop says (its run is not acknowledged yet). */
   stopUnavailableReason?: string | null;
@@ -119,23 +123,32 @@ export function AnswerReviewStatusV2({
 }>) {
   const settledText = answerReviewStatusTextV2(group, progress);
   if (!settledText) return null;
-  const text = progress.running && stopping ? `Review · round ${progress.running.round} · Stopping…` : settledText;
+  // The server drives an automatic session: Stop ends it at any moment, between steps too.
+  const auto = group.session.mode === "auto";
+  const autoRunning = answerReviewAutoRunningV2(group, progress);
+  const text = (progress.running || autoRunning) && stopping
+    ? `Review · round ${progress.running?.round ?? progress.next?.round ?? group.session.round} · Stopping…` : settledText;
   const clean = progress.state === "finished" && progress.stopReason === "clean";
-  const canAct = actionsEnabled && group.session.canAct === true && progress.state === "running" && !progress.running;
+  const canAct = !auto && actionsEnabled && group.session.canAct === true && progress.state === "running" && !progress.running;
   const stopReasonId = `answer-review-stop-${group.session.id}`;
   return (
-    <div className="v2-answer-review-status" data-testid="answer-review-status" data-state={progress.running ? "running"
+    <div className="v2-answer-review-status" data-testid="answer-review-status" data-state={progress.running || autoRunning ? "running"
       : progress.state} role="status">
       <UiV2Icon name={progress.running ? "shield" : clean ? "check" : progress.state === "stopped" ? "alert" : "shield"} />
       <span>{text}</span>
-      {progress.running && onStop ? (
+      {autoRunning && onStopSession && group.session.canAct ? (
+        <UiV2Button icon="stop" disabled={stopping} aria-busy={stopping || undefined} onClick={onStopSession} type="button">
+          {stopping ? "Stopping…" : "Stop"}
+        </UiV2Button>
+      ) : null}
+      {!auto && progress.running && onStop ? (
         <UiV2Button icon="stop" disabled={stopping || Boolean(stopUnavailableReason)} aria-busy={stopping || undefined}
           aria-describedby={stopUnavailableReason ? stopReasonId : undefined} onClick={onStop}
           title={stopUnavailableReason ?? undefined} type="button">
           {stopping ? "Stopping…" : "Stop"}
         </UiV2Button>
       ) : null}
-      {progress.running && onStop && stopUnavailableReason ? (
+      {!auto && progress.running && onStop && stopUnavailableReason ? (
         <span className="v2-sr-only" id={stopReasonId}>{stopUnavailableReason}</span>
       ) : null}
       {canAct && progress.next?.kind === "revision" && onRevise ? (

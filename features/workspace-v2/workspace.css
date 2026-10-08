@@ -333,6 +333,37 @@
   text-overflow: ellipsis;
 }
 
+/* Automatic answer review is on: a compact glyph with the reviewers' count
+   (the glyph alone on phones); a review that cannot run now reads dim. */
+.v2-live-model-review {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.125rem;
+  color: var(--v2-color-accent);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.v2-live-model-review > .v2-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.v2-live-model-review[data-state="unavailable"] {
+  color: var(--v2-color-text3);
+}
+
+.v2-live-model-review-count {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 767px) {
+  .v2-live-model-review-count {
+    display: none;
+  }
+}
+
 .v2-live-model > .v2-icon:last-child {
   width: 0.875rem;
   height: 0.875rem;
