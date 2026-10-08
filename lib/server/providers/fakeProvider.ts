@@ -55,6 +55,58 @@ function scriptedFetchUrlResult(request: ProviderRunRequest, question: string): 
   return { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) };
 }
 
+/**
+ * Test-only MCP scenario: `[AIQSA_MCP_E2E:<tool>:<id>]` calls the run's MCP
+ * tool `<tool>` once with `{ "id": "<id>" }`, then answers with the outcome
+ * (`done` or the refusal/error code). `[AIQSA_MCP_CODE_E2E:<tool>:<id>]`
+ * makes the same call from Workspace guest code (a real guest only). The
+ * server's continuation turn after an approval repeats the newest such call
+ * of the conversation, as a model re-issuing the approved call would.
+ */
+const MCP_TEST_DIRECTIVE = /\[AIQSA_MCP_(CODE_)?E2E:([a-z0-9_-]{1,64}):([A-Za-z0-9_-]{1,64})\]/u;
+const MCP_APPROVAL_CONTINUATION = /^The user approved `[^`\n]+` on `[^`\n]+`\. Continue the task\.$/u;
+
+/** Guest Python calling the run's MCP tool through the run gateway; prints `code-mcp:<outcome>`. */
+function mcpCodeCommand(toolName: string, id: string): string {
+  return ["python3 - <<'PY'", "import aiqsa", "from aiqsa.errors import AiqsaMcpError", "try:",
+    `    name = next(tool.name for tool in aiqsa.mcp.list_tools() if tool.tool == "${toolName}")`,
+    `    aiqsa.mcp.call(name, {"id": "${id}"})`, "    print(\"code-mcp:done\")", "except AiqsaMcpError as error:",
+    "    print(\"code-mcp:\" + str(error.code))", "PY"].join("\n");
+}
+
+function scriptedMcpResult(request: ProviderRunRequest, question: string): ProviderRunResult | null {
+  const continuation = MCP_APPROVAL_CONTINUATION.test(question.trim());
+  const match = MCP_TEST_DIRECTIVE.exec(question) ?? (continuation
+    ? textConversationForRequest(request).filter((message) => message.role === "user")
+      .map((message) => MCP_TEST_DIRECTIVE.exec(message.content)).filter((found) => found !== null).at(-1) ?? null
+    : null);
+  if (!match) return null;
+  const [, code, toolName, id] = match;
+  const results = fakeToolResults(request);
+  if (code) {
+    if (!request.workspace) return null;
+    if (results.length === 0) {
+      const call = toolCall(request, "sandbox_shell", 0, { command: mcpCodeCommand(toolName!, id!) });
+      return call ? { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
+        toolCalls: [call], usage: fakeUsage(question, "") } : null;
+    }
+    const data = lastToolData(results);
+    const stdout = isRecord(data) && typeof data.stdout === "string" ? data.stdout : "";
+    const finalText = `Code MCP call finished: ${/code-mcp:([a-z_]+)/u.exec(stdout)?.[1] ?? "unavailable"}.`;
+    return { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) };
+  }
+  const tool = request.tools?.find((candidate) => candidate.capability === "mcp" && candidate.name.includes(`_${toolName}_`));
+  if (!tool) return null;
+  if (results.length === 0) {
+    return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
+      toolCalls: [{ arguments: { id: id! }, id: `fake-mcp-${toolName}-${id}`, name: tool.name }], usage: fakeUsage(question, "") };
+  }
+  const value = results[0]?.content.find((part) => part.type === "json")?.value;
+  const finalText = `MCP call finished: ${isRecord(value) && typeof value.error === "string" ? value.error
+    : results[0]?.status === "error" ? "error" : "done"}.`;
+  return { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) };
+}
+
 function workspaceTool(request: ProviderRunRequest, originalName: string): RunTool | null {
   return request.tools?.find((tool) =>
     tool.capability === "workspace" && tool.name.includes(`_${originalName.slice(0, 24)}_`)) ?? null;
@@ -536,7 +588,8 @@ export function createFakeProviderAdapter(): ProviderAdapter {
     },
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const question = textFromContentBlocks(request.content) || "empty question";
-      const scripted = scriptedWorkspaceResult(request, question) ?? scriptedFetchUrlResult(request, question);
+      const scripted = scriptedWorkspaceResult(request, question) ?? scriptedFetchUrlResult(request, question) ??
+        scriptedMcpResult(request, question);
       if (scripted) {
         throwIfAborted(options.signal);
         if ((scripted.toolCalls?.length ?? 0) === 0) {
