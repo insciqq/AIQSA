@@ -547,7 +547,7 @@ describe("SCIM groups", () => {
     });
   });
 
-  it("replaces members on PUT and archives on DELETE without resurrecting the name", async () => {
+  it("replaces members on PUT and archives on DELETE under a name the IdP can push again", async () => {
     await withScimData(async (fixture) => {
       const stays = await fixture.user("stays");
       const leaves = await fixture.user("leaves");
@@ -566,11 +566,23 @@ describe("SCIM groups", () => {
       await expect(members(group)).resolves.toEqual([stays]);
 
       await expect(scim.deleteGroup(group)).resolves.toMatchObject({ kind: "ok" });
-      await expect(prisma.group.findUniqueOrThrow({ select: { archivedAt: true, scimExternalId: true }, where: { id: group } }))
-        .resolves.toEqual({ archivedAt: expect.any(Date), scimExternalId: null });
+      await expect(prisma.group.findUniqueOrThrow({ select: { archivedAt: true, name: true, scimExternalId: true }, where: { id: group } }))
+        .resolves.toEqual({
+          archivedAt: expect.any(Date),
+          name: `${fixture.groupName("Platform Engineering")} (archived ${group.slice(0, 8)})`,
+          scimExternalId: null
+        });
+      await expect(members(group)).resolves.toEqual([stays]);
       await expect(scim.getGroup(group, true)).resolves.toBeNull();
       await expect(scim.deleteGroup(group)).resolves.toEqual({ kind: "not_found" });
-      await expect(scim.createGroup(parseScimGroupBody({ displayName: fixture.groupName("Platform Engineering") })))
+
+      // The IdP may push the group again: a new group, without the archived one's grants.
+      const again = groupId(await scim.createGroup(parseScimGroupBody({ displayName: fixture.groupName("Platform Engineering") })));
+      expect(again).not.toBe(group);
+      // A group an administrator archived is not resurrected under its name.
+      const archivedByAdmin = await fixture.group("Archived by admin");
+      await expect(admins.archiveGroup(archivedByAdmin.id)).resolves.toBe(true);
+      await expect(scim.createGroup(parseScimGroupBody({ displayName: archivedByAdmin.name })))
         .resolves.toEqual({ detail: "An archived group has this name.", kind: "uniqueness" });
     });
   });
@@ -678,7 +690,24 @@ describe("SCIM sign-in link rule", () => {
       await expect(withScimLink("none", (tx) => settleExternalIdentity(tx, oidcInput(fixture.email("provisioned"), "no-link"))))
         .resolves.toEqual({ status: "account_conflict" });
 
-      // An account that already has an identity of that provider links no second one by email.
+      // Never for an administrator, nor for an account that already signs in some other way: an
+      // unverified email must not take over a real account, even one SCIM linked by its email.
+      await fixture.user("provisioned-admin", { role: "admin", scimExternalId: fixture.externalId("provisioned-admin") });
+      await expect(withScimLink("oidc", (tx) => settleExternalIdentity(tx, oidcInput(fixture.email("provisioned-admin"), "admin"))))
+        .resolves.toEqual({ status: "account_conflict" });
+      const linkedLocal = await fixture.user("linked-local", { scimExternalId: fixture.externalId("linked-local") });
+      await prisma.authIdentity.create({
+        data: {
+          emailVerifiedAt: now,
+          normalizedEmail: fixture.email("linked-local"),
+          passwordHash: "aiqsa-scrypt-v1$synthetic",
+          provider: "password",
+          providerAccountId: fixture.email("linked-local"),
+          userId: linkedLocal
+        }
+      });
+      await expect(withScimLink("oidc", (tx) => settleExternalIdentity(tx, oidcInput(fixture.email("linked-local"), "linked-local"))))
+        .resolves.toEqual({ status: "account_conflict" });
       await prisma.authIdentity.create({
         data: {
           normalizedEmail: `former-${fixture.email("provisioned")}`,
@@ -690,6 +719,11 @@ describe("SCIM sign-in link rule", () => {
       });
       await expect(withScimLink("oidc", (tx) => settleExternalIdentity(tx, oidcInput(fixture.email("provisioned"), "second"))))
         .resolves.toEqual({ status: "account_conflict" });
+      // A verified email still links as it always did.
+      await expect(withScimLink("oidc", (tx) => settleExternalIdentity(tx, {
+        ...oidcInput(fixture.email("linked-local"), "verified"),
+        emailVerified: true
+      }))).resolves.toEqual({ status: "active", userId: linkedLocal });
     });
   });
 });

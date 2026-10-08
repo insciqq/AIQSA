@@ -30,6 +30,7 @@ const scimFailureMessages: Record<string, string> = {
   invalid_request: "the identity provider sent a request AIQSA could not accept",
   last_admin: "the deactivation would have left no active administrator",
   owner_transfer_required: "a deactivated user still owns Projects alone; transfer their ownership",
+  request_failed: "AIQSA could not complete the request",
   token_invalid: "the bearer token is unknown or revoked",
   uniqueness: "a user or group with that name or external ID already exists"
 };
@@ -88,7 +89,8 @@ function useScimTokens() {
         return false;
       }
       setTokens(result.tokens);
-      setIssued(result.token);
+      // A revoke returns no token: a new one not yet dismissed stays on screen.
+      if (result.token !== null) setIssued(result.token);
       return true;
     } finally {
       if (mountedRef.current) setBusy(false);

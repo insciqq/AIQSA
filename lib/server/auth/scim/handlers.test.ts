@@ -294,6 +294,7 @@ describe("SCIM endpoint routing", () => {
     const failed = await call("GET", "Users");
     expect(failed.status).toBe(500);
     expect(await failed.text()).not.toContain("db-internal");
+    expect(outcomes).toEqual(["invalid_request", "request_failed"]);
   });
 
   it("refreshes an accepted health line at most once a minute, and right after a failure", async () => {

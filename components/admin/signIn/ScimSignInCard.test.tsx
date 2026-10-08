@@ -137,6 +137,33 @@ describe("SCIM sign-in card", () => {
     expect(document.body.innerHTML).not.toContain(NEW_TOKEN);
   });
 
+  it("keeps a new token on screen while an older one is revoked", async () => {
+    const older = token("token-0001");
+    const newer = token("token-0002");
+    mockApi({
+      handle: (call) => {
+        const body = call.body as { action?: string } | null;
+        if (body?.action === "create") return Response.json({ token: NEW_TOKEN, tokens: [newer, older] }, { status: 201 });
+        if (body?.action === "revoke") return Response.json({ tokens: [newer, { ...older, revokedAt: "2026-10-08T12:00:00.000Z" }] });
+        return null;
+      },
+      tokens: [older]
+    });
+    const card = await renderSection();
+    const tokens = within(card).getByTestId("admin-scim-tokens");
+    await waitFor(() => expect(within(tokens).getAllByTestId("admin-scim-token")).toHaveLength(1));
+
+    fireEvent.click(within(tokens).getByRole("button", { name: "Generate token" }));
+    await within(tokens).findByTestId("admin-scim-token-issued");
+    const olderRow = within(tokens).getAllByTestId("admin-scim-token").find((row) => row.textContent?.includes("aiqsa_scim_0001"))!;
+    fireEvent.click(within(olderRow).getByRole("button", { name: "Revoke" }));
+    fireEvent.click(within(olderRow).getByRole("button", { name: "Revoke token" }));
+
+    await waitFor(() => expect(within(tokens).getAllByTestId("admin-scim-token").filter((row) =>
+      row.getAttribute("data-revoked") === "true")).toHaveLength(1));
+    expect(within(within(tokens).getByTestId("admin-scim-token-issued")).getByLabelText("New SCIM token")).toHaveValue(NEW_TOKEN);
+  });
+
   it("revokes a token after an inline confirmation", async () => {
     const calls = mockApi({
       handle: (call) => call.method === "POST"
