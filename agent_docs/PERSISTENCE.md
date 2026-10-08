@@ -55,7 +55,7 @@ The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains 
 
 Keep every run’s final context measurement for its lifetime; earlier measurements may expire.
 
-The application prunes operator telemetry in bounded batches: hourly counters after 30 days, incidents after 14 days and beyond the newest 50,000. Every recording process adds its own totals; concurrent writers sum per key.
+The application prunes operator telemetry in bounded batches: hourly counters and incidents after 30 days, then per UTC day and incident key (event, code, subsystem, connection, error fingerprint) all but its first and latest 100 incidents, and last any incidents beyond the newest 50,000. Every recording process adds its own totals; concurrent writers sum per key.
 
 `npm run prune -- --dry-run` is read-only and precedes any explicitly authorized `--execute`. Never prune active sessions/runs, retrieval-visible evidence without a proven cutoff, or referenced objects.
 
