@@ -140,20 +140,42 @@ async function oktaSignIn(page: Page, person: Person): Promise<void> {
   }
 }
 
-async function signIn(browser: Browser, button: string, person: Person): Promise<{ context: BrowserContext; page: Page }> {
+async function signIn(browser: Browser, button: string, person: Person): Promise<{ context: BrowserContext; facts: () => string; page: Page }> {
   const { context, page } = await loginPage(browser, "/login?local=1");
+  const facts = watchSamlResponse(page);
   await page.getByRole("link", { exact: true, name: `Continue with ${button}` }).click();
   await oktaSignIn(page, person);
-  return { context, page };
+  return { context, facts, page };
+}
+
+/** Content-free facts about the SAML response the browser posts to /saml/acs: no values, only shapes. */
+function watchSamlResponse(page: Page): () => string {
+  let facts = "no_acs_post";
+  page.on("request", (request) => {
+    if (request.method() !== "POST" || !new URL(request.url()).pathname.endsWith("/saml/acs")) return;
+    const encoded = new URLSearchParams(request.postData() ?? "").get("SAMLResponse") ?? "";
+    const xml = Buffer.from(encoded, "base64").toString("utf8");
+    const nameId = /<(?:[\w-]+:)?NameID\b([^>]*)>([^<]*)</u.exec(xml);
+    const format = /Format="[^"]*:([A-Za-z-]+)"/u.exec(nameId?.[1] ?? "")?.[1] ?? "-";
+    facts = [
+      `nameId=${nameId ? "yes" : "no"}`,
+      `format=${format}`,
+      `length=${nameId?.[2]?.trim().length ?? 0}`,
+      `encryptedId=${/EncryptedID\b/u.test(xml)}`,
+      `encryptedAssertion=${/EncryptedAssertion\b/u.test(xml)}`,
+      `assertions=${(xml.match(/<(?:[\w-]+:)?Assertion\b/gu) ?? []).length}`
+    ].join(" ");
+  });
+  return () => facts;
 }
 
 /** The app shell after a sign-in; a refusal names the method's content-free failure code. */
-async function expectSignedIn(page: Page, method: "oidc" | "saml"): Promise<void> {
+async function expectSignedIn(page: Page, method: "oidc" | "saml", facts: () => string = () => "-"): Promise<void> {
   const shell = page.getByTestId("app-shell");
   await expect(shell.or(page.locator("[role=alert]:not(#__next-route-announcer__)"))).toBeVisible({ timeout: 60_000 });
   if (await shell.isVisible()) return;
   const health = await prisma.authSignInMethodSetting.findUnique({ select: { lastFailureCode: true }, where: { method } });
-  throw new Error(`${method}_sign_in_refused url=${new URL(page.url()).search.replace(/[^a-z0-9=&_]/gu, "")} code=${health?.lastFailureCode ?? "-"}`);
+  throw new Error(`${method}_sign_in_refused url=${new URL(page.url()).search.replace(/[^a-z0-9=&_]/gu, "")} code=${health?.lastFailureCode ?? "-"} ${facts()}`);
 }
 
 async function userBy(provider: "oidc" | "saml", email: string) {
@@ -261,8 +283,8 @@ test("Okta groups, users, applications and policies are created; the OIDC config
         signatureAlgorithm: "RSA_SHA256",
         ssoAcsUrl: acsUrl,
         subjectNameIdFormat: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
-        // The immutable Okta user id; `user.id` is not an Okta expression and leaves NameID empty.
-        subjectNameIdTemplate: "${user.getInternalProperty(\"id\")}"
+        // Okta's default: the NameID is the app username (the Okta username unless the app overrides it).
+        subjectNameIdTemplate: "${user.userName}"
       }
     },
     signOnMode: "SAML_2_0",
@@ -377,7 +399,7 @@ test("an administrator pastes Okta's SAML metadata into the card; SAML sign-ins 
   await context.close();
 
   const eli = await signIn(browser, SAML_BUTTON, people.eli);
-  await expectSignedIn(eli.page, "saml");
+  await expectSignedIn(eli.page, "saml", eli.facts);
   await eli.context.close();
   const eliUser = await userBy("saml", people.eli.email);
   expect(eliUser, "eli's SAML identity").toBeTruthy();
@@ -387,7 +409,7 @@ test("an administrator pastes Okta's SAML metadata into the card; SAML sign-ins 
   expect(eliUser!.role).toBe("user");
 
   const dina = await signIn(browser, SAML_BUTTON, people.dina);
-  await expectSignedIn(dina.page, "saml");
+  await expectSignedIn(dina.page, "saml", dina.facts);
   await dina.page.screenshot({ path: testInfo.outputPath("okta-saml-signed-in-desktop.png") });
   await dina.context.close();
   const dinaUser = await userBy("saml", people.dina.email);
