@@ -6,6 +6,7 @@ import {
   OAUTH_PROVIDER_IDS
 } from "@/lib/auth/oauth";
 import { getAuthConfig } from "@/lib/server/auth/config";
+import { oidcAutoRedirectPath } from "@/lib/server/auth/oidc/oidcLoginRedirect";
 import { resolveSignInMethods, type ResolvedSignInMethods } from "@/lib/server/auth/signInMethods";
 import type { SignInPolicySnapshot } from "@/lib/server/auth/signInPolicy";
 import { readSignInPolicy } from "@/lib/server/auth/signInSettings/defaultSignInSettings";
@@ -40,22 +41,32 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     ? await Promise.all([resolveSignInMethods(), readSignInPolicy()])
     : [{}, { passwordLoginEnabled: true, registrationEnabled: true }];
   const oauthProviders = OAUTH_PROVIDER_IDS.filter((provider) => Boolean(methods[provider]));
+  const nextPath = safeInternalPath(params.next);
   const trustedHeader = await trustedHeaderLoginState({
     config,
     hasSession: async () => hasActiveSessionToken((await cookies()).get(SESSION_COOKIE_NAME)?.value),
     methods,
-    nextPath: safeInternalPath(params.next),
+    nextPath,
     params
   });
   if (trustedHeader.redirectTo) redirect(trustedHeader.redirectTo);
+  // A trusted-header outcome on screen keeps the page, like any other shown outcome.
+  const oidcRedirect = params.trusted_header
+    ? null
+    : oidcAutoRedirectPath({ config: methods.oidc?.config, nextPath, params });
+
+  if (oidcRedirect) {
+    redirect(oidcRedirect);
+  }
 
   return (
     <AuthLogin
       inviteToken={params.invite}
-      nextPath={safeInternalPath(params.next)}
+      nextPath={nextPath}
       oauthOutcome={isOAuthLoginOutcome(params.oauth) ? params.oauth : undefined}
       oauthProvider={isOAuthProviderId(params.provider) ? params.provider : undefined}
       oauthProviders={oauthProviders}
+      oidcButtonLabel={methods.oidc?.config.buttonLabel}
       passwordLoginEnabled={policy.passwordLoginEnabled}
       registrationEnabled={policy.registrationEnabled}
       resetToken={params.reset}

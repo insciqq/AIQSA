@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { jwtVerify } from "jose";
 import { describe, expect, it, vi } from "vitest";
+import type { OAuthProviderId } from "@/lib/auth/oauth";
 import { getAuthConfig } from "./config";
 import {
   createOAuthCallbackHandler,
@@ -970,7 +971,7 @@ describe("OAuth handlers with admin-panel configuration", () => {
   });
 
   it("starts with the resolved client even without environment credentials, and 404s without one", async () => {
-    const resolveProvider = vi.fn(async (provider: "google" | "yandex") => provider === "google"
+    const resolveProvider = vi.fn(async (provider: OAuthProviderId) => provider === "google"
       ? { config: { clientId: "admin-client.apps.googleusercontent.com", clientSecret: "admin-secret" } }
       : null);
     const start = createOAuthStartHandler({ getConfig: () => unconfigured, resolveProvider });

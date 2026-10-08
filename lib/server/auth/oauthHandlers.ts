@@ -45,9 +45,44 @@ type OAuthRouteContext = {
   params: Promise<{ provider: string }> | { provider: string };
 };
 
-/** A provider's active client and, for an admin-panel configuration, its health recorder. */
-export type ResolvedOAuthProvider = {
-  config: OAuthProviderConfig;
+/** How a provider's own sign-in flow ended; `failed` carries a content-free health code. */
+export type OAuthFlowSignInResult =
+  | { cookie: string; status: "active" }
+  | { code: string; status: "failed" }
+  | { status: Exclude<OAuthLoginOutcome, "cancelled" | "failed"> };
+
+/**
+ * A provider that runs its own authorization and sign-in (OIDC): discovery, token validation,
+ * settlement and session issuance. The handlers keep the flow cookie, PKCE, state, nonce,
+ * `next` and the rate limits.
+ */
+export type OAuthProviderFlow = {
+  /** The IdP authorization URL, or a content-free code when it cannot be built. */
+  authorizationUrl(input: {
+    codeChallenge: string;
+    nonce: string;
+    redirectUri: string;
+    state: string;
+  }): Promise<{ code: string } | { url: URL }>;
+  signIn(input: {
+    code: string;
+    codeVerifier: string;
+    nonce: string;
+    now: Date;
+    redirectUri: string;
+    request: Request;
+    secureCookie: boolean;
+  }): Promise<OAuthFlowSignInResult>;
+};
+
+/**
+ * A provider's active client (Google, Yandex) or own flow (OIDC) and, for an admin-panel
+ * configuration, its health recorder.
+ */
+export type ResolvedOAuthProvider = (
+  | { config: OAuthProviderConfig; flow?: never }
+  | { config?: never; flow: OAuthProviderFlow }
+) & {
   /** Records a content-free sign-in outcome (`accepted` or a failure code); never throws. */
   recordOutcome?(code: string): Promise<void>;
 };
@@ -263,9 +298,9 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
       return unavailable();
     }
 
-    const providerConfig = (await resolveProvider(deps.resolveProvider, config, rawProvider))?.config;
+    const resolvedProvider = await resolveProvider(deps.resolveProvider, config, rawProvider);
 
-    if (!providerConfig) {
+    if (!resolvedProvider) {
       return unavailable();
     }
 
@@ -280,15 +315,36 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
       state: token()
     };
     const redirectUri = oauthRedirectUri(config, rawProvider);
-    const authorizationUrl = buildOAuthAuthorizationUrl({
-      clientId: providerConfig.clientId,
-      codeChallenge: codeChallenge(flow.codeVerifier),
-      nonce: flow.nonce,
-      provider: rawProvider,
-      redirectUri,
-      state: flow.state,
-      switchAccount: rawProvider === "yandex" && singleQueryValue(query, "switch_account") === "1"
-    });
+    let authorizationUrl: URL;
+
+    if (resolvedProvider.flow) {
+      const built = await resolvedProvider.flow.authorizationUrl({
+        codeChallenge: codeChallenge(flow.codeVerifier),
+        nonce: flow.nonce,
+        redirectUri,
+        state: flow.state
+      });
+
+      if ("code" in built) {
+        await resolvedProvider.recordOutcome?.(built.code);
+        return redirect(outcomeUrl({ appBaseUrl: config.appBaseUrl, nextPath, outcome: "failed", provider: rawProvider }));
+      }
+
+      authorizationUrl = built.url;
+    } else if (rawProvider !== "oidc") {
+      authorizationUrl = buildOAuthAuthorizationUrl({
+        clientId: resolvedProvider.config.clientId,
+        codeChallenge: codeChallenge(flow.codeVerifier),
+        nonce: flow.nonce,
+        provider: rawProvider,
+        redirectUri,
+        state: flow.state,
+        switchAccount: rawProvider === "yandex" && singleQueryValue(query, "switch_account") === "1"
+      });
+    } else {
+      return unavailable();
+    }
+
     const signedFlow = await signFlow(flow, config, deps.now?.() ?? new Date());
 
     return redirect(authorizationUrl.toString(), [
@@ -319,9 +375,8 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
     }
 
     const resolvedProvider = await resolveProvider(deps.resolveProvider, config, rawProvider);
-    const providerConfig = resolvedProvider?.config;
 
-    if (!providerConfig) {
+    if (!resolvedProvider) {
       return unavailable();
     }
 
@@ -485,11 +540,55 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       return response;
     }
 
+    if (resolvedProvider.flow) {
+      let result: OAuthFlowSignInResult;
+
+      try {
+        result = await resolvedProvider.flow.signIn({
+          code,
+          codeVerifier: flow.codeVerifier,
+          nonce: flow.nonce,
+          now,
+          redirectUri: oauthRedirectUri(config, rawProvider),
+          request,
+          secureCookie: config.cookieSecure
+        });
+      } catch {
+        result = { code: "sign_in_failed", status: "failed" };
+      }
+
+      if (result.status === "active") {
+        await recordOutcome("accepted");
+        if (rateLimitKey) {
+          await loginRateLimiter.release(rateLimitKey);
+        }
+        return redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, result.cookie]);
+      }
+
+      // A pending account is the provider working as configured.
+      await recordOutcome(
+        result.status === "failed" ? result.code : result.status === "pending" ? "accepted" : result.status
+      );
+      return redirect(
+        outcomeUrl({
+          appBaseUrl: config.appBaseUrl,
+          nextPath: flow.nextPath,
+          outcome: result.status,
+          provider: rawProvider
+        }),
+        [clearCookie]
+      );
+    }
+
+    if (rawProvider === "oidc") {
+      return unavailable();
+    }
+
     try {
       const profile = await (deps.exchangeCode ?? exchangeOAuthCode)({
         code,
         codeVerifier: flow.codeVerifier,
-        config: providerConfig,
+        config: resolvedProvider.config,
         fetchImpl: deps.fetchImpl,
         googleIdTokenVerifier: deps.googleIdTokenVerifier,
         nonce: flow.nonce,
