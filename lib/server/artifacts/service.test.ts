@@ -111,6 +111,22 @@ describe("artifact authorized projections", () => {
     expect(pages).toBeGreaterThan(1);
     expect(recovered).toBe(source);
   });
+  it("projects at most the first 256 KiB of each text file to the code view, never splitting a character", async () => {
+    const long = `a${"🙂".repeat(80_000)}`;
+    const short = "<p>Short</p>";
+    const body = Buffer.from(JSON.stringify({ version: 2, kind: "html", entrypoint: "index.html", files: [
+      { path: "index.html", mimeType: "text/html", text: short }, { path: "data.txt", mimeType: "text/plain", text: long }] }));
+    const db = { artifactVersion: { findFirst: async () => ({ id: "version", byteSize: body.byteLength, checksum: sha(body), bundleStorageKey: "owned-bundle" }) } } as unknown as PrismaClient;
+    const service = createArtifactService(db, { getObject: async () => ({ body }) } as unknown as StorageAdapter);
+    const source = await service.source({ ownerUserId: "owner", artifactId: "artifact", versionId: "version" });
+    expect(source?.files[0]).toEqual({ path: "index.html", mimeType: "text/html", group: "authored", byteSize: short.length, text: short });
+    const shown = source!.files[1]!;
+    expect(shown).toMatchObject({ path: "data.txt", group: "authored", byteSize: Buffer.byteLength(long), truncated: true });
+    // 262144 bytes end inside an emoji: the cut steps back to the last whole character.
+    expect(shown.text).toBe(`a${"🙂".repeat(65_535)}`);
+    expect(Buffer.byteLength(shown.text!)).toBeLessThanOrEqual(ARTIFACT_LIMITS.maxReadBytes);
+    expect(long.startsWith(shown.text!)).toBe(true);
+  });
   it("delivers structural repair hints privately but propagates unexpected database failures", async () => {
     const findFirst = vi.fn(async () => null);
     const transaction = vi.fn();

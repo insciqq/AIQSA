@@ -1,4 +1,4 @@
-import { ARTIFACT_STORAGE_LIMITS, ARTIFACT_STORAGE_PLACEHOLDER } from "../../contracts/artifactRuntime";
+import { ARTIFACT_FRAGMENT_PLACEHOLDER, ARTIFACT_STORAGE_LIMITS, ARTIFACT_STORAGE_PLACEHOLDER } from "../../contracts/artifactRuntime";
 
 /** Per-page bridge data: the page path and its local files as `[path, mime, kind]`. A `block`
  * file's bytes are in this page; `inline` files were inlined by a static reference and `page`
@@ -11,13 +11,14 @@ export type ArtifactRuntimeSite = Readonly<{
 
 export const ARTIFACT_SITE_PLACEHOLDER = "/*AIQSA_ARTIFACT_SITE*/null";
 
-/** Server-owned code runs before any authored script. The single state marker
- * is filled only by the viewer; shared render caches always retain empty data.
+/** Server-owned code runs before any authored script. The state and fragment
+ * markers are filled only by the viewer; shared render caches always retain empty data.
  * Local files are answered only from bytes embedded in the page: every other
  * request reaches the browser unchanged and stays under the artifact CSP. */
 export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
   const initial = ${ARTIFACT_STORAGE_PLACEHOLDER};
   const site = ${ARTIFACT_SITE_PLACEHOLDER} || { page: "", media: false, files: [] };
+  const arrival = ${ARTIFACT_FRAGMENT_PLACEHOLDER};
   const limits = ${JSON.stringify(ARTIFACT_STORAGE_LIMITS)};
   const send = value => { try { parent.postMessage(value, "*"); } catch {} };
   const storage = (entries, persistent) => {
@@ -425,6 +426,8 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
     if (destination) destination.scrollIntoView();
     else if (!fragment || fragment.toLowerCase() === "top") window.scrollTo(0, 0);
   };
+  // A link on another page named an anchor of this one; scroll once the page has loaded.
+  if (typeof arrival === "string" && arrival) window.addEventListener("load", () => scrollToFragment(arrival), { once: true });
   // Another page asks the viewer to show it; any other local file downloads from a blob: URL.
   const follow = (target, anchor, raw) => {
     if (!target.file) return void fail("Artifact link target not found: " + (target.path || raw));

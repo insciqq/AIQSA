@@ -1,6 +1,6 @@
 import { resolveObjectURL } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
-import { ARTIFACT_STORAGE_PLACEHOLDER, parseArtifactNavigateMessage } from "../../contracts/artifactRuntime";
+import { ARTIFACT_FRAGMENT_PLACEHOLDER, ARTIFACT_STORAGE_PLACEHOLDER, parseArtifactNavigateMessage } from "../../contracts/artifactRuntime";
 import { ARTIFACT_RUNTIME_BRIDGE, ARTIFACT_SITE_PLACEHOLDER, artifactRuntimeBridge, type ArtifactRuntimeSite } from "./runtimeBridge";
 
 function bridge(initial: Array<[string, string]> = []) {
@@ -396,10 +396,34 @@ describe("artifact local files", () => {
   });
 
   it("embeds site data as one inert literal that cannot close the script or forge the storage marker", () => {
-    const source = artifactRuntimeBridge({ page: "a.html", media: false, files: [["x</script><!--/*AIQSA_ARTIFACT_STORAGE_STATE*/[]&", "text/plain", "block"]] });
+    const source = artifactRuntimeBridge({ page: "a.html", media: false, files: [["x</script><!--/*AIQSA_ARTIFACT_STORAGE_STATE*/[]/*AIQSA_ARTIFACT_FRAGMENT*/\"\"&", "text/plain", "block"]] });
     expect(source).not.toMatch(/<\/script|<!--/iu);
     expect(source.split(ARTIFACT_STORAGE_PLACEHOLDER)).toHaveLength(2);
+    expect(source.split(ARTIFACT_FRAGMENT_PLACEHOLDER)).toHaveLength(2);
     expect(source).not.toContain(ARTIFACT_SITE_PLACEHOLDER);
     expect(ARTIFACT_RUNTIME_BRIDGE.split(ARTIFACT_SITE_PLACEHOLDER)).toHaveLength(2);
+  });
+
+  it("scrolls to the anchor named by the link that opened the page once the page has loaded", () => {
+    const run = (fragment: string | null) => {
+      const load = vi.fn<() => void>();
+      const destination = { scrollIntoView: vi.fn() };
+      const document = { addEventListener: vi.fn(), getElementById: vi.fn((id: string) => id === "part two" ? destination : null), getElementsByName: vi.fn(() => []) };
+      const window = { scrollTo: vi.fn(), addEventListener: vi.fn((name: string, action: () => void, options?: unknown) => {
+        if (name === "load") { expect(options).toEqual({ once: true }); load.mockImplementation(action); }
+      }) };
+      const source = ARTIFACT_RUNTIME_BRIDGE.replace(ARTIFACT_STORAGE_PLACEHOLDER, "[]")
+        .replace(ARTIFACT_FRAGMENT_PLACEHOLDER, fragment === null ? ARTIFACT_FRAGMENT_PLACEHOLDER : JSON.stringify(fragment));
+      new Function("window", "document", "parent", "DOMException", "URL", source)(window, document, { postMessage: vi.fn() }, DOMException, URL);
+      return { load, destination, window };
+    };
+    const arrived = run("part%20two");
+    expect(arrived.destination.scrollIntoView).not.toHaveBeenCalled();
+    arrived.load();
+    expect(arrived.destination.scrollIntoView).toHaveBeenCalledOnce();
+    // The unfilled marker of a shared render is an empty fragment: nothing waits for load.
+    for (const plain of [run(null), run("")]) {
+      expect(plain.window.addEventListener.mock.calls.some(([name]) => name === "load")).toBe(false);
+    }
   });
 });
