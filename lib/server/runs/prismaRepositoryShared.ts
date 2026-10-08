@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import {
   Prisma,
   type MessageStatus,
@@ -36,6 +37,54 @@ export function isPrismaSerializationConflict(error: unknown): boolean {
   // never arbitrary query text, so unrelated database failures still escape.
   return error instanceof Prisma.PrismaClientUnknownRequestError &&
     /PostgresError\s*\{\s*code:\s*"(?:40001|40P01)"/u.test(error.message);
+}
+
+// A settlement transaction that waits for one lock longer than this fails with
+// 55P03 and is retried whole, instead of expiring Prisma's 5-second
+// interactive transaction while blocked and only then learning it lost.
+const RUN_SETTLEMENT_LOCK_TIMEOUT_MS = 2_000;
+const RUN_SETTLEMENT_ATTEMPTS = 3;
+const RUN_SETTLEMENT_RETRY_MAX_DELAY_MS = 250;
+
+/** Bounds every lock wait of the calling transaction. */
+export async function boundRunSettlementLockWait(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT set_config('lock_timeout', ${`${RUN_SETTLEMENT_LOCK_TIMEOUT_MS}ms`}, true)
+  `);
+}
+
+/** A failure that rolled the whole interactive transaction back, or never
+ * started it: an expired or unstartable transaction (P2028), a bounded lock
+ * wait (55P03), a serialization conflict or a deadlock. */
+export function isRollbackSafeSettlementFailure(error: unknown): boolean {
+  if (isPrismaSerializationConflict(error)) return true;
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return error.code === "P2028" ||
+      (error.code === "P2010" && isRecord(error.meta) && error.meta.code === "55P03");
+  }
+  return error instanceof Prisma.PrismaClientUnknownRequestError &&
+    /PostgresError\s*\{\s*code:\s*"55P03"/u.test(error.message);
+}
+
+async function waitForSettlementRetry(attempt: number): Promise<void> {
+  const ceiling = Math.min(RUN_SETTLEMENT_RETRY_MAX_DELAY_MS, 50 * attempt);
+  await new Promise<void>((resolve) => setTimeout(resolve, randomInt(1, ceiling + 1)));
+}
+
+/** Runs one idempotent settlement transaction again after a rollback-safe
+ * failure; any other failure, or the last one, is returned unchanged. */
+export async function retryRollbackSafeSettlement<T>(
+  transaction: () => Promise<T>,
+  wait: (attempt: number) => Promise<void> = waitForSettlementRetry
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await transaction();
+    } catch (error) {
+      if (attempt >= RUN_SETTLEMENT_ATTEMPTS || !isRollbackSafeSettlementFailure(error)) throw error;
+      await wait(attempt);
+    }
+  }
 }
 
 /** A successor can now be admitted during predecessor cleanup. Match its
