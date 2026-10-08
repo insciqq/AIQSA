@@ -116,8 +116,12 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
             "p256dh" = EXCLUDED."p256dh",
             "auth" = EXCLUDED."auth",
             "updatedAt" = EXCLUDED."updatedAt",
-            "failureCount" = 0,
-            "lastFailureAt" = NULL
+            "failureCount" = CASE WHEN "BrowserPushSubscription"."userId" = EXCLUDED."userId"
+              AND "BrowserPushSubscription"."p256dh" = EXCLUDED."p256dh" AND "BrowserPushSubscription"."auth" = EXCLUDED."auth"
+              THEN "BrowserPushSubscription"."failureCount" ELSE 0 END,
+            "lastFailureAt" = CASE WHEN "BrowserPushSubscription"."userId" = EXCLUDED."userId"
+              AND "BrowserPushSubscription"."p256dh" = EXCLUDED."p256dh" AND "BrowserPushSubscription"."auth" = EXCLUDED."auth"
+              THEN "BrowserPushSubscription"."lastFailureAt" ELSE NULL END
         `);
         await tx.$executeRaw(Prisma.sql`
           DELETE FROM "BrowserPushSubscription"
