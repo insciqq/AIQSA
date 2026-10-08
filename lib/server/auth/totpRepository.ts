@@ -334,6 +334,10 @@ export function createPrismaSecondFactorSignInRepository(prisma: PrismaClient): 
           userId: challenge.userId
         });
 
+        if (issued.kind === "refused") {
+          return { kind: "challenge_expired" };
+        }
+
         if (issued.kind !== "session") {
           throw new Error("second_factor_not_accepted");
         }

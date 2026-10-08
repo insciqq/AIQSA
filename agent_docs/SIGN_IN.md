@@ -80,6 +80,15 @@ SAML is SP-initiated: unsigned AuthnRequests over HTTP-Redirect, responses over 
 - Signatures verify only against the pinned certificates, never `KeyInfo`, on the assertion, the response or both as configured. SHA-1 needs `allowSha1`; HMAC and unknown algorithms are refused. Destination and Recipient must be the ACS URL, Audience the SP entity id, Issuer the IdP entity id; timestamps allow 60 s of skew and assertion ids stay remembered until they expire. XML with a DTD is refused before parsing.
 - Attributes come only from the validated assertion. The subject is the NameID (transient refused) or the configured attribute. SAML asserts no verified email, so linking by email needs `trustUnverifiedEmail`.
 
+## SCIM Provisioning
+
+SCIM 2.0 under `/scim/v2` is an admin-level integration: its client sees every user and active group by AIQSA id, and `DELETE` never erases. Bearer tokens are shown once and stored as hashes; after a bounded body read, every token failure or SCIM being off gets the same 401, rate-limited per source. `userName` is the account email.
+
+- A user or group a SCIM write touches becomes SCIM-managed (`scimExternalId`: the client's externalId, else its own id). POST links an unmanaged account with the same email, or group with the same name; a linked group keeps its grants and takes the pushed members. Creating groups is SCIM's exception to never auto-creating them; a deleted group is archived under a name that frees the original. Full access links only by its exact name and is never renamed or archived.
+- Memberships change through the shared membership service, at most 1 000 per request, serializable against the administrators' editor.
+- Deactivation revokes sessions and inbound MCP grants at once and records `scimDeactivatedAt`, with `disableUser`'s guards: the last administrator who can still sign in stays, and a sole direct Project Owner stays `active` (409, shown to administrators) until ownership moves and the IdP retries; meanwhile only the bootstrap token signs in and scheduled tasks pause. Reactivation re-enables only accounts SCIM disabled; an administrator's disable or denial wins (409).
+- The one exception to email trust: an account SCIM provisioned with no sign-in identity yet, not an administrator, links its first identity of the method chosen on the SCIM card by email even when that method does not trust unverified emails.
+
 ## Dependencies
 
 | Dependency | Boundary/rationale |

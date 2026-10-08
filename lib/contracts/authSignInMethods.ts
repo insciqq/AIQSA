@@ -255,9 +255,13 @@ export const trustedHeaderSignInConfigSchema = z.strictObject({
 
 export const trustedHeaderSignInSecretsSchema = z.strictObject({});
 
-// SCIM (auth-scim refines). Tokens live in `AuthScimToken`, not in the method secrets.
+// SCIM. Tokens live in `AuthScimToken`, not in the method secrets. `linkMethod` is the sign-in
+// method whose first sign-in links a SCIM-provisioned account by email (Open WebUI's
+// `SCIM_AUTH_PROVIDER`).
 
 export const SCIM_LINK_METHODS = ["none", "oidc", "saml", "ldap"] as const;
+
+export type ScimLinkMethod = (typeof SCIM_LINK_METHODS)[number];
 
 export const scimConfigSchema = z.strictObject({ linkMethod: z.enum(SCIM_LINK_METHODS).default("none") });
 export const scimSecretsSchema = z.strictObject({});

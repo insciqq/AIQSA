@@ -1,6 +1,7 @@
 import type { AuthIdentityProvider, Prisma, PrismaClient, User, UserRole } from "@prisma/client";
 import {
   isExternalGroupSource,
+  scimConfigSchema,
   type AuthSessionSignInMethod,
   type ExternalGroupPolicyConfig
 } from "@/lib/contracts/authSignInMethods";
@@ -161,6 +162,41 @@ function emailTrusted(input: ExternalIdentityInput): boolean {
   return input.emailVerified || input.policy.trustUnverifiedEmail;
 }
 
+/** Disabled or denied, or deactivated by SCIM while that waits for a Project ownership transfer. */
+function signInBlocked(user: Pick<User, "scimDeactivatedAt" | "status">): boolean {
+  return user.status === "disabled" || user.status === "denied" || user.scimDeactivatedAt !== null;
+}
+
+/**
+ * The SCIM link rule: an account SCIM provisioned that has no sign-in identity yet links its
+ * first identity of the method SCIM links users to by email, even when that method does not
+ * trust unverified emails, because the IdP that pushed the account vouches for its email. Only
+ * while SCIM is active and only for that method's provider. Never for an administrator or an
+ * account that already signs in some other way: an unverified email must not take over a real
+ * account, even one SCIM linked by its email.
+ */
+async function scimProvisionedLink(
+  tx: Prisma.TransactionClient,
+  input: ExternalIdentityInput,
+  user: Pick<User, "id" | "role" | "scimExternalId">
+): Promise<boolean> {
+  if (user.scimExternalId === null || user.role === "admin" || !["ldap", "oidc", "saml"].includes(input.provider)) {
+    return false;
+  }
+
+  const scim = await tx.authSignInMethodSetting.findUnique({
+    select: { activeConfig: true, enabled: true },
+    where: { method: "scim" }
+  });
+  const config = scim?.enabled ? scimConfigSchema.safeParse(scim.activeConfig) : null;
+
+  if (!config?.success || config.data.linkMethod !== input.provider) {
+    return false;
+  }
+
+  return (await tx.authIdentity.count({ where: { userId: user.id } })) === 0;
+}
+
 /**
  * Activates a pending account when admission vouches for it: an enabled access rule for the
  * account's trusted email, or the source's groups admission (already passed). False keeps it
@@ -309,7 +345,7 @@ async function settleKnownSubject(
     return { status: "source_changed" };
   }
 
-  if (identity.user.status === "disabled" || identity.user.status === "denied") {
+  if (signInBlocked(identity.user)) {
     return { status: "not_allowed" };
   }
 
@@ -391,13 +427,13 @@ async function settleNewIdentity(
 
   const trusted = emailTrusted(input);
 
-  // Linking reaches an existing account only through an email the source verified, or one
-  // the operator explicitly trusts for this method.
-  if (user && !trusted) {
+  // Linking reaches an existing account only through an email the source verified, one the
+  // operator explicitly trusts for this method, or the SCIM link rule.
+  if (user && !trusted && !(await scimProvisionedLink(tx, input, user))) {
     return { status: "account_conflict" };
   }
 
-  if (user?.status === "disabled" || user?.status === "denied") {
+  if (user && signInBlocked(user)) {
     return { status: "not_allowed" };
   }
 
@@ -466,8 +502,10 @@ async function settleNewIdentity(
  * Settles one external sign-in (OIDC, LDAP, SAML, trusted header, Google, Yandex) inside the
  * caller's transaction. The source's subject, never its mutable email, finds a linked identity.
  * Only a trusted email (verified by the source, or trusted by the policy) links a new identity
- * to an existing account, counts for access rules, or becomes a new account's email. A new
- * account is created only when admission passed and the policy creates users.
+ * to an existing account, counts for access rules, or becomes a new account's email; the one
+ * exception is the SCIM link rule (`scimProvisionedLink`). A new account is created only when
+ * admission passed and the policy creates users. A pending SCIM deactivation refuses like a
+ * disabled account.
  *
  * Lock order, shared by every external sign-in:
  *   1. the normalized email (advisory, `lockAuthRegistrationEmail`);
@@ -540,6 +578,10 @@ export async function completeExternalSignIn(
       signInMethod: input.signInMethod,
       userId: outcome.userId
     });
+
+    if (issued.kind === "refused") {
+      return { status: "not_allowed" };
+    }
 
     if (issued.kind === "second_factor_required") {
       // Only LDAP among external methods asks for a second factor; its challenge binds to the

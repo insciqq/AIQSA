@@ -25,6 +25,11 @@ export function membershipManagerLabel(manager: AdminMembershipManager): string 
   return signInMethodLabels[manager];
 }
 
+/** What activating a method turns on, as notices and dialogs name it. */
+export function signInMethodActivity(method: AuthSignInMethod): string {
+  return method === "scim" ? "SCIM provisioning" : `${signInMethodLabels[method]} sign-in`;
+}
+
 export type SignInStatusPresentation = Readonly<{ label: string; tone: "neutral" | "ok" }>;
 
 export function signInStatusPresentation(status: AdminSignInMethodStatus): SignInStatusPresentation {
