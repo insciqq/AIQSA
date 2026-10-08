@@ -1810,7 +1810,9 @@ export function useMessageRunActions({
     let code: string | null = null;
     try {
       const response = await shellFetch(`/api/chats/${encodeURIComponent(chatId)}/answer-reviews`, {
-        body: JSON.stringify({ answerMessageId: input.answerMessageId, expectedActiveLeafId: leaf, reviewers: input.reviewers }),
+        // Exactly the identities: an earlier session's reviewer also carries a display name the request refuses.
+        body: JSON.stringify({ answerMessageId: input.answerMessageId, expectedActiveLeafId: leaf,
+          reviewers: input.reviewers.map(({ modelId, provider }) => ({ modelId, provider })) }),
         headers: { "content-type": "application/json" },
         method: "POST"
       });
