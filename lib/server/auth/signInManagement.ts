@@ -37,10 +37,12 @@ export async function managedMemberships(
   const managed = new Map<string, AdminMembershipManager>();
   if (!input.groupIds.length) return managed;
   const groupIds = [...new Set(input.groupIds)];
-  const [scimGroups, identities] = await Promise.all([
-    tx.group.findMany({ select: { id: true }, where: { id: { in: groupIds }, scimExternalId: { not: null } } }),
-    tx.authIdentity.findMany({ select: { provider: true }, where: { userId: input.userId } })
-  ]);
+  // Sequential: these run inside the caller's interactive transaction.
+  const scimGroups = await tx.group.findMany({
+    select: { id: true },
+    where: { id: { in: groupIds }, scimExternalId: { not: null } }
+  });
+  const identities = await tx.authIdentity.findMany({ select: { provider: true }, where: { userId: input.userId } });
   for (const group of scimGroups) managed.set(group.id, "scim");
   const sources = managingSources(identities.map((identity) => identity.provider));
   if (!sources.length) return managed;

@@ -390,8 +390,8 @@ async function postJson(
 
 /**
  * Stands where the password form was while password sign-in is off: the reason and the
- * sign-in methods that remain. Invite links land here too; the invited email then signs in
- * through one of these methods.
+ * sign-in methods that remain. Invite links land here too, since an invitation sets a
+ * password.
  */
 function PasswordSignInOff({
   invited,
