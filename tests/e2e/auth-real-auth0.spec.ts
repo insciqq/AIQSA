@@ -405,7 +405,8 @@ test("auto-redirect sends /login to Auth0, ?local=1 stays, and signing out ends 
   // Without an id_token_hint Auth0 may ask before it ends its session; then /login redirects
   // back to Auth0, which asks for credentials once its session is gone.
   const username = page.locator('input[name="username"]');
-  const confirm = page.locator('button[type="submit"][name="action"]').first();
+  // Auth0's logout prompt lists No before Yes; Yes submits `accept`.
+  const confirm = page.locator('button[type="submit"][value="accept"]');
   await expect.poll(async () => (await username.isVisible()) || (await confirm.isVisible()), { timeout: 60_000 }).toBe(true);
   const askedToConfirm = !(await username.isVisible());
   if (askedToConfirm) {
