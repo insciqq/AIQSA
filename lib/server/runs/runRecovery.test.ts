@@ -6682,6 +6682,31 @@ describe("run recovery", () => {
     expect(harness.state.completed).not.toBeNull();
   });
 
+  it("records no time to first output for text a recovered run produces", async () => {
+    const observation = await captureRunObservation();
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream() {
+        yield { type: "token", data: { delta: "Recovered answer." } };
+        return { ...providerResult, finalText: "Recovered answer." };
+      }
+    };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const base = checkpointedRun({
+      calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: "get_session_status" }],
+      phase: "tools_pending", providerToolMessages: []
+    });
+    const { mcp: _mcp, ...normalizedRequest } = base.normalizedRequest;
+    installCheckpointState(harness, {
+      ...base,
+      normalizedRequest: { ...normalizedRequest, sessionStatusTool: true, toolMode: "none", searchPlan: { mode: "all_selected", options: [] } }
+    });
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered answer." });
+    expect(observation.records().filter((entry) => entry.stage === "first_output")).toEqual([]);
+  });
+
   it.each([false, true])("rejects a refreshed forbidden synthesis and preserves partial text, settled work, and usage once (native=%s)", async (nativeMarkup) => {
     const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({
       events: [{ type: "token", data: { delta: "Available partial answer" } }],

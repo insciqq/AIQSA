@@ -123,6 +123,9 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
             userMessageId: admissionResult.userMessageId, defaults: undefined };
       created = await observeChatPdfPersistence(claim.runId, "continuation", () => deps.repository.continuePdfPreparedRun!({ admission, claimToken: claim.claimToken, created: admissionResult }));
       prepared = applyPreparingMaterialization(prepared, created);
+      // The run's first execution: its wait for the answer began at admission.
+      // A run resumed after a crash records no time to first output.
+      created = { ...created, acceptedAt: loaded.modelRun.createdAt };
     } else if (loaded.modelRun.status === "streaming" && loaded.state === "answer_ready" && loaded.modelRun.normalizedRequest) {
       logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "skip" });
       // Phase B committed before the crash, but no answer dispatch was claimed.
