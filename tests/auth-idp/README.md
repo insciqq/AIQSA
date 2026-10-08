@@ -30,7 +30,7 @@ node tests/auth-idp/stand.mjs down --state /srv/stand/auth-idp
 ```
 
 - `--state` must be outside the repository. Generated passwords and secrets stay in its `secrets.env` (mode 0600) and reach the specs only through `spec.env` (0600); nothing secret is printed. `down --purge` deletes the directory.
-- `--mode trusted` starts the app in trusted-proxy client identity mode (`AIQSA_TRUST_PROXY_HEADERS=true`, `AIQSA_TRUSTED_PROXY_COUNT=1`). Run `auth-real-trusted-header.spec.ts` once per mode; the other specs run on the `direct` stand (the Authentik spec skips itself in trusted mode, since SCIM pushes do not pass the proxy).
+- `--mode trusted` starts the app in trusted-proxy client identity mode (`AIQSA_TRUST_PROXY_HEADERS=true`, `AIQSA_TRUSTED_PROXY_COUNT=1`) with the header proxy as its base URL, as in a deployment behind an authenticating proxy (otherwise the mutation origin guard refuses the browser's sign-out through the proxy). Run `auth-real-trusted-header.spec.ts` once per mode; the other specs run on the `direct` stand (the Authentik spec skips itself in trusted mode, since SCIM pushes do not pass the proxy).
 - `--base FILE.json` replaces the minimal AIQSA base (app and PostgreSQL) with your own Compose JSON (`docker compose -f file.yml config --format json`); its `app` service must mount this checkout at `/app` and have dependencies installed.
 - `--project`, `--app-subnet` and `--lan-subnet` keep several stands apart on one host.
 - The paid scenario `auth-real-paid.spec.ts` additionally needs `CODEX_LB_API_KEY` and `CODEX_LB_BASE_URL`: put them in a 0600 file passed as `up --extra-env FILE`; without them it skips.

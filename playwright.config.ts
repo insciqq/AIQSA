@@ -30,7 +30,8 @@ export default defineConfig({
     command:
       "npm run db:generate && npx prisma migrate reset --force --skip-generate --skip-seed && npx prisma db seed && npm run dev",
     env: {
-      AIQSA_APP_BASE_URL: baseURL,
+      // The real-IdP stand's trusted-proxy mode serves users through its header proxy, as a deployment does.
+      AIQSA_APP_BASE_URL: process.env.AIQSA_E2E_APP_BASE_URL?.trim() || baseURL,
       AIQSA_AUTH_SESSION_SECRET: "aiqsa-playwright-session-secret-00000000000000000000000000000000",
       AIQSA_BOOTSTRAP_AUTH_TOKEN: "",
       AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: "",
