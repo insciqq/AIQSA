@@ -71,7 +71,9 @@ async function startReviewerEndpoint(): Promise<ReviewerEndpoint> {
           output = [{ content: [{ text, type: "output_text" }], role: "assistant", type: "message" }];
         } else {
           reviews.push(wire);
-          if (held) await held;
+          // A held review ends with the request: Stop aborts the app's fetch and closes this connection.
+          if (held) await Promise.race([held, new Promise<void>((resolve) => response.once("close", () => resolve()))]);
+          if (response.destroyed || response.writableEnded) return;
           output = [{ arguments: JSON.stringify({ findings: clean ? [] : [finding], verdict: clean ? "clean" : "changes_needed" }),
             call_id: `review-${reviews.length}`, id: `review-${reviews.length}`, name: "submit_answer_review", status: "completed",
             type: "function_call" }];
@@ -153,9 +155,10 @@ test.beforeAll(async ({ browser }, testInfo) => {
     const model = await prisma.providerModel.findFirstOrThrow({ where: { connectionId } });
     expect(model.displayName).toBe(reviewerName);
     expect((model.capabilities as Prisma.JsonObject).toolCalling, "the reviewer fixture must verify tool calling").toBe(true);
-    // A cold dev server compiles each new route on its first request, the step route with the whole run
-    // pipeline: warm both here so the cases time the review, not the compiler.
-    for (const path of [`/api/chats/${randomUUID()}/answer-reviews`, "/api/answer-reviews/route-warmup/steps"]) {
+    // A cold dev server compiles each route on its first request, the step and Stop routes with the whole
+    // run pipeline: warm them here so the cases time the review, not the compiler.
+    for (const path of [`/api/chats/${randomUUID()}/answer-reviews`, "/api/answer-reviews/route-warmup/steps",
+      `/api/model-runs/${randomUUID()}/cancel`]) {
       const warmed = await page.request.post(path, { data: {}, timeout: 240_000 });
       expect([400, 404], path).toContain(warmed.status());
     }
@@ -391,7 +394,13 @@ test("a reload during a step shows the same live state and the step runs once; S
     release = stand!.endpoint.hold();
     await startReview(page);
     await expect(status(page)).toHaveText(checking, { timeout: 30_000 });
-    await status(page).getByRole("button", { name: "Stop" }).click();
+    // Stop waits, like the answer's own Stop, until the server has acknowledged the step's run.
+    const stop = status(page).getByRole("button", { name: "Stop" });
+    await expect(stop).toBeEnabled({ timeout: 30_000 });
+    const cancelled = page.waitForResponse((candidate) => candidate.request().method() === "POST" &&
+      /^\/api\/model-runs\/[^/]+\/cancel$/u.test(new URL(candidate.url()).pathname), { timeout: 60_000 });
+    await stop.click();
+    expect((await cancelled).status()).toBe(200);
     await expect(status(page)).toHaveText(/^Stopped$/u, { timeout: 30_000 });
     await expect(shownAnswer(page)).toContainText("Fake answer: One more check");
   } finally {

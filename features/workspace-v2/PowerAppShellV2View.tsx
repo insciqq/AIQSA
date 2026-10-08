@@ -1692,6 +1692,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const renderAnswerReviewGroup = (group: AnswerReviewGroupV2): ReactNode => {
     const runningAnswer = group.steps.find((entry) => entry.answer?.status === "streaming")?.answer ?? null;
     const latestGroup = group.messages.at(-1)?.id === thread.visibleMessages.at(-1)?.id;
+    // Like the answer's own Stop: a step's run is stoppable once the server acknowledged it. Until then the
+    // optimistic step has no run id and a Stop would be dropped, so the button waits with its reason.
+    const stepRunId = runningAnswer && latestGroup ? thread.currentRunId ?? thread.interruptedRun?.runId ?? null : null;
     // A group the chat moved on from shows no status: the next run superseded it, whatever this page last read.
     const progress = answerReviewGroupDisplayProgressV2(group, { latest: latestGroup, ...(runningAnswer
       ? { live: { artifact: presentAnswer(runningAnswer).artifact, messageId: runningAnswer.id } } : {}) });
@@ -1712,8 +1715,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           group={group}
           onContinue={() => startStep("review")}
           onRevise={() => startStep("revision")}
-          onStop={() => void composer.stopCurrentRun(runningAnswer?.runId ?? undefined)}
+          onStop={() => {
+            if (stepRunId) void composer.stopCurrentRun(stepRunId);
+          }}
           progress={progress}
+          stopUnavailableReason={stepRunId ? null : "The run is not yet acknowledged by the server."}
           stopping={composer.stopping}
         />
       ),
