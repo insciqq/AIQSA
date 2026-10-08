@@ -105,7 +105,7 @@ test("password sign-in with TOTP: enrolment, codes, replay, recovery codes and a
   await expect(code).toHaveAttribute("inputmode", "numeric");
   expect((await second.context.cookies()).some((cookie) => cookie.name === "aiqsa_session")).toBe(false);
   await submitSecondFactor(second.page, "000000");
-  await expect(second.page.getByRole("alert")).toContainText("(invalid_code)");
+  await expect(second.page.getByRole("alert").filter({ hasText: "(invalid_code)" })).toBeVisible();
   await submitSecondFactor(second.page, await app.next());
   await expect(second.page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
   await second.context.close();
@@ -113,7 +113,7 @@ test("password sign-in with TOTP: enrolment, codes, replay, recovery codes and a
   // The same code is refused a second time.
   const replay = await passwordStep(browser, user);
   await submitSecondFactor(replay.page, app.reuse());
-  await expect(replay.page.getByRole("alert")).toContainText("(invalid_code)");
+  await expect(replay.page.getByRole("alert").filter({ hasText: "(invalid_code)" })).toBeVisible();
 
   // A recovery code works once.
   await replay.page.getByRole("button", { name: "Use a recovery code" }).click();
@@ -123,7 +123,9 @@ test("password sign-in with TOTP: enrolment, codes, replay, recovery codes and a
   const spent = await passwordStep(browser, user);
   await spent.page.getByRole("button", { name: "Use a recovery code" }).click();
   await submitSecondFactor(spent.page, recoveryCodes[0]!, "recovery");
-  await expect(spent.page.getByRole("alert")).toContainText("That recovery code is not valid or was already used.");
+  await expect(
+    spent.page.getByRole("alert").filter({ hasText: "That recovery code is not valid or was already used." })
+  ).toBeVisible();
   await spent.context.close();
 
   // An administrator reset removes the factor and signs the user out everywhere.
