@@ -141,7 +141,7 @@ test("the admin card shows the URIs and provider notes, never the secret", async
   await page.goto("/admin?section=sign-in");
   const card = page.getByTestId("admin-sign-in-card-oidc");
   await expect(card.getByTestId("admin-sign-in-status")).toHaveText("Active (admin)");
-  await expect(card.getByLabel("Redirect URI")).toHaveValue(/\/api\/auth\/oauth\/oidc\/callback$/u);
+  await expect(card.getByLabel("Redirect URI", { exact: true })).toHaveValue(/\/api\/auth\/oauth\/oidc\/callback$/u);
   await expect(card.getByLabel("Post-logout redirect URI")).toHaveValue(/\/login$/u);
   await expect(card.getByLabel("Issuer")).toHaveValue(`https://oidc-${run}.invalid/realms/main`);
   await card.getByText("Provider notes").click();
