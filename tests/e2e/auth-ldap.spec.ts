@@ -155,7 +155,9 @@ test.describe("with a disposable directory", () => {
     await card.getByLabel("User search filter").fill(stand.filter);
     await card.getByLabel("Sample sign-in name").fill(stand.username);
     await card.getByRole("button", { name: "Save" }).click();
-    await expect(card.getByLabel("Bind password")).toHaveValue("");
+    // Polled as a boolean: a failing value assertion would print the secret. The first save also
+    // waits for the route to compile on a fresh dev server.
+    await expect.poll(async () => (await card.getByLabel("Bind password").inputValue()) === "", { timeout: 60_000 }).toBe(true);
     await card.getByRole("button", { name: "Test" }).click();
     await expect(card.getByTestId("admin-sign-in-test")).toContainText("Test passed: Found the sample entry");
     await page.screenshot({ path: info.outputPath("ldap-card-test-passed.png") });
