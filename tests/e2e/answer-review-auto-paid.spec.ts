@@ -63,9 +63,13 @@ const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"];
 const TRAP_QUESTION = "Answer in at most three short lines, one per question. (1) A bat and a ball cost $1.10 together, and " +
   "the bat costs $1.00 more than the ball: what does the ball cost? (2) How many letters r are in the word \"strawberry\"? " +
   "(3) Is 1001 a prime number?";
-/** Constraints a reviewer can check word by word and a fast author often misses (a count, an initial, no repeats). */
-const REVISION_QUESTION = "Write one English sentence of exactly 15 words in which every word begins with the letter b and no " +
-  "word is repeated. Reply with the sentence only.";
+/**
+ * Constraints a reviewer checks word by word and no author meets in full (15 distinct real English words all
+ * starting with x): a real model answered the kept-wrong-figure and the b-words versions correctly, so their
+ * reviews were clean.
+ */
+const REVISION_QUESTION = "Write one English sentence of exactly 15 words in which every word is a real English word that " +
+  "begins with the letter x and no word is repeated. Reply with the sentence only.";
 const scenario = paidEnv("AIQSA_ANSWER_REVIEW_PAID_SCENARIO") === "revision" ? "revision" : "trap";
 
 /** Cheap, fast tool-calling classes first. */
