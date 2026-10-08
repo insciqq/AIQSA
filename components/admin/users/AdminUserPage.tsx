@@ -13,11 +13,17 @@ import {
   activeGroupIdsForUser,
   hasModelAccess,
   isFullAccessMember,
+  scimDeactivationPendingLabel,
   userDeletionInfo,
   userInitials
 } from "@/components/admin/users/usersView";
 import { UserAvatar, UserStatusPill, sectionHeadingClass } from "@/components/admin/users/usersPrimitives";
 import { AdminUserDirectGrants, AdminUserDirectKeys } from "@/components/admin/users/AdminUserDirectAccess";
+import {
+  AdminUserManagedGroups,
+  AdminUserSignInSection,
+  useAdminUserSignIn
+} from "@/components/admin/signIn/AdminUserSignIn";
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminDashboard, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
@@ -114,6 +120,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
   const pending = user.status === "pending";
   const active = user.status === "active";
   const currentGroupIds = activeGroupIdsForUser(user, groups);
+  const signIn = useAdminUserSignIn(user.id, currentGroupIds.join(","));
   const savedGroupIds = pending ? [] : currentGroupIds;
   const groupIds = groupDraft?.groupIds ?? savedGroupIds;
   const expectedGroupIds = groupDraft?.expectedGroupIds ?? currentGroupIds;
@@ -161,6 +168,18 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
         <UserStatusPill status={user.status} />
       </header>
 
+      {user.scimDeactivationPending ? (
+        <p
+          className="rounded-[10px] border border-caution/25 bg-caution/5 px-3 py-2.5 text-xs leading-5 text-ink-secondary"
+          data-testid="admin-user-scim-pending"
+          role="status"
+        >
+          <span className="font-semibold text-caution">{scimDeactivationPendingLabel(user.scimDeactivationPending)}.</span>{" "}
+          The identity provider deactivated this account: its sessions and connected apps are revoked and it cannot sign
+          in. Give its Projects another Owner; the identity provider&apos;s next retry then disables the account.
+        </p>
+      ) : null}
+
       <section aria-labelledby="admin-user-groups-heading" className={blockClass} data-testid="admin-user-groups">
         <h3 className={sectionHeadingClass} id="admin-user-groups-heading">Groups</h3>
         {editable ? (
@@ -198,6 +217,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
             {isSelf ? <p className={helpClass}>Your own memberships are managed from Groups.</p> : null}
           </>
         )}
+        <AdminUserManagedGroups groups={groups} signIn={signIn} />
       </section>
 
       <section aria-labelledby="admin-user-access-heading" className={blockClass}>
@@ -222,6 +242,8 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
       <div className="border-t border-trace-subtle">
         <AdminMcpUserAccessPanel controller={mcp} groups={groups} user={user} />
       </div>
+
+      <AdminUserSignInSection signIn={signIn} />
 
       <section aria-labelledby="admin-user-account-heading" className="flex flex-col gap-3" data-testid="admin-user-account">
         <h3 className={sectionHeadingClass} id="admin-user-account-heading">Account</h3>
@@ -256,6 +278,18 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
               <UiV2Button disabled={busy} icon="logout" onClick={() => users.actions.requestRevokeSessions(user)} tone="ghost" type="button">
                 Revoke sessions
               </UiV2Button>
+              {user.twoFactorEnabled ? (
+                <UiV2Button
+                  disabled={busy}
+                  icon="shield"
+                  onClick={() => users.actions.requestResetTwoFactor(user)}
+                  data-testid="admin-user-reset-two-factor"
+                  tone="ghost"
+                  type="button"
+                >
+                  Reset two-factor
+                </UiV2Button>
+              ) : null}
               <UiV2Button disabled={busy} onClick={() => users.actions.requestDisable(user)} tone="destructive" type="button">
                 Disable
               </UiV2Button>

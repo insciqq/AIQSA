@@ -4,7 +4,7 @@ import {
   type JWTPayload,
   type JWTVerifyGetKey
 } from "jose";
-import type { OAuthProviderId } from "../../auth/oauth";
+import type { OAuthClientProviderId } from "../../auth/oauth";
 import type { OAuthProviderConfig } from "./config";
 
 const GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -24,7 +24,7 @@ export type OAuthAuthorizationInput = {
   clientId: string;
   codeChallenge: string;
   nonce: string;
-  provider: OAuthProviderId;
+  provider: OAuthClientProviderId;
   redirectUri: string;
   state: string;
   switchAccount?: boolean;
@@ -49,7 +49,7 @@ export type OAuthCodeExchangeInput = {
   fetchImpl?: typeof fetch;
   googleIdTokenVerifier?: GoogleIdTokenVerifier;
   nonce: string;
-  provider: OAuthProviderId;
+  provider: OAuthClientProviderId;
   redirectUri: string;
 };
 

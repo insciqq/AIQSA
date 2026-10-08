@@ -8,6 +8,7 @@ import { loadAccountMemoryOwnedCounts } from "../memory/accountDeletion/inventor
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminDashboard, AdminDashboardNavigation } from "./adminRepositoryContract";
+import { countSoleOwnedProjects } from "./adminUserSessionCommands";
 import {
   serializeAdminEntitlements,
   serializeAdminGrant,
@@ -57,6 +58,11 @@ const adminDashboardUserSelect = {
     },
     take: 5
   },
+  authTotpFactor: {
+    select: {
+      confirmedAt: true
+    }
+  },
   displayName: true,
   email: true,
   groups: {
@@ -74,6 +80,7 @@ const adminDashboardUserSelect = {
   },
   id: true,
   role: true,
+  scimDeactivatedAt: true,
   settings: {
     select: {
       id: true
@@ -266,6 +273,12 @@ export async function listAdminDashboard(
     row.userId,
     row._count._all
   ]));
+  // A SCIM deactivation waits while the account still owns Projects alone.
+  const scimPendingProjectCounts = new Map(await Promise.all(
+    users
+      .filter((user) => user.status === "active" && Boolean(user.scimDeactivatedAt))
+      .map(async (user) => [user.id, await countSoleOwnedProjects(prisma, user.id)] as const)
+  ));
   const groupNamesById = new Map(groups.map((group) => [group.id, { name: group.name }]));
   const serializedAccessRules = accessRules.map((rule) => serializeAdminRule(rule, groupNamesById));
   const searchIds = [...new Set(grants.flatMap((grant) => grant.searchStrategy ? [grant.searchStrategy] : []))];
@@ -326,7 +339,11 @@ export async function listAdminDashboard(
       id: user.id,
       lastSessionAt: serializeAdminLastSession(user.authSessions),
       role: user.role,
-      status: user.status
+      ...(scimPendingProjectCounts.has(user.id)
+        ? { scimDeactivationPending: { projectCount: scimPendingProjectCounts.get(user.id)! } }
+        : {}),
+      status: user.status,
+      twoFactorEnabled: Boolean(user.authTotpFactor?.confirmedAt)
     };
   });
   const navigation = summarizeAdminNavigation({
