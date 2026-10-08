@@ -23,17 +23,37 @@ type SessionExpiredListener = (code: ClientSessionErrorCode) => void;
 const sessionExpiredListeners = new Set<SessionExpiredListener>();
 let sessionExpiredSignaled = false;
 let signOutInProgress = false;
+let signOutSuppression = 0;
+/** A sign-out normally leaves the page well within this; one that stays (a canceled navigation) gets its 401s back. */
+const SIGN_OUT_SUPPRESSION_MS = 10_000;
+
+if (typeof window !== "undefined") {
+  // A page restored from the back-forward cache after its sign-out reacts to session expiry again.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) {
+      signOutSuppression += 1;
+      signOutInProgress = false;
+    }
+  });
+}
 
 /**
  * A sign-out revokes the session before its response names the identity provider's logout
  * page, so other requests answer 401 meanwhile; they must not send the browser to the
  * session-expired login ahead of that logout. Returns the function a failed sign-out calls to
- * end the suppression; a successful one leaves the page.
+ * end the suppression early. It also ends on its own after a few seconds, when the page did not
+ * leave (a canceled navigation), and only for the sign-out that started it.
  */
-export function suppressSessionExpiredDuringSignOut(): () => void {
+export function suppressSessionExpiredDuringSignOut(timeoutMs = SIGN_OUT_SUPPRESSION_MS): () => void {
+  const suppression = ++signOutSuppression;
   signOutInProgress = true;
+  const release = () => {
+    if (suppression === signOutSuppression) signOutInProgress = false;
+  };
+  const timer = setTimeout(release, timeoutMs);
   return () => {
-    signOutInProgress = false;
+    clearTimeout(timer);
+    release();
   };
 }
 
