@@ -88,6 +88,10 @@ export type ModelRunSseEvent =
       type: "artifact";
       data: {
         artifactType:
+          /** A review step's review card (`AnswerReviewCard`). */
+          | "answer_review"
+          /** A revision step's decisions card (`AnswerReviewDecisionsCard`). */
+          | "answer_review_decisions"
           | "workspace_checkpoint"
           | "generated_artifact"
           | "image"
