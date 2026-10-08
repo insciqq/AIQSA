@@ -183,8 +183,13 @@ test("behind the proxy the browser signs in automatically with header groups; a 
   expect(uma.role).toBe("admin");
 
   // Signing out keeps the login page on screen instead of signing straight back in.
-  await page.getByRole("button", { name: "Account menu" }).first().click();
-  await page.getByRole("menu", { name: "Account", exact: true }).getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  // A click before hydration opens nothing: retry until the menu shows.
+  const accountMenu = page.getByRole("menu", { name: "Account", exact: true });
+  await expect(async () => {
+    await page.getByRole("button", { name: "Account menu" }).first().click();
+    await expect(accountMenu).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  await accountMenu.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/login\?local=1$/u, { timeout: 30_000 });
   await expect(page.getByRole("link", { name: "Continue with your proxy sign-in" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
