@@ -6,7 +6,7 @@ import { embeddingModelConfiguration, embeddingPresetsForFamily } from "../../..
 import { providerModelTemplateId } from "../../../domain/providerTemplates";
 import { rerankerModelConfiguration, rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 import { jevModelConfiguration } from "../../../domain/decisionModels";
-import type { ProviderConnectionConfiguration, ProviderModelConfiguration } from "../../providers/providerConfiguration";
+import { codexLbConnection, type ProviderConnectionConfiguration, type ProviderModelConfiguration } from "../../providers/providerConfiguration";
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 
 export type SetupModel = Readonly<{
@@ -21,19 +21,9 @@ export type SetupModel = Readonly<{
   webSearchPriceUsdPerThousand?: number | null;
 }>;
 
-/**
- * codex-lb identity of an `openai_compatible` endpoint. Accepts stored JSON; the
- * `20260930130000_model_token_prices` migration mirrors this predicate in SQL.
- */
-export function codexLbEndpoint(connection: Readonly<{ apiRoot?: unknown; responsesRequestIsolationDetected?: unknown }> | null | undefined): boolean {
-  if (typeof connection?.responsesRequestIsolationDetected === "boolean") return connection.responsesRequestIsolationDetected;
-  // Older connections predate the catalog marker; retain their explicit Codex endpoint identity.
-  return typeof connection?.apiRoot === "string" && connection.apiRoot.endsWith("/backend-api/codex");
-}
-
 /** Code-owned candidates only; availability and capabilities still need exact-key checks. */
 export function providerSetupModels(family: string, connection?: Pick<ProviderConnectionConfiguration, "apiRoot" | "responsesRequestIsolationDetected">): readonly SetupModel[] {
-  if (family === "openai_compatible" && codexLbEndpoint(connection)) {
+  if (family === "openai_compatible" && codexLbConnection(connection)) {
     const answers: SetupModel[] = adminProviderQuickSetupPolicy("openai").candidates.map(candidate => {
       const upstreamModelId = candidate.configuration.upstreamModelId;
       return {

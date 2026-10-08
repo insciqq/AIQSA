@@ -6,6 +6,7 @@ import { PROVIDER_CONTEXT_LENGTH_EXCEEDED, reportedContextTokens } from "./respo
 import { isProviderSearchExecutionError } from "./types";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import { ProviderStreamSafetyError } from "./streamSafety";
+import { providerStreamDrop, type ProviderStreamDrop } from "./streamDrop";
 
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
@@ -117,7 +118,7 @@ export function transportFailureFacts(error: unknown, signal?: AbortSignal): Tra
     return { category: abort.reason === "deadline" ? "timeout" : "aborted", code: abort.code, timeout_ms: abort.timeout_ms };
   }
   const category = failure.code === "mcp_http_dns_failed" || failure.code === "provider_http_dns_failed" ? "dns"
-    : failure.code === "mcp_http_tls_failed" ? "tls"
+    : failure.code === "mcp_http_tls_failed" || failure.code === "provider_http_tls_failed" ? "tls"
     : failure.httpStatus !== undefined ? "http" : "unknown";
   return { category, code: failure.code };
 }
@@ -326,6 +327,8 @@ type ObservedFailure = Readonly<{
   timeout_ms?: number;
   provider_status?: ProviderStatus;
   cause?: ProviderCause;
+  /** Why an answer stream ended before its completion event. */
+  stream_drop?: ProviderStreamDrop;
 }>;
 
 const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]);
@@ -406,7 +409,7 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
       : code === "workspace_tool_timeout" ? "deadline"
       : code === "provider_output_too_large" || code.startsWith("provider_stream_") && code !== "provider_stream_failed" ||
         code === "provider_response_too_large" || code === "provider_budget_exhausted" ? "safety_limit"
-      : code === "provider_http_dns_failed" || code === "provider_http_request_failed" ||
+      : code === "provider_http_dns_failed" || code === "provider_http_request_failed" || code === "provider_http_tls_failed" ||
         code === "provider_request_outcome_unknown" ||
         code === "agent_provider_dns_failed" || code === "agent_provider_connection_lost" ? "network"
       : status !== undefined ? "http"
@@ -420,9 +423,11 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
         ? "policy" : "unknown";
     const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,
       value instanceof GeminiHttpError && ownValue(value, "keyRejected") === true) : null;
+    const streamDrop = providerStreamDrop(value);
     return { code: classified ?? code, reason, ...(status === undefined ? {} : { httpStatus: status }),
       ...(providerStatus === undefined ? {} : { provider_status: providerStatus }),
-      ...(cause === undefined ? {} : { cause }) };
+      ...(cause === undefined ? {} : { cause }),
+      ...(streamDrop === null ? {} : { stream_drop: streamDrop }) };
   } catch { return { code: "unknown", reason: "unknown" }; }
 }
 
@@ -436,7 +441,7 @@ function writeOperation(scope: ProviderObservation, startedAt: number,
     stage: scope.stage, outcome, duration_ms: Math.max(0, Date.now() - startedAt),
     action: result?.action ?? "none", timeout_ms: failure.timeout_ms ?? scope.timeoutMs, code: result?.code ?? failure.code, reason: failure.reason,
     provider_status: result?.provider_status ?? failure.provider_status, cause: failure.cause,
-    httpStatus: failure.httpStatus, abort_source: failure.abort_source
+    httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop
   });
 }
 
@@ -567,12 +572,29 @@ export function withProviderAttempt<T>(attempt: number, operation: () => Promise
 export function observeProviderRetry(error: unknown, attempt: number, action: "retry" | "stop", delayMs?: number) {
   const scope = scopes.getStore();
   if (!scope) return;
+  writeRetry(scope.identity, scope.stage, error, attempt, action, delayMs);
+}
+
+/** The decision on one dropped answer-round request (`attempt`, 1-based) of
+ * the binding `identity`; recorded outside any request's scope. */
+export function observeProviderRoundRetry(identity: Partial<ProviderStreamSafetyIdentity>, input: Readonly<{
+  action: "retry" | "stop";
+  attempt: number;
+  delayMs?: number;
+  error: unknown;
+}>) {
+  writeRetry(identity, "answer", input.error, input.attempt, input.action, input.delayMs);
+}
+
+function writeRetry(identity: Partial<ProviderStreamSafetyIdentity>, stage: ProviderStage, error: unknown,
+  attempt: number, action: "retry" | "stop", delayMs?: number) {
   const failure = observedFailure(error);
   logEvent("provider_retry", {
-    adapterKind: scope.identity.adapterKind, connectionId: scope.identity.connectionId,
-    providerFamily: scope.identity.providerFamily, providerModelId: scope.identity.providerModelId,
-    stage: scope.stage, attempt, action, delay_ms: delayMs,
+    adapterKind: identity.adapterKind, connectionId: identity.connectionId,
+    providerFamily: identity.providerFamily, providerModelId: identity.providerModelId,
+    stage, attempt, action, delay_ms: delayMs,
     code: failure.code, reason: failure.reason, httpStatus: failure.httpStatus,
-    timeout_ms: failure.timeout_ms, provider_status: failure.provider_status, cause: failure.cause
+    timeout_ms: failure.timeout_ms, provider_status: failure.provider_status, cause: failure.cause,
+    stream_drop: failure.stream_drop
   });
 }

@@ -1,4 +1,5 @@
 import { providerResponseFailure } from "./responseFailure";
+import { markProviderStreamDrop } from "./streamDrop";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildOpenAIResponsesRequest,
@@ -147,7 +148,9 @@ export function createCompatibleResponsesAdapter(
           : undefined;
       if (isFailedOpenAIResponse(response)) {
         if (usageEvent) yield usageEvent;
-        throw providerResponseFailure(`compatible_response_${openAIResponseStatus(response)}`, response);
+        const status = openAIResponseStatus(response);
+        const failure = providerResponseFailure(`compatible_response_${status}`, response);
+        throw status === "failed" ? markProviderStreamDrop(failure, "response_failed") : failure;
       }
       if (openAIResponseStatus(response) !== "completed") {
         if (usageEvent) yield usageEvent;

@@ -16,12 +16,14 @@ import {
   executeWithProviderRetry,
   initialRequestTransportFailure,
   ownsInitialRequestReplay,
+  type ProviderRetryDecision,
   type ProviderRetryOptions
 } from "./providerRetry";
 import { providerRequestNotSent } from "./providerSafeFetch";
 import { parseRetryAfterMs } from "../retryAfter";
 import { randomUUID } from "node:crypto";
-import { parseSseStream } from "./sse";
+import { parseProviderSseStream } from "./sse";
+import { markProviderStreamDrop, providerStreamDrop } from "./streamDrop";
 
 export type OpenAIResponseObject = Record<string, unknown>;
 
@@ -85,11 +87,11 @@ async function parseOpenAIJsonResponse(
 async function collectStreamedResponse(response: Response, signal: AbortSignal, timeoutMs?: number): Promise<OpenAIResponseObject> {
   if (!response.body) throw new Error("openai_stream_body_missing");
   const items = new Map<number, OpenAIResponseObject>();
-  for await (const event of parseSseStream(response.body, { signal, maxBytes: 16 * 1024 * 1024,
+  for await (const event of parseProviderSseStream(response.body, { signal, maxBytes: 16 * 1024 * 1024,
     maxEventBytes: 16 * 1024 * 1024, ...providerStreamTimingLimits(timeoutMs) })) {
     if (event.data === "[DONE]") break;
     let value: unknown;
-    try { value = JSON.parse(event.data); } catch { throw new Error("openai_response_invalid_json"); }
+    try { value = JSON.parse(event.data); } catch { throw markProviderStreamDrop(new Error("openai_response_invalid_json"), "truncated"); }
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("openai_response_invalid_json");
     const payload = value as Record<string, unknown>;
     if (payload.type === "response.output_item.done") {
@@ -110,11 +112,13 @@ async function collectStreamedResponse(response: Response, signal: AbortSignal, 
       // Only the reviewed context-length identity and counts leave the event.
       const contextLength = providerContextLengthRejection(payload.error && typeof payload.error === "object" &&
         !Array.isArray(payload.error) ? payload.error as Record<string, unknown> : payload);
-      throw Object.assign(new Error("openai_response_stream_failed"),
-        contextLength ? { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength } : {});
+      if (contextLength) {
+        throw Object.assign(new Error("openai_response_stream_failed"), { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength });
+      }
+      throw markProviderStreamDrop(new Error("openai_response_stream_failed"), "error_event");
     }
   }
-  throw new Error("openai_response_not_completed");
+  throw markProviderStreamDrop(new Error("openai_response_not_completed"), "truncated");
 }
 
 async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Promise<never> {
@@ -172,6 +176,30 @@ function initialRequestRetryDecision(
       : null;
   }
   return providerRequestNotSent(error) ? { retryAfterMs: null } : null;
+}
+
+// Reviewed classifications a repeated request would only meet again.
+const deterministicFailureCodes = new Set<unknown>([PROVIDER_CONTEXT_LENGTH_EXCEEDED, "provider_response_not_retryable",
+  "provider_capability_unsupported", "provider_response_cancelled"]);
+
+/** Own data properties only: no getter of a foreign error runs. */
+function ownErrorValue(error: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(error, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+/**
+ * The Codex LB dropped-round decision (PROVIDERS.md): a compatible Responses
+ * round whose request failed with HTTP 502, or whose stream dropped before
+ * its completion event, may be sent again unless a reviewed classification
+ * makes the failure deterministic. A 502's Retry-After shapes the wait. The
+ * transport itself never replays either; the round owner decides.
+ */
+export function compatibleDroppedRoundDecision(error: unknown): ProviderRetryDecision | null {
+  if (typeof error !== "object" || error === null || deterministicFailureCodes.has(ownErrorValue(error, "code")) ||
+    ownErrorValue(error, "capabilityFailureReason") !== undefined) return null;
+  if (error instanceof OpenAIHttpError) return error.status === 502 ? { retryAfterMs: error.retryAfterMs } : null;
+  return providerStreamDrop(error) ? { retryAfterMs: null } : null;
 }
 
 export function openAIRetryableErrorPayload(error: unknown): OpenAIRetryableErrorPayload | null {
@@ -254,6 +282,7 @@ export function createFetchOpenAIResponsesClient(input: {
         ? await executeWithProviderRetry({
             operation,
             options: input.initialRequestRetry,
+            remainingMs: timeout.remainingMs,
             shouldRetry: (error) => initialRequestRetryDecision(error, timeout.signal),
             signal: timeout.signal
           })
