@@ -38,8 +38,20 @@ TOTP is optional per user and covers only the sign-ins AIQSA verifies itself: pa
 - A new secret replaces the active one only after it is confirmed, and starting that replacement, new recovery codes and turning TOTP off each need a current code or a recovery code. Password reset by email never touches the factor. An administrator reset removes the factor and its codes and ends every session of the user; it is refused for the administrator's own account.
 - Secrets live in purpose-bound envelopes under the encryption key, and recovery codes only as hashes keyed from it, so losing that key blocks password and LDAP sign-in of users with TOTP until an administrator resets their factor.
 
+## SAML
+
+SAML is SP-initiated: unsigned AuthnRequests over HTTP-Redirect, responses over HTTP-POST. IdP-initiated SSO, Single Logout and encrypted assertions are unsupported.
+
+- The ACS (`/saml/acs`) is public and outside `/api`: the IdP's cross-site form POST carries no `Lax` cookies and would fail the `/api` origin guard, so the signed response is the only proof. Its body is bounded at 256 KiB before parsing and each client is rate-limited.
+- Each AuthnRequest waits in process memory for 10 minutes with its destination and the configuration version that issued it (one replica; a restart ends sign-ins in flight). A response must name a pending request, which it consumes before validation, and its signed bearer confirmation must answer that request: a signed unsolicited assertion is refused inside any response. `RelayState` is an HMAC (session secret, domain-separated) of the request id and expiry; missing, altered or naming another request, the sign-in continues at `/`.
+- Signatures verify only against the pinned certificates, never `KeyInfo`, on the assertion, the response or both as configured. SHA-1 needs `allowSha1`; HMAC and unknown algorithms are refused. Destination and Recipient must be the ACS URL, Audience the SP entity id, Issuer the IdP entity id; timestamps allow 60 s of skew and assertion ids stay remembered until they expire. XML with a DTD is refused before parsing.
+- Attributes come only from the validated assertion. The subject is the NameID (transient refused) or the configured attribute. SAML asserts no verified email, so linking by email needs `trustUnverifiedEmail`.
+
 ## Dependencies
 
 | Dependency | Boundary/rationale |
 | --- | --- |
 | `uqr` | Zero-dependency QR encoder that turns the provisioning URI into module data in the browser, rendered as a React SVG path without markup injection; the URI never leaves the account settings page. |
+| `@node-saml/node-saml` | Server-only SAML response validation, AuthnRequest and SP metadata. Floor 5.1.0 (CVE-2025-54419: assertion read from unsigned content). AIQSA adds the request binding, Destination, Recipient, Issuer, status, algorithm and replay checks it lacks. |
+| `xml-crypto` | The signature verifier node-saml uses, pinned directly and by override; floor 6.1.2 (signature bypasses fixed in 6.0.1). HMAC stays off; tests sign fixtures with it. |
+| `@xmldom/xmldom` | Parses untrusted SAML responses and IdP metadata, also inside node-saml and xml-crypto. Override floor 0.8.15 for the parser denial-of-service and well-formedness advisories up to 0.8.14. |
