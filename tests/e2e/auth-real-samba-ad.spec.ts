@@ -28,7 +28,8 @@ import {
 test.skip(!realIdpEnabled, REAL_IDP_SKIP_REASON);
 test.describe.configure({ mode: "serial" });
 // Traces would record the stand passwords typed into the forms.
-test.use({ trace: "off" });
+// Traces would record IdP passwords; a failure screenshot shows at most a username.
+test.use({ screenshot: "only-on-failure", trace: "off" });
 
 const prisma = new PrismaClient();
 const run = randomSuffix();

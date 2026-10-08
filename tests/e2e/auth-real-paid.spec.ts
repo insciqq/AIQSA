@@ -41,7 +41,8 @@ test.skip(!realIdpEnabled, REAL_IDP_SKIP_REASON);
 test.skip(!paidEnv("CODEX_LB_API_KEY") || !paidEnv("CODEX_LB_BASE_URL"), "paid: needs CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
 test.describe.configure({ mode: "serial" });
 // Traces would record the stand passwords typed into Keycloak's form.
-test.use({ trace: "off" });
+// Traces would record IdP passwords; a failure screenshot shows at most a username.
+test.use({ screenshot: "only-on-failure", trace: "off" });
 
 const prisma = new PrismaClient();
 const run = randomSuffix();
