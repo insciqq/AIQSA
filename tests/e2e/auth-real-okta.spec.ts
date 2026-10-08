@@ -261,7 +261,8 @@ test("Okta groups, users, applications and policies are created; the OIDC config
         signatureAlgorithm: "RSA_SHA256",
         ssoAcsUrl: acsUrl,
         subjectNameIdFormat: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent",
-        subjectNameIdTemplate: "${user.id}"
+        // The immutable Okta user id; `user.id` is not an Okta expression and leaves NameID empty.
+        subjectNameIdTemplate: "${user.getInternalProperty(\"id\")}"
       }
     },
     signOnMode: "SAML_2_0",
