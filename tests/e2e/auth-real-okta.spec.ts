@@ -72,6 +72,9 @@ let restoreSaml: (() => Promise<void>) | null = null;
 let samlAppId = "";
 let groupId = "";
 
+// Okta requires app visibility; the test apps stay off the users' dashboards.
+const HIDDEN = { autoSubmitToolbar: false, hide: { iOS: true, web: true } };
+
 const oktaOrigin = () => new URL(standEnv("AIQSA_E2E_OKTA_ORG")).origin;
 const issuer = () => `${oktaOrigin()}/oauth2/default`;
 
@@ -207,6 +210,7 @@ test("Okta groups, users, applications and policies are created; the OIDC config
     credentials: { oauthClient: { autoKeyRotation: true, token_endpoint_auth_method: "client_secret_basic" } },
     label: `AIQSA e2e OIDC ${run}`,
     name: "oidc_client",
+    visibility: HIDDEN,
     settings: {
       oauthClient: {
         application_type: "web",
@@ -251,7 +255,8 @@ test("Okta groups, users, applications and policies are created; the OIDC config
         subjectNameIdTemplate: "${user.id}"
       }
     },
-    signOnMode: "SAML_2_0"
+    signOnMode: "SAML_2_0",
+    visibility: HIDDEN
   });
   created.appIds.push(saml.id);
   samlAppId = saml.id;
