@@ -7,7 +7,7 @@ import { createAdminUserSessionCommands } from "../auth/adminUserSessionCommands
 import { prisma } from "../prisma";
 import { createPrismaSettingsRepository } from "../settings/prismaRepository";
 import { scheduledTaskScheduleColumns } from "../scheduledTasks/store";
-import { BROWSER_PUSH_MAX_SUBSCRIPTIONS_PER_USER, createPrismaBrowserPushStore } from "./store";
+import { BROWSER_PUSH_MAX_CONSECUTIVE_FAILURES, BROWSER_PUSH_MAX_SUBSCRIPTIONS_PER_USER, createPrismaBrowserPushStore } from "./store";
 
 const users: string[] = [];
 const store = createPrismaBrowserPushStore(prisma);
@@ -95,6 +95,48 @@ describe("persisted browser push", () => {
     await subscribe(second, (await session(second)).id, shared);
     expect(await targets(first)).toEqual([]);
     expect(await targets(second)).toEqual([shared.endpoint]);
+  });
+
+  it("keeps consecutive failures across re-syncs and session changes until success or pruning", async () => {
+    const userId = await owner();
+    let current = await session(userId);
+    const subscription = await subscribe(userId, current.id);
+    const [target] = await store.listTargets(userId, new Date());
+    const failedAt = new Date();
+    await store.recordDelivery(target!, "failed", failedAt);
+    current = await session(userId);
+    await subscribe(userId, current.id, subscription);
+    expect(await prisma.browserPushSubscription.findUniqueOrThrow({ where: { endpoint: subscription.endpoint } }))
+      .toMatchObject({ failureCount: 1, lastFailureAt: failedAt, sessionId: current.id });
+    const succeededAt = new Date();
+    await store.recordDelivery(target!, "delivered", succeededAt);
+    expect(await prisma.browserPushSubscription.findUniqueOrThrow({ where: { endpoint: subscription.endpoint } }))
+      .toMatchObject({ failureCount: 0, lastFailureAt: failedAt, lastSuccessAt: succeededAt });
+    for (let count = 1; count < BROWSER_PUSH_MAX_CONSECUTIVE_FAILURES; count += 1) {
+      await store.recordDelivery(target!, "failed", failedAt);
+      await subscribe(userId, current.id, subscription);
+      expect(await prisma.browserPushSubscription.findUniqueOrThrow({ where: { endpoint: subscription.endpoint } }))
+        .toMatchObject({ failureCount: count, lastFailureAt: failedAt });
+    }
+    await store.recordDelivery(target!, "failed", failedAt);
+    expect(await targets(userId)).toEqual([]);
+  });
+
+  it.each(["auth", "p256dh", "owner"] as const)("starts failure history afresh when the subscription's %s changes", async (changed) => {
+    let userId = await owner();
+    let current = await session(userId);
+    const subscription = await subscribe(userId, current.id);
+    const [target] = await store.listTargets(userId, new Date());
+    await store.recordDelivery(target!, "failed", new Date());
+    if (changed === "owner") {
+      userId = await owner();
+      current = await session(userId);
+    } else {
+      subscription[changed] = device()[changed];
+    }
+    await subscribe(userId, current.id, subscription);
+    expect(await prisma.browserPushSubscription.findUniqueOrThrow({ where: { endpoint: subscription.endpoint } }))
+      .toMatchObject({ failureCount: 0, lastFailureAt: null, userId });
   });
 
   it("refuses registration while notifications are off and removes every device when turned off", async () => {
