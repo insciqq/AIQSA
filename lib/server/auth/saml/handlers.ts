@@ -20,6 +20,7 @@ import { prepareAuthSession } from "../requestAuth";
 import type { SignInSessionInput } from "../signInCompletion";
 import type { ResolvedSignInMethod } from "../signInMethods";
 import type { SignInHealthRecorder } from "../signInSettings/health";
+import { observeSignInStep, type SignInCode } from "../signInTelemetry";
 import {
   clearSamlBrowserBindingCookie,
   createSamlBrowserBinding,
@@ -86,17 +87,26 @@ export function createSamlStartHandler(deps: {
   requests: SamlRequestStore;
   resolveMethod: SamlMethodResolver;
 }) {
-  return async function GET(request: Request): Promise<Response> {
+  // A sent AuthnRequest ends at the ACS or the completion step, which records the attempt.
+  return observeSignInStep({ method: "saml", step: "start" }, async (attempt, request: Request): Promise<Response> => {
     const config = deps.getConfig();
-    if (!config.configured) return Response.json({ error: "auth_not_configured" }, { status: 503 });
+    if (!config.configured) {
+      return attempt.end(Response.json({ error: "auth_not_configured" }, { status: 503 }), "failed", "auth_not_configured");
+    }
     const method = await deps.resolveMethod();
-    if (!method) return Response.json({ error: "not_found" }, { status: 404 });
+    if (!method) return attempt.end(Response.json({ error: "not_found" }, { status: 404 }), "refused", "sign_in_method_disabled");
 
     const client = resolveLoginRateLimitIdentity(request, config);
-    if (client.status === "unavailable") return outcomeRedirect(config, "failed");
+    if (client.status === "unavailable") return attempt.end(outcomeRedirect(config, "failed"), "failed", "auth_admission_unavailable");
     if (client.status === "available") {
       const decision = await deps.rateLimiter.check(`saml-start:client:${client.key}`);
-      if (!decision.allowed) return outcomeRedirect(config, "failed", { retryAfterSeconds: decision.retryAfterSeconds });
+      if (!decision.allowed) {
+        return attempt.end(
+          outcomeRedirect(config, "failed", { retryAfterSeconds: decision.retryAfterSeconds }),
+          "refused",
+          "rate_limited"
+        );
+      }
     }
 
     const now = deps.now?.() ?? new Date();
@@ -123,7 +133,7 @@ export function createSamlStartHandler(deps: {
         undefined,
         {}
       );
-      if (!issuedAt) return outcomeRedirect(config, "failed", { nextPath });
+      if (!issuedAt) return attempt.end(outcomeRedirect(config, "failed", { nextPath }), "failed", "sign_in_failed");
       const binding = createSamlBrowserBinding({
         maxAgeSeconds: SAML_REQUEST_TTL_MS / 1000,
         requestId,
@@ -137,17 +147,19 @@ export function createSamlStartHandler(deps: {
         issuedAt,
         nextPath
       });
-      return redirect(location, [binding.cookie]);
-    } catch {
-      return outcomeRedirect(config, "failed", { nextPath });
+      return attempt.handOff(redirect(location, [binding.cookie]));
+    } catch (error) {
+      return attempt.end(outcomeRedirect(config, "failed", { nextPath }), "failed", "sign_in_failed", error);
     }
-  };
+  });
 }
 
 type SamlForm = { relayState: string | null; samlResponse: string };
 
 /** The HTTP-POST binding's form, bounded before it is decoded. */
-async function readSamlForm(request: Request): Promise<{ form: SamlForm; ok: true } | { code: string; ok: false }> {
+async function readSamlForm(
+  request: Request
+): Promise<{ form: SamlForm; ok: true } | { code: Extract<SignInCode, "response_invalid" | "response_too_large">; ok: false }> {
   const contentType = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   if (contentType !== "application/x-www-form-urlencoded") return { code: "response_invalid", ok: false };
   let text: string;
@@ -182,25 +194,32 @@ export function createSamlAcsHandler(deps: {
   requests: SamlRequestStore;
   resolveMethod: SamlMethodResolver;
 }) {
-  return async function POST(request: Request): Promise<Response> {
+  // A valid response continues at the completion step, which records the attempt.
+  return observeSignInStep({ method: "saml", step: "callback" }, async (attempt, request: Request): Promise<Response> => {
     const config = deps.getConfig();
-    if (!config.configured) return Response.json({ error: "not_found" }, { status: 404 });
+    if (!config.configured) return attempt.end(Response.json({ error: "not_found" }, { status: 404 }), "failed", "auth_not_configured");
     const method = await deps.resolveMethod();
-    if (!method) return outcomeRedirect(config, "failed");
+    if (!method) return attempt.end(outcomeRedirect(config, "failed"), "refused", "sign_in_method_disabled");
     const record = (code: string) => deps.recordOutcome(method, code);
 
     const client = resolveLoginRateLimitIdentity(request, config);
-    if (client.status === "unavailable") return outcomeRedirect(config, "failed");
+    if (client.status === "unavailable") return attempt.end(outcomeRedirect(config, "failed"), "failed", "auth_admission_unavailable");
     const rateLimitKey = client.status === "available" ? `saml-acs:client:${client.key}` : null;
     if (rateLimitKey) {
       const decision = await deps.loginRateLimiter.check(rateLimitKey);
-      if (!decision.allowed) return outcomeRedirect(config, "failed", { retryAfterSeconds: decision.retryAfterSeconds });
+      if (!decision.allowed) {
+        return attempt.end(
+          outcomeRedirect(config, "failed", { retryAfterSeconds: decision.retryAfterSeconds }),
+          "refused",
+          "rate_limited"
+        );
+      }
     }
 
     const read = await readSamlForm(request);
     if (!read.ok) {
       await record(read.code);
-      return outcomeRedirect(config, "failed");
+      return attempt.end(outcomeRedirect(config, "failed"), "failed", read.code);
     }
     const now = deps.now?.() ?? new Date();
     const verification = await verifySamlResponse({
@@ -214,7 +233,11 @@ export function createSamlAcsHandler(deps: {
     });
     if (!verification.ok) {
       await record(verification.code);
-      return outcomeRedirect(config, "failed", { nextPath: verification.request?.nextPath });
+      return attempt.end(
+        outcomeRedirect(config, "failed", { nextPath: verification.request?.nextPath }),
+        "failed",
+        verification.code
+      );
     }
 
     const relayState = readSamlRelayState(read.form.relayState, { now: now.getTime(), secret: config.sessionSecret });
@@ -228,8 +251,8 @@ export function createSamlAcsHandler(deps: {
     });
     // A valid response gives back only its own attempt; earlier failures keep counting.
     if (rateLimitKey) await deps.loginRateLimiter.release(rateLimitKey);
-    return redirect(new URL(SAML_COMPLETE_PATH, config.appBaseUrl).toString());
-  };
+    return attempt.handOff(redirect(new URL(SAML_COMPLETE_PATH, config.appBaseUrl).toString()));
+  });
 }
 
 /**
@@ -247,23 +270,23 @@ export function createSamlCompleteHandler(deps: {
   recordOutcome: SignInHealthRecorder;
   resolveMethod: SamlMethodResolver;
 }) {
-  return async function GET(request: Request): Promise<Response> {
+  return observeSignInStep({ method: "saml", step: "callback" }, async (attempt, request: Request): Promise<Response> => {
     const config = deps.getConfig();
-    if (!config.configured) return Response.json({ error: "not_found" }, { status: 404 });
+    if (!config.configured) return attempt.end(Response.json({ error: "not_found" }, { status: 404 }), "failed", "auth_not_configured");
     const cookies = [clearSamlBrowserBindingCookie(config.cookieSecure)];
     const binding = readSamlBrowserBinding(request.headers.get("cookie"), config.sessionSecret);
     const completion = binding ? deps.completions.take(binding.requestId) : null;
     // Not recorded as health: anyone can reach this step, so a mismatch says nothing of the IdP.
     if (!binding || !completion || !samlBindingMatches(binding.nonce, completion.bindingHash)) {
-      return outcomeRedirect(config, "browser_mismatch", { cookies });
+      return attempt.end(outcomeRedirect(config, "browser_mismatch", { cookies }), "failed", "browser_mismatch");
     }
     const nextPath = safeInternalPath(completion.nextPath, config.appBaseUrl);
     const method = await deps.resolveMethod();
-    if (!method) return outcomeRedirect(config, "failed", { cookies, nextPath });
+    if (!method) return attempt.end(outcomeRedirect(config, "failed", { cookies, nextPath }), "refused", "sign_in_method_disabled");
     const record = (code: string) => deps.recordOutcome(method, code);
     if ((method.activeVersion ?? null) !== completion.activeVersion) {
       await record("request_unknown");
-      return outcomeRedirect(config, "failed", { cookies, nextPath });
+      return attempt.end(outcomeRedirect(config, "failed", { cookies, nextPath }), "failed", "request_unknown");
     }
 
     const now = deps.now?.() ?? new Date();
@@ -285,28 +308,32 @@ export function createSamlCompleteHandler(deps: {
         source: completion.source,
         subject: identity.subject
       });
-    } catch {
+    } catch (error) {
       await record("sign_in_failed");
-      return outcomeRedirect(config, "failed", { cookies, nextPath });
+      return attempt.end(outcomeRedirect(config, "failed", { cookies, nextPath }), "failed", "sign_in_failed", error);
     }
 
     switch (result.status) {
       case "active":
         await record("accepted");
-        return redirect(new URL(nextPath, config.appBaseUrl).toString(), [...cookies, session.cookie]);
+        return attempt.end(
+          redirect(new URL(nextPath, config.appBaseUrl).toString(), [...cookies, session.cookie]),
+          "succeeded",
+          "accepted"
+        );
       case "pending":
         // A pending account is the IdP working as configured.
         await record("accepted");
-        return outcomeRedirect(config, "pending", { cookies, nextPath });
+        return attempt.end(outcomeRedirect(config, "pending", { cookies, nextPath }), "refused", "account_pending");
       case "second_factor_required":
         // SAML relies on the IdP's MFA; the completion seam never asks it for a second factor.
         await record("sign_in_failed");
-        return outcomeRedirect(config, "failed", { cookies, nextPath });
+        return attempt.end(outcomeRedirect(config, "failed", { cookies, nextPath }), "failed", "sign_in_failed");
       default:
         await record(result.status);
-        return outcomeRedirect(config, result.status, { cookies, nextPath });
+        return attempt.end(outcomeRedirect(config, result.status, { cookies, nextPath }), "refused", result.status);
     }
-  };
+  });
 }
 
 /**

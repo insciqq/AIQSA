@@ -127,6 +127,31 @@ describe("telemetry aggregation", () => {
     expect(JSON.stringify(counters)).not.toContain("call-");
   });
 
+  it("counts sign-in attempts by method, step, outcome and code, with incidents only for errors", () => {
+    const aggregator = createTelemetryAggregator();
+    const observe = (fields: EventFields["sign_in"]) =>
+      aggregator.observe(Object.freeze(JSON.parse(serializeEvent("sign_in", fields)!)));
+    for (let index = 0; index < 3; index += 1) {
+      observe({ sign_in_method: "saml", step: "callback", outcome: "failed", code: "signature_invalid", duration_ms: 40 });
+    }
+    observe({ sign_in_method: "saml", step: "callback", outcome: "failed", code: "browser_mismatch", duration_ms: 5 });
+    observe({ sign_in_method: "password", step: "credentials", outcome: "failed", code: "invalid_credentials" });
+    observe({ sign_in_method: "password", step: "credentials", outcome: "succeeded", code: "accepted" });
+
+    const { counters, incidents } = aggregator.drain();
+    const rows = counters.map((counter) => ({ count: counter.count, dimensions: counter.dimensions, level: counter.level }));
+    expect(rows).toHaveLength(4);
+    expect(rows).toEqual(expect.arrayContaining([
+      { count: 3, level: "error", dimensions: { code: "signature_invalid", outcome: "failed", sign_in_method: "saml", step: "callback" } },
+      { count: 1, level: "warn", dimensions: { code: "browser_mismatch", outcome: "failed", sign_in_method: "saml", step: "callback" } },
+      { count: 1, level: "warn", dimensions: { code: "invalid_credentials", outcome: "failed", sign_in_method: "password", step: "credentials" } },
+      { count: 1, level: "info", dimensions: { code: "accepted", outcome: "succeeded", sign_in_method: "password", step: "credentials" } }
+    ]));
+    expect(incidents).toHaveLength(3);
+    expect(incidents.every((incident) => incident.code === "signature_invalid" &&
+      incident.details.sign_in_method === "saml" && incident.details.step === "callback")).toBe(true);
+  });
+
   it("keeps rate-limited error incidents with the record's remaining fields", () => {
     const aggregator = createTelemetryAggregator(limits({ incidentsPerMinute: 3, maxIncidents: 6 }));
     for (let index = 0; index < 5; index += 1) {
