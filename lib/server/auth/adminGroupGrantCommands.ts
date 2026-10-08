@@ -7,6 +7,7 @@ import type { AdminRepository, AdminSetGroupGrantsResult } from "./adminReposito
 import { normalizeAdminGroupName } from "./adminRepositoryInputs";
 import { serializeAdminGroup } from "./adminRepositorySerializers";
 import { applyMembershipChange } from "./groupMembership";
+import { managedMemberships } from "./signInManagement";
 
 export type AdminGroupGrantCommands = Pick<
   AdminRepository,
@@ -335,11 +336,13 @@ export function createAdminGroupGrantCommands(prisma: PrismaClient): AdminGroupG
           if (JSON.stringify([...currentGroupIds].sort()) !== JSON.stringify(expectedGroupIds)) {
             return "user_access_stale" as const;
           }
-          await applyMembershipChange(tx, {
-            add: [...activeGroupIds].filter((groupId) => !currentGroupIds.has(groupId)),
-            remove: [...currentGroupIds].filter((groupId) => !activeGroupIds.has(groupId)),
-            userId: input.userId
-          });
+          const add = [...activeGroupIds].filter((groupId) => !currentGroupIds.has(groupId));
+          const remove = [...currentGroupIds].filter((groupId) => !activeGroupIds.has(groupId));
+          // The next sign-in or SCIM push would undo a manual change to an IdP-managed membership.
+          if ((await managedMemberships(tx, { groupIds: [...add, ...remove], userId: input.userId })).size) {
+            return "group_membership_managed" as const;
+          }
+          await applyMembershipChange(tx, { add, remove, userId: input.userId });
 
           return "applied" as const;
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });

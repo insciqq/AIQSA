@@ -376,7 +376,7 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
       });
       return result === "applied"
         ? json({ ok: true })
-        : json({ error: result }, { status: result === "user_access_stale" ? 409 : 404 });
+        : json({ error: result }, { status: result === "user_not_found" ? 404 : 409 });
     }
 
     if (action.action === "set_user_role") {

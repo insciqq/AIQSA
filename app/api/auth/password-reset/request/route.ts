@@ -5,6 +5,7 @@ import {
   passwordAuthRepository
 } from "@/lib/server/auth/defaultAuth";
 import { createPasswordResetRequestHandler } from "@/lib/server/auth/handlers";
+import { readSignInPolicy } from "@/lib/server/auth/signInSettings/defaultSignInSettings";
 
 export const runtime = "nodejs";
 
@@ -12,5 +13,6 @@ export const POST = createPasswordResetRequestHandler({
   getConfig: () => getAuthConfig(),
   mailer: authMailer,
   repository: passwordAuthRepository,
-  resetRateLimiter: authRateLimiter
+  resetRateLimiter: authRateLimiter,
+  signInPolicy: readSignInPolicy
 });

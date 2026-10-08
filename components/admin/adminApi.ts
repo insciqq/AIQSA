@@ -169,6 +169,7 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     group_has_grants: "Remove active grants before deleting this group.",
     group_has_members: "Remove members before deleting this group.",
     group_invalid: "Use a unique, non-empty group name.",
+    group_membership_managed: "Nothing was changed: this membership is managed by the identity provider or SCIM. The next sign-in or SCIM push would undo a manual change, so change the user's groups in the identity provider or remove the group's external name.",
     group_not_found: "This group no longer exists or its new name is already in use. Refresh to review the current groups.",
     group_required: "Enter a group name.",
     invalid_origin: "The request was blocked by the same-origin security check. Reload AIQSA from its configured URL and try again.",

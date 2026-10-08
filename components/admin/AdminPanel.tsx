@@ -20,6 +20,7 @@ import { AdminProvidersSection } from "@/components/admin/providers/AdminProvide
 import { AdminRetrievalSection } from "@/components/admin/retrieval/AdminRetrievalSection";
 import { AdminRolesSection } from "@/components/admin/roles/AdminRolesSection";
 import { AdminSearchSection } from "@/components/admin/search/AdminSearchSection";
+import { AdminSignInSection } from "@/components/admin/signIn/AdminSignInSection";
 import {
   AdminReleaseUpdatePill,
   AdminSectionTopbarProvider,
@@ -205,6 +206,8 @@ function AdminSectionContent({
       );
     case "access-rules":
       return <AdminSignupRulesSection controller={accessRules} groups={dashboard.groups} />;
+    case "sign-in":
+      return <AdminSignInSection feedback={feedback} requestConfirmation={requestConfirmation} />;
     case "limits":
       return <AdminUsageLimitsSection reportNotice={reportNotice} />;
     case "groups":

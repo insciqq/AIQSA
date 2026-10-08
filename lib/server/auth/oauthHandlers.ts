@@ -6,7 +6,7 @@ import {
   type OAuthLoginOutcome,
   type OAuthProviderId
 } from "../../auth/oauth";
-import type { AuthConfig } from "./config";
+import type { AuthConfig, OAuthProviderConfig } from "./config";
 import { resolveLoginRateLimitIdentity } from "./clientIdentity";
 import type { OAuthIdentityRepository } from "./oauthRepository";
 import {
@@ -45,10 +45,21 @@ type OAuthRouteContext = {
   params: Promise<{ provider: string }> | { provider: string };
 };
 
+/** A provider's active client and, for an admin-panel configuration, its health recorder. */
+export type ResolvedOAuthProvider = {
+  config: OAuthProviderConfig;
+  /** Records a content-free sign-in outcome (`accepted` or a failure code); never throws. */
+  recordOutcome?(code: string): Promise<void>;
+};
+
+/** The provider's active configuration; without a resolver, the environment's. */
+export type OAuthProviderResolver = (provider: OAuthProviderId) => Promise<ResolvedOAuthProvider | null>;
+
 type OAuthStartHandlerDeps = {
   getConfig(): AuthConfig;
   now?: () => Date;
   randomToken?: () => string;
+  resolveProvider?: OAuthProviderResolver;
 };
 
 type OAuthCallbackHandlerDeps = {
@@ -61,6 +72,7 @@ type OAuthCallbackHandlerDeps = {
   oauthFlowRateLimiter?: LoginRateLimiter;
   oauthProviderRateLimiter?: LoginRateLimiter;
   repository: OAuthIdentityRepository;
+  resolveProvider?: OAuthProviderResolver;
   sessions: AuthSessionStore;
 };
 
@@ -224,6 +236,16 @@ async function verifyFlow(token: string, config: AuthConfig, now: Date): Promise
   }
 }
 
+async function resolveProvider(
+  resolver: OAuthProviderResolver | undefined,
+  config: AuthConfig,
+  provider: OAuthProviderId
+): Promise<ResolvedOAuthProvider | null> {
+  if (resolver) return resolver(provider);
+  const environment = config.oauthProviders[provider];
+  return environment ? { config: environment } : null;
+}
+
 function unavailable(): Response {
   return Response.json({ error: "not_found" }, { status: 404 });
 }
@@ -241,7 +263,7 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
       return unavailable();
     }
 
-    const providerConfig = config.oauthProviders[rawProvider];
+    const providerConfig = (await resolveProvider(deps.resolveProvider, config, rawProvider))?.config;
 
     if (!providerConfig) {
       return unavailable();
@@ -296,12 +318,16 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       return unavailable();
     }
 
-    const providerConfig = config.oauthProviders[rawProvider];
+    const resolvedProvider = await resolveProvider(deps.resolveProvider, config, rawProvider);
+    const providerConfig = resolvedProvider?.config;
 
     if (!providerConfig) {
       return unavailable();
     }
 
+    const recordOutcome = async (code: string) => {
+      await resolvedProvider?.recordOutcome?.(code);
+    };
     const clearCookie = clearFlowCookie(config.cookieSecure);
     const now = deps.now?.() ?? new Date();
     const flowToken = readCookie(request.headers.get("cookie"), OAUTH_FLOW_COOKIE_NAME);
@@ -485,6 +511,8 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       });
 
       if (settlement.status !== "active") {
+        // A pending account is the provider working as configured.
+        await recordOutcome(settlement.status === "pending" ? "accepted" : settlement.status);
         return redirect(
           outcomeUrl({
             appBaseUrl: config.appBaseUrl,
@@ -504,6 +532,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         signInMethod: rawProvider,
         userId: settlement.userId
       });
+      await recordOutcome("accepted");
       // A completed login gives back only its own callback attempt; the source's earlier
       // failed callbacks keep counting.
       if (rateLimitKey) {
@@ -512,6 +541,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
 
       return redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, session.cookie]);
     } catch {
+      await recordOutcome("exchange_failed");
       return redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,

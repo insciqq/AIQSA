@@ -276,6 +276,7 @@ type AdminActionDomainErrorCode =
   | "group_has_grants"
   | "group_has_members"
   | "group_invalid"
+  | "group_membership_managed"
   | "group_not_found"
   | "group_required"
   | "system_group_forbidden"
