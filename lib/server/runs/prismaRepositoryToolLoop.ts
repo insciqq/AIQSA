@@ -17,6 +17,7 @@ import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspace
 import { validAcceptedAgent } from "../agents/config";
 import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
+import { signalRunTerminal } from "../push/runTerminalSignal";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import {
   Prisma,
@@ -2357,7 +2358,7 @@ export function createPrismaRunToolLoopOperations(
           : null;
       const estimatedCostMicros = sumEstimatedCostMicros(usageAttributions.map((attribution) => attribution.estimatedCostMicros));
 
-      return prismaClient.$transaction(async (tx) => {
+      const settled = await prismaClient.$transaction(async (tx) => {
         const [run] = await tx.$queryRaw<
           Array<{
             assistantMessageId: string | null;
@@ -2449,6 +2450,9 @@ export function createPrismaRunToolLoopOperations(
 
         return true;
       });
+      // Browser push learns of the failure only once it has committed.
+      if (settled) signalRunTerminal(input.runId);
+      return settled;
     },
     settleToolLoopCall: async (input) => {
       const result = snapshotToolLoopJson(input.result, toolLoopPersistenceLimits.resultBytes);

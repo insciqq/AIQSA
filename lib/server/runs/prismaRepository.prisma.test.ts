@@ -30,6 +30,7 @@ import {
 } from "../knowledge/automaticEvidence";
 import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
 import { createPrismaRunRepository } from "./prismaRepository";
+import { registerRunTerminalListener } from "../push/runTerminalSignal";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
@@ -4501,15 +4502,23 @@ describe("Prisma-backed run repository", () => {
         userId
       };
 
-      const settlements = await Promise.all([
-        repository.settleRecoveredRunError(settlement),
-        repository.settleRecoveredRunError(settlement)
-      ]);
+      const signalled: string[] = [];
+      registerRunTerminalListener((terminalRunId) => signalled.push(terminalRunId));
+      try {
+        const settlements = await Promise.all([
+          repository.settleRecoveredRunError(settlement),
+          repository.settleRecoveredRunError(settlement)
+        ]);
 
-      expect(settlements.sort()).toEqual([false, true]);
-      await expect(
-        repository.settleRecoveredRunError({ ...settlement, userId: "another-user" })
-      ).resolves.toBe(false);
+        expect(settlements.sort()).toEqual([false, true]);
+        await expect(
+          repository.settleRecoveredRunError({ ...settlement, userId: "another-user" })
+        ).resolves.toBe(false);
+        // Browser push hears of the committed transition once; lost ones send nothing.
+        expect(signalled).toEqual([recovered.runId]);
+      } finally {
+        registerRunTerminalListener(null);
+      }
       const [run, message, events, usageEvents, chats, controls] = await Promise.all([
         prisma.modelRun.findUniqueOrThrow({
           select: {
