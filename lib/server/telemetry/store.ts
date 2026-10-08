@@ -85,7 +85,7 @@ export type TelemetryIncidentRange = Readonly<{ from: Date; to: Date }>;
 /**
  * Retained incidents of one group with their distinct user and run ids.
  * Incidents are a rate-limited, trimmed sample of the failures, so each count
- * is a lower bound: an error that reached 40 users shows at least one each.
+ * is a lower bound of the failure's true reach.
  */
 export type TelemetryIncidentReach = Readonly<{ incidents: number; users: number; runs: number }>;
 
@@ -357,9 +357,9 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
   const inBatches = async (statement: Prisma.Sql): Promise<number> => {
     let total = 0;
     for (let batch = 0; batch < RETENTION_MAX_BATCHES; batch += 1) {
-      const deleted = await db.$executeRaw(statement);
-      total += deleted;
-      if (deleted < RETENTION_BATCH_ROWS) break;
+      const affected = await db.$executeRaw(statement);
+      total += affected;
+      if (affected < RETENTION_BATCH_ROWS) break;
     }
     return total;
   };

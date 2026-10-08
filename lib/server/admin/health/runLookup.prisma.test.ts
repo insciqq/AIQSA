@@ -22,7 +22,7 @@ function incident(runId: string, minutesAgo: number) {
   return {
     occurredAt: new Date(Date.now() - minutesAgo * 60_000), role: "app", event: "run_execution", level: "error" as const,
     appVersion: "run-lookup-test", instanceId: "c".repeat(32), code: "provider_auth_rejected", subsystem: null,
-    connectionId: null, runId, traceId: null, details: {}
+    connectionId: null, runId, traceId: null, userId: null, details: {}
   };
 }
 
