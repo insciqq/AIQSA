@@ -275,6 +275,7 @@ import {
 } from "./toolExecutionPersistence";
 import {
   isNotesOnlyCheckpoint,
+  isRunEndedToolCallResult,
   mergeAnswerRoundUsage,
   snapshotToolLoopJson,
   toolLoopPersistenceLimits,
@@ -1437,6 +1438,27 @@ async function currentRecoveryMcpDispatchFailure(
   }
 }
 
+/**
+ * The Search executions a call is billed for. An observed run bills its
+ * immutable receipt, or without one the executed Search whose receipt could
+ * not be recorded; an unobserved run bills what its saved result reports.
+ */
+async function billedSearchExecutions(input: Readonly<{
+  observations: ToolObservationService | null;
+  producer: Parameters<ToolObservationService["searchAccounting"]>[0];
+  result: ToolExecutionResult | null;
+  unrecorded?: ToolExecutionResult;
+}>): Promise<readonly SearchExecutionEvidence[]> {
+  const receipt = input.observations ? await input.observations.searchAccounting(input.producer) : null;
+  return receipt === null ? (input.result ? searchExecutionsFromToolResult(input.result) : [])
+    : receipt.length === 0 && input.unrecorded ? searchExecutionsFromToolResult(input.unrecorded) : receipt;
+}
+
+/** A Search execution bills usage only for its engine model. */
+function searchExecutionUsage(execution: SearchExecutionEvidence): RunUsageAttribution | null {
+  return execution.modelId ? searchUsageAttribution(execution) : null;
+}
+
 async function recordRecoveredSearchResult(input: Readonly<{
   modelRunToolCallId: string;
   context: RecoveryToolContext;
@@ -1445,12 +1467,12 @@ async function recordRecoveredSearchResult(input: Readonly<{
   /** The executed Search when its accounting receipt could not be recorded. */
   unrecorded?: ToolExecutionResult;
 }>): Promise<void> {
-  const receipt = input.context.run.normalizedRequest.toolObservationVersion === 1
-    ? await (await recoveredObservations(input.context)).searchAccounting({ runId: input.context.run.id,
-        userId: input.context.run.userId, toolCallId: input.modelRunToolCallId })
-    : null;
-  const executions = receipt === null ? searchExecutionsFromToolResult(input.result)
-    : receipt.length === 0 && input.unrecorded ? searchExecutionsFromToolResult(input.unrecorded) : receipt;
+  const executions = await billedSearchExecutions({
+    observations: input.context.run.normalizedRequest.toolObservationVersion === 1 ? await recoveredObservations(input.context) : null,
+    producer: { runId: input.context.run.id, userId: input.context.run.userId, toolCallId: input.modelRunToolCallId },
+    result: input.result,
+    ...(input.unrecorded ? { unrecorded: input.unrecorded } : {})
+  });
   const previewCount = input.context.run.normalizedRequest.toolObservationVersion === 1 ? null : searchExecutionPreviewCount(input.result);
   if (previewCount !== null && executions.length !== previewCount) {
     throw new ToolLoopRecoveryError(
@@ -1460,7 +1482,8 @@ async function recordRecoveredSearchResult(input: Readonly<{
   }
   for (const execution of executions) {
     // A reported engine cost settles the call, as in the live run.
-    if (input.includeUsage && execution.modelId) input.context.usageAttributions.push(searchUsageAttribution(execution));
+    const usage = searchExecutionUsage(execution);
+    if (input.includeUsage && usage) input.context.usageAttributions.push(usage);
     await persistRecoveredPlanSearchExecution({
       execution,
       modelRunId: input.context.run.id,
@@ -5014,14 +5037,45 @@ const RECOVERY_STATE_INVALID_MESSAGE =
   "This answer was interrupted, and its saved progress could not be read to resume it. Your message is saved; regenerate to try again.";
 
 /**
+ * Usage of the lost executor's settled tool calls that recovery never
+ * accounted, read from records that decode on their own: a Search call's
+ * immutable usage receipt, and a Knowledge call's saved result in a run with
+ * a Knowledge scope. Nothing is executed or disclosed; a record that does not
+ * decode is skipped, and a failed read propagates.
+ */
+async function unaccountedToolUsage(
+  deps: RunRecoveryDeps,
+  run: CheckpointedToolLoopRun
+): Promise<RunUsageAttribution[]> {
+  const usage: RunUsageAttribution[] = [];
+  const unaccounted = run.calls.filter((call) => call.usageAccountedAt == null);
+  const observations = unaccounted.length > 0 ? deps.observations ?? await defaultToolObservations() : null;
+  for (const call of unaccounted) {
+    const executions = await billedSearchExecutions({ observations,
+      producer: { runId: run.id, userId: run.userId, toolCallId: call.id }, result: null })
+      .catch((error: unknown) => { if (observationRestoreRefused(error)) return []; throw error; });
+    usage.push(...executions.flatMap((execution) => searchExecutionUsage(execution) ?? []));
+    if (run.knowledgeScope && deps.knowledgeExecutor?.accepts(call.toolName) &&
+      (call.state === "complete" || call.state === "error") && !isRunEndedToolCallResult(call.result)) {
+      const result = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result);
+      if (result) usage.push(...knowledgeUsageAttributionsFromToolResult(result));
+    }
+  }
+  return usage;
+}
+
+/**
  * Ends a run whose accepted recovery record was read but fails its decoder:
  * rereading cannot change it, and nothing may be dispatched, refreshed or
  * executed from it. A provider response the lost executor started is
- * cancelled, and its paid work is accounted as for a retired context policy:
- * a lost tool-loop round or summary call through a still readable
- * checkpoint, a direct answer dispatch as one operation of unknown usage
- * once the run is terminal. The terminal writers are the ordinary guarded
- * recovery ones, followed by Workspace settlement.
+ * cancelled, and its paid work is accounted: a lost tool-loop round or
+ * summary call through a still readable checkpoint, the unaccounted usage of
+ * its saved tool records, and a direct answer dispatch as one operation of
+ * unknown usage unless an answer was already recorded. The complete priced
+ * accounting is prepared first and committed with the guarded recovered-error
+ * transition, so a failed preparation leaves the run for a later pass and a
+ * concurrent winner or a retry never counts anything twice. Workspace
+ * settlement follows.
  */
 async function failInvalidRecoveryStateRun(
   deps: RunRecoveryDeps,
@@ -5039,32 +5093,25 @@ async function failInvalidRecoveryStateRun(
   const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId })
     .catch((error: unknown) => { if (error instanceof RecoveryStateInvalidError) return null; throw error; });
   if (checkpointed) await accountLostExecutorCheckpoint(deps, runId, userId);
-  const error = { code: invalid.code, message: RECOVERY_STATE_INVALID_MESSAGE };
-  // A recoverable error-status round is not dispatchable, so it settles
-  // through the recovered-error writer, keeping its recorded attributions.
-  const failed = control.status === "error"
-    ? await settleRecoveredError(deps.repository, { error, outputEvents: [], runId, usageAttributions: [], userId })
-    : await failRecoveredRun(deps.repository, runId, control.assistantMessageId, error, { recoveryTerminal: true });
-  if (!failed) return;
-  if (!checkpointed && control.providerResponseId) {
-    // Recorded only after the guarded terminal write, so a retry or another
-    // winner never counts it twice; an answer whose usage was already
-    // recorded is not counted again.
-    await (async () => {
-      const persisted = await deps.repository.loadRunUsageAttributions({ runId, userId });
-      if (persisted.some((attribution) => attribution.purpose === "chat_answer")) return;
-      await deps.repository.recordRunUsageEvents({
-        chatId: control.chatId,
-        runId,
-        usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
-          ...persisted.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
-          { modelId: control.modelId, operationCount: 1, provider: control.provider, purpose: "chat_answer",
-            usage: normalizeTokenUsage({ completeness: "unavailable" }) }
-        ])),
-        userId
-      });
-    })().catch(() => undefined);
+  const lost: RunUsageAttribution[] = checkpointed ? await unaccountedToolUsage(deps, checkpointed) : [];
+  const persisted = (await deps.repository.loadRunUsageAttributions({ runId, userId }))
+    .map(({ recordedAt: _recordedAt, ...attribution }) => attribution);
+  if (!checkpointed && control.providerResponseId && !persisted.some((attribution) => attribution.purpose === "chat_answer")) {
+    lost.push({ modelId: control.modelId, operationCount: 1, provider: control.provider, purpose: "chat_answer",
+      usage: normalizeTokenUsage({ completeness: "unavailable" }) });
   }
+  // Without lost usage the recorded attributions stay exactly as they are.
+  const usageAttributions = lost.length > 0
+    ? await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([...persisted, ...lost]))
+    : [];
+  const failed = await settleRecoveredError(deps.repository, {
+    error: { code: invalid.code, message: RECOVERY_STATE_INVALID_MESSAGE },
+    outputEvents: [],
+    runId,
+    usageAttributions,
+    userId
+  });
+  if (!failed) return;
   await deps.workspace?.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) })
     .catch((settleError: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
       code: observedFailureCode(settleError), prisma_code: databaseFailureCode(settleError), action: "retry" }));

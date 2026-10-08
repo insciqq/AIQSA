@@ -5303,8 +5303,12 @@ describe("model run route handlers", () => {
     const failed: string[] = [];
     const failRun = repository.failRun;
     repository.failRun = async (...args) => {
-      failed.push(`${args[0]}:${args[2].code}:${String(args[3]?.recoveryTerminal)}`);
+      failed.push(`fail:${args[0]}:${args[2].code}`);
       return failRun(...args);
+    };
+    repository.settleRecoveredRunError = async (input) => {
+      failed.push(`recovered:${input.runId}:${input.error.code}`);
+      return true;
     };
     const getRunControlForUser = repository.getRunControlForUser;
     repository.getRunControlForUser = async (id, userId) =>
@@ -5329,7 +5333,7 @@ describe("model run route handlers", () => {
 
     expect(response.status).toBe(200);
     await response.text();
-    expect(failed).toEqual(["run-unreadable:tool_loop_checkpoint_invalid_in_storage:true"]);
+    expect(failed).toEqual(["recovered:run-unreadable:tool_loop_checkpoint_invalid_in_storage"]);
     if (kind === "send") {
       expect(state.created?.content).toEqual({ blocks: [{ text: "Send beside unrecoverable runs", type: "text" }] });
     } else expect(state.regenerated).toMatchObject({ chatId: "chat-1", modelId: "fake-qsa" });
