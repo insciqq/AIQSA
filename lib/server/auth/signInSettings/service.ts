@@ -250,7 +250,9 @@ export function createSignInSettingsService(input: {
       if (!draft.ok) return { code: draft.code, ok: false };
 
       let verdict: { code: string; passed: boolean } = { code: "no_test_required", passed: true };
-      if (tester.test) {
+      if (tester.available && !tester.available(getAuthConfig(env()))) {
+        verdict = { code: "environment_unsupported", passed: false };
+      } else if (tester.test) {
         const controller = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
         // The deadline holds even for a tester that ignores its signal.
@@ -295,6 +297,10 @@ export function createSignInSettingsService(input: {
     async activate(request) {
       const methodDefinition = definition(request.method);
       if (!methodDefinition) return { code: "method_unavailable", ok: false };
+      // A passing test may predate a restart into another environment.
+      if (methodDefinition.available && !methodDefinition.available(getAuthConfig(env()))) {
+        return { code: "environment_unsupported", ok: false };
+      }
       const result = await repository.activate({
         actorUserId: request.actorUserId,
         confirmSourceChange: request.confirmSourceChange,

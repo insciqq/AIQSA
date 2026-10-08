@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { AuthSignInMethodSetting } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { trustedHeaderSignInMethod } from "../trustedHeader/method";
 import { googleSignInMethod, yandexSignInMethod } from "./oauthClientMethod";
 import type { SignInMethodServerRegistry } from "./registry";
 import type { SignInSettingsRepository } from "./repository";
@@ -351,4 +352,61 @@ describe("Google and Yandex testers", () => {
     await expect(yandexSignInMethod.test!({ appBaseUrl: "https://a.example", config: { clientId: "0123456789abcdef0123456789abcdef" }, secrets: { clientSecret: "has space" }, signal }))
       .resolves.toEqual({ code: "client_secret_format_invalid", passed: false });
   });
+});
+
+describe("environment-bound methods", () => {
+  const TRUSTED_PROXY = { AIQSA_TRUST_PROXY_HEADERS: "true" };
+  const DIRECT_PEER = { AIQSA_APP_BASE_URL: "http://10.20.30.40:3000", AIQSA_BIND_ADDRESS: "0.0.0.0" };
+  const DIRECT_LOOPBACK = { AIQSA_APP_BASE_URL: "http://localhost:3000" };
+
+  function trustedHeaderDraft(input: Partial<AuthSignInMethodSetting> = {}) {
+    return row({ draftConfig: { emailHeader: "X-Auth-Request-Email" }, draftVersion: 1, method: "trusted_header", ...input });
+  }
+
+  it("tests and activates the trusted header only in trusted-proxy mode", async () => {
+    const { invalidate, service: settings } = service({
+      env: TRUSTED_PROXY,
+      registry: { trusted_header: trustedHeaderSignInMethod },
+      repository: repository([trustedHeaderDraft()])
+    });
+
+    await expect(settings.test({ expectedDraftVersion: 1, method: "trusted_header" })).resolves.toMatchObject({
+      ok: true,
+      value: { test: { code: "trusted_proxy_mode", passed: true } }
+    });
+    await expect(settings.activate({
+      actorUserId: "admin",
+      confirmSourceChange: false,
+      expectedActiveVersion: 0,
+      expectedDraftVersion: 1,
+      method: "trusted_header"
+    })).resolves.toMatchObject({ ok: true });
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([["direct_peer", DIRECT_PEER], ["direct_loopback", DIRECT_LOOPBACK]])(
+    "fails the test and refuses activation in %s mode, even after an earlier passing test",
+    async (_mode, env) => {
+      const repo = repository([trustedHeaderDraft({ testedDraftVersion: 1 })]);
+      const { invalidate, service: settings } = service({
+        env,
+        registry: { trusted_header: trustedHeaderSignInMethod },
+        repository: repo
+      });
+
+      await expect(settings.test({ expectedDraftVersion: 1, method: "trusted_header" })).resolves.toMatchObject({
+        ok: true,
+        value: { test: { code: "environment_unsupported", passed: false } }
+      });
+      await expect(settings.activate({
+        actorUserId: "admin",
+        confirmSourceChange: false,
+        expectedActiveVersion: 0,
+        expectedDraftVersion: 1,
+        method: "trusted_header"
+      })).resolves.toEqual({ code: "environment_unsupported", ok: false });
+      expect(repo.activate).not.toHaveBeenCalled();
+      expect(invalidate).not.toHaveBeenCalled();
+    }
+  );
 });
