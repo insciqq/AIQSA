@@ -3,8 +3,9 @@ import {
   buildCompatibleResponsesRequest,
   createCompatibleResponsesAdapter
 } from "./compatibleResponses";
-import { createFetchOpenAIResponsesClient, type OpenAIResponsesClient } from "./openaiResponsesTransport";
+import { compatibleDroppedRoundDecision, createFetchOpenAIResponsesClient, type OpenAIResponsesClient } from "./openaiResponsesTransport";
 import { observedFailure } from "./providerObservability";
+import { providerStreamDrop } from "./streamDrop";
 import type { NormalizedSearchPlanOption, ProviderRunRequest } from "./types";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
@@ -393,6 +394,28 @@ describe("compatible Responses context-length refusal (codex-lb shapes)", () => 
     streamingRequest);
     expect(failure).toMatchObject({ message: "openai_response_identity_mismatch" });
     expect(failure).not.toHaveProperty("code");
+    // Nothing of the re-issued response is accepted, yet the request dropped
+    // and a Codex LB round may send it again.
+    expect(providerStreamDrop(failure)).toBe("response_failed");
+    expect(compatibleDroppedRoundDecision(failure)).toEqual({ retryAfterMs: null });
+    const refused = await run(streamed(frames([opened("response.created", "resp_1"), { type: "response.failed",
+      response: { object: "response", status: "failed", error: { code: "content_filter", message: sentinel }, id: "resp_lb" } }])),
+    streamingRequest);
+    expect(refused.failure).toMatchObject({ message: "openai_response_identity_mismatch" });
+    expect(providerStreamDrop(refused.failure)).toBeNull();
+  });
+
+  it("names a non-streamed failed response as a dropped request unless it is classified", async () => {
+    const created = (body: Record<string, unknown>) => createCompatibleResponsesAdapter({ client: createFetchOpenAIResponsesClient({
+      apiKey: "synthetic", baseUrl: "https://lb.example.test/v1", fetchFn: async () => Response.json(body) }) });
+    const failed = await run(created({ error: { code: "server_error", message: sentinel }, id: "resp_1", status: "failed" }),
+      request({ params: { maxOutputTokens: 16, stream: false } }));
+    expect(failed.failure).toMatchObject({ message: "compatible_response_failed" });
+    expect(providerStreamDrop(failed.failure)).toBe("response_failed");
+    const incomplete = await run(created({ id: "resp_1", incomplete_details: { reason: "max_output_tokens" }, status: "incomplete" }),
+      request({ params: { maxOutputTokens: 16, stream: false } }));
+    expect(providerStreamDrop(incomplete.failure)).toBeNull();
+    expect(JSON.stringify(failed.failure)).not.toContain(sentinel);
   });
 
   it("classifies the non-streamed HTTP 400 body with its status", async () => {

@@ -54,6 +54,8 @@ import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponses
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
 import { createFetchOpenRouterChatClient, createOpenRouterChatAdapter } from "../providers/openRouterChat";
 import { ProviderRequestTimeoutError } from "../providers/network";
+import { compatibleDroppedRoundDecision } from "../providers/openaiResponsesTransport";
+import { markProviderStreamDrop } from "../providers/streamDrop";
 import { ProviderSearchExecutionError } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
@@ -1453,6 +1455,8 @@ function compactionLoopFixture(input: Readonly<{
   resultChars: number;
   /** Parallel calls each tool round requests (default 1). */
   callsPerRound?: number;
+  /** Answer dispatches (1-based) whose stream drops after partial text; the binding admits sending them again. */
+  dropAnswers?: readonly number[];
   mutate?(request: NormalizedRunRequest): NormalizedRunRequest;
   onToolCall?(count: number): void;
   /** Answer dispatches (1-based) the provider rejects for context length. */
@@ -1486,7 +1490,7 @@ function compactionLoopFixture(input: Readonly<{
   const prepared = { ...base, normalizedRequest, providerRequest: { ...normalizedRequest, attachments: [] } };
   const summaries: ProviderRunRequest[] = [];
   const answers: ProviderRunRequest[] = [];
-  const adapter = createAdapter(async function* (request) {
+  const streamed = createAdapter(async function* (request) {
     if (request.forceNonStreaming) {
       summaries.push(request);
       if (input.summaryFails) throw new Error("summary provider unavailable");
@@ -1501,7 +1505,12 @@ function compactionLoopFixture(input: Readonly<{
       throw Object.assign(new Error("OpenAI request failed with status 400"), { code: "provider_context_length_exceeded",
         status: 400, providerMessage: "PRIVATE_PROVIDER_MESSAGE_CANARY" });
     }
-    const accepted = answers.length - (input.rejectAnswers?.filter(index => index < answers.length).length ?? 0);
+    if (input.dropAnswers?.includes(answers.length)) {
+      yield { type: "token", data: { delta: "Dropped par" } };
+      throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
+    }
+    const accepted = answers.length - [...input.rejectAnswers ?? [], ...input.dropAnswers ?? []]
+      .filter(index => index < answers.length).length;
     if (accepted < 3) {
       return providerResult({ finalText: "", toolCalls: Array.from({ length: input.callsPerRound ?? 1 }, (_, index) =>
         ({ id: `read-${accepted}${index ? `-${index}` : ""}`, name, arguments: {} })) });
@@ -1509,6 +1518,10 @@ function compactionLoopFixture(input: Readonly<{
     yield { type: "token", data: { delta: "Done." } };
     return providerResult({ finalText: "Done." });
   });
+  const adapter: ProviderAdapter = input.dropAnswers
+    ? { ...streamed, droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe: () => undefined } }
+    : streamed;
+  if (input.dropAnswers) repository.repository.reopenToolLoopProviderRound ??= async () => true;
   let toolCalls = 0;
   const callTool = vi.fn(async () => {
     toolCalls += 1;
@@ -1942,6 +1955,25 @@ describe("run execution", () => {
     ]);
   });
 
+  it("sends a dropped clarified round again with the notes it already bought", async () => {
+    const repository = createRepository();
+    const followups = followupFixture(repository.repository);
+    const clarification = `Clarified constraint ${"f".repeat(7_000)}`;
+    const loop = compactionLoopFixture({
+      dropAnswers: [2], historyTokens: 3_500, repository, resultChars: 3_000,
+      onToolCall: count => { if (count === 1) followups.accept(clarification); }
+    });
+    await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
+    // One purchase: the clarified round's re-sent request is the dropped one, notes included.
+    expect(loop.summaries).toHaveLength(1);
+    const [, dropped, resent] = loop.answers;
+    expect(dropped?.contextCompactionSummary).toBeDefined();
+    expect(resent).toEqual(dropped);
+    expect(JSON.stringify(resent?.providerToolMessages)).toContain("Clarified constraint");
+  });
+
   it("buys notes for a Knowledge answer whose history exceeds the window and keeps its evidence exact", async () => {
     const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
     const repository = createRepository({ groundingResult: structuralGroundingResult(finalText) });
@@ -2291,6 +2323,68 @@ describe("run execution", () => {
       .toEqual([1]);
     expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions).toEqual([expect.objectContaining({
       operationCount: 1, usage: expect.objectContaining({ completeness: "complete", inputTokens: 2, outputTokens: 1 }) })]);
+  });
+
+  it.each([true, false])("sends a dropped round again only for an admitting binding, replacing its text (admitted=%s)", async (admitted) => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    const repository = createRepository();
+    const order: string[] = [];
+    const reopen = vi.fn(async (_input: { roundIndex: number; runId: string; userId: string }) => {
+      order.push("reopen");
+      return true;
+    });
+    repository.repository.reopenToolLoopProviderRound = reopen;
+    const recordRunUsageEvents = repository.repository.recordRunUsageEvents;
+    repository.repository.recordRunUsageEvents = async (input) => {
+      if (input.answerRoundUsage) order.push(`usage:${input.answerRoundUsage.completeness}`);
+      return recordRunUsageEvents(input);
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      ...createAdapter(async function* (request) {
+        requests.push(request);
+        order.push(`dispatch:${requests.length}`);
+        if (requests.length === 1) {
+          yield { type: "token", data: { delta: "Dropped par" } };
+          throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
+        }
+        yield { type: "token", data: { delta: "Final answer" } };
+        return providerResult({ finalText: "Final answer", usage: usage(4, 2, 0) });
+      }),
+      ...(admitted ? { droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe: vi.fn() } } : {})
+    };
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text());
+    const answerEvents = events.filter(event => event.type === "token" || event.type === "message_reset" || event.type === "done" || event.type === "error");
+    if (!admitted) {
+      expect(requests).toHaveLength(1);
+      expect(reopen).not.toHaveBeenCalled();
+      expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "provider_stream_failed" }) })]);
+      expect(answerEvents.map(event => event.type)).toEqual(["token", "error"]);
+      return;
+    }
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    // The dropped request is accounted before the round re-opens, which comes before the next request.
+    expect(order).toEqual(["dispatch:1", "usage:partial", "reopen", "dispatch:2", "usage:terminal"]);
+    expect(reopen).toHaveBeenCalledExactlyOnceWith({ roundIndex: 1, runId: "run-1", userId: "user-1" });
+    // The browser withdraws the dropped text and shows only the retry's.
+    expect(answerEvents).toEqual([
+      { data: { delta: "Dropped par" }, type: "token" },
+      { data: { round: 1 }, type: "message_reset" },
+      { data: { delta: "Final answer" }, type: "token" },
+      { data: { runId: "run-1", status: "complete" }, type: "done" }
+    ]);
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toEqual([expect.objectContaining({ finalText: "Final answer" })]);
+    expect(repository.assistantTexts.at(-1)).toBe("Final answer");
+    // Two requests, two operations: the dropped one of unknown usage.
+    expect(repository.completeRuns[0]?.usageAttributions).toEqual([expect.objectContaining({ operationCount: 2, purpose: "chat_answer",
+      usage: expect.objectContaining({ completeness: "partial", inputTokens: 4, outputTokens: 2 }) })]);
   });
 
   it.each(["refused_replacement", "failed_interrupted_usage_write"] as const)("accounts an interrupted Follow-up generation once: %s", async mode => {

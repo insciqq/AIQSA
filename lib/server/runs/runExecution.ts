@@ -329,6 +329,7 @@ export type RunExecutionRepository = Pick<
   | "loadRunFetchUrlCalls"
   | "loadRunSearchSourceUrls"
   | "recordRunUsageEvents"
+  | "reopenToolLoopProviderRound"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
   | "updateRunProviderResponseId"
@@ -2380,6 +2381,22 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // tool budgets; a repeated one counts as an ordinary call.
           ...(normalizedRequest.monitoringVerdictTool ? { reservedCall: {
             called: false, instruction: monitoringVerdictReservedInstruction(), name: MONITORING_VERDICT_TOOL_NAME
+          } } : {}),
+          // A dropped round of a binding that admits it is sent again with the
+          // request it dispatched; its text is replaced, never appended.
+          ...(input.adapter.droppedRoundRetry && input.repository.reopenToolLoopProviderRound ? { roundRetry: {
+            policy: input.adapter.droppedRoundRetry,
+            reopen: async ({ publishedText, round }) => {
+              await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
+              const reopened = await input.repository.reopenToolLoopProviderRound!({ roundIndex: round, runId, userId: input.userId })
+                .catch(error => { throw new RunSettlementError("publication", error); });
+              if (!reopened) return false;
+              tokenBuffer.resetLocal();
+              answerStartMarked = false;
+              persistedProviderResponseId = null;
+              if (publishedText) emitTransient(controller, encoder, { data: { round }, type: "message_reset" });
+              return true;
+            }
           } } : {}),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);

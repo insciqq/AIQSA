@@ -53,6 +53,8 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   abort_source?: "provider_deadline" | "parent_signal" | "unknown";
   cause?: "max_output_tokens" | "content_filter";
   provider_status?: "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
+  /** Why an answer stream ended before its completion event. */
+  stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
 }>;
 export type EventFields = {
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;

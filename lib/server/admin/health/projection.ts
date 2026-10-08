@@ -95,7 +95,7 @@ export const ADMIN_HEALTH_INCIDENT_DETAIL_KEYS: ReadonlySet<string> = new Set([
   "engine_index", "error_category", "error_class", "error_fingerprint", "error_site", "failed_count", "headers_ms", "issue_count", "kind", "layer", "limit", "method",
   "mode", "node_version", "observed", "operation", "operation_index", "operation_stage", "outcome", "pending_count",
   "prisma_code", "providerFamily", "provider_code", "provider_status", "reason", "repeat_count", "retry_at",
-  "routePath", "route_source", "state", "status", "stream", "termination", "timeout_ms", "tool_kind",
+  "routePath", "route_source", "state", "status", "stream", "stream_drop", "termination", "timeout_ms", "tool_kind",
   "totalStreamBytes", "transport", "unit", "work_stage"
 ]);
 

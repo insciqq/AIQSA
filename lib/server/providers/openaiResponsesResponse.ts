@@ -13,7 +13,8 @@ import {
   resolveProviderStreamLimits,
   type ProviderStreamLimits
 } from "./network";
-import { parseSseStream } from "./sse";
+import { parseProviderSseStream } from "./sse";
+import { markProviderStreamDrop } from "./streamDrop";
 import {
   providerStreamSafetySnapshot,
   type ProviderStreamSafetySnapshot
@@ -500,6 +501,22 @@ function contextLengthRefusal(
   return null;
 }
 
+/** A proxy such as codex-lb may re-issue a request's failure under an
+ * identity of its own. Nothing of that response is accepted, yet an
+ * unclassified failure still ends this request as dropped. */
+function reissuedFailureDrop(
+  mismatch: Error,
+  failureStatus: string | null,
+  errorCode: string | null,
+  payload: Record<string, unknown>
+): Error {
+  if (failureStatus !== "failed" && !errorCode) return mismatch;
+  const failure = providerResponseFailure(errorCode ?? "openai_response_failed", payload);
+  return "code" in failure || "capabilityFailureReason" in failure
+    ? mismatch
+    : markProviderStreamDrop(mismatch, failureStatus === "failed" ? "response_failed" : "error_event");
+}
+
 function streamErrorCode(eventType: string, payload: Record<string, unknown>): string | null {
   if (eventType === "error") {
     return "openai_stream_error";
@@ -564,7 +581,7 @@ export async function* parseOpenAIResponsesSse(
   let latestSnapshot: ProviderStreamSafetySnapshot | null = null;
   const toolItems = new Map<string, { callIndex: number; callId: string; name: string; arguments: BoundedTextAccumulator }>();
 
-  for await (const event of parseSseStream(input.responseBody, {
+  for await (const event of parseProviderSseStream(input.responseBody, {
     idleTimeoutMs: streamLimits.idleTimeoutMs,
     maxBytes: streamLimits.maxBytes,
     maxDurationMs: streamLimits.maxDurationMs,
@@ -582,7 +599,7 @@ export async function* parseOpenAIResponsesSse(
       parsed = JSON.parse(event.data) as unknown;
     } catch {
       observeStreamParseFailure(input.responseBody);
-      throw new Error("openai_stream_truncated");
+      throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
     }
     if (!isRecord(parsed)) {
       continue;
@@ -610,7 +627,7 @@ export async function* parseOpenAIResponsesSse(
     }
     for (const candidateResponseId of providerResponseIdsFromStreamPayload(parsed, response)) {
       if (providerResponseId && candidateResponseId !== providerResponseId) {
-        throw new Error("openai_response_identity_mismatch");
+        throw reissuedFailureDrop(new Error("openai_response_identity_mismatch"), failureStatus, errorCode, response ?? parsed);
       }
       providerResponseId ??= candidateResponseId;
     }
@@ -623,7 +640,8 @@ export async function* parseOpenAIResponsesSse(
     }
 
     if (errorCode) {
-      throw providerResponseFailure(errorCode, response ?? parsed);
+      throw markProviderStreamDrop(providerResponseFailure(errorCode, response ?? parsed),
+        failureStatus === "failed" ? "response_failed" : "error_event");
     }
 
     if (isCompletedEvent) {
@@ -716,12 +734,14 @@ export async function* parseOpenAIResponsesSse(
     }
 
     if (failureStatus) {
-      throw providerResponseFailure(`openai_response_${failureStatus}`, response ?? parsed);
+      const failure = providerResponseFailure(`openai_response_${failureStatus}`, response ?? parsed);
+      // Only a failed response is a drop; incomplete and cancelled are answers' ends.
+      throw failureStatus === "failed" ? markProviderStreamDrop(failure, "response_failed") : failure;
     }
   }
 
   if (!terminalSeen || !finalResponse) {
-    throw new Error("openai_stream_truncated");
+    throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
   }
 
   // A terminal of another response proves nothing about this one: no usage.
