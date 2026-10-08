@@ -7,6 +7,12 @@ export const XML_SIGNATURE_NAMESPACE = "http://www.w3.org/2000/09/xmldsig#";
 
 /** SAML messages and metadata never carry a DTD; refusing one keeps entity expansion out. */
 const DOCUMENT_TYPE = /<!DOCTYPE|<!ENTITY/iu;
+/**
+ * Real responses and metadata nest a dozen levels and hold at most a few thousand nodes; deeper
+ * or larger documents only make canonicalization and signature checks expensive.
+ */
+export const SAML_XML_MAX_DEPTH = 64;
+export const SAML_XML_MAX_NODES = 20_000;
 
 export class SamlXmlError extends Error {
   constructor() {
@@ -31,7 +37,21 @@ export function parseSamlXml(text: string, maxLength: number): Document {
     locator: {}
   }).parseFromString(text, "text/xml") as Document | undefined;
   if (!document?.documentElement) refuse();
+  checkShape(document.documentElement);
   return document;
+}
+
+/** Refuses a document deeper or larger than SAML needs, before anything canonicalizes it. */
+function checkShape(root: Node): void {
+  const stack: Array<{ depth: number; node: Node }> = [{ depth: 1, node: root }];
+  let nodes = 0;
+  for (let entry = stack.pop(); entry; entry = stack.pop()) {
+    nodes += 1;
+    if (entry.depth > SAML_XML_MAX_DEPTH || nodes > SAML_XML_MAX_NODES) refuse();
+    for (let child = entry.node.firstChild; child; child = child.nextSibling) {
+      stack.push({ depth: entry.depth + 1, node: child });
+    }
+  }
 }
 
 /** The element children of `parent` with this namespace and local name, in document order. */
