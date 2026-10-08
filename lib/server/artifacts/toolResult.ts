@@ -1,3 +1,4 @@
+import { ARTIFACT_LIMITS } from "@/lib/contracts/artifacts";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { ARTIFACT_NOTE_LIMITS, type ArtifactBundleNotes } from "./bundle";
 import { ARTIFACT_UNPACK_SKIPPED_FILES, type ArtifactUnpackReport } from "./unpack";
@@ -8,10 +9,12 @@ const NOTE_CHARACTERS = 256;
 const ARCHIVE_PATH_CHARACTERS = 512;
 const INVALID_PAGES_HINT = "Each page in invalid_pages failed validation with the given error code and shows that error when opened; fix it with edits.";
 const MISSING_LINKS_HINT = "Each link in missing_links points to a file this artifact does not hold; add the file or correct the href with edits.";
+const UNVALIDATED_PAGES_HINT = "unvalidated_pages counts pages not checked at creation, since the pages checked first used up the site's validation budget; each is checked when opened and shows any error then.";
 
 /**
  * Render findings that never block a version: service links removed from pages, local links
- * to missing files and pages other than the entry page that fail validation.
+ * to missing files, pages other than the entry page that fail validation and pages left for
+ * validation when opened.
  */
 export type ArtifactRenderNotes = Omit<ArtifactBundleNotes, "pages">;
 
@@ -26,8 +29,9 @@ export type ArtifactVersionReport = Readonly<{
 
 /** The build's notes worth reporting, or nothing for a clean build. */
 export function artifactRenderNotes(notes: ArtifactBundleNotes): ArtifactRenderNotes | undefined {
-  const { removedLinks, missingLinks, invalidPages, omitted } = notes;
-  return removedLinks.length || missingLinks.length || invalidPages.length || omitted ? { removedLinks, missingLinks, invalidPages, omitted } : undefined;
+  const { removedLinks, missingLinks, invalidPages, omitted, unvalidatedPages } = notes;
+  return removedLinks.length || missingLinks.length || invalidPages.length || omitted || unvalidatedPages
+    ? { removedLinks, missingLinks, invalidPages, omitted, unvalidatedPages } : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,10 +56,13 @@ function decodeNotes<T extends string>(value: unknown, keys: readonly T[]): Arra
 
 function decodeRenderNotes(value: unknown): ArtifactRenderNotes | undefined {
   if (!isRecord(value) || !isCount(value.omitted)) return undefined;
+  // Notes stored before the validation budget have no unvalidated pages.
+  const unvalidatedPages = value.unvalidatedPages ?? 0;
+  if (!isCount(unvalidatedPages) || unvalidatedPages > ARTIFACT_LIMITS.maxBundleFiles) return undefined;
   const removedLinks = decodeNotes(value.removedLinks, ["page", "rel", "href"] as const);
   const missingLinks = decodeNotes(value.missingLinks, ["page", "href", "path"] as const);
   const invalidPages = decodeNotes(value.invalidPages, ["page", "code"] as const);
-  return removedLinks && missingLinks && invalidPages ? { removedLinks, missingLinks, invalidPages, omitted: value.omitted } : undefined;
+  return removedLinks && missingLinks && invalidPages ? { removedLinks, missingLinks, invalidPages, omitted: value.omitted, unvalidatedPages } : undefined;
 }
 
 /** The validated report of a stored private manifest, if it has one. */
@@ -68,12 +75,14 @@ export function decodeArtifactVersionReport(manifest: unknown): ArtifactVersionR
 
 /** Non-empty lists only, with one hint line for the findings the model can repair. */
 function renderNotesValue(notes: ArtifactRenderNotes) {
-  const hint = [notes.invalidPages.length ? INVALID_PAGES_HINT : "", notes.missingLinks.length ? MISSING_LINKS_HINT : ""].filter(Boolean).join(" ");
+  const hint = [notes.invalidPages.length ? INVALID_PAGES_HINT : "", notes.missingLinks.length ? MISSING_LINKS_HINT : "",
+    notes.unvalidatedPages ? UNVALIDATED_PAGES_HINT : ""].filter(Boolean).join(" ");
   return {
     ...(notes.removedLinks.length ? { removed_links: notes.removedLinks } : {}),
     ...(notes.missingLinks.length ? { missing_links: notes.missingLinks } : {}),
     ...(notes.invalidPages.length ? { invalid_pages: notes.invalidPages } : {}),
     ...(notes.omitted ? { omitted: notes.omitted } : {}),
+    ...(notes.unvalidatedPages ? { unvalidated_pages: notes.unvalidatedPages } : {}),
     ...(hint ? { hint } : {})
   };
 }

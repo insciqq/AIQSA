@@ -2,7 +2,7 @@ import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { crc32 } from "../../domain/crc32";
 import { writeZip } from "./zip";
-import { ARTIFACT_ZIP_LIMITS, ArtifactZipError, readZipArchive, type ArtifactZipErrorCode, type ZipReadLimits } from "./zipReader";
+import { ARTIFACT_ZIP_LIMITS, ARTIFACT_ZIP_PATH_LIMITS, ArtifactZipError, readZipArchive, type ArtifactZipErrorCode, type ZipReadLimits } from "./zipReader";
 
 type RawEntry = {
   name: string | Buffer;
@@ -263,14 +263,33 @@ describe("ZIP expansion and integrity bounds", () => {
 describe("ZIP path safety", () => {
   it.each([
     "../escape", "a/../escape", "./file", "a/./file", "/absolute", "\\absolute", "a\\b", "C:relative", "C:/absolute",
-    "site/C:relative", "a//b", "", "a//", "/", "a\0b", "a\nb", "a\tb", "a\u007fb", "a\u0085b", "a".repeat(513), "é".repeat(257)
+    "site/C:relative", "a//b", "", "a//", "/", "a\0b", "a\nb", "a\tb", "a\u007fb", "a\u0085b"
   ])("rejects unsafe paths %j", async name => {
     await expectFailure(rawZip([{ name }]), "artifact_zip_path_invalid");
   });
 
-  it("accepts a 512-byte path", async () => {
-    const path = "a".repeat(512);
-    expect((await readZipArchive(rawZip([{ name: path }]))).entries[0]!.path).toBe(path);
+  it("accepts a path of the longest name and the most folder levels", async () => {
+    const long = "a".repeat(ARTIFACT_ZIP_PATH_LIMITS.maxNameBytes);
+    const deep = Array.from({ length: ARTIFACT_ZIP_PATH_LIMITS.maxSegments }, (_, index) => `d${index}`).join("/");
+    expect((await readZipArchive(rawZip([{ name: long }]))).entries[0]!.path).toBe(long);
+    expect((await readZipArchive(rawZip([{ name: deep }, { name: "top" }]))).entries.map(entry => entry.path)).toEqual([deep, "top"]);
+  });
+
+  it("refuses longer names and deeper paths, naming a deep path", async () => {
+    for (const name of ["a".repeat(ARTIFACT_ZIP_PATH_LIMITS.maxNameBytes + 1), "é".repeat(ARTIFACT_ZIP_PATH_LIMITS.maxNameBytes / 2 + 1)]) {
+      await expectFailure(rawZip([{ name }]), "artifact_zip_path_too_long");
+    }
+    const deep = Array.from({ length: ARTIFACT_ZIP_PATH_LIMITS.maxSegments + 1 }, () => "d").join("/");
+    await expectFailure(rawZip([{ name: `${deep}/` }]), "artifact_zip_path_too_long", `${deep}/`);
+    await expectFailure(rawZip([{ name: deep }]), "artifact_zip_path_too_long", deep);
+  });
+
+  it("checks folder prefixes of the deepest paths across the most entries", async () => {
+    // Every entry adds its enclosing folders once; a file named like one of them still collides.
+    const folders = Array.from({ length: ARTIFACT_ZIP_PATH_LIMITS.maxSegments - 1 }, (_, index) => `f${index}`).join("/");
+    const names = Array.from({ length: ARTIFACT_ZIP_LIMITS.maxEntries }, (_, index) => `${folders}/file${index}`);
+    expect((await readZipArchive(rawZip(names.map(name => ({ name }))))).entries).toHaveLength(names.length);
+    await expectFailure(rawZip([...names.slice(0, 3), "F0/F1"].map(name => ({ name }))), "artifact_zip_duplicate_path", "F0/F1");
   });
 
   it.each([Buffer.from([0xff, 0xfe]), Buffer.from([0xc0, 0xaf]), Buffer.from([0xed, 0xa0, 0x80])])("rejects invalid UTF-8 %j", async name => {
