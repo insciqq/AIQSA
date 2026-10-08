@@ -12,6 +12,7 @@ import {
   replaceProvisionalDisplayName,
   type ApprovalMatch
 } from "./registrationRepository";
+import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import {
   lockActiveAdmins,
@@ -61,8 +62,16 @@ export type ExternalIdentityOutcome =
   | { status: "active"; userId: string; warning?: ExternalIdentityWarning }
   | { status: "account_conflict" | "email_missing" | "not_allowed" | "pending" | "source_changed" };
 
+/**
+ * `second_factor_required` (LDAP with TOTP only) creates no session: the caller signs the
+ * challenge into the second-factor cookie (`createSecondFactorChallengeCookie`).
+ */
 export type ExternalSignInResult =
   | (Extract<ExternalIdentityOutcome, { status: "active" }> & { sessionId: string })
+  | (Omit<Extract<ExternalIdentityOutcome, { status: "active" }>, "status"> & {
+      challenge: SecondFactorChallengeSubject;
+      status: "second_factor_required";
+    })
   | Exclude<ExternalIdentityOutcome, { status: "active" }>;
 
 export type ExternalAdminRoleChange = "demote" | "keep_last_admin" | "none" | "promote";
@@ -531,6 +540,28 @@ export async function completeExternalSignIn(
       signInMethod: input.signInMethod,
       userId: outcome.userId
     });
+
+    if (issued.kind === "second_factor_required") {
+      // Only LDAP among external methods asks for a second factor; its challenge binds to the
+      // identity that proved the first factor, which settlement has locked.
+      const identity = await tx.authIdentity.findUniqueOrThrow({
+        select: { id: true },
+        where: { provider_providerAccountId: { provider: input.provider, providerAccountId: input.subject } }
+      });
+
+      return {
+        ...(outcome.warning ? { warning: outcome.warning } : {}),
+        challenge: {
+          credential: identity.id,
+          factorBinding: issued.factorBinding,
+          identityId: identity.id,
+          signInMethod: issued.signInMethod,
+          userId: outcome.userId
+        },
+        status: "second_factor_required",
+        userId: outcome.userId
+      };
+    }
 
     return { ...outcome, sessionId: issued.session.id };
   });

@@ -177,6 +177,7 @@ export function createMemoryPasswordAuthRepository(input: {
       });
 
       return {
+        kind: "session",
         user: currentIdentity.user
       };
     },
