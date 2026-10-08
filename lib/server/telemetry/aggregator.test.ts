@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import type { EventFields } from "../observability/events";
 import { serializeEvent } from "../observability/runtime.cjs";
 import {
   createTelemetryAggregator, DEFAULT_TELEMETRY_AGGREGATOR_LIMITS, TELEMETRY_DURATION_BUCKETS,
@@ -78,6 +79,28 @@ describe("telemetry aggregation", () => {
     })]);
     expect(incidents).toEqual([expect.objectContaining({ event: "http.request_completed", level: "error",
       details: { method: "GET", status: 502, duration_ms: 12, outcome: "completed" } })]);
+  });
+
+  it("counts terminal tool calls by family, outcome and code, never by call identity", () => {
+    const aggregator = createTelemetryAggregator();
+    const observe = (fields: EventFields["tool_call"], toolCallId: string) =>
+      aggregator.observe(Object.freeze({ ...JSON.parse(serializeEvent("tool_call", fields)!), tool_call_id: toolCallId }));
+    observe({ tool_kind: "fetch_url", outcome: "completed", duration_ms: 80 }, "call-1");
+    observe({ tool_kind: "fetch_url", outcome: "completed", duration_ms: 90 }, "call-2");
+    observe({ tool_kind: "fetch_url", outcome: "failed", code: "fetch_timeout", duration_ms: 15_000 }, "call-3");
+    observe({ tool_kind: "fetch_url", outcome: "failed", code: "fetch_timeout", duration_ms: 15_000 }, "call-4");
+    observe({ tool_kind: "artifact", outcome: "failed", code: "artifact_tool_unavailable" }, "call-5");
+    observe({ tool_kind: "fetch_url", outcome: "timeout", code: "tool_call_timeout" }, "call-6");
+    const { counters } = aggregator.drain();
+    const toolCalls = counters.filter((item) => item.event === "tool_call").map(({ count, dimensions, level }) => ({ count, dimensions, level }));
+    expect(toolCalls).toHaveLength(4);
+    expect(toolCalls).toEqual(expect.arrayContaining([
+      { count: 2, level: "info", dimensions: { outcome: "completed", tool_kind: "fetch_url" } },
+      { count: 2, level: "warn", dimensions: { code: "fetch_timeout", outcome: "failed", tool_kind: "fetch_url" } },
+      { count: 1, level: "warn", dimensions: { code: "artifact_tool_unavailable", outcome: "failed", tool_kind: "artifact" } },
+      { count: 1, level: "warn", dimensions: { code: "tool_call_timeout", outcome: "timeout", tool_kind: "fetch_url" } }
+    ]));
+    expect(JSON.stringify(counters)).not.toContain("call-");
   });
 
   it("keeps rate-limited error incidents with the record's remaining fields", () => {

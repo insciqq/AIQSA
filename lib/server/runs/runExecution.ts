@@ -286,6 +286,7 @@ import {
 } from "../workspace/toolCatalog";
 
 import { activeRunControllers, runSettlements } from "./activeRunControllerRegistry";
+import { toolCallKind, toolExecutionKind, type ToolCallRoutes } from "./toolCallKind";
 export { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
 
 export type RunExecutionRepository = Pick<
@@ -2388,6 +2389,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             );
           }
         };
+        const toolCallRoutes: ToolCallRoutes = { search: isSearchCall, knowledge: isKnowledgeCall, workspace: isWorkspaceCall,
+          mcp: (name) => isMcpDiscoveryCall(name) || resolveMcpRunTool(activeMcpSnapshot, name) !== null };
         const outcome = await continueProviderToolLoop({
           // Every checkpoint of a v1 non-Agent run carries the rebuild record.
           allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
@@ -2396,15 +2399,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // first report, is reserved outside the business tool budgets; a
           // repeated one counts as an ordinary call.
           ...(reservedToolCall ? { reservedCall: { called: false, ...reservedToolCall } } : {}),
+          toolCallKind: (call) => toolCallKind(normalizedRequest, call.name, toolCallRoutes),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
             if (!persisted) return undefined;
             return {
               tool_call_id: persisted.id, execution_index: persisted.ordinal,
-              tool_kind: searchPlanRouter?.accepts(call.name) ? "search"
-                : isKnowledgeCall(call.name) ? "knowledge"
-                : isWorkspaceCall(call.name) ? "workspace"
-                : isMcpDiscoveryCall(call.name) || resolveMcpRunTool(activeMcpSnapshot, call.name) ? "mcp" : undefined
+              tool_kind: toolExecutionKind(call.name, toolCallRoutes)
             };
           },
           adapter: egressAdapter,

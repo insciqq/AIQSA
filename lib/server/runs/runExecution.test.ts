@@ -2652,6 +2652,30 @@ describe("run execution", () => {
     expect(events.at(-1)?.type).toBe("done");
   });
 
+  it("ends each live tool call with one content-free record of its shared family", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    let requests = 0;
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      requests += 1;
+      if (requests === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }] });
+      return providerResult({ finalText: "We have room to continue." });
+    });
+    const observation = await captureRunObservation();
+    await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text();
+    const terminal = observation.records().filter((record) => record.event === "tool_call");
+    observation.restore();
+    expect(repository.failedRuns).toEqual([]);
+    expect(terminal).toEqual([expect.objectContaining({ level: "info", tool_kind: "session_status", outcome: "completed",
+      run_id: expect.any(String), tool_call_id: expect.any(String) })]);
+    expect(JSON.stringify(terminal)).not.toContain("get_session_status");
+  });
+
   it("loads Skills through the durable loop without exposing their bodies or file arguments in SSE", async () => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
     const { manifest } = freezeSkillManifest({ mode: "auto", pinned: [], toolsSupported: true,
