@@ -9,8 +9,6 @@ export const artifactChecksum = (bytes: Uint8Array): string => createHash("sha25
 type BundleRow = { id: string; bundleStorageKey: string; byteSize: number; checksum: string };
 type RenderedContent = Readonly<{ body: Buffer; contentType: string }>;
 
-/** Heavy artifact work in this process (renders, exports, large reads) runs at most four at once. */
-const ARTIFACT_HEAVY_WORK_LIMIT = 4;
 /**
  * Work over more hydrated bytes than this is large and runs one at a time. A render peaks at
  * about ten times its input (some 220 MB above baseline for one 21 MB page), so one large job
@@ -18,51 +16,54 @@ const ARTIFACT_HEAVY_WORK_LIMIT = 4;
  * jobs would not. A cached render of 8 MiB or more is read under the general limit.
  */
 export const ARTIFACT_LARGE_WORK_BYTES = 8 * 1024 * 1024;
-/** Large work waits for its turn behind at most four others, and at most 10 s, then reports busy. */
-const LARGE_WORK_WAITERS = 4;
-const LARGE_WORK_WAIT_MS = 10_000;
+/** A turn not granted within this time is refused as busy. */
+const HEAVY_WORK_WAIT_MS = 10_000;
 /** Pages other than the entry share this render-cache budget per version; beyond it they render per request. */
 export const ARTIFACT_PAGE_RENDER_CACHE_BYTES = 256 * 1024 * 1024;
-let activeHeavyReads = 0;
-let largeWorkActive = false;
-const largeWorkQueue: Array<() => void> = [];
-/** One render of each cold page at a time in this process; concurrent requests share its result. */
-const renderFlights = new Map<string, Promise<RenderedContent>>();
 export class ArtifactPublicBusyError extends Error { constructor() { super("artifact_public_busy"); } }
 
-async function acquireLargeWork(): Promise<void> {
-  if (!largeWorkActive) { largeWorkActive = true; return; }
-  if (largeWorkQueue.length >= LARGE_WORK_WAITERS) throw new ArtifactPublicBusyError();
+/** Turns handed out in arrival order, with a bounded waiting room; overflow is refused at once. */
+type WorkPool = { active: number; readonly limit: number; readonly waitingRoom: number; readonly waiting: Array<() => void> };
+/** Heavy artifact work in this process (renders, exports, large reads): four at once, sixteen waiting. */
+const heavyWork: WorkPool = { active: 0, limit: 4, waitingRoom: 16, waiting: [] };
+/** Large work also takes this single turn, so two large jobs never run together. */
+const largeWork: WorkPool = { active: 0, limit: 1, waitingRoom: 4, waiting: [] };
+/** One render of each cold page at a time in this process; concurrent requests share its result. */
+const renderFlights = new Map<string, Promise<RenderedContent>>();
+
+async function acquire(pool: WorkPool): Promise<void> {
+  if (pool.active < pool.limit && !pool.waiting.length) { pool.active += 1; return; }
+  if (pool.waiting.length >= pool.waitingRoom) throw new ArtifactPublicBusyError();
   await new Promise<void>((resolve, reject) => {
     const grant = () => { clearTimeout(timer); resolve(); };
     const timer = setTimeout(() => {
-      const index = largeWorkQueue.indexOf(grant);
-      if (index >= 0) largeWorkQueue.splice(index, 1);
+      const index = pool.waiting.indexOf(grant);
+      if (index >= 0) pool.waiting.splice(index, 1);
       reject(new ArtifactPublicBusyError());
-    }, LARGE_WORK_WAIT_MS);
-    largeWorkQueue.push(grant);
+    }, HEAVY_WORK_WAIT_MS);
+    pool.waiting.push(grant);
   });
 }
 
-/** The turn passes straight to the oldest waiter, so newcomers cannot overtake it. */
-function releaseLargeWork(): void {
-  const next = largeWorkQueue.shift();
+/** A released turn passes straight to the oldest waiter, so newcomers cannot overtake it. */
+function release(pool: WorkPool): void {
+  const next = pool.waiting.shift();
   if (next) next();
-  else largeWorkActive = false;
+  else pool.active -= 1;
 }
 
-/** Runs heavy work within the process limits; `bytes` is how much hydrated content it materializes. */
+/**
+ * Runs heavy work within the process limits; `bytes` is how much hydrated content it
+ * materializes. Large work takes its single turn before a general one, never the reverse.
+ */
 export async function boundedArtifactWork<T>(work: () => Promise<T>, bytes = 0): Promise<T> {
   const large = bytes > ARTIFACT_LARGE_WORK_BYTES;
-  if (large) await acquireLargeWork();
-  if (activeHeavyReads >= ARTIFACT_HEAVY_WORK_LIMIT) {
-    if (large) releaseLargeWork();
-    throw new ArtifactPublicBusyError();
-  }
-  activeHeavyReads += 1;
+  if (large) await acquire(largeWork);
+  try { await acquire(heavyWork); }
+  catch (error) { if (large) release(largeWork); throw error; }
   try { return await work(); } finally {
-    activeHeavyReads -= 1;
-    if (large) releaseLargeWork();
+    release(heavyWork);
+    if (large) release(largeWork);
   }
 }
 

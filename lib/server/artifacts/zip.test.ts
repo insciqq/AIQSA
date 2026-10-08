@@ -64,6 +64,18 @@ describe("artifact ZIP export", () => {
     expect(files.get("workers/sort.js")!.toString()).toBe(sorter);
   });
 
+  it("splices at the exact source offsets of a page with a byte order mark and CRLF line breaks", async () => {
+    const worker = "self.onmessage = () => self.postMessage(1);";
+    const page = `${String.fromCharCode(0xfeff)}<!doctype html>\r\n<html>\r\n<head>\r\n<script id="w" type="text/js-worker" src="w.js"></script>\r\n</head>\r\n` +
+      '<body>\r\n<img alt="" crossorigin="anonymous" src="pixel.png">\r\n<p>End</p>\r\n</body>\r\n</html>\r\n';
+    const assets = [{ path: "pixel.png", mimeType: "image/png", bytes: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64") }];
+    const operation = normalizeArtifactOperation({ intent: "create", kind: "html", title: "CRLF", entrypoint: "index.html", files: [
+      { path: "index.html", mimeType: "text/html", text: page }, { path: "w.js", mimeType: "text/javascript", text: worker },
+      { path: "pixel.png", mimeType: "image/png", assetRef: "pixel" }] });
+    const files = await exported(hydrate(buildArtifactBundle(operation, assets).bundle, assets));
+    expect(files.get("index.html")!.toString("utf8")).toBe(page.replace('src="w.js"></script>', `>${worker}</script>`).replace('crossorigin="anonymous"', ""));
+  });
+
   it("exports stored files byte for byte, editor SVG and unvendored addresses included", async () => {
     const drawing = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<!-- Created with an editor -->\n<svg\n   xmlns="http://www.w3.org/2000/svg"\n' +
       '   xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" viewBox="0 0 10 10">\n' +

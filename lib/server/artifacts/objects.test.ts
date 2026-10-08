@@ -142,6 +142,27 @@ describe("bounded heavy artifact work", () => {
     await expect(boundedArtifactWork(async () => "free again", ARTIFACT_LARGE_WORK_BYTES + 1)).resolves.toBe("free again");
   });
 
+  it("lets general work wait for one of four turns in arrival order and refuses a turn not granted in time", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const active = Array.from({ length: 4 }, () => boundedArtifactWork(() => gate));
+    const order: number[] = [];
+    const queued = [1, 2].map(number => boundedArtifactWork(async () => { order.push(number); }));
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(order).toEqual([]);
+    release(); await Promise.all([...active, ...queued]);
+    expect(order).toEqual([1, 2]);
+    let hold!: () => void;
+    const blocker = new Promise<void>(resolve => { hold = resolve; });
+    const busy = Array.from({ length: 4 }, () => boundedArtifactWork(() => blocker));
+    const late = boundedArtifactWork(async () => "late").catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await late).toBeInstanceOf(ArtifactPublicBusyError);
+    hold(); await Promise.all(busy);
+    await expect(boundedArtifactWork(async () => "free")).resolves.toBe("free");
+  });
+
   it("refuses large work past the waiting room or the wait, and releases the turn after failure", async () => {
     vi.useFakeTimers();
     let release!: () => void;
