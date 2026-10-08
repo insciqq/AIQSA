@@ -7,6 +7,7 @@ import { createTokenLoginHandler } from "./handlers";
 import { hashPassword } from "./password";
 import { createPrismaPasswordAuthRepository } from "./passwordRepository";
 import { createPrismaAuthSessionStore } from "./prismaSessions";
+import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { createAuthSession } from "./requestAuth";
 import { hashToken } from "./token";
@@ -85,6 +86,8 @@ describe("sign-in completion", () => {
           AIQSA_BOOTSTRAP_LOGIN_ENABLED: "1",
           AIQSA_BOOTSTRAP_USER_ID: bootstrapUser.id
         }),
+        // The stateful lane runs outside NODE_ENV=test, which has no fallback limiter.
+        loginRateLimiter: createFixedWindowLoginRateLimiter(),
         sessions
       })(new Request("http://app.local/api/auth/token", {
         body: JSON.stringify({ token: `completion-bootstrap-${id}` }),
