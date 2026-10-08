@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { TELEMETRY_DURATION_BUCKETS, type TelemetryBatch, type TelemetryCounterDelta } from "./aggregator";
 import {
-  createPrismaTelemetryStore, TelemetryQueryError, telemetryDimensionHash, telemetryWriteIsPermanent,
+  clearTelemetryIncidentUser, createPrismaTelemetryStore, TelemetryQueryError, telemetryDimensionHash, telemetryWriteIsPermanent,
   type TelemetryDatabase
 } from "./store";
 
@@ -196,6 +196,14 @@ describe("Prisma telemetry store", () => {
     expect(byKey.statements[0]!.values).toEqual([range.from, range.to, 20]);
     await byKey.store.countIncidentReachByKey(range);
     expect(byKey.statements[1]!.values.at(-1)).toBe(100);
+  });
+
+  it("clears a deleted account's id from its incidents with one statement on the deleting client", async () => {
+    const tx = { $executeRaw: vi.fn(async (statement: Prisma.Sql) => statement.values.length) };
+    await expect(clearTelemetryIncidentUser(tx as unknown as TelemetryDatabase, "user-1")).resolves.toBe(1);
+    const [statement] = tx.$executeRaw.mock.calls[0]!;
+    expect(statement.text).toMatch(/^UPDATE "TelemetryIncident" SET "userId" = NULL WHERE "userId" = \$1$/u);
+    expect(statement.values).toEqual(["user-1"]);
   });
 
   it("returns numeric groups for the requested keys and pages incidents newest first", async () => {

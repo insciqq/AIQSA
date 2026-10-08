@@ -126,6 +126,15 @@ export class TelemetryQueryError extends Error {
   }
 }
 
+/**
+ * Clears a deleted account's id from its incidents inside the deleting
+ * transaction: telemetry keeps no foreign key on users, so that a write never
+ * fails on a deleted account. One indexed statement over a bounded table.
+ */
+export function clearTelemetryIncidentUser(tx: Pick<PrismaClient, "$executeRaw">, userId: string): Promise<number> {
+  return tx.$executeRaw(Prisma.sql`UPDATE "TelemetryIncident" SET "userId" = NULL WHERE "userId" = ${userId}`);
+}
+
 /** A rejected value (SQLSTATE class 22 or 23) fails the same way on every
  * retry, so its batch is dropped instead of blocking all later telemetry. */
 export function telemetryWriteIsPermanent(error: unknown): boolean {
