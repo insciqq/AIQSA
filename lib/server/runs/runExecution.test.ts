@@ -9,6 +9,8 @@ import { prepareWorkspaceImages } from "../workspace/imageCapture";
 import sharp from "sharp";
 import { createHash } from "node:crypto";
 import { observationWholeResultTokens } from "./runContextBudget";
+import { workspaceTurnSoftDeadlineMs } from "./workspaceTurnDeadline";
+import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "../../contracts/workspaceFailure";
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { mcpAutoDiscoveryFailure, RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7954,6 +7956,192 @@ it("retains final-only provider usage if completing the local egress receipt thr
   expect(JSON.stringify(events)).not.toContain("PRIVATE");
   expect(egress.completed).toEqual([]);
   expect(egress.failed).toHaveLength(1);
+});
+
+describe("Workspace turn deadlines", () => {
+  const shell = namespacedWorkspaceToolName("sandbox_shell");
+  // `completionWorkspace`: a 300 s turn and 5 s synchronous calls.
+  const softMs = workspaceTurnSoftDeadlineMs(completionWorkspace.turnTimeoutSeconds, completionWorkspace.syncToolTimeoutSeconds);
+  const hardMs = completionWorkspace.turnTimeoutSeconds * 1_000;
+  const timeInstruction = "Tool use is now disabled for this run: the time limit of this turn is close.";
+  const timeLimit = { code: "workspace_turn_time_limit", message: WORKSPACE_OPERATION_FAILURE_MESSAGES.workspace_turn_time_limit };
+  type WorkspaceInput = NonNullable<RunExecutionInput["workspace"]>;
+
+  beforeEach(() => {
+    activeRunControllersForTest().clear();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function workspaceTurn(input: Readonly<{
+    execute?: WorkspaceInput["execute"];
+    handoff?: WorkspaceInput["handoff"];
+    round(request: ProviderRunRequest, index: number, signal: AbortSignal | undefined): Promise<ProviderRunResult>;
+  }>) {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const workspace = {
+      accepts: ({ name }: { name: string }) => name === shell,
+      execute: vi.fn<WorkspaceInput["execute"]>(input.execute ?? (async ({ call }) => ({ callId: call.id, name: call.name,
+        status: "complete", content: [{ type: "text", text: "{\"data\":{\"exitCode\":0}}" }] }))),
+      tools: async () => [{ capability: "workspace" as const, name: shell, description: shell, inputSchema: { type: "object" } }],
+      finalize: vi.fn(), recoverExports: vi.fn(),
+      handoff: vi.fn<WorkspaceInput["handoff"]>(input.handoff ?? (async () => ({ status: "ready" as const }))),
+      settle: vi.fn<WorkspaceInput["settle"]>(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }))
+    } satisfies WorkspaceInput;
+    const adapter = createAdapter(async function* (request, options) {
+      requests.push(request);
+      return await input.round(request, requests.length, options?.signal);
+    });
+    const begin = vi.spyOn(repository.repository, "beginToolLoopProviderRound");
+    const cancelPending = vi.spyOn(repository.repository, "cancelPendingToolLoopCalls");
+    const base = preparedData({ provider: "openai", modelId: "gpt-tool-model", toolBudgets: { maxToolCalls: 80, maxToolRounds: 32 } });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, workspace: completionWorkspace },
+      providerRequest: { ...base.providerRequest, workspace: completionWorkspace } };
+    const run = async () => parseSse(await createRunExecutionResponse({
+      ...executionInput({ adapter, prepared, repository: repository.repository }), workspace }).text());
+    return { begin, cancelPending, repository, requests, run, workspace };
+  }
+  const shellCalls = (round: number, count: number) => providerResult({ finalText: "", toolCalls: Array.from({ length: count },
+    (_, index) => ({ id: `shell-${round}-${index}`, name: shell, arguments: { command: "synthetic-step" } })) });
+  const disabledRequests = (requests: readonly ProviderRunRequest[]) =>
+    requests.filter(request => JSON.stringify(request.providerToolMessages ?? []).includes("Tool use is now disabled"));
+  const terminalRounds = (repository: ReturnType<typeof createRepository>) => repository.recordedRunUsageEvents.flatMap(entry =>
+    entry.answerRoundUsage?.completeness === "terminal" ? [entry.answerRoundUsage.roundIndex] : []);
+
+  it("derives the soft deadline from the turn budget and the synchronous call limit", () => {
+    expect(workspaceTurnSoftDeadlineMs(1_800, 120)).toBe(1_440_000);
+    expect(workspaceTurnSoftDeadlineMs(3_600, 120)).toBe(3_240_000);
+    expect(workspaceTurnSoftDeadlineMs(1_800, 300)).toBe(1_260_000);
+    // Short budgets keep at least half of the turn for work.
+    expect(workspaceTurnSoftDeadlineMs(600, 120)).toBe(300_000);
+    expect(workspaceTurnSoftDeadlineMs(60, 120)).toBe(30_000);
+  });
+
+  it("finishes the running batch, forces exactly one tool-free answer and hands off normally at the soft deadline", async () => {
+    let executed = 0;
+    const turn = workspaceTurn({
+      execute: async ({ call }) => {
+        // The soft deadline passes while the first call of the batch runs.
+        if (++executed === 1) await vi.advanceTimersByTimeAsync(softMs);
+        return { callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: "{\"data\":{\"exitCode\":0}}" }] };
+      },
+      round: async (request, index) => request.toolChoice === "none"
+        ? providerResult({ finalText: "Steps 1-2 are done; the rest was not completed." })
+        : shellCalls(index, 2)
+    });
+    const events = await turn.run();
+
+    expect(turn.workspace.execute).toHaveBeenCalledTimes(2);
+    expect([...turn.repository.toolCalls.values()].map(call => call.state)).toEqual(["complete", "complete"]);
+    expect(turn.requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(disabledRequests(turn.requests)).toHaveLength(1);
+    expect(turn.requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: expect.stringContaining(timeInstruction) });
+    // A transient decision: nothing refused, no checkpointed synthesis, no tool-budget signal.
+    expect(turn.begin.mock.calls.some(([value]) => value.finalSynthesisOfRound !== undefined)).toBe(false);
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "tool_budget")).toBe(false);
+    expect(turn.workspace.handoff).toHaveBeenCalledOnce();
+    expect(turn.workspace.settle).not.toHaveBeenCalled();
+    expect(turn.repository.failedRuns).toEqual([]);
+    expect(turn.repository.completeRuns[0]?.finalText).toBe("Steps 1-2 are done; the rest was not completed.");
+    expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "complete" } });
+    expect(terminalRounds(turn.repository)).toEqual([1, 2]);
+  });
+
+  it("refuses a batch returned after the soft deadline into the same checkpointed synthesis", async () => {
+    const turn = workspaceTurn({
+      round: async (request, index) => {
+        if (request.toolChoice === "none") return providerResult({ finalText: "Nothing new was run; earlier results stand." });
+        // The soft deadline passes while the provider plans this batch.
+        await vi.advanceTimersByTimeAsync(softMs);
+        return shellCalls(index, 3);
+      }
+    });
+    const events = await turn.run();
+
+    expect(turn.workspace.execute).not.toHaveBeenCalled();
+    expect(turn.repository.toolCalls.size).toBe(0);
+    expect(turn.begin).toHaveBeenCalledWith(expect.objectContaining({ finalSynthesisOfRound: 1, roundIndex: 2,
+      providerContinuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }));
+    expect(turn.requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(disabledRequests(turn.requests)).toHaveLength(1);
+    expect(turn.requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: expect.stringContaining(timeInstruction) });
+    expect(JSON.stringify(turn.requests[1]!.providerToolMessages)).not.toContain("shell-1-0");
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "tool_budget")).toBe(false);
+    expect(turn.workspace.handoff).toHaveBeenCalledOnce();
+    expect(turn.repository.failedRuns).toEqual([]);
+    expect(turn.repository.completeRuns).toHaveLength(1);
+    expect(terminalRounds(turn.repository)).toEqual([1, 2]);
+  });
+
+  it("keeps the hard deadline as the safety net when a call outlives the soft deadline", async () => {
+    const turn = workspaceTurn({
+      execute: async ({ signal }) => {
+        await vi.advanceTimersByTimeAsync(hardMs);
+        expect(signal?.aborted).toBe(true);
+        throw signal!.reason;
+      },
+      round: async (request, index) => shellCalls(index, 1)
+    });
+    const events = await turn.run();
+
+    expect(turn.workspace.execute).toHaveBeenCalledOnce();
+    expect(turn.requests).toHaveLength(1);
+    expect(turn.cancelPending).toHaveBeenCalled();
+    expect(turn.workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "timed_out" }));
+    expect(turn.workspace.handoff).not.toHaveBeenCalled();
+    expect(turn.repository.completeRuns).toEqual([]);
+    expect(turn.repository.failedRuns).toEqual([expect.objectContaining({ error: timeLimit })]);
+    expect(events).toContainEqual({ type: "error", data: timeLimit });
+    expect(terminalRounds(turn.repository)).toEqual([1]);
+  });
+
+  it("fails a handoff the hard deadline interrupts with the time-limit message and keeps the published answer", async () => {
+    const turn = workspaceTurn({
+      handoff: async ({ signal }) => {
+        await vi.advanceTimersByTimeAsync(hardMs);
+        signal?.throwIfAborted();
+        return { status: "ready" };
+      },
+      round: async () => providerResult({ finalText: "Report written to the output directory." })
+    });
+    const events = await turn.run();
+
+    expect(turn.requests).toHaveLength(1);
+    expect(turn.workspace.handoff).toHaveBeenCalledOnce();
+    expect(turn.repository.publishedAnswers).toHaveLength(1);
+    expect(turn.repository.completeRuns).toEqual([]);
+    expect(turn.workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "timed_out" }));
+    expect(turn.repository.failedRuns).toEqual([expect.objectContaining({ error: timeLimit })]);
+    expect(events).toContainEqual({ type: "error", data: timeLimit });
+    expect(events.filter(event => event.type === "answer_complete")).toHaveLength(1);
+    expect(terminalRounds(turn.repository)).toEqual([1]);
+  });
+
+  it("lets Stop win over the soft deadline's final answer", async () => {
+    const turn = workspaceTurn({
+      execute: async ({ call }) => {
+        await vi.advanceTimersByTimeAsync(softMs);
+        return { callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: "{\"data\":{\"exitCode\":0}}" }] };
+      },
+      round: async (request, index, signal) => {
+        if (request.toolChoice !== "none") return shellCalls(index, 1);
+        expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
+        signal?.throwIfAborted();
+        return providerResult({ finalText: "must not complete" });
+      }
+    });
+    const events = await turn.run();
+
+    expect(turn.requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(turn.workspace.execute).toHaveBeenCalledOnce();
+    expect(turn.workspace.handoff).not.toHaveBeenCalled();
+    expect(turn.workspace.settle).toHaveBeenCalledWith(expect.objectContaining({ outcome: "cancelled" }));
+    expect(turn.repository.failedRuns).toEqual([]);
+    expect(turn.repository.completeRuns).toEqual([]);
+    expect(events.at(-1)).toMatchObject({ type: "done", data: { status: "cancelled" } });
+  });
 });
 
 describe("tool-free synthesis and repeated calls in live execution", () => {

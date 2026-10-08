@@ -45,8 +45,10 @@ export type ProviderToolLoopContinuation = Readonly<{
 }>;
 
 /** Why a round answers without tools. `calls` and `rounds` are an exactly
- * reached budget; the other two also left planned calls unexecuted. */
-export type ToolSynthesisReason = ToolSynthesisMarker | "calls" | "rounds";
+ * reached budget; the markers also left planned calls unexecuted. `time`:
+ * the turn's time budget is used up (known to live execution only; a batch
+ * it refused is checkpointed as `budget_exhausted`). */
+export type ToolSynthesisReason = ToolSynthesisMarker | "calls" | "rounds" | "time";
 
 export type ToolSynthesisDecision = Readonly<{
   /** The transient budget signal, when a budget ended tool use. */
@@ -58,7 +60,9 @@ export type ToolSynthesisDecision = Readonly<{
  * The one rule for a tool-free synthesis round, shared by live execution and
  * recovery: a checkpointed marker first, then a previous round of only
  * blocked repeats, then an exactly reached budget. A run admitted without
- * tools (`toolChoice: "none"`) is not synthesis.
+ * tools (`toolChoice: "none"`) is not synthesis. A used-up time budget
+ * (`timeExhausted`, live execution only) forces synthesis as well and is
+ * named as its cause unless the previous round made no progress.
  */
 export function toolSynthesisDecision(input: Readonly<{
   budgets: Pick<ToolLoopBudgets, "maxToolCalls" | "maxToolRounds">;
@@ -66,9 +70,13 @@ export function toolSynthesisDecision(input: Readonly<{
   initialToolChoice: ProviderRunRequest["toolChoice"];
   noProgress: boolean;
   progress: Pick<ToolLoopProgress, "toolCalls" | "toolRounds">;
+  timeExhausted?: boolean;
 }>): ToolSynthesisDecision | null {
   if (input.initialToolChoice === "none") return null;
   const reached = reachedToolLoopBudget(input.progress, input.budgets);
+  if (input.timeExhausted === true && input.continuation.finalSynthesis !== "no_progress" && !input.noProgress) {
+    return { budget: null, reason: "time" };
+  }
   if (input.continuation.finalSynthesis === "budget_exhausted") {
     return { budget: { kind: "calls", limit: input.budgets.maxToolCalls }, reason: "budget_exhausted" };
   }
@@ -83,9 +91,11 @@ export function toolSynthesisDecision(input: Readonly<{
 export function toolSynthesisInstruction(reason: ToolSynthesisReason): string {
   const cause = reason === "no_progress"
     ? "repeated identical calls returned no new data"
+    : reason === "time" ? "the time limit of this turn is close"
     : reason === "rounds" ? "the tool-round budget is exhausted" : "the tool-call budget is exhausted";
   const unexecuted = reason === "budget_exhausted" || reason === "no_progress"
-    ? " Some planned tool calls were not executed." : "";
+    ? " Some planned tool calls were not executed."
+    : reason === "time" ? " Planned tool calls may not have been executed." : "";
   return `Tool use is now disabled for this run: ${cause}.${unexecuted} Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.`;
 }
 
@@ -237,6 +247,9 @@ export type ProviderToolLoopInput = Readonly<{
   }>): Promise<void> | void;
   /** A tool reserved outside the budgets; see `ToolLoopReservedCall`. */
   reservedCall?: ToolLoopReservedCall;
+  /** The turn's time budget is used up: the next round is tool-free
+   * synthesis and a batch returned from now on is refused into it. */
+  timeBudgetExhausted?(): boolean;
   afterToolBatch?(input: Readonly<{
     continuation: ProviderToolLoopContinuation;
     progress: ToolLoopProgress;
@@ -424,6 +437,7 @@ export async function runProviderToolLoop(
     onSignal: input.onSignal,
     persistToolBatch: input.persistToolBatch,
     refuseToolBatch: ({ continuation, round }) => input.onFinalSynthesisTransition?.({ continuation, round }),
+    ...(input.timeBudgetExhausted ? { timeBudgetExhausted: input.timeBudgetExhausted } : {}),
     resume: input.resume ? {
       continuation: input.resume.continuation,
       ...(input.resume.previousToolResults
@@ -446,7 +460,8 @@ export async function runProviderToolLoop(
         initialToolChoice: input.initialRequest.toolChoice,
         noProgress: previousToolResults.length > 0 && input.isRepeatBlockedCall !== undefined &&
           previousToolResults.every(entry => input.isRepeatBlockedCall!(entry.call)),
-        progress
+        progress,
+        timeExhausted: input.timeBudgetExhausted?.() === true
       });
       // An exactly used budget first offers an outstanding reserved call
       // alone; synthesis follows once it was made or refused.

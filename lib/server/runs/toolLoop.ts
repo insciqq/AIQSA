@@ -204,6 +204,10 @@ export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonl
     progress?: ToolLoopProgress;
     seenCallIds?: readonly string[];
   }>;
+  /** The run's time budget is used up: a batch returned from now on is
+   * refused into its synthesis round, exactly like a batch over the call
+   * budget. A batch already dispatched is never interrupted. */
+  timeBudgetExhausted?(): boolean;
   onSignal?(signal: ToolLoopSignal): Promise<void> | void;
   runProviderRound(input: Readonly<{
     continuation: Continuation;
@@ -666,7 +670,10 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     const exemptCall = budgetExemptCallMade ? undefined : calls.find((call) => input.isBudgetExempt?.(call));
     const budgetedCalls = calls.length - (exemptCall ? 1 : 0);
     const roundsExceeded = budgetedCalls > 0 && progress.toolRounds >= input.budgets.maxToolRounds;
-    if (roundsExceeded || progress.toolCalls + budgetedCalls > input.budgets.maxToolCalls) {
+    const callsExceeded = progress.toolCalls + budgetedCalls > input.budgets.maxToolCalls;
+    // Without a synthesis round a used-up time budget leaves the batch alone.
+    const timeExhausted = providerResult.synthesisContinuation !== undefined && input.timeBudgetExhausted?.() === true;
+    if (roundsExceeded || callsExceeded || timeExhausted) {
       const synthesis = providerResult.synthesisContinuation;
       if (synthesis === undefined) {
         return failed(progress, roundsExceeded ? {

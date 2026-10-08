@@ -1181,6 +1181,7 @@
   "workspace_tool_outcome_unknown",
   "workspace_tool_output_limit_exceeded",
   "workspace_tool_timeout",
+  "workspace_turn_time_limit",
   "workspace_unavailable",
   "workspace_upload_recovery_failed",
   "workspace_upload_startup_failed",
