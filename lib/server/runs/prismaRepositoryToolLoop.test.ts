@@ -700,6 +700,31 @@ describe("provider dispatch recovery request loading", () => {
     }
   });
 
+  it("restores bounded artifact file references and keeps snapshots accepted before them valid", async () => {
+    const file = { attachmentId: "file-one", messageId: "message-one", fileName: " Untrusted name.xlsx", kind: "file",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", byteSize: 2048, origin: "upload" as const };
+    const snapshot = { ...normalizedRequest, toolMode: "auto" as const, artifactTool: true as const,
+      artifactToolDescription: "Frozen artifact description",
+      imageReferences: [{ attachmentId: "image-one", messageId: "message-one", fileName: "synthetic.png", origin: "upload" as const }],
+      fileReferences: [file, { ...file, attachmentId: "image-one", fileName: "synthetic.png", kind: "image", mimeType: "image/png", byteSize: 0 }] };
+    expect(await loadStored(snapshot)).toEqual(snapshot);
+    const many = Array.from({ length: 256 }, (_, index) => ({ ...file, attachmentId: `file-${index}` }));
+    expect((await loadStored({ ...snapshot, fileReferences: many }))?.fileReferences).toHaveLength(256);
+    // Accepted before file references: the artifact tool falls back to images.
+    const { fileReferences: _omitted, ...legacy } = snapshot;
+    expect(await loadStored(legacy)).toEqual(legacy);
+    for (const patch of [{ artifactTool: undefined, artifactToolDescription: undefined, imageReferences: undefined }, { fileReferences: [] },
+      { fileReferences: [...many, { ...file, attachmentId: "file-overflow" }] }, { fileReferences: [file, file] },
+      { fileReferences: [{ ...file, path: "/untrusted" }] }, { fileReferences: [{ ...file, origin: "unknown" }] },
+      { fileReferences: [{ ...file, byteSize: -1 }] }, { fileReferences: [{ ...file, byteSize: 1.5 }] },
+      { fileReferences: [{ ...file, byteSize: "2048" }] }, { fileReferences: [{ ...file, mimeType: "" }] },
+      { fileReferences: [{ ...file, mimeType: "x".repeat(256) }] }, { fileReferences: [{ ...file, fileName: "x".repeat(257) }] },
+      { fileReferences: [{ ...file, fileName: "a\u0000b" }] }, { fileReferences: [{ ...file, attachmentId: " file-one" }] },
+      { fileReferences: [{ ...file, kind: "" }] }, { fileReferences: [{ ...file, messageId: undefined }] }, { fileReferences: file }]) {
+      await expect(loadStored({ ...snapshot, ...patch })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
+  });
+
   it("restores current admitted model capabilities without weakening their validation", async () => {
     const capabilities = { ...normalizedRequest.modelCapabilities, vision: true, forcedToolCalling: true,
       validatedAutoToolCalling: true, nativeForcedToolChoice: false,
