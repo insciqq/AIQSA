@@ -331,6 +331,8 @@ test("auto-redirect sends /login to Keycloak, ?local=1 stays, and signing out en
   await keycloakSignIn(page, "alice", password(keycloakUsers.alice));
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 60_000 });
   const aliceId = (await userByIdentity(keycloakUsers.alice.email))!.id;
+  // Earlier tests left other sessions of alice open in their own browsers: sign-out ends this one.
+  const sessionsBefore = await prisma.authSession.count({ where: { revokedAt: null, signInMethod: "oidc", userId: aliceId } });
 
   await page.getByRole("button", { name: "Account menu" }).first().click();
   await page.getByRole("menu", { name: "Account", exact: true }).getByRole("menuitem", { name: "Sign out", exact: true }).click();
@@ -341,7 +343,8 @@ test("auto-redirect sends /login to Keycloak, ?local=1 stays, and signing out en
   // Back at /login, which redirects again: Keycloak now asks for credentials.
   await expect(page.locator("#kc-form-login")).toBeVisible({ timeout: 60_000 });
   const activeSessions = await prisma.authSession.count({ where: { revokedAt: null, signInMethod: "oidc", userId: aliceId } });
-  expect(activeSessions).toBe(0);
+  expect(sessionsBefore - activeSessions).toBe(1);
+  expect((await context.cookies()).some((cookie) => cookie.name === "aiqsa_session")).toBe(false);
   await context.close();
   await attachEvidence(testInfo, "oidc-redirect-logout", {
     activeSessionsAfterLogout: activeSessions,
