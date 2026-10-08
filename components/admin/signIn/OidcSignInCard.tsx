@@ -305,7 +305,7 @@ export function OidcSignInCard({ appBaseUrl, controller, state }: AdminSignInMet
         <SignInTextField
           disabled={busy}
           error={errors.groupsClaimPath}
-          help="A claim name or dot path: groups, realm_access.roles, resource_access.aiqsa.roles."
+          help="A claim name or dot path: groups, realm_access.roles, resource_access.aiqsa.roles; a namespaced claim such as https://example.com/groups is read whole."
           label="Groups claim"
           onChange={(value) => update("groupsClaimPath", value)}
           value={form.groupsClaimPath}
