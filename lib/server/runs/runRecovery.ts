@@ -936,9 +936,10 @@ async function settleToolLoopRecoveryError(
 
 const recoveryScope = new AsyncLocalStorage<string>();
 
-async function observeRecoveryRun(runId: string, operation: () => Promise<void>): Promise<void> {
+/** Recovers one run in its own root, its records named by the run and its user. */
+async function observeRecoveryRun(runId: string, userId: string, operation: () => Promise<void>): Promise<void> {
   if (recoveryScope.getStore() === runId) return operation();
-  return runInBackground(() => runWithContext({ run_id: runId }, () => recoveryScope.run(runId, async () => {
+  return runInBackground(() => runWithContext({ run_id: runId, user_id: userId }, () => recoveryScope.run(runId, async () => {
     const started = performance.now();
     logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: "started" });
     try {
@@ -6062,7 +6063,7 @@ export async function refreshProviderRunIfNeeded(
   // constitute recovery attempts.
   if (deps.registry.has(runId)) return;
 
-  const refresh = observeRecoveryRun(runId, () => refreshProviderRunOnce(deps, runId, userId));
+  const refresh = observeRecoveryRun(runId, userId, () => refreshProviderRunOnce(deps, runId, userId));
   runRefreshPromises.set(runId, refresh);
   try {
     await refresh;
@@ -6111,7 +6112,7 @@ export async function reconcileInstallationRuns(
   await Promise.allSettled(candidates.map((run) => {
     if (deps.registry.has(run.id)) return;
     // Observe each rejection before allSettled preserves independent progress.
-    return observeRecoveryRun(run.id, async () => {
+    return observeRecoveryRun(run.id, run.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, run.userId);
       if (control && !(await projectRecoveryAuthorityAllowsProceed(
         deps,
@@ -6188,7 +6189,7 @@ export async function reconcileStaleRuns(
       continue;
     }
 
-    await observeRecoveryRun(run.id, async () => {
+    await observeRecoveryRun(run.id, input.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, input.userId);
       if (control && !(await projectRecoveryAuthorityAllowsProceed(
         deps,

@@ -235,6 +235,7 @@ export const attachmentProcessingRepository: AttachmentProcessingRepository = {
         jobId: row.jobId,
         kind: row.kind,
         mimeType: row.mimeType,
+        ownerUserId: row.ownerUserId,
         storageKey: row.storageKey
       } satisfies AttachmentProcessingRecord) : null
     });
