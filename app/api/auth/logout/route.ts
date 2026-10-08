@@ -8,10 +8,10 @@ export const runtime = "nodejs";
 
 export const POST = createLogoutHandler({
   getConfig: () => getAuthConfig(),
-  identityProviderLogout: async ({ signInMethod }) => {
+  identityProviderLogout: async ({ idTokenHint, signInMethod }) => {
     const { appBaseUrl } = getAuthConfig();
     return trustedHeaderLogoutRedirect({ appBaseUrl, signInMethod }) ??
-      activeOidcLogoutRedirect({ appBaseUrl, signInMethod });
+      activeOidcLogoutRedirect({ appBaseUrl, idTokenHint, signInMethod });
   },
   sessions: authSessionStore
 });

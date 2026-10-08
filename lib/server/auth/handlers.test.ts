@@ -1188,6 +1188,48 @@ describe("auth route handlers", () => {
     expect(sessions.records.get(hashToken(created.token))?.revokedAt).toBeInstanceOf(Date);
   });
 
+  it("hands the identity provider step the sealed id token the session held before its revocation", async () => {
+    const sessions = createMemoryAuthSessionStore({ user });
+    const withHint = await createAuthSession({ secureCookie: true, sessions, userId: user.id });
+    const withoutHint = await createAuthSession({ secureCookie: true, sessions, userId: user.id });
+    const record = sessions.records.get(hashToken(withHint.token))!;
+    Object.assign(record, { idTokenHintEnvelope: "v2.sealed-hint", signInMethod: "oidc" });
+    sessions.records.get(hashToken(withoutHint.token))!.signInMethod = "oidc";
+    // Like the Prisma store, a read leaves the hint out unless it asks for it.
+    const find = sessions.findSessionByTokenHash;
+    sessions.findSessionByTokenHash = async (tokenHash, options) => {
+      const found = await find(tokenHash);
+      return found && !options?.idTokenHint ? { ...found, idTokenHintEnvelope: undefined } : found;
+    };
+    // Like the database trigger, revocation drops the hint.
+    const revoke = sessions.revokeSessionByTokenHash;
+    sessions.revokeSessionByTokenHash = async (input) => {
+      const revoked = await revoke(input);
+      const target = sessions.records.get(input.tokenHash);
+      if (target?.revokedAt) target.idTokenHintEnvelope = null;
+      return revoked;
+    };
+    const identityProviderLogout = vi.fn(async () => "https://idp.example/logout");
+    const POST = createLogoutHandler({ getConfig: () => ({ cookieSecure: true }), identityProviderLogout, sessions });
+    const logout = (cookie: string) => POST(new Request("http://app.local/api/auth/logout", {
+      body: "{}",
+      headers: { "content-type": "application/json", cookie },
+      method: "POST"
+    }));
+
+    const response = await logout(withHint.cookie);
+    expect(await response.json()).toEqual({ redirectTo: "https://idp.example/logout" });
+    expect(record.idTokenHintEnvelope).toBeNull();
+    await logout(withoutHint.cookie);
+    // A second logout of a revoked session has no identity provider step.
+    await logout(withHint.cookie);
+
+    expect(identityProviderLogout.mock.calls).toEqual([
+      [{ idTokenHint: { envelope: "v2.sealed-hint", sessionId: record.id }, signInMethod: "oidc" }],
+      [{ idTokenHint: null, signInMethod: "oidc" }]
+    ]);
+  });
+
   it("rejects non-JSON logout posts", async () => {
     const POST = createLogoutHandler({
       getConfig: () => ({
