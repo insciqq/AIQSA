@@ -4,6 +4,7 @@ import type {
   AdminSignInMethodStatus
 } from "@/lib/contracts/adminSignIn";
 import type { AuthSessionSignInMethod, AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
+import { samlFailureMessages, samlTestMessages } from "./samlSignInView";
 
 export const signInMethodLabels: Record<AuthSignInMethod | AuthSessionSignInMethod, string> = {
   bootstrap: "Bootstrap token",
@@ -36,6 +37,7 @@ export function signInStatusPresentation(status: AdminSignInMethodStatus): SignI
 }
 
 const testMessages: Record<string, string> = {
+  ...samlTestMessages,
   client_id_format_invalid: "The client ID does not look like one this provider issues.",
   client_secret_format_invalid: "The client secret has an unexpected format: spaces or too short.",
   format_checked: "Format checked. The provider confirms the client at the first real sign-in.",
@@ -52,6 +54,7 @@ export function signInTestMessage(code: string): string {
 }
 
 const failureMessages: Record<string, string> = {
+  ...samlFailureMessages,
   account_conflict: "an identity could not be linked to an existing account",
   email_missing: "the provider sent no usable email",
   exchange_failed: "the provider rejected the sign-in or could not be reached",
