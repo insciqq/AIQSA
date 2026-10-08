@@ -100,6 +100,8 @@ export type MemoryTemporaryFinalizationEvent = Readonly<{
 export type MemoryRetainedSourceMutationEvent = Readonly<{
   /** Set only when this mutation publishes a new chat branched from that retained chat. */
   branchSourceChatId?: string;
+  /** Set only when this mutation advanced the owner's memoryRevision. */
+  memoryRevisionAdvance?: Readonly<{ from: number; to: number }>;
   mutations: readonly MemorySourceMutation[];
   previous: LockedMemorySourceChat;
   settlement?: MemoryTerminalSettlement;
@@ -405,6 +407,7 @@ export async function applyMemorySourceMutations(
   const settings = needsSettings
     ? await lockMemorySettings(tx, input.chat.userId, false)
     : null;
+  let memoryRevisionAdvance: MemoryRetainedSourceMutationEvent["memoryRevisionAdvance"];
   if (settings) {
     const nextMemoryGeneration = checkedCounter(
       settings.memoryGeneration,
@@ -427,6 +430,9 @@ export async function applyMemorySourceMutations(
     });
     if (advanced.count !== 1) {
       throw new MemorySourceStateConflictError("memory_counter_contract_invalid");
+    }
+    if (nextMemoryRevision !== settings.memoryRevision) {
+      memoryRevisionAdvance = { from: settings.memoryRevision, to: nextMemoryRevision };
     }
     settings.memoryGeneration = nextMemoryGeneration;
     settings.memoryRevision = nextMemoryRevision;
@@ -503,6 +509,7 @@ export async function applyMemorySourceMutations(
       ...(input.branchSourceChatId
         ? { branchSourceChatId: input.branchSourceChatId }
         : {}),
+      ...(memoryRevisionAdvance ? { memoryRevisionAdvance } : {}),
       mutations: input.mutations,
       previous: input.chat,
       ...(input.terminalSettlement
