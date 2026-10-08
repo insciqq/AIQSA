@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeArtifactOperation } from "@/lib/contracts/artifacts";
 import { ARTIFACT_BRIDGE_SCRIPT_OPEN } from "@/lib/contracts/artifactRuntime";
-import { ARTIFACT_NOTE_LIMITS, artifactLinkTarget, buildArtifactBundle, decodeArtifactBundle, hydrateArtifactBundleFile, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleFile } from "./bundle";
+import { ARTIFACT_NOTE_LIMITS, ARTIFACT_PAGE_SVG_LIMIT, artifactLinkTarget, buildArtifactBundle, decodeArtifactBundle, hydrateArtifactBundleFile, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleFile } from "./bundle";
 import { ARTIFACT_ERROR_EXCERPT_CHARACTERS } from "./referencedFiles";
 
 describe("artifact bundle isolation", () => {
@@ -122,10 +122,17 @@ describe("artifact icon links", () => {
   ])("rejects an icon that is not an inline or included image: %s", link => {
     expect(() => buildHtml(head(link))).toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported", path: "index.html" }));
   });
-  it("keeps refusing other link relations", () => {
-    for (const rel of ["canonical", "alternate", "search"]) {
-      expect(() => buildHtml(head(`<link rel="${rel}" href="${png}">`))).toThrow(expect.objectContaining({ code: "artifact_external_style_unsupported" }));
-    }
+  it("drops every link that is neither a stylesheet nor an icon and notes it", () => {
+    const relations = ["canonical", "alternate", "alternate stylesheet", "author", "license", "search", "me", "pingback", "manifest", "preconnect", "x-unknown"];
+    const built = buildHtml(head(relations.map(rel => `<link rel="${rel}" href="https://example.com/${rel.replace(" ", "-")}">`).join("") +
+      '<link rel="stylesheet"><link href="https://example.com/no-rel">'));
+    const output = renderArtifactBundle(built.bundle).body.toString("utf8");
+    expect(output).not.toContain("<link");
+    expect(output).not.toContain("example.com");
+    expect(built.notes.removedLinks.map(note => note.rel)).toEqual([...relations, "stylesheet", ""]);
+    expect(built.notes.removedLinks[2]).toEqual({ page: "index.html", rel: "alternate stylesheet", href: "https://example.com/alternate-stylesheet" });
+    // A stylesheet link is still inlined, so an external one still fails.
+    expect(() => buildHtml(head('<link rel="stylesheet" href="https://example.com/a.css">'))).toThrow(expect.objectContaining({ code: "artifact_external_style_unsupported" }));
   });
 });
 
@@ -160,6 +167,44 @@ describe("artifact pages, local files and links", () => {
     expect(() => buildHtml('<img src="/../outside.png">')).toThrow(expect.objectContaining({ code: "artifact_external_image_unsupported" }));
   });
 
+  it("selects local resources without a cache-busting query or a fragment and keeps external URLs external", () => {
+    const files = [
+      { path: "css/site.css", mimeType: "text/css", text: "body{background:url(../img/logo.png?v=2#x)}" },
+      { path: "js/app.js", mimeType: "text/javascript", text: "window.app = 3;" },
+      { path: "img/logo.png", mimeType: "image/png", base64: PNG },
+      { path: "clip.wav", mimeType: "audio/wav", base64: "UklGRiQAAABXQVZF" }
+    ];
+    const output = page(site([html("index.html", '<link rel="stylesheet" href="css/site.css?1"><script src="/js/app.js?v=3"></script>' +
+      '<link rel="icon" href="img/logo.png?v=1"><img src="img/logo.png#top"><audio src="clip.wav?t=1"></audio>' +
+      '<p style="background:url(\'img/logo.png?x\')"></p><script>const kept = "img/logo.png?v=4";</script>'), ...files]));
+    expect(output).toContain("window.app = 3;");
+    expect(output).toContain(`body{background:url("data:image/png;base64,${PNG}")}`);
+    expect(output).toContain(`<link rel="icon" href="data:image/png;base64,${PNG}">`);
+    expect(output).toContain(`<img src="data:image/png;base64,${PNG}">`);
+    expect(output).toContain('<audio data-aiqsa-src="clip.wav"></audio>');
+    expect(output).toContain(`<p style="background:url(&quot;data:image/png;base64,${PNG}&quot;)"></p>`);
+    // Script string literals keep their exact-path rule: a suffixed one is left to the bridge.
+    expect(output).toContain('const kept = "img/logo.png?v=4";');
+    expect(output).not.toMatch(/(?:src|href)="[^"]*\?/u);
+    for (const [source, code] of [['<script src="https://example.com/app.js?v=3"></script>', "artifact_external_script_unsupported"],
+      ['<script src="?v=3"></script>', "artifact_external_script_unsupported"], ['<img src="?only">', "artifact_external_image_unsupported"],
+      ['<link rel="stylesheet" href="//example.com/a.css?1">', "artifact_external_style_unsupported"], ['<script src="missing.js?v=1"></script>', "artifact_external_script_unsupported"]]) {
+      expect(() => page(site([html("index.html", source!), ...files]))).toThrow(expect.objectContaining({ code }));
+    }
+  });
+
+  it("bounds the SVG markup a page parses again, while repeated references to one SVG file parse it once", () => {
+    const inline = (count: number) => '<svg viewBox="0 0 1 1"><rect width="1" height="1"/></svg>'.repeat(count);
+    expect(page(site([html("index.html", inline(ARTIFACT_PAGE_SVG_LIMIT))])).match(/<svg/gu)).toHaveLength(ARTIFACT_PAGE_SVG_LIMIT);
+    expect(() => page(site([html("index.html", inline(ARTIFACT_PAGE_SVG_LIMIT + 1))])))
+      .toThrow(expect.objectContaining({ code: "artifact_svg_limit_exceeded", path: "index.html", hint: expect.stringContaining("<use href=") }));
+    const css = `<style>${Array.from({ length: ARTIFACT_PAGE_SVG_LIMIT + 1 }, (_, index) => `.i${index}{background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>")}`).join("")}</style>`;
+    expect(() => page(site([html("index.html", css)]))).toThrow(expect.objectContaining({ code: "artifact_svg_limit_exceeded" }));
+    const icon = { path: "icon.svg", mimeType: "image/svg+xml", text: '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>' };
+    expect(page(site([html("index.html", '<img src="icon.svg">'.repeat(3 * ARTIFACT_PAGE_SVG_LIMIT)), icon])).match(/data:image\/svg\+xml;base64,/gu))
+      .toHaveLength(3 * ARTIFACT_PAGE_SVG_LIMIT);
+  });
+
   it("drops resource hints and manifests on every page and reports them with bounded detail", () => {
     const hints = ["preload", "modulepreload", "prefetch", "prerender", "dns-prefetch", "preconnect", "manifest"]
       .map(rel => `<link rel="${rel}" href="https://cdn.example/${rel}">`).join("");
@@ -180,15 +225,33 @@ describe("artifact pages, local files and links", () => {
     expect(many.notes.omitted).toBe(8);
   });
 
+  it("refuses an invalid entry page but keeps the bundle when another page fails, noting it", () => {
+    expect(() => buildArtifactBundle(operation([{ path: "index.html", text: "<p>Home</p><iframe></iframe>" }, { path: "docs/b.html", text: "<p>B</p>" }]), []))
+      .toThrow(expect.objectContaining({ code: "artifact_element_unsupported", path: "index.html", excerpt: expect.stringContaining("<iframe></iframe>") }));
+    const built = buildArtifactBundle(operation([
+      { path: "index.html", text: '<link rel="prefetch" href="next.html"><a href="docs/bad.html">Bad</a>' },
+      { path: "docs/bad.html", text: '<link rel="prefetch" href="x.html"><a href="gone.html">Gone</a><iframe></iframe>' },
+      { path: "docs/worse.html", text: '<script src="https://cdn.example/a.js"></script>' },
+      { path: "docs/good.html", text: '<a href="missing.html">Missing</a>' }
+    ]), []);
+    expect(built.notes).toEqual({ pages: ["index.html", "docs/bad.html", "docs/worse.html", "docs/good.html"],
+      removedLinks: [{ page: "index.html", rel: "prefetch", href: "next.html" }],
+      missingLinks: [{ page: "docs/good.html", href: "missing.html", path: "docs/missing.html" }],
+      invalidPages: [{ page: "docs/bad.html", code: "artifact_element_unsupported" }, { page: "docs/worse.html", code: "artifact_external_script_unsupported" }],
+      omitted: 0 });
+    expect(page(built.bundle)).toContain('<a href="docs/bad.html"');
+    // Opening the failing page shows its own typed error, with the excerpt of its markup.
+    expect(() => renderArtifactBundle(built.bundle, false, "docs/bad.html"))
+      .toThrow(expect.objectContaining({ code: "artifact_element_unsupported", path: "docs/bad.html", excerpt: expect.stringContaining("<iframe></iframe>") }));
+  });
+
   it("validates every page with the same rules and renders a selected page", () => {
-    expect(() => buildArtifactBundle(operation([{ path: "index.html", text: "<p>Home</p>" }, { path: "docs/bad.html", text: "<iframe></iframe>" }]), []))
-      .toThrow(expect.objectContaining({ code: "artifact_element_unsupported", path: "docs/bad.html" }));
     const built = buildArtifactBundle(operation([
       { path: "docs/b.html", text: "<h1>B</h1>" },
       { path: "index.html", text: "<h1>Home</h1>" },
       { path: "data.json", mimeType: "application/json", text: "{}" }
     ]), []);
-    expect(built.notes).toEqual({ pages: ["index.html", "docs/b.html"], removedLinks: [], missingLinks: [], omitted: 0 });
+    expect(built.notes).toEqual({ pages: ["index.html", "docs/b.html"], removedLinks: [], missingLinks: [], invalidPages: [], omitted: 0 });
     expect(page(built.bundle)).toContain("<h1>Home</h1>");
     expect(page(built.bundle, "index.html")).toBe(page(built.bundle));
     expect(page(built.bundle, "docs/b.html")).toContain("<h1>B</h1>");

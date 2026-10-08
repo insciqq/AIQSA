@@ -98,7 +98,7 @@ function localBridge(site: Site = {}, blocks: Record<string, string | Uint8Array
     send(...args: unknown[]) { this.calls.push(["send", ...args]); }
     abort() { this.calls.push(["abort"]); }
     setRequestHeader(...args: unknown[]) { this.calls.push(["setRequestHeader", ...args]); }
-    overrideMimeType() { /* native no-op */ }
+    overrideMimeType(...args: unknown[]) { this.calls.push(["overrideMimeType", ...args]); }
     getResponseHeader(name: string): string | null { return name ? "native" : null; }
     getAllResponseHeaders() { return "native"; }
     get readyState() { return 0; }
@@ -119,6 +119,7 @@ function localBridge(site: Site = {}, blocks: Record<string, string | Uint8Array
     get src() { return this.attributes.get("src") ?? ""; }
     set src(value: string) { this.assigned.push(value); this.attributes.set("src", value); }
   }
+  class NativeWorker { args: unknown[]; constructor(...args: unknown[]) { this.args = args; } }
   class FakeMedia extends FakeImage { localName = "audio"; nodeType = 1; networkState = 0; load = vi.fn(); }
   class FakeSource extends FakeImage { localName = "source"; nodeType = 1; parentNode: unknown = null; }
   const blockNodes = Object.entries(blocks).map(([path, data]) => ({ textContent: Buffer.from(data).toString("base64"),
@@ -135,7 +136,7 @@ function localBridge(site: Site = {}, blocks: Record<string, string | Uint8Array
   };
   const nativeFetch = vi.fn(async (...args: unknown[]) => new Response(`native ${args.length}`));
   const window = { addEventListener: vi.fn(), scrollTo: vi.fn(), fetch: nativeFetch as (input?: unknown, init?: RequestInit) => Promise<Response>,
-    XMLHttpRequest: NativeXHR, Element: FakeElement, HTMLImageElement: FakeImage, HTMLMediaElement: FakeMedia, HTMLSourceElement: FakeSource };
+    XMLHttpRequest: NativeXHR, Worker: NativeWorker as unknown as typeof Worker, Element: FakeElement, HTMLImageElement: FakeImage, HTMLMediaElement: FakeMedia, HTMLSourceElement: FakeSource };
   new Function("window", "document", "parent", "DOMException", "URL", artifactRuntimeBridge({ page: "index.html", media: false, files: [], ...site })
     .replace(ARTIFACT_STORAGE_PLACEHOLDER, "[]"))(window, document, { postMessage }, DOMException, URL);
   const click = (href: string, download: string | null = null) => {
@@ -144,7 +145,7 @@ function localBridge(site: Site = {}, blocks: Record<string, string | Uint8Array
     listeners.get("click")!(event);
     return event;
   };
-  return { window, document, postMessage, listeners, nativeFetch, downloads, click, NativeXHR, FakeElement, FakeImage, FakeMedia, FakeSource };
+  return { window, document, postMessage, listeners, nativeFetch, downloads, click, NativeXHR, NativeWorker, FakeElement, FakeImage, FakeMedia, FakeSource };
 }
 
 describe("artifact local files", () => {
@@ -176,7 +177,7 @@ describe("artifact local files", () => {
     await expect(h.window.fetch("inline.png")).rejects.toThrow("docs/inline.png is inlined into this page");
     expect(h.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "aiqsa_artifact_runtime_error", kind: "error",
       message: expect.stringContaining("so fetch cannot read it") }), "*");
-    const external = ["https://example.invalid/data.json", "//example.invalid/data.json", "https://app.example/other/data.json", "data:application/json,{}", "", "?page=x", "#data"];
+    const external = ["https://example.invalid/data.json", "//example.invalid/data.json", "https://app.example/other/data.json", "blob:https://app.example/1", "", "?page=x", "#data"];
     for (const input of external) await h.window.fetch(input);
     expect(h.nativeFetch.mock.calls.map(call => call[0])).toEqual(external);
   });
@@ -303,6 +304,93 @@ describe("artifact local files", () => {
       ["../img/a.png", "Artifact file img/a.png is inlined into this page by a static reference or an exact path string, so a link cannot read it by path"]]) {
       const fresh = localBridge({ page: "docs/index.html", files });
       fresh.click(href!);
+      expect(fresh.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "aiqsa_artifact_runtime_error", kind: "error", message, line: 0, column: 0 }, "*");
+    }
+  });
+
+  it("decodes data: URLs for fetch locally with the Fetch rules and never calls the browser's fetch", async () => {
+    const h = localBridge();
+    const read = async (input: unknown, init?: RequestInit) => {
+      const response = await h.window.fetch(input, init);
+      return [response.status, response.headers.get("content-type"), [...new Uint8Array(await response.arrayBuffer())]];
+    };
+    const png = [137, 80, 78, 71, 0, 255];
+    expect(await read(`data:image/png;base64,${Buffer.from(png).toString("base64")}`)).toEqual([200, "image/png", png]);
+    expect(await read(" DATA:Image/PNG ; Base64 ,iVBO\nRwD/#frag")).toEqual([200, "image/png", png]);
+    expect(await read("data:,a%20b%FF")).toEqual([200, "text/plain;charset=US-ASCII", [97, 32, 98, 255]]);
+    expect(await read("data:;charset=UTF-8,%D0%96")).toEqual([200, "text/plain;charset=UTF-8", [0xd0, 0x96]]);
+    expect(await read("data:Text/HTML;Charset=windows-1251;charset=x,%CF")).toEqual([200, "text/html;charset=windows-1251", [0xcf]]);
+    expect(await read("data:not a type,x")).toEqual([200, "text/plain;charset=US-ASCII", [120]]);
+    expect(await read(new URL("data:application/json,%7B%7D"))).toEqual([200, "application/json", [123, 125]]);
+    expect(await read(new Request("data:text/plain,req"))).toEqual([200, "text/plain", [114, 101, 113]]);
+    expect(await (await h.window.fetch('data:application/json,{"a":1}')).json()).toEqual({ a: 1 });
+    expect(await (await h.window.fetch("data:,body", { method: "HEAD" })).text()).toBe("");
+    await expect(h.window.fetch("data:text/plain;base64")).rejects.toThrow("Invalid data: URL");
+    await expect(h.window.fetch("data:;base64,a")).rejects.toThrow("Invalid data: URL");
+    const aborted = new AbortController(); aborted.abort();
+    await expect(h.window.fetch("data:,x", { signal: aborted.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(h.nativeFetch).not.toHaveBeenCalled();
+    expect(h.postMessage).not.toHaveBeenCalled();
+    await h.window.fetch("datax:,x");
+    await h.window.fetch("https://example.invalid/?u=data:,x");
+    expect(h.nativeFetch.mock.calls.map(call => call[0])).toEqual(["datax:,x", "https://example.invalid/?u=data:,x"]);
+  });
+
+  it("answers XMLHttpRequest for data: URLs and decodes text with the response or overridden charset", async () => {
+    const h = localBridge({ files: [["legacy.txt", "text/plain", "block"]] }, { "legacy.txt": new Uint8Array([0xcf, 0xf0]) });
+    const sync = (url: string, setup: (request: InstanceType<typeof h.NativeXHR>) => void = () => {}) => {
+      const request = new h.NativeXHR();
+      request.open("GET", url, false); setup(request); request.send();
+      return request;
+    };
+    const cp1251 = sync("data:text/plain;charset=windows-1251,%CF%F0");
+    expect([cp1251.status, cp1251.responseText, cp1251.getResponseHeader("content-type")]).toEqual([200, "Пр", "text/plain;charset=windows-1251"]);
+    expect(sync("data:text/plain,%D0%96").responseText).toBe("Ж");
+    expect(sync("data:application/json;charset=windows-1251;base64,eyJhIjoi0JYifQ==", request => { request.responseType = "json"; }).response).toEqual({ a: "Ж" });
+    expect([...new Uint8Array(sync("data:;base64,AAEC", request => { request.responseType = "arraybuffer"; }).response as ArrayBuffer)]).toEqual([0, 1, 2]);
+    expect(sync("legacy.txt").responseText).toBe("��");
+    expect(sync("legacy.txt", request => request.overrideMimeType("text/plain; charset=windows-1251")).responseText).toBe("Пр");
+    // An override set before open() also reaches the browser's own request, and still applies locally.
+    const early = new h.NativeXHR();
+    early.overrideMimeType("text/plain;charset=windows-1251"); early.open("GET", "legacy.txt", false); early.send();
+    expect([early.responseText, early.calls]).toEqual(["Пр", [["overrideMimeType", "text/plain;charset=windows-1251"]]]);
+    expect((sync("data:,x", request => request.overrideMimeType("image/png")).response)).toBe("x");
+    const blob = sync("data:,x", request => { request.overrideMimeType("image/png"); request.responseType = "blob"; }).response as Blob;
+    expect(blob.type).toBe("image/png");
+    const invalid = new h.NativeXHR(); invalid.open("GET", "data:text/plain", false);
+    expect(() => invalid.send()).toThrow(expect.objectContaining({ name: "NetworkError" }));
+    const async = new h.NativeXHR();
+    const loaded = new Promise(resolve => async.addEventListener("load", resolve));
+    async.open("GET", "data:,hello"); async.send(); await loaded;
+    expect([async.readyState, async.status, async.responseText]).toEqual([4, 200, "hello"]);
+    const unknown = sync("data:text/plain;charset=no-such-charset,%D0%96");
+    expect(unknown.responseText).toBe("Ж");
+    expect([cp1251, unknown, invalid, async].flatMap(request => request.calls)).toEqual([]);
+    expect(h.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("starts a Worker from a bundle script's blob: URL with the caller's options and leaves other addresses to the browser", async () => {
+    const files: ArtifactRuntimeSite["files"] = [["index.html", "text/html", "page"], ["workers/sum.js", "text/javascript", "block"],
+      ["data.json", "application/json", "block"], ["inline.js", "text/javascript", "inline"]];
+    const h = localBridge({ files }, { "workers/sum.js": "onmessage = event => postMessage(event.data + 1);", "data.json": "{}" });
+    const worker = new h.window.Worker("workers/sum.js", { type: "module", name: "sum" }) as unknown as InstanceType<typeof h.NativeWorker>;
+    expect(worker).toBeInstanceOf(h.NativeWorker);
+    expect(worker).toBeInstanceOf(h.window.Worker);
+    const [address, options] = worker.args as [string, object];
+    expect(options).toEqual({ type: "module", name: "sum" });
+    const blob = resolveObjectURL(address)!;
+    expect([blob.type, await blob.text()]).toEqual(["text/javascript", "onmessage = event => postMessage(event.data + 1);"]);
+    const absolute = new h.window.Worker(new URL("workers/sum.js?v=2", h.document.baseURI)) as unknown as InstanceType<typeof h.NativeWorker>;
+    expect(absolute.args).toEqual([address]);
+    const external = ["https://example.invalid/w.js", "blob:https://app.example/1", "data:text/javascript,1"];
+    for (const url of external) expect((new h.window.Worker(url) as unknown as InstanceType<typeof h.NativeWorker>).args).toEqual([url]);
+    expect(h.postMessage).not.toHaveBeenCalled();
+    expect(() => (h.window.Worker as unknown as (url: string) => unknown)("workers/sum.js")).toThrow(TypeError);
+    for (const [url, message] of [["missing.js", "Artifact worker script not found: missing.js"],
+      ["data.json", "Artifact file data.json is not JavaScript, so a Worker cannot run it"],
+      ["inline.js", "Artifact file inline.js is inlined into this page by a static reference or an exact path string, so a Worker cannot read it by path"]]) {
+      const fresh = localBridge({ files });
+      expect((new fresh.window.Worker(url!) as unknown as InstanceType<typeof h.NativeWorker>).args).toEqual([url]);
       expect(fresh.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "aiqsa_artifact_runtime_error", kind: "error", message, line: 0, column: 0 }, "*");
     }
   });
