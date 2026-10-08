@@ -5017,8 +5017,11 @@ const RECOVERY_STATE_INVALID_MESSAGE =
  * Ends a run whose accepted recovery record was read but fails its decoder:
  * rereading cannot change it, and nothing may be dispatched, refreshed or
  * executed from it. A provider response the lost executor started is
- * cancelled; usage already recorded stays as it is. The terminal writers are
- * the ordinary guarded recovery ones, followed by Workspace settlement.
+ * cancelled, and its paid work is accounted as for a retired context policy:
+ * a lost tool-loop round or summary call through a still readable
+ * checkpoint, a direct answer dispatch as one operation of unknown usage
+ * once the run is terminal. The terminal writers are the ordinary guarded
+ * recovery ones, followed by Workspace settlement.
  */
 async function failInvalidRecoveryStateRun(
   deps: RunRecoveryDeps,
@@ -5032,13 +5035,36 @@ async function failInvalidRecoveryStateRun(
     const runtime = await resolveAnswerRuntime(deps, runId, control.provider).catch(() => null);
     await runtime?.adapter.cancel?.(control.providerResponseId).catch(() => undefined);
   }
+  // An invalid checkpoint has nothing to account; a failed read keeps the run.
+  const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId })
+    .catch((error: unknown) => { if (error instanceof RecoveryStateInvalidError) return null; throw error; });
+  if (checkpointed) await accountLostExecutorCheckpoint(deps, runId, userId);
   const error = { code: invalid.code, message: RECOVERY_STATE_INVALID_MESSAGE };
   // A recoverable error-status round is not dispatchable, so it settles
-  // through the recovered-error writer, without usage attributions.
+  // through the recovered-error writer, keeping its recorded attributions.
   const failed = control.status === "error"
     ? await settleRecoveredError(deps.repository, { error, outputEvents: [], runId, usageAttributions: [], userId })
     : await failRecoveredRun(deps.repository, runId, control.assistantMessageId, error, { recoveryTerminal: true });
   if (!failed) return;
+  if (!checkpointed && control.providerResponseId) {
+    // Recorded only after the guarded terminal write, so a retry or another
+    // winner never counts it twice; an answer whose usage was already
+    // recorded is not counted again.
+    await (async () => {
+      const persisted = await deps.repository.loadRunUsageAttributions({ runId, userId });
+      if (persisted.some((attribution) => attribution.purpose === "chat_answer")) return;
+      await deps.repository.recordRunUsageEvents({
+        chatId: control.chatId,
+        runId,
+        usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
+          ...persisted.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
+          { modelId: control.modelId, operationCount: 1, provider: control.provider, purpose: "chat_answer",
+            usage: normalizeTokenUsage({ completeness: "unavailable" }) }
+        ])),
+        userId
+      });
+    })().catch(() => undefined);
+  }
   await deps.workspace?.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) })
     .catch((settleError: unknown) => logEvent("run_recovery", { subsystem: "run_recovery", stage: "release", outcome: "failed",
       code: observedFailureCode(settleError), prisma_code: databaseFailureCode(settleError), action: "retry" }));
