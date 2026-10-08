@@ -58,7 +58,9 @@ const publicPrefixes = [
   "/oauth/register",
   "/oauth/revoke",
   "/oauth/token",
-  "/mcp"
+  "/mcp",
+  // SCIM provisioning: the bearer token is the only credential, checked by the route.
+  "/scim/v2"
 ];
 
 function isPublicPath(
