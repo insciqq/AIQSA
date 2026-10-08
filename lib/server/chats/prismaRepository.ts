@@ -15,6 +15,8 @@ import {
   type ScheduledTaskCard
 } from "../../contracts/scheduledTasks";
 import { foldSkillSaveCards } from "../../contracts/skillSaves";
+import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
+import { mcpApprovalGated } from "../runs/mcpApprovalGate";
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
 import { scheduledTaskRowSelect, toScheduledTask } from "../scheduledTasks/store";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
@@ -221,6 +223,8 @@ const assistantRunDetailSelect = {
   normalizedRequest: true,
   userId: true,
   status: true,
+  // The answer's MCP approval cards; their decisions are read here, never from events.
+  mcpToolApprovals: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
   toolCalls: {
     orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
     select: {
@@ -228,6 +232,7 @@ const assistantRunDetailSelect = {
       mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
       completedAt: true,
       ordinal: true,
+      providerCallId: true,
       result: true,
       roundIndex: true,
       startedAt: true,
@@ -294,7 +299,8 @@ const hydratedMessageSelect = {
     take: 1,
     where: { scheduledOccurrenceId: { not: null } }
   },
-  status: true
+  status: true,
+  systemTurnKind: true
 } satisfies Prisma.MessageSelect;
 
 const sessionStatusEventsSelect = {
@@ -413,6 +419,7 @@ type HydratedMessagePath = Readonly<{
 type CurrentScheduledTasks = ReadonlyMap<string, ScheduledTask>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
+  mcpToolApprovals?: readonly McpApprovalCardRow[];
   normalizedRequest?: unknown;
   answerStartedAt?: Date | null;
   createdAt?: Date;
@@ -435,6 +442,7 @@ type ArtifactSummaryRun = {
   status?: string;
   toolCalls?: readonly object[];
   updatedAt?: Date;
+  userId?: string;
   workspaceProducedAttachments?: readonly {
     byteSize: number;
     fileName: string;
@@ -475,6 +483,8 @@ type ToolActivityRun = {
     result?: unknown;
     completedAt: Date | null;
     ordinal: number;
+    /** Selected by every current reader; absent only in older fixtures. */
+    providerCallId?: string;
     roundIndex: number;
     startedAt: Date | null;
     state: string;
@@ -809,7 +819,9 @@ function serializeHydratedMessage(
         memoryActionsByRun.get(modelRun.id) ?? null,
         memorySourcesByRun.get(modelRun.id) ?? [],
         memoryStatusesByRun.get(modelRun.id),
-        scheduledTasks
+        scheduledTasks,
+        // A branch copy shows the source answer's approval cards read-only.
+        message.assistantModelRuns.length ? viewerUserId : undefined
       )
     : null;
   return {
@@ -848,6 +860,7 @@ function serializeHydratedMessage(
     } } : {}),
     ...(isScheduledTaskCheckOutcome(scheduledOutcome) ? { scheduledOutcome } : {}),
     status: message.status,
+    ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
     toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, viewerUserId) : null,
     workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
   };
@@ -1129,7 +1142,13 @@ export function summarizeMessageRunToolActivity(
       acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, fingerprint)
       ? { roundIndex: call.roundIndex, ordinal: call.ordinal }
       : undefined;
+    // A call refused for the user's approval was never sent; its card says why.
+    const approvalRequired = call.providerCallId !== undefined && mcpApprovalGated({ providerCallId: call.providerCallId,
+      result: (call.result ?? null) as Parameters<typeof mcpApprovalGated>[0]["result"],
+      startedAt: call.startedAt?.toISOString() ?? null, state: call.state as Parameters<typeof mcpApprovalGated>[0]["state"],
+      toolName: call.toolName });
     return {
+      ...(approvalRequired ? { approvalRequired: true as const } : {}),
       ...(details ? { details } : {}),
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
@@ -1327,7 +1346,9 @@ export function summarizeMessageRunArtifacts(
   memoryAction: MemoryActionFeedback | null = null,
   memorySources: readonly MemoryAnswerSource[] = [],
   memoryStatus?: MemoryRunPresentationStatus,
-  currentScheduledTasks?: CurrentScheduledTasks
+  currentScheduledTasks?: CurrentScheduledTasks,
+  /** The reader: only the run's initiator may decide its approval cards. */
+  viewerUserId?: string
 ): ThreadArtifactSummary | null {
   const grounding = run.events.filter((event) => event.eventType === "grounding_display")
     .map((event) => projectGroundingDisplay(event.payload))
@@ -1383,6 +1404,8 @@ export function summarizeMessageRunArtifacts(
   const scheduledTasks = answerScheduledTaskCards(artifactPayloads, currentScheduledTasks);
   const skillSaves = foldSkillSaveCards(artifactPayloads.filter((payload) => artifactType(payload) === "skill_save")
     .map(artifactInnerPayload));
+  const mcpApprovals = projectMcpApprovalCards(run.mcpToolApprovals ?? [],
+    { initiator: viewerUserId !== undefined && run.userId === viewerUserId });
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
@@ -1437,6 +1460,7 @@ export function summarizeMessageRunArtifacts(
     generatedArtifacts.length === 0 &&
     scheduledTasks.length === 0 &&
     skillSaves.length === 0 &&
+    mcpApprovals.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
@@ -1469,6 +1493,7 @@ export function summarizeMessageRunArtifacts(
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks.length > 0 ? { scheduledTasks } : {}),
     ...(skillSaves.length > 0 ? { skillSaves } : {}),
+    ...(mcpApprovals.length > 0 ? { mcpApprovals } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== null ? { workDurationMs } : {})

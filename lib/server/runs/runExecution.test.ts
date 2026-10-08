@@ -137,6 +137,8 @@ import { agentLimits } from "../agents/config";
 import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
 import { conversationContextPolicy } from "./contextCompactionContract";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
+import { mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
+import { MCP_APPROVAL_REQUIRED_MESSAGE, mcpApprovalArgumentsDigest, type McpApprovalRequest } from "../mcp/writeApproval";
 import { decodeContextCompactionStatus, type ContextSummary } from "../../contracts/contextCompaction";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
@@ -164,7 +166,13 @@ type RepositoryOptions = Readonly<{
   searchStrategyEnabled?: boolean;
   responseIdPublication?: "cancelled" | "published" | "terminal";
   usagePersistenceError?: Error;
+  /** One-shot MCP approvals of later runs of the chat, by call key (`server:tool:digest`). */
+  mcpApprovals?: readonly string[];
 }>;
+
+function approvalKey(input: Readonly<{ argumentsDigest: string; serverId: string; toolName: string }>): string {
+  return `${input.serverId}:${input.toolName}:${input.argumentsDigest}`;
+}
 
 function usage(inputTokens = 2, outputTokens = 3, reasoningTokens = 1): ModelRunUsage {
   return {
@@ -974,10 +982,22 @@ function createRepository(options: RepositoryOptions = {}) {
   const recordedRunUsageEvents: RecordRunUsageEventsInput[] = [];
   const searchRuns: CreateSearchRunInput[] = [];
   const toolCalls = new Map<string, PersistedToolLoopCall>();
+  // Like the durable repository: an approval is counted at persist, consumed at claim.
+  const approvalsLeft = [...options.mcpApprovals ?? []];
+  const approvalRequests: Array<McpApprovalRequest & Readonly<{ toolCallId: string }>> = [];
+  const gate = (call: PersistedToolLoopCall, request: McpApprovalRequest): PersistedToolLoopCall => {
+    approvalRequests.push({ ...request, toolCallId: call.id });
+    return { ...call, completedAt: new Date().toISOString(), state: "error",
+      result: mcpApprovalRequiredToolCallResult({ providerCallId: call.providerCallId, toolName: call.toolName }) };
+  };
   let durableProviderResponsePreview: Record<string, unknown> | null = null;
   let toolCallSequence = 0;
   let chatUpdateLoads = 0;
   const repository: RunExecutionRepository = {
+    async loadRunMcpApprovalCards() {
+      return approvalRequests.map((request, index) => ({ approvalId: `approval-${index + 1}`, canDecide: true as const,
+        serverName: request.serverName, source: "model" as const, state: "pending" as const, toolName: request.toolTitle }));
+    },
     async loadCheckpointedToolLoopRun() { return null; },
     async advanceToolLoopCallBatch() {
       return "advanced";
@@ -1015,12 +1035,21 @@ function createRepository(options: RepositoryOptions = {}) {
       toolCalls.set(callId, claimed);
       return { call: claimed, kind: "claimed" };
     },
-    async claimToolLoopCall({ callId }) {
+    async claimToolLoopCall({ callId, mcpApproval }) {
       const call = toolCalls.get(callId);
       if (!call) return { kind: "not_found" };
       if (call.state === "running") return { call, kind: "ambiguous" };
       if (call.state === "cancelled") return { call, kind: "cancelled" };
       if (call.state === "complete" || call.state === "error") return { call, kind: "settled" };
+      if (mcpApproval) {
+        const index = approvalsLeft.indexOf(approvalKey(mcpApproval));
+        if (index < 0) {
+          const gated = gate(call, mcpApproval);
+          toolCalls.set(callId, gated);
+          return { call: gated, kind: "settled" };
+        }
+        approvalsLeft.splice(index, 1);
+      }
       const claimed = { ...call, startedAt: new Date().toISOString(), state: "running" as const };
       toolCalls.set(callId, claimed);
       return { call: claimed, kind: "claimed" };
@@ -1123,12 +1152,15 @@ function createRepository(options: RepositoryOptions = {}) {
       return null;
     },
     async persistToolLoopCallBatch(input) {
+      const counted = [...approvalsLeft];
       const calls = input.calls.map((call) => {
         const existing = [...toolCalls.values()].find((entry) =>
           entry.roundIndex === input.roundIndex && entry.providerCallId === call.providerCallId
         );
         if (existing) return existing;
         const id = `persisted-tool-call-${++toolCallSequence}`;
+        const available = call.mcpApproval ? counted.indexOf(approvalKey(call.mcpApproval)) : -1;
+        if (available >= 0) counted.splice(available, 1);
         const persisted: PersistedToolLoopCall = {
           arguments: call.arguments,
           completedAt: call.repeatBlocked ? new Date().toISOString() : null,
@@ -1149,8 +1181,10 @@ function createRepository(options: RepositoryOptions = {}) {
           toolName: call.toolName,
           workspaceBindingId: call.workspace ? input.runId : null
         };
-        toolCalls.set(id, persisted);
-        return persisted;
+        // A call needing approval without one left settles gated with its batch.
+        const settled = call.mcpApproval && available < 0 ? gate(persisted, call.mcpApproval) : persisted;
+        toolCalls.set(id, settled);
+        return settled;
       });
       return { calls, kind: "persisted" };
     },
@@ -1224,6 +1258,8 @@ function createRepository(options: RepositoryOptions = {}) {
   };
 
   return {
+    approvalRequests,
+    approvalsLeft,
     assistantTexts,
     publishedAnswers,
     completeRuns,
@@ -8143,6 +8179,147 @@ describe("tool-free synthesis and repeated calls in live execution", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: {
       artifactType: "tool_budget", payload: { kind: "calls", limit: 3 } } }));
     expect(repository.completeRuns[0]?.finalText).toBe("done");
+  });
+
+  /** The run admitted interactive (MCP write approval), with these servers always allowed. */
+  const interactive = (consentedServerIds: string[] = [], toolBudgets = { maxToolCalls: 20, maxToolRounds: 8 }) => {
+    const base = preparedData({ mcp, modelId: "synthetic-model", provider: "openai", toolBudgets });
+    const mcpApproval = { consentedServerIds, version: 1 as const };
+    return { ...base, normalizedRequest: { ...base.normalizedRequest, mcpApproval },
+      providerRequest: { ...base.providerRequest, mcpApproval } };
+  };
+  const writeKey = (args: Record<string, unknown>) =>
+    `synthetic-server:${update}:${mcpApprovalArgumentsDigest(args)}`;
+
+  it("refuses an MCP write before dispatch, shows its card and ends an all-gated round in synthesis", async () => {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ id: "write-1", name: update, arguments: { id: "rec-1" } }] })
+        : providerResult({ finalText: "I wanted to update rec-1; it needs your approval." });
+    });
+    const mcpRuntime = runtime(() => "updated");
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, mcpRuntime, prepared: interactive(),
+      repository: repository.repository })).text());
+
+    expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ startedAt: null, state: "error",
+      result: mcpApprovalRequiredToolCallResult({ providerCallId: "write-1", toolName: update }) })]);
+    expect(repository.approvalRequests).toEqual([expect.objectContaining({ argumentsDigest: mcpApprovalArgumentsDigest({ id: "rec-1" }),
+      definitionHash: "c".repeat(64), serverId: "synthetic-server", serverName: "Records", toolName: update, toolTitle: "update" })]);
+    // The model reads the refusal, then answers once without tools.
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain(MCP_APPROVAL_REQUIRED_MESSAGE);
+    expect(requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: expect.stringContaining("a tool call waits for the user's approval in the chat. Some planned tool calls were not executed.") });
+    // The card streams live; its row is its durable state.
+    expect(events).toContainEqual({ type: "artifact", data: { artifactType: "mcp_approval", payload: {
+      approvalId: "approval-1", canDecide: true, serverName: "Records", source: "model", state: "pending", toolName: "update" } } });
+    expect(events.filter(event => event.type === "artifact" && event.data.artifactType === "mcp_approval")).toHaveLength(1);
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe("I wanted to update rec-1; it needs your approval.");
+  });
+
+  it("dispatches a read-only tool beside a gated write and keeps the loop going", async () => {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ id: "read-1", name, arguments: { id: "rec-1" } },
+          { id: "write-1", name: update, arguments: { id: "rec-1" } }] })
+        : providerResult({ finalText: "rec-1 is open; the update waits for approval." });
+    });
+    const mcpRuntime = runtime(() => "record rec-1: open");
+    await createRunExecutionResponse(executionInput({ adapter, mcpRuntime, prepared: interactive(),
+      repository: repository.repository })).text();
+    expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+    expect([...repository.toolCalls.values()].map(row => [row.providerCallId, row.state])).toEqual([["read-1", "complete"], ["write-1", "error"]]);
+    // A mixed round is no reason for synthesis.
+    expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto"]);
+  });
+
+  it("counts a gated call against the call budget", async () => {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ id: "read-1", name, arguments: { id: "rec-1" } },
+          { id: "write-1", name: update, arguments: { id: "rec-1" } }] })
+        : providerResult({ finalText: "done" });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, mcpRuntime: runtime(() => "open"),
+      prepared: interactive([], { maxToolCalls: 2, maxToolRounds: 8 }), repository: repository.repository })).text());
+    expect(requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: {
+      artifactType: "tool_budget", payload: { kind: "calls", limit: 2 } } }));
+  });
+
+  it.each([
+    { label: "a run admitted without the marker", prepared: () => preparedData({ mcp, modelId: "synthetic-model", provider: "openai",
+      toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }) },
+    { label: "a server always allowed at admission", prepared: () => interactive(["synthetic-server"]) }
+  ])("dispatches a write as before for $label", async ({ prepared }) => {
+    const repository = createRepository();
+    let round = 0;
+    const adapter = createAdapter(async function* () {
+      round += 1;
+      return round === 1
+        ? providerResult({ finalText: "", toolCalls: [{ id: "write-1", name: update, arguments: { id: "rec-1" } }] })
+        : providerResult({ finalText: "updated" });
+    });
+    const mcpRuntime = runtime(() => "updated");
+    await createRunExecutionResponse(executionInput({ adapter, mcpRuntime, prepared: prepared(), repository: repository.repository })).text();
+    expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+    expect(repository.approvalRequests).toEqual([]);
+  });
+
+  it("dispatches exactly one call per one-shot approval; an identical second call of the batch asks again", async () => {
+    const args = { id: "rec-1" };
+    const repository = createRepository({ mcpApprovals: [writeKey(args)] });
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ id: "write-1", name: update, arguments: args },
+          { id: "write-2", name: update, arguments: args }] })
+        : providerResult({ finalText: "rec-1 updated once." });
+    });
+    const mcpRuntime = runtime(() => "updated");
+    await createRunExecutionResponse(executionInput({ adapter, mcpRuntime, prepared: interactive(), repository: repository.repository })).text();
+    expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+    expect([...repository.toolCalls.values()].map(row => [row.providerCallId, row.state])).toEqual([["write-1", "complete"], ["write-2", "error"]]);
+    expect(repository.approvalsLeft).toEqual([]);
+    expect(repository.approvalRequests).toHaveLength(1);
+  });
+
+  it("asks again for different arguments and gates at the claim an approval that is gone by then", async () => {
+    const repository = createRepository({ mcpApprovals: [writeKey({ id: "rec-1" })] });
+    const persist = repository.repository.persistToolLoopCallBatch;
+    repository.repository.persistToolLoopCallBatch = async (input) => {
+      const persisted = await persist(input);
+      // Consumed elsewhere (or expired) between the persist and the claim.
+      repository.approvalsLeft.splice(0, repository.approvalsLeft.length);
+      return persisted;
+    };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ id: "write-1", name: update, arguments: { id: "rec-1" } },
+          { id: "write-2", name: update, arguments: { id: "rec-2" } }] })
+        : providerResult({ finalText: "Both updates wait for approval." });
+    });
+    const mcpRuntime = runtime(() => "updated");
+    await createRunExecutionResponse(executionInput({ adapter, mcpRuntime, prepared: interactive(), repository: repository.repository })).text();
+    expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+    expect([...repository.toolCalls.values()].every(row => row.state === "error" && row.startedAt === null)).toBe(true);
+    expect(repository.approvalRequests.map(request => request.argumentsDigest))
+      .toEqual([mcpApprovalArgumentsDigest({ id: "rec-2" }), mcpApprovalArgumentsDigest({ id: "rec-1" })]);
+    expect(requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
   });
 
   it.each(["evidence", "none"] as const)("grounds a client-tool Knowledge run after a refused batch (%s)", async (settled) => {

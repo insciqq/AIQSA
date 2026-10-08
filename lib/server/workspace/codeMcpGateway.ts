@@ -12,6 +12,8 @@ import { resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor"
 import { filterMcpCatalog } from "../mcp/toolAccessProjection";
 import type { McpToolAccessFilter } from "../mcp/toolAccess";
 import type { McpCapabilityCatalog, McpCapabilityCatalogTool, McpRunPlanResult } from "../mcp/runPlan";
+import { MCP_APPROVAL_REFUSAL, MCP_APPROVAL_REFUSAL_MESSAGE } from "../mcp/writeApproval";
+import { createPrismaMcpGatewayApprovalStore, gateMcpGatewayCall, type McpGatewayApprovalStore } from "../mcp/writeApprovalGateway";
 import { isWorkspaceCodeInvocationId, WORKSPACE_CODE_INVOCATION_HEADER } from "./codeMcp";
 import {
   createPrismaWorkspaceCodeGatewayStore,
@@ -28,6 +30,8 @@ type SelectedTools = readonly Readonly<{ namespacedName: string; revisionId: str
 
 /** The shared MCP dispatch pipeline and authority of model calls; injectable for tests. */
 export type WorkspaceCodeMcpDependencies = Readonly<{
+  /** MCP write approval; without it a call that needs approval is refused. */
+  approvals?: McpGatewayApprovalStore;
   callRuntimeTool: McpToolRuntimeCall;
   filterTools: McpToolAccessFilter;
   inspect(userId: string, tools: SelectedTools): Promise<McpRunPlanResult>;
@@ -37,6 +41,7 @@ export type WorkspaceCodeMcpDependencies = Readonly<{
 
 export function defaultWorkspaceCodeMcpDependencies(): WorkspaceCodeMcpDependencies {
   return {
+    approvals: createPrismaMcpGatewayApprovalStore(prisma),
     callRuntimeTool: (request) => getDefaultMcpRuntimeCoordinator().callTool(request),
     filterTools: defaultMcpRunPlan.filterTools,
     inspect: (userId, tools) => defaultMcpRunPlan.inspect(userId, tools),
@@ -49,9 +54,10 @@ const refused = () => Response.json({ error: "agent_authorization_required" }, {
 /** The bearer is valid, but the request names no open invocation of its run. */
 const invocationRefused = () => Response.json({ error: "code_invocation_required" }, { status: 403 });
 
-type RefusalCode = Exclude<WorkspaceCodeClaim, { kind: "claimed" }>["code"] | McpHubServiceErrorCode;
+type RefusalCode = Exclude<WorkspaceCodeClaim, { kind: "claimed" }>["code"] | McpHubServiceErrorCode | typeof MCP_APPROVAL_REFUSAL;
 
 const MESSAGES: Readonly<Record<RefusalCode, string>> = {
+  approval_required: MCP_APPROVAL_REFUSAL_MESSAGE,
   authorization_required: "The MCP server needs the user to sign in again. Nothing was sent.",
   code_invocation_closed: "This process no longer belongs to a running Workspace command, so it cannot call MCP tools.",
   code_mcp_busy: "Too many MCP calls from this run's code are in progress. Wait for one to finish, then retry.",
@@ -242,6 +248,17 @@ async function serve(
           toolVersion = descriptor.tool_version;
         }
         const prepared = await service.prepareToolCall({ arguments: args, authority, signal, toolId: tool.namespacedName, toolVersion });
+        // An interactive run's code asks the user before a tool that may
+        // change data runs: refused with a card unless a matching one-shot
+        // approval of a later run of the chat is consumed here.
+        const gate = await gateMcpGatewayCall({ admission: grant.approval, prepared, source: "code", store: dependencies.approvals,
+          scope: { chatId: grant.chatId, runId: grant.runId, userId: grant.userId }, toolCallId: null, toolName: tool.namespacedName });
+        if (gate === "refused") {
+          await dependencies.store.settle({ durationMs: Date.now() - started, errorCode: MCP_APPROVAL_REFUSAL, id: claim.id,
+            resultBytes: null, runId: grant.runId, state: "error" });
+          observe("failed", "admission", MCP_APPROVAL_REFUSAL);
+          return refusal(MCP_APPROVAL_REFUSAL, false);
+        }
         const result = await service.dispatchPreparedToolCall({ authority, onDispatch: () => { dispatched = true; }, prepared, signal });
         const output: CallToolResult = {
           content: result.text.map((text) => ({ type: "text" as const, text })),

@@ -210,7 +210,8 @@ import {
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
 import { readOnlyRunTool } from "./toolReadOnly";
-import { repeatBlockedRounds, roundMadeNoProgress, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
+import { repeatBlockedRounds, roundAwaitsApproval, roundMadeNoProgress, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
+import { mcpApprovalGated, mcpApprovalRequestForCall } from "./mcpApprovalGate";
 import { applyProviderRequestContextBudget, measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import {
@@ -998,6 +999,8 @@ type RecoveryToolContext = {
   skillResultBudget: ReturnType<typeof createSkillToolResultBudget>;
   activeMcpDiscovery: McpDiscoveryState | undefined;
   activeMcpSnapshot: McpRunPlanSnapshot | undefined;
+  /** Provider call ids a recovered claim settled gated for the user's approval. */
+  approvalGatedCallIds: Set<string>;
   deps: RunRecoveryDeps;
   /** The run's page reader, seeded from its persisted calls; null without the frozen marker. */
   fetchSession: FetchUrlSession | null;
@@ -1642,13 +1645,20 @@ async function executePersistedToolCallInContext(
       round: persisted.roundIndex
     };
   }
+  // The live rule: a call the run's frozen admission gates dispatches only by
+  // consuming a one-shot approval in its claim, which settles it gated otherwise.
+  const mcpApproval = mcpApprovalRequestForCall({ admission: context.run.normalizedRequest.mcpApproval, call,
+    snapshot: context.activeMcpSnapshot });
   const claim = await claimCall({
     callId: persisted.id,
+    ...(mcpApproval ? { mcpApproval } : {}),
     runId: context.run.id,
     userId: context.run.userId
   });
-  if (claim.kind === "settled" && repeatBlockedRounds(claim.call)) {
-    // A blocked repeat was settled with its batch: nothing runs or replays.
+  if (claim.kind === "settled" && mcpApprovalGated(claim.call)) context.approvalGatedCallIds.add(persisted.providerCallId);
+  if (claim.kind === "settled" && (repeatBlockedRounds(claim.call) || mcpApprovalGated(claim.call))) {
+    // A blocked repeat or a call gated for the user's approval was settled
+    // undispatched: nothing runs or replays.
     const blocked = parsePersistedToolExecutionResult(call, claim.call.result);
     if (!blocked) {
       throw new ToolLoopRecoveryError("tool_call_result_invalid", "A persisted tool result is invalid and cannot be replayed safely.");
@@ -2708,6 +2718,7 @@ async function recoverCheckpointedToolLoop(
       skillResultBudget: createSkillToolResultBudget(),
       activeMcpDiscovery,
       activeMcpSnapshot: run.normalizedRequest.mcp,
+      approvalGatedCallIds: new Set(),
       deps,
       // Recovery keeps no follow-ups (an executor loss ends a clarified run).
       fetchSession: fetchPlan ? createFetchUrlSession({
@@ -3273,8 +3284,11 @@ async function recoverCheckpointedToolLoop(
             "tool_call_arguments_invalid"
           ) as Readonly<Record<string, ToolLoopJsonValue>>;
           const repeatOf = repeatHistory.blockFor({ arguments: callArguments, toolName: call.name }, round, repeatContext);
+          const mcpApproval = repeatOf ? undefined : mcpApprovalRequestForCall({ admission: run.normalizedRequest.mcpApproval,
+            call: { arguments: callArguments, name: call.name }, snapshot: context.activeMcpSnapshot });
           return {
             arguments: callArguments,
+            ...(mcpApproval ? { mcpApproval } : {}),
             ordinal,
             providerCallId: call.id,
             ...(repeatOf ? { repeatBlocked: { repeatOf } } : {}),
@@ -3359,6 +3373,7 @@ async function recoverCheckpointedToolLoop(
       // only blocked repeats, or an exactly reached budget, which first offers
       // an outstanding reserved verdict.
       const decision = toolSynthesisDecision({
+        approvalRequired: roundAwaitsApproval(priorCalls),
         budgets: toolBudgets,
         continuation: savedContinuation,
         initialToolChoice: providerRequest.toolChoice,
@@ -3785,6 +3800,10 @@ async function recoverCheckpointedToolLoop(
       isRepeatBlockedCall: (call) => {
         const persisted = persistedCalls.get(call.id);
         return persisted !== undefined && repeatBlockedRounds(persisted) !== null;
+      },
+      isApprovalGatedCall: (call) => {
+        const persisted = persistedCalls.get(call.id);
+        return context.approvalGatedCallIds.has(call.id) || persisted !== undefined && mcpApprovalGated(persisted);
       },
       toolResultNoteForProvider: (entry) => {
         const persisted = persistedCalls.get(entry.call.id);

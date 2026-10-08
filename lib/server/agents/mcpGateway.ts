@@ -25,6 +25,13 @@ import { agentMcpDeliveryId, type createAgentRunStore } from "./store";
 import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
 import { restoreAgentMcpTools } from "./mcpResume";
 import { logEvent, runWithContext } from "../observability";
+import { MCP_APPROVAL_REFUSAL, MCP_APPROVAL_REFUSAL_MESSAGE } from "../mcp/writeApproval";
+import {
+  createPrismaMcpGatewayApprovalStore,
+  gateMcpGatewayCall,
+  McpApprovalRequiredError,
+  type McpGatewayApprovalStore
+} from "../mcp/writeApprovalGateway";
 
 type Authority = McpToolAuthority & Readonly<{ callId: string; markDispatched(): void }>;
 
@@ -59,6 +66,8 @@ function frozenSchema(schema: Record<string, unknown>) {
 }
 
 export async function createAgentMcpGateway(input: Readonly<{
+  /** MCP write approval; Codex never prompts (`approval_policy = "never"`), this gateway asks. */
+  approvals?: McpGatewayApprovalStore;
   observations?: ToolObservationService;
   request: NormalizedRunRequest;
   runId: string;
@@ -94,6 +103,7 @@ export async function createAgentMcpGateway(input: Readonly<{
     }
   });
   const catalog = input.request.mcpDiscovery?.catalog ?? catalogFromSnapshot(input.request.mcp);
+  const approvals = input.approvals ?? createPrismaMcpGatewayApprovalStore(prisma);
   const allowed = new Map<string, string>();
   const service = createMcpToolService<Authority>({
     catalog: async () => catalog,
@@ -156,6 +166,12 @@ export async function createAgentMcpGateway(input: Readonly<{
           observe(Boolean(result.isError));
           return result;
         } catch (error) {
+          if (error instanceof McpApprovalRequiredError) {
+            if (callId) await input.store.settleTool(callId, "error", { code: MCP_APPROVAL_REFUSAL }).catch(() => undefined);
+            observe(true, MCP_APPROVAL_REFUSAL);
+            const value = { code: MCP_APPROVAL_REFUSAL, dispatched: false, message: MCP_APPROVAL_REFUSAL_MESSAGE };
+            return { ...textResult(value, true), structuredContent: value };
+          }
           const observationError = observationFailure(error);
           if (observationError) {
             if (callId) await input.store.settleTool(callId, "error", { code: observationError.code }).catch(() => undefined);
@@ -209,6 +225,11 @@ export async function createAgentMcpGateway(input: Readonly<{
         if (!current) throw new DiscoveryRequiredError();
         if (current.version !== toolVersion) throw new McpHubServiceError("tool_definition_changed");
         const prepared = await service.prepareToolCall({ authority, toolId, toolVersion, arguments: args, signal });
+        // The run's initiator approves a tool that may change data first:
+        // refused with a card unless a matching one-shot approval is consumed.
+        if (await gateMcpGatewayCall({ admission: input.request.mcpApproval, prepared, source: "agent", store: approvals,
+          scope: { chatId: input.request.chatId, runId: input.runId, userId: input.userId }, toolCallId: authority.callId,
+          toolName: toolId }) === "refused") throw new McpApprovalRequiredError();
         const dispatch = () => service.dispatchPreparedToolCall({ authority, prepared, signal, onDispatch: authority.markDispatched });
         if (input.request.toolObservationVersion === 1) {
           const admitted = await prisma.agentMcpTool.findUnique({ where: { modelRunId_toolId: { modelRunId: input.runId, toolId } }, select: { snapshot: true } });

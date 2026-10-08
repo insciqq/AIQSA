@@ -2,6 +2,7 @@ import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { InstructionPresetError } from "../instructions/store";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
+import { MCP_APPROVAL_CONTINUATION_KIND, mcpApprovalContinuationText } from "../../contracts/mcpApprovals";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
@@ -199,6 +200,37 @@ async function readJson(
     typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null,
     requestBodyErrorResponse(value)
   ];
+}
+
+/**
+ * A continuation turn after an MCP approval (`systemTurn`). The turn's text
+ * is the server's, written from the user's own Allow in this chat; the body's
+ * text and attachments are ignored. Null for an ordinary send.
+ */
+async function approvalContinuationBody(
+  deps: RunHandlerDeps,
+  body: Record<string, unknown> | null,
+  chatId: string,
+  userId: string
+): Promise<Record<string, unknown> | "invalid" | "unavailable" | null> {
+  if (!body || !Object.hasOwn(body, "systemTurn")) return null;
+  const turn = body.systemTurn;
+  if (!turn || typeof turn !== "object" || Array.isArray(turn)) return "invalid";
+  const { approvalId, kind } = turn as Record<string, unknown>;
+  if (Object.keys(turn).sort().join(",") !== "approvalId,kind" || kind !== MCP_APPROVAL_CONTINUATION_KIND ||
+    typeof approvalId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(approvalId)) return "invalid";
+  const approval = await deps.repository.loadMcpApprovalContinuation?.({ approvalId, chatId, userId }) ?? null;
+  if (!approval) return "unavailable";
+  const {
+    artifactEdit: _artifactEdit,
+    artifactIntent: _artifactIntent,
+    attachmentIds: _attachmentIds,
+    content: _content,
+    systemTurn: _systemTurn,
+    text: _text,
+    ...rest
+  } = body;
+  return { ...rest, content: { blocks: [{ type: "text", text: mcpApprovalContinuationText(approval) }] } };
 }
 
 function runPreparationFailureResponse(failure: RunPreparationFailure): Response {
@@ -648,6 +680,12 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "project_draft_conflict" }, { status: 409 });
       }
     }
+    const continuationBody = await approvalContinuationBody(deps, body, chat.id, auth.userId);
+    if (continuationBody === "invalid") return Response.json({ error: "system_turn_invalid" }, { status: 400 });
+    if (continuationBody === "unavailable") {
+      return Response.json({ error: "mcp_approval_continuation_unavailable" }, { status: 409 });
+    }
+    const sendBody = continuationBody ?? body;
 
     const activeRun = await deps.repository.findRecentActiveRunForChat({
       chatId: chat.id, since: new Date(Date.now() - activeRunGateWindowMs), userId: auth.userId
@@ -672,7 +710,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     if (usageRefusal) return usageRefusal;
     const scopeFingerprint = chatPdfFingerprint({ chatId: chat.id, project: chat.project ?? null, memoryMode: chat.memoryMode ?? null });
     const preparation = await prepareRun(deps, {
-      body,
+      body: sendBody,
       skillCatalogDecision: {
         operationKey: admissionKey,
         authorizeScope: async () => {
@@ -760,6 +798,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ...(preparedData.scheduledUnavailableSources ? { scheduledUnavailableSources: preparedData.scheduledUnavailableSources } : {})
         } : {}),
         signal: request.signal,
+        ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
         userId: auth.userId
       });
     } catch (error) {

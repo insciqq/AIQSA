@@ -127,6 +127,25 @@ function detailChat(overrides: Record<string, unknown> = {}) {
 }
 
 describe("chat wire contracts", () => {
+  it("carries MCP approval cards, the not-sent mark and the server-written turn", () => {
+    const card = { approvalId: "approval-1", canDecide: true, serverName: "Records", source: "model", state: "pending",
+      toolName: "delete_record" };
+    const turn = { ...message, id: "turn", role: "user", modelRunId: null, systemTurnKind: "mcp_approval_continuation",
+      content: { blocks: [{ text: "The user approved `delete_record` on `Records`. Continue the task.", type: "text" }] } };
+    const answer = { ...message, parentMessageId: "turn",
+      artifactSummary: { citations: [], mcpApprovals: [card], reasoningText: [], sources: [] },
+      toolActivity: { calls: [{ approvalRequired: true, origin: "mcp", round: 1, status: "error", toolName: "delete_record" }] } };
+    const decoded = decodeChatDetailResponse({ chat: detailChat({ messages: [turn, answer], usageStats }) });
+    expect(decoded?.messages[0]?.systemTurnKind).toBe("mcp_approval_continuation");
+    expect(decoded?.messages[1]?.artifactSummary?.mcpApprovals).toEqual([card]);
+    expect(decoded?.messages[1]?.toolActivity?.calls[0]?.approvalRequired).toBe(true);
+    // A server-written kind only on user messages; the not-sent mark only on a refused MCP call.
+    expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...message, systemTurnKind: "mcp_approval_continuation" }],
+      usageStats }) })).toBeNull();
+    expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...answer, toolActivity: { calls: [{ approvalRequired: true,
+      origin: "mcp", round: 1, status: "complete", toolName: "delete_record" }] } }], usageStats }) })).toBeNull();
+  });
+
   it("decodes the source message for a context snapshot and rejects malformed or orphan identities", () => {
     const session = { approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 4, loadedTools: 2,
       maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",

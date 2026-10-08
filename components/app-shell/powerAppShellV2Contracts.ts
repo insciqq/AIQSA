@@ -203,6 +203,8 @@ export type ShellThreadView = {
    */
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
+  /** Continues the open chat after its initiator allowed a refused MCP call. */
+  sendMcpApprovalContinuation?(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>): Promise<void>;
   /** The message a search result opened in this chat; a long question shows in full. */
   revealedMessageId?: string | null;
   /**

@@ -123,6 +123,7 @@ import {
   AnswerOutputsV2,
   ArtifactGenerationCardsV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { McpApprovalContinuationTurnV2 } from "@/features/answer-outputs-v2/McpApprovalCardV2";
 import {
   AnswerIdentityChipV2,
   answerIdentityV2,
@@ -1373,6 +1374,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onCheckout={branches.checkoutBranch}
       />
     );
+    if (source.role === "user" && source.systemTurnKind === "mcp_approval_continuation") {
+      // The server-written turn after an approval is not the user's speech.
+      return <McpApprovalContinuationTurnV2 anchorId={source.id} content={messageText(source)} />;
+    }
     if (source.role === "user") {
       // Owner-only quiet line of the files sent with this exact message,
       // rendered from the labels the thread snapshot already exposes.
@@ -1482,6 +1487,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 artifact={artifact}
                 live={!settled}
                 canSaveFiles={!projectContext && !temporarySession}
+                runId={source.runId ?? null}
+                onContinueAfterMcpApproval={thread.sendMcpApprovalContinuation}
                 onEditArtifact={projectContext || temporarySession ? undefined : generated => editArtifact(generated)}
                 onEditScheduledTask={projectContext || temporarySession || !settings.studio ? undefined
                   : (taskId) => openScheduledTaskEditorV2(taskId, (after) => settings.studio?.open("scheduled", after))}

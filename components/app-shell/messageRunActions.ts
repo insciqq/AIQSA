@@ -65,6 +65,7 @@ import {
 } from "@/components/app-shell/composerAssistantState";
 import type { AssistantIdentity, AssistantRowKey } from "@/lib/contracts/assistants";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
+import { MCP_APPROVAL_CONTINUATION_KIND, mcpApprovalContinuationText } from "@/lib/contracts/mcpApprovals";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
 
 type MutableRef<T> = { current: T };
@@ -1454,6 +1455,114 @@ export function useMessageRunActions({
     }
   }
 
+  /**
+   * The continuation turn after the initiator allowed a refused MCP call: an
+   * ordinary send of the open chat with its current controls, as Regenerate
+   * uses them, whose text the server writes from the approval. The composer
+   * draft stays untouched; the turn shows as a compact chip.
+   */
+  async function sendMcpApprovalContinuation(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>) {
+    const chatId = useWorkspaceStore.getState().activeChatId;
+    const activeSend = chatId ? useRunLifecycleStore.getState().activeStreams[chatId] : undefined;
+    if (!chatId || chatId !== activeChatIdRef.current || activeSend && !activeSend.answerComplete) return;
+    if (assistantUpdatePending(chatId) && !(await settleAssistantBeforeRun(chatId))) return;
+    const runControlSnapshot = captureRunControlSnapshot();
+    if (!runControlSnapshot.model || assistantBlocksRun(runControlSnapshot)) return;
+    if (hasUnreconciledOptimisticLeaf(chatId) && !(await reconcileBeforeRunMutation(chatId))) return;
+    const chatSummary = useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chatId);
+    const thread = selectThreadSnapshot(useThreadStore.getState(), chatId);
+    const parentLeafForSend = effectiveActiveLeafId(thread.messages, thread.activeLeafId) ??
+      chatSummary?.activeLeafMessageId ?? null;
+    if (!parentLeafForSend) return;
+    try {
+      await persistActiveLeaf(chatId, parentLeafForSend);
+    } catch (error) {
+      setNotice({ kind: "error", text: errorMessage(error) });
+      await reconcileBranchConflict(chatId, error instanceof Error ? error.message : undefined);
+      return;
+    }
+    clearNoticeForChat?.(chatId);
+    const userMessage: ThreadMessage = {
+      content: mcpApprovalContinuationText(card),
+      id: `user-${Date.now()}`,
+      modelId: runControlSnapshot.modelId,
+      parentMessageId: parentLeafForSend,
+      provider: runControlSnapshot.provider,
+      role: "user",
+      status: "complete",
+      systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND
+    };
+    const assistantId = `assistant-${Date.now()}`;
+    const assistantMessage: ThreadMessage = {
+      content: "",
+      id: assistantId,
+      modelId: runControlSnapshot.modelId,
+      parentMessageId: userMessage.id,
+      provider: runControlSnapshot.provider,
+      ...optimisticAnswerIdentity(runControlSnapshot),
+      role: "assistant",
+      status: "streaming"
+    };
+    mergeStreamChatMessages(chatId, [userMessage, assistantMessage]);
+    updateStreamChatActiveLeaf(chatId, assistantId);
+    if (activeChatIdRef.current === chatId) resetThreadToLatest();
+    const admissionId = randomUUID();
+    const controls = runControlPayload(runControlSnapshot, Boolean(chatSummary?.projectId));
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef,
+      activeStreamAbortRef,
+      chatId,
+      consumeRunStream,
+      contextConfigurationKey: runControlSnapshot.contextConfigurationKey,
+      createStreamTokenBuffer,
+      failurePrefix: "send_failed",
+      fetchRun,
+      notifyAnswerReady,
+      optimisticAssistantMessageId: assistantId,
+      primeAnswerSound,
+      reconcileMessageIds({ currentRunId, messageIds }) {
+        const persistedUserId = messageIds.userMessageId;
+        const persistedAssistantId = messageIds.assistantMessageId;
+        if (persistedAssistantId) updateStreamChatActiveLeaf(chatId, persistedAssistantId, assistantId);
+        updateStreamChatMessages(chatId, (current) => current.map((message) => {
+          if (persistedUserId && message.id === userMessage.id) return { ...message, id: persistedUserId };
+          if (persistedAssistantId && message.id === assistantId) {
+            return { ...message, id: persistedAssistantId, parentMessageId: persistedUserId ?? message.parentMessageId,
+              runId: currentRunId ?? message.runId };
+          }
+          return message;
+        }));
+      },
+      refreshActiveChat,
+      request(signal) {
+        return shellFetch(`/api/chats/${chatId}/messages`, {
+          body: JSON.stringify({
+            admissionId,
+            expectedActiveLeafId: parentLeafForSend,
+            systemTurn: { approvalId: card.approvalId, kind: MCP_APPROVAL_CONTINUATION_KIND },
+            ...controls
+          }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+          signal
+        });
+      },
+      settleFailedRunState({ kind }) {
+        if (kind === "rejected") {
+          rollbackOptimisticRun({
+            chatId,
+            expectedParentMessageId: parentLeafForSend,
+            optimisticAssistantMessageId: assistantId,
+            optimisticUserMessageId: userMessage.id,
+            previousLeafId: parentLeafForSend
+          });
+        }
+      }
+    });
+    await reconcileBranchConflict(chatId, result.failureCode);
+    noticeRejectedRun(chatId, result);
+  }
+
   async function regenerateMessage(messageId: string) {
     const chatIdForRegenerate = activeChatId;
     if (!chatIdForRegenerate) {
@@ -1585,6 +1694,7 @@ export function useMessageRunActions({
     submitFollowup: submitRunFollowup,
     refreshInterruptedRun,
     regenerateMessage,
+    sendMcpApprovalContinuation,
     sendStarterPrompt,
     submitMessageEdit: editMessageBranch,
     submitComposer
