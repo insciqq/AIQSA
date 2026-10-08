@@ -12,10 +12,10 @@ type RenderedContent = Readonly<{ body: Buffer; contentType: string }>;
 /** Heavy artifact work in this process (renders, exports, large reads) runs at most four at once. */
 const ARTIFACT_HEAVY_WORK_LIMIT = 4;
 /**
- * Work over more hydrated bytes than this is large and runs one at a time. Rendering peaks at
- * many times its input (about 1.4 GB was measured for one 21 MB page), so two large renders
- * together could exhaust a 2 GB app container; at or below 8 MiB a render stays a fraction of
- * that. Cached renders of this size are already read under the general limit.
+ * Work over more hydrated bytes than this is large and runs one at a time. A render peaks at
+ * about ten times its input (some 220 MB above baseline for one 21 MB page), so one large job
+ * beside three of at most 8 MiB stays well inside a 2 GB app container, while four 32 MiB
+ * jobs would not. A cached render of 8 MiB or more is read under the general limit.
  */
 export const ARTIFACT_LARGE_WORK_BYTES = 8 * 1024 * 1024;
 /** Large work waits for its turn behind at most four others, and at most 10 s, then reports busy. */
