@@ -90,10 +90,7 @@ export function useAdminSignInController({
     replace({ ...current, methods: current.methods.map((entry) => entry.method === method.method ? method : entry) });
   }, [replace]);
 
-  const load = useCallback(async () => {
-    const generation = ++generationRef.current;
-    const result = await requestAdminSignIn();
-    if (!mountedRef.current || generation !== generationRef.current) return;
+  const apply = useCallback((result: Awaited<ReturnType<typeof requestAdminSignIn>>) => {
     setLoaded(true);
     if (result.ok) {
       setError(null);
@@ -103,9 +100,22 @@ export function useAdminSignInController({
     }
   }, [replace]);
 
+  // The first load applies the answer from the response callback; a later refresh awaits it.
   useEffect(() => {
-    if (active) void load();
-  }, [active, load]);
+    if (!active) return;
+    const generation = ++generationRef.current;
+    void requestAdminSignIn().then((result) => {
+      if (!mountedRef.current || generation !== generationRef.current) return;
+      apply(result);
+    });
+  }, [active, apply]);
+
+  const load = useCallback(async () => {
+    const generation = ++generationRef.current;
+    const result = await requestAdminSignIn();
+    if (!mountedRef.current || generation !== generationRef.current) return;
+    apply(result);
+  }, [apply]);
 
   const guard = useCallback(async (
     key: AuthSignInMethod | "policy",

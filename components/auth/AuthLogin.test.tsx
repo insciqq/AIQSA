@@ -1184,3 +1184,36 @@ describe("AuthLogin", () => {
     expect(screen.queryByRole("button", { name: "Bootstrap token" })).not.toBeInTheDocument();
   });
 });
+
+describe("AuthLogin sign-in switches", () => {
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("replaces the password form with the remaining methods while password sign-in is off", () => {
+    render(<AuthLogin nextPath="/chats" oauthProviders={["google"]} passwordLoginEnabled={false} />);
+
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("password-sign-in-off")).toHaveTextContent("Password sign-in is turned off. Use one of these methods.");
+    expect(screen.getByRole("link", { name: "Continue with Google" })).toHaveAttribute("href", "/api/auth/oauth/google?next=%2Fchats");
+    expect(screen.queryByRole("button", { name: "Reset password" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request access" })).not.toBeInTheDocument();
+  });
+
+  it("tells an invited person that the invitation cannot set a password while passwords are off", () => {
+    render(<AuthLogin inviteToken="invite-token" nextPath="/" oauthProviders={[]} passwordLoginEnabled={false} />);
+
+    expect(screen.queryByTestId("register-form")).not.toBeInTheDocument();
+    expect(screen.getByTestId("password-sign-in-off")).toHaveTextContent("this invitation cannot set a password");
+    expect(screen.getByTestId("password-sign-in-off")).toHaveTextContent("Ask an administrator how to sign in.");
+  });
+
+  it("hides the access request while registration is off and keeps password sign-in", () => {
+    render(<AuthLogin nextPath="/" registrationEnabled={false} />);
+
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset password" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request access" })).not.toBeInTheDocument();
+  });
+});

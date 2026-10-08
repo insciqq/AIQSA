@@ -250,14 +250,24 @@ export function createSignInSettingsService(input: {
       let verdict: { code: string; passed: boolean } = { code: "no_test_required", passed: true };
       if (tester.test) {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), input.testTimeoutMs ?? SIGN_IN_TEST_TIMEOUT_MS);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        // The deadline holds even for a tester that ignores its signal.
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error("sign_in_test_timeout"));
+          }, input.testTimeoutMs ?? SIGN_IN_TEST_TIMEOUT_MS);
+        });
         try {
-          const result = await tester.test({
-            appBaseUrl: getAuthConfig(env()).appBaseUrl,
-            config: draft.config,
-            secrets: draft.secrets,
-            signal: controller.signal
-          });
+          const result = await Promise.race([
+            tester.test({
+              appBaseUrl: getAuthConfig(env()).appBaseUrl,
+              config: draft.config,
+              secrets: draft.secrets,
+              signal: controller.signal
+            }),
+            deadline
+          ]);
           verdict = isSignInOutcomeCode(result.code) && typeof result.passed === "boolean"
             ? { code: result.code, passed: result.passed }
             : { code: "test_failed", passed: false };

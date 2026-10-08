@@ -123,9 +123,11 @@ export function SignInTextField({
 
 /**
  * A write-only secret: the stored value is never sent to the browser, so the field starts
- * empty and says whether a value is stored.
+ * empty and says whether a value is stored. An optional secret also offers an explicit
+ * removal (`clear`), which `signInSecretAction(value, cleared)` turns into the clear action.
  */
 export function SignInSecretField({
+  clear,
   configured,
   disabled,
   error,
@@ -133,6 +135,7 @@ export function SignInSecretField({
   onChange,
   value
 }: Readonly<{
+  clear?: Readonly<{ cleared: boolean; onChange(cleared: boolean): void }>;
   configured: boolean;
   disabled: boolean;
   error?: string;
@@ -140,19 +143,38 @@ export function SignInSecretField({
   onChange(value: string): void;
   value: string;
 }>) {
+  const cleared = clear?.cleared === true;
   return (
     <SignInField
       error={error}
-      help={configured ? "Stored. Leave blank to keep it; it is never shown here." : "Stored encrypted and never shown again."}
+      help={
+        <>
+          {cleared
+            ? "The stored value is removed when you save."
+            : configured ? "Stored. Leave blank to keep it; it is never shown here." : "Stored encrypted and never shown again."}
+          {clear && configured ? (
+            <label className="mt-1 flex items-center gap-2 text-xs text-ink-secondary">
+              <input
+                checked={cleared}
+                className="size-4 shrink-0 accent-proof"
+                disabled={disabled}
+                onChange={(event) => clear.onChange(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              Remove the stored value
+            </label>
+          ) : null}
+        </>
+      }
       label={label}
       render={(props) => (
         <input
           {...props}
           autoComplete="new-password"
           className={inputClass}
-          disabled={disabled}
+          disabled={disabled || cleared}
           onChange={(event) => onChange(event.currentTarget.value)}
-          placeholder={configured ? "••••••••" : undefined}
+          placeholder={configured && !cleared ? "••••••••" : undefined}
           spellCheck={false}
           type="password"
           value={value}
@@ -225,7 +247,7 @@ function EnvironmentHint({ state }: Readonly<{ state: AdminSignInMethodState }>)
         {variables.map((variable, index) => (
           <span key={variable}>
             {index > 0 ? " and " : null}
-            <code className="font-mono text-[11px] [overflow-wrap:anywhere]">{variable}</code>
+            <code className="font-mono text-metadata [overflow-wrap:anywhere]">{variable}</code>
           </span>
         ))}
         .

@@ -45,22 +45,28 @@ export function useAdminGroupSignIn(groupId: string, membershipKey: string): Adm
     };
   }, []);
 
-  const refresh = useCallback(async () => {
-    const generation = ++generationRef.current;
-    const result = await requestAdminGroupSignIn(groupId);
-    if (!mountedRef.current || generation !== generationRef.current) return;
+  const apply = useCallback((result: Awaited<ReturnType<typeof requestAdminGroupSignIn>>) => {
     if (result.ok) {
       setGroup(result.data);
       setError(null);
     } else {
       setError(adminSignInErrorMessage(result.error));
     }
-  }, [groupId]);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const generation = ++generationRef.current;
+    const result = await requestAdminGroupSignIn(groupId);
+    if (mountedRef.current && generation === generationRef.current) apply(result);
+  }, [apply, groupId]);
 
   // Membership changes can make a member managed, so the page passes a key of its members.
   useEffect(() => {
-    void refresh();
-  }, [membershipKey, refresh]);
+    const generation = ++generationRef.current;
+    void requestAdminGroupSignIn(groupId).then((result) => {
+      if (mountedRef.current && generation === generationRef.current) apply(result);
+    });
+  }, [apply, groupId, membershipKey]);
 
   const change = useCallback(async (
     body: Parameters<typeof changeAdminGroupSignIn>[1]
@@ -153,7 +159,7 @@ function SourceNames({
           void add();
         }}
       >
-        <label className="sr-only" htmlFor={inputId}>{`Add a ${label} external name`}</label>
+        <label className="sr-only" htmlFor={inputId}>{`Add an external name for ${label}`}</label>
         <input
           aria-describedby={message ? errorId : undefined}
           aria-invalid={message ? true : undefined}
