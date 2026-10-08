@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import { parse, type DefaultTreeAdapterMap } from "parse5";
+import type { DefaultTreeAdapterMap } from "parse5";
 import type { NormalizedArtifactOperation } from "@/lib/contracts/artifacts";
 import type { ArtifactBundle, ArtifactBundleAsset, ArtifactBundleFile } from "./bundle";
 import { parseArtifactCss } from "./css";
@@ -9,6 +9,7 @@ import { assertArtifactSingleModule } from "./modulePolicy";
 import { artifactResourceText, createArtifactResourceFetcher, verifyArtifactIntegrity, type ArtifactResourceFetcher } from "./resourceFetch";
 import { ARTIFACT_RESOURCE_LIMITS, artifactResourceByteLimit, artifactResourceUrlSpelling, type ArtifactResourceClass, type ArtifactResourcePolicy } from "./resourcePolicy";
 import { artifactSourceSpan, withArtifactErrorExcerpt } from "./referencedFiles";
+import { parseArtifactHtml } from "./htmlParse";
 
 export type ArtifactVendorMetadata = Readonly<{
   sourceUrl: string;
@@ -57,7 +58,7 @@ function collectReferences(operation: NormalizedArtifactOperation): ResourceRef[
       if ("childNodes" in node) node.childNodes.forEach(visit);
       if ("content" in node) visit(node.content);
     }
-    visit(parse(text, { sourceCodeLocationInfo: referenced }));
+    visit(parseArtifactHtml(text, { sourceCodeLocationInfo: referenced }));
   }
   return references;
 }
