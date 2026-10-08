@@ -130,6 +130,12 @@ async function pushedUser(person: Person) {
 /** Authentik's login flow: identification, then password, then the implicit consent. */
 async function authentikSignIn(browser: Browser, person: Person): Promise<{ context: BrowserContext; page: import("@playwright/test").Page }> {
   const { context, page } = await loginPage(browser, "/login?local=1");
+  // Content-free: the OAuth error code Authentik may send back to the callback (a protocol enum).
+  const callbackErrors: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/api/auth/oauth/oidc/callback")) callbackErrors.push(url.searchParams.get("error") ?? "none");
+  });
   await page.getByRole("link", { name: "Continue with Authentik" }).click();
   const uid = page.locator('input[name="uidField"]');
   await expect(uid).toBeVisible({ timeout: 60_000 }).catch(async (error: unknown) => {
@@ -138,7 +144,7 @@ async function authentikSignIn(browser: Browser, person: Person): Promise<{ cont
     const health = await prisma.authSignInMethodSetting.findUnique({ select: { lastFailureCode: true }, where: { method: "oidc" } });
     throw new Error(
       `authentik_login_not_reached host=${url.host} path=${url.pathname} oauth=${url.searchParams.get("oauth") ?? "-"} ` +
-        `health=${health?.lastFailureCode ?? "-"}`,
+        `health=${health?.lastFailureCode ?? "-"} callback=${callbackErrors.join(",").replace(/[^a-z_,]/gu, "") || "-"}`,
       { cause: error }
     );
   });

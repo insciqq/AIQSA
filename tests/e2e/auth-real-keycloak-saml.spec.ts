@@ -199,14 +199,19 @@ test("alice and dave sign in through Keycloak SAML with the groups attribute and
 
   const daveContext = await standContext(browser);
   const davePage = await daveContext.newPage();
-  await startSignIn(davePage, keycloakUsers.dave, "continue");
+  const daveResponse = decode((await startSignIn(davePage, keycloakUsers.dave, "continue")).SAMLResponse!);
   await expect(davePage.getByTestId("app-shell")).toBeVisible({ timeout: 60_000 });
   await daveContext.close();
   const dave = await prisma.user.findFirstOrThrow({
     where: { authIdentities: { some: { normalizedEmail: keycloakUsers.dave.email, provider: "saml" } } }
   });
   const daveSync = await prisma.authIdentity.findFirst({ select: { lastSyncWarning: true }, where: { provider: "saml", userId: dave.id } });
-  expect(dave.role, `content-free sync warning: ${daveSync?.lastSyncWarning ?? "none"}`).toBe("admin");
+  const samlSetting = await prisma.authSignInMethodSetting.findUnique({ select: { activeConfig: true }, where: { method: "saml" } });
+  const adminGroupCount = ((samlSetting?.activeConfig as { adminGroups?: unknown[] } | null)?.adminGroups ?? []).length;
+  // Content-free facts about Keycloak's real response: attribute names and whether "admins" is a value.
+  const attributeNames = [...daveResponse.matchAll(/<(?:[\w.-]+:)?Attribute\b[^>]*\bName="([A-Za-z]+)"/gu)].map((match) => match[1]).join(",");
+  const adminsValue = /<(?:[\w.-]+:)?AttributeValue\b[^>]*>admins<\//u.test(daveResponse);
+  expect(dave.role, `sync=${daveSync?.lastSyncWarning ?? "none"} adminGroups=${adminGroupCount} attributes=${attributeNames} adminsValue=${adminsValue}`).toBe("admin");
   expect(dave.roleManagedBy).toBe(`saml:${standEnv("AIQSA_E2E_KEYCLOAK_ISSUER")}`);
   await attachEvidence(testInfo, "saml-sign-in", { aliceMember, aliceSessions: await samlSessions(keycloakUsers.alice.email), daveAdmin: true });
 });
