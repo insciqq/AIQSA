@@ -5,6 +5,7 @@ import {
   isOAuthProviderId,
   OAUTH_PROVIDER_IDS
 } from "@/lib/auth/oauth";
+import { isSamlLoginOutcome } from "@/lib/contracts/samlSignIn";
 import { getAuthConfig } from "@/lib/server/auth/config";
 import { oidcAutoRedirectPath } from "@/lib/server/auth/oidc/oidcLoginRedirect";
 import { resolveSignInMethods, type ResolvedSignInMethods } from "@/lib/server/auth/signInMethods";
@@ -29,6 +30,7 @@ type LoginPageProps = {
     provider?: string;
     reason?: string;
     reset?: string;
+    saml?: string;
     trusted_header?: string;
     verify?: string;
   }>;
@@ -71,6 +73,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       passwordLoginEnabled={policy.passwordLoginEnabled}
       registrationEnabled={policy.registrationEnabled}
       resetToken={params.reset}
+      samlOutcome={isSamlLoginOutcome(params.saml) ? params.saml : undefined}
+      samlSignIn={methods.saml ? { buttonLabel: methods.saml.config.buttonLabel } : undefined}
       sessionExpired={params.reason === "session_expired"}
       trustedHeader={trustedHeader.login}
       verifyToken={params.verify}

@@ -1,6 +1,7 @@
 import { LdapSignInCard } from "@/components/admin/signIn/LdapSignInCard";
 import { GoogleSignInCard, YandexSignInCard } from "@/components/admin/signIn/OAuthClientSignInCard";
 import { OidcSignInCard } from "@/components/admin/signIn/OidcSignInCard";
+import { SamlSignInCard } from "@/components/admin/signIn/SamlSignInCard";
 import { TrustedHeaderSignInCard } from "@/components/admin/signIn/TrustedHeaderSignInCard";
 import type { AdminSignInMethodCardProps } from "@/components/admin/signIn/SignInMethodCardFrame";
 import type { AuthSignInMethod } from "@/lib/contracts/authSignInMethods";
@@ -20,6 +21,7 @@ export const adminSignInMethodCards: AdminSignInMethodCardRegistry = {
   google: GoogleSignInCard,
   ldap: LdapSignInCard,
   oidc: OidcSignInCard,
+  saml: SamlSignInCard,
   trusted_header: TrustedHeaderSignInCard,
   yandex: YandexSignInCard
 };
