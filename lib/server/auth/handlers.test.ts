@@ -4,6 +4,7 @@ import { getAuthConfig, TEST_AUTH_TOKEN } from "./config";
 import { DIRECT_PEER_HEADER } from "./clientIdentity";
 import { createLogoutHandler, createMeHandler, createPasswordLoginHandler, createPasswordResetCompleteHandler, createPasswordResetRequestHandler, createTokenLoginHandler, getLoginRateLimitKey, PASSWORD_LOGIN_DISTRIBUTED_CEILING, type SafeUserWithGroups } from "./handlers";
 import { createMemoryAuthMailer } from "@/tests/support/authMailers";
+import { captureSignInRecords, captureSignIns } from "@/tests/support/signInRecords";
 import { hashPassword, verifyPassword } from "./password";
 import type { PasswordIdentityRecord } from "./passwordRepository";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
@@ -1280,5 +1281,70 @@ describe("auth route handlers", () => {
     await expect(response.json()).resolves.toEqual({
       user
     });
+  });
+});
+
+describe("sign-in telemetry of the token and password forms", () => {
+  it("records each bootstrap token attempt once with its outcome", async () => {
+    const POST = createTokenLoginHandler({
+      findUserById: async () => user,
+      getConfig: () => config,
+      loginRateLimiter: createFixedWindowLoginRateLimiter(),
+      sessions: createMemoryAuthSessionStore({ user })
+    });
+
+    const signIns = await captureSignIns(async () => {
+      expect((await POST(tokenRequest(TEST_AUTH_TOKEN))).status).toBe(200);
+      expect((await POST(tokenRequest("wrong-token"))).status).toBe(401);
+    });
+
+    expect(signIns).toEqual([
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "token", step: "credentials" },
+      { code: "invalid_credentials", level: "warn", outcome: "failed", sign_in_method: "token", step: "credentials" }
+    ]);
+  });
+
+  it("records password outcomes without the address or password they were given", async () => {
+    const POST = createPasswordLoginHandler({
+      getConfig: () => config,
+      loginRateLimiter: createFixedWindowLoginRateLimiter(),
+      repository: createMemoryPasswordAuthRepository({ identity: createTestPasswordIdentity({ passwordHash: "stored-hash" }) }),
+      verifyPassword: async (password, hash) => hash === "stored-hash" && password === "correct-password"
+    });
+    const login = (body: Record<string, unknown>) => POST(jsonRequest("/api/auth/login", body));
+
+    const records = await captureSignInRecords(async () => {
+      expect((await login({ email: "operator@aiqsa.local", password: "correct-password" })).status).toBe(200);
+      expect((await login({ email: "operator@aiqsa.local", password: "wrong-password" })).status).toBe(401);
+      expect((await login({ email: "operator@aiqsa.local" })).status).toBe(400);
+    });
+
+    expect(records).toEqual([
+      expect.objectContaining({ code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "password", step: "credentials" }),
+      expect.objectContaining({ code: "invalid_credentials", level: "warn", outcome: "failed", sign_in_method: "password" }),
+      expect.objectContaining({ code: "request_invalid", level: "warn", outcome: "refused", sign_in_method: "password" })
+    ]);
+    expect(JSON.stringify(records)).not.toMatch(/operator|aiqsa\.local|correct-|wrong-|stored-hash/u);
+  });
+
+  it("records an unexpected password failure as an error and lets it propagate", async () => {
+    const repository = createMemoryPasswordAuthRepository();
+    repository.findPasswordIdentityByEmail = async () => {
+      throw new Error("database unavailable");
+    };
+    const POST = createPasswordLoginHandler({
+      getConfig: () => config,
+      loginRateLimiter: createFixedWindowLoginRateLimiter(),
+      repository
+    });
+
+    const signIns = await captureSignIns(async () => {
+      await expect(POST(jsonRequest("/api/auth/login", { email: "operator@aiqsa.local", password: "any-password" })))
+        .rejects.toThrow("database unavailable");
+    });
+
+    expect(signIns).toEqual([
+      { code: "sign_in_failed", level: "error", outcome: "failed", sign_in_method: "password", step: "credentials" }
+    ]);
   });
 });
