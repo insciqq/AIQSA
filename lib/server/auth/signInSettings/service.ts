@@ -46,6 +46,8 @@ export type SignInSettingsService = {
     actorUserId: string;
     expectedActiveVersion: number;
     method: AuthSignInMethod;
+    /** The acting administrator's current session, for the lockout guard. */
+    sessionId: string;
   }): Promise<SignInMethodServiceResult<AdminSignInMethodState>>;
   /** Whether the method can be configured here: a method task registered it. */
   isAvailable(method: AuthSignInMethod): boolean;
@@ -329,9 +331,11 @@ export function createSignInSettingsService(input: {
       if (!definition(request.method)) return { code: "method_unavailable", ok: false };
       const result = await repository.disable({
         actorUserId: request.actorUserId,
+        environmentMethods: environmentMethods(),
         expectedActiveVersion: request.expectedActiveVersion,
         method: request.method,
-        now: now()
+        now: now(),
+        sessionId: request.sessionId
       });
       if (!result.ok) return result;
       input.activeSettings.invalidate();

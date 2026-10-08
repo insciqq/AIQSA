@@ -293,12 +293,27 @@ describe("sign-in settings service", () => {
     const repo = repository([googleDraft({ activeConfig: { clientId: GOOGLE_CLIENT }, activeVersion: 1, enabled: true })]);
     const { invalidate, service: settings } = service({ repository: repo });
 
-    const disabled = await settings.disable({ actorUserId: "admin", expectedActiveVersion: 1, method: "google" });
+    const disabled = await settings.disable({ actorUserId: "admin", expectedActiveVersion: 1, method: "google", sessionId: "session-1" });
 
     expect(disabled.ok && disabled.value.status).toBe("off");
     expect(disabled.ok && disabled.value.active.config).toEqual({ clientId: GOOGLE_CLIENT });
     expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(repo.disable).toHaveBeenCalledWith(expect.objectContaining({ environmentMethods: new Set(), sessionId: "session-1" }));
     await expect(settings.readPolicy()).resolves.toEqual({ passwordLoginEnabled: true, registrationEnabled: true });
+  });
+
+  it("reports the disable lockout guard without dropping the cached snapshot", async () => {
+    const repo = repository([googleDraft({ activeConfig: { clientId: GOOGLE_CLIENT }, activeVersion: 1, enabled: true })]);
+    repo.disable.mockResolvedValueOnce({ code: "lockout_risk", ok: false });
+    const { invalidate, service: settings } = service({
+      env: { AIQSA_YANDEX_OAUTH_CLIENT_ID: "yandex-client", AIQSA_YANDEX_OAUTH_CLIENT_SECRET: "yandex-secret" },
+      repository: repo
+    });
+
+    await expect(settings.disable({ actorUserId: "admin", expectedActiveVersion: 1, method: "google", sessionId: "session-1" }))
+      .resolves.toEqual({ code: "lockout_risk", ok: false });
+    expect(repo.disable).toHaveBeenCalledWith(expect.objectContaining({ environmentMethods: new Set(["yandex"]), sessionId: "session-1" }));
+    expect(invalidate).not.toHaveBeenCalled();
   });
 
   it("passes the environment fallbacks to the lockout guard", async () => {

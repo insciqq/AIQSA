@@ -124,6 +124,12 @@ describe("admin sign-in handlers", () => {
     });
     expect((await POST(json("POST", { action: "activate", confirmSourceChange: false, expectedActiveVersion: 0, expectedDraftVersion: 2 }), google)).status).toBe(400);
     expect((await POST(json("POST", { action: "disable", expectedActiveVersion: 1 }), google)).status).toBe(200);
+    expect(service.disable).toHaveBeenCalledWith({
+      actorUserId: "admin",
+      expectedActiveVersion: 1,
+      method: "google",
+      sessionId: "session-admin"
+    });
     expect((await POST(json("POST", { action: "delete" }), google)).status).toBe(400);
 
     const notTested = createAdminSignInMethodHandlers(deps(fakeService({
@@ -132,6 +138,17 @@ describe("admin sign-in handlers", () => {
     const refused = await notTested.POST(json("POST", { action: "activate", expectedActiveVersion: 0, expectedDraftVersion: 2 }), google);
     expect(refused.status).toBe(409);
     await expect(refused.json()).resolves.toEqual({ error: "sign_in_draft_not_tested" });
+  });
+
+  it("refuses to disable the acting session's own way in while passwords are off", async () => {
+    const { POST } = createAdminSignInMethodHandlers(deps(fakeService({
+      disable: vi.fn(async () => ({ code: "lockout_risk" as const, ok: false as const }))
+    })));
+
+    const response = await POST(json("POST", { action: "disable", expectedActiveVersion: 1 }), google);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "password_login_lockout_risk" });
   });
 
   it("changes the switches for the acting session and reports the lockout risk", async () => {

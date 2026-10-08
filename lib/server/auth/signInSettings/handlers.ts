@@ -197,7 +197,12 @@ export function createAdminSignInMethodHandlers(deps: AdminSignInHandlerDeps) {
       if (!hasOnlyKeys(body, ["action", "expectedActiveVersion"]) || expectedActiveVersion === null) {
         return errorJson("sign_in_configuration_invalid", 400);
       }
-      const result = await deps.service.disable({ actorUserId: read.session.userId, expectedActiveVersion, method });
+      const result = await deps.service.disable({
+        actorUserId: read.session.userId,
+        expectedActiveVersion,
+        method,
+        sessionId: read.session.id
+      });
       return result.ok
         ? Response.json({ method: result.value } satisfies AdminSignInMethodResponse)
         : failureResponse(result);

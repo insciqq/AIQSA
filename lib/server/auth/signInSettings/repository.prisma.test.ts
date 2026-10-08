@@ -224,7 +224,8 @@ describe("sign-in settings repository", () => {
   });
 
   it("disables without deleting and keeps health to the active version", async () => {
-    await withSettings(["oidc"], async ({ admin }) => {
+    await withSettings(["oidc"], async ({ admin, session }) => {
+      const sessionId = await session("password");
       await saveOidc({ actorUserId: admin.id, expectedDraftVersion: 0, secret: { kind: "replace", value: "client-secret" } });
       await repository.activate({
         actorUserId: admin.id,
@@ -243,7 +244,14 @@ describe("sign-in settings repository", () => {
         .resolves.toMatchObject({ lastFailureAt: now, lastFailureCode: "exchange_failed" });
       expect((await repository.loadEnabled()).map((row) => row.method)).toContain("oidc");
 
-      const disabled = await repository.disable({ actorUserId: admin.id, expectedActiveVersion: 1, method: "oidc", now });
+      const disabled = await repository.disable({
+        actorUserId: admin.id,
+        environmentMethods: new Set(),
+        expectedActiveVersion: 1,
+        method: "oidc",
+        now,
+        sessionId
+      });
       expect(disabled.ok && disabled.value).toMatchObject({
         activeConfig: expect.objectContaining({ clientId: "client" }),
         activeVersion: 2,
@@ -251,7 +259,7 @@ describe("sign-in settings repository", () => {
         lastFailureCode: null
       });
       expect((await repository.loadEnabled()).map((row) => row.method)).not.toContain("oidc");
-      await expect(repository.disable({ actorUserId: admin.id, expectedActiveVersion: 2, method: "oidc", now }))
+      await expect(repository.disable({ actorUserId: admin.id, environmentMethods: new Set(), expectedActiveVersion: 2, method: "oidc", now, sessionId }))
         .resolves.toEqual({ code: "not_configured", ok: false });
     });
   });
@@ -302,6 +310,93 @@ describe("sign-in settings repository", () => {
         .resolves.toMatchObject({ ok: true, value: { passwordLoginEnabled: false, version: 3 } });
       await expect(prisma.authSignInPolicy.findUniqueOrThrow({ where: { id: SIGN_IN_POLICY_ID } }))
         .resolves.toMatchObject({ passwordLoginEnabled: false, updatedByUserId: admin.id } satisfies Partial<AuthSignInPolicy>);
+    });
+  });
+
+  it("keeps the method the acting session signed in with on while password sign-in is off", async () => {
+    await withSettings(["oidc", "google"], async ({ admin, session }) => {
+      await saveOidc({ actorUserId: admin.id, expectedDraftVersion: 0, secret: { kind: "replace", value: "client-secret" } });
+      await repository.activate({
+        actorUserId: admin.id,
+        confirmSourceChange: true,
+        expectedActiveVersion: 0,
+        expectedDraftVersion: 1,
+        inspectDraft: inspect(null),
+        method: "oidc",
+        now,
+        requiresTest: false
+      });
+      const oidcSession = await session("oidc");
+      const disable = (input: { environment?: string[]; sessionId: string }) => repository.disable({
+        actorUserId: admin.id,
+        environmentMethods: new Set(input.environment ?? []),
+        expectedActiveVersion: 1,
+        method: "oidc",
+        now,
+        sessionId: input.sessionId
+      });
+      await expect(repository.updatePolicy({
+        actorUserId: admin.id,
+        environmentMethods: new Set(),
+        expectedVersion: 0,
+        now,
+        passwordLoginEnabled: false,
+        registrationEnabled: true,
+        sessionId: oidcSession
+      })).resolves.toMatchObject({ ok: true });
+
+      await expect(disable({ sessionId: oidcSession })).resolves.toEqual({ code: "lockout_risk", ok: false });
+      await expect(prisma.authSignInMethodSetting.findUniqueOrThrow({ where: { method: "oidc" } }))
+        .resolves.toMatchObject({ activeVersion: 1, enabled: true });
+      // Another administrator's way in is theirs to keep: a session of another method may disable it.
+      await expect(disable({ sessionId: await session("google") })).resolves.toMatchObject({
+        ok: true,
+        value: { activeVersion: 2, enabled: false }
+      });
+    });
+  });
+
+  it("lets disable and the password switch race without deadlocking", async () => {
+    await withSettings(["oidc"], async ({ admin, session }) => {
+      await saveOidc({ actorUserId: admin.id, expectedDraftVersion: 0, secret: { kind: "replace", value: "client-secret" } });
+      await repository.activate({
+        actorUserId: admin.id,
+        confirmSourceChange: true,
+        expectedActiveVersion: 0,
+        expectedDraftVersion: 1,
+        inspectDraft: inspect(null),
+        method: "oidc",
+        now,
+        requiresTest: false
+      });
+      await repository.updatePolicy({
+        actorUserId: admin.id,
+        environmentMethods: new Set(),
+        expectedVersion: 0,
+        now,
+        passwordLoginEnabled: true,
+        registrationEnabled: true,
+        sessionId: await session("password")
+      });
+      const oidcSession = await session("oidc");
+
+      const [disabled, switched] = await Promise.all([
+        repository.disable({ actorUserId: admin.id, environmentMethods: new Set(), expectedActiveVersion: 1, method: "oidc", now, sessionId: oidcSession }),
+        repository.updatePolicy({
+          actorUserId: admin.id,
+          environmentMethods: new Set(),
+          expectedVersion: 1,
+          now,
+          passwordLoginEnabled: false,
+          registrationEnabled: true,
+          sessionId: oidcSession
+        })
+      ]);
+
+      // Exactly one order wins: either OIDC went off first and passwords stay on, or passwords
+      // went off first and OIDC, the acting session's way in, stays on.
+      expect([disabled.ok, switched.ok].filter(Boolean)).toHaveLength(1);
+      expect(disabled.ok ? switched : disabled).toEqual({ code: "lockout_risk", ok: false });
     });
   });
 });

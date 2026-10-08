@@ -411,7 +411,15 @@ export function SignInMethodCardFrame({
             Activate
           </UiV2Button>
           {state.status === "active_admin" ? (
-            <UiV2Button disabled={busy} onClick={() => controller.actions.requestDisable(state.method)} tone="destructive" type="button">
+            <UiV2Button
+              disabled={busy}
+              onClick={() => {
+                setMessage(null);
+                controller.actions.requestDisable(state.method, setMessage);
+              }}
+              tone="destructive"
+              type="button"
+            >
               Disable
             </UiV2Button>
           ) : null}
