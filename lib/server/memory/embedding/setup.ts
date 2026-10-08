@@ -123,7 +123,7 @@ export function createPrismaMemoryEmbeddingSetup(client: PrismaClient) {
         expectedMemoryRevision: before.memoryRevision,
         expectedSettingsRevision: before.settingsRevision,
         operation: "REEMBED"
-      });
+      }, "embedding_setup");
     }
   };
   let afterUserId = "";

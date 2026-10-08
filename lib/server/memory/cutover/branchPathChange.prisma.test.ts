@@ -351,8 +351,9 @@ async function indexHistory(userId: string): Promise<void> {
     orderBy: [{ sourceRevision: "desc" }, { createdAt: "desc" }],
     where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
   });
+  // The coordinator settles superseded source jobs as STALE at preflight.
   await prisma.memoryJob.updateMany({
-    data: { errorCode: "memory_source_stale", state: "STALE" },
+    data: { completedAt: new Date(), errorCode: "memory_source_stale", state: "STALE" },
     where: { id: { not: latest.id }, kind: "INDEX_HISTORY", state: "QUEUED", userId }
   });
   const claimToken = randomUUID();
@@ -691,7 +692,9 @@ describe("Memory branch-path changes that leave the index unchanged", () => {
       const reconciled = await createPrismaMemoryRetrievalCutoverRepository(
         ownerScopedClient(userId)
       ).reconcile({ limit: 100 });
-      expect(reconciled).toEqual([expect.objectContaining({ kind: "queued" })]);
+      expect(reconciled).toEqual([
+        expect.objectContaining({ kind: "queued", reason: "revision_lag" })
+      ]);
       await expect(prisma.memoryJob.count({ where: { kind: "REBUILD_INDEX", userId } }))
         .resolves.toBe(1);
     } finally {

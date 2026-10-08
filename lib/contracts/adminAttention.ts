@@ -5,7 +5,8 @@ import type { ErrorResponse } from "./http";
  * needs an administrator decision or action from data it already serves
  * (dashboard, providers, Search, system roles, Knowledge operations, Memory
  * status, MCP servers, email health, usage limits), from thresholds over the
- * content-free health telemetry counters and from background queue ages.
+ * content-free health telemetry counters and Memory rebuild counts, and from
+ * background queue ages.
  * Nothing is persisted; every item carries human copy plus one jump target
  * inside the Control Center.
  */
@@ -21,6 +22,7 @@ export type AdminAttentionCode =
   | "logs_dropped"
   | "mcp_server_needs_attention"
   | "memory_index_rebuild_required"
+  | "memory_index_rebuilds_repeated"
   | "memory_processing_blocked"
   | "memory_worker_not_running"
   | "memory_worker_stalled"
@@ -134,10 +136,11 @@ export type AdminAttentionSummaryResponse = {
   summary: AdminAttentionSummary;
 };
 
-/** Items derived from the health telemetry rules. */
+/** Items derived from the health rules. */
 export const adminHealthAttentionCodes = [
   "background_failures",
   "logs_dropped",
+  "memory_index_rebuilds_repeated",
   "new_error",
   "operation_timeouts_rising",
   "process_restarting",
