@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { signOutCurrentSession } from "./sessionActions";
+import { shellFetch, subscribeToSessionExpired } from "./shellApi";
 import { clearSignedOutComposerDrafts, startComposerDraftPersistence } from "./composerDraftPersistence";
 import { composerDraftEpochKey, composerDraftStorageKey, readComposerDraftEpoch, readComposerDrafts, replaceComposerDraftEpoch,
   writeComposerDrafts } from "./composerDraftStorage";
@@ -131,6 +132,37 @@ describe("signOutCurrentSession", () => {
     for (const redirectTo of ["javascript:alert(1)", "/relative", 42]) {
       await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockResolvedValue(Response.json({ redirectTo })), navigate });
       expect(navigate).toHaveBeenLastCalledWith("/login");
+    }
+  });
+
+  it("keeps other requests' 401s from preempting the identity provider's logout; a failed sign-out resumes them", async () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeToSessionExpired(listener);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ error: "unauthorized" }, { status: 401 }));
+    try {
+      const failed = await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockRejectedValue(new Error("offline")), navigate: vi.fn() });
+      expect(failed.ok).toBe(false);
+      await shellFetch("/api/chats");
+      expect(listener).toHaveBeenCalledOnce();
+      unsubscribe();
+
+      const afterLogout = vi.fn();
+      const unsubscribeAfter = subscribeToSessionExpired(afterLogout);
+      let revoked: () => void = () => undefined;
+      const fetcher = vi.fn(() => new Promise<Response>((resolve) => {
+        revoked = () => resolve(Response.json({ redirectTo: "https://idp.example/logout" }));
+      }));
+      const navigate = vi.fn();
+      const signingOut = signOutCurrentSession({ accountId: null, fetcher, navigate });
+      // The session is already revoked on the server; a request in flight answers 401.
+      await shellFetch("/api/chats");
+      revoked();
+      await signingOut;
+      expect(afterLogout).not.toHaveBeenCalled();
+      expect(navigate).toHaveBeenLastCalledWith("https://idp.example/logout");
+      unsubscribeAfter();
+    } finally {
+      fetchSpy.mockRestore();
     }
   });
 
