@@ -79,7 +79,14 @@ describe("sign-in completion", () => {
       });
       const sessions = createPrismaAuthSessionStore(prisma);
       const bootstrap = await createTokenLoginHandler({
-        findUserById: async () => bootstrapUser,
+        // The route's projection: the full row has BigInt columns that JSON cannot carry.
+        findUserById: async () => ({
+          displayName: bootstrapUser.displayName,
+          email: bootstrapUser.email,
+          id: bootstrapUser.id,
+          role: bootstrapUser.role,
+          status: bootstrapUser.status
+        }),
         getConfig: () => getAuthConfig({
           AIQSA_AUTH_SESSION_SECRET: `completion-secret-${id}`,
           AIQSA_BOOTSTRAP_AUTH_TOKEN: `completion-bootstrap-${id}`,
