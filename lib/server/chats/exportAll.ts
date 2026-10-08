@@ -11,7 +11,7 @@ import type { RequestAuthResolver } from "../auth/requestAuth";
 import { chatExportChatSelect, loadChatExportSource } from "./exportChat";
 import { tarGzipStream, type TarEntry } from "./tarArchive";
 
-type ExportPrismaClient = Pick<PrismaClient, "attachment" | "chat" | "message">;
+type ExportPrismaClient = Pick<PrismaClient, "answerReviewSession" | "attachment" | "chat" | "message">;
 
 function uniqueBaseName(used: Set<string>, base: string): string {
   let candidate = base;
