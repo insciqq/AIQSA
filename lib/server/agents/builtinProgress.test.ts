@@ -9,7 +9,7 @@ describe("Agent built-in output across processes", () => {
       name: "create_artifact", ordinal, arguments: { metadata: { title: "Synthetic page", kind: "html" } }, pending,
       result: pending ? null : artifactToolResult({ id: `call-${ordinal}`, name: "create_artifact" }, {
         id: `version-${ordinal}`, artifactId: "artifact", title: "Synthetic page", kind: "html", versionNumber: ordinal + 1,
-        entrypoint: "index.html", manifest: { files: [{ byteSize: 42 }] }
+        entrypoint: "index.html", manifest: { files: [{ byteSize: 42, path: "index.html" }] }
       }) });
     let rows = [make(0, true), make(1, true)];
     const builtinProgress = vi.fn(async (after: number, pending: readonly string[]) =>
