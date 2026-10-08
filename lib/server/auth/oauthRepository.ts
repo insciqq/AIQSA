@@ -1,15 +1,12 @@
-import type { AuthIdentityProvider, Prisma, PrismaClient } from "@prisma/client";
-import type { OAuthProviderId } from "../../auth/oauth";
-import { normalizeAuthEmail } from "./password";
-import { provisionActiveUser } from "./provisioning";
-import { findEnabledAccessRuleMatch, replaceProvisionalDisplayName } from "./registrationRepository";
-import { lockAuthIdentity, lockAuthRegistrationEmail, lockAuthUser } from "./transactionLocks";
+import type { PrismaClient } from "@prisma/client";
+import type { OAuthClientProviderId } from "../../auth/oauth";
+import { settleExternalIdentity, type ExternalIdentityPolicy } from "./externalIdentity";
 
 export type OAuthIdentitySettlementInput = {
   displayName: string;
   email: string;
   now: Date;
-  provider: OAuthProviderId;
+  provider: OAuthClientProviderId;
   providerAccountId: string;
 };
 
@@ -26,234 +23,55 @@ export type OAuthIdentityRepository = {
   settleIdentity(input: OAuthIdentitySettlementInput): Promise<OAuthIdentitySettlementResult>;
 };
 
-type OAuthIdentityWithUser = Prisma.AuthIdentityGetPayload<{
-  include: {
-    user: true;
-  };
-}>;
+/** Google and Yandex admit through the access rules and carry no groups, admin role or source. */
+const OAUTH_POLICY: ExternalIdentityPolicy = {
+  adminGroups: [],
+  admission: { kind: "access_rules" },
+  autoCreateUsers: true,
+  syncGroups: false,
+  trustUnverifiedEmail: false
+};
 
-function providerValue(provider: OAuthProviderId): AuthIdentityProvider {
-  return provider;
-}
-
-function fallbackDisplayName(input: OAuthIdentitySettlementInput, normalizedEmail: string): string {
-  return input.displayName.trim().slice(0, 160) || normalizedEmail.split("@")[0] || "AIQSA User";
-}
-
-async function lockedIdentity(
-  tx: Prisma.TransactionClient,
-  identity: OAuthIdentityWithUser
-): Promise<OAuthIdentityWithUser | null> {
-  await lockAuthIdentity(tx, identity.id);
-  await lockAuthUser(tx, identity.userId);
-
-  return tx.authIdentity.findUnique({
-    include: {
-      user: true
-    },
-    where: {
-      id: identity.id
-    }
-  });
-}
-
-async function settlePendingUser(
-  tx: Prisma.TransactionClient,
-  input: {
-    normalizedEmail: string;
-    userId: string;
-  }
-): Promise<OAuthIdentitySettlementResult> {
-  const approval = await findEnabledAccessRuleMatch(tx, input.normalizedEmail);
-
-  if (!approval) {
-    return {
-      status: "pending"
-    };
-  }
-
-  await tx.user.update({
-    data: {
-      status: "active"
-    },
-    where: {
-      id: input.userId
-    }
-  });
-  await provisionActiveUser(tx, {
-    groups: approval.groups,
-    userId: input.userId
-  });
-
-  return {
-    status: "active",
-    userId: input.userId
-  };
-}
+/**
+ * Whether the email of a settled profile is verified. Google: `verifyGoogleIdToken` accepts
+ * only ID tokens with `email_verified === true`, and the callback settles only the profiles it
+ * returned. Yandex: the account's default email has always linked existing accounts, and that
+ * stays an explicit choice here.
+ */
+const OAUTH_EMAIL_VERIFIED = {
+  google: true,
+  yandex: true
+} as const satisfies Record<OAuthClientProviderId, boolean>;
 
 export function createPrismaOAuthIdentityRepository(prisma: PrismaClient): OAuthIdentityRepository {
   return {
     async settleIdentity(input) {
-      const normalizedEmail = normalizeAuthEmail(input.email);
-      const provider = providerValue(input.provider);
+      const outcome = await prisma.$transaction((tx) =>
+        settleExternalIdentity(tx, {
+          displayName: input.displayName,
+          email: input.email,
+          emailVerified: OAUTH_EMAIL_VERIFIED[input.provider],
+          groups: null,
+          now: input.now,
+          policy: OAUTH_POLICY,
+          provider: input.provider,
+          source: null,
+          subject: input.providerAccountId
+        })
+      );
 
-      return prisma.$transaction(async (tx) => {
-        await lockAuthRegistrationEmail(tx, normalizedEmail);
-
-        const subjectCandidate = await tx.authIdentity.findUnique({
-          include: {
-            user: true
-          },
-          where: {
-            provider_providerAccountId: {
-              provider,
-              providerAccountId: input.providerAccountId
-            }
-          }
-        });
-
-        if (subjectCandidate) {
-          const identity = await lockedIdentity(tx, subjectCandidate);
-
-          if (!identity || identity.user.status === "disabled" || identity.user.status === "denied") {
-            return {
-              status: "not_allowed"
-            };
-          }
-
-          const currentEmailIdentity = await tx.authIdentity.findUnique({
-            select: {
-              id: true
-            },
-            where: {
-              provider_normalizedEmail: {
-                normalizedEmail,
-                provider
-              }
-            }
-          });
-
-          if (currentEmailIdentity && currentEmailIdentity.id !== identity.id) {
-            return {
-              status: "account_conflict"
-            };
-          }
-
-          if (identity.user.status === "active") {
-            return {
-              status: "active",
-              userId: identity.userId
-            };
-          }
-
-          return settlePendingUser(tx, {
-            normalizedEmail: identity.normalizedEmail,
-            userId: identity.userId
-          });
-        }
-
-        const emailIdentity = await tx.authIdentity.findUnique({
-          where: {
-            provider_normalizedEmail: {
-              normalizedEmail,
-              provider
-            }
-          }
-        });
-
-        if (emailIdentity) {
-          return {
-            status: "account_conflict"
-          };
-        }
-
-        let user = await tx.user.findUnique({
-          where: {
-            email: normalizedEmail
-          }
-        });
-
-        if (user) {
-          await lockAuthUser(tx, user.id);
-          user = await tx.user.findUnique({
-            where: {
-              id: user.id
-            }
-          });
-        }
-
-        if (user?.status === "disabled" || user?.status === "denied") {
-          return {
-            status: "not_allowed"
-          };
-        }
-
-        const approval = user?.status === "active" ? null : await findEnabledAccessRuleMatch(tx, normalizedEmail);
-
-        if (!user && !approval) {
-          return {
-            status: "not_allowed"
-          };
-        }
-
-        if (user) {
-          await replaceProvisionalDisplayName(tx, {
-            displayName: fallbackDisplayName(input, normalizedEmail),
-            userId: user.id
-          });
-        }
-
-        user ??= await tx.user.create({
-          data: {
-            displayName: fallbackDisplayName(input, normalizedEmail),
-            email: normalizedEmail,
-            role: "user",
-            status: "pending"
-          }
-        });
-
-        await tx.authIdentity.create({
-          data: {
-            emailVerifiedAt: input.now,
-            normalizedEmail,
-            passwordHash: null,
-            provider,
-            providerAccountId: input.providerAccountId,
-            userId: user.id
-          }
-        });
-
-        if (user.status === "active") {
-          return {
-            status: "active",
-            userId: user.id
-          };
-        }
-
-        if (!approval) {
-          return {
-            status: "pending"
-          };
-        }
-
-        await tx.user.update({
-          data: {
-            status: "active"
-          },
-          where: {
-            id: user.id
-          }
-        });
-        await provisionActiveUser(tx, {
-          groups: approval.groups,
-          userId: user.id
-        });
-
-        return {
-          status: "active",
-          userId: user.id
-        };
-      });
+      switch (outcome.status) {
+        case "active":
+          return { status: "active", userId: outcome.userId };
+        case "account_conflict":
+        case "not_allowed":
+        case "pending":
+          return { status: outcome.status };
+        default:
+          // Google and Yandex identities have no source, and the callback settles only a
+          // plausible email, so neither remaining outcome can occur.
+          throw new Error("oauth_settlement_unexpected");
+      }
     }
   };
 }

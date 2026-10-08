@@ -1,5 +1,6 @@
 import { clearAllArtifactSavedState } from "@/components/artifacts/artifactBrowserStorage";
 import { clearSignedOutComposerDrafts } from "./composerDraftPersistence";
+import { suppressSessionExpiredDuringSignOut } from "./shellApi";
 
 export type SignOutResult =
   | {
@@ -33,6 +34,16 @@ function signOutErrorMessage(code: string): string {
   return `${messages[code] ?? "Could not sign out. Try again."} (${code})`;
 }
 
+function identityProviderLogoutUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function signOutCurrentSession(options: SignOutOptions): Promise<SignOutResult> {
   const fetcher = options.fetcher ?? fetch;
   const navigate = options.navigate ?? ((href: string) => window.location.assign(href));
@@ -40,6 +51,7 @@ export async function signOutCurrentSession(options: SignOutOptions): Promise<Si
   const timeoutMs = options.timeoutMs ?? DEFAULT_SIGN_OUT_TIMEOUT_MS;
   let timedOut = false;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const resumeSessionExpired = suppressSessionExpiredDuringSignOut();
 
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutId = setTimeout(() => {
@@ -49,7 +61,7 @@ export async function signOutCurrentSession(options: SignOutOptions): Promise<Si
     }, timeoutMs);
   });
 
-  const request = (async (): Promise<{ code?: string; ok: boolean }> => {
+  const request = (async (): Promise<{ code?: string; ok: boolean; redirectTo?: string }> => {
     const response = await fetcher("/api/auth/logout", {
       body: "{}",
       credentials: "same-origin",
@@ -65,13 +77,18 @@ export async function signOutCurrentSession(options: SignOutOptions): Promise<Si
       return { code: data?.error ?? "logout_failed", ok: false };
     }
 
-    return { ok: true };
+    // The session is already revoked; a 200 names the identity provider's logout page.
+    const data = response.status === 200
+      ? (await response.json().catch(() => null)) as { redirectTo?: unknown } | null
+      : null;
+    return { ok: true, redirectTo: identityProviderLogoutUrl(data?.redirectTo) };
   })();
 
   try {
     const result = await Promise.race([request, timeout]);
 
     if (!result.ok) {
+      resumeSessionExpired();
       return {
         error: signOutErrorMessage(result.code ?? "logout_failed"),
         ok: false
@@ -80,9 +97,10 @@ export async function signOutCurrentSession(options: SignOutOptions): Promise<Si
 
     clearSignedOutComposerDrafts(options.accountId);
     await clearAllArtifactSavedState();
-    navigate("/login");
+    navigate(result.redirectTo ?? "/login");
     return { ok: true };
   } catch {
+    resumeSessionExpired();
     return {
       error: signOutErrorMessage(timedOut ? "logout_timeout" : "network_error"),
       ok: false

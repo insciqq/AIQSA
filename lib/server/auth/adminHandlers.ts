@@ -312,6 +312,26 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
       });
     }
 
+    if (action.action === "reset_user_two_factor") {
+      const userId = stringField(action.userId);
+
+      if (!userId) {
+        return json({ error: "user_required" }, { status: 400 });
+      }
+
+      // An administrator's own factor needs a current code like anyone else's.
+      if (userId === admin.userId) {
+        return json({ error: "self_two_factor_reset_forbidden" }, { status: 403 });
+      }
+
+      const revoked = await deps.repository.resetUserTwoFactor({
+        revokedByUserId: admin.userId,
+        userId
+      });
+
+      return revoked === null ? json({ error: "user_not_found" }, { status: 404 }) : json({ revoked });
+    }
+
     if (action.action === "revoke_all_sessions") {
       return json({
         revoked: await deps.repository.revokeAllSessions({
@@ -376,7 +396,7 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
       });
       return result === "applied"
         ? json({ ok: true })
-        : json({ error: result }, { status: result === "user_access_stale" ? 409 : 404 });
+        : json({ error: result }, { status: result === "user_not_found" ? 404 : 409 });
     }
 
     if (action.action === "set_user_role") {

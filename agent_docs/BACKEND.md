@@ -17,6 +17,10 @@ Diagnostics validate fields at runtime. HTTP completion, operation outcome and p
 
 Configuration transitions use optimistic concurrency and atomic validation. Never silently clamp, substitute, or partially apply a multi-resource change.
 
+All external sign-in methods share one identity settlement and one sign-in completion seam; [Sign-in](SIGN_IN.md) owns their rules.
+
+SCIM provisioning (`/scim/v2`) is an admin-level integration surface outside `/api`: its bearer token is the only gate, and it changes accounts and memberships only through the commands the administrator paths use.
+
 Assistant publication must preserve direct Skill audience coverage and require approved revisions for all linked Skills. Project publication or explicit manager refresh applies the complete eligible dependency plan atomically; later Assistant edits never silently change Project grants. Missing dependencies make it unavailable until authorized refresh. Unlink/unpublish clears affected defaults/plans/dependent authorities atomically and reports safe consequences. Non-administrators list installation-wide only through approved requests; approval checks the requested version, and later edits stay unreviewed. Administrators read private definitions only through pending requests for the current version.
 
 Answer recommendations and purpose-specific System Model assignments are independent and grant no entitlement. Each system role uses its configured deployment and installation credential without substitution. Consolidated administration does not merge domain ownership: Knowledge activation creates an immutable profile with explicit reprocessing/reindexing, while Personal Memory retains owner-scoped entitlement and generation rules.

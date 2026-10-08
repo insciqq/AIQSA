@@ -67,6 +67,7 @@ https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
 - Assistants with fixed instructions, models and Knowledge.
 - Role-based access control: administrator and user roles, groups that decide who can use which providers, models and search, and Owner, Manager, Contributor and Viewer roles in Projects.
 - Email invitations.
+- Sign-in with Google, Yandex, OpenID Connect with group sync, LDAP/Active Directory, SAML 2.0 or a trusted reverse-proxy header, SCIM 2.0 provisioning and optional TOTP two-factor sign-in, all configured in the admin panel ([recipes](SELF_HOSTING.md#sign-in-methods)).
 - Usage and cost per user.
 
 **Operations**

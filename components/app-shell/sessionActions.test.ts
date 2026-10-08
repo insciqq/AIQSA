@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { signOutCurrentSession } from "./sessionActions";
+import { shellFetch, subscribeToSessionExpired } from "./shellApi";
 import { clearSignedOutComposerDrafts, startComposerDraftPersistence } from "./composerDraftPersistence";
 import { composerDraftEpochKey, composerDraftStorageKey, readComposerDraftEpoch, readComposerDrafts, replaceComposerDraftEpoch,
   writeComposerDrafts } from "./composerDraftStorage";
@@ -122,6 +123,49 @@ describe("signOutCurrentSession", () => {
     expect(navigate).toHaveBeenCalledWith("/login");
   });
 
+  it("continues to the identity provider's logout page the server names, and to /login otherwise", async () => {
+    const navigate = vi.fn();
+    const target = "https://idp.example/realms/main/protocol/openid-connect/logout?client_id=aiqsa&post_logout_redirect_uri=https%3A%2F%2Faiqsa.example%2Flogin";
+    await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockResolvedValue(Response.json({ redirectTo: target })), navigate });
+    expect(navigate).toHaveBeenLastCalledWith(target);
+
+    for (const redirectTo of ["javascript:alert(1)", "/relative", 42]) {
+      await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockResolvedValue(Response.json({ redirectTo })), navigate });
+      expect(navigate).toHaveBeenLastCalledWith("/login");
+    }
+  });
+
+  it("keeps other requests' 401s from preempting the identity provider's logout; a failed sign-out resumes them", async () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeToSessionExpired(listener);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ error: "unauthorized" }, { status: 401 }));
+    try {
+      const failed = await signOutCurrentSession({ accountId: null, fetcher: vi.fn().mockRejectedValue(new Error("offline")), navigate: vi.fn() });
+      expect(failed.ok).toBe(false);
+      await shellFetch("/api/chats");
+      expect(listener).toHaveBeenCalledOnce();
+      unsubscribe();
+
+      const afterLogout = vi.fn();
+      const unsubscribeAfter = subscribeToSessionExpired(afterLogout);
+      let revoked: () => void = () => undefined;
+      const fetcher = vi.fn(() => new Promise<Response>((resolve) => {
+        revoked = () => resolve(Response.json({ redirectTo: "https://idp.example/logout" }));
+      }));
+      const navigate = vi.fn();
+      const signingOut = signOutCurrentSession({ accountId: null, fetcher, navigate });
+      // The session is already revoked on the server; a request in flight answers 401.
+      await shellFetch("/api/chats");
+      revoked();
+      await signingOut;
+      expect(afterLogout).not.toHaveBeenCalled();
+      expect(navigate).toHaveBeenLastCalledWith("https://idp.example/logout");
+      unsubscribeAfter();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("keeps the user in place and preserves a stable backend code on failure", async () => {
     const fetcher = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: "unauthorized" }), {
@@ -189,6 +233,9 @@ describe("signOutCurrentSession", () => {
       navigate,
       timeoutMs: 250
     });
+    // Only the session-expiry suppression's own release stays, for a navigation that never leaves.
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(vi.getTimerCount()).toBe(0);
 
     await signOutCurrentSession({

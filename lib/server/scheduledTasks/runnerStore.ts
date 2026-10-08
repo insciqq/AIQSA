@@ -584,7 +584,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
               chatEpoch: true, chatMode: true, chatPeriod: true, generation: true, kind: true, memoryEnabled: true,
               modelId: true, prompt: true, pinnedSkillIds: true, promptUrlDigests: true, provider: true, revision: true,
               searchEnabled: true, status: true, timeZone: true, title: true, toolsEnabled: true, workspaceEnabled: true,
-              user: { select: { status: true } },
+              user: { select: { scimDeactivatedAt: true, status: true } },
               chat: {
                 select: {
                   activeLeafMessageId: true, archived: true, assistantId: true, id: true, permanentDeletionAt: true, projectId: true
@@ -625,7 +625,9 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         occurrence: {
           id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: trigger(row.trigger), userId: row.userId
         },
-        ownerActive: user.status === "active",
+        // A pending SCIM deactivation keeps the status active only for the Project-owner
+        // invariant; the owner's access, standing tasks included, already ended.
+        ownerActive: user.status === "active" && user.scimDeactivatedAt === null,
         relevantMcpServerIds: !task.toolsEnabled ? null
           : baseline?.generation === task.generation
             ? await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId: row.userId })

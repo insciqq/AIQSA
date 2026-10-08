@@ -21,6 +21,11 @@ import { hashToken } from "./token";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import { logEvent } from "../observability";
 import {
+  refuseWhenPasswordSignInOff,
+  refuseWhenRegistrationOff,
+  type SignInPolicyReader
+} from "./signInPolicy";
+import {
   waitForAuthResponseFloor
 } from "./responseFloor";
 
@@ -32,6 +37,8 @@ export type RegisterHandlerDeps = {
   registrationRateLimiter?: LoginRateLimiter;
   repository: AuthRegistrationRepository;
   responseFloorMs?: number;
+  /** The registration and password sign-in switches; absent means both on. */
+  signInPolicy?: SignInPolicyReader;
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
@@ -40,6 +47,7 @@ export type EmailVerificationHandlerDeps = {
   passwordHasher?: (password: string) => Promise<string>;
   now?: () => Date;
   repository: AuthRegistrationRepository;
+  signInPolicy?: SignInPolicyReader;
   verificationRateLimiter?: LoginRateLimiter;
 };
 
@@ -48,6 +56,7 @@ export type InviteAcceptanceHandlerDeps = {
   inviteAcceptanceRateLimiter?: LoginRateLimiter;
   now?: () => Date;
   repository: AuthRegistrationRepository;
+  signInPolicy?: SignInPolicyReader;
 };
 
 const defaultRegistrationRateLimiter = createFixedWindowLoginRateLimiter();
@@ -231,6 +240,9 @@ export function createInviteAcceptanceHandler(deps: InviteAcceptanceHandlerDeps)
       return contentTypeError;
     }
 
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
+
     const rateLimiter = resolveLoginRateLimiter(
       deps.inviteAcceptanceRateLimiter,
       defaultInviteAcceptanceRateLimiter
@@ -375,6 +387,9 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
       return json({ error: "registration_required" }, { status: 400 });
     }
 
+    const registrationOff = await refuseWhenRegistrationOff(deps.signInPolicy, { invited: Boolean(body.inviteToken) });
+    if (registrationOff) return registrationOff;
+
     const normalizedEmail = normalizeAuthEmail(body.email);
 
     if (!isPlausibleEmail(normalizedEmail)) {
@@ -451,6 +466,9 @@ export function createEmailVerificationHandler(deps: EmailVerificationHandlerDep
     if (contentTypeError) {
       return contentTypeError;
     }
+
+    const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
+    if (passwordSignInOff) return passwordSignInOff;
 
     const config = deps.getConfig();
     const rateLimiter = resolveLoginRateLimiter(

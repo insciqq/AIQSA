@@ -10,20 +10,45 @@ import {
 import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { safeInternalPath } from "@/lib/auth/internalPath";
 import type { OAuthLoginOutcome, OAuthProviderId } from "@/lib/auth/oauth";
+import type { SamlLoginOutcome } from "@/lib/contracts/samlSignIn";
+import {
+  fieldClassName,
+  focusRingClassName,
+  formClassName,
+  invalidFieldClassName,
+  primaryButtonClassName,
+  secondaryButtonClassName
+} from "./authFormStyles";
+import { SamlSignInLink, samlOutcomeFeedback, type SamlSignInOption } from "./SamlSignIn";
+import { SecondFactorStep } from "./SecondFactorStep";
+import { TrustedHeaderSignIn, type TrustedHeaderLoginProps } from "./TrustedHeaderSignIn";
 
 type AuthLoginProps = {
+  /** LDAP on the same form: it works while password sign-in is off, and may take a username. */
+  directorySignIn?: { loginUsesUsername: boolean };
   inviteToken?: string;
   navigateAfterLogin?: (nextPath: string) => void;
   nextPath: string;
   oauthOutcome?: OAuthLoginOutcome;
   oauthProvider?: OAuthProviderId;
   oauthProviders?: OAuthProviderId[];
+  /** The OIDC button's label from the admin configuration. */
+  oidcButtonLabel?: string;
+  /** The installation's password sign-in switch; off hides every password form. */
+  passwordLoginEnabled?: boolean;
+  /** Self-service access requests; invites work either way. */
+  registrationEnabled?: boolean;
   resetToken?: string;
+  samlOutcome?: SamlLoginOutcome;
+  /** The active SAML method, offered beside the OAuth providers. */
+  samlSignIn?: SamlSignInOption;
   sessionExpired?: boolean;
+  /** Present while the trusted proxy header can sign people in. */
+  trustedHeader?: TrustedHeaderLoginProps;
   verifyToken?: string;
 };
 
-type Mode = "check-email" | "password" | "register" | "reset-request" | "reset-complete" | "verify-email";
+type Mode = "check-email" | "password" | "register" | "reset-request" | "reset-complete" | "second-factor" | "verify-email";
 
 // False for the server markup and the hydration render; true from the first
 // client render after hydration, once the forms submit through their handlers.
@@ -58,7 +83,7 @@ type RegistrationOutcome = "request-received" | "verification-required";
 type AuthPostResult = {
   error?: string;
   ok: boolean;
-  status?: "active" | "pending" | "request_received" | "verification_required";
+  status?: "active" | "pending" | "request_received" | "second_factor_required" | "verification_required";
 };
 
 type AuthRequestGeneration = {
@@ -66,25 +91,9 @@ type AuthRequestGeneration = {
   request: number;
 };
 
-const fieldClassName =
-  "h-touch w-full rounded-control border border-control-boundary bg-answer-paper px-3.5 text-[15px] text-ink caret-proof outline-none placeholder:text-ink-disabled autofill:bg-answer-paper autofill:text-ink disabled:cursor-not-allowed disabled:border-trace-subtle disabled:text-ink-disabled disabled:opacity-70 focus:border-focus focus:ring-2 focus:ring-focus";
-
-const invalidFieldClassName =
-  "border-critical focus:border-critical";
-
-const focusRingClassName =
-  "outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper";
-
-const primaryButtonClassName = `${focusRingClassName} flex min-h-touch w-full items-center justify-center gap-2 rounded-control bg-proof px-4 py-2 text-sm font-semibold text-proof-contrast hover:bg-proof-hover disabled:cursor-not-allowed disabled:opacity-60`;
-
-const secondaryButtonClassName = `${focusRingClassName} flex min-h-touch items-center justify-center rounded-control px-3 py-2 text-sm font-medium text-ink-secondary hover:bg-control-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-disabled`;
-
 const oauthButtonClassName = `${focusRingClassName} relative flex min-h-touch w-full items-center justify-center rounded-control border border-control-boundary bg-answer-paper px-10 py-2 text-sm font-medium text-ink hover:bg-control-hover`;
 
-const formClassName =
-  "mt-7 space-y-5 [@media(max-height:32rem)]:!mt-3 [@media(max-height:32rem)]:!space-y-3";
-
-function oauthProviderLabel(provider: OAuthProviderId | undefined): string {
+function oauthProviderLabel(provider: OAuthProviderId | undefined, oidcLabel?: string): string {
   if (provider === "google") {
     return "Google";
   }
@@ -93,10 +102,17 @@ function oauthProviderLabel(provider: OAuthProviderId | undefined): string {
     return "Yandex";
   }
 
+  if (provider === "oidc") {
+    return oidcLabel || "SSO";
+  }
+
   return "OAuth";
 }
 
-function oauthProviderInitial(provider: OAuthProviderId): string {
+function oauthProviderInitial(provider: OAuthProviderId, oidcLabel?: string): string {
+  if (provider === "oidc") {
+    return Array.from(oauthProviderLabel(provider, oidcLabel))[0]?.toUpperCase() ?? "S";
+  }
   return provider === "google" ? "G" : "Y";
 }
 
@@ -132,7 +148,8 @@ function modeForAuthProof(proof: ActiveAuthProof): Mode {
 
 function oauthOutcomeMessage(
   outcome: OAuthLoginOutcome | undefined,
-  provider: OAuthProviderId | undefined
+  provider: OAuthProviderId | undefined,
+  oidcLabel: string | undefined
 ): { error: string | null; notice: string | null } {
   if (!outcome) {
     return {
@@ -141,7 +158,7 @@ function oauthOutcomeMessage(
     };
   }
 
-  const label = oauthProviderLabel(provider);
+  const label = oauthProviderLabel(provider, oidcLabel);
 
   if (outcome === "pending") {
     return {
@@ -153,8 +170,10 @@ function oauthOutcomeMessage(
   const messages: Record<Exclude<OAuthLoginOutcome, "pending">, string> = {
     account_conflict: `${label} could not be linked to this AIQSA account. Sign in another way or contact the operator.`,
     cancelled: `${label} sign-in was cancelled. You can try again.`,
+    email_missing: `${label} did not share an email address for this account. Ask an administrator to check the identity provider's email claim.`,
     failed: `${label} sign-in could not be completed. Try again or use email and password.`,
-    not_allowed: `This ${label} account is not allowed to access AIQSA.`
+    not_allowed: `This ${label} account is not allowed to access AIQSA.`,
+    source_changed: `This ${label} account was linked through a previous sign-in configuration. Ask an administrator to unlink it, then sign in again.`
   };
 
   return {
@@ -166,9 +185,10 @@ function oauthOutcomeMessage(
 function initialAuthFeedback(
   sessionExpired: boolean | undefined,
   outcome: OAuthLoginOutcome | undefined,
-  provider: OAuthProviderId | undefined
+  provider: OAuthProviderId | undefined,
+  oidcLabel: string | undefined
 ): { error: string | null; notice: string | null } {
-  const oauthMessage = oauthOutcomeMessage(outcome, provider);
+  const oauthMessage = oauthOutcomeMessage(outcome, provider, oidcLabel);
   if (oauthMessage.error || oauthMessage.notice || !sessionExpired) {
     return oauthMessage;
   }
@@ -275,12 +295,20 @@ function authErrorMessage(code: string, operation: PendingAction): string {
     invalid_or_expired_reset_token: "This reset link is invalid or expired.",
     invalid_or_expired_verification_token: "This verification link is invalid or expired.",
     network_error: "Could not reach the server. Check your connection and try again.",
+    password_login_disabled: "Password sign-in is turned off on this server. Use another sign-in method.",
     password_too_long: "Choose a shorter password.",
     password_too_short: "Use at least 8 characters.",
     rate_limited: "Too many attempts. Wait a bit before trying again.",
+    registration_disabled: "Access requests are turned off. Ask an administrator for an invite.",
     registration_not_allowed: "This email or domain is not allowed to request access.",
     registration_required: "Enter an email address to request access.",
     invite_token_password_required: "Open the invite link and choose a password.",
+    account_conflict: "This directory account cannot be linked to an existing account. Ask an administrator.",
+    account_pending: "Your account is waiting for administrator approval.",
+    email_missing: "The directory has no email address for this account. Ask an administrator.",
+    ldap_unavailable: "The directory could not be reached. Try again later.",
+    not_allowed: "This account is not allowed to sign in here. Ask an administrator.",
+    source_changed: "This account belongs to an earlier directory. Ask an administrator.",
     reset_token_password_required: "Enter a new password.",
     token_required: "Enter an access token.",
     unauthorized: "The credentials were not accepted.",
@@ -344,6 +372,7 @@ function decodeAuthSuccess(operation: PendingAction, data: unknown): AuthPostRes
   if (!isRecord(data)) return null;
 
   if (operation === "login") {
+    if (data.status === "second_factor_required") return { ok: true, status: "second_factor_required" };
     return isRecord(data.user) ? { ok: true } : null;
   }
   if (operation === "reset-request" || operation === "reset-complete") {
@@ -386,6 +415,59 @@ async function postJson(
     error: isRecord(data) ? stableAuthErrorCode(data.error) ?? fallbackError : fallbackError,
     ok: false
   };
+}
+
+/**
+ * Stands where the password form was while password sign-in is off: the reason and the
+ * sign-in methods that remain. Invite links land here too, since an invitation sets a
+ * password.
+ */
+function PasswordSignInOff({
+  invited,
+  nextPath,
+  oauthProviders,
+  oidcButtonLabel,
+  samlSignIn
+}: {
+  invited: boolean;
+  nextPath: string;
+  oauthProviders: readonly OAuthProviderId[];
+  oidcButtonLabel?: string;
+  samlSignIn?: SamlSignInOption;
+}) {
+  const methods = oauthProviders.length + (samlSignIn ? 1 : 0);
+  return (
+    <div className={formClassName} data-testid="password-sign-in-off">
+      <div className="flex items-start gap-3 border-y border-trace-subtle py-3.5">
+        <span className="mt-2 size-1.5 shrink-0 rounded-full bg-ink-muted" aria-hidden="true" />
+        <p className="text-sm leading-6 text-ink-secondary" role="status">
+          Password sign-in is turned off
+          {invited ? ", so this invitation cannot set a password. " : ". "}
+          {methods
+            ? invited
+              ? "Use one of these methods, or ask the administrator who invited you."
+              : "Use one of these methods."
+            : "Ask an administrator how to sign in."}
+        </p>
+      </div>
+      {methods ? (
+        <div className={`grid gap-2 ${methods > 1 ? "sm:grid-cols-2" : ""}`}>
+          {oauthProviders.map((provider) => (
+            <a className={oauthButtonClassName} href={oauthStartHref(provider, nextPath)} key={provider}>
+              <span
+                aria-hidden="true"
+                className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
+              >
+                {oauthProviderInitial(provider, oidcButtonLabel)}
+              </span>
+              Continue with {oauthProviderLabel(provider, oidcButtonLabel)}
+            </a>
+          ))}
+          {samlSignIn ? <SamlSignInLink className={oauthButtonClassName} label={samlSignIn.buttonLabel} nextPath={nextPath} /> : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function PasswordVisibilityButton({
@@ -443,17 +525,26 @@ function AuthMark({ className, gradient = false }: { className?: string; gradien
 }
 
 export function AuthLogin({
+  directorySignIn,
   inviteToken,
   navigateAfterLogin,
   nextPath,
   oauthOutcome,
   oauthProvider,
   oauthProviders = [],
+  oidcButtonLabel,
+  passwordLoginEnabled = true,
+  registrationEnabled = true,
   resetToken,
+  samlOutcome,
+  samlSignIn,
   sessionExpired,
+  trustedHeader,
   verifyToken
 }: AuthLoginProps) {
-  const initialFeedback = initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider);
+  const initialFeedback = samlOutcome
+    ? samlOutcomeFeedback(samlOutcome, samlSignIn?.buttonLabel ?? "SAML")
+    : initialAuthFeedback(sessionExpired, oauthOutcome, oauthProvider, oidcButtonLabel);
   const proofInputKey = JSON.stringify([verifyToken ?? null, resetToken ?? null, inviteToken ?? null]);
   const previousProofInputKeyRef = useRef(proofInputKey);
   const proofGenerationRef = useRef(0);
@@ -492,7 +583,9 @@ export function AuthLogin({
         ? "verification-feedback"
         : mode === "reset-request"
           ? "reset-request-feedback"
-          : "reset-complete-feedback";
+          : mode === "second-factor"
+            ? "second-factor-feedback"
+            : "reset-complete-feedback";
   const invalidFieldIds = new Set(fieldError?.fieldIds ?? []);
   const showInitialAuthFeedback =
     mode === "password" &&
@@ -532,7 +625,9 @@ export function AuthLogin({
     if (mode === "register") {
       return activeInviteToken
         ? {
-            description: "This one-time invitation confirms your email. Choose your name and password to enter AIQSA.",
+            description: passwordLoginEnabled
+              ? "This one-time invitation confirms your email. Choose your name and password to enter AIQSA."
+              : "This one-time invitation is for your email address.",
             eyebrow: "Invitation",
             title: "Create your account"
           }
@@ -559,6 +654,14 @@ export function AuthLogin({
         description: "Choose a password to prove this email and finish the one-time verification link.",
         eyebrow: "Account verification",
         title: "Choose your password"
+      };
+    }
+
+    if (mode === "second-factor") {
+      return {
+        description: "Your account uses two-factor sign-in. Enter the code from your authenticator app.",
+        eyebrow: "Account access",
+        title: "Two-factor verification"
       };
     }
 
@@ -684,6 +787,12 @@ export function AuthLogin({
       if (!result.ok) {
         const errorCode = result.error ?? "unauthorized";
         showAuthError("login", errorCode);
+        return;
+      }
+
+      if (result.status === "second_factor_required") {
+        setPasswordVisible(false);
+        setMode("second-factor");
         return;
       }
 
@@ -918,6 +1027,9 @@ export function AuthLogin({
   }
 
   const passwordMode = mode === "password";
+  // The directory keeps the sign-in form while local passwords are off.
+  const passwordSignInOff = !passwordLoginEnabled && ((passwordMode && !directorySignIn) || mode === "register");
+  const usernameSignIn = directorySignIn?.loginUsesUsername === true;
 
   return (
     <main className="v2-auth-root" data-testid="auth-root">
@@ -971,28 +1083,41 @@ export function AuthLogin({
                 </p>
               </div>
             ) : null}
+            {passwordMode && trustedHeader ? (
+              <TrustedHeaderSignIn disabled={submitting} nextPath={nextPath} outcome={trustedHeader.outcome} />
+            ) : null}
 
-          {mode === "password" ? (
+          {passwordSignInOff ? (
+            <PasswordSignInOff
+              invited={Boolean(activeInviteToken)}
+              nextPath={nextPath}
+              oauthProviders={oauthProviders}
+              oidcButtonLabel={oidcButtonLabel}
+              samlSignIn={samlSignIn}
+            />
+          ) : null}
+
+          {mode === "password" && !passwordSignInOff ? (
             <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} method="post" noValidate onSubmit={submitPassword}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="email">
-                  Email
+                  {usernameSignIn ? "Username or email" : "Email"}
                 </label>
                 <input
                   aria-describedby={loginEmailInvalid ? feedbackId : undefined}
                   aria-errormessage={loginEmailInvalid ? feedbackId : undefined}
                   aria-invalid={loginEmailInvalid || undefined}
                   autoCapitalize="none"
-                  autoComplete="email"
+                  autoComplete={usernameSignIn ? "username" : "email"}
                   className={`${fieldClassName} ${loginEmailInvalid ? invalidFieldClassName : ""}`}
                   disabled={submitting}
                   id="email"
-                  inputMode="email"
+                  inputMode={usernameSignIn ? "text" : "email"}
                   name="email"
                   ref={firstFieldRef}
                   required
                   spellCheck={false}
-                  type="email"
+                  type={usernameSignIn ? "text" : "email"}
                 />
               </div>
 
@@ -1044,14 +1169,14 @@ export function AuthLogin({
                 />
               ) : null}
 
-              {oauthProviders.length ? (
+              {oauthProviders.length || samlSignIn ? (
                 <div className="space-y-4">
                   <div className="flex items-center gap-3 text-xs text-ink-muted" aria-hidden="true">
                     <span className="h-px flex-1 bg-trace-subtle" />
                     <span>or</span>
                     <span className="h-px flex-1 bg-trace-subtle" />
                   </div>
-                  <div className={`grid gap-2 ${oauthProviders.length > 1 ? "sm:grid-cols-2" : ""}`}>
+                  <div className={`grid gap-2 ${oauthProviders.length + (samlSignIn ? 1 : 0) > 1 ? "sm:grid-cols-2" : ""}`}>
                     {oauthProviders.map((provider) => (
                       <a
                         aria-disabled={submitting || undefined}
@@ -1064,18 +1189,37 @@ export function AuthLogin({
                           aria-hidden="true"
                           className="absolute left-3 grid size-6 place-items-center rounded-control bg-control-surface text-incidental font-semibold text-ink-secondary"
                         >
-                          {oauthProviderInitial(provider)}
+                          {oauthProviderInitial(provider, oidcButtonLabel)}
                         </span>
-                        Continue with {oauthProviderLabel(provider)}
+                        Continue with {oauthProviderLabel(provider, oidcButtonLabel)}
                       </a>
                     ))}
+                    {samlSignIn ? (
+                      <SamlSignInLink className={oauthButtonClassName} disabled={submitting} label={samlSignIn.buttonLabel} nextPath={nextPath} />
+                    ) : null}
                   </div>
                 </div>
               ) : null}
             </form>
           ) : null}
 
-          {mode === "register" ? (
+          {mode === "second-factor" ? (
+            <SecondFactorStep
+              feedbackId={feedbackId}
+              inputRef={firstFieldRef}
+              onBack={() => switchMode("password")}
+              onExpired={() => {
+                switchMode("password");
+                setError("This sign-in step expired. Sign in again. (challenge_expired)");
+              }}
+              onSignedIn={() => {
+                const redirectTarget = safeInternalPath(nextPath, window.location.origin);
+                (navigateAfterLogin ?? window.location.assign.bind(window.location))(redirectTarget);
+              }}
+            />
+          ) : null}
+
+          {mode === "register" && !passwordSignInOff ? (
             <form
               aria-busy={submitting}
               className={`${formClassName} sm:[@media(max-height:45rem)]:mt-3 sm:[@media(max-height:45rem)]:grid sm:[@media(max-height:45rem)]:grid-cols-2 sm:[@media(max-height:45rem)]:gap-x-3 sm:[@media(max-height:45rem)]:gap-y-3 sm:[@media(max-height:45rem)]:space-y-0`}
@@ -1353,7 +1497,7 @@ export function AuthLogin({
             </form>
           ) : null}
 
-          {mode !== "password" && !showInitialAuthFeedback ? (
+          {mode !== "password" && mode !== "second-factor" && !showInitialAuthFeedback ? (
             <AuthFeedback error={error} feedbackId={feedbackId} notice={notice} />
           ) : null}
           </div>
@@ -1361,7 +1505,7 @@ export function AuthLogin({
 
         <footer className="v2-auth-footer">
           <p>Self-hosted · your data stays on your infrastructure</p>
-          {passwordMode ? (
+          {passwordMode && passwordLoginEnabled ? (
             <div className="v2-auth-footer-links">
               <button
                 className="v2-auth-link"
@@ -1371,14 +1515,16 @@ export function AuthLogin({
               >
                 Reset password
               </button>
-              <button
-                className="v2-auth-link"
-                disabled={submitting}
-                onClick={() => switchMode("register")}
-                type="button"
-              >
-                {registerLabel}
-              </button>
+              {registrationEnabled || activeInviteToken ? (
+                <button
+                  className="v2-auth-link"
+                  disabled={submitting}
+                  onClick={() => switchMode("register")}
+                  type="button"
+                >
+                  {registerLabel}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </footer>

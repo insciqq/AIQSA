@@ -190,7 +190,8 @@ export type InboundMcpAccountRevocationReason =
   | "admin_revoke_all"
   | "admin_revoke_user"
   | "password_change"
-  | "password_reset";
+  | "password_reset"
+  | "scim_deactivated";
 
 /**
  * Ends every ACTIVE inbound grant of one account, Memory `/mcp` and Hub `/mcp/hub` alike, inside
@@ -263,13 +264,15 @@ function activeGrant(input: Readonly<{
   grant: Readonly<{
     revision: number;
     state: string;
-    user: Readonly<{ status: string }>;
+    user: Readonly<{ scimDeactivatedAt: Date | null; status: string }>;
   }>;
   grantRevision: number;
 }>): boolean {
+  // A pending SCIM deactivation keeps the account active only for its Projects: it holds no access.
   return input.grant.state === "ACTIVE" &&
     input.grant.revision === input.grantRevision &&
-    input.grant.user.status === "active";
+    input.grant.user.status === "active" &&
+    input.grant.user.scimDeactivatedAt === null;
 }
 
 function scopesWithin(scopes: readonly string[], authority: readonly string[]): boolean {
@@ -306,7 +309,7 @@ export async function assertInboundMcpSkillsAuthority(
     JOIN "User" u ON u."id" = g."userId"
     WHERE t."id" = ${auth.tokenId} AND f."id" = ${auth.familyId}
       AND g."id" = ${auth.grantId} AND g."userId" = ${auth.userId}
-      AND c."clientId" = ${auth.clientId} AND u."status" = 'active'
+      AND c."clientId" = ${auth.clientId} AND u."status" = 'active' AND u."scimDeactivatedAt" IS NULL
       AND g."state" = 'ACTIVE' AND g."revision" = ${auth.grantRevision}
       AND f."grantRevision" = g."revision" AND f."revokedAt" IS NULL
       AND f."inactivityExpiresAt" > clock_timestamp()
@@ -334,7 +337,9 @@ export function createPrismaInboundMcpOAuthRepository(
           ? !validSkillsScopes(scopes) : scopes.length !== 0) return false;
         // Serialize new/repeated consent against owner disable/delete, including first grants.
         const activeOwners = await tx.$queryRaw<Array<{ id: string }>>`
-          SELECT "id" FROM "User" WHERE "id" = ${input.userId} AND "status" = 'active' FOR SHARE
+          SELECT "id" FROM "User"
+          WHERE "id" = ${input.userId} AND "status" = 'active' AND "scimDeactivatedAt" IS NULL
+          FOR SHARE
         `;
         if (activeOwners.length !== 1) return false;
         const [client, user] = await Promise.all([
@@ -451,7 +456,7 @@ export function createPrismaInboundMcpOAuthRepository(
             client: { select: { clientId: true, id: true } },
             grant: {
               include: {
-                user: { select: { id: true, status: true } }
+                user: { select: { id: true, scimDeactivatedAt: true, status: true } }
               }
             }
           },
@@ -572,7 +577,7 @@ export function createPrismaInboundMcpOAuthRepository(
                 grant: {
                   include: {
                     client: { select: { clientId: true, id: true } },
-                    user: { select: { id: true, status: true } }
+                    user: { select: { id: true, scimDeactivatedAt: true, status: true } }
                   }
                 }
               }
@@ -675,7 +680,7 @@ export function createPrismaInboundMcpOAuthRepository(
                 grant: {
                   include: {
                     client: { select: { clientId: true, id: true } },
-                    user: { select: { status: true } }
+                    user: { select: { scimDeactivatedAt: true, status: true } }
                   }
                 }
               }
