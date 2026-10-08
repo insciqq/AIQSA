@@ -85,6 +85,57 @@ describe("image adapters", () => {
         diagnostic: { category: "unknown" } });
     expect(fetchFn).toHaveBeenCalledOnce();
   });
+  it.each([
+    [{ status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text: "PRIVATE refusal" }] }] }, "other"],
+    [{ status: "failed", error: { code: "SAFETY", message: "PRIVATE refusal" } }, "safety"],
+    [{ status: "incomplete", finish_reason: "PRIVATE_REASON" }, "other"],
+    [{ status: "completed", steps: [{ type: "model_output", content: [{ type: "refusal", refusal: "PRIVATE refusal" }] }] }, "blocked"]
+  ] as const)("distinguishes a Gemini answer without a completed image (%j)", async (body, finishReason) => {
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ ...body, usage: { total_input_tokens: 3, total_output_tokens: 1, total_tokens: 4 } }));
+    const error = await createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic", fetchFn })
+      .generate({ prompt: "PRIVATE prompt" }).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: "image_generation_refused", finishReason, usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE");
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+  it.each(["not base64!", "AAAA"])("keeps corrupt Gemini image data distinct from refusal (%s)", async (data) => {
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ status: "completed", steps: [
+      { type: "model_output", content: [{ type: "image", data, mime_type: "image/png" }] }
+    ] }));
+    await expect(createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic", fetchFn })
+      .generate({ prompt: "A circle" })).rejects.toMatchObject({ code: "image_response_invalid", finishReason: undefined });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+  it("keeps Gemini HTTP errors distinct from a no-image answer", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ error: { message: "PRIVATE" } }, { status: 429 }));
+    await expect(createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic", fetchFn })
+      .generate({ prompt: "A circle" })).rejects.toMatchObject({ code: "image_provider_http_error", httpStatus: 429, usage: null });
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+  it("times out Gemini once at the unchanged 300-second default without usage or replay", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchFn = vi.fn<typeof fetch>(async (_url, init) => new Promise((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+      }));
+      const pending = createImageGenerationAdapter({ connection: { ...connection, responseTimeoutMs: 300_000 }, model: model("gemini"), secret: "synthetic", fetchFn })
+        .generate({ prompt: "A circle" }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(fetchFn).toHaveBeenCalledOnce();
+      expect(fetchFn.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatchObject({ code: "image_request_timed_out", usage: null });
+      expect(fetchFn).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it("refuses unsupported edit bytes as input before provider I/O", async () => {
+    const fetchFn = vi.fn<typeof fetch>();
+    const adapter = createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic", fetchFn });
+    await expect(adapter.generate({ prompt: "Edit", images: [{ bytes: png, mimeType: "image/jpeg" }] }))
+      .rejects.toMatchObject({ code: "image_reference_unsupported" });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("does not confer conversation capabilities on an image model", () => {
     expect(normalizeProviderModelConfiguration(model("openai")).modelClass).toBe("image");
     expect(() => normalizeProviderModelConfiguration({ ...model("openai"), answerSelectable: true })).toThrow();

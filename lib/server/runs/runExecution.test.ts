@@ -34,6 +34,7 @@ import { artifactTool } from "../tools/artifact";
 import { mixedToolsImagePlan, openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { imageGenerationTool } from "../tools/imageGeneration";
 import { analyzeImageTools } from "../tools/analyzeImage";
+import { ImageInputError } from "../images/inputError";
 import { ImageGenerationError } from "../providers/imageGeneration";
 import { imageFailureDiagnostic } from "../providers/imageFailure";
 import {
@@ -2481,6 +2482,37 @@ describe("run execution", () => {
     expect(JSON.stringify(repository.persistedEvents)).not.toContain("LIVE_CODE_CANARY");
     expect(repository.persistedEvents.some(({ event }) => event.type === "artifact_generation")).toBe(false);
     expect(repository.completeRuns).toHaveLength(1);
+  });
+  it.each(["image_reference_not_found", "image_reference_unsupported"] as const)("lets the model correct %s without failing the run", async (code) => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, imagePlan: mixedToolsImagePlan },
+      providerRequest: { ...base.providerRequest, imagePlan: mixedToolsImagePlan, tools: [imageGenerationTool(mixedToolsImagePlan)] } };
+    const repository = createRepository();
+    const execute = vi.fn<NonNullable<RunExecutionInput["images"]>["execute"]>(async (call) => {
+      if (Array.isArray(call.arguments.image_ids) && call.arguments.image_ids[0] === "bad-reference") throw new ImageInputError(code, "bad-reference");
+      return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: { image_id: "saved-image" } }] };
+    });
+    const images = { authorize: vi.fn(async () => true), execute, restore: vi.fn(async () => null),
+      withConversationPixels: vi.fn(async (request: ProviderRunRequest) => request) };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 3) return providerResult({ finalText: "Saved the corrected image." });
+      return providerResult({ finalText: "", toolCalls: [{ id: `image-${requests.length}`, name: "generate_image",
+        arguments: { prompt: "Edit the reference", image_ids: [requests.length === 1 ? "bad-reference" : "correct-reference"] } }] });
+    });
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+      images: images as unknown as NonNullable<RunExecutionInput["images"]> }).text();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(requests).toHaveLength(3);
+    const refusal = JSON.stringify(requests[1]!.providerToolMessages);
+    expect(refusal).toContain(code);
+    expect(refusal).toContain("bad-reference");
+    expect(refusal).toContain("Nothing was sent");
+    expect(refusal).not.toContain("Do not repeat");
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect([...repository.toolCalls.values()].map(call => call.state)).toEqual(["error", "complete"]);
   });
   it("ends the run with the image failure cause, keeps it with the failed call and never repeats the generation", async () => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });

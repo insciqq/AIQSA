@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
+import sharp from "sharp";
+import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
+import { captureRunObservation } from "@/tests/support/runObservation";
+import { imageInputFailure, ImageInputError } from "./inputError";
+import { imageDispatchMustStop } from "./errors";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatAccess } from "../projects/access";
 import type { ProviderAttachment, ProviderRunRequest } from "../providers/types";
@@ -177,5 +182,94 @@ describe("withConversationPixels", () => {
     access.value = personal;
     const tampered = harness([row("h1"), row("h2")], { h2: bytes("x") });
     await expect(tampered.service.withConversationPixels(request([], earlier), USER)).rejects.toThrow("image_reference_invalid");
+  });
+});
+
+describe("image edit preflight", () => {
+  beforeEach(() => { access.value = personal; });
+
+  async function editHarness() {
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).png().toBuffer();
+    const reference = row("private-reference", { byteSize: png.length, checksum: null });
+    const findMany = vi.fn(async () => [reference]);
+    const binding = vi.fn(async () => ({ executionSnapshot: mixedToolsImagePlan.snapshot }));
+    const usage = vi.fn();
+    const prisma = { providerRunBinding: { findFirst: binding }, attachment: { findFirst: vi.fn(async () => null), findMany },
+      modelRun: { findFirst: vi.fn(async () => ({ assistantMessageId: "assistant", status: "streaming" })) },
+      modelRunToolCall: { findFirst: vi.fn(async () => ({ id: "tool" })), count: vi.fn(async () => 0) },
+      providerModel: { findFirst: vi.fn(async () => ({ id: "model" })) },
+      providerCredentialVersion: { findFirst: vi.fn(async () => ({ id: "key" })) }, usageEvent: { create: usage } };
+    const getObject = vi.fn(async () => ({ body: png, contentType: "image/png" }));
+    const fetchFn = vi.fn<typeof fetch>();
+    const beforeDispatch = vi.fn(async () => { throw new Error("fixture_dispatch_boundary"); });
+    const service = createPrismaImageGenerationService(prisma as unknown as PrismaClient, { getObject } as unknown as StorageAdapter, { fetchFn });
+    const call = { id: "call", name: "generate_image", arguments: { prompt: "PRIVATE prompt", image_ids: [reference.id] } };
+    const context = { runId: "run", userId: USER, persistedToolCallId: "tool", request: {
+      chatId: "chat", imagePlan: mixedToolsImagePlan,
+      imageReferences: [{ attachmentId: reference.id, messageId: "message", fileName: "PRIVATE.png", origin: "upload" as const }] } };
+    return { reference, findMany, binding, usage, getObject, fetchFn, beforeDispatch, service, call, context };
+  }
+
+  it.each(["gif", "mime", "bytes", "kind", "checksum"])("refuses %s before the dispatch claim and usage", async (fault) => {
+    const h = await editHarness();
+    if (fault === "gif") h.reference.mimeType = "image/gif";
+    if (fault === "mime") h.reference.mimeType = "image/jpeg";
+    if (fault === "bytes") h.getObject.mockResolvedValue({ body: Buffer.alloc(h.reference.byteSize), contentType: "image/png" });
+    if (fault === "kind") h.reference.kind = "file";
+    if (fault === "checksum") h.reference.checksum = "bad-checksum";
+    const error = await h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ImageInputError);
+    expect(imageInputFailure(error)).toMatchObject({ code: fault === "checksum" ? "image_reference_invalid" : "image_reference_unsupported",
+      message: expect.stringContaining(h.reference.id) });
+    expect(imageDispatchMustStop(error)).toBe(false);
+    expect(h.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.usage).not.toHaveBeenCalled();
+  });
+
+  it("refuses invalid prompt and parameters before a dispatch claim", async () => {
+    const h = await editHarness();
+    for (const arguments_ of [
+      { ...h.call.arguments, prompt: "bad\u0000prompt" },
+      { ...h.call.arguments, parameters: { quality: "invalid" } }
+    ]) {
+      const error = await h.service.execute({ ...h.call, arguments: arguments_ }, h.context, undefined,
+        { beforeDispatch: h.beforeDispatch }).catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(ImageInputError);
+      expect(imageDispatchMustStop(error)).toBe(false);
+    }
+    expect(h.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.usage).not.toHaveBeenCalled();
+  });
+
+  it.each(["11111111-1111-4111-8111-111111111111x", "11111111-1111-4111-8111-111111111112"])("allows correction of an unavailable ID %s", async (id) => {
+    const h = await editHarness();
+    h.call.arguments.image_ids = [h.reference.id, id];
+    const error = await h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch }).catch((error: unknown) => error);
+    const failure = imageInputFailure(error)!;
+    expect(failure.code).toBe("image_reference_not_found");
+    expect(failure.message).toContain(id);
+    expect(failure.message).not.toMatch(/uncertain|not repeat/i);
+    expect(h.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.getObject).not.toHaveBeenCalled();
+    h.call.arguments.image_ids = [h.reference.id];
+    await expect(h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch })).rejects.toThrow("fixture_dispatch_boundary");
+    expect(h.beforeDispatch).toHaveBeenCalledOnce();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.usage).not.toHaveBeenCalled();
+  });
+
+  it.each(["binding", "reference_read"] as const)("logs an unexpected failure at %s without content", async (stage) => {
+    const h = await editHarness();
+    const observation = await captureRunObservation();
+    const error = new Error("PRIVATE exception with https://secret.example and sk-secret");
+    if (stage === "binding") h.binding.mockRejectedValue(error);
+    else h.getObject.mockRejectedValue(error);
+    await expect(h.service.execute(h.call, h.context)).rejects.toBe(error);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage, code: "tool_call_failed" }));
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference|secret.example|sk-secret/);
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.usage).not.toHaveBeenCalled();
   });
 });

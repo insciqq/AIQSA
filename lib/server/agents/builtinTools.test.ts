@@ -3,6 +3,8 @@ import type { NormalizedRunRequest } from "../providers/types";
 import type { ToolExecutionResult } from "../tools/types";
 import type { createAgentRunStore } from "./store";
 import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
+import { ImageInputError } from "../images/inputError";
+import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import { WorkspaceCheckpointError } from "../workspace/checkpointInput";
 import { ObservationStoreError } from "../toolObservations/contract";
 import { readToolCallReceiptHash } from "../tools/readToolCall";
@@ -105,7 +107,6 @@ describe("native first-party System Vision dispatch", () => {
   });
 });
 
-
 describe("native checkpoint publication", () => {
   it.each([undefined, 1] as const)("keeps an accepted checkpoint description through discovery with guidance version %s", guidanceVersion => {
     const accepted = { ...request, workspace: { ...request.workspace!, guidanceVersion }, workspaceCheckpoints: true as const };
@@ -147,5 +148,24 @@ describe("native checkpoint publication", () => {
     await expect(dispatch(call, new AbortController().signal)).resolves.toEqual(result);
     expect(checkpoints.execute).toHaveBeenCalledOnce();
     expect(checkpoints.restore).toHaveBeenCalledOnce();
+  });
+});
+
+describe("native image input refusals", () => {
+  it("settles a correctable reference refusal with guidance and no dispatch claim", async () => {
+    const accepted = { ...request, workspace: undefined, imagePlan: mixedToolsImagePlan };
+    const call = { id: "call", name: "generate_image", arguments: { prompt: "Edit", image_ids: ["bad-reference"] } };
+    const store = { claimBuiltinTool: vi.fn(async () => ({ claimed: true, id: "tool", result: null })),
+      settleBuiltinTool: vi.fn(async () => {}), builtinResult: vi.fn(async () => null), startBuiltinImage: vi.fn() };
+    const execute = vi.fn(async () => { throw new ImageInputError("image_reference_not_found", "bad-reference"); });
+    const dispatch = createAgentBuiltinDispatcher({ request: accepted, runId: "run", userId: "user",
+      store: store as unknown as ReturnType<typeof createAgentRunStore>, images: { execute } });
+    const result = await dispatch(call, new AbortController().signal);
+    expect(result.status).toBe("error");
+    expect(JSON.stringify(result)).toContain("image_reference_not_found");
+    expect(JSON.stringify(result)).toContain("bad-reference");
+    expect(JSON.stringify(result)).not.toContain("Do not repeat");
+    expect(store.startBuiltinImage).not.toHaveBeenCalled();
+    expect(store.settleBuiltinTool).toHaveBeenCalledExactlyOnceWith("tool", result);
   });
 });
