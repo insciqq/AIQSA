@@ -71,6 +71,8 @@ Workspace idle stop preserves disk; expiry/reset/deletion first records exact-se
 
 Agent threads remain outside exported `project/`, without independent retention/backup/continuation seeds. Ordinary resume requires a compatible completed active-branch predecessor in the surviving session; otherwise use branch context. Follow-up requires the live run's exact settled predecessor/runtime; loss prohibits recreation/replay. Stored identifiers/hashes cannot override disk loss/revocation.
 
+An answer problem report holds a reason and an optional comment administrators read in Health, never the question or answer. Deleting the answer, its chat or the reporting account removes it; deleting its run clears only that reference. The application prunes reports 90 days after their last change.
+
 ## Backup And Restore
 
 [`aiqsa.sh`](../aiqsa.sh) `backup`/`restore` own single-host cold backup and empty-target restore under this procedure; off-site copies, schedules, retention and multi-host recovery belong to infrastructure. Verify migrated schema, stop all writers, release/fence claimed Memory, Knowledge, and object-deletion work, then copy PostgreSQL and private objects together. Record format/schema and required non-secret Memory key IDs; restore exactly the prior writer set afterward. Preserve chat PDF artifacts and dispatch ambiguity. Back up required secrets separately under [Environment](ENV_VARIABLES.md).
