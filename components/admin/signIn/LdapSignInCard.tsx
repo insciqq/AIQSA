@@ -411,6 +411,15 @@ export function LdapSignInCard({ controller, state }: AdminSignInMethodCardProps
           value={form.adminGroups}
         />
       </div>
+      {form.groupValueForm === "cn" && form.adminGroups.trim() ? (
+        <p
+          className="rounded-[10px] border border-caution/30 bg-caution/10 px-3 py-2 text-xs leading-5 text-caution"
+          data-testid="admin-sign-in-ldap-cn-admin-warning"
+          role="note"
+        >
+          A first CN matches a group of that name anywhere in the directory. If people can create groups, compare full group DNs so only the intended group grants the administrator role.
+        </p>
+      ) : null}
       <div className="grid min-w-0 gap-3">
         <Checkbox checked={form.autoCreateUsers} disabled={busy} onChange={(checked) => set("autoCreateUsers", checked)}>
           Create accounts on first sign-in
