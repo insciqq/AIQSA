@@ -348,8 +348,12 @@ describe("sign-in settings repository", () => {
       await expect(disable({ sessionId: oidcSession })).resolves.toEqual({ code: "lockout_risk", ok: false });
       await expect(prisma.authSignInMethodSetting.findUniqueOrThrow({ where: { method: "oidc" } }))
         .resolves.toMatchObject({ activeVersion: 1, enabled: true });
-      // Another administrator's way in is theirs to keep: a session of another method may disable it.
-      await expect(disable({ sessionId: await session("google") })).resolves.toMatchObject({
+      // Nor may another administrator end the last external way in: with OIDC the only active
+      // method, a Google session's disable is refused as well.
+      const googleSession = await session("google");
+      await expect(disable({ sessionId: googleSession })).resolves.toEqual({ code: "lockout_risk", ok: false });
+      // While another way in stays active (here Google from the environment), it may.
+      await expect(disable({ environment: ["google"], sessionId: googleSession })).resolves.toMatchObject({
         ok: true,
         value: { activeVersion: 2, enabled: false }
       });
