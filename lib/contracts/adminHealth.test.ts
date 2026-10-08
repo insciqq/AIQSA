@@ -20,7 +20,8 @@ const health: AdminHealth = {
     p95Ms: 2_500, lastFailureAt: "2026-10-07T11:00:00.000Z" }],
   errorGroups: [{ fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/runs/x.ts:42", count: 2,
     events: ["job_attempt"], roles: ["memory_coordinator"], codes: ["memory_job_failed"],
-    lastSeenAt: "2026-10-07T12:00:00.000Z", firstSeenAt: "2026-10-07T11:00:00.000Z", isNew: true }],
+    lastSeenAt: "2026-10-07T12:00:00.000Z", firstSeenAt: "2026-10-07T11:00:00.000Z", isNew: true,
+    usersAtLeast: 2, runsAtLeast: 0 }],
   errorGroupsTruncated: false
 };
 
@@ -34,6 +35,9 @@ describe("admin health contract", () => {
     expect(decodeAdminHealthResponse({ health: { ...health, providers: [{ ...health.providers[0], failureRate: 2 }] } })).toBeNull();
     expect(decodeAdminHealthResponse({ health: { ...health, errorGroups: [{ ...health.errorGroups[0], fingerprint: "nothex" }] } })).toBeNull();
     expect(decodeAdminHealthResponse({ health: { ...health, errorGroups: [{ ...health.errorGroups[0], site: "x\ny" }] } })).toBeNull();
+    for (const reach of [{ usersAtLeast: -1 }, { runsAtLeast: 1.5 }, { usersAtLeast: "user-1" }, { runsAtLeast: undefined }]) {
+      expect(decodeAdminHealthResponse({ health: { ...health, errorGroups: [{ ...health.errorGroups[0], ...reach }] } })).toBeNull();
+    }
     expect(decodeAdminHealthResponse({ health: { ...health, errorGroupsTruncated: undefined } })).toBeNull();
   });
 
