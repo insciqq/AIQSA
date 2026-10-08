@@ -523,12 +523,13 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
         artifact: { ownerUserId: input.ownerUserId, archivedAt: null, owner: { status: "active" } } } });
       if (!row) throw new Error("artifact_version_not_found");
       const storageKey = `artifact-publications/${input.ownerUserId}/${randomUUID()}.bundle.json`;
+      const manifest = publicManifestFromPrivate(row.manifest);
       const publication = await tx.artifactPublication.create({ data: { artifactId: row.artifactId, artifactVersionId: row.id,
         bundleStorageKey: storageKey, byteSize: row.byteSize, checksum: row.checksum, kind: row.kind,
-        ownerUserId: input.ownerUserId, publicManifest: json(publicManifestFromPrivate(row.manifest)), title: row.title,
+        ownerUserId: input.ownerUserId, publicManifest: json(manifest), title: row.title,
         tokenHash: hashShareToken(token), expiresAt: input.expiresAt, status: "PENDING" } });
       await tx.attachmentDeletionJob.create({ data: { storageKey } });
-      return { ...publication, sourceStorageKey: row.bundleStorageKey, bundleStorageKey: storageKey,
+      return { ...publication, sourceStorageKey: row.bundleStorageKey, bundleStorageKey: storageKey, renderBytes: artifactRenderBytes(manifest),
         artifactVersionId: row.id, versionNumber: row.versionNumber, byteSize: row.byteSize, checksum: row.checksum, kind: row.kind, title: row.title };
     });
     try {
@@ -539,8 +540,9 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       if (stored.body.byteLength !== publication.byteSize || checksum(stored.body) !== publication.checksum) throw new Error("artifact_bundle_write_failed");
       if (!await db.artifactPublication.findFirst({ where: { id: publication.id, status: "PENDING", revokedAt: null,
         artifact: { ownerUserId: input.ownerUserId, archivedAt: null, owner: { status: "active" } } }, select: { id: true } })) throw new Error("artifact_publication_unavailable");
+      // The entry page renders now (or is already cached from the owner's views); other pages render when opened.
       await objects.rendered({ id: publication.artifactVersionId, artifactId: publication.artifactId, ownerUserId: input.ownerUserId,
-        bundleStorageKey: publication.sourceStorageKey, byteSize: publication.byteSize, checksum: publication.checksum });
+        bundleStorageKey: publication.sourceStorageKey, byteSize: publication.byteSize, checksum: publication.checksum }, { bytes: publication.renderBytes });
       await db.$transaction(async (tx) => {
         await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Artifact" WHERE "id" = ${input.artifactId} FOR UPDATE`);
         const settled = await tx.artifactPublication.updateMany({ where: { id: publication.id, status: "PENDING", revokedAt: null, createdAt: { gt: new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS) },

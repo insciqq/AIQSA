@@ -160,7 +160,7 @@ export function createArtifactContentHandler(deps: Deps) {
       const headers = new Headers({ "cache-control": "private, no-store, max-age=0", "content-type": result.contentType, "content-length": String(result.body.byteLength), "x-content-type-options": "nosniff" });
       headers.set("content-security-policy", ARTIFACT_RESPONSE_CSP);
       headers.set("content-disposition", artifactDownloadDisposition(result.title, result.fileName.split(".").at(-1)!));
-      if ("page" in result && result.page) headers.set(ARTIFACT_PAGE_HEADER, result.page);
+      if ("page" in result && typeof result.page === "string") headers.set(ARTIFACT_PAGE_HEADER, result.page);
       return new Response(result.body, { headers });
     } catch (error) { return errorResponse(error); }
   };
@@ -309,7 +309,7 @@ export function createPublicArtifactHandler(service: ArtifactService) {
       headers.set("content-disposition", artifactDownloadDisposition(result.title, result.fileName.split(".").at(-1)!));
       headers.set("content-security-policy", ARTIFACT_RESPONSE_CSP);
       headers.set(ARTIFACT_PUBLIC_VERSION_HEADER, String(result.versionNumber));
-      if ("page" in result && result.page) headers.set(ARTIFACT_PAGE_HEADER, result.page);
+      if ("page" in result && typeof result.page === "string") headers.set(ARTIFACT_PAGE_HEADER, result.page);
       return new Response(result.body, { headers });
     } catch (error) {
       if (error instanceof ArtifactPublicBusyError) return Response.json({ error: "rate_limit_exceeded" }, { status: 429, headers: { "cache-control": "private, no-store", "retry-after": "1", "x-robots-tag": "noindex, nofollow, noarchive", "referrer-policy": "no-referrer" } });
