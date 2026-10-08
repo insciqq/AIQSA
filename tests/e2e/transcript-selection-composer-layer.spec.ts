@@ -160,10 +160,13 @@ async function settleFrames(page: Page, count = 4) {
   }, count);
 }
 
-/** Waits for the layer's entrance animation, which scales its box. */
+/**
+ * Waits for the layer's entrance animation, which scales its box. Only
+ * time-based animations end: the list's scroll-driven fade never finishes.
+ */
 async function settleLayer(page: Page) {
-  await page.locator(".v2-composer-layer").evaluate(layer =>
-    Promise.all(layer.getAnimations({ subtree: true }).map(animation => animation.finished)));
+  await page.locator(".v2-composer-layer").evaluate(layer => Promise.all(layer.getAnimations({ subtree: true })
+    .filter(animation => animation.timeline === document.timeline).map(animation => animation.finished)));
 }
 
 async function rectOf(locator: Locator): Promise<Box> {
