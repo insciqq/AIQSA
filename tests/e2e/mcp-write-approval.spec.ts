@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import { keepAccountMcpDefault } from "./support/chatDefaults";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
@@ -88,9 +88,13 @@ async function withApprovalServer(page: Page, label: string, body: (stand: Stand
   }
 }
 
-/** A new chat whose tools are listed up front (Load all), with Workspace only when asked. */
-async function newChat(page: Page, options: Readonly<{ workspace?: boolean }> = {}) {
-  await page.goto("/");
+/**
+ * The open chat lists its MCP tools up front (Load all), which the scripted
+ * call needs, with Workspace only when asked. Load all is chosen for this
+ * chat only, never as the account default, so a reload returns the composer
+ * to Auto: choose again after every reload.
+ */
+async function chooseTools(page: Page, options: Readonly<{ workspace?: boolean }> = {}) {
   const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
   await expect(mcpMode).toBeVisible({ timeout: 30_000 });
   // The 8k fake model cannot hold the Workspace tool surface beside MCP tools.
@@ -99,6 +103,11 @@ async function newChat(page: Page, options: Readonly<{ workspace?: boolean }> = 
   await mcpMode.click();
   await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
   await expect(mcpMode).toHaveAccessibleDescription(/^MCP: Load all/u);
+}
+
+async function newChat(page: Page, options: Readonly<{ workspace?: boolean }> = {}) {
+  await page.goto("/");
+  await chooseTools(page, options);
 }
 
 /** Sends one turn and waits until its answer settled with `answer`. */
@@ -189,9 +198,29 @@ test("a write tool asks first: Deny sends nothing, a reload keeps the card, Allo
       expect(stand.endpoint.dispatches("delete_record")).toBe(0);
     });
 
-    await test.step("Allow once continues with exactly the approved call, once", async () => {
+    await test.step("Allow once continues with exactly the approved call, once, also after a refused attempt", async () => {
+      await chooseTools(page);
       await send(page, stand, "Delete record r-1 [AIQSA_MCP_E2E:delete_record:r-1]", "MCP call finished: mcp_approval_required.");
-      await deleteCard(page, stand).getByRole("button", { name: "Allow once" }).click();
+      // The continuation the decision starts is refused before any run exists,
+      // as another running answer or a usage limit would: Continue retries it.
+      let refusedContinuations = 0;
+      const refuseFirstContinuation = async (route: Route) => {
+        const request = route.request();
+        const body = request.method() === "POST" ? request.postDataJSON() as { systemTurn?: unknown } | null : null;
+        if (!body?.systemTurn || refusedContinuations > 0) return route.fallback();
+        refusedContinuations += 1;
+        return route.fulfill({ json: { error: "active_run_in_progress" }, status: 409 });
+      };
+      await page.route("**/api/chats/*/messages", refuseFirstContinuation);
+      const card = deleteCard(page, stand);
+      await card.getByRole("button", { name: "Allow once" }).click();
+      await expect(page.getByTestId("shell-notice")).toContainText("Use Continue on the approval card to try again.");
+      await expect(card).toContainText("The answer has not continued yet.");
+      await expect(page.getByRole("article", { name: "Approval" })).toHaveCount(0);
+      expect(refusedContinuations).toBe(1);
+      expect(stand.endpoint.dispatches("delete_record")).toBe(0);
+      await page.unroute("**/api/chats/*/messages", refuseFirstContinuation);
+      await card.getByRole("button", { name: "Continue" }).click();
       await expect(page.getByRole("article", { name: "Approval" }).last()).toContainText("Allowed: delete_record");
       await expect(lastAnswer(page)).toContainText("MCP call finished: done.", { timeout: 60_000 });
       await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 45_000 });
