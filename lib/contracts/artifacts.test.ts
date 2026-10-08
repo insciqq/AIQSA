@@ -7,7 +7,7 @@ import {
   decodeArtifactPublicationCreate, decodeArtifactPublicationMutation, decodeArtifactPublicationRevision,
   decodeArtifactPublicationSummary, decodeArtifactPublicManifest, decodeArtifactPublicVersion, decodeArtifactVersionPage,
   decodeArtifactDetail, ARTIFACT_LIMITS,
-  normalizeArtifactOperation,
+  normalizeArtifactOperation, isReservedArtifactPath,
   applyArtifactTextEdit, artifactMimeEssence, isArtifactImageMime, isArtifactTextMime
 } from "./artifacts";
 
@@ -260,5 +260,129 @@ describe("files supplied by reference", () => {
     expect(applyArtifactTextEdit("one $1", { old_string: "$1", new_string: "$$" }, "a.txt", 0)).toBe("one $$");
     expect(() => applyArtifactTextEdit("abc", { old_string: "z", new_string: "y" }, "a.txt", 2)).toThrowError(expect.objectContaining({ code: "artifact_edit_not_found", editIndex: 2 }));
     expect(() => applyArtifactTextEdit("x x x x x", { old_string: "x", new_string: "y" }, "a.txt", 0)).toThrowError(expect.objectContaining({ code: "artifact_edit_ambiguous", count: 5 }));
+  });
+});
+
+describe("archives unpacked into the bundle root", () => {
+  const archive = { path: "site.zip", mimeType: "application/zip", assetRef: "attachment-zip", unpack: true };
+  const site = (overrides: Record<string, unknown> = {}) => ({ intent: "create", kind: "html", title: "Site", files: [archive], ...overrides });
+  /** The layer the server builds from an archive: references to verified bytes. */
+  const layer = (types: Record<string, string>) => Object.entries(types).map(([path, mimeType], index) => ({ path, mimeType, assetRef: `archive:${index}`, byteSize: 0 }));
+  const page = { path: "index.html", mimeType: "text/html", text: "<p>x</p>" };
+  const reject = (run: () => unknown, code: string, details: Record<string, unknown> = {}) => {
+    let caught: unknown;
+    try { run(); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(ArtifactContractError);
+    expect(caught).toMatchObject({ code, ...details });
+  };
+
+  it("accepts unpack only on one archive reference and keeps unpack: false an ordinary file", () => {
+    for (const mimeType of ["application/zip", "application/x-zip-compressed", "Application/ZIP"]) {
+      expect(normalizeArtifactOperation(site({ files: [{ ...archive, mimeType }] })).unpack)
+        .toEqual({ assetRef: "attachment-zip", mimeType: mimeType.toLowerCase(), path: "site.zip" });
+    }
+    // The archive's path is a label, never a stored path.
+    expect(normalizeArtifactOperation(site({ files: [{ ...archive, path: "/" }] })).unpack?.path).toBe("/");
+    for (const file of [{ ...archive, mimeType: "application/octet-stream" }, { ...archive, mimeType: "application/pdf" },
+      { path: "site.zip", mimeType: "application/zip", unpack: true }, { ...page, unpack: true }, { ...archive, unpack: "yes" },
+      { ...archive, path: " " }, { ...archive, extra: true }]) {
+      reject(() => normalizeArtifactOperation(site({ files: [file] })), "artifact_unpack_invalid");
+    }
+    reject(() => normalizeArtifactOperation(site({ files: [archive, { ...archive, assetRef: "second-zip" }] })), "artifact_unpack_invalid");
+    for (const kind of ["image", "svg"]) reject(() => normalizeArtifactOperation(site({ kind })), "artifact_unpack_invalid", { path: "site.zip" });
+    const kept = normalizeArtifactOperation(site({ entrypoint: "index.html", files: [page, { ...archive, path: "copy.zip", unpack: false }] }));
+    expect(kept.unpack).toBeUndefined();
+    expect(kept.files.map(file => file.path)).toEqual(["index.html", "copy.zip"]);
+    // Supplying archive files to an operation without unpack is a server error.
+    reject(() => normalizeArtifactOperation(html(), undefined, { archive: layer({ "index.html": "text/html" }) }), "artifact_operation_invalid");
+  });
+
+  it("checks what it can before the archive is read and leaves its entry page and edit targets for later", () => {
+    const pending = normalizeArtifactOperation(site({ edits: [{ path: "index.html", old_string: "Old", new_string: "New" }] }));
+    expect(pending).toMatchObject({ unpack: { assetRef: "attachment-zip" }, files: [], entrypoint: "index.html", totalBytes: 0 });
+    expect(pending.referenceEdits).toBeUndefined();
+    reject(() => normalizeArtifactOperation(site({ edits: [{ path: "index.html", old_string: "same", new_string: "same" }] })), "artifact_edit_invalid", { editIndex: 0 });
+    reject(() => normalizeArtifactOperation(site({ entrypoint: "../index.html" })), "artifact_entrypoint_invalid");
+    reject(() => normalizeArtifactOperation(site({ files: [archive, { path: "a.txt", mimeType: "text/plain", text: "x" }, { path: "a.txt", mimeType: "text/plain", text: "y" }] })), "artifact_path_duplicate");
+  });
+
+  it("starts at the root index.html, lets files[] replace unpacked files and edits unpacked text by reference", () => {
+    const files = layer({ "index.html": "text/html", "about.html": "text/html", "app.css": "text/css", "logo.png": "image/png" });
+    const edit = { path: "index.html", old_string: '<link rel="preload">', new_string: "" };
+    const operation = normalizeArtifactOperation(site({ files: [archive, { path: "app.css", mimeType: "text/css", text: "body{}" }], edits: [edit] }),
+      undefined, { archive: files });
+    expect(operation.unpack).toBeUndefined();
+    expect(operation.entrypoint).toBe("index.html");
+    expect(operation.files).toEqual([files[0], files[1], { path: "app.css", mimeType: "text/css", text: "body{}", byteSize: 6 }, files[3]]);
+    expect(operation.referenceEdits).toEqual([{ ...edit, editIndex: 0 }]);
+    expect(normalizeArtifactOperation(site({ entrypoint: "about.html" }), undefined, { archive: files }).entrypoint).toBe("about.html");
+    reject(() => normalizeArtifactOperation(site({ edits: [{ path: "logo.png", old_string: "a", new_string: "b" }] }), undefined, { archive: files }),
+      "artifact_edit_path_invalid", { path: "logo.png", editIndex: 0 });
+    reject(() => normalizeArtifactOperation(site({ edits: [{ path: "missing.html", old_string: "a", new_string: "b" }] }), undefined, { archive: files }),
+      "artifact_edit_path_invalid", { path: "missing.html" });
+  });
+
+  it("names the archive's HTML pages when its entry page is missing or not HTML", () => {
+    const pages = Object.fromEntries(Array.from({ length: 12 }, (_, index) => [`pages/p${String(index).padStart(2, "0")}.html`, "text/html"]));
+    const files = layer({ ...pages, "logo.svg": "image/svg+xml", "readme.txt": "text/plain" });
+    reject(() => normalizeArtifactOperation(site(), undefined, { archive: files }), "artifact_entrypoint_missing",
+      { path: "index.html", count: 12, candidates: Object.keys(pages).slice(0, 10) });
+    reject(() => normalizeArtifactOperation(site({ entrypoint: "gone.html" }), undefined, { archive: files }), "artifact_entrypoint_missing", { path: "gone.html" });
+    reject(() => normalizeArtifactOperation(site({ entrypoint: "logo.svg" }), undefined, { archive: files }), "artifact_entrypoint_invalid", { path: "logo.svg", count: 12 });
+    reject(() => normalizeArtifactOperation(site(), undefined, { archive: layer({ "logo.svg": "image/svg+xml" }) }), "artifact_entrypoint_missing", { count: 0, candidates: [] });
+    let ordinary: unknown;
+    try { normalizeArtifactOperation(html({ entrypoint: "missing.html" })); } catch (error) { ordinary = error; }
+    expect(ordinary).toMatchObject({ code: "artifact_entrypoint_missing" });
+    expect((ordinary as ArtifactContractError).candidates).toBeUndefined();
+  });
+
+  it("unpacks over a base version: unpacked files replace files at their paths, other base files and the entry page stay", () => {
+    const base = normalizeArtifactOperation({ intent: "create", kind: "html", title: "Site", entrypoint: "home.html", files: [
+      { path: "home.html", mimeType: "text/html", text: "<p>home</p>" }, { path: "old.css", mimeType: "text/css", text: "p{}" },
+      { path: "logo.png", mimeType: "image/png", assetRef: "base:logo" }] });
+    const files = layer({ "home.html": "text/html", "logo.png": "image/png", "new.js": "text/javascript" });
+    const updated = normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", files: [archive],
+      edits: [{ path: "home.html", old_string: "Old", new_string: "New" }] }, base, { archive: files });
+    expect(updated.entrypoint).toBe("home.html");
+    expect(updated.files.map(file => [file.path, file.assetRef ?? file.text])).toEqual([["home.html", "archive:0"], ["old.css", "p{}"], ["logo.png", "archive:1"], ["new.js", "archive:2"]]);
+    // The edit applies to the unpacked page, not to the base text it replaces.
+    expect(updated.referenceEdits).toEqual([{ path: "home.html", old_string: "Old", new_string: "New", editIndex: 0 }]);
+    expect(normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", files: [archive], delete_paths: ["old.css", "new.js"] }, base, { archive: files })
+      .files.map(file => file.path)).toEqual(["home.html", "logo.png"]);
+  });
+
+  it("bounds files[] per call by 32 and the merged artifact by 500, also when a large base is updated", () => {
+    const texts = (count: number) => Array.from({ length: count }, (_, index) => ({ path: `notes/${index}.txt`, mimeType: "text/plain", text: "x" }));
+    reject(() => normalizeArtifactOperation(html({ files: [page, ...texts(ARTIFACT_LIMITS.maxFiles)] })), "artifact_file_count_exceeded");
+    const images = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`img/${index}.png`, "image/png"]));
+    const full = layer({ "index.html": "text/html", ...images(ARTIFACT_LIMITS.maxBundleFiles - 1 - 31) });
+    expect(normalizeArtifactOperation(site({ files: [archive, ...texts(31)] }), undefined, { archive: full }).files).toHaveLength(ARTIFACT_LIMITS.maxBundleFiles);
+    reject(() => normalizeArtifactOperation(site({ files: [archive, ...texts(31)] }), undefined,
+      { archive: layer({ "index.html": "text/html", ...images(ARTIFACT_LIMITS.maxBundleFiles - 31) }) }), "artifact_file_count_exceeded");
+    const stored = { intent: "create", kind: "html", title: "Large", entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", assetRef: "base:index" },
+      ...Array.from({ length: ARTIFACT_LIMITS.maxBundleFiles - 1 }, (_, index) => ({ path: `img/${index}.png`, mimeType: "image/png", assetRef: `base:${index}` }))] };
+    reject(() => normalizeArtifactOperation(stored), "artifact_file_count_exceeded");
+    const base = normalizeArtifactOperation(stored, undefined, { stored: true });
+    expect(base.files).toHaveLength(ARTIFACT_LIMITS.maxBundleFiles);
+    reject(() => normalizeArtifactOperation({ ...stored, files: [...stored.files, { path: "one-more.png", mimeType: "image/png", assetRef: "x" }] }, undefined, { stored: true }),
+      "artifact_file_count_exceeded");
+    const update = { intent: "update", baseVersionId: "v1" };
+    const edited = normalizeArtifactOperation({ ...update, edits: [{ path: "index.html", old_string: "a", new_string: "b" }],
+      files: [{ path: "img/0.png", mimeType: "image/png", assetRef: "new-photo" }] }, base);
+    expect(edited.files).toHaveLength(ARTIFACT_LIMITS.maxBundleFiles);
+    expect(edited.referenceEdits).toHaveLength(1);
+    reject(() => normalizeArtifactOperation({ ...update, files: [{ path: "new.txt", mimeType: "text/plain", text: "x" }] }, base), "artifact_file_count_exceeded");
+    expect(normalizeArtifactOperation({ ...update, delete_paths: ["img/0.png"], files: [{ path: "new.txt", mimeType: "text/plain", text: "x" }] }, base).files)
+      .toHaveLength(ARTIFACT_LIMITS.maxBundleFiles);
+  });
+
+  it("accepts a leading underscore in paths and keeps _vendor reserved in any letter case", () => {
+    const withFile = (path: string) => html({ files: [page, { path, mimeType: "text/css", text: "p{}" }] });
+    expect(normalizeArtifactOperation(withFile("_astro/app.css")).files[1]!.path).toBe("_astro/app.css");
+    for (const path of ["_vendor/a.css", "_VENDOR/a.css", "_Vendor", ".hidden/a.css", "-a.css", "a b.css", "café.css"]) {
+      reject(() => normalizeArtifactOperation(withFile(path)), "artifact_path_invalid");
+    }
+    expect([isReservedArtifactPath("_vendor"), isReservedArtifactPath("_VENDOR/x"), isReservedArtifactPath("site/_vendor/x"), isReservedArtifactPath("_vendored")])
+      .toEqual([true, true, false, false]);
   });
 });

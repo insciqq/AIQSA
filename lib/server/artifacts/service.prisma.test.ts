@@ -10,6 +10,8 @@ import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
 import { createPrismaRetentionRepository } from "../retention/prune";
 import type { ProviderRunRequest } from "../providers/types";
 import { createArtifactService } from "./service";
+import { writeZip } from "./zip";
+import { readZipArchive } from "./zipReader";
 
 const operation: ArtifactOperation = { intent: "create", kind: "game", title: "Counter", entrypoint: "index.html",
   files: [{ path: "index.html", mimeType: "text/html", text: '<button id="count">Count</button><script>let n=0;count.onclick=()=>count.textContent=String(++n)</script>' }] };
@@ -674,4 +676,95 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
       expect(await prisma.artifactVersionBlob.count({ where: { version: { artifactId: first.artifactId } } })).toBe(3);
     } finally { await cleanupRuns(f); await f.cleanup(); }
   });
+
+  const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+  const archiveOf = (files: Record<string, string | Buffer>) => writeZip(Object.entries(files).map(([path, bytes]) => ({ path, bytes: Buffer.from(bytes) })));
+  const unpackFile = (id: string) => ({ path: "site.zip", mimeType: "application/zip", asset_ref: id, unpack: true });
+  const sitePaths = ["about.html", "css/empty.css", "css/site.css", "img/copy.png", "img/logo.png", "index.html"];
+  const siteArchive = () => archiveOf({
+    "site/index.html": '<!doctype html><html><head><link rel="stylesheet" href="css/site.css"></head><body><h1>SYNTHETIC_SITE</h1><img alt="Logo" src="img/logo.png"></body></html>',
+    "site/about.html": "<p>About</p>", "site/css/site.css": "h1{color:teal}", "site/css/empty.css": "",
+    "site/img/logo.png": png, "site/img/copy.png": png, "site/img/.DS_Store": "x", "__MACOSX/site/._index.html": "x"
+  });
+
+  it("unpacks a referenced site into owner blobs, renders it, recovers the same receipt and keeps other files on later edits", async () => {
+    const f = await fixture();
+    try {
+      const run = await acceptedRun(f);
+      // Extraction of the archive never finishes: stored bytes and checksum are what counts.
+      const archive = await attach(f, { bytes: siteArchive(), mimeType: "application/zip", fileName: "site.zip", status: "processing" });
+      const created = await run.call({ intent: "create", kind: "html", title: "Site", files: [unpackFile(archive.id)] }, [archive.id]);
+      expect(created.status).toBe("complete");
+      expect((created.content[0] as { value: Record<string, unknown> }).value).toMatchObject({ entrypoint: "index.html",
+        unpacked: { root_folder: "site", skipped_entries: 2, file_count: sitePaths.length, paths: sitePaths } });
+      const first = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: run.run.id } });
+      const before = storedBundle(f, first.bundleStorageKey).files;
+      expect(before.map(file => file.path)).toEqual(sitePaths);
+      expect(before.find(file => file.path === "css/empty.css")).toEqual({ path: "css/empty.css", mimeType: "text/css", text: "" });
+      // Both copies of the logo share one owner blob; the archive itself is not stored.
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(4);
+      expect(await prisma.artifactVersionBlob.count({ where: { versionId: first.id } })).toBe(5);
+      expect(JSON.stringify(first.manifest)).not.toContain(archive.id);
+      const rendered = (await f.service.getPrivateBundle({ ownerUserId: f.owner.id, artifactId: first.artifactId }))!.body.toString();
+      for (const expected of ["SYNTHETIC_SITE", "h1{color:teal}", `data:image/png;base64,${png.toString("base64")}`]) expect(rendered).toContain(expected);
+      // Crash recovery rebuilds the same receipt from the stored version.
+      const restored = await f.service.restore({ id: "recovered", name: "create_artifact", arguments: {} },
+        { userId: f.owner.id, runId: run.run.id, persistedToolCallId: first.sourceToolCallId!, request: artifactReadRequest(f.chat.id) });
+      expect(restored?.content).toEqual(created.content);
+      const reference = { artifactId: first.artifactId, versionId: first.id };
+      const edited = await run.call({ intent: "update", base_version_id: first.id, edits: [{ path: "about.html", old_string: "About", new_string: "About us" }] }, [], reference);
+      expect(edited.status).toBe("complete");
+      expect((edited.content[0] as { value: Record<string, unknown> }).value).not.toHaveProperty("unpacked");
+      const second = await prisma.artifactVersion.findFirstOrThrow({ where: { artifactId: first.artifactId, versionNumber: 2 } });
+      const after = storedBundle(f, second.bundleStorageKey).files;
+      expect(after.filter(file => file.path !== "about.html")).toEqual(before.filter(file => file.path !== "about.html"));
+      expect(after.find(file => file.path === "about.html")).toMatchObject({ blob: sha(Buffer.from("<p>About us</p>")) });
+      expect(before.find(file => file.path === "about.html")).toMatchObject({ blob: sha(Buffer.from("<p>About</p>")) });
+      const exported = await f.service.getPrivateZip({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: second.id });
+      expect((await readZipArchive(exported!.body)).entries.map(entry => entry.path)).toEqual(sitePaths);
+    } finally { await cleanupRuns(f); await f.cleanup(); }
+  });
+
+  it("refuses an archive of another chat or another owner without writing anything", async () => {
+    const f = await fixture();
+    const stranger = await prisma.user.create({ data: { id: `artifact-test-${randomUUID()}`, displayName: "Stranger", status: "active" } });
+    try {
+      const run = await acceptedRun(f);
+      const otherChat = await prisma.chat.create({ data: { userId: f.owner.id, title: "Other chat" } });
+      const strangerChat = await prisma.chat.create({ data: { userId: stranger.id, title: "Stranger chat" } });
+      const elsewhere = await attach(f, { bytes: siteArchive(), mimeType: "application/zip", chatId: otherChat.id });
+      const foreign = await attach(f, { bytes: siteArchive(), mimeType: "application/zip", userId: stranger.id, chatId: strangerChat.id });
+      for (const [id, allowed] of [[elsewhere.id, [elsewhere.id]], [elsewhere.id, []], [foreign.id, [foreign.id]]] as const) {
+        const value = errorOf(await run.call({ intent: "create", kind: "html", title: "Site", files: [unpackFile(id)] }, allowed));
+        expect(value).toMatchObject({ error: "artifact_asset_unavailable", path: "site.zip" });
+        expect(value.hint).not.toMatch(/zip|site/u);
+      }
+      expect(await prisma.artifact.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+      expect([...f.objects.keys()].filter(key => key.startsWith("artifact"))).toEqual([]);
+    } finally {
+      await cleanupRuns(f);
+      await prisma.user.deleteMany({ where: { id: stranger.id } });
+      await f.cleanup();
+    }
+  });
+
+  it("unpacks a 500-file site and edits it, binding every file in one transaction each", async () => {
+    const f = await fixture();
+    try {
+      const run = await acceptedRun(f);
+      const notes = Object.fromEntries(Array.from({ length: ARTIFACT_LIMITS.maxBundleFiles - 1 }, (_, index) => [`notes/${String(index).padStart(3, "0")}.txt`, `note ${index}`]));
+      const archive = await attach(f, { bytes: archiveOf({ "index.html": "<h1>LARGE_SITE</h1>", ...notes }), mimeType: "application/zip" });
+      expect((await run.call({ intent: "create", kind: "html", title: "Large", files: [unpackFile(archive.id)] }, [archive.id])).status).toBe("complete");
+      const first = await prisma.artifactVersion.findFirstOrThrow({ where: { sourceModelRunId: run.run.id } });
+      expect(await prisma.artifactVersionBlob.count({ where: { versionId: first.id } })).toBe(ARTIFACT_LIMITS.maxBundleFiles);
+      const edited = await run.call({ intent: "update", base_version_id: first.id, edits: [{ path: "index.html", old_string: "LARGE_SITE", new_string: "LARGER_SITE" }] },
+        [], { artifactId: first.artifactId, versionId: first.id });
+      expect(edited.status).toBe("complete");
+      const second = await prisma.artifactVersion.findFirstOrThrow({ where: { artifactId: first.artifactId, versionNumber: 2 } });
+      expect(await prisma.artifactVersionBlob.count({ where: { versionId: second.id } })).toBe(ARTIFACT_LIMITS.maxBundleFiles);
+      expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(ARTIFACT_LIMITS.maxBundleFiles + 1);
+      expect((await f.service.getPrivateBundle({ ownerUserId: f.owner.id, artifactId: first.artifactId, versionId: second.id }))!.body.toString()).toContain("LARGER_SITE");
+    } finally { await cleanupRuns(f); await f.cleanup(); }
+  }, 120_000);
 });
