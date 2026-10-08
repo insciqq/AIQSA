@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestAuth } from "@/tests/support/auth";
-import { createAnswerReviewHandlers } from "./handlers";
+import { createAnswerReviewRoundHandler } from "./roundHandler";
+import { createAnswerReviewStepHandler } from "./stepHandler";
 import type { AnswerReviewServiceDeps } from "./service";
 import type { AnswerReviewStepStartDeps } from "./stepStart";
 
@@ -13,8 +14,11 @@ const auth = createTestAuth({ user: { id: "user-1" } });
 const inactive = createTestAuth({ token: "inactive-token", user: { id: "user-2", status: "disabled" } });
 const service = {} as AnswerReviewServiceDeps;
 const steps = {} as AnswerReviewStepStartDeps;
-const handlers = createAnswerReviewHandlers({ resolveAuth: async (request) => await auth.resolveAuth(request) ?? inactive.resolveAuth(request),
-  service: () => service, steps: () => steps });
+const resolveAuth = async (request: Request) => await auth.resolveAuth(request) ?? inactive.resolveAuth(request);
+const handlers = {
+  POST_ROUND: createAnswerReviewRoundHandler({ resolveAuth, service: () => service }),
+  POST_STEP: createAnswerReviewStepHandler({ resolveAuth, steps: () => steps })
+};
 const author = { modelId: "model-a", name: "Claude", provider: "connection-a" };
 const session = { authorModel: author, chatId: "chat-1", id: "session-1", maxRounds: null, mode: "manual" as const,
   reviewers: [{ modelId: "model-b", name: "GPT-5", provider: "connection-b" }], round: 1, sourceAssistantMessageId: "answer-1",
