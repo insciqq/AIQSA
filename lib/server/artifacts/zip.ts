@@ -1,6 +1,6 @@
 import { deflateRawSync } from "node:zlib";
 import { posix } from "node:path";
-import { serialize, type DefaultTreeAdapterMap } from "parse5";
+import type { DefaultTreeAdapterMap, Token } from "parse5";
 import { bundleFileBytes, localResourcePath, type ArtifactBundle, type ArtifactBundleFile } from "./bundle";
 import { parseArtifactCss } from "./css";
 import { parseArtifactHtml } from "./htmlParse";
@@ -9,6 +9,9 @@ import { crc32 } from "../../domain/crc32";
 export { crc32 } from "../../domain/crc32";
 
 type Element = DefaultTreeAdapterMap["element"];
+type Splice = Readonly<{ start: number; end: number; text: string }>;
+/** Elements whose references the export points at vendored copies; integrity and crossorigin would block those copies offline. */
+const RESOURCE_ELEMENTS = new Set(["script", "link", "img", "image"]);
 /** The JavaScript MIME type essences of the HTML standard: a script of any other type is a data block. */
 const JAVASCRIPT_TYPES = new Set(["application/ecmascript", "application/javascript", "application/x-ecmascript", "application/x-javascript",
   "text/ecmascript", "text/javascript", "text/javascript1.0", "text/javascript1.1", "text/javascript1.2", "text/javascript1.3",
@@ -24,7 +27,23 @@ function scriptRuns(node: Element): boolean {
   return value === "module" || JAVASCRIPT_TYPES.has(value);
 }
 
-/** Bounded, normalized bundle paths only; no filesystem or archive extraction. */
+/** The source with each splice applied; splices are disjoint source ranges. */
+function applySplices(source: string, splices: Splice[]): string {
+  let text = "", cursor = 0;
+  for (const splice of [...splices].sort((left, right) => left.start - right.start)) {
+    if (splice.start < cursor) continue;
+    text += source.slice(cursor, splice.start) + splice.text;
+    cursor = splice.end;
+  }
+  return text + source.slice(cursor);
+}
+
+/**
+ * Exports every file as stored, except where an offline copy needs a change: a vendored
+ * stylesheet's url() references and, in HTML and SVG markup, the attributes and inline text
+ * named below, spliced into the source. Nothing else is parsed into a new serialization, so a
+ * file without such references, such as an SVG from an editor, keeps its exact bytes.
+ */
 export function artifactZip(bundle: ArtifactBundle): Buffer {
   const resources = new Map(bundle.files.filter(file => file.vendor).map(file => [file.vendor!.sourceUrl, file]));
   const byPath = new Map(bundle.files.map(file => [file.path, file]));
@@ -35,55 +54,62 @@ export function artifactZip(bundle: ArtifactBundle): Buffer {
     if (local) return local;
     try { return resources.get(new URL(value).href); } catch { return undefined; }
   }
-  /**
-   * A browser never loads the src of a script it does not run (the pdf.js worker pattern:
-   * `type="text/js-worker"`), so the exported page carries that text inline, as the renderer does.
-   */
-  function inlineDataBlock(node: Element, from: ArtifactBundleFile): boolean {
-    const source = node.attrs.find(attr => attr.name === "src");
-    if (!source || scriptRuns(node)) return false;
-    const target = scriptFile(source.value, from);
-    if (target?.text === undefined) return false;
-    node.attrs = node.attrs.filter(attr => !["src", "integrity", "crossorigin"].includes(attr.name));
-    node.childNodes = [{ nodeName: "#text", value: target.text.replace(/<\/script/giu, "<\\/script"), parentNode: node }];
-    return true;
-  }
-  function relative(value: string, from: ArtifactBundleFile): string {
-    if (value.startsWith("#") || value.startsWith("data:")) return value;
+  /** The vendored copy's path relative to `from`; null for a URL the version did not vendor. */
+  function vendoredPath(value: string, from: ArtifactBundleFile): string | null {
     const base = from.vendor?.resolvedUrl ?? from.vendor?.sourceUrl;
     let url: string;
-    try { url = new URL(value, base).href; } catch { return value; }
+    try { url = new URL(value, base).href; } catch { return null; }
     const resource = resources.get(url);
-    if (!resource) throw new Error("artifact_bundle_file_invalid");
-    return posix.relative(posix.dirname(from.path), resource.path);
+    return resource ? posix.relative(posix.dirname(from.path), resource.path) : null;
   }
-  function exportedText(file: ArtifactBundleFile): string {
-    if (file.mimeType === "text/css" && file.vendor) {
-      const parsed = parseArtifactCss(file.text!, file.path);
-      for (const reference of parsed.references) reference.replace(relative(reference.value, file));
-      return parsed.text();
-    }
-    if (!["text/html", "image/svg+xml"].includes(file.mimeType)) return file.text!;
-    const document = parseArtifactHtml(file.text!);
+  function exportedMarkup(file: ArtifactBundleFile): string {
+    const source = file.text!;
+    const splices: Splice[] = [];
+    const remove = (span: Token.Location | undefined) => { if (span) splices.push({ start: span.startOffset, end: span.endOffset, text: "" }); };
     function visit(node: DefaultTreeAdapterMap["node"]): void {
       if ("tagName" in node) {
-        if (node.tagName === "script" && inlineDataBlock(node, file)) return;
-        if (["script", "link", "img", "image"].includes(node.tagName)) {
-          for (const attr of node.attrs) if (["src", "href"].includes(attr.name) && /^https:\/\//iu.test(attr.value)) attr.value = relative(attr.value, file);
-          node.attrs = node.attrs.filter(attr => !["integrity", "crossorigin"].includes(attr.name));
+        // Elements the parser implied have no source to change.
+        const tag = node.sourceCodeLocation?.startTag;
+        if (tag && RESOURCE_ELEMENTS.has(node.tagName)) {
+          const span = (name: string) => tag.attrs?.[name];
+          const src = node.attrs.find(attr => attr.name === "src");
+          const target = node.tagName === "script" && src && !scriptRuns(node) ? scriptFile(src.value, file) : undefined;
+          const end = node.sourceCodeLocation?.endTag;
+          if (target?.text !== undefined && end && span("src")) {
+            // A browser never loads the src of a script it does not run (the pdf.js worker
+            // pattern: type="text/js-worker"), so the export carries its text inline, as pages do.
+            remove(span("src"));
+            splices.push({ start: tag.endOffset, end: end.startOffset, text: target.text.replace(/<\/script/giu, "<\\/script") });
+          } else {
+            for (const attr of node.attrs) {
+              const name = attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name;
+              const location = span(name);
+              const local = ["src", "href"].includes(attr.name) && /^https:\/\//iu.test(attr.value) ? vendoredPath(attr.value, file) : null;
+              if (location && local !== null) splices.push({ start: location.startOffset, end: location.endOffset, text: `${name}="${local}"` });
+            }
+          }
+          remove(span("integrity")); remove(span("crossorigin"));
         }
       }
       if ("childNodes" in node) node.childNodes.forEach(visit);
       if ("content" in node) visit(node.content);
     }
-    visit(document);
-    if (file.mimeType === "image/svg+xml") {
-      const find = (node: DefaultTreeAdapterMap["node"]): DefaultTreeAdapterMap["element"] | undefined =>
-        "tagName" in node && node.tagName === "svg" ? node : "childNodes" in node ? node.childNodes.map(find).find(Boolean) : undefined;
-      const svg = find(document);
-      if (svg) return serialize({ nodeName: "#document-fragment", childNodes: [svg] });
+    visit(parseArtifactHtml(source, { sourceCodeLocationInfo: true }));
+    return splices.length ? applySplices(source, splices) : source;
+  }
+  function exportedText(file: ArtifactBundleFile): string {
+    if (file.mimeType === "text/css" && file.vendor) {
+      const parsed = parseArtifactCss(file.text!, file.path);
+      for (const reference of parsed.references) {
+        if (reference.value.startsWith("#") || reference.value.startsWith("data:") || !URL.canParse(reference.value, file.vendor.resolvedUrl ?? file.vendor.sourceUrl)) continue;
+        // Vendoring downloaded every resource a stylesheet names.
+        const local = vendoredPath(reference.value, file);
+        if (local === null) throw new Error("artifact_bundle_file_invalid");
+        reference.replace(local);
+      }
+      return parsed.text();
     }
-    return serialize(document);
+    return ["text/html", "image/svg+xml"].includes(file.mimeType) ? exportedMarkup(file) : file.text!;
   }
   return writeZip(bundle.files.map((file) => ({
     path: file.path,
