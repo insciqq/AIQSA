@@ -1,0 +1,76 @@
+{
+  "realm": "aiqsa",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "groups": [
+    { "name": "engineers" },
+    { "name": "admins" },
+    { "name": "contractors" }
+  ],
+  "roles": { "realm": [ { "name": "aiqsa-admin" }, { "name": "aiqsa-user" } ] },
+  "users": [
+    { "username": "alice", "email": "alice@idp.aiqsa.test", "emailVerified": true, "enabled": true, "firstName": "Alice", "lastName": "Engineer",
+      "groups": ["/engineers"], "realmRoles": ["aiqsa-user"], "credentials": [{ "type": "password", "value": "__PW_ALICE__", "temporary": false }] },
+    { "username": "bob", "email": "bob@idp.aiqsa.test", "emailVerified": true, "enabled": true, "firstName": "Bob", "lastName": "Outsider",
+      "groups": ["/contractors"], "credentials": [{ "type": "password", "value": "__PW_BOB__", "temporary": false }] },
+    { "username": "carol", "email": "carol@local.aiqsa.test", "emailVerified": false, "enabled": true, "firstName": "Carol", "lastName": "Unverified",
+      "groups": ["/engineers"], "credentials": [{ "type": "password", "value": "__PW_CAROL__", "temporary": false }] },
+    { "username": "dave", "email": "dave@idp.aiqsa.test", "emailVerified": true, "enabled": true, "firstName": "Dave", "lastName": "Admin",
+      "groups": ["/engineers", "/admins"], "realmRoles": ["aiqsa-admin"], "credentials": [{ "type": "password", "value": "__PW_DAVE__", "temporary": false }] }
+  ],
+  "clients": [
+    {
+      "clientId": "aiqsa",
+      "name": "AIQSA",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "__OIDC_CLIENT_SECRET__",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["__APP__/api/auth/oauth/oidc/callback"],
+      "webOrigins": ["__APP__"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "__APP__/login"
+      },
+      "protocolMappers": [
+        { "name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper", "consentRequired": false,
+          "config": { "claim.name": "groups", "full.path": "true", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true", "multivalued": "true" } },
+        { "name": "realm roles in id token", "protocol": "openid-connect", "protocolMapper": "oidc-usermodel-realm-role-mapper", "consentRequired": false,
+          "config": { "claim.name": "realm_access.roles", "id.token.claim": "true", "access.token.claim": "true", "userinfo.token.claim": "true", "multivalued": "true", "jsonType.label": "String" } }
+      ]
+    },
+    {
+      "clientId": "__APP__/saml/metadata",
+      "name": "AIQSA SAML",
+      "enabled": true,
+      "protocol": "saml",
+      "redirectUris": ["__APP__/saml/acs"],
+      "attributes": {
+        "saml_assertion_consumer_url_post": "__APP__/saml/acs",
+        "saml.server.signature": "true",
+        "saml.assertion.signature": "true",
+        "saml.client.signature": "false",
+        "saml.authnstatement": "true",
+        "saml.signature.algorithm": "RSA_SHA256",
+        "saml_force_name_id_format": "true",
+        "saml_name_id_format": "persistent",
+        "saml_signature_canonicalization_method": "http://www.w3.org/2001/10/xml-exc-c14n#"
+      },
+      "protocolMappers": [
+        { "name": "email", "protocol": "saml", "protocolMapper": "saml-user-property-mapper", "consentRequired": false,
+          "config": { "user.attribute": "email", "attribute.name": "email", "attribute.nameformat": "Basic", "friendly.name": "email" } },
+        { "name": "displayName", "protocol": "saml", "protocolMapper": "saml-user-property-mapper", "consentRequired": false,
+          "config": { "user.attribute": "firstName", "attribute.name": "displayName", "attribute.nameformat": "Basic" } },
+        { "name": "groups", "protocol": "saml", "protocolMapper": "saml-group-membership-mapper", "consentRequired": false,
+          "config": { "attribute.name": "groups", "attribute.nameformat": "Basic", "full.path": "false", "single": "false" } },
+        { "name": "roles", "protocol": "saml", "protocolMapper": "saml-role-list-mapper", "consentRequired": false,
+          "config": { "attribute.name": "Role", "attribute.nameformat": "Basic", "single": "false" } }
+      ]
+    }
+  ]
+}
