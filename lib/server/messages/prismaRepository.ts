@@ -13,6 +13,7 @@ import {
 } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { resolveProjectAccess } from "../projects/access";
+import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
 import {
   ActiveMessageMutationConflictError,
   MessageDeleteConflictError,
@@ -323,23 +324,37 @@ export function createPrismaMessageBranchRepository(
             role: true,
             scheduledTaskPrompt: true,
             status: true,
-            systemTurnKind: true
+            systemTurnKind: true,
+            answerReviewSessionId: true
           },
           where: {
             chatId: lockedChat.id
           }
         });
-        const path = orderedAncestorPath(sourceMessages, sourceMessageId);
-        if (path.length === 0) {
+        const ancestors = orderedAncestorPath(sourceMessages, sourceMessageId);
+        if (ancestors.length === 0) {
           return null;
         }
-        if (path.some((message) => isActiveMessageStatus(message.status))) {
+        if (ancestors.some((message) => isActiveMessageStatus(message.status))) {
           throw new ActiveMessageMutationConflictError();
         }
+        // The copy holds no answer review session: each one on the path is
+        // copied as its question followed by the group's latest version, and
+        // a later message hangs from that version (as exports read it).
+        const reviewSessionIds = [...new Set(ancestors.flatMap((message) => message.answerReviewSessionId ?? []))];
+        const reviewCollapse = collapseAnswerReviews(ancestors.map((message) => ({
+          answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
+          role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
+        })), reviewSessionIds.length ? await tx.answerReviewSession.findMany({
+          select: { id: true, sourceAssistantMessageId: true }, where: { chatId: lockedChat.id, id: { in: reviewSessionIds } }
+        }) : []);
+        const path = ancestors.filter((message) => !reviewCollapse.removed.has(message.id));
+        // The branch's last message stands for its source when the source was a review step.
+        const branchLeaf = path.at(-1)!;
         const defaultKnowledgePlan = storedKnowledgePlan(lockedChat.defaultKnowledgePlan);
 
         const sourceAnswerBinding =
-          source.role === "assistant"
+          branchLeaf.role === "assistant"
             ? (
                 await tx.modelRun.findFirst({
                   orderBy: { createdAt: "desc" },
@@ -350,7 +365,7 @@ export function createPrismaMessageBranchRepository(
                     }
                   },
                   where: {
-                    assistantMessageId: source.id,
+                    assistantMessageId: branchLeaf.id,
                     ...(isProjectChat(lockedChat) ? {} : { userId })
                   }
                 })
@@ -487,7 +502,10 @@ export function createPrismaMessageBranchRepository(
         const idMap = new Map<string, string>();
         let activeLeafMessageId: string | null = null;
         for (const sourceMessage of path) {
-          const parentMessageId = sourceMessage.parentMessageId ? idMap.get(sourceMessage.parentMessageId) ?? null : null;
+          const sourceParentId = reviewCollapse.parents.has(sourceMessage.id)
+            ? reviewCollapse.parents.get(sourceMessage.id) ?? null
+            : sourceMessage.parentMessageId;
+          const parentMessageId = sourceParentId ? idMap.get(sourceParentId) ?? null : null;
           const clonedMessageId = randomUUID();
           const followups = projectMessageFollowups(sourceMessage);
           const clonedAttachmentIds = new Map(

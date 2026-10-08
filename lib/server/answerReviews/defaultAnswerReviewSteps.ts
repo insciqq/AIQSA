@@ -1,8 +1,7 @@
 import { resolveRequestAuth } from "../auth/defaultAuth";
 import { prisma } from "../prisma";
-import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
-import { createAnswerReviewHandlers } from "./handlers";
+import { createAnswerReviewStepHandler } from "./stepHandler";
 import type { AnswerReviewStepStartDeps } from "./stepStart";
 
 const globalForAnswerReviews = globalThis as typeof globalThis & {
@@ -15,8 +14,7 @@ function sendDeps(): AnswerReviewStepStartDeps["sendDeps"] {
   return globalForAnswerReviews.__aiqsaAnswerReviewSendDeps;
 }
 
-export const answerReviewHandlers = createAnswerReviewHandlers({
+export const answerReviewStepHandler = createAnswerReviewStepHandler({
   resolveAuth: resolveRequestAuth,
-  service: () => ({ prisma, providerAdmission: providerAdmissionService }),
   steps: () => ({ prisma, sendDeps: sendDeps() })
 });

@@ -100,10 +100,23 @@ export function decodeAnswerReviewSessionRow(row: SessionRow): AnswerReviewSessi
   };
 }
 
+/**
+ * Whether `userId` may act on a session: its initiator, who alone starts its
+ * steps, or (to start a new round, taking the session over) any member once
+ * the initiator's account is gone and the session has ended. Chat access and
+ * the Project role are checked where the round starts.
+ */
+export function canActOnAnswerReviewSession(
+  session: Pick<AnswerReviewSessionRecord, "state" | "userId">,
+  userId: string | null
+): boolean {
+  return userId !== null && (session.userId === userId || (session.userId === null && session.state !== "running"));
+}
+
 export function answerReviewSessionWire(session: AnswerReviewSessionRecord, viewerUserId: string | null): AnswerReviewSessionWire {
   return {
     author: session.authorModel,
-    ...(viewerUserId !== null && session.userId === viewerUserId ? { canAct: true as const } : {}),
+    ...(canActOnAnswerReviewSession(session, viewerUserId) ? { canAct: true as const } : {}),
     id: session.id,
     maxRounds: session.maxRounds,
     mode: session.mode,

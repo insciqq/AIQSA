@@ -42,6 +42,25 @@ describe("answer review transcript collapse", () => {
     expect(collapse.removed.has("s1-revise")).toBe(false);
   });
 
+  it("collapses a send's previous message too: a session that ended on a review step leaves no step behind", () => {
+    const question = message("q", null, "user");
+    const answer = message("a1", "q", "assistant");
+    const reviewTurn = turn("s1-review", "a1", "answer_review_request");
+    const cases: Array<readonly [string, AnswerReviewTranscriptMessage[]]> = [
+      // A clean finish: the last reviewer's short summary is the leaf.
+      ["clean", [question, answer, reviewTurn, stepAnswer("r1", "s1-review")]],
+      // A reviewer stopped mid-answer, or one whose answer ended on an approval card.
+      ["stopped review", [question, answer, reviewTurn, stepAnswer("r1", "s1-review", "cancelled")]],
+      // A revision stopped mid-answer: its partial version is no version.
+      ["stopped revision", [question, answer, reviewTurn, stepAnswer("r1", "s1-review"), turn("s1-revise", "r1", "answer_revision_request"),
+        stepAnswer("a2", "s1-revise", "cancelled")]]
+    ];
+    for (const [label, path] of cases) {
+      const collapse = collapseAnswerReviews(path, sessions);
+      expect(path.filter((entry) => !collapse.removed.has(entry.id)).map((entry) => entry.id), label).toEqual(["q", "a1"]);
+    }
+  });
+
   it("leaves a session whose source answer is outside the transcript whole", () => {
     expect(collapseAnswerReviews(reviewed.slice(2), sessions).removed.size).toBe(0);
   });

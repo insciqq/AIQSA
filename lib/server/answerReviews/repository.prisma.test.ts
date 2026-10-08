@@ -3,6 +3,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { AnswerReviewCard } from "../../contracts/answerReviews";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
+import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan, type ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -15,9 +16,9 @@ import { answerReviewSnapshotProgress, reconcileAnswerReviewSession } from "./st
 /**
  * Answer review storage on the disposable database: sessions, the step claim
  * on a server-written turn, admission without message-window rows,
- * supersession by ordinary runs, the context collapse later runs read and
- * the deletion cascade. Provider admission is a stand-in: these cases never
- * dispatch to a provider.
+ * supersession by ordinary runs, the context collapse later runs read, branch
+ * copies, initiators and the deletion cascade. Provider admission is a
+ * stand-in: these cases never dispatch to a provider.
  */
 
 const repository = createPrismaRunRepository(prisma);
@@ -116,8 +117,9 @@ async function startSession(f: Fixture, answerId: string) {
 const findingsCard: AnswerReviewCard = { findings: [{ claim: "It is 42.", id: "F1", problem: "It is 41.", severity: "high",
   suggestion: "Say 41." }], reviewer: 0, reviewerName: "Synthetic Reviewer", round: 1, verdict: "changes_needed", version: 1 };
 
+afterAll(() => prisma.$disconnect());
+
 describe("answer review storage", () => {
-  afterAll(() => prisma.$disconnect());
 
   it("starts a manual session on the chat's latest answer with frozen display names, once per answer", async () => fixture(async (f) => {
     const first = await f.exchange("What is the total?", null, "The total is 42.");
@@ -268,5 +270,157 @@ describe("answer review storage", () => {
     await prisma.chat.delete({ where: { id: f.chatId } });
     expect(await prisma.answerReviewSession.count({ where: { id: session.id } })).toBe(0);
     expect(await prisma.message.count({ where: { id: { in: [review.userMessageId, review.assistantMessageId] } } })).toBe(0);
+  }));
+});
+
+describe("answer review context after a session that did not end on a revision", () => {
+  const clean = { ...findingsCard, findings: [], verdict: "clean" as const };
+  const ids = (messages: readonly { id: string }[] | null) => messages?.map((message) => message.id) ?? null;
+
+  it("reads a clean finish as the question and the source answer, also for the follow-up's regeneration", async () => fixture(async (f) => {
+    const first = await f.exchange("What is the total?", null, "The total is 42.");
+    const session = await startSession(f, first.assistantMessageId);
+    const review = await f.step({ kind: "review", leaf: first.assistantMessageId, sessionId: session.id, step: 0 });
+    await f.complete(review, "Review submitted: no substantive issues.", [reviewEvent(clean)]);
+    // The next send's expected leaf is the reviewer's summary: it leaves with its turn.
+    expect(ids(await repository.loadConversationContextForExpectedLeaf(f.chatId, f.userId, review.assistantMessageId)))
+      .toEqual([first.userMessageId, first.assistantMessageId]);
+    const next = await f.exchange("And the average?", review.assistantMessageId, "The average is 7.");
+    expect(ids(await repository.loadConversationContextForLeaf(f.chatId, f.userId, next.userMessageId)))
+      .toEqual([first.userMessageId, first.assistantMessageId, next.userMessageId]);
+  }));
+
+  it("never shows a stopped reviewer's or reviser's partial answer to the next turn", async () => fixture(async (f) => {
+    const first = await f.exchange("What is the total?", null, "The total is 42.");
+    const session = await startSession(f, first.assistantMessageId);
+    const review = await f.step({ kind: "review", leaf: first.assistantMessageId, sessionId: session.id, step: 0 });
+    await repository.cancelRun({ payload: cancelPayload, runId: review.runId, userId: f.userId });
+    // Stopped with partial text, which a path keeps for a stopped ordinary answer.
+    await prisma.message.update({ data: { content: textMessageContent("I checked the first figure and") },
+      where: { id: review.assistantMessageId } });
+    expect(ids(await repository.loadConversationContextForExpectedLeaf(f.chatId, f.userId, review.assistantMessageId)))
+      .toEqual([first.userMessageId, first.assistantMessageId]);
+
+    // A revision stopped mid-answer is no version either.
+    const other = await f.exchange("Check this one too", review.assistantMessageId, "It is 12.");
+    const second = await startSession(f, other.assistantMessageId);
+    const secondReview = await f.step({ kind: "review", leaf: other.assistantMessageId, sessionId: second.id, step: 0 });
+    await f.complete(secondReview, "Review submitted: one finding.", [reviewEvent(findingsCard)]);
+    const revision = await f.step({ kind: "revision", leaf: secondReview.assistantMessageId, sessionId: second.id, step: 1 });
+    await repository.cancelRun({ payload: cancelPayload, runId: revision.runId, userId: f.userId });
+    await prisma.message.update({ data: { content: textMessageContent("The total is") }, where: { id: revision.assistantMessageId } });
+    expect(ids(await repository.loadConversationContextForExpectedLeaf(f.chatId, f.userId, revision.assistantMessageId)))
+      .toEqual([first.userMessageId, first.assistantMessageId, other.userMessageId, other.assistantMessageId]);
+  }));
+
+  it("gives an MCP approval continuation after a review step's approval card the question and source answer only", async () => fixture(async (f) => {
+    const first = await f.exchange("What is the total?", null, "The total is 42.");
+    const session = await startSession(f, first.assistantMessageId);
+    // Standing in for a reviewer's answer that ended on an approval card: no review was submitted.
+    const review = await f.step({ kind: "review", leaf: first.assistantMessageId, sessionId: session.id, step: 0 });
+    await f.complete(review, "I need approval to look the record up.");
+    // The continuation send reads the path up to that answer: the step leaves whole.
+    expect(ids(await repository.loadConversationContextForExpectedLeaf(f.chatId, f.userId, review.assistantMessageId)))
+      .toEqual([first.userMessageId, first.assistantMessageId]);
+    const continuation = await f.send({ expectedActiveLeafId: review.assistantMessageId, systemTurnKind: "mcp_approval_continuation",
+      text: "The user approved `lookup` on `Records`. Continue the task." });
+    // Its regeneration answers that same turn again.
+    expect(ids(await repository.loadConversationContextForLeaf(f.chatId, f.userId, continuation.userMessageId)))
+      .toEqual([first.userMessageId, first.assistantMessageId, continuation.userMessageId]);
+  }));
+});
+
+describe("answer review branch copies", () => {
+  const branches = createPrismaMessageBranchRepository(prisma);
+
+  async function reviewedChat(f: Fixture) {
+    const first = await f.exchange("What is the total?", null, "The total is 42.");
+    const session = await startSession(f, first.assistantMessageId);
+    const review = await f.step({ kind: "review", leaf: first.assistantMessageId, sessionId: session.id, step: 0 });
+    await f.complete(review, "Review submitted: one finding.", [reviewEvent(findingsCard)]);
+    const revision = await f.step({ kind: "revision", leaf: review.assistantMessageId, sessionId: session.id, step: 1 });
+    await f.complete(revision, "The total is 41.");
+    const next = await f.exchange("Thanks, and the median?", revision.assistantMessageId, "The median is 6.");
+    return { first, next, review, revision, session };
+  }
+
+  /** The copy's messages from its root, each with its source's text. */
+  async function copied(chatId: string) {
+    const rows = await prisma.message.findMany({ orderBy: { createdAt: "asc" }, select: { answerReviewRound: true,
+      answerReviewSessionId: true, content: true, id: true, parentMessageId: true, role: true, systemTurnKind: true },
+      where: { chatId } });
+    const chat = await prisma.chat.findUniqueOrThrow({ select: { activeLeafMessageId: true }, where: { id: chatId } });
+    const textOf = (content: unknown) => (content as { blocks?: Array<{ text?: string }> }).blocks
+      ?.map((block) => block.text ?? "").join("") ?? "";
+    return { chat, rows, texts: rows.map((row) => textOf(row.content)) };
+  }
+
+  it("copies a path through a reviewed answer as its question, the latest version and what followed", async () => fixture(async (f) => {
+    const { first, next } = await reviewedChat(f);
+    const branch = await branches.createChatBranchFromMessage({ sourceMessageId: next.assistantMessageId, userId: f.userId });
+    expect(branch).toMatchObject({ messageCount: 4 });
+    const { chat, rows, texts } = await copied(branch!.id);
+    expect(texts).toEqual(["What is the total?", "The total is 41.",
+      "Thanks, and the median?", "The median is 6."]);
+    // One linear chain: the version hangs from the question, the next question from the version.
+    expect(rows.map((row) => row.parentMessageId)).toEqual([null, rows[0]!.id, rows[1]!.id, rows[2]!.id]);
+    expect(chat.activeLeafMessageId).toBe(rows[3]!.id);
+    expect(rows.every((row) => row.systemTurnKind === null && row.answerReviewSessionId === null && row.answerReviewRound === null))
+      .toBe(true);
+    expect(await prisma.answerReviewSession.count({ where: { chatId: branch!.id } })).toBe(0);
+    // The copy's next run reads the same chain.
+    expect((await repository.loadConversationContextForExpectedLeaf(branch!.id, f.userId, rows[3]!.id))?.map((message) => message.id))
+      .toEqual(rows.map((row) => row.id));
+    expect(first.userMessageId).not.toBe(rows[0]!.id);
+  }));
+
+  it("copies the group itself as its latest version, and a step as the version it stood for", async () => fixture(async (f) => {
+    const { review, revision } = await reviewedChat(f);
+    const fromVersion = await branches.createChatBranchFromMessage({ sourceMessageId: revision.assistantMessageId, userId: f.userId });
+    expect((await copied(fromVersion!.id)).texts)
+      .toEqual(["What is the total?", "The total is 41."]);
+    const fromReview = await branches.createChatBranchFromMessage({ sourceMessageId: review.assistantMessageId, userId: f.userId });
+    const { chat, rows, texts } = await copied(fromReview!.id);
+    expect(texts).toEqual(["What is the total?", "The total is 42."]);
+    expect(chat.activeLeafMessageId).toBe(rows[1]!.id);
+  }));
+});
+
+describe("answer review initiators", () => {
+  it("refuses another member's session with its own reason", async () => fixture(async (f) => {
+    const first = await f.exchange("What is the total?", null, "The total is 42.");
+    const session = await startSession(f, first.assistantMessageId);
+    const otherId = `answer-review-other-${randomUUID()}`;
+    await prisma.user.create({ data: { displayName: "Another member", id: otherId, status: "active" } });
+    try {
+      // The session stands for one another member started in a shared chat.
+      await prisma.answerReviewSession.update({ data: { userId: otherId }, where: { id: session.id } });
+      await expect(startAnswerReviewRound(serviceDeps, { answerMessageId: first.assistantMessageId, chatId: f.chatId,
+        expectedActiveLeafId: first.assistantMessageId, reviewers: [reviewer], userId: f.userId }))
+        .resolves.toEqual({ code: "answer_review_not_initiator", ok: false, status: 409 });
+    } finally {
+      await prisma.user.deleteMany({ where: { id: otherId } });
+    }
+  }));
+
+  it("lets a member take over an ended session whose initiator is gone, with the author model admitted again", async () => fixture(async (f) => {
+    const first = await f.exchange("What is the total?", null, "The total is 42.");
+    const session = await startSession(f, first.assistantMessageId);
+    const review = await f.step({ kind: "review", leaf: first.assistantMessageId, sessionId: session.id, step: 0 });
+    await f.complete(review, "Review submitted: one finding.", [reviewEvent(findingsCard)]);
+    await prisma.answerReviewSession.update({ data: { state: "stopped", stopReason: "superseded", userId: null },
+      where: { id: session.id } });
+    // A running session of a gone initiator is never taken over.
+    await prisma.answerReviewSession.update({ data: { state: "running", stopReason: null }, where: { id: session.id } });
+    await expect(startAnswerReviewRound(serviceDeps, { answerMessageId: first.assistantMessageId, chatId: f.chatId,
+      expectedActiveLeafId: review.assistantMessageId, reviewers: [reviewer], userId: f.userId }))
+      .resolves.toMatchObject({ code: "answer_review_not_initiator", ok: false });
+    await prisma.answerReviewSession.update({ data: { state: "stopped", stopReason: "superseded" }, where: { id: session.id } });
+    vi.mocked(providerAdmission.load).mockClear();
+    const taken = await startAnswerReviewRound(serviceDeps, { answerMessageId: first.assistantMessageId, chatId: f.chatId,
+      expectedActiveLeafId: review.assistantMessageId, reviewers: [reviewer], userId: f.userId });
+    expect(taken).toMatchObject({ ok: true, session: { id: session.id, round: 2, state: "running", stopReason: null, userId: f.userId } });
+    expect(vi.mocked(providerAdmission.load).mock.calls.map(([input]) => input.providerModelId))
+      .toEqual([providerTemplateIds.fakeModel, reviewer.modelId]);
   }));
 });
