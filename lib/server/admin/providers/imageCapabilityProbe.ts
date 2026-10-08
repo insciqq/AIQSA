@@ -83,6 +83,11 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
           evidence[capability] = { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true };
         }
       } catch (error) {
+        // A completed answer rejected by the adapter is paid too; the adapter attaches its reported receipt.
+        if (error instanceof ImageGenerationError && error.usage) {
+          input.onProviderUsage?.({ usage: { inputTokens: error.usage.inputTokens, outputTokens: error.usage.outputTokens,
+            totalTokens: error.usage.totalTokens }, reportedCostUsd: error.usage.costUsd });
+        }
         input.signal?.throwIfAborted();
         let status: AdminProviderCapabilityCheckStatus = "incomplete";
         if (error instanceof ImageGenerationError) {
