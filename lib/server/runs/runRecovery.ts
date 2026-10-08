@@ -12,7 +12,7 @@ import { callReadIds, callReadReplayBudgets, withoutCallReadOutputs, withRereadC
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
-import { RunSettlementError, runSettlementFailure } from "./settlementFailure";
+import { RunSettlementError, WorkspaceHandoffFailure, runSettlementFailure } from "./settlementFailure";
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
@@ -5184,9 +5184,9 @@ async function refreshProviderRunOnceRegistered(
       signal.throwIfAborted();
       // The answer and its usage are already durable. A failed capture must
       // terminate this turn without replaying the provider or losing that text.
+      const failure = new WorkspaceHandoffFailure(error);
       await failRecoveredRun(deps.repository, runId, publishedAnswer.assistantMessageId, {
-        code: error instanceof WorkspaceRuntimeError ? error.code : "workspace_output_export_failed",
-        message: "The answer was saved, but Workspace could not finish preparing its files."
+        code: failure.code, message: failure.message
       }, { recoveryTerminal: true });
       await deps.workspace.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) });
       return;
