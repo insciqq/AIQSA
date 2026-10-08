@@ -752,7 +752,7 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
         const file = resolve(reference.value, from, script ? "artifact_external_script_unsupported" : "artifact_external_style_unsupported");
         if (!(script ? ["text/javascript", "application/javascript", "application/x-javascript"].includes(file.mimeType) : file.mimeType === "text/css") || file.text === undefined) invalid("artifact_mime_invalid", from, "Use a text/javascript script or text/css stylesheet file.");
         const text = file.text;
-        if (script && type === "module") assertArtifactSingleModule(text, file.path, memo(`module:${file.path}`, () => isArtifactSingleModule(text)));
+        if (script && type === "module") assertArtifactSingleModule(text, file.path, memo(`module:${file.path}`, () => isArtifactSingleModule(text, file.path)));
         account.inlined.add(file.path);
         const retained = node.attrs.filter(attr => script ? ["type", "id", "nomodule"].includes(attr.name) : ["media", "id", "title"].includes(attr.name));
         node.tagName = script ? "script" : "style";
@@ -818,7 +818,7 @@ function renderBundlePage(bundle: ArtifactBundle, mainFile: boolean, page: strin
           if (linked) {
             // A linked file's literal paths resolve from the page's folder.
             const file = linked;
-            if (type === "module") assertArtifactSingleModule(text, from, memo(`linked-module:${file.path}`, () => isArtifactSingleModule(text)));
+            if (type === "module") assertArtifactSingleModule(text, from, memo(`linked-module:${file.path}`, () => isArtifactSingleModule(text, file.path)));
             // Without a literal that could name an image, every folder leaves the text as it is.
             if (memo(`script-literals:${file.path}`, () => imageLiteralCandidate(text))) {
               child.value = cached(cache.scriptLiterals, `${file.path}\u0000${posix.dirname(from)}`, () => scriptLiterals(text, from));
