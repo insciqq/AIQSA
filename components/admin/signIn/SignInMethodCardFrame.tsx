@@ -261,7 +261,12 @@ function EnvironmentHint({ state }: Readonly<{ state: AdminSignInMethodState }>)
   );
 }
 
-function StateLines({ state }: Readonly<{ state: AdminSignInMethodState }>) {
+/** How a card's health line names its method's activity; sign-ins unless the card says otherwise. */
+export type SignInHealthWording = Readonly<{ describeFailure(code: string): string; subject: string }>;
+
+const signInHealthWording: SignInHealthWording = { describeFailure: signInFailureMessage, subject: "sign-in" };
+
+function StateLines({ state, wording }: Readonly<{ state: AdminSignInMethodState; wording: SignInHealthWording }>) {
   const test = state.draft.test;
   const health = state.health;
   const failureAt = formatSignInTime(health.lastFailureAt);
@@ -290,10 +295,10 @@ function StateLines({ state }: Readonly<{ state: AdminSignInMethodState }>) {
       ) : null}
       {recentFailure ? (
         <p className="text-xs leading-5 text-caution" data-testid="admin-sign-in-health">
-          Last sign-in failed {failureAt}: {signInFailureMessage(health.lastFailureCode ?? "")}.
+          Last {wording.subject} failed {failureAt}: {wording.describeFailure(health.lastFailureCode ?? "")}.
         </p>
       ) : acceptedAt ? (
-        <p className={lineClass} data-testid="admin-sign-in-health">Last sign-in accepted {acceptedAt}.</p>
+        <p className={lineClass} data-testid="admin-sign-in-health">Last {wording.subject} accepted {acceptedAt}.</p>
       ) : null}
     </div>
   );
@@ -310,6 +315,7 @@ export function SignInMethodCardFrame({
   copyValues = [],
   description,
   draft,
+  healthWording = signInHealthWording,
   state,
   title
 }: Readonly<{
@@ -318,6 +324,7 @@ export function SignInMethodCardFrame({
   copyValues?: readonly Readonly<{ label: string; value: string }>[];
   description: ReactNode;
   draft: SignInCardDraft;
+  healthWording?: SignInHealthWording;
   state: AdminSignInMethodState;
   title?: string;
 }>) {
@@ -377,7 +384,7 @@ export function SignInMethodCardFrame({
         <fieldset className="grid min-w-0 gap-4" disabled={busy}>
           {children}
         </fieldset>
-        <StateLines state={state} />
+        <StateLines state={state} wording={healthWording} />
         {message ? (
           <p
             className="rounded-[10px] border border-critical/25 bg-critical/5 px-3 py-2 text-xs leading-5 text-critical"
