@@ -6,10 +6,12 @@ import {
   OAUTH_PROVIDER_IDS
 } from "@/lib/auth/oauth";
 import { getAuthConfig } from "@/lib/server/auth/config";
+import { oidcAutoRedirectPath } from "@/lib/server/auth/oidc/oidcLoginRedirect";
 import { resolveSignInMethods, type ResolvedSignInMethods } from "@/lib/server/auth/signInMethods";
 import type { SignInPolicySnapshot } from "@/lib/server/auth/signInPolicy";
 import { readSignInPolicy } from "@/lib/server/auth/signInSettings/defaultSignInSettings";
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 
 export const metadata: Metadata = {
   title: "Sign in"
@@ -18,6 +20,7 @@ export const metadata: Metadata = {
 type LoginPageProps = {
   searchParams: Promise<{
     invite?: string;
+    local?: string;
     next?: string;
     oauth?: string;
     provider?: string;
@@ -34,14 +37,21 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     ? await Promise.all([resolveSignInMethods(), readSignInPolicy()])
     : [{}, { passwordLoginEnabled: true, registrationEnabled: true }];
   const oauthProviders = OAUTH_PROVIDER_IDS.filter((provider) => Boolean(methods[provider]));
+  const nextPath = safeInternalPath(params.next);
+  const oidcRedirect = oidcAutoRedirectPath({ config: methods.oidc?.config, nextPath, params });
+
+  if (oidcRedirect) {
+    redirect(oidcRedirect);
+  }
 
   return (
     <AuthLogin
       inviteToken={params.invite}
-      nextPath={safeInternalPath(params.next)}
+      nextPath={nextPath}
       oauthOutcome={isOAuthLoginOutcome(params.oauth) ? params.oauth : undefined}
       oauthProvider={isOAuthProviderId(params.provider) ? params.provider : undefined}
       oauthProviders={oauthProviders}
+      oidcButtonLabel={methods.oidc?.config.buttonLabel}
       passwordLoginEnabled={policy.passwordLoginEnabled}
       registrationEnabled={policy.registrationEnabled}
       resetToken={params.reset}

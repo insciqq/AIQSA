@@ -1,5 +1,5 @@
 import { createSecondFactorChallengeCookie } from "./secondFactorChallenge";
-import { createSessionClearCookie, createSessionToken } from "./session";
+import { createSessionClearCookie, createSessionToken, getSessionFromRequest } from "./session";
 import type { AuthMailer } from "./mailer";
 import {
   hashPassword as hashPasswordDefault,
@@ -67,6 +67,11 @@ export type MeHandlerDeps = {
 
 type LogoutHandlerDeps = {
   getConfig(): Pick<AuthConfig, "cookieSecure">;
+  /**
+   * Where the browser goes next to end the identity provider's session of a just revoked
+   * session that `signInMethod` signed in (OIDC IdP logout), or null. Never fails the logout.
+   */
+  identityProviderLogout?(input: { signInMethod: string | null }): Promise<string | null>;
   sessions: AuthSessionStore;
 };
 
@@ -751,17 +756,28 @@ export function createLogoutHandler(deps: LogoutHandlerDeps) {
     }
 
     const config = deps.getConfig();
-    await revokeRequestSession({
+    const token = deps.identityProviderLogout ? getSessionFromRequest(request) : undefined;
+    const session = token ? await deps.sessions.findSessionByTokenHash(hashToken(token)) : null;
+    // The local session is revoked first, whatever the identity provider does next.
+    const revoked = await revokeRequestSession({
       request,
       revokedReason: "logout",
       sessions: deps.sessions
     });
+    const clearCookie = createSessionClearCookie({
+      secure: config.cookieSecure
+    });
+    const redirectTo = revoked > 0 && session && deps.identityProviderLogout
+      ? await deps.identityProviderLogout({ signInMethod: session.signInMethod ?? null }).catch(() => null)
+      : null;
+
+    if (redirectTo) {
+      return json({ redirectTo }, { headers: { "set-cookie": clearCookie } });
+    }
 
     return new Response(null, {
       headers: {
-        "set-cookie": createSessionClearCookie({
-          secure: config.cookieSecure
-        })
+        "set-cookie": clearCookie
       },
       status: 204
     });
