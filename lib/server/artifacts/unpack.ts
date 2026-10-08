@@ -94,6 +94,7 @@ export async function unpackArtifactArchive(archive: Uint8Array, label: string, 
   const assets = new Map<string, { bytes: Buffer; mimeType: string }>();
   const skippedFiles: string[] = [];
   let skippedEntries = read.skipped;
+  const retained: Array<{ archivePath: string; path: string; bytes: Buffer; mimeType: string }> = [];
   for (const entry of read.entries) {
     const archivePath = read.strippedRoot === null ? entry.path : `${read.strippedRoot}/${entry.path}`;
     const mimeType = artifactMimeForPath(entry.path);
@@ -104,21 +105,31 @@ export async function unpackArtifactArchive(archive: Uint8Array, label: string, 
       if (skippedFiles.length < ARTIFACT_UNPACK_SKIPPED_FILES) skippedFiles.push(archivePath);
       continue;
     }
-    if (normalizedArtifactPath(entry.path) !== entry.path) throw new ArtifactToolError("artifact_zip_path_unsupported", { path: archivePath, hint: PATH_HINT });
-    if (isReservedArtifactPath(entry.path)) throw new ArtifactToolError("artifact_zip_path_unsupported", { path: archivePath, hint: RESERVED_HINT });
+    retained.push({ archivePath, path: entry.path, bytes: entry.bytes, mimeType });
+  }
+  // A skipped file beside the site's folder (a root .gitignore) does not keep that folder.
+  let rootFolder = read.strippedRoot;
+  const first = retained[0]?.path.split("/")[0];
+  if (rootFolder === null && first !== undefined && retained.every(entry => entry.path.startsWith(`${first}/`))) {
+    rootFolder = first;
+    for (const entry of retained) entry.path = entry.path.slice(first.length + 1);
+  }
+  for (const { archivePath, path, bytes, mimeType } of retained) {
+    if (normalizedArtifactPath(path) !== path) throw new ArtifactToolError("artifact_zip_path_unsupported", { path: archivePath, hint: PATH_HINT });
+    if (isReservedArtifactPath(path)) throw new ArtifactToolError("artifact_zip_path_unsupported", { path: archivePath, hint: RESERVED_HINT });
     if (isArtifactTextMime(mimeType)) {
-      try { artifactTextFromBytes(entry.bytes, entry.path); }
+      try { artifactTextFromBytes(bytes, path); }
       catch (error) {
         if (error instanceof ArtifactToolError) throw new ArtifactToolError(error.code, { path: archivePath, hint: TEXT_HINT });
         throw error;
       }
     }
-    if (!entry.bytes.byteLength) { files.push({ path: entry.path, mimeType, text: "", byteSize: 0 }); continue; }
+    if (!bytes.byteLength) { files.push({ path, mimeType, text: "", byteSize: 0 }); continue; }
     // Local keys of this operation: the bytes are already verified and read.
     const assetRef = `archive:${assets.size}`;
-    assets.set(assetRef, { bytes: entry.bytes, mimeType });
-    files.push({ assetRef, byteSize: 0, mimeType, path: entry.path });
+    assets.set(assetRef, { bytes, mimeType });
+    files.push({ assetRef, byteSize: 0, mimeType, path });
   }
   if (!files.length) throw new ArtifactToolError("artifact_zip_empty", { path: label, hint: ZIP_HINTS.get("artifact_zip_empty")! });
-  return { files, assets, report: { rootFolder: read.strippedRoot, skippedEntries, skippedFiles } };
+  return { files, assets, report: { rootFolder, skippedEntries, skippedFiles } };
 }
