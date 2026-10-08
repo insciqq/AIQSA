@@ -147,6 +147,15 @@ async function signIn(browser: Browser, button: string, person: Person): Promise
   return { context, page };
 }
 
+/** The app shell after a sign-in; a refusal names the method's content-free failure code. */
+async function expectSignedIn(page: Page, method: "oidc" | "saml"): Promise<void> {
+  const shell = page.getByTestId("app-shell");
+  await expect(shell.or(page.locator("[role=alert]:not(#__next-route-announcer__)"))).toBeVisible({ timeout: 60_000 });
+  if (await shell.isVisible()) return;
+  const health = await prisma.authSignInMethodSetting.findUnique({ select: { lastFailureCode: true }, where: { method } });
+  throw new Error(`${method}_sign_in_refused url=${new URL(page.url()).search.replace(/[^a-z0-9=&_]/gu, "")} code=${health?.lastFailureCode ?? "-"}`);
+}
+
 async function userBy(provider: "oidc" | "saml", email: string) {
   return prisma.user.findFirst({
     include: { authIdentities: { where: { provider } } },
@@ -367,7 +376,7 @@ test("an administrator pastes Okta's SAML metadata into the card; SAML sign-ins 
   await context.close();
 
   const eli = await signIn(browser, SAML_BUTTON, people.eli);
-  await expect(eli.page.getByTestId("app-shell")).toBeVisible({ timeout: 60_000 });
+  await expectSignedIn(eli.page, "saml");
   await eli.context.close();
   const eliUser = await userBy("saml", people.eli.email);
   expect(eliUser, "eli's SAML identity").toBeTruthy();
@@ -377,7 +386,7 @@ test("an administrator pastes Okta's SAML metadata into the card; SAML sign-ins 
   expect(eliUser!.role).toBe("user");
 
   const dina = await signIn(browser, SAML_BUTTON, people.dina);
-  await expect(dina.page.getByTestId("app-shell")).toBeVisible({ timeout: 60_000 });
+  await expectSignedIn(dina.page, "saml");
   await dina.page.screenshot({ path: testInfo.outputPath("okta-saml-signed-in-desktop.png") });
   await dina.context.close();
   const dinaUser = await userBy("saml", people.dina.email);
