@@ -19,6 +19,12 @@ import { decodeContextCompactionStatus, type ContextCompactionStatus } from "../
 import { decodeThreadSearchActivitySnapshot, type ThreadSearchActivitySnapshot } from "../../contracts/searchActivity";
 import { decodeScheduledTaskCard, type ScheduledTaskCard } from "../../contracts/scheduledTasks";
 import { decodeSkillSaveCard, type SkillSaveCard } from "../../contracts/skillSaves";
+import {
+  decodeAnswerReviewCard,
+  decodeAnswerReviewDecisionsCard,
+  type AnswerReviewCard,
+  type AnswerReviewDecisionsCard
+} from "../../contracts/answerReviews";
 
 type RunOutputGeneratedArtifact = {
   byteSize?: number;
@@ -42,6 +48,10 @@ export type RunOutputArtifactEvent =
   | { type: "artifact"; data: { artifactType: "scheduled_task"; payload: ScheduledTaskCard } }
   /** A Skill the answer's `save_skill` call saved, as that call left it. */
   | { type: "artifact"; data: { artifactType: "skill_save"; payload: SkillSaveCard } }
+  /** A review step's review, as its `submit_answer_review` call left it. */
+  | { type: "artifact"; data: { artifactType: "answer_review"; payload: AnswerReviewCard } }
+  /** A revision step's decisions, as its `record_review_decisions` call left them. */
+  | { type: "artifact"; data: { artifactType: "answer_review_decisions"; payload: AnswerReviewDecisionsCard } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
       data: {
@@ -219,6 +229,16 @@ export function projectRunOutputArtifactEvent(
     return payload ? { type: "artifact", data: { artifactType: "skill_save", payload } } : null;
   }
 
+  if (event.data.artifactType === "answer_review") {
+    const payload = decodeAnswerReviewCard(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "answer_review", payload } } : null;
+  }
+
+  if (event.data.artifactType === "answer_review_decisions") {
+    const payload = decodeAnswerReviewDecisionsCard(event.data.payload);
+    return payload ? { type: "artifact", data: { artifactType: "answer_review_decisions", payload } } : null;
+  }
+
   if (event.data.artifactType === "workspace_checkpoint") {
     const payload = decodeThreadWorkspaceCheckpointOutput(event.data.payload);
     return payload ? { type: "artifact", data: { artifactType: "workspace_checkpoint", payload } } : null;
@@ -301,6 +321,14 @@ export function isRunOutputArtifactEvent(
   }
   if (event.data.artifactType === "skill_save") {
     const decoded = decodeSkillSaveCard(event.data.payload);
+    return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
+  }
+  if (event.data.artifactType === "answer_review") {
+    const decoded = decodeAnswerReviewCard(event.data.payload);
+    return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
+  }
+  if (event.data.artifactType === "answer_review_decisions") {
+    const decoded = decodeAnswerReviewDecisionsCard(event.data.payload);
     return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
   }
   if (event.data.artifactType !== "search" || !isRecord(event.data.payload) ||

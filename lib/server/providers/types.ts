@@ -231,6 +231,11 @@ export type NormalizedRunRequest = {
    * scheduled occurrence admitted: it offers `report_monitoring_result`,
    * reserved outside the tool budgets. Never set from a request field. */
   monitoringVerdictTool?: true;
+  /** Server-owned admission marker of an answer review step's run, frozen
+   * from the step its session admitted: a review offers
+   * `submit_answer_review`, a revision `record_review_decisions`, each
+   * reserved outside the tool budgets. Never set from a request field. */
+  answerReviewStep?: import("../tools/answerReview").AnswerReviewStepMarker;
   modelId: string;
   personalContext?: Readonly<{
     approxTokens: number;
