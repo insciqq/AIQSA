@@ -1154,5 +1154,10 @@
   "workspace_upload_recovery_failed",
   "workspace_upload_startup_failed",
   "workspace_uv_cache_prune_failed",
-  "workspace_uv_cache_pruned"
+  "workspace_uv_cache_pruned",
+  "approval_required",
+  "mcp_approval_required",
+  "mcp_approval_decision_failed",
+  "mcp_consent_list_failed",
+  "mcp_consent_revoke_failed"
 ]
