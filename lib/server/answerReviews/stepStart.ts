@@ -4,6 +4,7 @@ import {
   ANSWER_REVISION_REQUEST_KIND,
   answerReviewFindingKey,
   type AnswerReviewCard,
+  type AnswerReviewMode,
   type AnswerReviewStepKind,
   type AnswerReviewStopReason
 } from "../../contracts/answerReviews";
@@ -13,6 +14,7 @@ import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry
 import { createSendMessageHandler, type RunHandlerDeps } from "../runs/handlers";
 import type { AnswerReviewStepPreparation } from "../runs/runPreparation";
 import { answerReviewRequestText, answerRevisionRequestText } from "./prompts";
+import { answerReviewStepControls } from "./stepControls";
 import {
   loadAnswerReviewSessionSnapshot,
   rejectedAnswerReviewFindings,
@@ -45,6 +47,11 @@ export type AnswerReviewStepStartInput = Readonly<{
   controls: Readonly<Record<string, unknown>>;
   /** The session's last message, which the step appends to. */
   expectedActiveLeafId: string;
+  /**
+   * Who drives the session: the browser starts a manual session's steps, the
+   * server's driver an automatic one's. A step of the other mode is refused.
+   */
+  expectedMode?: AnswerReviewMode;
   /** The step the caller means to start; it must be the session's next one. */
   kind: AnswerReviewStepKind;
   /** Resolves the initiator again on every call, so authority lost mid-admission refuses the step. */
@@ -58,15 +65,7 @@ export type AnswerReviewStepStart =
   /** No run started: the response explains why; `stopped` is set when the refusal ended the session. */
   | Readonly<{ code: string; ok: false; response: Response; stopped?: AnswerReviewStopReason }>;
 
-/** The control keys a step takes from the chat; everything else in a send body is the server's. */
-const STEP_CONTROL_KEYS = [
-  "agentEnabled", "knowledgePlan", "mcp", "searchPlan", "searchPreferencePlan", "searchPreferenceSource", "skillIds",
-  "skills", "timeZone", "tools", "workspace"
-] as const;
-
-export function answerReviewStepControls(controls: Readonly<Record<string, unknown>>): Record<string, unknown> {
-  return Object.fromEntries(STEP_CONTROL_KEYS.flatMap((key) => Object.hasOwn(controls, key) ? [[key, controls[key]]] : []));
-}
+export { answerReviewStepControls };
 
 function refusal(code: string, status: number, stopped?: AnswerReviewStopReason): AnswerReviewStepStart {
   return { code, ok: false, response: Response.json({ error: code }, { headers: { "cache-control": "no-store" }, status }),
@@ -75,10 +74,10 @@ function refusal(code: string, status: number, stopped?: AnswerReviewStopReason)
 
 /** The progress of a loaded session, read from its settled steps. */
 export function answerReviewSnapshotProgress(snapshot: AnswerReviewSessionSnapshot): AnswerReviewProgress {
-  const { session, steps } = snapshot;
+  const { session, source, steps } = snapshot;
   return answerReviewProgress({
     maxRounds: session.maxRounds, mode: session.mode, reviewerCount: session.reviewers.length, round: session.round,
-    state: session.state, steps, stopReason: session.stopReason
+    ...(source ? { source } : {}), state: session.state, steps, stopReason: session.stopReason
   });
 }
 
@@ -156,6 +155,7 @@ export async function startAnswerReviewStep(
   const snapshot = await loadAnswerReviewSessionSnapshot(deps.prisma, input.sessionId);
   // Only the initiator starts steps; any other reader learns nothing more.
   if (!snapshot || snapshot.session.userId !== input.userId) return refusal("answer_review_unavailable", 404);
+  if (input.expectedMode && snapshot.session.mode !== input.expectedMode) return refusal("answer_review_step_unavailable", 409);
   const progress = answerReviewSnapshotProgress(snapshot);
   if (progress.settle && progress.stopReason && progress.state !== "running") {
     await settleAnswerReviewSession(deps.prisma, { sessionId: snapshot.session.id, state: progress.state, stopReason: progress.stopReason });

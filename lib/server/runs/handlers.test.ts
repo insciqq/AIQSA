@@ -2373,6 +2373,61 @@ describe("model run route handlers", () => {
     expect(await conflict.json()).toEqual({ error: "answer_review_step_unavailable" });
   });
 
+  it("freezes a send's automatic review into its admission and refuses a reviewer the answer's own model", async () => {
+    const { repository, state } = createMemoryRepository({
+      modelKeys: new Set(["fake:fake-qsa", "fake:fake-reviewer"]), providerKeys: new Set(), searchStrategies: new Set()
+    }, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    const POST = createSendMessageHandler({ ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository });
+    const send = (reviewer: string) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({
+        answerReview: { maxRounds: 2, reviewers: [{ modelId: reviewer, provider: "fake",
+          searchPlan: { mode: "all_selected", optionIds: [] } }] },
+        content: { blocks: [{ text: "Check the total.", type: "text" }] }, mcp: { mode: "off" }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] }
+      }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    const own = await send("fake-qsa");
+    expect(own.status).toBe(409);
+    expect(await own.json()).toEqual({ error: "answer_review_reviewer_unavailable" });
+    expect(state.created).toBeNull();
+
+    const accepted = await send("fake-reviewer");
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(state.created).toMatchObject({ answerReviewAuto: {
+      authorModel: { modelId: "fake-qsa", provider: "fake" },
+      controls: { controls: { mcp: { mode: "off" } }, reviewerSearchPlans: [{ mode: "all_selected", optionIds: [] }], version: 1 },
+      maxRounds: 2,
+      reviewers: [{ modelId: "fake-reviewer", name: "fake-reviewer", provider: "fake" }]
+    } });
+    expect(state.created).not.toHaveProperty("answerReviewStep");
+  });
+
+  it("starts no automatic review from a review step's own send", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
+      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
+      pdf: true, reasoning: true, streaming: true, vision: true
+    });
+    const response = await createSendMessageHandler({ ...authDeps, answerReviewStep: {
+      preparation: { kind: "review", reviewer: 0, round: 1, sessionId: "session-1", step: 0 }, turnKind: "answer_review_request"
+    }, providers: { fake: createFakeProviderAdapter() }, repository })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ answerReview: { maxRounds: 1, reviewers: [{ modelId: "missing", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }] }, content: { blocks: [{ text: "Review the answer.", type: "text" }] },
+        modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(state.created).not.toHaveProperty("answerReviewAuto");
+  });
+
   it("stops an answer review step whose provider has not answered yet, at once", async () => {
     const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
       toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,

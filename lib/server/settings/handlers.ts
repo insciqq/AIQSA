@@ -18,8 +18,10 @@ import {
   decodeKnowledgeSelection,
   type KnowledgeSelection
 } from "../../contracts/knowledge";
+import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
 import {
   catalogDefaultAssistant,
+  resolveAnswerReviewDefault,
   resolveChatDefaults,
   resolveCurrentUserCatalogSelection,
   resolveCurrentUserControlValues,
@@ -35,6 +37,8 @@ export type SettingsHandlerData = CatalogSelectionData & {
 };
 
 export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
+  /** The automatic answer review new chats start with. */
+  defaultAnswerReview: AnswerReviewAutoConfig;
   /** Off also removes every browser push subscription of the account. */
   browserNotificationsEnabled: boolean;
   /** Null clears the default; an id must be available to the user. */
@@ -197,6 +201,7 @@ function buildSettingsUpdate(
     "answerSoundEnabled",
     "answerSoundId",
     "browserNotificationsEnabled",
+    "defaultAnswerReview",
     "defaultAssistantId",
     "defaultControlValues",
     "defaultKnowledgePlan",
@@ -266,6 +271,16 @@ function buildSettingsUpdate(
       }
       update.defaultKnowledgePlan = decoded.plan.mode === "none" ? null : decoded.plan;
     }
+  }
+
+  if ("defaultAnswerReview" in body) {
+    // Reviewers come from the user's catalog and call tools; every send admits them again.
+    const config = decodeAnswerReviewAutoConfig(body.defaultAnswerReview);
+    if (!config || config.reviewers.some((reviewer) => !models.some((model) => model.modelId === reviewer.modelId &&
+      model.provider === reviewer.provider && model.capabilities.toolCalling === true))) {
+      return { error: "default_answer_review_invalid" };
+    }
+    update.defaultAnswerReview = config;
   }
 
   if ("defaultMcpMode" in body) {
@@ -345,6 +360,7 @@ function serializeSettings(
     answerSoundEnabled: settings.answerSoundEnabled ?? DEFAULT_ANSWER_SOUND.answerSoundEnabled,
     answerSoundId: settings.answerSoundId ?? DEFAULT_ANSWER_SOUND.answerSoundId,
     browserNotificationsEnabled: settings.browserNotificationsEnabled ?? true,
+    defaultAnswerReview: resolveAnswerReviewDefault(settings),
     defaultAssistantId: defaultAssistant.assistantId,
     defaultAssistantUnavailable: defaultAssistant.assistantUnavailable,
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),

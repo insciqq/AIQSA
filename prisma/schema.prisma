@@ -98,6 +98,8 @@ enum AnswerReviewStopReason {
   superseded
   review_unreadable
   error
+  unsupported
+  time_limit
 }
 
 enum ModelRunStatus {
@@ -1402,6 +1404,8 @@ model UserSettings {
   defaultMcpMode          String         @default("auto")
   defaultSkillsMode       SkillsMode     @default(auto)
   defaultWorkspaceEnabled Boolean        @default(true)
+  /// Automatic answer review new chats start with (`AnswerReviewAutoConfig`); null is off.
+  defaultAnswerReview     Json?
   defaultAssistantId      String?
   /// Null follows the administrator default; only withdrawal resets a choice.
   imageProviderModelId    String?
@@ -3300,6 +3304,8 @@ model Chat {
   /// task's history retention keeps such a chat.
   ownerKeptAt                     DateTime?
   workspaceEnabled                Boolean              @default(false)
+  /// The chat's automatic answer review (`AnswerReviewAutoConfig`); null is off.
+  answerReviewConfig              Json?
   totalInputTokens                Int                  @default(0)
   totalOutputTokens               Int                  @default(0)
   totalReasoningTokens            Int                  @default(0)
@@ -3579,6 +3585,13 @@ model AnswerReviewSession {
   round                    Int                     @default(1)
   state                    AnswerReviewState       @default(running)
   stopReason               AnswerReviewStopReason?
+  /// Automatic only: the controls the user's send froze for every step (its
+  /// Search, MCP, Workspace, Skills and time zone, with each reviewer's
+  /// Search as the composer reconciled it for that model).
+  controls                 Json?
+  /// Automatic only: the driver handled the session's end (its one
+  /// notification) after it stopped running; at most once.
+  endNotifiedAt            DateTime?
   createdAt                DateTime                @default(now())
   updatedAt                DateTime                @updatedAt
   chat                     Chat                    @relation(fields: [chatId], references: [id], onDelete: Cascade)
@@ -3590,6 +3603,7 @@ model AnswerReviewSession {
   @@unique([chatId, id])
   @@unique([chatId, sourceAssistantMessageId])
   @@index([chatId, state])
+  @@index([mode, state])
   @@index([userId])
 }
 

@@ -17,7 +17,7 @@ import {
   type AnswerReviewState,
   type AnswerReviewStopReason
 } from "../../contracts/answerReviews";
-import type { AnswerReviewStepFacts } from "../../domain/answerReviewProgress";
+import type { AnswerReviewSourceFacts, AnswerReviewStepFacts } from "../../domain/answerReviewProgress";
 import { isAnswerReviewStepMarker } from "../tools/answerReview";
 import type { AnswerReviewRejectedFinding } from "./prompts";
 
@@ -34,6 +34,7 @@ export type AnswerReviewModelRef = AnswerReviewModelWire;
 export type AnswerReviewSessionRecord = Readonly<{
   authorModel: AnswerReviewModelRef;
   chatId: string;
+  createdAt: Date;
   id: string;
   maxRounds: number | null;
   mode: AnswerReviewMode;
@@ -52,8 +53,13 @@ export type AnswerReviewStepRecord = AnswerReviewStepFacts & Readonly<{
   reviewCard?: AnswerReviewCard;
   reviewer?: number;
   runId: string | null;
+  /** The step's run reached a terminal state (its Workspace settled too); false without a run. */
+  runTerminal: boolean;
   turnId: string;
 }>;
+
+/** An automatic session's answer: its message's facts and whether its run is terminal. */
+export type AnswerReviewSourceRecord = AnswerReviewSourceFacts & Readonly<{ runId: string | null; runTerminal: boolean }>;
 
 export type AnswerReviewSessionSnapshot = Readonly<{
   chat: Readonly<{ activeLeafMessageId: string | null; assistantId: string | null; projectId: string | null }>;
@@ -62,6 +68,8 @@ export type AnswerReviewSessionSnapshot = Readonly<{
   /** The group's latest version: the newest complete revision answer, else the source answer. */
   latestVersionId: string;
   session: AnswerReviewSessionRecord;
+  /** An automatic session's answer under review. */
+  source?: AnswerReviewSourceRecord;
   steps: readonly AnswerReviewStepRecord[];
 }>;
 
@@ -82,10 +90,11 @@ function decodeReviewers(value: unknown): AnswerReviewModelRef[] | null {
   return reviewers.every((reviewer): reviewer is AnswerReviewModelRef => reviewer !== null) ? reviewers : null;
 }
 
-const sessionSelect = {
-  authorModel: true, chatId: true, id: true, maxRounds: true, mode: true, reviewers: true, round: true,
+export const answerReviewSessionSelect = {
+  authorModel: true, chatId: true, createdAt: true, id: true, maxRounds: true, mode: true, reviewers: true, round: true,
   sourceAssistantMessageId: true, state: true, stopReason: true, userId: true
 } satisfies Prisma.AnswerReviewSessionSelect;
+const sessionSelect = answerReviewSessionSelect;
 
 type SessionRow = Prisma.AnswerReviewSessionGetPayload<{ select: typeof sessionSelect }>;
 
@@ -95,8 +104,9 @@ export function decodeAnswerReviewSessionRow(row: SessionRow): AnswerReviewSessi
   const reviewers = decodeReviewers(row.reviewers);
   if (!authorModel || !reviewers) return null;
   return {
-    authorModel, chatId: row.chatId, id: row.id, maxRounds: row.maxRounds, mode: row.mode, reviewers, round: row.round,
-    sourceAssistantMessageId: row.sourceAssistantMessageId, state: row.state, stopReason: row.stopReason, userId: row.userId
+    authorModel, chatId: row.chatId, createdAt: row.createdAt, id: row.id, maxRounds: row.maxRounds, mode: row.mode, reviewers,
+    round: row.round, sourceAssistantMessageId: row.sourceAssistantMessageId, state: row.state, stopReason: row.stopReason,
+    userId: row.userId
   };
 }
 
@@ -149,7 +159,8 @@ const stepMessageSelect = {
       },
       id: true,
       mcpToolApprovals: { select: { id: true }, take: 1, where: { decision: null } },
-      normalizedRequest: true
+      normalizedRequest: true,
+      status: true
     },
     take: 1
   },
@@ -179,6 +190,13 @@ function stepStatus(status: string | undefined): AnswerReviewStepFacts["status"]
   return status === "complete" || status === "error" || status === "cancelled" ? status : "running";
 }
 
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(["complete", "error", "cancelled"]);
+
+/** Whether a run's own status is terminal: an answer can complete while its Workspace still settles. */
+export function answerReviewRunTerminal(status: string | null | undefined): boolean {
+  return status !== null && status !== undefined && TERMINAL_RUN_STATUSES.has(status);
+}
+
 /** A session's steps, in round and step order, from its messages. */
 export function answerReviewStepsFromMessages(rows: readonly StepMessageRow[]): AnswerReviewStepRecord[] {
   const answers = new Map<string, StepMessageRow>();
@@ -203,11 +221,19 @@ export function answerReviewStepsFromMessages(rows: readonly StepMessageRow[]): 
       ...(cards.decisions ? { decisions: true as const, decisionsCard: cards.decisions } : {}),
       kind,
       ...(cards.review && kind === "review"
-        ? { review: { findings: cards.review.findings.length, verdict: cards.review.verdict }, reviewCard: cards.review }
+        ? {
+            review: {
+              findings: cards.review.findings.length,
+              repeats: cards.review.findings.filter((finding) => finding.repeatsFindingId !== undefined).length,
+              verdict: cards.review.verdict
+            },
+            reviewCard: cards.review
+          }
         : {}),
       ...(reviewer !== undefined ? { reviewer } : {}),
       round: turn.answerReviewRound,
       runId: run?.id ?? null,
+      runTerminal: answerReviewRunTerminal(run?.status),
       status: answer ? stepStatus(answer.status) : "running",
       step: turn.answerReviewStep,
       turnId: turn.id
@@ -239,12 +265,49 @@ export async function loadAnswerReviewSessionSnapshot(
   const lastStep = steps.at(-1);
   const lastMessageId = lastStep ? lastStep.answerId ?? lastStep.turnId : session.sourceAssistantMessageId;
   const versions = steps.filter((step) => step.kind === "revision" && step.status === "complete" && step.answerId);
+  const source = session.mode === "auto" ? await loadAnswerReviewSource(db, session) : undefined;
   return {
     chat,
     lastMessageId,
     latestVersionId: versions.at(-1)?.answerId ?? session.sourceAssistantMessageId,
     session,
+    ...(source ? { source } : {}),
     steps
+  };
+}
+
+/**
+ * The answer an automatic session reviews: its status, an approval card it
+ * still waits on, images it generated, and its run's own status.
+ */
+async function loadAnswerReviewSource(
+  db: Pick<Prisma.TransactionClient, "message">,
+  session: Pick<AnswerReviewSessionRecord, "chatId" | "sourceAssistantMessageId">
+): Promise<AnswerReviewSourceRecord | undefined> {
+  const answer = await db.message.findFirst({
+    select: {
+      assistantModelRuns: {
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          mcpToolApprovals: { select: { id: true }, take: 1, where: { decision: null } },
+          status: true,
+          workspaceProducedAttachments: { select: { id: true }, take: 1, where: { origin: "IMAGE_OUTPUT" } }
+        },
+        take: 1
+      },
+      status: true
+    },
+    where: { chatId: session.chatId, id: session.sourceAssistantMessageId }
+  });
+  if (!answer) return undefined;
+  const run = answer.assistantModelRuns[0];
+  return {
+    ...(run?.mcpToolApprovals.length ? { approvalPending: true as const } : {}),
+    ...(run?.workspaceProducedAttachments.length ? { imageOutput: true as const } : {}),
+    runId: run?.id ?? null,
+    runTerminal: answerReviewRunTerminal(run?.status),
+    status: stepStatus(answer.status)
   };
 }
 

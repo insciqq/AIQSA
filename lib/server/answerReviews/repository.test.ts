@@ -10,6 +10,7 @@ import {
 const session: AnswerReviewSessionRecord = {
   authorModel: { modelId: "model-a", name: "Claude", provider: "connection-a" },
   chatId: "chat-1",
+  createdAt: new Date(Date.UTC(2026, 9, 8)),
   id: "session-1",
   maxRounds: null,
   mode: "manual",
@@ -62,13 +63,13 @@ describe("answer review steps from messages", () => {
       row({ answerReviewRound: 1, answerReviewStep: 1, id: "revise", parentMessageId: "review-answer",
         systemTurnKind: "answer_revision_request" }),
       row({ answerReviewRound: 1, answerReviewStep: 0, id: "review", parentMessageId: "answer-1", systemTurnKind: "answer_review_request" }),
-      row({ assistantModelRuns: [{ events: [{ payload: card(1, 1) }], id: "run-r", mcpToolApprovals: [], normalizedRequest: {} }],
+      row({ assistantModelRuns: [{ events: [{ payload: card(1, 1) }], id: "run-r", mcpToolApprovals: [], normalizedRequest: {}, status: "complete" }],
         id: "review-answer", parentMessageId: "review", role: "assistant" }),
-      row({ assistantModelRuns: [{ events: [], id: "run-v", mcpToolApprovals: [{ id: "approval-1" }], normalizedRequest: {} }],
+      row({ assistantModelRuns: [{ events: [], id: "run-v", mcpToolApprovals: [{ id: "approval-1" }], normalizedRequest: {}, status: "complete" }],
         id: "revised", parentMessageId: "revise", role: "assistant", status: "streaming" })
     ] as StepRow[]);
     expect(steps).toEqual([
-      expect.objectContaining({ answerId: "review-answer", kind: "review", review: { findings: 1, verdict: "changes_needed" },
+      expect.objectContaining({ answerId: "review-answer", kind: "review", review: { findings: 1, repeats: 0, verdict: "changes_needed" },
         reviewer: 0, round: 1, runId: "run-r", status: "complete", step: 0, turnId: "review" }),
       expect.objectContaining({ answerId: "revised", approvalPending: true, kind: "revision", round: 1, runId: "run-v",
         status: "running", step: 1, turnId: "revise" })
@@ -85,14 +86,14 @@ describe("answer review steps from messages", () => {
   it("lists findings the author rejected in earlier rounds with their reviewer's claim", () => {
     const steps = answerReviewStepsFromMessages([
       row({ answerReviewRound: 1, answerReviewStep: 0, id: "review", systemTurnKind: "answer_review_request" }),
-      row({ assistantModelRuns: [{ events: [{ payload: card(1, 2) }], id: "run-r", mcpToolApprovals: [], normalizedRequest: {} }],
+      row({ assistantModelRuns: [{ events: [{ payload: card(1, 2) }], id: "run-r", mcpToolApprovals: [], normalizedRequest: {}, status: "complete" }],
         id: "review-answer", parentMessageId: "review", role: "assistant" }),
       row({ answerReviewRound: 1, answerReviewStep: 1, id: "revise", parentMessageId: "review-answer",
         systemTurnKind: "answer_revision_request" }),
       row({ assistantModelRuns: [{ events: [{ payload: { artifactType: "answer_review_decisions", payload: { decisions: [
         { decision: "rejected", findingId: "R1.1.F1", reason: "Already sourced." },
         { decision: "accepted", findingId: "R1.1.F2", reason: "Right." }
-      ], round: 1, version: 1 } } }], id: "run-v", mcpToolApprovals: [], normalizedRequest: {} }],
+      ], round: 1, version: 1 } } }], id: "run-v", mcpToolApprovals: [], normalizedRequest: {}, status: "complete" }],
       id: "revised", parentMessageId: "revise", role: "assistant" })
     ] as StepRow[]);
     expect(rejectedAnswerReviewFindings(steps, 2)).toEqual([{ claim: "Claim 0", key: "R1.1.F1", reason: "Already sourced." }]);
