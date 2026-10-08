@@ -1,3 +1,4 @@
+import { samlSignInMethod } from "../saml/method";
 import { googleSignInMethod, yandexSignInMethod } from "./oauthClientMethod";
 import type { SignInMethodServerRegistry } from "./registry";
 
@@ -8,5 +9,6 @@ import type { SignInMethodServerRegistry } from "./registry";
  */
 export const signInMethodServerRegistry: SignInMethodServerRegistry = {
   google: googleSignInMethod,
+  saml: samlSignInMethod,
   yandex: yandexSignInMethod
 };
