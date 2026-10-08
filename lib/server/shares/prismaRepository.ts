@@ -6,6 +6,7 @@ import {
   projectPublicShareSnapshot
 } from "../../domain/shareSnapshot";
 import { prisma } from "../prisma";
+import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
 import { resolveProjectAccess } from "../projects/access";
 import type { ShareRepository } from "./handlers";
 
@@ -97,12 +98,21 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
         const history = await tx.message.findMany({ where: { chatId: chat.id, role: "assistant" },
           select: { id: true, ...messageFollowupSelect } });
         const followups = new Map(history.map(message => [message.id, projectMessageFollowups(message)]));
+        // Each answer review reads as its answer: the latest version stands in
+        // the source answer's place; the review turns stay out of the snapshot.
+        const sessions = chat.messages.some((message) => message.answerReviewSessionId)
+          ? await tx.answerReviewSession.findMany({ select: { id: true, sourceAssistantMessageId: true }, where: { chatId: chat.id } })
+          : [];
+        const collapse = collapseAnswerReviews(chat.messages.map((message) => ({
+          answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
+          role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
+        })), sessions);
         const snapshot = buildPublicShareSnapshot({
-          activeLeafMessageId: leaf,
-          messages: chat.messages.map((message) => ({
+          activeLeafMessageId: collapse.replacements.get(leaf) ?? leaf,
+          messages: chat.messages.filter((message) => !collapse.removed.has(message.id)).map((message) => ({
             content: message.content,
             id: message.id,
-            parentMessageId: message.parentMessageId,
+            parentMessageId: collapse.parents.has(message.id) ? collapse.parents.get(message.id) ?? null : message.parentMessageId,
             role: message.role as "assistant" | "system" | "tool" | "user",
             ...(followups.get(message.id) ? { followups: followups.get(message.id)! } : {})
           })),
