@@ -30,8 +30,9 @@ function count(value: bigint | number): number {
   return converted;
 }
 
-/** Shadow generations are never deleted while their owner exists, and the
- * table holds a handful of rows per owner, so the window needs no index. */
+/** Only a full Memory reset or account deletion removes an owner's old shadow
+ * generations, and the table holds a handful of rows per owner, so the window
+ * needs no index. */
 export async function readMemoryRebuildLoad(
   client: AdminHealthQueueClient,
   input: Readonly<{ now: Date; threshold: number; windowMs: number }>
