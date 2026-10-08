@@ -4462,3 +4462,78 @@ describe("assistantControlDefaults", () => {
     expect(assistantControlDefaults({ maxOutputTokens: "12.5", temperature: "warm" }, model)).toEqual({});
   });
 });
+
+describe("continuation after an MCP approval", () => {
+  const card = { approvalId: "approval-1", serverName: "Records", toolName: "delete_record" };
+  const retry = "The answer did not continue. Use Continue on the approval card to try again.";
+
+  beforeEach(() => {
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+  });
+
+  it("sends the server's turn after the latest answer and reports a started run", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Kept draft" });
+    prepareRegenerationThread();
+
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("started");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/chats/chat-a/messages");
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ expectedActiveLeafId: "assistant-original",
+      systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } });
+    expect(body).not.toHaveProperty("content");
+    expect(body).not.toHaveProperty("text");
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Kept draft" });
+  });
+
+  it("says why it did not start while another answer runs, and sends nothing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    prepareRegenerationThread();
+    useRunLifecycleStore.getState().streamStarted({ assistantMessageId: "assistant-other", chatId: "chat-a" });
+
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("not_started");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.setNotice).toHaveBeenCalledWith({ chatId: "chat-a", kind: "error",
+      text: `Another answer is still running in this chat. ${retry}` });
+  });
+
+  it("says why it did not start without a runnable model or a latest answer", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const withoutModel = useMessageRunActionsForTest({ attachments: [], draft: "", model: null });
+    prepareRegenerationThread();
+    expect(await withoutModel.sendMcpApprovalContinuation(card)).toBe("not_started");
+    expect(withoutModel.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error",
+      text: `No available model is selected for this chat. ${retry}` });
+
+    const withoutAnswer = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    expect(await withoutAnswer.sendMcpApprovalContinuation(card)).toBe("not_started");
+    expect(withoutAnswer.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error",
+      text: `The chat's latest answer could not be found. ${retry}` });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rolls a refused turn back and points to Continue, unless the approval is gone", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => Response.json({ error: "active_run_in_progress" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    prepareRegenerationThread();
+
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("not_started");
+    expect(actions.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error", text: expect.stringMatching(
+      /^Another response is still running\..* The answer did not continue\. Use Continue on the approval card to try again\.$/u) });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages.map((message) => message.id))
+      .toEqual(["user-original", "assistant-original"]);
+
+    fetchMock.mockImplementation(async () => Response.json({ error: "mcp_approval_continuation_unavailable" }, { status: 409 }));
+    expect(await actions.sendMcpApprovalContinuation(card)).toBe("unavailable");
+    expect(actions.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error",
+      text: "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval." });
+  });
+});

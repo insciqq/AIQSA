@@ -88,6 +88,49 @@ describe("McpApprovalCardsV2", () => {
     expect(screen.getByRole("region", { name: "Tool approvals" })).toBeVisible();
   });
 
+  it("leaves Continue on the latest answer when the Allow started no run, and retries it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ approval: { ...decided("allowed_once"),
+      canContinue: true } }), { status: 200 })));
+    const onContinue = vi.fn(async () => "not_started" as const);
+    render(<McpApprovalCardsV2 cards={[pending]} offerContinue onContinue={onContinue} runId="run-1" />);
+    const card = screen.getByTestId("mcp-approval-card");
+    fireEvent.click(within(card).getByRole("button", { name: "Allow once" }));
+    const retry = await within(card).findByRole("button", { name: "Continue" });
+    expect(card).toHaveTextContent("Allowed once: only this exact call may run, once. The answer has not continued yet.");
+    expect(onContinue).toHaveBeenCalledTimes(1);
+    fireEvent.click(retry);
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(2));
+    expect(onContinue).toHaveBeenLastCalledWith({ ...decided("allowed_once"), canContinue: true });
+    expect(await within(card).findByRole("button", { name: "Continue" })).toBeEnabled();
+  });
+
+  it("drops Continue once the server says the approval is gone", async () => {
+    const allowed: McpApprovalCard = { ...decided("allowed_server"), canContinue: true };
+    const onContinue = vi.fn(async () => "unavailable" as const);
+    render(<McpApprovalCardsV2 cards={[allowed]} offerContinue onContinue={onContinue} runId="run-1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Continue" })).toBeNull());
+    expect(screen.getByTestId("mcp-approval-card")).not.toHaveTextContent("The answer has not continued yet.");
+  });
+
+  it("offers Continue only on the latest settled answer, for a card the server lets continue", () => {
+    const allowed: McpApprovalCard = { ...decided("allowed_once"), canContinue: true };
+    const onContinue = vi.fn();
+    const { rerender } = render(<McpApprovalCardsV2 cards={[allowed]} onContinue={onContinue} runId="run-1" />);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    rerender(<McpApprovalCardsV2 cards={[allowed]} live offerContinue onContinue={onContinue} runId="run-1" />);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    rerender(<McpApprovalCardsV2 cards={[decided("allowed_once")]} offerContinue onContinue={onContinue} runId="run-1" />);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    rerender(<AnswerOutputsV2 artifact={{ citations: [], mcpApprovals: [allowed], reasoningText: [], sources: [] }}
+      latestAnswer onContinueAfterMcpApproval={onContinue} runId="run-1" />);
+    expect(screen.getByRole("button", { name: "Continue" })).toBeVisible();
+    rerender(<AnswerOutputsV2 artifact={{ citations: [], mcpApprovals: [allowed], reasoningText: [], sources: [] }}
+      onContinueAfterMcpApproval={onContinue} runId="run-1" />);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    expect(onContinue).not.toHaveBeenCalled();
+  });
+
   it("shows the server-written continuation turn as a compact chip", () => {
     render(<McpApprovalContinuationTurnV2 anchorId="message-1"
       content="The user approved `delete_record` on `Records`. Continue the task." />);
