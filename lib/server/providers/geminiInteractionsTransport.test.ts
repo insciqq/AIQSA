@@ -281,18 +281,21 @@ describe("Gemini Interactions transport", () => {
       }
     });
 
-    it.each(sends)("ends a backoff longer than the remaining deadline as a request timeout (%s)", async (send) => {
+    it.each(sends)("ends at once with the refusal when its backoff outlasts the remaining deadline (%s)", async (send) => {
       const fetchFn = vi.fn<typeof fetch>(async () => new Response("rate limited", { status: 429, headers: { "retry-after": "60" } }));
+      const sleep = vi.fn(async (_delayMs: number, signal: AbortSignal) => new Promise<void>((_resolve, reject) => {
+        const rejectFromSignal = () => reject(signal.reason);
+        if (signal.aborted) rejectFromSignal();
+        else signal.addEventListener("abort", rejectFromSignal, { once: true });
+      }));
       const client = createFetchGeminiInteractionsClient({ apiKey: "key", defaultTimeoutMs: 5, fetchFn, initialRequestRetry: {
         maxAttempts: 3,
-        sleep: async (_delayMs, signal) => new Promise<void>((_resolve, reject) => {
-          const rejectFromSignal = () => reject(signal.reason);
-          if (signal.aborted) rejectFromSignal();
-          else signal.addEventListener("abort", rejectFromSignal, { once: true });
-        })
+        sleep
       } });
-      await expect(client[send](body)).rejects.toMatchObject({ code: "provider_request_timed_out", timeoutMs: 5 });
+      // The provider's refusal, not a deadline the wait would have run into.
+      await expect(client[send](body)).rejects.toMatchObject({ httpStatus: 429, retryAfterMs: 60_000 });
       expect(fetchFn).toHaveBeenCalledOnce();
+      expect(sleep).not.toHaveBeenCalled();
     });
 
     it.each<[number, string | null]>([

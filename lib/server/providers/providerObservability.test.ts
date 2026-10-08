@@ -20,6 +20,7 @@ import { ProviderRequestTimeoutError, withTimeoutSignal } from "./network";
 import { ProviderSearchExecutionError } from "./types";
 import { GeminiInteractionsStreamError } from "./geminiInteractionsStreamError";
 import { parseGeminiInteractionsSse } from "./geminiInteractionsResponse";
+import { parseOpenAIResponsesSse } from "./openaiResponsesResponse";
 
 const identity = { adapterKind: "openai_responses_compatible", providerFamily: "openai_compatible", connectionId: "connection-safe", providerModelId: "model-safe" };
 
@@ -283,6 +284,26 @@ describe("provider diagnostics", () => {
     await expect(iterator.next()).rejects.toMatchObject({ code: "gemini_interactions_stream_invalid_json" });
     expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
       code: "gemini_interactions_stream_invalid_json", reason: "invalid_response" }));
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("names why a Responses stream dropped on the failed operation, never its content", async () => {
+    const records = capture();
+    const frames = [{ response: { id: "resp-drop", status: "in_progress" }, type: "response.created" },
+      { response: { error: { code: "server_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" }, id: "resp-drop", status: "failed" },
+        type: "response.failed" }];
+    const responseBody = new ReadableStream<Uint8Array>({ start(controller) {
+      for (const frame of frames) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+      controller.close();
+    } });
+    const iterator = observeProviderStream(identity, parseOpenAIResponsesSse({ background: false, responseBody, stream: true }),
+      { timeoutMs: 1000, signal: new AbortController().signal });
+    await iterator.next();
+    await expect(iterator.next()).rejects.toThrow("openai_response_failed");
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed", level: "error",
+      stream_drop: "response_failed", code: "unknown" }));
+    // A value outside the closed vocabulary never reaches a record.
+    expect(observedFailure(Object.assign(new Error("x"), { streamDrop: "PRIVATE_DROP_CANARY" }))).toEqual({ code: "unknown", reason: "unknown" });
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 

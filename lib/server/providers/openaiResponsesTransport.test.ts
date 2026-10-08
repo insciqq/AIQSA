@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  compatibleDroppedRoundDecision,
   createFetchOpenAIResponsesClient,
   openAIRetryableErrorPayload
 } from "./openaiResponsesTransport";
 import { ProviderResponseTooLargeError } from "./network";
 import { observedFailure, providerContextRejection, providerHttpFailureMessage } from "./providerObservability";
 import { ProviderSafeFetchError } from "./providerSafeFetch";
+import { markProviderStreamDrop, providerStreamDrop } from "./streamDrop";
 
 function delayedResponse(input: {
   delayMs: number;
@@ -407,27 +409,33 @@ describe("OpenAI Responses transport", () => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
       new Response("rate limited", { status: 429 })
     );
+    const sleep = vi.fn(async (_delayMs: number, signal: AbortSignal) =>
+      new Promise<void>((_resolve, reject) => {
+        const rejectFromSignal = () => reject(signal.reason);
+        if (signal.aborted) rejectFromSignal();
+        else signal.addEventListener("abort", rejectFromSignal, { once: true });
+      }));
     const client = createFetchOpenAIResponsesClient({
       apiKey: "key",
       defaultTimeoutMs: 5,
       fetchFn,
       requestIsolation,
-      initialRequestRetry: {
-        maxAttempts: 3,
-        sleep: async (_delayMs, signal) =>
-          new Promise<void>((_resolve, reject) => {
-            const rejectFromSignal = () => reject(signal.reason);
-            if (signal.aborted) rejectFromSignal();
-            else signal.addEventListener("abort", rejectFromSignal, { once: true });
-          })
-      }
+      initialRequestRetry: { maxAttempts: 3, random: () => 0, sleep }
     });
 
-    await expect(client.create({ model: "gpt-test" })).rejects.toMatchObject({
-      code: "provider_request_timed_out",
-      timeoutMs: 5
-    });
+    // A wait the remaining deadline cannot hold ends with the provider's own
+    // refusal at once, never with the deadline it would have outlasted.
+    await expect(client.create({ model: "gpt-test" })).rejects.toMatchObject({ status: 429 });
     expect(fetchFn).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+
+    // A Retry-After the deadline holds still waits inside it and is ended by it.
+    const later = vi.fn<typeof fetch>(async () => new Response("unavailable", { status: 503, headers: { "retry-after": "1" } }));
+    const bounded = createFetchOpenAIResponsesClient({ apiKey: "key", defaultTimeoutMs: 1_200, fetchFn: later, requestIsolation,
+      initialRequestRetry: { maxAttempts: 3, random: () => 0, sleep } });
+    await expect(bounded.create({ model: "gpt-test" })).rejects.toMatchObject({ code: "provider_request_timed_out", timeoutMs: 1_200 });
+    expect(later).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(1_000, expect.any(AbortSignal));
   });
 
   it("applies the provider request timeout to create, retrieve, cancel, and stream", async () => {
@@ -595,5 +603,55 @@ describe("OpenAI Responses transport", () => {
 
     await expect(client.stream!({ stream: true })).rejects.toThrow("openai_stream_body_missing");
     expect(fetchFn).toHaveBeenCalledOnce();
+  });
+});
+
+describe("compatible dropped-round decision", () => {
+  const failureOf = async (response: () => Response) => {
+    const client = createFetchOpenAIResponsesClient({ apiKey: "key", fetchFn: async () => response(),
+      acceptStreamedCreate: true, initialRequestRetry: { maxAttempts: 3, sleep: async () => undefined } });
+    return client.create({ stream: false }).then(() => null, (error: unknown) => error);
+  };
+  const sse = (data: readonly unknown[]) => () => new Response(data.map((value) => `data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`).join(""),
+    { headers: { "content-type": "text/event-stream" } });
+
+  it("sends a 502 again, with its Retry-After, unless its body classifies it", async () => {
+    // The transport itself never replays a 502: the round owner decides.
+    const plain = await failureOf(() => new Response(JSON.stringify({ error: { code: "server_is_overloaded", message: "x" } }), { status: 502 }));
+    expect(compatibleDroppedRoundDecision(plain)).toEqual({ retryAfterMs: null });
+    const later = await failureOf(() => new Response("{}", { headers: { "retry-after": "3" }, status: 502 }));
+    expect(compatibleDroppedRoundDecision(later)).toEqual({ retryAfterMs: 3_000 });
+    const tooLong = await failureOf(() => new Response(JSON.stringify({ error: { code: "context_length_exceeded", message: "x" } }), { status: 502 }));
+    expect(compatibleDroppedRoundDecision(tooLong)).toBeNull();
+    for (const status of [400, 429, 500, 503, 504]) {
+      expect(compatibleDroppedRoundDecision(await failureOf(() => new Response("{}", { status })))).toBeNull();
+    }
+  });
+
+  it("sends a streamed create that dropped before completion again", async () => {
+    const truncated = await failureOf(sse(["[DONE]"]));
+    expect(providerStreamDrop(truncated)).toBe("truncated");
+    expect(compatibleDroppedRoundDecision(truncated)).toEqual({ retryAfterMs: null });
+    const cut = await failureOf(sse(["{\"type\":\"response.output_item.do"]));
+    expect(providerStreamDrop(cut)).toBe("truncated");
+    const errorEvent = await failureOf(sse([{ code: "server_error", message: "x", type: "error" }]));
+    expect(providerStreamDrop(errorEvent)).toBe("error_event");
+    expect(compatibleDroppedRoundDecision(errorEvent)).toEqual({ retryAfterMs: null });
+    const contextLength = await failureOf(sse([{ code: "context_length_exceeded", message: "x", type: "error" }]));
+    expect(contextLength).toMatchObject({ code: "provider_context_length_exceeded" });
+    expect(providerStreamDrop(contextLength)).toBeNull();
+    expect(compatibleDroppedRoundDecision(contextLength)).toBeNull();
+  });
+
+  it("keeps every other failure", () => {
+    expect(compatibleDroppedRoundDecision(new Error("openai_stream_truncated"))).toBeNull();
+    expect(compatibleDroppedRoundDecision(new ProviderSafeFetchError("provider_http_request_failed"))).toBeNull();
+    expect(compatibleDroppedRoundDecision(markProviderStreamDrop(Object.assign(new Error("x"), { code: "provider_response_not_retryable" }),
+      "response_failed"))).toBeNull();
+    expect(compatibleDroppedRoundDecision(markProviderStreamDrop(Object.assign(new Error("x"), { capabilityFailureReason: "refusal" }),
+      "response_failed"))).toBeNull();
+    expect(compatibleDroppedRoundDecision(markProviderStreamDrop(Object.assign(new Error("aborted"), { code: "ECONNRESET" }), "reset")))
+      .toEqual({ retryAfterMs: null });
+    expect(compatibleDroppedRoundDecision(null)).toBeNull();
   });
 });

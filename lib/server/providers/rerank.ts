@@ -472,6 +472,7 @@ export function createOpenRouterRerankAdapter(input: Readonly<{
               );
             },
             options: input.network?.retry,
+            remainingMs: timeout.remainingMs,
             shouldRetry: (error) => rerankRetryDecision(error, timeout.signal),
             signal: timeout.signal
           });

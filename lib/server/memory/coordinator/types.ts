@@ -63,10 +63,14 @@ export type MemoryJobFenceDecision = Readonly<{
   status: "STALE" | "CANCELLED";
 }>;
 
+/** A bounded pass that leaves work for itself returns its job to the queue
+ * in the same transaction instead of completing it. */
+export type MemoryJobApplyOutcome = Readonly<{ requeue: true }>;
+
 export type MemoryJobApply = (
   tx: Prisma.TransactionClient,
   claim: MemoryJobClaim
-) => Promise<void>;
+) => Promise<MemoryJobApplyOutcome | void>;
 
 export type MemoryDeletionApply = (
   tx: Prisma.TransactionClient,

@@ -11,9 +11,11 @@ import {
 } from "../providers/anthropicMessages";
 import { calculateContextBudgetLimits } from "../../domain/contextBudget";
 import { createCompatibleResponsesAdapter } from "../providers/compatibleResponses";
-import { createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
+import { compatibleDroppedRoundDecision, createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
+import { sleepWithSignal } from "../providers/providerRetry";
+import { providerStreamDrop } from "../providers/streamDrop";
 import { anthropicMessagesToolBridge, geminiInteractionsToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
-import { runProviderToolLoop } from "./providerToolLoop";
+import { runProviderToolLoop, toolSynthesisDecision } from "./providerToolLoop";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { openRouterChatToolBridge } from "../tools/bridges";
 import { createOpenRouterChatAdapter } from "../providers/openRouterChat";
@@ -1886,6 +1888,105 @@ describe("tool-free synthesis when the budget ends tool use", () => {
     expect(JSON.stringify(requests[1]!.providerToolMessages)).not.toContain("Tool use is now disabled");
   });
 
+  const timeInstruction = "Tool use is now disabled for this run: the time limit of this turn is close. " +
+    "Planned tool calls may not have been executed. " +
+    "Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.";
+
+  it("lets a batch running when the time budget ends settle, then answers once without tools or a budget signal", async () => {
+    const { adapter, requests } = scripted([{ calls: 2, text: "" }, { text: "partial answer" }]);
+    let timeUsedUp = false;
+    const executeTool = vi.fn(async (call: { id: string; name: string }) => {
+      timeUsedUp = true;
+      return { status: "complete" as const, value: { callId: call.id, name: call.name, status: "complete" as const,
+        content: [{ type: "text" as const, text: "ok" }] } };
+    });
+    const transition = vi.fn();
+    const budgets: unknown[] = [];
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool, initialRequest: request(), parallelToolCalls: true, tools, onFinalSynthesisTransition: transition,
+      onFinalSynthesis: budget => { budgets.push(budget); }, timeBudgetExhausted: () => timeUsedUp
+    });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "partial answer" }, toolCalls: 2, toolRounds: 1 });
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    expect(transition).not.toHaveBeenCalled();
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: timeInstruction });
+    expect(budgets).toEqual([]);
+  });
+
+  it("refuses a batch returned after the time budget ends into the checkpointed synthesis and names time as its cause", async () => {
+    const { adapter, requests } = scripted([{ calls: 3, text: "planning" }, { text: "answer from earlier results" }]);
+    const executeTool = vi.fn();
+    const persistToolBatch = vi.fn();
+    const transitions: Array<{ continuation: ProviderToolLoopContinuation; round: number }> = [];
+    const dispatchMarks: number[] = [];
+    const budgets: unknown[] = [];
+    const usage: Array<[number, string]> = [];
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool, initialRequest: request(), parallelToolCalls: true, persistToolBatch, tools,
+      onFinalSynthesis: budget => { budgets.push(budget); },
+      onFinalSynthesisTransition: input => { transitions.push(input); },
+      beforeSynthesisDispatch: ({ round }) => { dispatchMarks.push(round); },
+      onUsage: (_usage, _request, context) => { usage.push([context.round, context.completeness]); },
+      // Used up while the first round is planned.
+      timeBudgetExhausted: () => requests.length > 0
+    });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer from earlier results" }, toolCalls: 0 });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(persistToolBatch).not.toHaveBeenCalled();
+    expect(transitions).toEqual([{ round: 1, continuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }]);
+    expect(dispatchMarks).toEqual([2]);
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: timeInstruction });
+    expect(JSON.stringify(transitions)).not.toContain("Tool use is now disabled");
+    expect(budgets).toEqual([]);
+    expect(usage).toEqual([[1, "terminal"], [2, "terminal"]]);
+  });
+
+  it("decides time only where live execution knows it; recovery keeps the checkpointed call-budget decision", () => {
+    const decide = (timeExhausted?: boolean) => toolSynthesisDecision({
+      budgets: { maxToolCalls: 320, maxToolRounds: 100 }, continuation: { finalSynthesis: "budget_exhausted" },
+      initialToolChoice: "auto", noProgress: false, progress: { toolCalls: 4, toolRounds: 2 },
+      ...(timeExhausted === undefined ? {} : { timeExhausted })
+    });
+    expect(decide()).toEqual({ budget: { kind: "calls", limit: 320 }, reason: "budget_exhausted" });
+    expect(decide(false)).toEqual({ budget: { kind: "calls", limit: 320 }, reason: "budget_exhausted" });
+    expect(decide(true)).toEqual({ budget: null, reason: "time" });
+    expect(toolSynthesisDecision({ budgets: { maxToolCalls: 320, maxToolRounds: 100 }, continuation: {},
+      initialToolChoice: "none", noProgress: false, progress: { toolCalls: 0, toolRounds: 0 }, timeExhausted: true })).toBeNull();
+  });
+
+  it("keeps the no-progress cause over a used-up time budget", async () => {
+    const { adapter, requests } = scripted([{ calls: 1, text: "" }, { text: "answer" }]);
+    let blocked = false;
+    await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool: async call => { blocked = true; return { status: "complete", value: { callId: call.id, name: call.name,
+        status: "error", content: [{ type: "json", value: { error: "tool_call_repeat_blocked", repeatOf: [1, 2] } }] } }; },
+      initialRequest: request(), parallelToolCalls: true, tools, isRepeatBlockedCall: () => true,
+      timeBudgetExhausted: () => blocked
+    });
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: instruction("repeated identical calls returned no new data", true) });
+  });
+
+  it("keeps the approval cause over a used-up time budget", async () => {
+    const { adapter, requests } = scripted([{ calls: 1, text: "" }, { text: "answer" }]);
+    let gated = false;
+    await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool: async call => { gated = true; return { status: "complete", value: { callId: call.id, name: call.name,
+        status: "error", content: [{ type: "json", value: { error: "mcp_approval_required" } }] } }; },
+      initialRequest: request(), parallelToolCalls: true, tools, isApprovalGatedCall: () => true,
+      timeBudgetExhausted: () => gated
+    });
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: instruction("a tool call waits for the user's approval in the chat", true) });
+  });
+
   it("sends the Anthropic instruction as a text block the adapter keeps", async () => {
     const { adapter, requests } = scripted([{ calls: 6, text: "" }, { text: "answer" }]);
     await runProviderToolLoop({
@@ -1934,5 +2035,216 @@ describe("synthesis after a refused batch never inherits reader-dependent refere
     expect(JSON.stringify(prepared[2]!.providerToolMessages)).toContain("FULL_DATA");
     expect(JSON.stringify(requests[2]!.providerToolMessages)).toContain("FULL_DATA");
     expect(JSON.stringify(requests[2]!.providerToolMessages)).not.toContain("REFERENCE_ONLY");
+  });
+});
+
+describe("dropped Codex LB round retry", () => {
+  const alpha: RunTool = { capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" };
+  const artifact: RunTool = { capability: "artifact", description: "Artifact", inputSchema: { type: "object" }, name: "create_artifact" };
+  const encoder = new TextEncoder();
+  /** One SSE body read chunk by chunk; `failure` breaks the read after them. */
+  const sse = (events: readonly unknown[], failure?: unknown) => {
+    const chunks = events.map((event) => encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+    let index = 0;
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (index < chunks.length) controller.enqueue(chunks[index++]!);
+        else if (failure) controller.error(failure);
+        else controller.close();
+      }
+    }), { headers: { "content-type": "text/event-stream" } });
+  };
+  const created = (id: string) => ({ response: { id, status: "in_progress" }, type: "response.created" });
+  const delta = (text: string) => ({ delta: text, type: "response.output_text.delta" });
+  const failed = (id: string, error: Record<string, unknown>, usage?: Record<string, number>) =>
+    ({ response: { error, id, output: [], status: "failed", ...(usage ? { usage } : {}) }, type: "response.failed" });
+  const completed = (id: string, text: string, call?: string) => ({ response: { id, status: "completed",
+    output: call ? [{ arguments: "{}", call_id: call, id: `fc-${call}`, name: "alpha", type: "function_call" }]
+      : [{ content: [{ text, type: "output_text" }], role: "assistant", type: "message" }],
+    usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } }, type: "response.completed" });
+  const steps = {
+    "502": () => new Response(JSON.stringify({ error: { code: "server_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }),
+      { headers: { "content-type": "application/json" }, status: 502 }),
+    "502_retry_after": () => new Response("{}", { headers: { "retry-after": "2" }, status: 502 }),
+    "502_retry_after_long": () => new Response("{}", { headers: { "retry-after": "301" }, status: 502 }),
+    truncated: () => sse([created("resp-drop"), delta("Dropped par")]),
+    error_event: () => sse([created("resp-drop"), delta("Dropped par"),
+      { code: "server_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY", type: "error" }]),
+    response_failed: () => sse([created("resp-drop"), delta("Dropped par"),
+      failed("resp-drop", { code: "server_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" }, { input_tokens: 9, output_tokens: 1, total_tokens: 10 })]),
+    reset: () => sse([created("resp-drop"), delta("Dropped par")], Object.assign(new Error("aborted"), { code: "ECONNRESET" })),
+    context_failed: () => sse([created("resp-drop"), delta("Dropped par"),
+      failed("resp-drop", { code: "context_length_exceeded", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" })]),
+    content_filter: () => sse([created("resp-drop"), delta("Dropped par"), failed("resp-drop", { code: "content_filter", message: "x" })]),
+    tool_arguments: () => sse([created("resp-drop"),
+      { item: { arguments: "", call_id: "art-1", id: "fc-art", name: "create_artifact", type: "function_call" }, output_index: 0,
+        type: "response.output_item.added" },
+      { delta: "{\"title\"", item_id: "fc-art", output_index: 0, type: "response.function_call_arguments.delta" }]),
+    hosted_search: () => sse([created("resp-drop"), { item_id: "ws-1", output_index: 0, type: "response.web_search_call.in_progress" }]),
+    final: () => sse([created("resp-final"), delta("Final answer"), completed("resp-final", "Final answer")]),
+    final_tool: () => sse([created("resp-tool"), completed("resp-tool", "", "call-1")])
+  } satisfies Record<string, () => Response>;
+  type Step = keyof typeof steps;
+
+  function harness(sequence: readonly Step[], input: Readonly<{
+    admitted?: boolean;
+    onUsage?: (usage: unknown, context: unknown) => void;
+    reopen?: () => Promise<boolean>;
+    roundTimeoutMs?: number;
+    signal?: AbortSignal;
+    sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+    tools?: readonly RunTool[];
+  }> = {}) {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const step = sequence[bodies.length - 1];
+      if (!step) throw new Error("unexpected_request");
+      return steps[step]();
+    });
+    const adapter = createCompatibleResponsesAdapter({ client: createFetchOpenAIResponsesClient({ apiKey: "synthetic",
+      baseUrl: "https://lb.example.test/backend-api/codex", fetchFn, initialRequestRetry: { maxAttempts: 3, sleep: async () => undefined },
+      requestIsolation: true }) });
+    const observe = vi.fn();
+    const reopen = vi.fn(async (_value: Readonly<{ attempt: number; publishedText: boolean; round: number }>) =>
+      input.reopen ? input.reopen() : true);
+    const sleeps: number[] = [];
+    const usage: Array<[unknown, unknown]> = [];
+    const text: string[] = [];
+    const executeTool = vi.fn(async (call: { id: string; name: string }) => ({ status: "complete" as const,
+      value: { callId: call.id, content: [{ text: "evidence", type: "text" as const }], name: call.name, status: "complete" as const } }));
+    const run = () => runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2,
+        ...(input.roundTimeoutMs ? { providerRoundTimeoutMs: input.roundTimeoutMs } : {}) },
+      executeTool, initialRequest: request({ params: { stream: true }, provider: "openai-compatible" }),
+      onSignal: (signal) => { if (signal.type === "text_delta") text.push(signal.delta); },
+      onToolArguments: async () => undefined,
+      onUsage: (value, _request, context) => {
+        usage.push([value, context]);
+        input.onUsage?.(value, context);
+      },
+      parallelToolCalls: false,
+      ...(input.admitted === false ? {} : { roundRetry: {
+        policy: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe },
+        random: () => 0, reopen,
+        sleep: input.sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); })
+      } }),
+      ...(input.signal ? { signal: input.signal } : {}),
+      tools: [...(input.tools ?? [alpha])]
+    });
+    return { bodies, executeTool, fetchFn, observe, reopen, run, sleeps, text, usage };
+  }
+  const unknownPartial = [{}, { completeness: "partial", round: 1 }];
+  const withoutRoutingKey = ({ prompt_cache_key: _key, ...body }: Record<string, unknown>) => body;
+
+  it.each([
+    ["502", null, false],
+    ["truncated", "truncated", true],
+    ["error_event", "error_event", true],
+    ["response_failed", "response_failed", true],
+    ["reset", "reset", true]
+  ] as const)("sends the round again after a %s, replacing its text", async (step, drop, publishedText) => {
+    const loop = harness([step, "final"]);
+    const outcome = await loop.run();
+    expect(outcome).toMatchObject({ final: { finalText: "Final answer" }, providerRounds: 1, status: "complete" });
+    expect(loop.fetchFn).toHaveBeenCalledTimes(2);
+    // The same prepared request, destination and model; only the routing key is per request.
+    expect(withoutRoutingKey(loop.bodies[1]!)).toEqual(withoutRoutingKey(loop.bodies[0]!));
+    expect(loop.bodies[1]!.prompt_cache_key).not.toBe(loop.bodies[0]!.prompt_cache_key);
+    // Each request is one accounted operation: the dropped one with what it reported.
+    expect(loop.usage).toEqual([
+      step === "response_failed"
+        ? [expect.objectContaining({ inputTokens: 9, outputTokens: 1 }), { completeness: "partial", round: 1 }]
+        : unknownPartial,
+      [expect.objectContaining({ inputTokens: 5, outputTokens: 2 }), { completeness: "terminal", round: 1 }]
+    ]);
+    expect(loop.sleeps).toEqual([125]);
+    expect(loop.reopen).toHaveBeenCalledExactlyOnceWith({ attempt: 2, publishedText, round: 1 });
+    expect(loop.text).toEqual([...(publishedText ? ["Dropped par"] : []), "Final answer"]);
+    expect(loop.observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: "retry", attempt: 1, delayMs: 125 }));
+    const failure: unknown = loop.observe.mock.calls[0]![0].error;
+    expect(providerStreamDrop(failure)).toBe(drop);
+    if (step === "502") expect(failure).toMatchObject({ status: 502 });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it("gives up after the third dropped request with the last drop as the round's failure", async () => {
+    const loop = harness(["502", "truncated", "502"]);
+    const outcome = await loop.run();
+    expect(outcome).toMatchObject({ failure: { code: "provider_server_error", httpStatus: 502, stage: "provider" }, status: "failed" });
+    expect(loop.fetchFn).toHaveBeenCalledTimes(3);
+    expect(loop.usage).toEqual([unknownPartial, unknownPartial, unknownPartial]);
+    expect(loop.sleeps).toEqual([125, 250]);
+    expect(loop.reopen.mock.calls.map(([value]) => value)).toEqual([
+      { attempt: 2, publishedText: false, round: 1 }, { attempt: 3, publishedText: true, round: 1 }]);
+    expect(loop.observe.mock.calls.map(([value]) => [value.action, value.attempt])).toEqual([["retry", 1], ["retry", 2], ["stop", 3]]);
+  });
+
+  it.each([
+    ["tool arguments streamed", "tool_arguments", { tools: [alpha, artifact] }],
+    ["a hosted tool ran", "hosted_search", {}],
+    ["a context-length refusal", "context_failed", {}],
+    ["a content-filter refusal", "content_filter", {}],
+    ["a Retry-After beyond the shared ceiling", "502_retry_after_long", {}],
+    ["a binding without the admission", "502", { admitted: false }]
+  ] as const)("keeps the failure after %s", async (_name, step, options) => {
+    const loop = harness([step, "final"], options);
+    const outcome = await loop.run();
+    expect(outcome.status).toBe("failed");
+    expect(loop.fetchFn).toHaveBeenCalledOnce();
+    expect(loop.reopen).not.toHaveBeenCalled();
+    expect(loop.sleeps).toEqual([]);
+    expect(loop.usage).toHaveLength(1);
+  });
+
+  it("waits for a 502's Retry-After before the next request", async () => {
+    const loop = harness(["502_retry_after", "final"]);
+    expect(await loop.run()).toMatchObject({ status: "complete" });
+    expect(loop.sleeps).toEqual([2_000]);
+  });
+
+  it("keeps the drop when the dropped request's usage was not recorded or the round cannot re-open", async () => {
+    const unrecorded = harness(["truncated", "final"], { onUsage: (_usage, context) => {
+      if ((context as { completeness: string }).completeness === "partial") throw new Error("synthetic_accounting_unavailable");
+    } });
+    expect(await unrecorded.run()).toMatchObject({ failure: { code: "provider_round_failed" }, status: "failed" });
+    expect(unrecorded.fetchFn).toHaveBeenCalledOnce();
+    expect(unrecorded.observe).not.toHaveBeenCalled();
+
+    const conflict = harness(["truncated", "final"], { reopen: async () => false });
+    expect(await conflict.run()).toMatchObject({ failure: { code: "provider_round_failed" }, status: "failed" });
+    expect(conflict.fetchFn).toHaveBeenCalledOnce();
+    expect(conflict.reopen).toHaveBeenCalledOnce();
+  });
+
+  it("ends the wait at once on Stop or the run's deadline without another request", async () => {
+    for (const reason of [undefined, Object.assign(new Error("workspace_tool_timeout"), { code: "workspace_tool_timeout" })]) {
+      const controller = new AbortController();
+      const loop = harness(["truncated", "final"], { signal: controller.signal, sleep: (delayMs, signal) => {
+        controller.abort(reason);
+        return sleepWithSignal(delayMs, signal);
+      } });
+      expect(await loop.run()).toMatchObject({ status: "cancelled" });
+      expect(loop.fetchFn).toHaveBeenCalledOnce();
+      expect(loop.reopen).not.toHaveBeenCalled();
+      expect(loop.usage).toEqual([unknownPartial]);
+    }
+  });
+
+  it("bounds the round and its waits by the round deadline", async () => {
+    const loop = harness(["truncated", "final"], { roundTimeoutMs: 20, sleep: sleepWithSignal });
+    expect(await loop.run()).toMatchObject({ failure: { code: "provider_round_timeout" }, status: "failed" });
+    expect(loop.fetchFn).toHaveBeenCalledOnce();
+    expect(loop.reopen).not.toHaveBeenCalled();
+  });
+
+  it("runs the tool calls of the round's completed request once", async () => {
+    const loop = harness(["truncated", "final_tool", "final"]);
+    expect(await loop.run()).toMatchObject({ final: { finalText: "Final answer" }, status: "complete", toolCalls: 1 });
+    expect(loop.executeTool).toHaveBeenCalledOnce();
+    expect(loop.usage.map(([, context]) => context)).toEqual([
+      { completeness: "partial", round: 1 }, { completeness: "terminal", round: 1 }, { completeness: "terminal", round: 2 }]);
+    expect(loop.reopen).toHaveBeenCalledOnce();
   });
 });

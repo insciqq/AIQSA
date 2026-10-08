@@ -3,6 +3,7 @@ export const WORKSPACE_OPERATION_FAILURE_MESSAGES = {
   workspace_session_lost: "The Workspace session is no longer available. Inspect the current session and attachment references before continuing; earlier commands were not repeated.",
   workspace_runtime_unavailable: "The Workspace runtime is unavailable. Check its status before continuing; an uncertain command must not be repeated.",
   workspace_tool_timeout: "The Workspace operation reached its time limit. This does not confirm that execution stopped; do not repeat an uncertain action.",
+  workspace_turn_time_limit: "This turn ran out of time and was stopped. The files created so far remain in this chat's Workspace for your next message; a command that was still running may not have finished.",
   workspace_tool_cancelled: "The Workspace operation was cancelled. Cancellation does not confirm that execution stopped or undo earlier effects.",
   workspace_path_not_found: "The requested Workspace path was not found. Check the exact path before another operation.",
   workspace_path_access_denied: "Access to the requested path was denied. Check the allowed Workspace location and permissions.",

@@ -3,7 +3,7 @@ import { ADMIN_MODEL_PRICE_FIELDS, decodeAdminModelPriceChange, modelClassPriceF
   normalizeAdminModelPrice, type AdminModelPricing, type AdminModelTokenPrices } from "../../../contracts/adminProviderModelPrices";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import { catalogModelPriceClass, catalogModelTokenPricing } from "../../../domain/modelPrices";
-import { codexLbEndpoint } from "./setupModels";
+import { codexLbConnection } from "../../providers/providerConfiguration";
 
 /** Stored connection columns; configurations are raw JSON as persisted. */
 export type CatalogIdentityConnection = Readonly<{ family: string; activeConfig: unknown; draftConfig: unknown }>;
@@ -27,7 +27,7 @@ function storedEndpoint(connection: CatalogIdentityConnection): Readonly<Record<
  * (answer) and `20261008140000_embedding_model_prices` (embedding) mirror it in SQL.
  */
 export function providerModelCatalogKey(row: CatalogIdentityRow, connection: CatalogIdentityConnection): string | null {
-  const family = connection.family === "openai_compatible" && codexLbEndpoint(storedEndpoint(connection)) ? "openai"
+  const family = connection.family === "openai_compatible" && codexLbConnection(storedEndpoint(connection)) ? "openai"
     : ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(connection.family as AdminProviderQuickSetupProviderId) ? connection.family : null;
   const key = row.templateKey ?? (family && `${family}:${row.modelId}`);
   return key && catalogModelPriceClass(key) === row.modelClass ? key : null;

@@ -552,9 +552,26 @@ export type ProviderSearchOptions = {
   timeoutMs?: number;
 };
 
+/**
+ * The admission of an accepted binding to send a dropped answer round again
+ * (PROVIDERS.md: Codex LB). The adapter owns which failures count as a drop;
+ * the round's owner decides whether the round still qualifies, accounts each
+ * request and waits with the shared provider backoff.
+ */
+export type ProviderDroppedRoundRetry = Readonly<{
+  /** Requests of one round, the first included. */
+  maxAttempts: number;
+  /** Null keeps the failure; otherwise the provider's Retry-After, if any. */
+  decision(error: unknown): import("./providerRetry").ProviderRetryDecision | null;
+  /** Content-free record of the decision on a failed request of the round. */
+  observe(input: Readonly<{ action: "retry" | "stop"; attempt: number; delayMs?: number; error: unknown }>): void;
+}>;
+
 export type ProviderAdapter = {
   buildRequestPreview(request: ProviderRunRequest): Record<string, unknown>;
   cancel?(providerResponseId: string): Promise<Record<string, unknown>>;
+  /** Present only where the accepted connection admits it. */
+  droppedRoundRetry?: ProviderDroppedRoundRetry;
   refresh?(providerResponseId: string): Promise<ProviderRunRefreshResult>;
   retrieve?(providerResponseId: string): Promise<Record<string, unknown>>;
   stream(request: ProviderRunRequest, options?: ProviderRunOptions): AsyncGenerator<ModelRunSseEvent, ProviderRunResult>;

@@ -11,6 +11,7 @@ import {
   type ProviderStreamSafetySnapshot
 } from "./streamSafety";
 import { beginTransportStage, createProviderAbortObserver, observeProviderDeadline, transportFailureFacts } from "./providerObservability";
+import { markProviderStreamReset } from "./streamDrop";
 
 export type ParsedServerSentEvent = {
   data: string;
@@ -444,5 +445,29 @@ export async function* parseSseStream(
     } else if (!released) {
       releaseReader();
     }
+  }
+}
+
+/** A provider answer stream: `parseSseStream` whose body-read failures name a
+ * `reset` drop. Only the read is classified, never the consumer's own frame
+ * handling. */
+export async function* parseProviderSseStream(
+  stream: ReadableStream<Uint8Array>,
+  options: ParseSseStreamOptions = {}
+): AsyncGenerator<ParsedServerSentEvent> {
+  const events = parseSseStream(stream, options);
+  try {
+    for (;;) {
+      let next: IteratorResult<ParsedServerSentEvent>;
+      try {
+        next = await events.next();
+      } catch (error) {
+        throw markProviderStreamReset(error, options.signal);
+      }
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    await events.return(undefined);
   }
 }

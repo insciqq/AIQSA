@@ -506,6 +506,7 @@ export function createOpenAICompatibleEmbeddingAdapter(input: Readonly<{
               );
             },
             options: input.network?.retry,
+            remainingMs: timeout.remainingMs,
             shouldRetry: (error) => embeddingRetryDecision(error, signal),
             signal
           });

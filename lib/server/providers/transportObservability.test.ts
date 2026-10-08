@@ -67,7 +67,7 @@ describe("provider transport observations", () => {
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 
-  it("records TLS before the existing safe-fetch mapping and records each physical attempt", async () => {
+  it("records TLS before the safe-fetch mapping, keeps its not-sent proof and records each physical attempt", async () => {
     const records = capture();
     const failure = Object.assign(new Error("PRIVATE_CERT_PATH_CANARY"), { code: "CERT_HAS_EXPIRED", hostname: "PRIVATE_HOST_CANARY" });
     httpsRequest.mockImplementation(() => {
@@ -80,14 +80,14 @@ describe("provider transport observations", () => {
     }));
     for (let index = 0; index < 2; index += 1) {
       await expect(observeProviderOperation(identity, "answer", () => fetchFn("https://provider.example.test/responses", { headers: { authorization: "Bearer PRIVATE_KEY_CANARY" } })))
-        .rejects.toMatchObject({ code: "provider_http_invalid_request" });
+        .rejects.toMatchObject({ code: "provider_http_tls_failed", requestNotSent: true });
     }
     expect(httpsRequest).toHaveBeenCalledTimes(2);
     const transport = records().filter((entry) => entry.event === "transport_stage" && entry.outcome === "failed");
     expect(transport).toHaveLength(2);
     expect(transport).toEqual([expect.objectContaining({ category: "tls", code: "CERT_HAS_EXPIRED", stage: "fetch" }), expect.objectContaining({ category: "tls", code: "CERT_HAS_EXPIRED", stage: "fetch" })]);
     expect(transport.every((entry) => entry.httpStatus === undefined && entry.bytes === undefined)).toBe(true);
-    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_request", code: "provider_http_invalid_request" }));
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_request", code: "provider_http_tls_failed", reason: "network" }));
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 
