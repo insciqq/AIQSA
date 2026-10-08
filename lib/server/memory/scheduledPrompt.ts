@@ -1,12 +1,14 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 /**
- * Whether a user message is a scheduled task's prompt. The message carries
- * the mark itself: run creation sets it on the prompt a scheduled run posts,
- * and a branch copies it with the message. The prompt may have been written
- * by the model, so the prompt and every answer to it (the scheduled run, a
- * later regeneration, an answer in a branch at any depth) are never Personal
- * Memory history or direct user evidence, whatever the chat's mode.
+ * Whether a user message is not its owner's own speech: a scheduled task's
+ * prompt, or a turn the server wrote for the user (`Message.systemTurnKind`,
+ * the continuation after an MCP approval). The message carries the mark
+ * itself: run creation sets it, and a branch copies it with the message. The
+ * prompt may have been written by the model, so the prompt and every answer
+ * to it (the scheduled run, a later regeneration, an answer in a branch at
+ * any depth) are never Personal Memory history or direct user evidence,
+ * whatever the chat's mode.
  *
  * `messageId` is an expression of the enclosing query, evaluated outside the
  * subquery so its column references cannot resolve to the subquery's own
@@ -19,7 +21,7 @@ export function memoryScheduledPromptSql(chatId: string, messageId: Prisma.Sql):
     SELECT scheduled_prompt."id"
     FROM "Message" AS scheduled_prompt
     WHERE scheduled_prompt."chatId" = ${chatId}
-      AND scheduled_prompt."scheduledTaskPrompt"
+      AND (scheduled_prompt."scheduledTaskPrompt" OR scheduled_prompt."systemTurnKind" IS NOT NULL)
   ), false)`;
 }
 

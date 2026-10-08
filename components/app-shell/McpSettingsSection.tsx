@@ -13,6 +13,7 @@ import { DiscardChangesConfirmationDialog } from "./ConfirmationDialog";
 import { useBeforeUnloadGuard } from "./useBeforeUnloadGuard";
 import { useChatRoutePath } from "./chatRoute";
 import { McpHubConnection } from "./McpHubConnection";
+import { McpConsentsSection } from "./McpConsentsSection";
 import {
   disconnectUserMcpServer,
   followMcpOAuthStart,
@@ -709,6 +710,7 @@ export function McpSettingsSection({
         <p className="v2-settings-field-note" role="status">Status could not be refreshed. Try again.</p>
       ) : null}
 
+      <McpConsentsSection />
       {/* Footnote: how a chat consumes the enabled catalog (A13). */}
       <McpHubConnection />
       <details className="v2-settings-footnote">

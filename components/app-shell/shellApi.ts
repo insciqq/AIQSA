@@ -232,6 +232,7 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     runId: message.modelRunId ?? null,
     ...(message.scheduledTask ? { scheduledTask: message.scheduledTask } : {}),
     ...(message.scheduledOutcome ? { scheduledOutcome: message.scheduledOutcome } : {}),
+    ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
     status: normalizeThreadStatus(message.status),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     ...(message.workspacePreparation ? { workspacePreparation: true as const } : {}),

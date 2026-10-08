@@ -322,7 +322,8 @@ export function createPrismaMessageBranchRepository(
             reasoningTokens: true,
             role: true,
             scheduledTaskPrompt: true,
-            status: true
+            status: true,
+            systemTurnKind: true
           },
           where: {
             chatId: lockedChat.id
@@ -531,6 +532,10 @@ export function createPrismaMessageBranchRepository(
               // to it must stay out of Memory and never create a task.
               ...(sourceMessage.role === "user" && sourceMessage.scheduledTaskPrompt
                 ? { scheduledTaskPrompt: true }
+                : {}),
+              // A turn the server wrote for the user stays one in the copy too.
+              ...(sourceMessage.role === "user" && sourceMessage.systemTurnKind
+                ? { systemTurnKind: sourceMessage.systemTurnKind }
                 : {}),
               status: sourceMessage.status
             },

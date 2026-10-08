@@ -135,6 +135,36 @@ export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]
 
 export type MutableMcpEndpoint = Awaited<ReturnType<typeof startMutableMcpEndpoint>>;
 
+/**
+ * The synthetic peer of the MCP write-approval scenarios: `read_record` the
+ * server annotates read-only and `delete_record` it annotates destructive.
+ * Each record exists until a dispatched delete removes it, so the endpoint's
+ * `dispatches(name, args)` and `deleted()` are the oracles.
+ */
+export function createWriteApprovalFixture() {
+  const deleted: string[] = [];
+  const idSchema = { additionalProperties: false, properties: { id: { maxLength: 64, type: "string" } }, required: ["id"],
+    type: "object" as const };
+  const tools: MutableMcpTool[] = [
+    { annotations: { readOnlyHint: true }, description: "Read one synthetic record by id.", inputSchema: idSchema,
+      name: "read_record" },
+    { annotations: { destructiveHint: true }, description: "Delete one synthetic record by id.", inputSchema: idSchema,
+      name: "delete_record" }
+  ];
+  const callTool = (name: string, args: Readonly<Record<string, unknown>>): CallToolResult => {
+    const id = typeof args.id === "string" ? args.id : null;
+    if (name === "read_record" && id) {
+      return { content: [{ text: JSON.stringify({ id, state: deleted.includes(id) ? "deleted" : "open" }), type: "text" }] };
+    }
+    if (name === "delete_record" && id) {
+      deleted.push(id);
+      return { content: [{ text: JSON.stringify({ deleted: id }), type: "text" }] };
+    }
+    return { content: [{ text: "Unknown synthetic tool or arguments.", type: "text" }], isError: true };
+  };
+  return { callTool, deleted: (): readonly string[] => [...deleted], tools: tools as readonly MutableMcpTool[] };
+}
+
 export const TOOL_HISTORY_FIXTURE = Object.freeze({
   writeTool: "create_record",
   readTool: "get_item",

@@ -97,6 +97,12 @@ import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskC
 import { loadScheduledTaskManagementAdmission, manageScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskManagement";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
 import {
+  loadMcpApprovalContinuation,
+  loadMcpToolConsentServerIds,
+  loadRunMcpApprovalCards,
+  mcpApprovalCardSelect
+} from "../mcp/writeApprovalRepository";
+import {
   decodeProjectDefaults,
   decodeProjectPolicy
 } from "../../contracts/projects";
@@ -508,6 +514,9 @@ export function createPrismaRunRepository(
     loadRunFetchUrlCalls: (input) => fetchUrlOperations.loadRunFetchUrlCalls(input).catch(retainRunPrismaCode),
     loadScheduledPromptMessageIds: (input) =>
       fetchUrlOperations.loadScheduledPromptMessageIds(input).catch(retainRunPrismaCode),
+    loadMcpToolConsentServerIds: (input) => loadMcpToolConsentServerIds(prismaClient, input).catch(retainRunPrismaCode),
+    loadMcpApprovalContinuation: (input) => loadMcpApprovalContinuation(prismaClient, input).catch(retainRunPrismaCode),
+    loadRunMcpApprovalCards: (input) => loadRunMcpApprovalCards(prismaClient, input).catch(retainRunPrismaCode),
     loadScheduledTaskManagement: (input) => loadScheduledTaskManagementAdmission(prismaClient, input).catch(retainRunPrismaCode),
     manageScheduledTaskForCall: (input) => manageScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
       .catch(retainRunPrismaCode),
@@ -1549,6 +1558,7 @@ export function createPrismaRunRepository(
                   normalizedRequest: true,
                   userId: true,
                   status: true,
+                  mcpToolApprovals: { orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: mcpApprovalCardSelect, take: 16 },
                   workspaceExecutions: { take: 512, orderBy: { startedAt: "desc" },
                     select: { modelRunToolCallId: true, state: true, lastErrorCode: true } },
                   workspaceRunBinding: {
@@ -1561,6 +1571,7 @@ export function createPrismaRunRepository(
                       mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
                       completedAt: true,
                       ordinal: true,
+                      providerCallId: true,
                       result: true,
                       roundIndex: true,
                       startedAt: true,
@@ -1670,7 +1681,9 @@ export function createPrismaRunRepository(
                     message.content,
                     memoryActionsByRun.get(modelRun.id) ?? null,
                     memorySourcesByRun.get(modelRun.id) ?? [],
-                    memoryStatusesByRun.get(modelRun.id)
+                    memoryStatusesByRun.get(modelRun.id),
+                    undefined,
+                    userId
                   )
                 : null,
               assistantIdentity: serializeRunAssistantIdentity(modelRun),
@@ -1692,6 +1705,7 @@ export function createPrismaRunRepository(
               provider: message.provider,
               role: message.role,
               status: message.status,
+              ...(message.systemTurnKind ? { systemTurnKind: message.systemTurnKind } : {}),
               ...(modelRun?.chatPdfAttachments?.length ? { pdfPreparation: modelRun.chatPdfAttachments.map((row) =>
                 projectChatPdfPreparation(row, modelRun.chatPdfPreparation?.state === "failed" || modelRun.chatPdfPreparation?.state === "cancelled"
                   ? { phase: modelRun.status === "error" ? "failed" : "cancelled",
