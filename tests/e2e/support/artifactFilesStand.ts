@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { expect, type APIRequestContext, type FrameLocator, type Locator, type Page } from "@playwright/test";
 import { readZipArchive, type ZipReadLimits } from "../../../lib/server/artifacts/zipReader";
@@ -458,4 +460,18 @@ export const publicContentPath = (publicPath: string): string => publicPath.repl
 export async function removeArtifact(request: APIRequestContext, artifactId: string): Promise<void> {
   const response = await request.delete(`/api/artifacts/${artifactId}`, { timeout: 60_000 }).catch(() => null);
   if (response && !response.ok() && response.status() !== 404) throw new Error(`afc_artifact_cleanup_${response.status()}`);
+}
+
+/**
+ * The operator's private large page, never part of the repository: the exact
+ * path in AIQSA_AFC_LARGE_HTML, or the single `.html` file the stand harness
+ * placed in AIQSA_AFC_PRIVATE_DIR. Absent means the case is skipped.
+ */
+export function privateLargeHtmlPath(): string | null {
+  const explicit = process.env.AIQSA_AFC_LARGE_HTML?.trim();
+  if (explicit) return existsSync(explicit) ? explicit : null;
+  const directory = process.env.AIQSA_AFC_PRIVATE_DIR?.trim();
+  if (!directory || !existsSync(directory)) return null;
+  const pages = readdirSync(directory).filter(name => name.toLowerCase().endsWith(".html"));
+  return pages.length === 1 ? join(directory, pages[0]!) : null;
 }
