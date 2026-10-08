@@ -22,7 +22,8 @@ import { artifactZip } from "./zip";
 import { ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { ARTIFACT_ASSET_HINTS, ArtifactToolError, artifactToolError, type ArtifactAssetErrorCode } from "./errors";
 import { materializeArtifactReferences } from "./referencedFiles";
-import { createArtifactObjects } from "./objects";
+import { boundedArtifactWork, createArtifactObjects } from "./objects";
+import { artifactRenderBytes, artifactRenderExtension, artifactRequestedPage } from "./pages";
 import { createArtifactPublications, publicManifestFromPrivate } from "./publications";
 import { artifactDownloadName } from "./downloadName";
 import { artifactReadPage } from "./readPage";
@@ -44,6 +45,15 @@ type ArtifactExecutionOptions = {
 
 function json(value: unknown): Prisma.InputJsonValue { return value as Prisma.InputJsonValue; }
 const checksum = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+/** The longest prefix of `text` within `maxBytes` UTF-8 bytes that keeps every character whole; null when all of it fits. */
+function utf8Prefix(text: string, maxBytes: number): string | null {
+  if (text.length * 3 <= maxBytes) return null;
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= maxBytes) return null;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8");
+}
 const assetError = (code: ArtifactAssetErrorCode, path: string, hint: string = ARTIFACT_ASSET_HINTS[code]) => new ArtifactToolError(code, { path, hint });
 const authoredText = (file: ArtifactBundleFile) => !file.vendor && isArtifactTextMime(file.mimeType);
 type ArtifactBase = Readonly<{ bundle: ArtifactBundle; metadata: ReadonlyArray<{ path: string; assetRef?: string }> }>;
@@ -381,33 +391,40 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     };
   }
 
-  async function getPrivateBundle(input: { ownerUserId: string; artifactId: string; versionId?: string; mainFile?: boolean }) {
+  async function privateVersion(input: { ownerUserId: string; artifactId: string; versionId?: string }) {
     const artifact = await db.artifact.findFirst({ where: { id: input.artifactId, ownerUserId: input.ownerUserId, archivedAt: null }, select: { currentVersionId: true } });
     if (!artifact) return null;
-    const row = await db.artifactVersion.findFirst({ where: {
+    return db.artifactVersion.findFirst({ where: {
       artifactId: input.artifactId, status: "READY", id: input.versionId ?? artifact.currentVersionId ?? ""
     } });
+  }
+
+  /**
+   * The owner's view of a version page (the entry page without `page`). It shares the render
+   * cache with publications: a page renders once per renderer version, under the heavy-work
+   * limits, and later views read the verified render.
+   */
+  async function getPrivateBundle(input: { ownerUserId: string; artifactId: string; versionId?: string; mainFile?: boolean; page?: string }) {
+    const row = await privateVersion(input);
     if (!row) return null;
-    const object = await storage.getObject(row.bundleStorageKey, { maxBytes: row.byteSize });
-    if (object.body.byteLength !== row.byteSize || checksum(object.body) !== row.checksum) throw new Error("artifact_bundle_unavailable");
-    const bundle = await objects.hydrate(input.ownerUserId, row.id, decodeArtifactBundle(object.body));
-    const rendered = renderArtifactBundle(bundle, input.mainFile);
-    return { ...rendered, fileName: artifactDownloadName(row.title, rendered.fileName.split(".").at(-1)!).utf8, title: row.title, version: publicVersion(row) };
+    const manifest = publicManifestFromPrivate(row.manifest);
+    const page = artifactRequestedPage(manifest, input.page);
+    const bytes = artifactRenderBytes(manifest);
+    const rendered = input.mainFile && row.kind === "svg" && page === undefined
+      ? await boundedArtifactWork(async () => renderArtifactBundle(await objects.hydrate(input.ownerUserId, row.id, await objects.readBundle(row)), true), bytes)
+      : await objects.rendered({ ...row, ownerUserId: input.ownerUserId }, { page, bytes });
+    return { body: rendered.body, contentType: rendered.contentType, fileName: artifactDownloadName(row.title, artifactRenderExtension(rendered.contentType)).utf8,
+      title: row.title, version: publicVersion(row), page: rendered.contentType.startsWith("text/html") ? page ?? row.entrypoint : null };
   }
 
   async function getPrivateZip(input: { ownerUserId: string; artifactId: string; versionId?: string }) {
-    const artifact = await db.artifact.findFirst({ where: { id: input.artifactId, ownerUserId: input.ownerUserId, archivedAt: null }, select: { currentVersionId: true } });
-    if (!artifact) return null;
-    const row = await db.artifactVersion.findFirst({ where: {
-      artifactId: input.artifactId, status: "READY", id: input.versionId ?? artifact.currentVersionId ?? ""
-    } });
+    const row = await privateVersion(input);
     if (!row) return null;
-    const object = await storage.getObject(row.bundleStorageKey, { maxBytes: row.byteSize });
-    if (object.body.byteLength !== row.byteSize || checksum(object.body) !== row.checksum) throw new Error("artifact_bundle_unavailable");
-    return { body: artifactZip(await objects.hydrate(input.ownerUserId, row.id, decodeArtifactBundle(object.body))), contentType: "application/zip",
-      fileName: artifactDownloadName(row.title, "zip").utf8, title: row.title, version: publicVersion(row) };
+    return boundedArtifactWork(async () => ({ body: artifactZip(await objects.hydrate(input.ownerUserId, row.id, await objects.readBundle(row))), contentType: "application/zip",
+      fileName: artifactDownloadName(row.title, "zip").utf8, title: row.title, version: publicVersion(row) }), artifactRenderBytes(publicManifestFromPrivate(row.manifest)));
   }
 
+  /** The code view: text files up to `maxReadBytes` each, so a 24 MiB page never reaches the browser whole. */
   async function source(input: { ownerUserId: string; artifactId: string; versionId: string }) {
     const row = await db.artifactVersion.findFirst({ where: { id: input.versionId, artifactId: input.artifactId, status: "READY",
       artifact: { ownerUserId: input.ownerUserId, archivedAt: null } } });
@@ -415,10 +432,13 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     const object = await storage.getObject(row.bundleStorageKey, { maxBytes: row.byteSize });
     if (object.body.byteLength !== row.byteSize || checksum(object.body) !== row.checksum) throw new Error("artifact_bundle_unavailable");
     const bundle = await objects.hydrate(input.ownerUserId, row.id, decodeArtifactBundle(object.body), { only: artifactBlobIsText });
-    return { versionId: row.id, files: bundle.files.map((file) => ({ path: file.path, mimeType: file.mimeType,
-      group: file.vendor ? "vendored" as const : "authored" as const,
-      byteSize: file.byteSize ?? (file.text !== undefined ? Buffer.byteLength(file.text) : Buffer.from(file.base64 ?? "", "base64").byteLength),
-      ...(file.text !== undefined ? { text: file.text } : { binary: true as const }) })) } satisfies ArtifactSource;
+    return { versionId: row.id, files: bundle.files.map((file) => {
+      const shown = file.text === undefined ? null : utf8Prefix(file.text, ARTIFACT_LIMITS.maxReadBytes);
+      return { path: file.path, mimeType: file.mimeType,
+        group: file.vendor ? "vendored" as const : "authored" as const,
+        byteSize: file.byteSize ?? (file.text !== undefined ? Buffer.byteLength(file.text) : Buffer.from(file.base64 ?? "", "base64").byteLength),
+        ...(file.text === undefined ? { binary: true as const } : shown === null ? { text: file.text } : { text: shown, truncated: true as const }) };
+    }) } satisfies ArtifactSource;
   }
 
   async function prepareEdit(input: { ownerUserId: string; artifactId: string; versionId: string; chatId?: string }) {
@@ -503,12 +523,13 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
         artifact: { ownerUserId: input.ownerUserId, archivedAt: null, owner: { status: "active" } } } });
       if (!row) throw new Error("artifact_version_not_found");
       const storageKey = `artifact-publications/${input.ownerUserId}/${randomUUID()}.bundle.json`;
+      const manifest = publicManifestFromPrivate(row.manifest);
       const publication = await tx.artifactPublication.create({ data: { artifactId: row.artifactId, artifactVersionId: row.id,
         bundleStorageKey: storageKey, byteSize: row.byteSize, checksum: row.checksum, kind: row.kind,
-        ownerUserId: input.ownerUserId, publicManifest: json(publicManifestFromPrivate(row.manifest)), title: row.title,
+        ownerUserId: input.ownerUserId, publicManifest: json(manifest), title: row.title,
         tokenHash: hashShareToken(token), expiresAt: input.expiresAt, status: "PENDING" } });
       await tx.attachmentDeletionJob.create({ data: { storageKey } });
-      return { ...publication, sourceStorageKey: row.bundleStorageKey, bundleStorageKey: storageKey,
+      return { ...publication, sourceStorageKey: row.bundleStorageKey, bundleStorageKey: storageKey, renderBytes: artifactRenderBytes(manifest),
         artifactVersionId: row.id, versionNumber: row.versionNumber, byteSize: row.byteSize, checksum: row.checksum, kind: row.kind, title: row.title };
     });
     try {
@@ -519,8 +540,9 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       if (stored.body.byteLength !== publication.byteSize || checksum(stored.body) !== publication.checksum) throw new Error("artifact_bundle_write_failed");
       if (!await db.artifactPublication.findFirst({ where: { id: publication.id, status: "PENDING", revokedAt: null,
         artifact: { ownerUserId: input.ownerUserId, archivedAt: null, owner: { status: "active" } } }, select: { id: true } })) throw new Error("artifact_publication_unavailable");
+      // The entry page renders now (or is already cached from the owner's views); other pages render when opened.
       await objects.rendered({ id: publication.artifactVersionId, artifactId: publication.artifactId, ownerUserId: input.ownerUserId,
-        bundleStorageKey: publication.sourceStorageKey, byteSize: publication.byteSize, checksum: publication.checksum });
+        bundleStorageKey: publication.sourceStorageKey, byteSize: publication.byteSize, checksum: publication.checksum }, { bytes: publication.renderBytes });
       await db.$transaction(async (tx) => {
         await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Artifact" WHERE "id" = ${input.artifactId} FOR UPDATE`);
         const settled = await tx.artifactPublication.updateMany({ where: { id: publication.id, status: "PENDING", revokedAt: null, createdAt: { gt: new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS) },

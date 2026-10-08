@@ -6,7 +6,7 @@ import {
   decodeArtifactEdit,
   decodeArtifactPublicationCreate, decodeArtifactPublicationMutation, decodeArtifactPublicationRevision,
   decodeArtifactPublicationSummary, decodeArtifactPublicManifest, decodeArtifactPublicVersion, decodeArtifactVersionPage,
-  decodeArtifactDetail, ARTIFACT_LIMITS,
+  decodeArtifactDetail, ARTIFACT_LIMITS, artifactPagePath, decodeArtifactContentQuery,
   normalizeArtifactOperation, isReservedArtifactPath,
   applyArtifactTextEdit, artifactMimeEssence, isArtifactImageMime, isArtifactTextMime
 } from "./artifacts";
@@ -164,6 +164,24 @@ describe("explicit versioned publication contracts", () => {
     for (const value of [null, "", "0", "01", "-1", "+1", " 1", "1 ", "1.0", "1e2", "1,2", "2147483648", "9".repeat(100)]) expect(decodeArtifactPublicVersion(value)).toBeNull();
     expect(decodeArtifactPublicVersion("2147483647")).toBe(2_147_483_647);
     expect(decodeArtifactPublicVersion("3")).toBe(3);
+  });
+  it("selects content with exactly one page or one download form, by the artifact path grammar", () => {
+    const query = (search: string) => decodeArtifactContentQuery(new URLSearchParams(search));
+    expect(query("")).toEqual({});
+    expect(query("page=about.html")).toEqual({ page: "about.html" });
+    expect(query(`page=${encodeURIComponent("docs/guide.html")}`)).toEqual({ page: "docs/guide.html" });
+    expect(query("download=zip")).toEqual({ download: "zip" });
+    expect(query("download=file")).toEqual({ download: "file" });
+    const longest = `${"a".repeat(ARTIFACT_LIMITS.maxPathBytes - 5)}.html`;
+    expect(query(`page=${longest}`)).toEqual({ page: longest });
+    for (const search of ["page=", "page=/about.html", "page=../about.html", "page=docs//a.html", "page=docs/./a.html", "page=docs/",
+      `page=${"a".repeat(ARTIFACT_LIMITS.maxPathBytes - 4)}.html`, "page=_vendor/0123456789ab/a.html", "page=a%20b.html", "page=a%0Ab.html",
+      "page=a.html&page=b.html", "download=zip&download=file", "download=other", "download=", "page=a.html&download=file",
+      "page=a.html&download=zip", "version=3", "page=a.html&version=3", "Page=a.html"]) {
+      expect(query(search), search).toBeNull();
+    }
+    expect(artifactPagePath("docs/guide.html")).toBe("docs/guide.html");
+    for (const value of ["docs/guide.html ", "Café.html".normalize("NFD"), "_vendor/a.html", 42, null]) expect(artifactPagePath(value)).toBeNull();
   });
 });
 

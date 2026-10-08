@@ -196,6 +196,11 @@ describe("artifact settlement and lifecycle in PostgreSQL", () => {
       expect(corruptBundle.byteLength).toBe(originalBundle.body.byteLength);
       expect(corruptBundle.equals(originalBundle.body)).toBe(false);
       f.objects.set(versionRow.bundleStorageKey, { ...originalBundle, body: corruptBundle });
+      // The owner's view reads the render the publication verified; canonical bytes
+      // are proven again whenever a page renders.
+      expect((await f.service.getPrivateBundle(privateInput))?.body).toEqual(bytes);
+      expect(await prisma.artifactRender.count({ where: { versionId: version.id } })).toBe(1);
+      await prisma.artifactRender.deleteMany({ where: { versionId: version.id } });
       await expect(f.service.getPrivateBundle(privateInput)).rejects.toThrow("artifact_bundle_unavailable");
       f.objects.set(versionRow.bundleStorageKey, originalBundle);
 
@@ -218,6 +223,7 @@ describe("artifact settlement and lifecycle in PostgreSQL", () => {
       corruptRender[0] = corruptRender[0]! ^ 1;
       f.objects.set(render.renderedStorageKey, { ...originalRender, body: corruptRender });
       expect(await f.service.publicBundle(pub.shareToken)).toBeNull();
+      await expect(f.service.getPrivateBundle(privateInput)).rejects.toThrow("artifact_render_unavailable");
       f.objects.set(render.renderedStorageKey, originalRender);
       expect((await f.service.publicBundle(pub.shareToken))?.body).toEqual(bytes);
       expect(await f.service.revoke({ ownerUserId: f.owner.id, publicationId: pub.id })).toBe(true);
@@ -227,7 +233,8 @@ describe("artifact settlement and lifecycle in PostgreSQL", () => {
       expect(await prisma.artifact.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
       expect(await prisma.artifactBlob.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
       expect(await prisma.artifactVersionBlob.count({ where: { versionId: version.id } })).toBe(0);
-      expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: { contains: f.owner.id } } })).toBe(4);
+      // Bundle, publication copy, blob and both renders (the dropped one and its replacement).
+      expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: { contains: f.owner.id } } })).toBe(5);
     } finally { await f.cleanup(); }
   });
 
@@ -533,7 +540,9 @@ describe("artifact files supplied by reference in PostgreSQL", () => {
         { userId: f.owner.id, runId: "accepted-run", request: artifactReadRequest(f.chat.id, { artifactId: version.artifactId, versionId: version.id }) });
       expect((next.content[0] as { value: { files: Array<{ offset: number; text: string }> } }).value.files[0]!.offset).toBe(first.files[0]!.text!.length);
       const source = await f.service.source({ ownerUserId: f.owner.id, artifactId: version.artifactId, versionId: version.id });
-      expect(source?.files).toEqual([{ path: "index.html", mimeType: "text/html", group: "authored", byteSize: bytes.length, text: html }]);
+      // The code view gets the first 256 KiB of the page (ASCII here) and its full size.
+      expect(source?.files).toEqual([{ path: "index.html", mimeType: "text/html", group: "authored", byteSize: bytes.length,
+        text: html.slice(0, ARTIFACT_LIMITS.maxReadBytes), truncated: true }]);
       const context = await f.service.contextForChat({ ownerUserId: f.owner.id, chatId: f.chat.id });
       expect(context[0]?.files).toEqual([{ path: "index.html", mimeType: "text/html", bytes: bytes.length }]);
       // The artifact keeps its own copy: the attachment can disappear.

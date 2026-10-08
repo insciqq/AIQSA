@@ -1,4 +1,5 @@
 import { ARTIFACT_PUBLIC_VERSION_HEADER, decodeArtifactPublicManifest, decodeArtifactPublicVersion, type ArtifactPublicManifest } from "@/lib/contracts/artifacts";
+import { artifactPageSearch } from "./artifactNavigation";
 
 export class ArtifactPublicRequestError extends Error {
   constructor(readonly status: number) {
@@ -29,8 +30,9 @@ export async function fetchPublicArtifactManifest(token: string, signal: AbortSi
   return manifest;
 }
 
-export async function fetchPublicArtifactVersion(token: string, versionNumber: number, signal: AbortSignal, download = false): Promise<Response> {
-  const response = await fetch(`${artifactPublicPath(token)}${download ? "?download=zip" : ""}`, {
+/** The selected version's ZIP, or one of its pages (its entry page without `page`). */
+export async function fetchPublicArtifactVersion(token: string, versionNumber: number, signal: AbortSignal, download = false, page?: string): Promise<Response> {
+  const response = await fetch(`${artifactPublicPath(token)}${download ? "?download=zip" : artifactPageSearch(page)}`, {
     cache: "no-store", credentials: "omit", signal, headers: { [ARTIFACT_PUBLIC_VERSION_HEADER]: String(versionNumber) }
   });
   if (!response.ok) throw new ArtifactPublicRequestError(response.status);

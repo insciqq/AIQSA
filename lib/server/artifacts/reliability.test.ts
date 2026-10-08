@@ -107,12 +107,14 @@ describe("artifact patch, privacy and bounded output", () => {
     expect(preview.feed('{"files":[{"text":"x","text":"duplicate"}]}')).toEqual([{ draftId: "broken", phase: "reset" }]);
     expect(preview.feed('{"files":[{"text":"later"}]}')).toEqual([]);
   });
-  it("refuses excess rendering work and releases permits after failure", async () => {
+  it("queues rendering work past four, refuses it past the waiting room, and releases permits after failure", async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const active = Array.from({ length: 4 }, () => boundedArtifactWork(() => gate));
+    const waiting = Array.from({ length: 16 }, (_, index) => boundedArtifactWork(async () => index));
     try { await expect(boundedArtifactWork(async () => "extra")).rejects.toBeInstanceOf(ArtifactPublicBusyError); }
     finally { release(); await Promise.all(active); }
+    expect(await Promise.all(waiting)).toEqual(Array.from({ length: 16 }, (_, index) => index));
     await expect(boundedArtifactWork(async () => { throw new Error("synthetic failure"); })).rejects.toThrow("synthetic failure");
     await expect(boundedArtifactWork(async () => "available")).resolves.toBe("available");
   });
