@@ -40,7 +40,8 @@ describe("sign-in method contracts", () => {
       groupsClaimPath: "groups",
       groupsFrom: "id_token_then_userinfo",
       scopes: "openid email profile",
-      syncGroups: false,
+      // Sync touches only groups with an OIDC external name, so on is the useful default.
+      syncGroups: true,
       trustUnverifiedEmail: false
     });
     expect(ldap).toMatchObject({
