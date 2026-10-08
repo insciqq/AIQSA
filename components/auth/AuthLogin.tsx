@@ -22,6 +22,8 @@ import { SecondFactorStep } from "./SecondFactorStep";
 import { TrustedHeaderSignIn, type TrustedHeaderLoginProps } from "./TrustedHeaderSignIn";
 
 type AuthLoginProps = {
+  /** LDAP on the same form: it works while password sign-in is off, and may take a username. */
+  directorySignIn?: { loginUsesUsername: boolean };
   inviteToken?: string;
   navigateAfterLogin?: (nextPath: string) => void;
   nextPath: string;
@@ -296,6 +298,12 @@ function authErrorMessage(code: string, operation: PendingAction): string {
     registration_not_allowed: "This email or domain is not allowed to request access.",
     registration_required: "Enter an email address to request access.",
     invite_token_password_required: "Open the invite link and choose a password.",
+    account_conflict: "This directory account cannot be linked to an existing account. Ask an administrator.",
+    account_pending: "Your account is waiting for administrator approval.",
+    email_missing: "The directory has no email address for this account. Ask an administrator.",
+    ldap_unavailable: "The directory could not be reached. Try again later.",
+    not_allowed: "This account is not allowed to sign in here. Ask an administrator.",
+    source_changed: "This account belongs to an earlier directory. Ask an administrator.",
     reset_token_password_required: "Enter a new password.",
     token_required: "Enter an access token.",
     unauthorized: "The credentials were not accepted.",
@@ -508,6 +516,7 @@ function AuthMark({ className, gradient = false }: { className?: string; gradien
 }
 
 export function AuthLogin({
+  directorySignIn,
   inviteToken,
   navigateAfterLogin,
   nextPath,
@@ -1005,7 +1014,9 @@ export function AuthLogin({
   }
 
   const passwordMode = mode === "password";
-  const passwordSignInOff = !passwordLoginEnabled && (passwordMode || mode === "register");
+  // The directory keeps the sign-in form while local passwords are off.
+  const passwordSignInOff = !passwordLoginEnabled && ((passwordMode && !directorySignIn) || mode === "register");
+  const usernameSignIn = directorySignIn?.loginUsesUsername === true;
 
   return (
     <main className="v2-auth-root" data-testid="auth-root">
@@ -1076,23 +1087,23 @@ export function AuthLogin({
             <form aria-busy={submitting} className={formClassName} data-hydrated={hydratedForm} method="post" noValidate onSubmit={submitPassword}>
               <div>
                 <label className="mb-2 block text-sm font-medium text-ink" htmlFor="email">
-                  Email
+                  {usernameSignIn ? "Username or email" : "Email"}
                 </label>
                 <input
                   aria-describedby={loginEmailInvalid ? feedbackId : undefined}
                   aria-errormessage={loginEmailInvalid ? feedbackId : undefined}
                   aria-invalid={loginEmailInvalid || undefined}
                   autoCapitalize="none"
-                  autoComplete="email"
+                  autoComplete={usernameSignIn ? "username" : "email"}
                   className={`${fieldClassName} ${loginEmailInvalid ? invalidFieldClassName : ""}`}
                   disabled={submitting}
                   id="email"
-                  inputMode="email"
+                  inputMode={usernameSignIn ? "text" : "email"}
                   name="email"
                   ref={firstFieldRef}
                   required
                   spellCheck={false}
-                  type="email"
+                  type={usernameSignIn ? "text" : "email"}
                 />
               </div>
 
