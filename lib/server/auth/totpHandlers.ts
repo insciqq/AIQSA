@@ -12,6 +12,7 @@ import {
 } from "./rateLimit";
 import { prepareAuthSession, type RequestAuthResolver } from "./requestAuth";
 import { refuseWhenPasswordSignInOff, type SignInPolicyReader } from "./signInPolicy";
+import { observeSignInStep } from "./signInTelemetry";
 import {
   clearSecondFactorChallengeCookie,
   readSecondFactorChallengeToken,
@@ -99,22 +100,27 @@ function twoFactorAccountKey(userId: string): string {
  * factor can spend it.
  */
 export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerDeps) {
-  return async function POST(request: Request): Promise<Response> {
+  // The method comes from the challenge; a step that ends before reading it records none.
+  return observeSignInStep({ step: "second_factor" }, async (attempt, request: Request): Promise<Response> => {
     const config = deps.getConfig();
 
     if (!config.configured) {
-      return noStoreJson({ error: "auth_not_configured" }, { status: 503 });
+      return attempt.end(noStoreJson({ error: "auth_not_configured" }, { status: 503 }), "failed", "auth_not_configured");
     }
 
     if (!isJsonContentType(request.headers.get("content-type"))) {
-      return noStoreJson({ error: "json_required" }, { status: 415 });
+      return attempt.end(noStoreJson({ error: "json_required" }, { status: 415 }), "refused", "request_invalid");
     }
 
     const rateLimiter = resolveLoginRateLimiter(deps.rateLimiter, defaultSecondFactorRateLimiter);
     const clientIdentity = resolveLoginRateLimitIdentity(request, config);
 
     if (clientIdentity.status === "unavailable") {
-      return noStoreJson({ error: "auth_admission_unavailable" }, { status: 503 });
+      return attempt.end(
+        noStoreJson({ error: "auth_admission_unavailable" }, { status: 503 }),
+        "failed",
+        "auth_admission_unavailable"
+      );
     }
 
     const sourceKey = clientIdentity.status === "available" ? `second-factor:client:${clientIdentity.key}` : null;
@@ -123,7 +129,7 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
       const sourceLimit = await rateLimiter.check(sourceKey);
 
       if (!sourceLimit.allowed) {
-        return rateLimited(sourceLimit);
+        return attempt.end(rateLimited(sourceLimit), "refused", "rate_limited");
       }
     }
 
@@ -138,9 +144,10 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
     );
 
     if (!challenge) {
-      return challengeExpired();
+      return attempt.end(challengeExpired(), "failed", "challenge_expired");
     }
 
+    attempt.method = challenge.signInMethod;
     // A password challenge issued before password sign-in was switched off cannot finish it;
     // a directory (LDAP) challenge can.
     if (challenge.signInMethod === "password") {
@@ -148,7 +155,7 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
       if (passwordSignInOff) {
         passwordSignInOff.headers.set("cache-control", "private, no-store, max-age=0");
         passwordSignInOff.headers.append("set-cookie", clearSecondFactorChallengeCookie(config.cookieSecure));
-        return passwordSignInOff;
+        return attempt.end(passwordSignInOff, "refused", "sign_in_method_disabled");
       }
     }
 
@@ -156,16 +163,16 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
     const accountLimit = await rateLimiter.check(accountKey);
 
     if (!accountLimit.allowed) {
-      return rateLimited(accountLimit);
+      return attempt.end(rateLimited(accountLimit), "refused", "rate_limited");
     }
 
     const rawBody = await readJsonBodyOrNull(request, "auth");
     const bodyError = requestBodyErrorResponse(rawBody);
-    if (bodyError) return bodyError;
-    const attempt = secondFactorAttemptFromBody(rawBody);
+    if (bodyError) return attempt.end(bodyError, "refused", "request_invalid");
+    const proof = secondFactorAttemptFromBody(rawBody);
 
-    if (!attempt) {
-      return noStoreJson({ error: "code_required" }, { status: 400 });
+    if (!proof) {
+      return attempt.end(noStoreJson({ error: "code_required" }, { status: 400 }), "refused", "request_invalid");
     }
 
     const session = prepareAuthSession({ request, secureCookie: config.cookieSecure });
@@ -173,7 +180,7 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
 
     try {
       result = await deps.repository.completeSecondFactorSignIn({
-        attempt,
+        attempt: proof,
         challenge,
         keys: deps.getKeys(),
         matchesChallenge: (current) => secondFactorChallengeMatches(challenge, current, config.sessionSecret),
@@ -181,16 +188,16 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
         session: session.input
       });
     } catch (error) {
-      if (isKeyFailure(error)) return unavailable();
+      if (isKeyFailure(error)) return attempt.end(unavailable(), "failed", "two_factor_unavailable", error);
       throw error;
     }
 
     if (result.kind === "challenge_expired") {
-      return challengeExpired();
+      return attempt.end(challengeExpired(), "failed", "challenge_expired");
     }
 
     if (result.kind === "invalid_code") {
-      return noStoreJson({ error: "invalid_code" }, { status: 401 });
+      return attempt.end(noStoreJson({ error: "invalid_code" }, { status: 401 }), "failed", "invalid_code");
     }
 
     await Promise.all([
@@ -202,8 +209,8 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
     headers.append("set-cookie", session.cookie);
     headers.append("set-cookie", clearSecondFactorChallengeCookie(config.cookieSecure));
 
-    return noStoreJson({ user: result.user }, { headers });
-  };
+    return attempt.end(noStoreJson({ user: result.user }, { headers }), "succeeded", "accepted");
+  });
 }
 
 export function createTwoFactorStatusHandler(deps: Pick<TwoFactorHandlerDeps, "repository" | "resolveAuth">) {

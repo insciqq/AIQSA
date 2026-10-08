@@ -23,6 +23,10 @@ export type SubsystemFailure = CaughtError & Readonly<{
   /** Server-owned identity used only to distinguish internal health states. */
   scope_id?: string;
 }>;
+export type SignInTelemetryMethod = "password" | "token" | "oauth" | "oidc" | "saml" | "ldap" | "trusted_header";
+/** `start` records only a start that ends the attempt; the later step records the rest. */
+export type SignInStep = "start" | "credentials" | "second_factor" | "callback";
+export type SignInOutcome = "succeeded" | "failed" | "refused";
 export type ToolKind = "search" | "knowledge" | "mcp" | "workspace" | "vision";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "knowledge_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
@@ -57,6 +61,12 @@ export type EventFields = {
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected" }>;
   "http.route_resolver_unavailable": Readonly<{ reason: "missing" | "invalid" | "unsupported" }>;
   "client.error": Readonly<{ kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown" }>;
+  /** One step of a sign-in attempt; `code` is a key of signInCodes.json. */
+  sign_in: CaughtError & Readonly<{
+    /** Absent while the step cannot tell the method yet (a second factor before its challenge). */
+    sign_in_method?: SignInTelemetryMethod;
+    step: SignInStep; outcome: SignInOutcome; code: string; duration_ms?: number;
+  }>;
   "process.failure": EmergencyFailure;
   "process.started": Readonly<{
     node_version: string; attachments?: SubsystemState; memory?: SubsystemState; knowledge?: SubsystemState;

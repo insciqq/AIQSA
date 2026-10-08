@@ -22,6 +22,7 @@ import {
 } from "./rateLimit";
 import { createAuthSession, type AuthSessionStore } from "./requestAuth";
 import { readCookie } from "./session";
+import { observeSignInStep, signInCode, type SignInAttempt } from "./signInTelemetry";
 
 export const OAUTH_FLOW_COOKIE_NAME = "aiqsa_oauth_flow";
 export const OAUTH_FLOW_MAX_AGE_SECONDS = 10 * 60;
@@ -285,23 +286,35 @@ function unavailable(): Response {
   return Response.json({ error: "not_found" }, { status: 404 });
 }
 
+/** Google and Yandex sign in through OAuth; the OIDC provider is a method of its own. */
+function noteProviderMethod(attempt: SignInAttempt, provider: string): void {
+  if (isOAuthProviderId(provider)) attempt.method = provider === "oidc" ? "oidc" : "oauth";
+}
+
+/** A settlement that admitted no session: refused by the access rules or an identity conflict. */
+function settlementCode(status: Exclude<OAuthLoginOutcome, "cancelled" | "failed">) {
+  return status === "pending" ? "account_pending" : status;
+}
+
 export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
-  return async function GET(request: Request, context: OAuthRouteContext): Promise<Response> {
+  // A started flow ends at the callback, which records the attempt.
+  return observeSignInStep({ step: "start" }, async (attempt, request: Request, context: OAuthRouteContext): Promise<Response> => {
     const { provider: rawProvider } = await context.params;
+    noteProviderMethod(attempt, rawProvider);
     const config = deps.getConfig();
 
     if (!config.configured) {
-      return Response.json({ error: "auth_not_configured" }, { status: 503 });
+      return attempt.end(Response.json({ error: "auth_not_configured" }, { status: 503 }), "failed", "auth_not_configured");
     }
 
     if (!isOAuthProviderId(rawProvider)) {
-      return unavailable();
+      return attempt.end(unavailable(), "refused", "sign_in_method_disabled");
     }
 
     const resolvedProvider = await resolveProvider(deps.resolveProvider, config, rawProvider);
 
     if (!resolvedProvider) {
-      return unavailable();
+      return attempt.end(unavailable(), "refused", "sign_in_method_disabled");
     }
 
     const query = new URL(request.url).searchParams;
@@ -327,7 +340,11 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
 
       if ("code" in built) {
         await resolvedProvider.recordOutcome?.(built.code);
-        return redirect(outcomeUrl({ appBaseUrl: config.appBaseUrl, nextPath, outcome: "failed", provider: rawProvider }));
+        return attempt.end(
+          redirect(outcomeUrl({ appBaseUrl: config.appBaseUrl, nextPath, outcome: "failed", provider: rawProvider })),
+          "failed",
+          signInCode(built.code)
+        );
       }
 
       authorizationUrl = built.url;
@@ -342,18 +359,18 @@ export function createOAuthStartHandler(deps: OAuthStartHandlerDeps) {
         switchAccount: rawProvider === "yandex" && singleQueryValue(query, "switch_account") === "1"
       });
     } else {
-      return unavailable();
+      return attempt.end(unavailable(), "refused", "sign_in_method_disabled");
     }
 
     const signedFlow = await signFlow(flow, config, deps.now?.() ?? new Date());
 
-    return redirect(authorizationUrl.toString(), [
+    return attempt.handOff(redirect(authorizationUrl.toString(), [
       flowCookie(signedFlow, {
         maxAge: OAUTH_FLOW_MAX_AGE_SECONDS,
         secure: config.cookieSecure
       })
-    ]);
-  };
+    ]));
+  });
 }
 
 export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
@@ -366,18 +383,23 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
     windowMs: OAUTH_PROVIDER_ADMISSION_WINDOW_MS
   });
 
-  return async function GET(request: Request, context: OAuthRouteContext): Promise<Response> {
+  return observeSignInStep({ step: "callback" }, async (attempt, request: Request, context: OAuthRouteContext): Promise<Response> => {
     const { provider: rawProvider } = await context.params;
+    noteProviderMethod(attempt, rawProvider);
     const config = deps.getConfig();
 
-    if (!config.configured || !isOAuthProviderId(rawProvider)) {
-      return unavailable();
+    if (!config.configured) {
+      return attempt.end(unavailable(), "failed", "auth_not_configured");
+    }
+
+    if (!isOAuthProviderId(rawProvider)) {
+      return attempt.end(unavailable(), "refused", "sign_in_method_disabled");
     }
 
     const resolvedProvider = await resolveProvider(deps.resolveProvider, config, rawProvider);
 
     if (!resolvedProvider) {
-      return unavailable();
+      return attempt.end(unavailable(), "refused", "sign_in_method_disabled");
     }
 
     const recordOutcome = async (code: string) => {
@@ -391,7 +413,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
     const state = singleQueryValue(query, "state");
 
     if (!flow || flow.provider !== rawProvider || !state || !exactMatch(state, flow.state)) {
-      return redirect(
+      return attempt.end(redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           nextPath: "/",
@@ -399,14 +421,14 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           provider: rawProvider
         }),
         [clearCookie]
-      );
+      ), "failed", "state_mismatch");
     }
 
     const providerErrors = query.getAll("error");
     const codes = query.getAll("code");
 
     if (providerErrors.length > 1 || codes.length > 1 || (providerErrors.length > 0 && codes.length > 0)) {
-      return redirect(
+      return attempt.end(redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           nextPath: flow.nextPath,
@@ -414,13 +436,14 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           provider: rawProvider
         }),
         [clearCookie]
-      );
+      ), "failed", "callback_invalid");
     }
 
     const providerError = providerErrors[0] || null;
 
     if (providerError) {
-      return redirect(
+      // Only the person's own refusal at the IdP is told apart; the IdP's error text is never kept.
+      return attempt.end(redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           nextPath: flow.nextPath,
@@ -428,13 +451,13 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           provider: rawProvider
         }),
         [clearCookie]
-      );
+      ), "failed", providerError === "access_denied" ? "cancelled" : "idp_error");
     }
 
     const code = codes[0] || null;
 
     if (!code) {
-      return redirect(
+      return attempt.end(redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           nextPath: flow.nextPath,
@@ -442,7 +465,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           provider: rawProvider
         }),
         [clearCookie]
-      );
+      ), "failed", "callback_invalid");
     }
 
     const loginRateLimiter = resolveLoginRateLimiter(
@@ -460,7 +483,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
     const clientIdentity = resolveLoginRateLimitIdentity(request, config);
 
     if (clientIdentity.status === "unavailable") {
-      return redirect(
+      return attempt.end(redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           nextPath: flow.nextPath,
@@ -468,7 +491,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           provider: rawProvider
         }),
         [clearCookie]
-      );
+      ), "failed", "auth_admission_unavailable");
     }
 
     const rateLimitKey = clientIdentity.status === "available"
@@ -489,7 +512,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           [clearCookie]
         );
         response.headers.set("retry-after", String(rateLimit.retryAfterSeconds));
-        return response;
+        return attempt.end(response, "refused", "rate_limited");
       }
     }
 
@@ -511,7 +534,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         [clearCookie]
       );
       response.headers.set("retry-after", String(flowRateLimit.retryAfterSeconds));
-      return response;
+      return attempt.end(response, "refused", "rate_limited");
     }
 
     const installationRateLimit = await oauthProviderRateLimiter.check(
@@ -537,11 +560,12 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         [clearCookie]
       );
       response.headers.set("retry-after", String(providerRateLimit.retryAfterSeconds));
-      return response;
+      return attempt.end(response, "refused", "rate_limited");
     }
 
     if (resolvedProvider.flow) {
       let result: OAuthFlowSignInResult;
+      let thrown: unknown;
 
       try {
         result = await resolvedProvider.flow.signIn({
@@ -553,7 +577,8 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           request,
           secureCookie: config.cookieSecure
         });
-      } catch {
+      } catch (error) {
+        thrown = error;
         result = { code: "sign_in_failed", status: "failed" };
       }
 
@@ -562,14 +587,18 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         if (rateLimitKey) {
           await loginRateLimiter.release(rateLimitKey);
         }
-        return redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, result.cookie]);
+        return attempt.end(
+          redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, result.cookie]),
+          "succeeded",
+          "accepted"
+        );
       }
 
       // A pending account is the provider working as configured.
       await recordOutcome(
         result.status === "failed" ? result.code : result.status === "pending" ? "accepted" : result.status
       );
-      return redirect(
+      const response = redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           nextPath: flow.nextPath,
@@ -578,10 +607,13 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         }),
         [clearCookie]
       );
+      return result.status === "failed"
+        ? attempt.end(response, "failed", signInCode(result.code), thrown)
+        : attempt.end(response, "refused", settlementCode(result.status));
     }
 
     if (rawProvider === "oidc") {
-      return unavailable();
+      return attempt.end(unavailable(), "refused", "sign_in_method_disabled");
     }
 
     try {
@@ -612,7 +644,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
       if (settlement.status !== "active") {
         // A pending account is the provider working as configured.
         await recordOutcome(settlement.status === "pending" ? "accepted" : settlement.status);
-        return redirect(
+        return attempt.end(redirect(
           outcomeUrl({
             appBaseUrl: config.appBaseUrl,
             nextPath: flow.nextPath,
@@ -620,7 +652,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
             provider: rawProvider
           }),
           [clearCookie]
-        );
+        ), "refused", settlementCode(settlement.status));
       }
 
       const session = await createAuthSession({
@@ -638,10 +670,14 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
         await loginRateLimiter.release(rateLimitKey);
       }
 
-      return redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, session.cookie]);
-    } catch {
+      return attempt.end(
+        redirect(new URL(flow.nextPath, config.appBaseUrl).toString(), [clearCookie, session.cookie]),
+        "succeeded",
+        "accepted"
+      );
+    } catch (error) {
       await recordOutcome("exchange_failed");
-      return redirect(
+      return attempt.end(redirect(
         outcomeUrl({
           appBaseUrl: config.appBaseUrl,
           nextPath: flow.nextPath,
@@ -649,7 +685,7 @@ export function createOAuthCallbackHandler(deps: OAuthCallbackHandlerDeps) {
           provider: rawProvider
         }),
         [clearCookie]
-      );
+      ), "failed", "exchange_failed", error);
     }
-  };
+  });
 }

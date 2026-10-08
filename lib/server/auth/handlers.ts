@@ -28,6 +28,7 @@ import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
 import { resolveLoginRateLimitIdentity } from "./clientIdentity";
 import { refuseWhenPasswordSignInOff, type SignInPolicyReader } from "./signInPolicy";
+import { observeSignInStep, type SignInAttempt } from "./signInTelemetry";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import {
   waitForAuthResponseFloor
@@ -88,6 +89,8 @@ type LogoutHandlerDeps = {
 export type DirectoryPasswordSignIn = (input: {
   /** One attempt under the password-login account budgets; a refusal is the 429 to return. */
   admitAccount(accountKey: string): Promise<Response | null>;
+  /** The form's sign-in record: an answering directory sets its method and ends it. */
+  attempt: SignInAttempt;
   config: AuthConfig;
   identifier: string;
   localPasswordUsable(normalizedEmail: string): Promise<boolean>;
@@ -337,25 +340,25 @@ function passwordResetEmail(input: { resetUrl: string; to: string }): { subject:
 }
 
 export function createTokenLoginHandler(deps: AuthHandlerDeps) {
-  return async function POST(request: Request): Promise<Response> {
+  return observeSignInStep({ method: "token", step: "credentials" }, async (attempt, request: Request): Promise<Response> => {
     const config = deps.getConfig();
 
     if (!config.configured) {
-      return json({ error: "auth_not_configured" }, { status: 503 });
+      return attempt.end(json({ error: "auth_not_configured" }, { status: 503 }), "failed", "auth_not_configured");
     }
 
     if (!config.bootstrapLoginEnabled) {
-      return json({ error: "not_found" }, { status: 404 });
+      return attempt.end(json({ error: "not_found" }, { status: 404 }), "refused", "sign_in_method_disabled");
     }
 
     if (!config.bootstrapConfigured) {
-      return json({ error: "bootstrap_not_configured" }, { status: 503 });
+      return attempt.end(json({ error: "bootstrap_not_configured" }, { status: 503 }), "failed", "bootstrap_not_configured");
     }
 
     const contentTypeError = requireJsonContentType(request);
 
     if (contentTypeError) {
-      return contentTypeError;
+      return attempt.end(contentTypeError, "refused", "request_invalid");
     }
 
     const loginRateLimiter = resolveLoginRateLimiter(
@@ -365,39 +368,39 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
     const rateLimitIdentity = bootstrapRateLimitKey({ config, request });
 
     if (rateLimitIdentity.status === "unavailable") {
-      return authAdmissionUnavailable();
+      return attempt.end(authAdmissionUnavailable(), "failed", "auth_admission_unavailable");
     }
 
     const rateLimitKey = rateLimitIdentity.key;
     const rateLimit = await loginRateLimiter.check(rateLimitKey);
 
     if (!rateLimit.allowed) {
-      return rateLimitedResponse(rateLimit);
+      return attempt.end(rateLimitedResponse(rateLimit), "refused", "rate_limited");
     }
 
     const body = await readJson(request);
     const bodyError = requestBodyErrorResponse(body);
-    if (bodyError) return bodyError;
+    if (bodyError) return attempt.end(bodyError, "refused", "request_invalid");
     const token = tokenFromBody(body);
 
     if (typeof token !== "string" || !token) {
-      return json({ error: "token_required" }, { status: 400 });
+      return attempt.end(json({ error: "token_required" }, { status: 400 }), "refused", "request_invalid");
     }
 
     const verifyTokenHash = deps.verifyTokenHash ?? verifyTokenHashDefault;
 
     if (!verifyTokenHash(token, config.bootstrapTokenHash)) {
-      return unauthorized();
+      return attempt.end(unauthorized(), "failed", "invalid_credentials");
     }
 
     const user = await deps.findUserById(config.bootstrapUserId);
 
     if (!user) {
-      return json({ error: "bootstrap_user_not_found" }, { status: 500 });
+      return attempt.end(json({ error: "bootstrap_user_not_found" }, { status: 500 }), "failed", "bootstrap_user_not_found");
     }
 
     if (!isActiveUser(user)) {
-      return unauthorized();
+      return attempt.end(unauthorized(), "refused", "account_inactive");
     }
 
     const session = await createAuthSession({
@@ -409,7 +412,7 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
     });
     await loginRateLimiter.reset(rateLimitKey);
 
-    return json(
+    return attempt.end(json(
       {
         user
       },
@@ -418,22 +421,22 @@ export function createTokenLoginHandler(deps: AuthHandlerDeps) {
           "set-cookie": session.cookie
         }
       }
-    );
-  };
+    ), "succeeded", "accepted");
+  });
 }
 
 export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
-  return async function POST(request: Request): Promise<Response> {
+  return observeSignInStep({ method: "password", step: "credentials" }, async (attempt, request: Request): Promise<Response> => {
     const config = deps.getConfig();
 
     if (!config.configured) {
-      return json({ error: "auth_not_configured" }, { status: 503 });
+      return attempt.end(json({ error: "auth_not_configured" }, { status: 503 }), "failed", "auth_not_configured");
     }
 
     const contentTypeError = requireJsonContentType(request);
 
     if (contentTypeError) {
-      return contentTypeError;
+      return attempt.end(contentTypeError, "refused", "request_invalid");
     }
 
     const clientIdentity = credentialClientRateLimitKey({
@@ -443,7 +446,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     });
 
     if (clientIdentity.status === "unavailable") {
-      return authAdmissionUnavailable();
+      return attempt.end(authAdmissionUnavailable(), "failed", "auth_admission_unavailable");
     }
 
     const clientRateLimitKey = clientIdentity.status === "available"
@@ -459,17 +462,17 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
       const clientRateLimit = await loginRateLimiter.check(clientRateLimitKey);
 
       if (!clientRateLimit.allowed) {
-        return rateLimitedResponse(clientRateLimit);
+        return attempt.end(rateLimitedResponse(clientRateLimit), "refused", "rate_limited");
       }
     }
 
     const rawBody = await readJson(request);
     const bodyError = requestBodyErrorResponse(rawBody);
-    if (bodyError) return bodyError;
+    if (bodyError) return attempt.end(bodyError, "refused", "request_invalid");
     const credentials = credentialsFromBody(rawBody);
 
     if (!credentials || !credentials.email.trim() || !credentials.password) {
-      return json({ error: "credentials_required" }, { status: 400 });
+      return attempt.end(json({ error: "credentials_required" }, { status: 400 }), "refused", "request_invalid");
     }
 
     // Success clears only the account's keys. The source budget merely gets back the
@@ -488,6 +491,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
             const decision = await admitPasswordLoginAccount(loginRateLimiter, { accountKey, source });
             return decision.allowed ? null : rateLimitedResponse(decision);
           },
+          attempt,
           config,
           identifier: credentials.email,
           async localPasswordUsable(email) {
@@ -507,17 +511,17 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
 
     const localUnauthorized = async () => {
       if (directory.kind === "local") await directory.waitForFloor();
-      return unauthorized();
+      return attempt.end(unauthorized(), "failed", "invalid_credentials");
     };
 
     // Local passwords only: a directory sign-in sharing this form branched off above.
     const passwordSignInOff = await refuseWhenPasswordSignInOff(deps.signInPolicy);
-    if (passwordSignInOff) return passwordSignInOff;
+    if (passwordSignInOff) return attempt.end(passwordSignInOff, "refused", "sign_in_method_disabled");
 
     const normalizedEmail = normalizeAuthEmail(credentials.email);
 
     if (!isPlausibleEmail(normalizedEmail)) {
-      return unauthorized();
+      return attempt.end(unauthorized(), "failed", "invalid_credentials");
     }
 
     const rateLimitKey = credentialRateLimitKey({
@@ -530,7 +534,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     });
 
     if (!rateLimit.allowed) {
-      return rateLimitedResponse(rateLimit);
+      return attempt.end(rateLimitedResponse(rateLimit), "refused", "rate_limited");
     }
 
     const identity = await deps.repository.findPasswordIdentityByEmail(normalizedEmail);
@@ -562,7 +566,7 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     // A verified password of a user with TOTP creates no session, only a challenge that the
     // second-factor route redeems; its own limits bound the code guesses.
     if (currentCredential.kind === "second_factor_required") {
-      return json(
+      return attempt.end(json(
         { status: "second_factor_required" },
         {
           headers: {
@@ -572,10 +576,10 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
             })
           }
         }
-      );
+      ), "succeeded", "second_factor_required");
     }
 
-    return json(
+    return attempt.end(json(
       {
         user: {
           displayName: currentCredential.user.displayName,
@@ -590,8 +594,8 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
           "set-cookie": session.cookie
         }
       }
-    );
-  };
+    ), "succeeded", "accepted");
+  });
 }
 
 export function createPasswordResetRequestHandler(deps: PasswordResetRequestHandlerDeps) {
