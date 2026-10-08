@@ -15,8 +15,10 @@ import {
   randomSuffix,
   REAL_IDP_SKIP_REASON,
   realIdpEnabled,
+  reconfigureMethod,
   saveTestActivate,
   snapshotMethod,
+  standContext,
   standEnv,
   standEnvPresent
 } from "./support/realIdp";
@@ -366,4 +368,60 @@ test("an administrator loads Auth0's SAML metadata into the card; SAML sign-ins 
   expect(dinaUser!.role, `groups sync=${dinaSync}`).toBe("admin");
   expect(dinaUser!.roleManagedBy).toMatch(/^saml:/u);
   await attachEvidence(testInfo, "auth0-saml-sign-in", { dinaAdmin: true, eliMember: member, metadataLoaded: true });
+});
+
+test("auto-redirect sends /login to Auth0, ?local=1 stays, and signing out ends the Auth0 session", async ({ browser }, testInfo) => {
+  test.setTimeout(240_000);
+  const discovery = await (await fetch(`${issuer()}.well-known/openid-configuration`)).json() as { end_session_endpoint?: string };
+  const endSessionAdvertised = typeof discovery.end_session_endpoint === "string";
+  expect(endSessionAdvertised, "Auth0 advertises RP-initiated logout").toBe(true);
+  const admin = await adminSession(browser);
+  await reconfigureMethod(admin.context.request, "oidc", { autoRedirect: true, idpLogout: true }, ["clientSecret"]);
+  await admin.context.close();
+
+  const local = await loginPage(browser, "/login?local=1");
+  await expect(local.page.getByLabel("Password", { exact: true })).toBeVisible();
+  await expect(local.page.getByRole("link", { name: `Continue with ${OIDC_BUTTON}` })).toBeVisible();
+  await local.context.close();
+
+  const context = await standContext(browser);
+  const page = await context.newPage();
+  await page.goto("/login");
+  await expect(page).toHaveURL((url) => url.origin === auth0Origin(), { timeout: 60_000 });
+  await auth0SignIn(page, people.ana);
+  await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 60_000 });
+  const anaId = (await userBy("oidc", people.ana.email))!.id;
+  const sessionsBefore = await prisma.authSession.count({ where: { revokedAt: null, signInMethod: "oidc", userId: anaId } });
+
+  // A click before hydration opens nothing: retry until the menu shows.
+  const accountMenu = page.getByRole("menu", { name: "Account", exact: true });
+  await expect(async () => {
+    await page.getByRole("button", { name: "Account menu" }).first().click();
+    await expect(accountMenu).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  await accountMenu.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.origin === auth0Origin(), { timeout: 30_000 });
+  const logoutPath = new URL(page.url()).pathname;
+  // Without an id_token_hint Auth0 may ask before it ends its session; then /login redirects
+  // back to Auth0, which asks for credentials once its session is gone.
+  const username = page.locator('input[name="username"]');
+  const confirm = page.locator('button[type="submit"][name="action"]').first();
+  await expect.poll(async () => (await username.isVisible()) || (await confirm.isVisible()), { timeout: 60_000 }).toBe(true);
+  const askedToConfirm = !(await username.isVisible());
+  if (askedToConfirm) {
+    await page.screenshot({ path: testInfo.outputPath("auth0-idp-logout-confirm-desktop.png") });
+    await confirm.click();
+  }
+  await expect(username).toBeVisible({ timeout: 60_000 });
+  const activeSessions = await prisma.authSession.count({ where: { revokedAt: null, signInMethod: "oidc", userId: anaId } });
+  expect(sessionsBefore - activeSessions).toBe(1);
+  expect((await context.cookies()).some((cookie) => cookie.name === "aiqsa_session")).toBe(false);
+  await context.close();
+  await attachEvidence(testInfo, "auth0-redirect-logout", {
+    askedToConfirm,
+    autoRedirect: true,
+    endSessionAdvertised,
+    idpAsksForCredentialsAfterLogout: true,
+    logoutPath: logoutPath.replaceAll("/", ".").replace(/[^a-z0-9_.:-]/gu, "").slice(0, 64)
+  });
 });
