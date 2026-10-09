@@ -181,6 +181,7 @@ function plan(
     source,
     suppressionIdentitySnapshot,
     timeZone: "UTC",
+    toolCallReplay: null,
     toolEvents: [],
     work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
   };
@@ -345,6 +346,16 @@ describe("Memory INDEX_HISTORY handler", () => {
     // The repository's outcome reaches the coordinator: the job is queued
     // again for the next page instead of completing.
     await expect(partial.apply?.({} as never, claim())).resolves.toEqual({ requeue: true });
+
+    // A page that leaves changed tool calls to replay is partial as well, and
+    // its accepted result binds where the next page resumes.
+    const replaying = await handlerFor({ ...plan([chunk("chunk-0", 0)]), toolCallReplay: {
+      after: { id: "call-1", updatedAt: "2026-08-10T10:05:00.000Z" }
+    } }).execute(claim(), context());
+    expect(replaying.stage).toBe("lexical_ready:history_page_partial");
+    const replayed = await handlerFor(plan([chunk("chunk-0", 0)])).execute(claim(), context());
+    expect(replayed.stage).toBe("lexical_ready");
+    expect(replaying.acceptedResultHash).not.toBe(replayed.acceptedResultHash);
 
     const truncated = await handlerFor({
       ...plan([chunk("chunk-0", 0)]),

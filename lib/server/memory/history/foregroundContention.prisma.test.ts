@@ -8,6 +8,7 @@ import { normalizeTokenUsage } from "../../../domain/usage";
 import { prisma } from "../../prisma";
 import { createPrismaRunRepository } from "../../runs/prismaRepository";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { createQueryCountingClient } from "@/tests/support/prismaQueryLog";
 import {
   activateContentionVectorIndex,
   claimContentionJob,
@@ -41,6 +42,20 @@ const TOOL_CALLS = 2;
 // turns (each estimated above 40 writes) plus the two turns an APPEND page
 // rewinds for context.
 const MAX_MESSAGES_PER_PASS = 34;
+// A deletion that scrubs settled call results (as removing a Knowledge source
+// does) leaves every changed observation of the indexed prefix to replay on
+// the chat's next turn: here ten of the twelve calls of each of twelve turns.
+const REPLAY_TURNS = 12;
+const REPLAY_CALLS = 12;
+const REPLAY_CHANGED_CALLS = 10;
+const REPLAY_LIMITS = {
+  maxChunks: 512, maxContentBytes: 4 * 1024 * 1024, maxIndexWrites: 90, maxMessages: 1_024, maxToolCalls: 4_096
+};
+// Changed calls one bounded page replays: its write budget at three writes each.
+const MAX_REPLAYED_PER_PASS = REPLAY_LIMITS.maxIndexWrites / 3;
+// Statements of one such commit: about fifty-five for its locks, exact
+// re-proof and checkpoint (measured), and three per observation it writes.
+const MAX_STATEMENTS_PER_REPLAY_PASS = 80 + 4 * MAX_REPLAYED_PER_PASS;
 
 type SeededChat = Readonly<{ chatId: string; pathIds: readonly string[]; toolCallIds: readonly string[] }>;
 
@@ -95,6 +110,23 @@ async function seedLongChat(userId: string, turns: number, toolCalls: number): P
   } });
   await prisma.$executeRawUnsafe(`ANALYZE "Chat", "Message", "ModelRun", "ModelRunToolCall"`);
   return { chatId: chat.id, pathIds: messages.map(({ id }) => id!), toolCallIds: calls.map(({ id }) => id!) };
+}
+
+/** Appends one settled turn without tool calls, which queues the chat's next
+ * history job at a new source revision. */
+async function appendTurn(userId: string, chatId: string, parentMessageId: string): Promise<string> {
+  const question = await prisma.message.create({ data: { chatId, content: textMessageContent("One more question."),
+    parentMessageId, role: "user", status: "complete" } });
+  const answer = await prisma.message.create({ data: { chatId, content: textMessageContent("One more answer."),
+    modelId: "contention-model", parentMessageId: question.id, provider: "contention-provider", role: "assistant",
+    status: "complete" } });
+  const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId, modelId: "contention-model",
+    normalizedRequest: { prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } } },
+    provider: "contention-provider", status: "complete", userId, userMessageId: question.id } });
+  await mutateContentionSource(userId, chatId, { mutations: ["NORMAL_APPEND"], patch: { activeLeafMessageId: answer.id } });
+  await mutateContentionSource(userId, chatId, { mutations: ["TERMINAL_SETTLEMENT"], terminalSettlement: {
+    assistantMessageId: answer.id, runId: run.id, status: "complete" } });
+  return answer.id;
 }
 
 /** The chat's newest queued history job; older ones are superseded, as the
@@ -280,21 +312,11 @@ describe("INDEX_HISTORY commits and the owner's and the chat's foreground writes
       // A new turn advances the source revision; its job carries every
       // retained observation to it without rewriting the observation's entry.
       const chat = await prisma.chat.findUniqueOrThrow({ where: { id: chatId } });
-      const question = await prisma.message.create({ data: { chatId, content: textMessageContent("One more question."),
-        parentMessageId: pathIds.at(-1)!, role: "user", status: "complete" } });
-      const answer = await prisma.message.create({ data: { chatId, content: textMessageContent("One more answer."),
-        modelId: "contention-model", parentMessageId: question.id, provider: "contention-provider", role: "assistant",
-        status: "complete" } });
-      const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId, modelId: "contention-model",
-        normalizedRequest: { prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } } },
-        provider: "contention-provider", status: "complete", userId, userMessageId: question.id } });
-      await mutateContentionSource(userId, chatId, { mutations: ["NORMAL_APPEND"], patch: { activeLeafMessageId: answer.id } });
-      await mutateContentionSource(userId, chatId, { mutations: ["TERMINAL_SETTLEMENT"], terminalSettlement: {
-        assistantMessageId: answer.id, runId: run.id, status: "complete" } });
+      const answerId = await appendTurn(userId, chatId, pathIds.at(-1)!);
       await indexPass();
       const moved = await versions();
       const current = await prisma.chatMemoryCheckpoint.findUniqueOrThrow({ where: { userId_chatId: { chatId, userId } } });
-      expect(current).toMatchObject({ lastIndexedMessageId: answer.id, status: "READY" });
+      expect(current).toMatchObject({ lastIndexedMessageId: answerId, status: "READY" });
       expect(current.sourceRevision).toBeGreaterThan(chat.memorySourceRevision);
       expect(moved.map(({ id }) => id)).toEqual(indexed.map(({ id }) => id));
       for (const row of moved) {
@@ -307,4 +329,152 @@ describe("INDEX_HISTORY commits and the owner's and the chat's foreground writes
       await cleanupContentionOwner(userId);
     }
   }, 120_000);
+
+  it("replays more changed observations than one page admits in bounded commits that end where one commit does", async () => {
+    const userId = await createContentionOwner("history-replay");
+    const counting = createQueryCountingClient();
+    try {
+      const bounded = await seedLongChat(userId, REPLAY_TURNS, REPLAY_CALLS);
+      const oneShot = await seedLongChat(userId, REPLAY_TURNS, REPLAY_CALLS);
+      const coordinator = createPrismaMemoryCoordinatorRepository(counting.client);
+      const defaultHandler = createMemoryHistoryIndexHandler({
+        repository: createPrismaMemoryHistoryIndexRepository(counting.client) });
+      const boundedHandler = createMemoryHistoryIndexHandler({
+        repository: createPrismaMemoryHistoryIndexRepository(counting.client, REPLAY_LIMITS) });
+      const checkpointOf = (chatId: string) => prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId, userId } } });
+      const activeEventIds = async (chatId: string) => new Set((await prisma.memoryToolEvent.findMany({
+        select: { id: true }, where: { chatId, state: "ACTIVE", userId } })).map(({ id }) => id));
+      // One pass of the chat's queued job; the commit's statements are counted.
+      const pass = async (handler: ReturnType<typeof createMemoryHistoryIndexHandler>, chatId: string) => {
+        const job = await currentHistoryJob(userId, chatId);
+        const claim = await claimContentionJob(job.id);
+        const now = new Date();
+        const result = await handler.execute(claim, { now: () => now, setStage: async () => undefined,
+          signal: new AbortController().signal });
+        await counting.reset();
+        const origin = performance.now();
+        expect(await coordinator.commitJobSuccess({ acceptedResultHash: result.acceptedResultHash, apply: result.apply,
+          claim, now, operationalCounters: result.operationalCounters, stage: result.stage ?? null })).toBe(true);
+        const heldMs = Math.round(performance.now() - origin);
+        const statements = await counting.count();
+        const { state } = await prisma.memoryJob.findUniqueOrThrow({ select: { state: true }, where: { id: job.id } });
+        return { done: state === "SUCCEEDED", heldMs, stage: result.stage ?? null, statements };
+      };
+      const indexFully = async (chatId: string) => {
+        for (let passes = 1; ; passes += 1) {
+          expect(passes).toBeLessThanOrEqual(10);
+          if ((await pass(defaultHandler, chatId)).done) return;
+        }
+      };
+      await indexFully(bounded.chatId);
+      await indexFully(oneShot.chatId);
+      const fence = (await checkpointOf(bounded.chatId)).lastSucceededAt!;
+      const indexedEventIds = await activeEventIds(bounded.chatId);
+      expect(indexedEventIds.size).toBe(REPLAY_TURNS * REPLAY_CALLS);
+
+      // A new turn advances each chat's source revision and queues its job.
+      // Before the job runs, one scrub changes ten calls of every turn at the
+      // same instant; the other two stay current and move to the new revision.
+      const boundedLeaf = await appendTurn(userId, bounded.chatId, bounded.pathIds.at(-1)!);
+      const oneShotLeaf = await appendTurn(userId, oneShot.chatId, oneShot.pathIds.at(-1)!);
+      const changedAt = new Date();
+      for (const chat of [bounded, oneShot]) {
+        expect((await checkpointOf(chat.chatId)).lastSucceededAt!.getTime()).toBeLessThan(changedAt.getTime());
+        const changed = chat.toolCallIds.filter((_, ordinal) => ordinal % REPLAY_CALLS < REPLAY_CHANGED_CALLS);
+        await prisma.modelRunToolCall.updateMany({ data: { arguments: { deleted: true }, result: Prisma.DbNull,
+          updatedAt: changedAt }, where: { id: { in: changed } } });
+      }
+
+      const boundedPasses: Array<Awaited<ReturnType<typeof pass>> & { written: number }> = [];
+      let replayAfter: string | null = null;
+      for (;;) {
+        const before = await activeEventIds(bounded.chatId);
+        const result = await pass(boundedHandler, bounded.chatId);
+        const after = await activeEventIds(bounded.chatId);
+        const written = [...after].filter((id) => !before.has(id)).length;
+        boundedPasses.push({ ...result, written });
+        console.info("memory_history_replay_pass", JSON.stringify({ pass: boundedPasses.length, ...result, written }));
+        expect(boundedPasses.length).toBeLessThanOrEqual(12);
+        // Every page writes at most its budget of observations, in a commit
+        // whose size does not grow with the number of changed calls.
+        expect(written).toBeLessThanOrEqual(MAX_REPLAYED_PER_PASS);
+        expect(result.statements).toBeLessThanOrEqual(MAX_STATEMENTS_PER_REPLAY_PASS);
+        const checkpoint = await checkpointOf(bounded.chatId);
+        expect(checkpoint).toMatchObject({ lastIndexedMessageId: boundedLeaf, status: "READY" });
+        if (result.done) {
+          // The replay is complete; changes from now on are fenced afresh.
+          expect(checkpoint).toMatchObject({ toolCallReplayAfterId: null, toolCallReplayAfterUpdatedAt: null });
+          expect(checkpoint.lastSucceededAt!.getTime()).toBeGreaterThan(changedAt.getTime());
+          break;
+        }
+        // An unfinished replay keeps its fence and resumes after the last
+        // call it handled, never before an earlier page's position.
+        expect(result.stage).toBe("lexical_ready:history_page_partial");
+        expect(checkpoint.lastSucceededAt).toEqual(fence);
+        if (checkpoint.toolCallReplayAfterId !== null) {
+          expect(checkpoint.toolCallReplayAfterUpdatedAt).toEqual(changedAt);
+          if (replayAfter !== null) expect(checkpoint.toolCallReplayAfterId > replayAfter).toBe(true);
+          replayAfter = checkpoint.toolCallReplayAfterId;
+        }
+      }
+      // A hundred changed prefix calls at thirty per page, after the page
+      // that indexed the new turn (and rebuilt the two turns it rewinds).
+      const prefixReplays = (REPLAY_TURNS - 2) * REPLAY_CHANGED_CALLS;
+      expect(boundedPasses.length).toBeGreaterThanOrEqual(1 + Math.ceil(prefixReplays / MAX_REPLAYED_PER_PASS));
+
+      const oneShotPass = await pass(defaultHandler, oneShot.chatId);
+      console.info("memory_history_replay_one_shot", JSON.stringify(oneShotPass));
+      expect(oneShotPass.done).toBe(true);
+      // Each bounded commit sent a bounded share of the statements the
+      // one-shot replay needed.
+      for (const boundedPass of boundedPasses) {
+        expect(boundedPass.statements).toBeLessThan(oneShotPass.statements);
+      }
+
+      // Both chats end in the same exact index: each changed call's scrubbed
+      // observation replaced the old one, the unchanged ones moved to the new
+      // revision, and no observation was written twice or left stale.
+      const observations = async (chat: SeededChat) => {
+        const callOrdinal = new Map(chat.toolCallIds.map((id, ordinal) => [id, ordinal]));
+        const events = await prisma.memoryToolEvent.findMany({ where: { chatId: chat.chatId, state: "ACTIVE", userId } });
+        const entries = await prisma.memorySearchEntry.findMany({ select: { normalizedSearchText: true, toolEventId: true },
+          where: { itemType: "TOOL_EVENT", toolEventId: { in: events.map(({ id }) => id) }, userId } });
+        return {
+          events: events.map((event) => ({
+            call: callOrdinal.get(event.modelRunToolCallId) ?? -1,
+            contentHash: event.contentHash,
+            entries: entries.filter(({ toolEventId }) => toolEventId === event.id)
+              .map(({ normalizedSearchText }) => normalizedSearchText),
+            occurredAt: event.occurredAt.toISOString(),
+            outcome: event.outcome,
+            safeProjectedText: event.safeProjectedText,
+            sourceCallUpdatedAt: event.sourceCallUpdatedAtAtCreation.toISOString(),
+            sourcePayloadHash: event.sourcePayloadHash,
+            sourceRevision: event.sourceRevisionAtCreation
+          })).sort((left, right) => left.call - right.call),
+          invalidated: await prisma.memoryToolEvent.count({ where: { chatId: chat.chatId, state: "INVALIDATED", userId } })
+        };
+      };
+      const boundedState = await observations(bounded);
+      const oneShotState = await observations(oneShot);
+      expect(boundedState).toEqual(oneShotState);
+      expect(boundedState.events).toHaveLength(REPLAY_TURNS * REPLAY_CALLS);
+      expect(boundedState.invalidated).toBe(REPLAY_TURNS * REPLAY_CHANGED_CALLS);
+      for (const event of boundedState.events) {
+        expect(event.entries).toHaveLength(1);
+        expect(event.sourceCallUpdatedAt === changedAt.toISOString())
+          .toBe(event.call % REPLAY_CALLS < REPLAY_CHANGED_CALLS);
+      }
+      // The unchanged observations kept their identity.
+      const boundedEventIds = await activeEventIds(bounded.chatId);
+      expect([...indexedEventIds].filter((id) => boundedEventIds.has(id)))
+        .toHaveLength(REPLAY_TURNS * (REPLAY_CALLS - REPLAY_CHANGED_CALLS));
+      await expect(checkpointOf(oneShot.chatId)).resolves.toMatchObject({ lastIndexedMessageId: oneShotLeaf,
+        status: "READY", toolCallReplayAfterId: null, toolCallReplayAfterUpdatedAt: null });
+    } finally {
+      await counting.client.$disconnect();
+      await cleanupContentionOwner(userId);
+    }
+  }, 300_000);
 });

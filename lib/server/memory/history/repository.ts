@@ -59,7 +59,8 @@ import {
   type MemoryHistoryIndexSourceIdentity,
   type MemoryHistoryPreparedChunk,
   type MemoryHistoryPreparedRound,
-  type MemoryHistoryPreparedToolEvent
+  type MemoryHistoryPreparedToolEvent,
+  type MemoryHistoryToolCallReplay
 } from "./contract";
 import {
   alignMemoryHistoryIndexPageEnd,
@@ -70,6 +71,7 @@ import {
   memoryHistoryIndexMinimumPageEnd,
   memoryHistoryIndexPageLimitsAreValid,
   memoryHistoryIndexWriteCost,
+  memoryHistoryToolCallReplayLimit,
   planMemoryHistoryTailUpdate,
   shrinkMemoryHistoryIndexPageEnd,
   type MemoryHistoryIndexPageLimits
@@ -106,6 +108,7 @@ import {
 import { memoryHistorySuppressionIdentitySnapshot } from "./admissionIdentity";
 import {
   MEMORY_TOOL_EVENT_PROJECTION_VERSION,
+  MEMORY_TOOL_EVENT_REPLAY_SCAN_CALLS,
   MEMORY_TOOL_EVENT_SOURCE_READ_BATCH,
   projectMemoryToolEvent
 } from "./toolEvents";
@@ -529,16 +532,25 @@ async function loadIncrementalHistoryState(
   chunks: readonly CurrentChunkRow[];
   checkpointLastSucceededAt: Date | null;
   checkpointPipelineVersion: string | null;
+  checkpointToolCallReplayAfter: ToolCallReplayPosition | null;
   messages: readonly Readonly<{
     messageId: string;
     sourceMessageUpdatedAt: string;
   }>[];
   rounds: readonly CurrentRoundRow[];
+  /** Active observations whose settled call no longer has the state, time or
+   * revision they were projected from. */
+  staleToolEventIds: ReadonlySet<string>;
   toolEvents: readonly MemoryToolEvent[];
 }>> {
-  const [checkpoint, rows, roundRows, toolEventRows, messageRows] = await Promise.all([
+  const [checkpoint, rows, roundRows, toolEventRows, messageRows, staleToolEvents] = await Promise.all([
     tx.chatMemoryCheckpoint.findUnique({
-      select: { lastSucceededAt: true, pipelineVersion: true },
+      select: {
+        lastSucceededAt: true,
+        pipelineVersion: true,
+        toolCallReplayAfterId: true,
+        toolCallReplayAfterUpdatedAt: true
+      },
       where: { userId_chatId: { chatId: source.id, userId: source.userId } }
     }),
     tx.memoryRecallChunk.findMany({
@@ -573,7 +585,28 @@ async function loadIncrementalHistoryState(
       orderBy: { ordinal: "asc" },
       select: { messageId: true, sourceMessageUpdatedAt: true },
       where: { chatId: source.id, userId: source.userId }
-    })
+    }),
+    // The tool-event source guard rejects writing such an observation, and
+    // retrieval already ignores it; a page drops it instead of moving it.
+    tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT tool_event."id"
+      FROM "MemoryToolEvent" AS tool_event
+      LEFT JOIN "ModelRunToolCall" AS source_call
+        ON source_call."modelRunId" = tool_event."modelRunId"
+        AND source_call."id" = tool_event."modelRunToolCallId"
+      WHERE tool_event."userId" = ${source.userId}
+        AND tool_event."chatId" = ${source.id}
+        AND tool_event."state" = 'ACTIVE'::"MemoryHistoryItemState"
+        AND (
+          source_call."id" IS NULL
+          OR source_call."state" NOT IN (
+            'complete'::"ModelRunToolCallState", 'error'::"ModelRunToolCallState"
+          )
+          OR source_call."completedAt" IS DISTINCT FROM tool_event."occurredAt"
+          OR source_call."updatedAt" IS DISTINCT FROM
+            tool_event."sourceCallUpdatedAtAtCreation"
+        )
+    `)
   ]);
   const chunkIds = rows.map((row) => row.id);
   const roundIds = roundRows.map((row) => row.id);
@@ -606,6 +639,13 @@ async function loadIncrementalHistoryState(
   return Object.freeze({
     checkpointLastSucceededAt: checkpoint?.lastSucceededAt ?? null,
     checkpointPipelineVersion: checkpoint?.pipelineVersion ?? null,
+    checkpointToolCallReplayAfter: checkpoint?.toolCallReplayAfterId &&
+      checkpoint.toolCallReplayAfterUpdatedAt
+      ? {
+          id: checkpoint.toolCallReplayAfterId,
+          updatedAt: checkpoint.toolCallReplayAfterUpdatedAt
+        }
+      : null,
     chunks: Object.freeze(rows.flatMap((row): CurrentChunkRow[] => {
       const messageJoins = joinsByChunk.get(row.id) ?? [];
       return messageJoins.length === 0 ? [] : [{ ...row, messageJoins }];
@@ -618,6 +658,7 @@ async function loadIncrementalHistoryState(
       const messageJoins = joinsByRound.get(row.id) ?? [];
       return messageJoins.length === 0 ? [] : [{ ...row, messageJoins }];
     })),
+    staleToolEventIds: new Set(staleToolEvents.map(({ id }) => id)),
     toolEvents: Object.freeze(toolEventRows)
   });
 }
@@ -768,20 +809,65 @@ const HISTORY_RUN_SELECT = {
   userMessageId: true
 } as const;
 
-type ChangedToolCallSource = Readonly<{
-  assistantMessageId: string | null;
-  id: string;
+type HistoryRun = Prisma.ModelRunGetPayload<{ select: typeof HISTORY_RUN_SELECT }>;
+
+/** The runs' assistants that the owner still owns and has not archived. */
+async function loadOwnedAssistantIds(
+  tx: MemoryTransaction,
+  userId: string,
+  runs: readonly HistoryRun[]
+): Promise<readonly string[]> {
+  const assistantIds = [...new Set(runs.flatMap((run) =>
+    run.assistantId ? [run.assistantId] : []))];
+  if (assistantIds.length === 0) return [];
+  const owned = await tx.assistantDefinition.findMany({
+    select: { id: true },
+    where: {
+      archivedAt: null,
+      id: { in: assistantIds },
+      ownerUserId: userId
+    }
+  });
+  return owned.map(({ id }) => id);
+}
+
+/** A settled call's position in the changed-call replay order. */
+type ToolCallReplayPosition = Readonly<{ id: string; updatedAt: Date }>;
+
+type ChangedToolCall = Readonly<{ assistantMessageId: string; id: string }>;
+
+type ToolCallReplayScan = Readonly<{
+  /** Handled calls whose observation this page rebuilds. */
+  calls: readonly ChangedToolCall[];
+  /** False when changed calls may remain after `last`. */
+  complete: boolean;
+  /** The last call this page handled, replayed or not. */
+  last: ToolCallReplayPosition | null;
 }>;
 
-/** Keyset-paged identities of settled calls changed since the checkpoint. */
-async function loadChangedToolCallSources(
+/**
+ * Walks the settled calls of the chat's complete runs that changed since the
+ * checkpoint, in (updatedAt, id) order: after `after` when an earlier page
+ * stopped there, otherwise from `since`. A call whose observation needs no
+ * rebuild in the indexed prefix (`replays` is false) is handled without a
+ * write. The walk stops before the first call beyond `limit` replays, or
+ * after MEMORY_TOOL_EVENT_REPLAY_SCAN_CALLS handled calls.
+ */
+async function scanChangedToolCalls(
   tx: MemoryTransaction,
   source: Readonly<{ id: string; userId: string }>,
-  since: Date
-): Promise<readonly ChangedToolCallSource[]> {
-  const changed: ChangedToolCallSource[] = [];
-  let cursor: Readonly<{ id: string; updatedAt: Date }> | null = null;
+  input: Readonly<{
+    after: ToolCallReplayPosition | null;
+    limit: number;
+    replays: (call: ChangedToolCall) => boolean;
+    since: Date;
+  }>
+): Promise<ToolCallReplayScan> {
+  const calls: ChangedToolCall[] = [];
+  let last: ToolCallReplayPosition | null = null;
+  let handled = 0;
   for (;;) {
+    const from: ToolCallReplayPosition | null = last ?? input.after;
     const batch: Array<{
       id: string;
       modelRun: { assistantMessageId: string | null };
@@ -798,15 +884,14 @@ async function loadChangedToolCallSources(
       take: MEMORY_TOOL_EVENT_SOURCE_READ_BATCH,
       where: {
         AND: [
-          { updatedAt: { gte: since } },
-          ...(cursor
-            ? [{
+          from
+            ? {
                 OR: [
-                  { updatedAt: { gt: cursor.updatedAt } },
-                  { id: { gt: cursor.id }, updatedAt: cursor.updatedAt }
+                  { updatedAt: { gt: from.updatedAt } },
+                  { id: { gt: from.id }, updatedAt: from.updatedAt }
                 ]
-              }]
-            : [])
+              }
+            : { updatedAt: { gte: input.since } }
         ],
         completedAt: { not: null },
         modelRun: {
@@ -818,16 +903,22 @@ async function loadChangedToolCallSources(
       }
     });
     for (const call of batch) {
-      changed.push({
-        assistantMessageId: call.modelRun.assistantMessageId,
-        id: call.id
-      });
+      const assistantMessageId = call.modelRun.assistantMessageId;
+      const changed = assistantMessageId === null ? null : { assistantMessageId, id: call.id };
+      if (changed && input.replays(changed)) {
+        if (calls.length >= input.limit) return { calls, complete: false, last };
+        calls.push(changed);
+      }
+      last = { id: call.id, updatedAt: call.updatedAt };
+      handled += 1;
+      if (handled >= MEMORY_TOOL_EVENT_REPLAY_SCAN_CALLS) {
+        return { calls, complete: false, last };
+      }
     }
-    const last = batch.at(-1);
-    if (!last || batch.length < MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) break;
-    cursor = { id: last.id, updatedAt: last.updatedAt };
+    if (batch.length < MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) {
+      return { calls, complete: true, last };
+    }
   }
-  return changed;
 }
 
 type SettledToolCallSource = Readonly<Pick<
@@ -879,6 +970,34 @@ async function forEachSettledToolCall(
     const last = batch.at(-1);
     if (!last?.completedAt || batch.length < MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) break;
     cursor = { completedAt: last.completedAt, id: last.id };
+  }
+}
+
+/** Visits the settled calls among `ids` in the same bounded batches. */
+async function forEachSettledToolCallById(
+  tx: MemoryTransaction,
+  ids: readonly string[],
+  visit: (call: SettledToolCallSource) => void
+): Promise<void> {
+  for (let offset = 0; offset < ids.length; offset += MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) {
+    const batch: SettledToolCallSource[] = await tx.modelRunToolCall.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        completedAt: true,
+        id: true,
+        modelRunId: true,
+        result: true,
+        state: true,
+        toolName: true,
+        updatedAt: true
+      },
+      where: {
+        completedAt: { not: null },
+        id: { in: ids.slice(offset, offset + MEMORY_TOOL_EVENT_SOURCE_READ_BATCH) },
+        state: { in: ["complete", "error"] }
+      }
+    });
+    for (const call of batch) visit(call);
   }
 }
 
@@ -998,7 +1117,7 @@ async function prepareWith(
     ...path.slice(toolEventStart, maximumPageEnd).map(({ id }) => id),
     source.activeLeafMessageId
   ])];
-  const candidateRuns = await tx.modelRun.findMany({
+  const candidateRuns: readonly HistoryRun[] = await tx.modelRun.findMany({
     select: HISTORY_RUN_SELECT,
     where: {
       assistantMessageId: { in: candidateRunMessageIds },
@@ -1006,51 +1125,21 @@ async function prepareWith(
       userId: source.userId
     }
   });
-  const changedToolCalls = canReuseToolEvents && previous.checkpointLastSucceededAt
-    ? await loadChangedToolCallSources(tx, source, previous.checkpointLastSucceededAt)
-    : [];
-  const candidateMessageIds = new Set(candidateRunMessageIds);
-  const changedOnlyMessageIds = [...new Set(changedToolCalls.flatMap(
-    ({ assistantMessageId }) =>
-      assistantMessageId && pathById.has(assistantMessageId) &&
-        !candidateMessageIds.has(assistantMessageId)
-        ? [assistantMessageId]
-        : []
-  ))];
-  const changedRuns = changedOnlyMessageIds.length === 0
-    ? []
-    : await tx.modelRun.findMany({
-        select: HISTORY_RUN_SELECT,
-        where: {
-          assistantMessageId: { in: changedOnlyMessageIds },
-          chatId: source.id,
-          userId: source.userId
-        }
-      });
-  const runById = new Map(candidateRuns.map((run) => [run.id, run]));
-  for (const run of changedRuns) runById.set(run.id, run);
-  const runs = [...runById.values()];
-  const runAssistantIds = runs.flatMap((run) => run.assistantId ? [run.assistantId] : []);
-  const ownedAssistants = runAssistantIds.length === 0
-    ? []
-    : await tx.assistantDefinition.findMany({
-        select: { id: true },
-        where: {
-          archivedAt: null,
-          id: { in: runAssistantIds },
-          ownerUserId: source.userId
-        }
-      });
-  const ownedAssistantIds = new Set(ownedAssistants.map((assistant) => assistant.id));
-  const runsByAssistantMessage = new Map<string, typeof runs>();
-  for (const run of runs) {
-    if (!run.assistantMessageId) continue;
-    runsByAssistantMessage.set(run.assistantMessageId, [
-      ...(runsByAssistantMessage.get(run.assistantMessageId) ?? []),
-      run
-    ]);
-  }
-  const uniquelySettled = (run: (typeof runs)[number]): boolean =>
+  const runs = candidateRuns;
+  // Grown by the runs of replayed prefix calls once the page is final.
+  const ownedAssistantIds = new Set(await loadOwnedAssistantIds(tx, source.userId, runs));
+  const runsByAssistantMessage = new Map<string, HistoryRun[]>();
+  const addRuns = (added: readonly HistoryRun[]): void => {
+    for (const run of added) {
+      if (!run.assistantMessageId) continue;
+      runsByAssistantMessage.set(run.assistantMessageId, [
+        ...(runsByAssistantMessage.get(run.assistantMessageId) ?? []),
+        run
+      ]);
+    }
+  };
+  addRuns(runs);
+  const uniquelySettled = (run: HistoryRun): boolean =>
     run.status === "complete" && run.assistantMessageId !== null &&
     runsByAssistantMessage.get(run.assistantMessageId)?.length === 1;
 
@@ -1292,33 +1381,22 @@ async function prepareWith(
   const chunks = [...retained, ...rebuilt];
 
   // Tool observations follow the same cursor: this page rebuilds only calls of
-  // its own messages, plus changed calls inside the indexed prefix.
+  // its own messages, plus as many changed calls inside the indexed prefix as
+  // its write budget has left.
   const pagePathById = new Map(path.slice(0, pageEnd).map((message) =>
     [message.id, message]));
   const runMessageIds = new Set([
     ...path.slice(canReuseToolEvents ? pageStart : 0, pageEnd).map(({ id }) => id),
     ...(pageEnd === path.length ? [source.activeLeafMessageId] : [])
   ]);
-  const changedMessageIds = new Set(changedToolCalls.flatMap(({ assistantMessageId }) =>
-    assistantMessageId && pagePathById.has(assistantMessageId)
-      ? [assistantMessageId]
-      : []));
-  const settledRunById = new Map(runs.flatMap((run) =>
-    run.assistantMessageId !== null && uniquelySettled(run) &&
-      (runMessageIds.has(run.assistantMessageId) ||
-        changedMessageIds.has(run.assistantMessageId))
-      ? [[run.id, run] as const]
-      : []));
-  const settledToolCallIds: string[] = [];
+  const admitted = (message: HistoryPathMessageMetadata): boolean =>
+    !excluded.has(message.id) && (cutoff === null || message.createdAt > cutoff);
   const projectedToolEvents: MemoryHistoryPreparedToolEvent[] = [];
-  await forEachSettledToolCall(tx, [...settledRunById.keys()], (call) => {
-    settledToolCallIds.push(call.id);
-    const run = settledRunById.get(call.modelRunId);
-    if (!run?.assistantMessageId || !call.completedAt ||
+  const projectSettledCall = (run: HistoryRun, call: SettledToolCallSource): void => {
+    if (!run.assistantMessageId || !call.completedAt ||
       (call.state !== "complete" && call.state !== "error")) return;
     const sourceMessage = pagePathById.get(run.assistantMessageId);
-    if (!sourceMessage || excluded.has(sourceMessage.id) ||
-      cutoff !== null && sourceMessage.createdAt <= cutoff) return;
+    if (!sourceMessage || !admitted(sourceMessage)) return;
     const projection = projectMemoryToolEvent({
       assistantMessageId: run.assistantMessageId,
       branchGeneration: source.memoryBranchGeneration,
@@ -1338,18 +1416,104 @@ async function prepareWith(
       userId: source.userId
     });
     if (projection) projectedToolEvents.push({ ...projection, publicationState: "ACTIVE" });
+  };
+  const settledRunById = new Map(runs.flatMap((run) =>
+    run.assistantMessageId !== null && uniquelySettled(run) &&
+      runMessageIds.has(run.assistantMessageId)
+      ? [[run.id, run] as const]
+      : []));
+  const settledToolCallIds: string[] = [];
+  await forEachSettledToolCall(tx, [...settledRunById.keys()], (call) => {
+    settledToolCallIds.push(call.id);
+    const run = settledRunById.get(call.modelRunId);
+    if (run) projectSettledCall(run, call);
   });
-  const rebuiltToolCallIds = new Set([
-    ...settledToolCallIds,
-    ...changedToolCalls.map(({ id }) => id)
-  ]);
+
+  // A settled call can change after its observation was projected (a deletion
+  // scrubs its result). The checkpoint's lastSucceededAt and replay position
+  // fence those changes: each page replays the next ones in (updatedAt, id)
+  // order within what its own writes leave of the budget and records where
+  // it stopped, so a long replay commits in bounded pages like a long tail.
+  let toolCallReplay: MemoryHistoryToolCallReplay | null = null;
+  let replayedToolCallIds: readonly string[] = [];
+  let replayRunRows = 0;
+  if (canReuseToolEvents && previous.checkpointLastSucceededAt) {
+    const currentToolEventCallIds = new Set(previous.toolEvents.flatMap((event) =>
+      previous.staleToolEventIds.has(event.id) ? [] : [event.modelRunToolCallId]));
+    let pageWrites = 0;
+    let pageToolCalls = 0;
+    for (let ordinal = Math.min(tailStart, toolEventStart); ordinal < pageEnd; ordinal += 1) {
+      const toolCalls = ordinal >= toolEventStart ? settledToolCalls(ordinal) : 0;
+      pageToolCalls += toolCalls;
+      pageWrites += memoryHistoryIndexWriteCost({
+        contentBytes: ordinal >= tailStart
+          ? contentBytesById.get(path[ordinal]!.id) ?? 0
+          : null,
+        toolCalls
+      });
+    }
+    const scan = await scanChangedToolCalls(tx, source, {
+      after: previous.checkpointToolCallReplayAfter,
+      limit: memoryHistoryToolCallReplayLimit({
+        indexesNewMessages: firstUncovered < path.length,
+        limits,
+        pageToolCalls,
+        pageWrites
+      }),
+      // This page already rebuilds its own messages' calls, a later page
+      // builds those of messages beyond it from their current state, and an
+      // observation projected after the change is current.
+      replays: ({ assistantMessageId, id }) => {
+        const message = pagePathById.get(assistantMessageId);
+        return Boolean(message && admitted(message) &&
+          !runMessageIds.has(assistantMessageId) && !currentToolEventCallIds.has(id));
+      },
+      since: previous.checkpointLastSucceededAt
+    });
+    const after = scan.last ?? previous.checkpointToolCallReplayAfter;
+    toolCallReplay = scan.complete
+      ? null
+      : { after: after ? { id: after.id, updatedAt: after.updatedAt.toISOString() } : null };
+    replayedToolCallIds = scan.calls.map(({ id }) => id);
+    if (replayedToolCallIds.length > 0) {
+      const replayMessageIds = [...new Set(scan.calls.map(({ assistantMessageId }) =>
+        assistantMessageId))];
+      const unloadedMessageIds = replayMessageIds.filter((id) => !runsByAssistantMessage.has(id));
+      // Every run of a replayed message, so uniqueness is proven as for the page.
+      const replayRuns: readonly HistoryRun[] = unloadedMessageIds.length === 0
+        ? []
+        : await tx.modelRun.findMany({
+            select: HISTORY_RUN_SELECT,
+            where: {
+              assistantMessageId: { in: unloadedMessageIds },
+              chatId: source.id,
+              userId: source.userId
+            }
+          });
+      replayRunRows = replayRuns.length;
+      addRuns(replayRuns);
+      for (const id of await loadOwnedAssistantIds(tx, source.userId, replayRuns)) {
+        ownedAssistantIds.add(id);
+      }
+      const replayRunById = new Map(replayMessageIds.flatMap((messageId) =>
+        (runsByAssistantMessage.get(messageId) ?? []).flatMap((run) =>
+          uniquelySettled(run) ? [[run.id, run] as const] : [])));
+      await forEachSettledToolCallById(tx, replayedToolCallIds, (call) => {
+        const run = replayRunById.get(call.modelRunId);
+        if (run) projectSettledCall(run, call);
+      });
+    }
+  }
+  const rebuiltToolCallIds = new Set([...settledToolCallIds, ...replayedToolCallIds]);
+  // An observation whose call changed after its projection is never moved to
+  // this revision; a later page replays the call when this one has no room.
   const retainedToolEvents = canReuseToolEvents
     ? previous.toolEvents.flatMap((row): MemoryHistoryPreparedToolEvent[] => {
         const sourceMessage = pagePathById.get(row.assistantMessageId);
-        if (!sourceMessage || excluded.has(sourceMessage.id) ||
-          cutoff !== null && sourceMessage.createdAt <= cutoff ||
+        if (!sourceMessage || !admitted(sourceMessage) ||
           rebuiltToolCallIds.has(row.modelRunToolCallId) ||
-          runMessageIds.has(row.assistantMessageId)) return [];
+          runMessageIds.has(row.assistantMessageId) ||
+          previous.staleToolEventIds.has(row.id)) return [];
         return [storedToolEventProjection(row, source)];
       })
     : [];
@@ -1455,7 +1619,7 @@ async function prepareWith(
     chunksReused: retained.length,
     messageContentRowsLoaded: rows.length,
     messagesProjected: messages.length,
-    modelRunRowsLoaded: runs.length,
+    modelRunRowsLoaded: runs.length + replayRunRows,
     pathMetadataRowsRead: path.length,
     roundSegmentsBuilt: builtRoundSegments,
     roundSegmentsReplaced: Math.max(0, previousRoundSegments - reusedRoundSegments),
@@ -1479,6 +1643,7 @@ async function prepareWith(
       reusedChunkIds,
       reusedRoundIds,
       rounds,
+      toolCallReplay,
       toolEvents,
       work
     }
@@ -1499,6 +1664,7 @@ async function prepareWith(
       source: sourceIdentity,
       suppressionIdentitySnapshot: admission.suppressionIdentitySnapshot,
       timeZone,
+      toolCallReplay,
       toolEvents,
       work
     }
@@ -1773,6 +1939,7 @@ async function planAlreadyApplied(
       }
     }
   });
+  const replayAfter = plan.toolCallReplay?.after ?? null;
   if (
     !checkpoint ||
     checkpoint.status !== "READY" ||
@@ -1781,7 +1948,10 @@ async function planAlreadyApplied(
     checkpoint.branchGeneration !== plan.source.branchGeneration ||
     checkpoint.sourceContentHash !== plan.source.sourceHash ||
     checkpoint.sourceRevision !== plan.source.sourceRevision ||
-    checkpoint.lastIndexedMessageId !== memoryHistoryIndexPlanIndexedThrough(plan)
+    checkpoint.lastIndexedMessageId !== memoryHistoryIndexPlanIndexedThrough(plan) ||
+    checkpoint.toolCallReplayAfterId !== (replayAfter?.id ?? null) ||
+    (checkpoint.toolCallReplayAfterUpdatedAt?.toISOString() ?? null) !==
+      (replayAfter?.updatedAt ?? null)
   ) return false;
 
   const checkpointMessages = await tx.chatMemoryCheckpointMessage.findMany({
@@ -2740,6 +2910,7 @@ async function applyPlan(
         reusedChunkIds: plan.reusedChunkIds,
         reusedRoundIds: plan.reusedRoundIds,
         rounds: plan.rounds,
+        toolCallReplay: plan.toolCallReplay,
         toolEvents: plan.toolEvents,
         work: plan.work
       }
@@ -3115,6 +3286,14 @@ async function applyPlan(
   // A READY checkpoint carries no error code (ChatMemoryCheckpoint_shape_check).
   // An explicitly truncated message is reported by the persisted job stage
   // (lexical_ready:history_message_truncated) and its content-free log event.
+  // lastSucceededAt fences changed tool calls: a page that leaves part of a
+  // replay keeps it and records the last call it handled, so the next page
+  // skips none; a page that leaves none advances it.
+  const replayAfter = plan.toolCallReplay?.after ?? null;
+  const toolCallReplayPosition = {
+    toolCallReplayAfterId: replayAfter?.id ?? null,
+    toolCallReplayAfterUpdatedAt: replayAfter ? new Date(replayAfter.updatedAt) : null
+  };
   await tx.chatMemoryCheckpoint.upsert({
     create: {
       activeLeafMessageId: plan.source.activeLeafMessageId,
@@ -3127,6 +3306,7 @@ async function applyPlan(
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
       status,
+      ...toolCallReplayPosition,
       userId: plan.source.userId
     },
     update: {
@@ -3134,11 +3314,12 @@ async function applyPlan(
       branchGeneration: plan.source.branchGeneration,
       lastErrorCode: null,
       lastIndexedMessageId: indexedThrough,
-      lastSucceededAt: now,
+      ...(plan.toolCallReplay === null ? { lastSucceededAt: now } : {}),
       pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       sourceContentHash: plan.source.sourceHash,
       sourceRevision: plan.source.sourceRevision,
-      status
+      status,
+      ...toolCallReplayPosition
     },
     where: {
       userId_chatId: {

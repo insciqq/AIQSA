@@ -70,6 +70,21 @@ export type MemoryHistoryCheckpointMessage = Readonly<{
   sourceMessageUpdatedAt: string;
 }>;
 
+/** A settled tool call's position in the changed-call replay order. */
+export type MemoryHistoryToolCallReplayCursor = Readonly<{
+  id: string;
+  updatedAt: string;
+}>;
+
+/**
+ * Changed settled calls of the indexed prefix that a page leaves to the next:
+ * it resumes strictly after `after` in (updatedAt, id) order, or at the
+ * checkpoint's `lastSucceededAt` when no page has handled one yet.
+ */
+export type MemoryHistoryToolCallReplay = Readonly<{
+  after: MemoryHistoryToolCallReplayCursor | null;
+}>;
+
 export type MemoryHistoryWorkCounters = Readonly<{
   chunksBuilt: number;
   chunksReplaced: number;
@@ -127,6 +142,8 @@ export type MemoryHistoryIndexPlan = Readonly<{
   source: MemoryHistoryIndexSourceIdentity;
   suppressionIdentitySnapshot: string;
   timeZone: string;
+  /** Null when no changed call of the indexed prefix remains to replay. */
+  toolCallReplay: MemoryHistoryToolCallReplay | null;
   toolEvents: readonly MemoryHistoryPreparedToolEvent[];
   work: MemoryHistoryWorkCounters;
 }>;
@@ -139,12 +156,13 @@ export function memoryHistoryIndexPlanIndexedThrough(
     plan.source.activeLeafMessageId;
 }
 
-/** A plan that indexes one page of a longer uncovered tail. */
+/** A plan that indexes one page of a longer uncovered tail, or of a longer
+ * replay of changed tool calls. */
 export function memoryHistoryIndexPlanIsPartial(
-  plan: Pick<MemoryHistoryIndexPlan, "checkpointMessages" | "source">
+  plan: Pick<MemoryHistoryIndexPlan, "checkpointMessages" | "source" | "toolCallReplay">
 ): boolean {
   return memoryHistoryIndexPlanIndexedThrough(plan) !==
-    plan.source.activeLeafMessageId;
+    plan.source.activeLeafMessageId || plan.toolCallReplay !== null;
 }
 
 type FingerprintSource = Pick<
@@ -239,6 +257,7 @@ export function memoryHistoryIndexResultHash(
     reusedChunkIds?: readonly string[];
     reusedRoundIds?: readonly string[];
     rounds?: readonly MemoryHistoryPreparedRound[];
+    toolCallReplay?: MemoryHistoryToolCallReplay | null;
     toolEvents?: readonly MemoryHistoryPreparedToolEvent[];
     work?: MemoryHistoryWorkCounters;
   }> = {}
@@ -324,6 +343,9 @@ export function memoryHistoryIndexResultHash(
     source,
     suppressionIdentitySnapshot,
     timeZone: canonicalTimeZone,
+    // Only a page that leaves a replay behind adds this key, so every other
+    // plan keeps its hash.
+    ...(options.toolCallReplay ? { toolCallReplay: options.toolCallReplay } : {}),
     work: options.work ?? EMPTY_MEMORY_HISTORY_WORK_COUNTERS
   });
 }
