@@ -953,13 +953,15 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
     report({ kind: "unhandledrejection", message: clean(message, 300), line: 0, column: 0 });
   }, { once: true });
   window.addEventListener("securitypolicyviolation", event => {
+    // A report-only policy (the app's development header reaches srcdoc too) never blocks anything.
+    if (event.disposition === "report") return;
     let blocked = "unknown";
     const value = String(event.blockedURI || "");
     if (["inline", "eval"].includes(value)) blocked = value;
     else if (/^(data|blob):/.test(value)) blocked = value.split(":")[0];
     else try { const url = new URL(value); if (/^https?:$/.test(url.protocol)) blocked = url.origin; } catch {}
     report({ kind: "csp", message: "Blocked resource", line: position(event.lineNumber), column: position(event.columnNumber), directive: clean(event.effectiveDirective, 64), blocked: clean(blocked, 128) });
-  }, { once: true });
+  });
   window.addEventListener("keydown", event => {
     if (event.key === "Escape" && !event.defaultPrevented) send({ type: "aiqsa_artifact_escape" });
   });

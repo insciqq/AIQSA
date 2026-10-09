@@ -12,6 +12,7 @@ describe("runtime security headers", () => {
     expect(headers["Content-Security-Policy"]).not.toContain("'unsafe-eval'");
     // Opaque srcdoc artifacts inherit this policy for their blob:/data: media.
     expect(headers["Content-Security-Policy"]).toContain("; media-src 'self' blob: data:;");
+    expect(headers["Content-Security-Policy"]).toContain("; worker-src 'self' blob:;");
     expect(headers["Content-Security-Policy-Report-Only"]).toBe("");
     expect(headers["Strict-Transport-Security"]).toBe("max-age=15552000; includeSubDomains");
   });
@@ -25,6 +26,8 @@ describe("runtime security headers", () => {
     expect(headers["Content-Security-Policy"]).toBe("");
     expect(headers["Content-Security-Policy-Report-Only"]).toContain("'unsafe-eval'");
     expect(headers["Content-Security-Policy-Report-Only"]).toContain("; media-src 'self' blob: data:;");
+    // Mirrors the enforced policy, so a blob: worker in an artifact reports no violation.
+    expect(headers["Content-Security-Policy-Report-Only"]).toMatch(/; worker-src 'self' blob:(;|$)/u);
     expect(headers["Strict-Transport-Security"]).toBe("");
   });
 
