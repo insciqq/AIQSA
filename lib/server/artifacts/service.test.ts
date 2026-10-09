@@ -10,6 +10,8 @@ import { artifactTool, describeArtifactTool } from "../tools/artifact";
 import { buildArtifactBundle, decodeArtifactBundle } from "./bundle";
 import { vendorArtifactResources } from "./vendoring";
 import { writeZip } from "./zip";
+import { boundedArtifactCreation } from "./objects";
+import { createArtifactDuplicateHandler, createArtifactVersionHandler } from "./handlers";
 
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const inlinePage = { path: "index.html", mimeType: "text/html", text: "<p>Files</p>" };
@@ -560,5 +562,34 @@ describe("render notes in the tool result", () => {
     expect(resultValue(result)).toMatchObject({ unpacked: { root_folder: "site", skipped_files: [".gitignore"], paths: ["index.html"] },
       render_notes: { missing_links: [{ page: "index.html", href: "missing.html", path: "missing.html" }], hint: expect.stringContaining("missing_links") } });
     expect(await h.recover(1)).toEqual(result);
+  });
+});
+
+describe("artifact creation admission", () => {
+  it("refuses a creation past the process limit before any read: a typed tool error for the model, 429 for the owner", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const held = Array.from({ length: 12 }, () => boundedArtifactCreation(() => gate));
+    const getObject = vi.fn(); const findMany = vi.fn(); const transaction = vi.fn();
+    const db = { artifactVersion: { findFirst: vi.fn(async () => null), findUnique: async () => null }, chat: { findFirst: async () => ({ id: "chat" }) },
+      attachment: { findMany }, $transaction: transaction } as unknown as PrismaClient;
+    const service = createArtifactService(db, { getObject } as unknown as StorageAdapter);
+    const result = await service.execute({ id: "call", name: "create_artifact", arguments: {
+      intent: "create", kind: "html", title: "Busy", entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", asset_ref: "html" }]
+    } }, { userId: "owner", runId: "run", persistedToolCallId: "persisted",
+      request: { chatId: "chat", fileReferences: [{ attachmentId: "html" }] } } as unknown as ToolExecutionContext);
+    expect(result).toMatchObject({ status: "error", content: [{ type: "json", value: {
+      error: "artifact_server_busy", hint: expect.stringContaining("Retry the same call once shortly") } }] });
+    const auth = async () => ({ userId: "owner" }) as never;
+    const created = await createArtifactVersionHandler({ resolveAuth: auth, service })(new Request("https://app.example/api/artifacts", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operation: { intent: "create", kind: "html", title: "Busy", entrypoint: "index.html", files: [inlinePage] } }) }));
+    expect(created.status).toBe(429); expect(created.headers.get("retry-after")).toBe("5");
+    await expect(created.json()).resolves.toEqual({ error: "artifact_server_busy" });
+    const copied = await createArtifactDuplicateHandler({ resolveAuth: auth, service })(
+      new Request("https://app.example/api/artifacts/a/duplicate", { method: "POST" }), { params: Promise.resolve({ artifactId: "a" }) });
+    expect(copied.status).toBe(429);
+    for (const untouched of [getObject, findMany, transaction]) expect(untouched).not.toHaveBeenCalled();
+    release(); await Promise.all(held);
   });
 });

@@ -4,7 +4,8 @@ import type { PrismaClient } from "@prisma/client";
 import { normalizeArtifactOperation } from "@/lib/contracts/artifacts";
 import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
 import { ARTIFACT_RENDERER_VERSION, buildArtifactBundle } from "./bundle";
-import { ARTIFACT_LARGE_WORK_BYTES, ARTIFACT_PAGE_RENDER_CACHE_BYTES, ArtifactPublicBusyError, boundedArtifactWork, createArtifactObjects } from "./objects";
+import { ArtifactToolError } from "./errors";
+import { ARTIFACT_LARGE_WORK_BYTES, ARTIFACT_PAGE_RENDER_CACHE_BYTES, ArtifactPublicBusyError, boundedArtifactCreation, boundedArtifactWork, createArtifactObjects } from "./objects";
 
 type RenderRow = { id: string; versionId: string; rendererVersion: number; page: string; renderedStorageKey: string; renderedByteSize: number; renderedChecksum: string; contentType: string };
 
@@ -175,5 +176,75 @@ describe("bounded heavy artifact work", () => {
     release(); await holder;
     await expect(boundedArtifactWork(async () => { throw new Error("synthetic failure"); }, ARTIFACT_LARGE_WORK_BYTES + 1)).rejects.toThrow("synthetic failure");
     await expect(boundedArtifactWork(async () => "available", ARTIFACT_LARGE_WORK_BYTES + 1)).resolves.toBe("available");
+  });
+});
+
+describe("bounded artifact creation", () => {
+  /** Four creations that run until released, counting how many run at once. */
+  function holders() {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const state = { running: 0, peak: 0 };
+    const work = async () => { state.running += 1; state.peak = Math.max(state.peak, state.running); await gate; state.running -= 1; };
+    return { state, release, work, done: Promise.all(Array.from({ length: 4 }, () => boundedArtifactCreation(work))) };
+  }
+  const busyCode = (error: unknown) => error instanceof ArtifactToolError ? error.code : error;
+
+  it("runs four at once and hands turns to waiters in arrival order", async () => {
+    const held = holders();
+    const order: number[] = [];
+    const queued = [1, 2, 3].map(number => boundedArtifactCreation(async () => { order.push(number); await held.work(); }));
+    await vi.waitFor(() => expect(held.state.running).toBe(4));
+    expect(order).toEqual([]);
+    held.release(); await Promise.all([held.done, ...queued]);
+    expect(order).toEqual([1, 2, 3]);
+    expect(held.state.peak).toBe(4);
+  });
+
+  it("refuses past eight waiting or thirty seconds with a typed busy error, before the work starts", async () => {
+    vi.useFakeTimers();
+    const held = holders();
+    const work = vi.fn(async () => "ran");
+    const waiting = Array.from({ length: 8 }, () => boundedArtifactCreation(work).catch(busyCode));
+    const overflow = await boundedArtifactCreation(work).catch((error: unknown) => error);
+    expect(overflow).toBeInstanceOf(ArtifactToolError);
+    expect(overflow).toMatchObject({ code: "artifact_server_busy", hint: expect.stringContaining("Retry the same call once") });
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(work).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await Promise.all(waiting)).toEqual(Array(8).fill("artifact_server_busy"));
+    expect(work).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    held.release(); await held.done;
+    await expect(boundedArtifactCreation(async () => "free")).resolves.toBe("free");
+  });
+
+  it("removes an aborted waiter with its signal's reason and keeps the slot accounting", async () => {
+    vi.useFakeTimers();
+    const held = holders();
+    const controller = new AbortController();
+    const work = vi.fn(async () => "aborted ran");
+    const aborted = boundedArtifactCreation(work, controller.signal).catch((error: unknown) => error);
+    const waiting = Array.from({ length: 7 }, () => boundedArtifactCreation(async () => "waited"));
+    const reason = new Error("run_stopped");
+    controller.abort(reason);
+    expect(await aborted).toBe(reason);
+    expect(vi.getTimerCount()).toBe(7);
+    // The freed place in the waiting room takes one more creation; the next one overflows.
+    const last = boundedArtifactCreation(async () => "last");
+    await expect(boundedArtifactCreation(async () => "overflow")).rejects.toMatchObject({ code: "artifact_server_busy" });
+    await expect(boundedArtifactCreation(async () => "stopped", AbortSignal.abort(reason))).rejects.toBe(reason);
+    held.release(); await held.done;
+    expect(await Promise.all([...waiting, last])).toEqual([...Array(7).fill("waited"), "last"]);
+    expect(work).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("releases the turn when the work fails", async () => {
+    await Promise.all(Array.from({ length: 4 }, () =>
+      expect(boundedArtifactCreation(async () => { throw new Error("synthetic failure"); })).rejects.toThrow("synthetic failure")));
+    const held = holders();
+    await vi.waitFor(() => expect(held.state.running).toBe(4));
+    held.release(); await held.done;
   });
 });
