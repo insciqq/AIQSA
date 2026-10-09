@@ -66,7 +66,11 @@ function adminServer(input: Partial<AdminMcpServer> = {}): AdminMcpServer {
     activePersonalSlots: draft.slots
       .filter((slot) => slot.policy.kind === "personal" ||
         (slot.policy.kind === "shared" && slot.policy.allowPersonalOverride))
-      .map((slot) => ({ label: slot.label, slotKey: slot.slotKey })),
+      .map((slot) => ({
+        kind: slot.policy.kind === "personal" ? "required" as const : "override" as const,
+        label: slot.label,
+        slotKey: slot.slotKey
+      })),
     activeRevision: revision,
     archivedAt: null,
     description: "Example MCP",

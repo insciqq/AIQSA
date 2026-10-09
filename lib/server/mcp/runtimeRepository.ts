@@ -11,6 +11,7 @@ import {
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
 import {
+  authorizedMcpPersonalSlotKeys,
   mcpRuntimeFingerprint,
   mcpSharedRuntimeFingerprint,
   resolveEffectiveMcpGrant,
@@ -300,7 +301,7 @@ function effectiveRuntimeCandidate(input: {
       : undefined
   );
   const effective = resolveEffectiveMcpValues({
-    personalSlotKeys: access.personalSlotKeys,
+    personalSlotKeys: authorizedMcpPersonalSlotKeys(access, configuration.slots),
     personalValues: personal.values,
     personalVersion: input.record.personalConfigVersion,
     sharedValues: shared.values,

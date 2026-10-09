@@ -324,6 +324,11 @@ export type AdminMcpGrant = {
 };
 
 export type AdminMcpPersonalSlotSummary = {
+  /**
+   * `required`: every member with server use fills it in. `override`: it
+   * replaces a shared value and needs a direct per-user permission.
+   */
+  kind: "override" | "required";
   label: string;
   slotKey: string;
 };
