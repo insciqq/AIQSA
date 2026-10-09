@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { PrismaClient, type Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createQueryCountingClient } from "@/tests/support/prismaQueryLog";
 import type { UsageLimitValues } from "../../contracts/usageLimits";
 import { decideUsageAdmission, USAGE_DAY_MS, USAGE_HOUR_MS } from "../../domain/usageLimits";
 import { PERSONAL_USAGE_PURPOSES, type UsagePurpose } from "../../domain/usagePurpose";
@@ -381,42 +382,38 @@ describe("usage limit persistence", () => {
     await setPolicy({});
 
     // Counts every SQL statement, relation loads included.
-    let statements = 0;
-    const counting = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
-    counting.$on("query", () => {
-      statements += 1;
-    });
+    const counting = createQueryCountingClient();
     try {
-      const counted = createUsageLimitsRepository(counting);
-      await counting.$connect();
-      statements = 0;
+      const counted = createUsageLimitsRepository(counting.client);
+      await counting.client.$connect();
+      await counting.reset();
       const fast = await counted.loadUsageLimitStatus(member, now);
       // An archived group's allowance does not apply, so nothing can refuse.
-      expect(statements).toBe(1);
+      expect(await counting.count()).toBe(1);
       expect(fast).toMatchObject({ installationCapMicros: null, lastHour: { count: 0 }, userSpentMicros: 0 });
       expect(decideUsageAdmission({ ...fast, interactive: true, now })).toEqual({ ok: true });
 
-      statements = 0;
+      await counting.reset();
       const limited = await counted.loadUsageLimitStatus(limitedMember, now);
-      expect(statements).toBeGreaterThan(1);
+      expect(await counting.count()).toBeGreaterThan(1);
       expect(limited.effective.messagesPerHour.value).toBe(5);
 
       // A per-user default or a pooled cap applies to everyone: the full read follows.
       await setPolicy({ monthlyCapMicros: 1_000_000_000 });
-      statements = 0;
+      await counting.reset();
       expect(await counted.loadUsageLimitStatus(member, now)).toMatchObject({
         lastHour: { count: 1 }, userSpentMicros: 1_500_000
       });
-      expect(statements).toBeGreaterThan(1);
+      expect(await counting.count()).toBeGreaterThan(1);
       await setPolicy({});
       expect(await counted.putUserLimits({
         limits: { ...unset, exempt: true, expectedVersion: null }, targetUserId: member, userId: admin
       })).toBe("written");
-      statements = 0;
+      await counting.reset();
       expect((await counted.loadUsageLimitStatus(member, now)).effective.exempt).toBe(true);
-      expect(statements).toBeGreaterThan(1);
+      expect(await counting.count()).toBeGreaterThan(1);
     } finally {
-      await counting.$disconnect();
+      await counting.client.$disconnect();
     }
   });
 
