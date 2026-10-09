@@ -93,7 +93,8 @@ test("a user reports a problem on an answer, updates it, and an administrator fi
   await expect(comment).toHaveAccessibleDescription(NOTICE);
   await page.keyboard.type(COMMENT);
   await dialog.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByTestId("shell-notice")).toContainText("Report sent. Thank you.");
+  // A fresh dev server compiles the report route on its first request.
+  await expect(page.getByTestId("shell-notice")).toContainText("Report sent. Thank you.", { timeout: 30_000 });
   await expect(dialog).toHaveCount(0);
   await expect(lastAnswer(page).getByRole("button", { name: "More answer actions" })).toBeFocused();
 
