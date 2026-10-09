@@ -1,3 +1,4 @@
+import { retainFailureCause } from "../../observability/failureFacts.cjs";
 import type { MemoryJobFenceDecision } from "./types";
 
 const safeCode = /^[a-z][a-z0-9_]{0,63}$/u;
@@ -7,15 +8,18 @@ export function isMemoryCoordinatorErrorCode(value: unknown): value is string {
 }
 
 /** Content-free coordinator failure. Private source/provider text must never
- * be attached to queue state, logs, or this error. */
+ * be attached to queue state, logs, or this error: of the replaced error
+ * (`factsOf`) only its content-free telemetry facts are retained. */
 export class MemoryCoordinatorError extends Error {
   constructor(
     readonly code: string,
-    readonly retryable = true
+    readonly retryable = true,
+    options?: Readonly<{ factsOf?: unknown }>
   ) {
     super(isMemoryCoordinatorErrorCode(code) ? code : "memory_coordinator_failed");
     this.name = "MemoryCoordinatorError";
     this.code = this.message;
+    if (options?.factsOf !== undefined) retainFailureCause(this, options.factsOf);
   }
 }
 

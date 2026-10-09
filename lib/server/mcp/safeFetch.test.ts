@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMcpSafeFetch,
@@ -12,6 +13,7 @@ import {
   type McpResolvedAddress
 } from "./safeFetch";
 import { MCP_JSON_RPC_REQUEST_MAX_BYTES } from "./responseLimits";
+import { describeFailureFacts } from "../observability/failureFacts.cjs";
 
 const PUBLIC_IPV4: McpResolvedAddress = { address: "93.184.216.34", family: 4 };
 
@@ -453,6 +455,32 @@ describe("MCP safe fetch Node transport", () => {
     } finally {
       process.off("uncaughtException", uncaught);
     }
+  });
+
+  it("retains only the refused connection's facts, never the socket error", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const safeFetch = createMcpSafeFetch({
+      allowInsecureHttp: true,
+      allowPrivateNetwork: true,
+      lookupHostname: async () => [{ address: "127.0.0.1", family: 4 }]
+    });
+
+    const failure = await safeFetch(`http://fixture.invalid:${port}/closed`).catch((error: unknown) => error);
+
+    expectSafeFetchError(failure, "mcp_http_request_failed");
+    expect(failure).toMatchObject({ requestNotSent: true });
+    expect((failure as Error).cause).toBeUndefined();
+    expect(describeFailureFacts(failure)).toMatchObject({ sys_code: "ECONNREFUSED", syscall: "connect", cause_class: "Error" });
+    const printed = inspect(failure, { depth: 8 });
+    expect(printed).not.toContain("127.0.0.1");
+    expect(printed).not.toContain(`:${port}`);
+    expect(printed).not.toMatch(/\b(?:address|port):/u);
   });
 });
 

@@ -177,7 +177,8 @@ export function createMemoryHistoryIndexHandler(
         if (error instanceof MemoryCoordinatorError) throw error;
         throw new MemoryCoordinatorError(
           "memory_history_classification_unavailable",
-          true
+          true,
+          { factsOf: error }
         );
       }
     }

@@ -162,6 +162,39 @@ describe("health report text", () => {
       "      TypeError at app/api/x/route.ts:3 · next_request\n");
   });
 
+  it("names the root cause, database and system facts of an incident in the list and the run lookup", async () => {
+    const handoff = incident(0, { event: "run_execution", code: "workspace_output_export_failed", stage: "completion",
+      connectionName: null, modelName: null, httpStatus: null, details: [
+        { key: "cause_class", value: "PrismaClientKnownRequestError" },
+        { key: "cause_site", value: "lib/server/workspace/sessionOperation.ts:11" },
+        { key: "db_failure", value: "transaction_expired" },
+        { key: "error_class", value: "WorkspaceHandoffFailure" },
+        { key: "error_site", value: "lib/server/runs/runExecution.ts:3832" },
+        { key: "prisma_code", value: "P2028" },
+        { key: "tx_elapsed_ms", value: 5012 },
+        { key: "tx_timeout_ms", value: 5000 }
+      ] });
+    const crash = incident(1, { event: "process.failure", level: "fatal", code: "unexpected", stage: "uncaught_exception",
+      connectionName: null, modelName: null, httpStatus: null, runId: null, details: [
+        { key: "cause_class", value: "Error" }, { key: "error_class", value: "McpSafeFetchError" },
+        { key: "sys_code", value: "ENETUNREACH" }, { key: "syscall", value: "connect" }
+      ] });
+    const incidents = vi.fn().mockResolvedValue({ incidents: [handoff, crash], nextCursor: null });
+    const joined = (text: string) => text.replace(/\n {6}/gu, " · ");
+    const listed = joined(formatHealthReport(await collectHealthReport(sources({
+      health: { read: vi.fn().mockResolvedValue(health), incidents }
+    }), "24h")));
+    const handoffLine = "WorkspaceHandoffFailure at lib/server/runs/runExecution.ts:3832 · " +
+      "cause PrismaClientKnownRequestError at lib/server/workspace/sessionOperation.ts:11 · " +
+      "P2028 transaction_expired · transaction 5012 ms of 5000 ms · code workspace_output_export_failed · completion";
+    const crashLine = "McpSafeFetchError · cause Error · system ENETUNREACH connect · code unexpected · uncaught_exception";
+    expect(listed).toContain(handoffLine);
+    expect(listed).toContain(crashLine);
+    const runs = { lookup: vi.fn().mockResolvedValue({ truncated: false, runs: [] }) };
+    const looked = joined(formatHealthRunReport(await collectHealthRunReport({ health: { incidents }, runs }, RUN.slice(0, 8))));
+    expect(looked).toContain(handoffLine);
+  });
+
   it("prints how many users and runs a failure hit as counts only, in text and JSON", async () => {
     const one = { ...health.errorGroups[0]!, fingerprint: "ba9876543210", errorClass: "RangeError", site: "lib/server/a.ts:1",
       count: 120, events: ["run_execution"], roles: ["app"], codes: [], isNew: false, usersAtLeast: 1, runsAtLeast: 0 };
