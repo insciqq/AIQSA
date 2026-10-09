@@ -13,23 +13,38 @@ export const MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE =
   "memory_history_path_limit_exceeded";
 
 /**
- * Work admitted by one INDEX_HISTORY job. A longer uncovered tail is indexed
- * in consecutive pages: each committed page advances the checkpoint cursor
- * (`lastIndexedMessageId` plus checkpoint message rows) and the next job
- * resumes with the ordinary APPEND proof. The bounds apply to rebuilt work in
- * one job, never to retained history.
+ * Work admitted by one INDEX_HISTORY commit. A longer uncovered tail is
+ * indexed in consecutive pages: each committed page advances the checkpoint
+ * cursor (`lastIndexedMessageId` plus checkpoint message rows) and the job's
+ * next pass resumes with the ordinary APPEND proof. The bounds apply to
+ * rebuilt work in one commit, never to retained history.
  */
 export type MemoryHistoryIndexPageLimits = Readonly<{
   maxChunks: number;
   maxContentBytes: number;
+  /** Estimated index writes (see `memoryHistoryIndexWriteCost`) one commit
+   * applies while it holds the owner and source chat locks. */
+  maxIndexWrites: number;
   maxMessages: number;
   maxToolCalls: number;
 }>;
+
+// Write statements a page sends while its commit holds the owner row and the
+// source chat FOR SHARE, estimated before any content is read. Each message
+// joins its recall round; about every 2.2 KB of stored content becomes one
+// chunk and one round segment, each a row with its source map and search
+// entry; a settled tool call becomes one observation with its entry. On a
+// disposable database a statement took about 1.2 ms, and a page of 600
+// estimated writes committed in about a second.
+const MEMORY_HISTORY_INDEX_MESSAGE_WRITES = 3;
+const MEMORY_HISTORY_INDEX_CONTENT_BYTES_PER_WRITE = 220;
+const MEMORY_HISTORY_INDEX_TOOL_CALL_WRITES = 3;
 
 export const DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS: MemoryHistoryIndexPageLimits =
   Object.freeze({
     maxChunks: DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS.maxChunks,
     maxContentBytes: 4 * 1024 * 1024,
+    maxIndexWrites: 600,
     maxMessages: 1_024,
     maxToolCalls: MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS
   });
@@ -40,8 +55,25 @@ export function memoryHistoryIndexPageLimitsAreValid(
   return Number.isSafeInteger(limits.maxChunks) && limits.maxChunks >= 1 &&
     limits.maxChunks <= DEFAULT_MEMORY_HISTORY_CHUNKING_OPTIONS.maxChunks &&
     Number.isSafeInteger(limits.maxContentBytes) && limits.maxContentBytes >= 1 &&
+    Number.isSafeInteger(limits.maxIndexWrites) && limits.maxIndexWrites >= 1 &&
     Number.isSafeInteger(limits.maxMessages) && limits.maxMessages >= 1 &&
     Number.isSafeInteger(limits.maxToolCalls) && limits.maxToolCalls >= 1;
+}
+
+/**
+ * Index writes one message adds to a page: its content when the page
+ * reprojects it (null when it does not), and its settled tool calls when the
+ * page rebuilds their observations (zero when it does not).
+ */
+export function memoryHistoryIndexWriteCost(input: Readonly<{
+  contentBytes: number | null;
+  toolCalls: number;
+}>): number {
+  const content = input.contentBytes === null
+    ? 0
+    : MEMORY_HISTORY_INDEX_MESSAGE_WRITES +
+      Math.ceil(Math.max(0, input.contentBytes) / MEMORY_HISTORY_INDEX_CONTENT_BYTES_PER_WRITE);
+  return content + Math.max(0, input.toolCalls) * MEMORY_HISTORY_INDEX_TOOL_CALL_WRITES;
 }
 
 /**
