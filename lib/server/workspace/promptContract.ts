@@ -55,7 +55,7 @@ export function workspacePromptContract(input: Readonly<{
     `Before building, changing or saving a reusable script Skill, read ${WORKSPACE_GUIDE_PATHS.skills}.`,
     WORKSPACE_WEBSITE_ACTION_SAFETY,
     WORKSPACE_NO_REPLAY_SAFETY,
-    "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface publishes successfully exported files automatically."
+    "When you create a user-facing file, mention its filename in the answer. Do not create sandbox:, file: or local filesystem download links and do not repeat a \"Files for download\" list: the interface lists successfully exported files as downloads automatically."
   ];
   const conditional = [
     agent ? "Read outputDirectory from the current AIQSA turn workspace paths. These paths change each user turn."
