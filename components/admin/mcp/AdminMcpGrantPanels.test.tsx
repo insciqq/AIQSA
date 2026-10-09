@@ -11,7 +11,7 @@ import {
 } from "./AdminMcpGrantPanels";
 
 const server: AdminMcpServer = {
-  activePersonalSlots: [{ label: "API key", slotKey: "api_key" }],
+  activePersonalSlots: [{ kind: "required", label: "API key", slotKey: "api_key" }],
   activeRevision: null,
   activation: null,
   archivedAt: null,
@@ -41,6 +41,16 @@ const server: AdminMcpServer = {
   sharedValues: {},
   updatedAt: "2026-07-22T00:00:00.000Z",
   validationOAuth: null
+};
+
+/** The same field as a shared value a user may override only with direct permission. */
+const overrideServer: AdminMcpServer = {
+  ...server,
+  activePersonalSlots: [{ kind: "override", label: "API key", slotKey: "api_key" }],
+  draft: {
+    ...server.draft,
+    slots: [{ ...server.draft.slots[0]!, policy: { allowPersonalOverride: true, kind: "shared" } }]
+  }
 };
 
 const group: AdminGroup = {
@@ -201,8 +211,8 @@ describe("Admin MCP grant ownership", () => {
     expect(screen.getByRole("switch", { name: "Memory for operators" })).toBeEnabled();
   });
 
-  it("keeps direct use and exact personal-field grants in selected user details", () => {
-    const view = controller();
+  it("keeps direct use and exact personal-override grants in selected user details", () => {
+    const view = controller(overrideServer);
     render(<AdminMcpUserAccessPanel controller={view.controller} groups={[]} user={user} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Grant Memory directly for Alice" }));
@@ -213,12 +223,47 @@ describe("Admin MCP grant ownership", () => {
     });
 
     const panel = screen.getByTestId("admin-user-mcp-access");
+    expect(within(panel).getByRole("group", { name: "Permitted personal overrides" })).toBeInTheDocument();
     fireEvent.click(within(panel).getByRole("checkbox", { name: "API key" }));
     expect(view.grant).toHaveBeenLastCalledWith("server-1", {
       canUse: false,
       personalSlotKeys: ["api_key"],
       userId: "user-1"
     });
+  });
+
+  it("asks for no per-user permission for a required personal field, even one already on a direct grant", () => {
+    const view = controller({
+      ...server,
+      grants: [{
+        canUse: true,
+        groupId: null,
+        groupName: null,
+        id: "grant-1",
+        personalSlotKeys: ["api_key"],
+        userId: user.id,
+        userName: user.displayName
+      }]
+    });
+    render(<AdminMcpUserAccessPanel controller={view.controller} groups={[]} user={user} />);
+
+    const panel = screen.getByTestId("admin-user-mcp-access");
+    expect(panel).toHaveTextContent("Required personal fields come with server use.");
+    expect(within(panel).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(within(panel).queryByText("Removed field permissions")).not.toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "Revoke Memory directly for Alice" }));
+    expect(view.grant).toHaveBeenLastCalledWith("server-1", {
+      canUse: false,
+      personalSlotKeys: ["api_key"],
+      userId: "user-1"
+    });
+  });
+
+  it("does not ask a group's members for personal values when the server only allows overrides", () => {
+    const view = controller(overrideServer);
+    render(<AdminMcpGroupAccessPanel controller={view.controller} group={group} />);
+
+    expect(screen.queryByText("Needs personal values from each member")).not.toBeInTheDocument();
   });
 
   it("uses active-revision personal slots and exposes stale grant keys for cleanup", () => {
@@ -363,7 +408,7 @@ describe("Server page access panels", () => {
     const granted = { ...user, displayName: "Zoe", id: "user-zoe" };
     const member = { ...user, displayName: "Bob", groups: [{ groupId: group.id, name: group.name, role: "member" }], id: "user-bob" };
     const view = controller({
-      ...server,
+      ...overrideServer,
       grants: [
         { canUse: true, groupId: group.id, groupName: group.name, id: "grant-group", personalSlotKeys: [], userId: null, userName: null },
         { canUse: true, groupId: null, groupName: null, id: "grant-zoe", personalSlotKeys: ["api_key"], userId: granted.id, userName: granted.displayName }
@@ -389,6 +434,14 @@ describe("Server page access panels", () => {
     expect(view.grant).toHaveBeenLastCalledWith("server-1", { canUse: true, personalSlotKeys: [], userId: "user-1" });
     fireEvent.click(within(rows[1]).getByRole("checkbox", { name: "API key" }));
     expect(view.grant).toHaveBeenLastCalledWith("server-1", { canUse: false, personalSlotKeys: ["api_key"], userId: "user-1" });
+  });
+
+  it("lists no per-user field permission for a required personal field on the server page", () => {
+    const view = controller();
+    render(<AdminMcpServerUserAccessPanel controller={view.controller} groups={[]} server={server} users={[user]} />);
+
+    expect(screen.getByRole("switch", { name: "Memory for Alice" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
   it("searches people only once the list is long and disables edits on an archived server", () => {

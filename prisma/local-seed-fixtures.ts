@@ -47,7 +47,7 @@ export const LOCAL_SHARED_MCP_DRAFT: McpDraftConfiguration = {
   runtime: { callTimeoutMs: 30_000, startupTimeoutMs: 45_000 },
   slots: [
     {
-      description: "Only a direct user grant may expose and change this development fixture field.",
+      description: "Every member with server use enters this development fixture value.",
       label: "Fixture workspace",
       maxLength: 64,
       minLength: 1,

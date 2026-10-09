@@ -35,7 +35,7 @@ import type {
   UserMcpServer
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
-import { resolveEffectiveMcpGrant, resolveEffectiveMcpValues } from "./access";
+import { authorizedMcpPersonalSlotKeys, resolveEffectiveMcpGrant, resolveEffectiveMcpValues } from "./access";
 import { archivePersonalMcpServers } from "./personalArchive";
 import {
   hashCanonicalMcpValue,
@@ -710,7 +710,11 @@ function serializeAdminServer(
       ? draftFrom(record.activeRevision.configuration).slots
           .filter((slot) => slot.policy.kind === "personal" ||
             (slot.policy.kind === "shared" && slot.policy.allowPersonalOverride))
-          .map((slot) => ({ label: slot.label, slotKey: slot.slotKey }))
+          .map((slot) => ({
+            kind: slot.policy.kind === "personal" ? "required" as const : "override" as const,
+            label: slot.label,
+            slotKey: slot.slotKey
+          }))
       : [],
     activeRevision: record.activeRevision
       ? serializeRevision(record.revisions.find((revision) => revision.id === record.activeRevision!.id) ?? record.activeRevision)
@@ -889,8 +893,9 @@ function serializeUserServer(input: {
   );
   const endpoint = mcpEndpointBinding(draft);
   const personalValues = valuesForEndpoint(personal, endpoint, endpoint);
+  const personalSlotKeys = authorizedMcpPersonalSlotKeys(grant, draft.slots);
   const resolved = resolveEffectiveMcpValues({
-    personalSlotKeys: grant.personalSlotKeys,
+    personalSlotKeys,
     personalValues,
     personalVersion: preference?.personalConfigVersion ?? 0,
     sharedValues: valuesForEndpoint(shared, endpoint, endpoint),
@@ -898,10 +903,7 @@ function serializeUserServer(input: {
     slots: draft.slots
   });
   const fields: UserMcpConfigurationField[] = draft.slots.flatMap((slot) => {
-    if (!grant.personalSlotKeys.has(slot.slotKey) ||
-      (slot.policy.kind !== "personal" && !(slot.policy.kind === "shared" && slot.policy.allowPersonalOverride))) {
-      return [];
-    }
+    if (!personalSlotKeys.has(slot.slotKey)) return [];
     const plan = resolved.plan.find((item) => item.slotKey === slot.slotKey)!;
     const field: UserMcpConfigurationField = {
       ...(isMcpAuthorizationHeader(slot.target.name) ? { authorizationHeader: true as const } : {}),
@@ -2824,9 +2826,9 @@ export function createPrismaMcpRepository(input: {
           }
           userDisabledToolNames = nextPersonalMcpDisabledToolNames(preference?.userDisabledToolNames ?? [], tool, liveToolNames);
         }
+        const personalSlotKeys = authorizedMcpPersonalSlotKeys(grant, draft.slots);
         if (values) {
-          const issues = valueIssues(draft.slots, values, (slot) => grant.personalSlotKeys.has(slot.slotKey) &&
-            (slot.policy.kind === "personal" || (slot.policy.kind === "shared" && slot.policy.allowPersonalOverride)));
+          const issues = valueIssues(draft.slots, values, (slot) => personalSlotKeys.has(slot.slotKey));
           if (issues.length) return { issues, kind: "invalid_values" as const };
         }
         const endpoint = mcpEndpointBinding(draft);
@@ -2855,7 +2857,7 @@ export function createPrismaMcpRepository(input: {
               : undefined
           );
           const resolved = resolveEffectiveMcpValues({
-            personalSlotKeys: grant.personalSlotKeys,
+            personalSlotKeys,
             personalValues: valuesForEndpoint(personal, endpoint, endpoint),
             personalVersion: (preference?.personalConfigVersion ?? 0) + (values && Object.keys(values).length ? 1 : 0),
             sharedValues: valuesForEndpoint(shared, endpoint, endpoint),

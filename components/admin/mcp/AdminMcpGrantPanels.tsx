@@ -102,8 +102,9 @@ function DirectGrantAction({
 }
 
 /**
- * The exact personal fields a user may fill for one server, plus keys that a
- * later configuration dropped and that still sit on the grant.
+ * The shared values a user may override with a personal one, plus keys that a
+ * later configuration dropped and that still sit on the grant. Required
+ * personal fields come with server use and need no per-user permission.
  */
 function PersonalFieldGrants({
   controller,
@@ -119,22 +120,22 @@ function PersonalFieldGrants({
   user: AdminUserRecord;
 }>) {
   const grantedSlots = new Set(grant?.personalSlotKeys ?? []);
-  const personalSlots = server.activePersonalSlots;
-  const activeSlotKeys = new Set(personalSlots.map((slot) => slot.slotKey));
+  const activeSlotKeys = new Set(server.activePersonalSlots.map((slot) => slot.slotKey));
+  const overrideSlots = server.activePersonalSlots.filter((slot) => slot.kind === "override");
   const staleSlotKeys = [...grantedSlots].filter((slotKey) => !activeSlotKeys.has(slotKey));
   const save = (next: readonly string[]) => void controller.actions.grant(server.id, {
     canUse: grant?.canUse === true,
     personalSlotKeys: [...next],
     userId: user.id
   });
-  if (!personalSlots.length && !staleSlotKeys.length) return null;
+  if (!overrideSlots.length && !staleSlotKeys.length) return null;
   return (
     <>
-      {personalSlots.length ? (
+      {overrideSlots.length ? (
         <fieldset className="min-w-0 border-t border-trace-subtle pt-2">
-          <legend className="px-1 text-metadata text-ink-muted">Permitted personal fields</legend>
+          <legend className="px-1 text-metadata text-ink-muted">Permitted personal overrides</legend>
           <div className="mt-1 flex min-w-0 flex-wrap gap-2">
-            {personalSlots.map((slot) => (
+            {overrideSlots.map((slot) => (
               <label className={`flex min-h-control-sm min-w-0 items-center gap-2 rounded-control bg-control-surface px-2.5 text-metadata text-ink-secondary ${touchTarget}`} key={slot.slotKey}>
                 <input
                   checked={grantedSlots.has(slot.slotKey)}
@@ -247,7 +248,9 @@ export function AdminMcpGroupAccessPanel({
               const grant = grantForGroup(server, group.id);
               const note = [
                 server.enabled ? null : "Disabled",
-                server.activePersonalSlots.length ? "Needs personal values from each member" : null
+                server.activePersonalSlots.some((slot) => slot.kind === "required")
+                  ? "Needs personal values from each member"
+                  : null
               ].filter((part): part is string => part !== null).join(" · ");
               return (
                 <li className="flex min-h-14 min-w-0 items-center gap-3 px-4 py-2.5 sm:px-5" key={server.id}>
@@ -305,7 +308,7 @@ export function AdminMcpUserAccessPanel({
       <div>
         <div className="text-sm font-semibold text-ink">MCP server access</div>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
-          Direct server use combines with group grants. Personal-field permission is direct-only and does not reveal a stored value.
+          Direct server use combines with group grants. Required personal fields come with server use. Permission to override a shared value is direct-only and does not reveal a stored value.
         </p>
       </div>
       <CatalogState controller={controller} />

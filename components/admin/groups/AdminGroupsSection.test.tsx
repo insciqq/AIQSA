@@ -134,7 +134,7 @@ const gitlab: AdminMcpServer = {
 };
 const antv: AdminMcpServer = {
   ...gitlab,
-  activePersonalSlots: [{ label: "API key", slotKey: "api_key" }],
+  activePersonalSlots: [{ kind: "required", label: "API key", slotKey: "api_key" }],
   grants: [],
   id: "server-antv",
   name: "AntV Chart Studio",

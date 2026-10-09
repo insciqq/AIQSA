@@ -89,6 +89,7 @@ function isServer(value: unknown): value is AdminMcpServer {
   if (!isRecord(value)) return false;
   const validActivePersonalSlots = Array.isArray(value.activePersonalSlots) &&
     value.activePersonalSlots.every((slot) => isRecord(slot) &&
+      (slot.kind === "override" || slot.kind === "required") &&
       typeof slot.label === "string" && typeof slot.slotKey === "string");
   const validationOAuth = value.validationOAuth;
   const validValidationOAuth = validationOAuth === null || (
