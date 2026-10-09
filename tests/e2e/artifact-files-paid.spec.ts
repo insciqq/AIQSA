@@ -305,10 +305,17 @@ async function sendTurn(stand: Stand, text: string): Promise<Turn> {
   }, "afc_run_timeout");
   const runMs = Date.now() - started;
   // A run that used the guest exports its outputs; an unused binding only retires. Either way the session is free after.
+  // A run that did not complete exports nothing new: as the chat's Workspace output status, an export never
+  // attempted is terminal and only a live export lease is awaited, so the run's own error is what gets reported.
   const exportState = await pollUntil(300_000, async () => {
     const binding = await db().workspaceRunBinding.findUnique({ where: { modelRunId: run.id }, select: { exportState: true,
+      exportAttemptCount: true, exportLeaseExpiresAt: true,
       _count: { select: { selectedCaptures: true, toolCalls: true } }, workspaceSession: { select: { operationOwner: true } } } });
     if (!binding) return "none";
+    if (run.status !== "complete") {
+      if (binding.exportState === "EXPORTING" && binding.exportLeaseExpiresAt !== null && binding.exportLeaseExpiresAt > new Date()) return null;
+      return binding.exportState === "PENDING" && binding.exportAttemptCount === 0 ? "not_exported" : binding.exportState;
+    }
     if (binding.workspaceSession.operationOwner !== null) return null;
     if (binding.exportState === "COMPLETE" || binding.exportState === "FAILED") return binding.exportState;
     return binding._count.toolCalls === 0 && binding._count.selectedCaptures === 0 ? "unused" : null;
@@ -325,7 +332,8 @@ async function sendTurn(stand: Stand, text: string): Promise<Turn> {
   turns.push({ runStatus: run.status, runErrorCode: safeCode((run.errorPayload as { code?: unknown } | null)?.code ?? null),
     runMs, workspaceExport: exportState, tools, artifactErrorCodes: artifactCalls.map((call) => artifactErrorCode(call.result)),
     artifactArgumentBytesMax: Math.max(0, ...artifactCalls.map((call) => argumentBytes(call.arguments))) });
-  expect(run.status, "the run completes").toBe("complete");
+  // The summary's turn holds the run's status and error code; the failure names the status.
+  if (run.status !== "complete") throw new Error(`afc_run_${run.status}`);
   await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, { timeout: 120_000 });
   return { chatId, run, calls, runMs };
 }
