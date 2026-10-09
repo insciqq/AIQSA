@@ -181,6 +181,7 @@ function plan(
     source,
     suppressionIdentitySnapshot,
     timeZone: "UTC",
+    toolCallReplay: null,
     toolEvents: [],
     work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
   };
@@ -194,7 +195,10 @@ function context() {
   };
 }
 
-function handlerFor(currentPlan: MemoryHistoryIndexPlan, apply = vi.fn(async () => undefined)) {
+function handlerFor(
+  currentPlan: MemoryHistoryIndexPlan,
+  apply: (...args: never[]) => Promise<unknown> = vi.fn(async () => undefined)
+) {
   return createMemoryHistoryIndexHandler({
     repository: {
       apply,
@@ -335,9 +339,23 @@ describe("Memory INDEX_HISTORY handler", () => {
       ordinal: 0,
       sourceMessageUpdatedAt: "2026-08-10T10:00:00.000Z"
     }];
-    const partial = await handlerFor({ ...plan([chunk("chunk-0", 0)]), checkpointMessages: cursor })
+    const partial = await handlerFor({ ...plan([chunk("chunk-0", 0)]), checkpointMessages: cursor },
+      vi.fn(async () => ({ requeue: true as const })))
       .execute(claim(), context());
     expect(partial.stage).toBe("lexical_ready:history_page_partial");
+    // The repository's outcome reaches the coordinator: the job is queued
+    // again for the next page instead of completing.
+    await expect(partial.apply?.({} as never, claim())).resolves.toEqual({ requeue: true });
+
+    // A page that leaves changed tool calls to replay is partial as well, and
+    // its accepted result binds where the next page resumes.
+    const replaying = await handlerFor({ ...plan([chunk("chunk-0", 0)]), toolCallReplay: {
+      after: { id: "call-1", updatedAt: "2026-08-10T10:05:00.000Z" }
+    } }).execute(claim(), context());
+    expect(replaying.stage).toBe("lexical_ready:history_page_partial");
+    const replayed = await handlerFor(plan([chunk("chunk-0", 0)])).execute(claim(), context());
+    expect(replayed.stage).toBe("lexical_ready");
+    expect(replaying.acceptedResultHash).not.toBe(replayed.acceptedResultHash);
 
     const truncated = await handlerFor({
       ...plan([chunk("chunk-0", 0)]),

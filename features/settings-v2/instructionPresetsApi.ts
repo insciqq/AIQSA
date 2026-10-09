@@ -3,7 +3,7 @@ import { decodeInstructionPreset, decodeInstructionPresetState, instructionPrese
 import { decodeInstructionPreview, type InstructionPreview } from "@/lib/contracts/instructionPreview";
 
 export class InstructionPresetApiError extends Error {
-  constructor(readonly code: unknown) { super(instructionPresetErrorMessage(code)); }
+  constructor(readonly code: unknown) { super(instructionPresetErrorMessage(code)); this.name = "InstructionPresetApiError"; }
 }
 async function request(path: string, mutation?: InstructionPresetMutation, signal?: AbortSignal) {
   const response = await fetch(`/api/me/instructions${path}`, {

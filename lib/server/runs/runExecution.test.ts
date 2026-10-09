@@ -62,6 +62,7 @@ import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import { attributeRequestUser, runInBackground, runWithContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
+import { describeError } from "../observability/errorSite.cjs";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type {
@@ -76,6 +77,7 @@ import type {
 import {
   activeRunControllerRegistry,
   createRunExecutionResponse,
+  RunPipelineError,
   type RunExecutionInput,
   type RunExecutionRepository
 } from "./runExecution";
@@ -3760,6 +3762,36 @@ describe("run execution", () => {
     expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed",
       code: "gemini_interactions_stream_truncated", reason: "invalid_response" }));
     expect(JSON.stringify([response, repository.failedRuns, observation.records()])).not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
+  });
+
+  it("names a failed run's pipeline error by its stable class name", async () => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const base = preparedData();
+    // A tool-capable round reports the provider failure through the tool loop.
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    const adapter = createAdapter(async function* () {
+      yield { data: { delta: "partial" }, type: "token" };
+      throw new Error("openrouter_stream_truncated");
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text();
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed",
+      code: "provider_stream_failed", error_class: "RunPipelineError" }));
+
+    // The production bundle renames the class (seen as `tf`); its own name still wins.
+    const declared = Object.getOwnPropertyDescriptor(RunPipelineError, "name")!;
+    Object.defineProperty(RunPipelineError, "name", { ...declared, value: "tf" });
+    try {
+      expect(RunPipelineError.name).toBe("tf");
+      expect(describeError(new RunPipelineError("provider_stream_failed", "failed"))).toEqual(
+        expect.objectContaining({ error_class: "RunPipelineError" }));
+    } finally {
+      Object.defineProperty(RunPipelineError, "name", declared);
+    }
   });
 
   it("flushes partial text and records failure without persisting a timeline", async () => {

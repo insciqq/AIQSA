@@ -15,7 +15,10 @@ import { decodeAssistantAvatarRecipe, decodeAssistantRows, type AssistantAvatarR
 
 /** A failed administrator call: the stable server code plus the blocking Skills of an audience mismatch. */
 export class AdminAssistantsRequestError extends Error {
-  constructor(readonly code: string, readonly status: number, readonly skillNames: readonly string[] = []) { super(code); }
+  constructor(readonly code: string, readonly status: number, readonly skillNames: readonly string[] = []) {
+    super(code);
+    this.name = "AdminAssistantsRequestError";
+  }
 }
 
 const PAGE_SIZE = 30;

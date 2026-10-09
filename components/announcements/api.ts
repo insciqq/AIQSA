@@ -4,7 +4,7 @@ import {
 } from "@/lib/contracts/announcements";
 
 export class AnnouncementRequestError extends Error {
-  constructor(readonly code: string) { super(announcementErrorMessage(code)); }
+  constructor(readonly code: string) { super(announcementErrorMessage(code)); this.name = "AnnouncementRequestError"; }
 }
 export function announcementErrorMessage(code: string): string {
   switch (code) {

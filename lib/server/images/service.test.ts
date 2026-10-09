@@ -8,7 +8,7 @@ import { imageDispatchMustStop } from "./errors";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatAccess } from "../projects/access";
 import type { ProviderAttachment, ProviderRunRequest } from "../providers/types";
-import type { StorageAdapter } from "../uploads/storage";
+import { StoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
 
 const access = vi.hoisted(() => ({ value: null as ChatAccess | null }));
 vi.mock("../projects/access", () => ({ resolveChatAccess: vi.fn(async () => access.value) }));
@@ -261,17 +261,53 @@ describe("image edit preflight", () => {
     expect(h.usage).not.toHaveBeenCalled();
   });
 
-  it.each(["binding", "reference_read"] as const)("logs an unexpected failure at %s without content", async (stage) => {
+  it("logs an unexpected failure at binding without content", async () => {
     const h = await editHarness();
     const observation = await captureRunObservation();
     const error = new Error("PRIVATE exception with https://secret.example and sk-secret");
-    if (stage === "binding") h.binding.mockRejectedValue(error);
-    else h.getObject.mockRejectedValue(error);
+    h.binding.mockRejectedValue(error);
     await expect(h.service.execute(h.call, h.context)).rejects.toBe(error);
-    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage, code: "tool_call_failed" }));
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "binding", code: "tool_call_failed",
+      outcome: "failed", level: "error" }));
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference|secret.example|sk-secret/);
     expect(h.fetchFn).not.toHaveBeenCalled();
     expect(h.usage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a missing object", Object.assign(new Error("PRIVATE ENOENT key-private-reference"), { code: "ENOENT" }), "image_reference_not_found"],
+    ["an S3 NoSuchKey", Object.assign(new Error("PRIVATE NoSuchKey"), { name: "NoSuchKey" }), "image_reference_not_found"],
+    ["an oversized object", new StoredObjectTooLargeError({ maxBytes: 4, observedBytes: 5 }), "image_reference_invalid"],
+    ["a storage outage", new Error("PRIVATE exception with https://secret.example and sk-secret"), "image_reference_unavailable"]
+  ] as const)("refuses %s at reference_read as a correctable input error before dispatch", async (_label, failure, code) => {
+    const h = await editHarness();
+    const observation = await captureRunObservation();
+    h.getObject.mockRejectedValue(failure);
+    const error = await h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ImageInputError);
+    expect(imageInputFailure(error)).toMatchObject({ code, message: expect.stringContaining(h.reference.id) });
+    expect(imageInputFailure(error)!.message).toContain("Nothing was sent to the image provider.");
+    expect(imageDispatchMustStop(error)).toBe(false);
+    // A correctable refusal warns; a lost or unreadable object is the storage read's own error record.
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "reference_read", code,
+      outcome: "refused", level: "warn" }));
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference|secret.example|sk-secret/);
+    expect(h.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.usage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a cancelled reference read a cancellation", async () => {
+    const h = await editHarness();
+    const controller = new AbortController();
+    const reason = new DOMException("Stopped", "AbortError");
+    h.getObject.mockImplementation(async () => { controller.abort(reason); throw reason; });
+    const observation = await captureRunObservation();
+    await expect(h.service.execute(h.call, h.context, controller.signal, { beforeDispatch: h.beforeDispatch })).rejects.toBe(reason);
+    expect(observation.records().filter((record) => record.event === "image_execution"))
+      .toEqual([expect.objectContaining({ stage: "reference_read", outcome: "cancelled", level: "warn" })]);
+    expect(h.beforeDispatch).not.toHaveBeenCalled();
+    expect(h.fetchFn).not.toHaveBeenCalled();
   });
 });
 
@@ -316,6 +352,15 @@ describe("paid image usage write", () => {
     const h = await dispatchHarness("image");
     h.usage.mockRejectedValueOnce(prismaError("P1001")).mockRejectedValueOnce(prismaError("P2002"));
     await expect(h.execute()).rejects.toBe(h.storageBoundary);
+    expect(h.usage).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an uncoded engine failure like a transient code", async () => {
+    const h = await dispatchHarness("image");
+    h.usage.mockRejectedValueOnce(new Prisma.PrismaClientUnknownRequestError("PRIVATE connection reset", { clientVersion: "fixture" }))
+      .mockRejectedValueOnce(prismaError("P2002"));
+    await expect(h.execute()).rejects.toBe(h.storageBoundary);
+    expect(h.fetchFn).toHaveBeenCalledOnce();
     expect(h.usage).toHaveBeenCalledTimes(2);
   });
 

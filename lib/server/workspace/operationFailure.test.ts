@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { workspaceMcpFailure, workspaceOperationFailureResult } from "./operationFailure";
+import { observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 
 const wire = (value: unknown, isError = true) => ({ isError, content: [{ type: "text", text: JSON.stringify(value) }] });
 describe("Workspace confirmed operation failures", () => {
@@ -95,5 +97,26 @@ describe("Workspace confirmed operation failures", () => {
     expect(workspaceMcpFailure(wire({ data: { exitCode: 9 } }, false), 4096, "sandbox_fs_read")).toBeNull();
     expect(workspaceMcpFailure(wire({ data: { done: true, exitStatus: { code: 9 }, events: [] } }, false), 4096, "sandbox_exec_poll")).toBeNull();
     expect(workspaceMcpFailure(wire({ data: { exitCode: 0 } }, false), 4096, "sandbox_shell")).toBeNull();
+  });
+});
+
+describe("Workspace command failure telemetry", () => {
+  const records = async (code: "workspace_command_failed" | "workspace_operation_failed") => {
+    const observation = await captureRunObservation();
+    await observeWorkspaceToolExecution(async () => retainWorkspaceResultCode({ status: "error" as const }, code));
+    return observation.records().filter((record) => record.event === "tool_execution" && record.outcome === "failed");
+  };
+
+  it("logs a model command's non-zero exit as the tool's result, not as an error", async () => {
+    const result = workspaceMcpFailure(wire({ ok: true, data: { exitCode: 1, stdout: "", stderr: "no match" } }, false), 4096, "sandbox_shell")!;
+    expect(result.errorCode).toBe("workspace_command_failed");
+    const failed = await records(result.errorCode as "workspace_command_failed");
+    expect(failed.map((record) => [record.stage, record.code, record.level])).toEqual([
+      ["execution", "workspace_command_failed", "info"], ["result", "workspace_command_failed", "info"]]);
+  });
+
+  it("keeps a failed workspace operation an error", async () => {
+    const failed = await records("workspace_operation_failed");
+    expect(failed.map((record) => [record.stage, record.level])).toEqual([["execution", "error"], ["result", "error"]]);
   });
 });

@@ -133,7 +133,6 @@ export const NOOP_MEMORY_SOURCE_MUTATION_HOOKS: MemorySourceMutationHooks = Obje
 type SourcePathRow = Readonly<{
   content: Prisma.JsonValue;
   createdAt: Date;
-  depth: number;
   errorMessage: string | null;
   id: string;
   modelId: string | null;
@@ -231,8 +230,10 @@ async function loadActiveSourcePath(
 ): Promise<readonly SourcePathRow[]> {
   if (activeLeafMessageId === null) return [];
   // UNION deduplicates ancestor identities, so a cycle terminates without an
-  // ever-growing visited array. The second walk can only start from a root;
-  // cyclic or disconnected paths therefore fail the existing shape checks.
+  // ever-growing visited array, and each step is one key lookup. The rows are
+  // ordered below by following parents from the leaf: a recursive walk back
+  // down from the root that joins the ancestor set at every step costs the
+  // square of the path, which a long chat pays under the Memory locks.
   const rows = await tx.$queryRaw<SourcePathRow[]>(Prisma.sql`
     WITH RECURSIVE ancestor_ids AS (
       SELECT
@@ -249,49 +250,36 @@ async function loadActiveSourcePath(
       INNER JOIN "Message" AS parent
         ON parent."chatId" = ${chatId}
        AND parent."id" = child."parentMessageId"
-    ), active_path AS (
-      SELECT
-        message."id", message."parentMessageId", message."role",
-        message."content", message."status"::text AS "status",
-        message."provider", message."modelId", message."errorMessage",
-        message."createdAt", message."updatedAt",
-        0 AS "depth"
-      FROM ancestor_ids AS member
-      INNER JOIN "Message" AS message
-        ON message."chatId" = ${chatId}
-       AND message."id" = member."id"
-      WHERE member."parentMessageId" IS NULL
-
-      UNION ALL
-
-      SELECT
-        child."id", child."parentMessageId", child."role",
-        child."content", child."status"::text AS "status",
-        child."provider", child."modelId", child."errorMessage",
-        child."createdAt", child."updatedAt",
-        parent."depth" + 1
-      FROM active_path AS parent
-      INNER JOIN "Message" AS child
-        ON child."chatId" = ${chatId}
-       AND child."parentMessageId" = parent."id"
-      INNER JOIN ancestor_ids AS member
-        ON member."id" = child."id"
     )
     SELECT
-      "id", "parentMessageId", "role", "content", "status", "provider",
-      "modelId", "errorMessage", "createdAt", "updatedAt", "depth"
-    FROM active_path
-    ORDER BY "depth" ASC
+      message."id", message."parentMessageId", message."role",
+      message."content", message."status"::text AS "status",
+      message."provider", message."modelId", message."errorMessage",
+      message."createdAt", message."updatedAt"
+    FROM ancestor_ids AS member
+    INNER JOIN "Message" AS message
+      ON message."chatId" = ${chatId}
+     AND message."id" = member."id"
   `);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const path: SourcePathRow[] = [];
+  // Only a chain that reaches a root from the leaf through every ancestor is
+  // a path; a cycle, a missing leaf or a parent outside the chat is not.
+  for (let row = byId.get(activeLeafMessageId); row; ) {
+    path.push(row);
+    if (row.parentMessageId === null || path.length > rows.length) break;
+    row = byId.get(row.parentMessageId);
+  }
+  path.reverse();
   if (
-    rows.length === 0 ||
-    rows[0]?.parentMessageId !== null ||
-    rows.at(-1)?.id !== activeLeafMessageId ||
-    rows.some((row, index) => index > 0 && row.parentMessageId !== rows[index - 1]?.id)
+    path.length === 0 ||
+    path.length !== rows.length ||
+    path[0]?.parentMessageId !== null ||
+    path.at(-1)?.id !== activeLeafMessageId
   ) {
     throw new MemorySourceStateConflictError("memory_source_path_invalid");
   }
-  return rows;
+  return path;
 }
 
 function sourceMessageProjection(message: SourcePathRow): Readonly<Record<string, unknown>> {

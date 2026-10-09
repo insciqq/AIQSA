@@ -25,6 +25,8 @@ Assistant publication must preserve direct Skill audience coverage and require a
 
 Answer recommendations and purpose-specific System Model assignments are independent and grant no entitlement. Each system role uses its configured deployment and installation credential without substitution. Consolidated administration does not merge domain ownership: Knowledge activation creates an immutable profile with explicit reprocessing/reindexing, while Personal Memory retains owner-scoped entitlement and generation rules.
 
+Installation MCP server use, direct or through a group, lets a member fill the server's required personal values; overriding a shared value replaces an installation credential and needs a direct per-user permission.
+
 Inbound MCP grants resolve the current active account; clients cannot select another owner. Memory calls and Hub discovery/dispatch create no synthetic chat/run/history state. Hub uses existing outbound MCP configuration and runtime authority. Utility execution evidence is content-free.
 
 The Skill store exposes owned packages independently of chat enablement; write grants permit mutations, never sharing/execution. Mutations hold authority through commit. Clients install complete bundles locally; missing packages imply no deletion. Public agent instructions exclude repository instructions/private catalogs.

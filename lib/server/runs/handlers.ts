@@ -78,7 +78,8 @@ import type { RunRepository, ScheduledOccurrenceAdmission } from "./runRepositor
 import { serializeRunOutcome } from "./runOutcome";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
 import { logEvent, runWithContext, type EventFields } from "../observability";
-import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
+import { logRunPersistence, runDatabaseFailureCode, settleRunWrite } from "./runObservability";
+import type { DbTransactionTiming } from "../observability/transactionTiming";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { observedFailure } from "../providers/providerObservability";
 import type {
@@ -1270,15 +1271,16 @@ export function createCancelModelRunHandler(deps: Omit<RunHandlerDeps, "usageLim
 
     const params = await context.params;
     let cancellation: Awaited<ReturnType<RunRepository["cancelRun"]>>;
+    let cancelTiming: DbTransactionTiming | undefined;
     try {
-      cancellation = await deps.repository.cancelRun({
+      ({ value: cancellation, timing: cancelTiming } = await settleRunWrite(() => deps.repository.cancelRun({
         payload: {
           code: "model_run_cancelled",
           message: "Model run cancelled"
         },
         runId: params.runId,
         userId: auth.userId
-      });
+      })));
     } catch (error) {
       logStopAdmission({ outcome: "failed", prisma_code: runDatabaseFailureCode(error) });
       throw error;
@@ -1306,7 +1308,7 @@ export function createCancelModelRunHandler(deps: Omit<RunHandlerDeps, "usageLim
     const run = cancellation.run;
     logStopAdmission({ run_id: run.id, outcome: "accepted" });
     return runWithContext({ run_id: run.id }, async () => {
-      logRunPersistence(run.id, "cancel", "confirmed");
+      logRunPersistence(run.id, "cancel", "confirmed", undefined, cancelTiming);
       await settleCancelledRun(deps, run, auth.userId);
       return privateModelRunJson({
         run: {
@@ -1372,14 +1374,14 @@ export async function stopModelRun(
   deps: RunStopDeps,
   input: Readonly<{ payload: Readonly<{ code: string; message: string }>; runId: string; userId: string }>
 ): Promise<"stopped" | "not_cancelable" | "not_found"> {
-  const cancellation = await deps.repository.cancelRun({
+  const { value: cancellation, timing } = await settleRunWrite(() => deps.repository.cancelRun({
     payload: { code: input.payload.code, message: input.payload.message }, runId: input.runId, userId: input.userId
-  });
+  }));
   if (cancellation.kind === "not_found") return "not_found";
   if (cancellation.kind === "current") return "not_cancelable";
   const run = cancellation.run;
   await runWithContext({ run_id: run.id }, async () => {
-    logRunPersistence(run.id, "cancel", "confirmed");
+    logRunPersistence(run.id, "cancel", "confirmed", undefined, timing);
     await settleCancelledRun(deps, run, input.userId);
   });
   return "stopped";

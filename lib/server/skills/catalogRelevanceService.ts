@@ -6,7 +6,7 @@ import { buildSkillCatalogRelevancePlan, skillCatalogRelevanceSelection, SKILL_C
 import type { SkillRunCatalogEntry } from "./runMaterialization";
 
 export class SkillCatalogAuthorityChangedError extends Error {
-  constructor() { super("skill_catalog_authority_changed"); }
+  constructor() { super("skill_catalog_authority_changed"); this.name = "SkillCatalogAuthorityChangedError"; }
 }
 
 export type SkillCatalogRelevanceService = (input: Readonly<{

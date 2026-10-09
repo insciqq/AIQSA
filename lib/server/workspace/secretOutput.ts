@@ -26,7 +26,7 @@ type GramIndex = ReadonlyMap<string, readonly Readonly<{ offset: number; pattern
 type Boundaries = Readonly<{ end?: boolean; markers?: boolean; quotes?: boolean; start?: boolean }>;
 type Range = Readonly<{ from: number; replacement: string; to: number }>;
 
-class DepthExceeded extends Error {}
+class DepthExceeded extends Error { override name = "DepthExceeded"; }
 
 function gramIndex(patterns: readonly Pattern[]): GramIndex {
   const index = new Map<string, { offset: number; pattern: Pattern }[]>();

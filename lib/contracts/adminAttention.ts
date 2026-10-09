@@ -5,7 +5,7 @@ import type { ErrorResponse } from "./http";
  * needs an administrator decision or action from data it already serves
  * (dashboard, providers, Search, system roles, Knowledge operations, Memory
  * status, MCP servers, email health, usage limits), from thresholds over the
- * content-free health telemetry counters and Memory rebuild counts, and from
+ * content-free health telemetry counters, Memory rebuild and failed-run counts, and from
  * background queue ages.
  * Nothing is persisted; every item carries human copy plus one jump target
  * inside the Control Center.
@@ -36,6 +36,7 @@ export type AdminAttentionCode =
   | "provider_runtime_key_rejected"
   | "provider_runtime_quota_exhausted"
   | "queue_stalled"
+  | "runs_failed"
   | "search_source_model_off"
   | "server_errors_rising"
   | "skills_pending_approval"
@@ -147,6 +148,7 @@ export const adminHealthAttentionCodes = [
   "provider_runtime_failing",
   "provider_runtime_key_rejected",
   "provider_runtime_quota_exhausted",
+  "runs_failed",
   "server_errors_rising"
 ] as const satisfies readonly AdminAttentionCode[];
 

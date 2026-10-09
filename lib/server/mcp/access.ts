@@ -28,6 +28,24 @@ export function resolveEffectiveMcpGrant(input: {
   };
 }
 
+/**
+ * The personal slots one member may fill. Effective server use, direct or
+ * through a group, authorizes every required personal value; overriding a
+ * shared value replaces an installation credential and stays a direct-only
+ * permission (`personalSlotKeys`).
+ */
+export function authorizedMcpPersonalSlotKeys(
+  grant: EffectiveMcpGrant,
+  slots: McpConfigurationSlot[]
+): Set<string> {
+  return new Set(slots
+    .filter((slot) => slot.policy.kind === "personal"
+      ? grant.canUse || grant.personalSlotKeys.has(slot.slotKey)
+      : slot.policy.kind === "shared" && slot.policy.allowPersonalOverride &&
+        grant.personalSlotKeys.has(slot.slotKey))
+    .map((slot) => slot.slotKey));
+}
+
 export function resolveEffectiveMcpValues(input: {
   personalSlotKeys: Set<string>;
   personalValues: Record<string, unknown>;

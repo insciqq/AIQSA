@@ -29,7 +29,7 @@ export type DirectMemoryFactAccessTouchInput = Readonly<{
   userId: string;
 }>;
 
-class MemoryDecayTouchIneligibleError extends Error {}
+class MemoryDecayTouchIneligibleError extends Error { override name = "MemoryDecayTouchIneligibleError"; }
 
 function exactIdentity(input: MemoryDecayTouchIdentity): boolean {
   return [input.bindingId, input.modelRunId, input.retrievalAttemptId]

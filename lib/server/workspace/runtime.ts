@@ -1,3 +1,4 @@
+import { retainFailureCause } from "../observability/failureFacts.cjs";
 import type { WorkspaceOperation } from "./operationFence";
 import type { AcceptedWorkspaceSecret } from "./secrets/store";
 import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runtime";
@@ -359,9 +360,12 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_tool_cancelled"
     | "workspace_tool_timeout";
 
-  constructor(code: WorkspaceRuntimeError["code"]) {
+  /** `factsOf` is the failed step's own error: only its content-free
+   * telemetry facts are retained, never the error, its text or paths. */
+  constructor(code: WorkspaceRuntimeError["code"], options?: Readonly<{ factsOf?: unknown }>) {
     super(code);
     this.code = code;
     this.name = "WorkspaceRuntimeError";
+    if (options?.factsOf !== undefined) retainFailureCause(this, options.factsOf);
   }
 }

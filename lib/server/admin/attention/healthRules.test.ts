@@ -3,6 +3,7 @@ import type { AdminProviderConnection } from "../../../contracts/adminProviders"
 import type { TelemetryCounterGroup } from "../../telemetry/store";
 import {
   evaluateHealthRules,
+  failedRunFindings,
   healthAttentionItems,
   memoryRebuildFindings,
   readHealthCounterRows,
@@ -159,7 +160,7 @@ describe("new errors", () => {
   const failure = (fingerprint: string, fields: Record<string, string | null>, count: number, ago = 5) =>
     row({ error_fingerprint: fingerprint, error_class: "Error", error_site: "lib/server/x.ts:10", code: null, ...fields }, count, ago);
 
-  it("raises unclassified failures and programming errors first seen within a day, never classified ones", () => {
+  it("raises unclassified failures and programming errors first seen within a day, never ones another rule covers", () => {
     const findings = evaluateHealthRules(rows({
       errorFingerprints: [
         failure("aaaaaaaaaaaa", { code: "unknown" }, 4),
@@ -176,6 +177,24 @@ describe("new errors", () => {
       { code: "new_error", fingerprint: "bbbbbbbbbbbb", errorClass: "TypeError", site: "lib/server/memory/a.ts:3", count: 2 },
       { code: "new_error", fingerprint: "dddddddddddd", errorClass: "Error", site: "lib/server/x.ts:10", count: 1 }
     ]);
+  });
+
+  it("raises a classified code without a rule of its own, and leaves provider, timeout and refused-input codes to their rules", () => {
+    const findings = evaluateHealthRules(rows({
+      errorFingerprints: [
+        failure("aaaaaaaaaaaa", { error_class: "WorkspaceRuntimeError", code: "workspace_output_export_failed",
+          error_site: "lib/server/workspace/coordinator.ts:900", event: "service_operation" }, 1),
+        failure("bbbbbbbbbbbb", { code: "provider_rate_limited", event: "run_execution" }, 5),
+        failure("cccccccccccc", { code: "provider_response_invalid", event: "provider_operation" }, 3),
+        failure("dddddddddddd", { code: "workspace_tool_timeout", event: "tool_execution" }, 2),
+        failure("eeeeeeeeeeee", { code: "context_too_large", event: "run_execution" }, 4)
+      ]
+    }), now);
+    expect(findings).toEqual([{ code: "new_error", fingerprint: "aaaaaaaaaaaa", errorClass: "WorkspaceRuntimeError",
+      site: "lib/server/workspace/coordinator.ts:900", count: 1 }]);
+    // The code stays in the report's failure section, not in the attention copy.
+    expect(healthAttentionItems(findings, null)[0]).toMatchObject({ code: "new_error", count: 1,
+      detail: "WorkspaceRuntimeError at lib/server/workspace/coordinator.ts:900 · 1 time since it first appeared in the last 24 hours" });
   });
 
   it("names the most frequent new failures and sums the rest in one item", () => {
@@ -201,6 +220,32 @@ describe("Memory index rebuilds per owner", () => {
   });
 });
 
+describe("failed runs", () => {
+  const RUN_A = "1a2b3c4d-1111-4111-8111-111111111111";
+  const load = {
+    runs: 1, users: 1, groupsTruncated: false,
+    groups: [{ code: "workspace_output_export_failed", runs: 1, users: 1, firstAt: minutesAgo(30), lastAt: minutesAgo(30),
+      newest: [{ runId: RUN_A, userId: "user-1", startedAt: minutesAgo(30) }] }]
+  };
+
+  it("raises one item for a single failed run, with counts and navigation only", () => {
+    const findings = failedRunFindings(load);
+    expect(findings).toEqual([{ code: "runs_failed", runs: 1, users: 1 }]);
+    const [item] = healthAttentionItems(findings, null);
+    expect(item).toEqual({ action: "Open Health", code: "runs_failed", count: 1, id: "runs_failed", severity: "warn",
+      target: { section: "health" }, title: "Runs failed",
+      detail: "1 answer failed for 1 user in the last 24 hours — the health report lists them by cause" });
+    // Human copy only: no failure code, run reference or user id.
+    expect(JSON.stringify(item)).not.toMatch(/workspace_output_export_failed|1a2b3c4d|user-1/u);
+    expect(healthAttentionItems(failedRunFindings({ runs: 14, users: 5 }), null)[0]!.detail)
+      .toBe("14 answers failed for 5 users in the last 24 hours — the health report lists them by cause");
+  });
+
+  it("stays quiet without failed runs", () => {
+    expect(failedRunFindings({ runs: 0, users: 0 })).toEqual([]);
+  });
+});
+
 describe("readHealthCounterRows", () => {
   it("reads the current and previous hourly buckets for the hour rules and a day of buckets for timeouts", async () => {
     const readCounters = vi.fn().mockResolvedValue([]);
@@ -213,7 +258,7 @@ describe("readHealthCounterRows", () => {
     expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ ...day, events: ["tool_execution"] }));
     // Failure fingerprints: the new-error window, and their first occurrence over retention.
     expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ ...day, levels: ["error", "fatal"],
-      groupBy: ["error_fingerprint", "error_class", "error_site", "code"] }));
+      groupBy: ["error_fingerprint", "error_class", "error_site", "code", "event"] }));
     expect(readCounters).toHaveBeenCalledWith(expect.objectContaining({ from: new Date("2026-09-07T12:00:00.000Z"),
       to: new Date("2026-10-07T13:00:00.000Z"), levels: ["error", "fatal"], groupBy: ["error_fingerprint"] }));
     for (const [query] of readCounters.mock.calls) {

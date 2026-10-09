@@ -1,7 +1,10 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 export class AssistantListingError extends Error {
-  constructor(readonly code: string, readonly status = 409, readonly skillNames?: readonly string[]) { super(code); }
+  constructor(readonly code: string, readonly status = 409, readonly skillNames?: readonly string[]) {
+    super(code);
+    this.name = "AssistantListingError";
+  }
 }
 
 const PENDING_INDEX = "AssistantListingRequest_pending_assistant_key";

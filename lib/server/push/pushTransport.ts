@@ -1,9 +1,9 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import type { ClientRequest, IncomingMessage } from "node:http";
 import { request as httpsRequest, type RequestOptions } from "node:https";
-import { isIP, type LookupFunction } from "node:net";
+import { isIP } from "node:net";
 import type { PushTransportFailureCategory } from "../observability/events";
-import { networkAddressScope } from "../mcp/safeFetch";
+import { networkAddressScope, pinnedAddressLookup } from "../mcp/safeFetch";
 
 export type PushPostRequest = Readonly<{
   body: Buffer;
@@ -85,12 +85,9 @@ export function createPinnedPushPost(options: Readonly<{
         const remaining = deadline - performance.now();
         if (remaining <= 0) return finish(new PushTransportError("push_transport_failed", "timeout"));
         const pinned = addresses[index]!;
-        const lookup: LookupFunction = (_name, lookupOptions, callback) => {
-          if (lookupOptions.all) callback(null, [{ address: pinned.address, family: pinned.family }]);
-          else callback(null, pinned.address, pinned.family);
-        };
         let phase: "connect" | "tls" | "sending" = "connect";
         let ended = false;
+        const lookup = pinnedAddressLookup(pinned, () => ended || finished);
         let outgoing: ClientRequest | undefined;
         // Leave time for other addresses when a TCP connection silently stalls.
         const connectTimer = setTimeout(() => fail("timeout"), Math.max(1, remaining / (addresses.length - index)));
