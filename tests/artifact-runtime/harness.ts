@@ -24,6 +24,13 @@ export function productionViewerPolicies(): string[] {
   return [enforced, "frame-src 'none'"];
 }
 
+/** The app's development/loopback policy, sent as Content-Security-Policy-Report-Only. */
+export function developmentReportOnlyPolicy(): string {
+  const reportOnly = runtimeSecurityHeaders({ AIQSA_APP_BASE_URL: "http://localhost:3000", NODE_ENV: "development" })["Content-Security-Policy-Report-Only"];
+  if (!reportOnly) throw new Error("report_only_policy_missing");
+  return reportOnly;
+}
+
 /** Renders an entry document (and optional extra files) through the real renderer. */
 export function renderArtifactDocument(html: string, files: readonly ArtifactBundleFile[] = []): string {
   return renderArtifactPage([{ mimeType: "text/html", path: "index.html", text: html }, ...files]);
@@ -63,7 +70,7 @@ export type RuntimeServer = Readonly<{
    * this counter is the only evidence that the connection was made. */
   connections: string[];
   /** Serves a viewer-like host page for an already rendered artifact document. */
-  hostPage(document: string, policies?: readonly string[]): string;
+  hostPage(document: string, policies?: readonly string[], reportOnlyPolicies?: readonly string[]): string;
   close(): Promise<void>;
 }>;
 
@@ -85,7 +92,7 @@ function trapResponse(request: IncomingMessage, response: ServerResponse): void 
 }
 
 export async function startRuntimeServer(): Promise<RuntimeServer> {
-  const pages = new Map<string, { body: string; policies: readonly string[] }>();
+  const pages = new Map<string, { body: string; policies: readonly string[]; reportOnlyPolicies: readonly string[] }>();
   const hits: RuntimeHit[] = [];
   const connections: string[] = [];
   const server: Server = createServer((request, response) => {
@@ -94,6 +101,7 @@ export async function startRuntimeServer(): Promise<RuntimeServer> {
     if (page) {
       // One header line per policy, each enforced independently.
       if (page.policies.length) response.setHeader("content-security-policy", [...page.policies]);
+      if (page.reportOnlyPolicies.length) response.setHeader("content-security-policy-report-only", [...page.reportOnlyPolicies]);
       response.writeHead(200, { "cache-control": "no-store", "content-type": "text/html; charset=utf-8" });
       response.end(page.body);
       return;
@@ -117,9 +125,9 @@ export async function startRuntimeServer(): Promise<RuntimeServer> {
     wsOrigin: `ws://127.0.0.1:${port}`,
     hits,
     connections,
-    hostPage(document, policies = []) {
+    hostPage(document, policies = [], reportOnlyPolicies = []) {
       const path = `/host/${++next}`;
-      pages.set(path, { body: hostDocument(document), policies });
+      pages.set(path, { body: hostDocument(document), policies, reportOnlyPolicies });
       return `http://127.0.0.1:${port}${path}`;
     },
     close: () => new Promise<void>((resolve, reject) => {
