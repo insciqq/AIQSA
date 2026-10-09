@@ -267,7 +267,8 @@ describe("image edit preflight", () => {
     const error = new Error("PRIVATE exception with https://secret.example and sk-secret");
     h.binding.mockRejectedValue(error);
     await expect(h.service.execute(h.call, h.context)).rejects.toBe(error);
-    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "binding", code: "tool_call_failed" }));
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "binding", code: "tool_call_failed",
+      outcome: "failed", level: "error" }));
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference|secret.example|sk-secret/);
     expect(h.fetchFn).not.toHaveBeenCalled();
     expect(h.usage).not.toHaveBeenCalled();
@@ -287,7 +288,9 @@ describe("image edit preflight", () => {
     expect(imageInputFailure(error)).toMatchObject({ code, message: expect.stringContaining(h.reference.id) });
     expect(imageInputFailure(error)!.message).toContain("Nothing was sent to the image provider.");
     expect(imageDispatchMustStop(error)).toBe(false);
-    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "reference_read", code }));
+    // A correctable refusal warns; a lost or unreadable object is the storage read's own error record.
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "image_execution", stage: "reference_read", code,
+      outcome: "refused", level: "warn" }));
     expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|private-reference|secret.example|sk-secret/);
     expect(h.beforeDispatch).not.toHaveBeenCalled();
     expect(h.fetchFn).not.toHaveBeenCalled();
@@ -299,7 +302,10 @@ describe("image edit preflight", () => {
     const controller = new AbortController();
     const reason = new DOMException("Stopped", "AbortError");
     h.getObject.mockImplementation(async () => { controller.abort(reason); throw reason; });
+    const observation = await captureRunObservation();
     await expect(h.service.execute(h.call, h.context, controller.signal, { beforeDispatch: h.beforeDispatch })).rejects.toBe(reason);
+    expect(observation.records().filter((record) => record.event === "image_execution"))
+      .toEqual([expect.objectContaining({ stage: "reference_read", outcome: "cancelled", level: "warn" })]);
     expect(h.beforeDispatch).not.toHaveBeenCalled();
     expect(h.fetchFn).not.toHaveBeenCalled();
   });

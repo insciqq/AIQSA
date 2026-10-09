@@ -72,6 +72,8 @@ export type EventFields = {
   image_execution: CaughtError & Readonly<{
     stage: "input" | "binding" | "run" | "references" | "reference_read" | "reference_validation" | "authorization" |
       "dispatch_claim" | "usage" | "provider" | "storage" | "publication";
+    /** `refused`: a correctable refusal of the model's request; `cancelled`: a stop. Both warn; a failure is an error. */
+    outcome?: "failed" | "refused" | "cancelled";
     code: string; duration_ms: number; finish_reason?: "safety" | "blocked" | "other";
     prisma_code?: string; db_failure?: DatabaseFailureKind;
   }>;

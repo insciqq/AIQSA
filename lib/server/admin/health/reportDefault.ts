@@ -5,10 +5,15 @@ import { listAnswerProblemReports } from "../../answerProblemReports/repository"
 import { prisma } from "../../prisma";
 import type { HealthAgentReportSources } from "./agentReport";
 import { adminHealthProviderNames, adminHealthService, adminHealthTelemetryStore } from "./defaultService";
+import { readFailedRunLoad } from "./failedRuns";
 import { adminHealthQueuesService } from "./queuesDefault";
 import type { HealthReportSources, HealthRunReportSources } from "./report";
 import { adminHealthRunLookup } from "./runLookupDefault";
 import { readAdminHealthUserFailedRuns } from "./runLookupRepository";
+
+/** Failed runs of a report's whole range, read once; it gets more time than a page read. */
+const readReportFailedRuns: HealthReportSources["failedRuns"] = (query) =>
+  readFailedRunLoad(prisma, { ...query, statementTimeoutMs: 15_000 });
 
 /** The health report over this installation's database, through the Health page's own services. */
 export const healthReportSources: HealthReportSources & HealthRunReportSources = {
@@ -16,7 +21,8 @@ export const healthReportSources: HealthReportSources & HealthRunReportSources =
   queues: adminHealthQueuesService,
   runs: adminHealthRunLookup,
   findings: readDefaultHealthFindings,
-  connections: () => prisma.providerConnection.findMany({ select: { id: true, displayName: true, enabled: true } })
+  connections: () => prisma.providerConnection.findMany({ select: { id: true, displayName: true, enabled: true } }),
+  failedRuns: readReportFailedRuns
 };
 
 /** The agent reports (`--full`, `--user`) over the same database; they only read. */
@@ -26,6 +32,7 @@ export const healthAgentReportSources: HealthAgentReportSources = {
   queues: adminHealthQueuesService,
   problemReports: (query) => listAnswerProblemReports(prisma, query),
   failedRuns: (query) => readAdminHealthUserFailedRuns(prisma, query),
+  failedRunGroups: readReportFailedRuns,
   userExists: async (userId) => (await prisma.user.findUnique({ where: { id: userId }, select: { id: true } })) !== null
 };
 

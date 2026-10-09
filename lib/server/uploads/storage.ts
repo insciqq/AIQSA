@@ -17,7 +17,9 @@ import { basename, dirname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { readStreamWithAbort, nodeByteStream } from "../http/byteStream";
-import { beginStorageOperation, observeStorageOperation } from "./storageObservability";
+import { beginStorageOperation, isStoredObjectMissingError, observeStorageOperation } from "./storageObservability";
+
+export { isStoredObjectMissingError };
 
 export type StoredObjectInput = {
   body: Buffer;
@@ -26,6 +28,13 @@ export type StoredObjectInput = {
 };
 
 export type StoredObjectReadOptions = {
+  /**
+   * The caller reads to learn whether the object exists and handles its
+   * absence itself (a write-once check before writing): a missing object is
+   * then not logged as a storage failure. Leave it unset whenever the object
+   * must exist, so that a lost file stays an error.
+   */
+  expectMissing?: boolean;
   maxBytes?: number;
   requireStreaming?: boolean;
   signal?: AbortSignal;
@@ -241,14 +250,6 @@ function boundedExactWebStream(
   });
 }
 
-/** The object does not exist (filesystem ENOENT, S3 NoSuchKey or 404), as
- * opposed to a transport or service failure that a later read may survive. */
-export function isStoredObjectMissingError(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const record = error as { code?: unknown; name?: unknown; $metadata?: { httpStatusCode?: unknown } };
-  return record.code === "ENOENT" || record.name === "NoSuchKey" || record.$metadata?.httpStatusCode === 404;
-}
-
 export async function getStoredObjectStream(
   storage: StorageAdapter,
   storageKey: string,
@@ -311,7 +312,7 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
           contentType: "application/octet-stream",
           storageKey
         };
-      }, options?.signal);
+      }, { signal: options?.signal, expectMissing: options?.expectMissing });
     },
     async getObjectStream(storageKey, options) {
       return observeStorageOperation("prepare", async () => {
@@ -333,7 +334,7 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
           contentType: "application/octet-stream",
           storageKey
         };
-      }, options?.signal);
+      }, { signal: options?.signal, expectMissing: options?.expectMissing });
     },
     async inspectObject(storageKey, options) {
       return observeStorageOperation("read", async () => {
@@ -358,7 +359,7 @@ export function createFileSystemStorageAdapter(root: string): StorageAdapter {
           signal,
           storageKey
         });
-      }, options?.signal);
+      }, { signal: options?.signal, expectMissing: options?.expectMissing });
     },
     async putObject(input) {
       return observeStorageOperation("write", async () => {
@@ -986,7 +987,7 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
           contentType: output.ContentType ?? "application/octet-stream",
           storageKey
         };
-      }, options?.signal);
+      }, { signal: options?.signal, expectMissing: options?.expectMissing });
     },
     async getObjectStream(storageKey, options) {
       return observeStorageOperation("prepare", async () => {
@@ -1007,7 +1008,7 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
           contentType: output.ContentType ?? "application/octet-stream",
           storageKey
         };
-      }, options?.signal);
+      }, { signal: options?.signal, expectMissing: options?.expectMissing });
     },
     async inspectObject(storageKey, options) {
       return observeStorageOperation("read", async () => {
@@ -1022,7 +1023,7 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
           signal,
           storageKey
         });
-      }, options?.signal);
+      }, { signal: options?.signal, expectMissing: options?.expectMissing });
     },
     async putObject(input) {
       return observeStorageOperation("write", async () => {

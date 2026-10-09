@@ -85,6 +85,7 @@ function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSour
       { id: "conn-openai", displayName: "OpenAI", enabled: true },
       { id: "conn-disabled", displayName: "Old key", enabled: false }
     ]),
+    failedRuns: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false }),
     ...overrides
   };
 }
@@ -95,8 +96,9 @@ describe("health report collection", () => {
     const report = await collectHealthReport(input, "24h");
     expect(input.health.read).toHaveBeenCalledWith("24h");
     expect(input.health.incidents).toHaveBeenCalledWith({ category: null, code: null, cursor: null, event: null, level: null, q: null, range: "24h" });
+    expect(input.failedRuns).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to), perCode: 3, groupLimit: 50 });
     expect(Object.keys(report)).toEqual(["kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry", "attention",
-      "summary", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
+      "failedRuns", "summary", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
       "queues", "queuesCheckedAt",
       "incidents", "incidentsTruncated"]);
     // A disabled connection has nothing left to fix; only the stalled queue that raises its own item joins.
@@ -149,6 +151,49 @@ describe("health report text", () => {
     expect(text).toContain("  UNAVAILABLE  Memory learning and indexing · could not be read\n");
     expect(text).toContain("  2026-10-07 09:59:12  error  app  provider_operation  ref 1a2b3c4d\n" +
       "      code provider_rate_limited · answer · OpenAI · gpt-5 · HTTP 429\n");
+  });
+
+  it("leads with failed runs: counts in attention, then each failure code with users and references to look up", async () => {
+    const RUN_A = "1a2b3c4d-1111-4111-8111-111111111111";
+    const RUN_B = "5e6f7a8b-2222-4222-8222-222222222222";
+    const RUN_C = "9c8d7e6f-3333-4333-8333-333333333333";
+    const at = new Date("2026-10-07T09:30:00.000Z");
+    const report = await collectHealthReport(sources({
+      health: { read: vi.fn().mockResolvedValue(health), incidents: vi.fn().mockResolvedValue({ incidents: [], nextCursor: null }) },
+      findings: vi.fn().mockResolvedValue([
+        { code: "runs_failed", runs: 13, users: 5 },
+        { code: "new_error", fingerprint: "0123456789ab", errorClass: "WorkspaceHandoffFailure",
+          site: "lib/server/runs/runExecution.ts:3832", count: 1 }
+      ]),
+      failedRuns: vi.fn().mockResolvedValue({ runs: 13, users: 5, groupsTruncated: false, groups: [
+        { code: "provider_server_error", runs: 12, users: 4, firstAt: at, lastAt: at, newest: [
+          { runId: RUN_A, userId: "private-user-a", startedAt: at }, { runId: RUN_B, userId: "private-user-b", startedAt: at }] },
+        { code: "workspace_output_export_failed", runs: 1, users: 1, firstAt: at, lastAt: at, newest: [
+          { runId: RUN_C, userId: "private-user-c", startedAt: at }, { runId: "not-a-run", userId: "private-user-d", startedAt: at }] }
+      ] })
+    }), "24h");
+    expect(report.attention.map((item) => item.id)).toEqual(["runs_failed", "new_error:0123456789ab", "queue_stalled:chat_titles"]);
+    expect(report.failedRuns).toEqual({ runs: 13, users: 5, truncated: false, rows: [
+      { failureCode: "provider_server_error", runs: 12, users: 4, lastAt: at.toISOString(), references: ["1a2b3c4d", "5e6f7a8b"] },
+      { failureCode: "workspace_output_export_failed", runs: 1, users: 1, lastAt: at.toISOString(), references: ["9c8d7e6f"] }
+    ] });
+    // The default report counts users and never names them.
+    expect(JSON.stringify(report)).not.toMatch(/private-user|"user_?[iI]d"/u);
+    const text = formatHealthReport(report);
+    const lines = text.trimEnd().split("\n");
+    expect(lines.every((line) => line.length <= 100)).toBe(true);
+    expect(text).toContain("Needs attention (3)\n  WARN  Runs failed\n" +
+      "        13 answers failed for 5 users in the last 24 hours — the health report lists them by cause\n");
+    expect(text).toContain("\n\nFailed runs: 13 runs of 5 users (stops and refused input not counted)\n" +
+      "  code provider_server_error · 12 runs · 4 users · last 2026-10-07 09:30\n" +
+      "      ref 1a2b3c4d, 5e6f7a8b\n" +
+      "  code workspace_output_export_failed · 1 run · 1 user · last 2026-10-07 09:30\n" +
+      "      ref 9c8d7e6f\n\nError totals");
+    // Attention copy is human copy only; codes and references live in the report sections.
+    const attentionCopy = JSON.stringify(report.attention);
+    expect(attentionCopy).not.toMatch(/provider_server_error|workspace_output_export_failed|1a2b3c4d|9c8d7e6f/u);
+    // Without incidents of their own, the failed runs' references still get the lookup hint.
+    expect(lines.at(-1)).toBe("Look up a reference: ./aiqsa.sh health --run <reference>");
   });
 
   it("names the class and code site of an incident that has them", async () => {

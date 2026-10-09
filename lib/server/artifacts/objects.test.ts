@@ -5,7 +5,7 @@ import { normalizeArtifactOperation } from "@/lib/contracts/artifacts";
 import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
 import { ARTIFACT_RENDERER_VERSION, buildArtifactBundle } from "./bundle";
 import { ArtifactToolError } from "./errors";
-import { ARTIFACT_LARGE_WORK_BYTES, ARTIFACT_PAGE_RENDER_CACHE_BYTES, ArtifactPublicBusyError, boundedArtifactCreation, boundedArtifactWork, createArtifactObjects } from "./objects";
+import { ARTIFACT_LARGE_WORK_BYTES, ARTIFACT_PAGE_RENDER_CACHE_BYTES, ArtifactPublicBusyError, artifactChecksum, boundedArtifactCreation, boundedArtifactWork, createArtifactObjects } from "./objects";
 
 type RenderRow = { id: string; versionId: string; rendererVersion: number; page: string; renderedStorageKey: string; renderedByteSize: number; renderedChecksum: string; contentType: string };
 
@@ -246,5 +246,30 @@ describe("bounded artifact creation", () => {
     const held = holders();
     await vi.waitFor(() => expect(held.state.running).toBe(4));
     held.release(); await held.done;
+  });
+});
+
+describe("artifact blob writes", () => {
+  it("checks a new blob's object as an expected miss and verifies the written one as an object that must exist", async () => {
+    const bytes = Buffer.from("blob bytes");
+    const stored = new Map<string, Buffer>();
+    const getObject = vi.fn(async (key: string, _options?: unknown) => {
+      const body = stored.get(key);
+      if (!body) throw Object.assign(new Error("missing"), { name: "NoSuchKey" });
+      return { body, contentType: "text/plain", storageKey: key };
+    });
+    const storage: StorageAdapter = {
+      getObject,
+      async putObject(value) { stored.set(value.storageKey, Buffer.from(value.body)); },
+      async deleteObject() {}
+    };
+    const objects = createArtifactObjects({} as PrismaClient, storage);
+    const blob = { id: "blob", ownerUserId: "owner", sha256: artifactChecksum(bytes), byteSize: bytes.byteLength,
+      storageKey: "artifact-blobs/owner/new", bytes, mimeType: "text/plain", path: "a.txt" };
+    await objects.writeBlobs([blob] as unknown as Parameters<typeof objects.writeBlobs>[0]);
+    expect(getObject.mock.calls).toEqual([
+      ["artifact-blobs/owner/new", { maxBytes: bytes.byteLength, expectMissing: true }],
+      ["artifact-blobs/owner/new", { maxBytes: bytes.byteLength }]
+    ]);
   });
 });
