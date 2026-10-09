@@ -201,6 +201,8 @@ describe("answer problem report storage", () => {
     expect(first.rows[0]).not.toHaveProperty("messageId");
     expect((await listAnswerProblemReports(prisma, { ...window, limit: 5 })).rows.map((row) => row.comment))
       .toEqual(["Recent note", "Old note"]);
+    const own = await listAnswerProblemReports(prisma, { ...window, limit: 5, userId: f.owner });
+    expect({ comments: own.rows.map((row) => row.comment), total: own.total }).toEqual({ comments: ["Old note"], total: 1 });
     await expect(listAnswerProblemReports(prisma, { ...window, limit: 0 })).rejects.toThrow(RangeError);
 
     // 2003-12-01 minus 90 days is 2003-09-02: the July report goes, the November one stays.

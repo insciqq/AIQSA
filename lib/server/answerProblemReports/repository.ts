@@ -132,21 +132,23 @@ function displayName(value: string | null | undefined): string | null {
 }
 
 /**
- * Reports last sent at or after `from` (and before `to`, when given), newest
- * first, at most `limit` (1–500), with the total in that window. Connection
+ * Reports last sent at or after `from` (and before `to`, when given; of one
+ * user, when `userId` is given), newest first, at most `limit` (1–500), with
+ * the total in that window. Connection
  * and model names are the current ones of the run's answer binding; a deleted
  * connection reads as such. Health and the agent report both read this.
  */
 export async function listAnswerProblemReports(
   db: Pick<PrismaClient, "answerProblemReport" | "providerConnection">,
-  input: Readonly<{ from: Date; limit: number; to?: Date }>
+  input: Readonly<{ from: Date; limit: number; to?: Date; userId?: string }>
 ): Promise<Readonly<{ rows: AnswerProblemReportListRow[]; total: number }>> {
   if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > LIST_MAX_ROWS ||
     Number.isNaN(input.from.getTime()) || (input.to !== undefined && Number.isNaN(input.to.getTime()))) {
     throw new RangeError("answer_problem_report_list_invalid");
   }
   const where = {
-    updatedAt: { gte: input.from, ...(input.to ? { lt: input.to } : {}) }
+    updatedAt: { gte: input.from, ...(input.to ? { lt: input.to } : {}) },
+    ...(input.userId !== undefined ? { userId: input.userId } : {})
   } satisfies Prisma.AnswerProblemReportWhereInput;
   try {
     const [total, rows] = await Promise.all([

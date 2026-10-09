@@ -21,8 +21,12 @@ const ROWS_PER_STATEMENT = 500;
 const KEY_DAY_EDGE_ROWS = TELEMETRY_INCIDENT_KEY_DAY_ROWS / 2;
 /** One incident key per UTC day: a repeating error. Distinct fingerprints are
  * distinct keys; NULLs compare equal within a window partition. */
-const incidentKeyDay = Prisma.sql`"event", "code", "subsystem", "connectionId", "details" ->> 'error_fingerprint',
-  date_trunc('day', "occurredAt")`;
+const incidentKey = Prisma.sql`"event", "code", "subsystem", "connectionId", "details" ->> 'error_fingerprint'`;
+const incidentKeyDay = Prisma.sql`${incidentKey}, date_trunc('day', "occurredAt")`;
+const incidentColumns = Prisma.sql`"id", "occurredAt", "role", "event", "level", "appVersion", "instanceId",
+  "code", "subsystem", "connectionId", "runId", "traceId", "userId", "details"`;
+/** Group keys one counter read may combine. */
+const MAX_GROUP_KEYS = 16;
 
 export const TELEMETRY_GROUP_KEYS = Object.freeze(
   ["bucket", "role", "event", "level", "appVersion", "overflow", ...TELEMETRY_DIMENSIONS] as const
@@ -114,6 +118,13 @@ export type TelemetryStore = Readonly<{
   ): Promise<ReadonlyMap<string, TelemetryIncidentReach>>;
   /** Reach per incident key over a range, most incidents first (at most `limit`, default 100). */
   countIncidentReachByKey(query: TelemetryIncidentRange & Readonly<{ limit?: number }>): Promise<readonly TelemetryIncidentKeyReach[]>;
+  /**
+   * The first incident of each incident key within a range, newest first, at
+   * most `limit` (default 100, at most 1,000); `truncated` when more keys exist.
+   */
+  readFirstIncidentPerKey(
+    query: TelemetryIncidentRange & Readonly<{ limit?: number }>
+  ): Promise<Readonly<{ items: readonly TelemetryIncident[]; truncated: boolean }>>;
 }>;
 
 export type TelemetryDatabase = Pick<PrismaClient, "$executeRaw" | "$queryRaw" | "$transaction">;
@@ -352,6 +363,14 @@ function details(value: unknown): Readonly<Record<string, string | number | bool
     typeof item === "string" || typeof item === "number" || typeof item === "boolean"));
 }
 
+function incidentFromRow(row: IncidentRow): TelemetryIncident {
+  return Object.freeze({
+    ...row,
+    level: row.level === "fatal" ? "fatal" : "error",
+    details: Object.freeze(details(row.details))
+  });
+}
+
 export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStore {
   /** Repeats a statement over at most one batch of rows until a batch comes up short. */
   const inBatches = async (statement: Prisma.Sql): Promise<number> => {
@@ -466,7 +485,7 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
     async readCounters(query: TelemetryCounterQuery): Promise<readonly TelemetryCounterGroup[]> {
       const conditions = counterConditions(query);
       const groupBy = query.groupBy ?? [];
-      if (!Array.isArray(groupBy) || groupBy.length > 8 || new Set(groupBy).size !== groupBy.length ||
+      if (!Array.isArray(groupBy) || groupBy.length > MAX_GROUP_KEYS || new Set(groupBy).size !== groupBy.length ||
         !groupBy.every((key) => groupKeys.has(key))) invalid();
       const interval = query.interval ?? "hour";
       if (interval !== "hour" && interval !== "day") invalid();
@@ -520,18 +539,13 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
       const pageSize = limit(query.limit, 50, 200);
       try {
         const rows = await db.$queryRaw<IncidentRow[]>(Prisma.sql`
-          SELECT "id", "occurredAt", "role", "event", "level", "appVersion", "instanceId",
-            "code", "subsystem", "connectionId", "runId", "traceId", "userId", "details"
+          SELECT ${incidentColumns}
           FROM "TelemetryIncident"
           ${conditions.length > 0 ? Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}` : Prisma.empty}
           ORDER BY "occurredAt" DESC, "id" DESC
           LIMIT ${pageSize + 1}
         `);
-        const items = rows.slice(0, pageSize).map((row): TelemetryIncident => Object.freeze({
-          ...row,
-          level: row.level === "fatal" ? "fatal" : "error",
-          details: Object.freeze(details(row.details))
-        }));
+        const items = rows.slice(0, pageSize).map(incidentFromRow);
         const last = items.at(-1);
         return { items, nextCursor: rows.length > pageSize && last ? encodeCursor(last) : null };
       } catch (error) {
@@ -598,6 +612,28 @@ export function createPrismaTelemetryStore(db: TelemetryDatabase): TelemetryStor
           firstAt: row.firstAt,
           lastAt: row.lastAt
         }));
+      } catch (error) {
+        return retainDatabaseFailure(error);
+      }
+    },
+
+    async readFirstIncidentPerKey(
+      query: TelemetryIncidentRange & Readonly<{ limit?: number }>
+    ): Promise<Readonly<{ items: readonly TelemetryIncident[]; truncated: boolean }>> {
+      const range = incidentRange(query);
+      const rows = limit(query.limit, 100, 1_000);
+      try {
+        const result = await db.$queryRaw<IncidentRow[]>(Prisma.sql`
+          SELECT ${incidentColumns} FROM (
+            SELECT DISTINCT ON (${incidentKey}) ${incidentColumns}
+            FROM "TelemetryIncident"
+            WHERE ${range}
+            ORDER BY ${incidentKey}, "occurredAt", "id"
+          ) AS "first"
+          ORDER BY "occurredAt" DESC, "id" DESC
+          LIMIT ${rows + 1}
+        `);
+        return { items: result.slice(0, rows).map(incidentFromRow), truncated: result.length > rows };
       } catch (error) {
         return retainDatabaseFailure(error);
       }
