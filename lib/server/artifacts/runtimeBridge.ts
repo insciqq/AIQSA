@@ -76,6 +76,471 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
   };
   const fail = message => { report({ kind: "error", message: clean(message, 300), line: 0, column: 0 }); return message; };
 
+  // Resource hints and nested documents. WebKit opens a TCP connection for a
+  // preconnect link (and resolves a dns-prefetch host name) as soon as such a
+  // link element is connected, or a connected one gains that relation or a new
+  // href, under any CSP: neither is a CSP fetch. That happens synchronously
+  // inside the insertion or attribute change, so an observer is too late. A
+  // nested srcdoc document, or a javascript: frame, is a fresh realm without
+  // this bridge whose own markup and scripts reach the same channels and
+  // WebRTC. So, before the native operation runs, on every script path that
+  // creates, changes or connects such an element:
+  //   - a link loses its preconnect, dns-prefetch, prefetch, prerender, preload
+  //     and modulepreload tokens. They are only hints and default-src 'none'
+  //     lets none of them serve the page, so this stays silent;
+  //   - an iframe loses its srcdoc and a frame or iframe a javascript: src,
+  //     reported as a runtime error because that content then never shows.
+  // Decisions use intrinsics captured here, before any authored script, so a
+  // page that later replaces String, RegExp, Array, Reflect, NodeList or DOM
+  // members cannot steer them; a nested about:blank frame is another opaque
+  // origin, so no untouched realm is reachable. Element and shadow root
+  // innerHTML, outerHTML and insertAdjacentHTML parse in a detached element of
+  // the same document, namespace and name and move the checked nodes in.
+  // DOMParser, createContextualFragment and XSLT results are checked before
+  // they are returned. Sinks that parse on their own (document.write, execCommand
+  // insertHTML, setHTMLUnsafe, setHTML, parseHTMLUnsafe, parseHTML) get link and
+  // frame tags renamed to inert basefont and noembed elements, also where such
+  // a tag only appears as text; document.write holds back a tag name split
+  // across calls. Not covered: HTML a user pastes or drops into an editable
+  // region, and a subtree connected by an indexed select or options setter,
+  // which matters only for a link that escaped every path above.
+  try {
+    const apply = Reflect.apply, describe = Object.getOwnPropertyDescriptor, define = Object.defineProperty;
+    const toText = String, fromCharCode = String.fromCharCode, charCodeAt = String.prototype.charCodeAt, cut = String.prototype.slice;
+    const exec = RegExp.prototype.exec, mapGet = WeakMap.prototype.get, mapSet = WeakMap.prototype.set;
+    const HTML = "http://www.w3.org/1999/xhtml";
+    const protoOf = name => typeof window[name] === "function" ? window[name].prototype : null;
+    const slot = (owner, key) => owner && describe(owner, key) || null;
+    const getter = (name, key) => { const found = slot(protoOf(name), key); return found && found.get || null; };
+    const method = (name, key) => { const found = slot(protoOf(name), key); return found && typeof found.value === "function" ? found.value : null; };
+    const read = (get, self) => apply(get, self, []);
+    // A DOMString argument, converted once so the checked value is the stored one.
+    const text = value => typeof value === "symbol" ? value : toText(value);
+    const ElementProto = protoOf("Element"), DocumentProto = protoOf("Document"), FragmentProto = protoOf("DocumentFragment");
+    const nodeType = getter("Node", "nodeType"), isConnected = getter("Node", "isConnected"), parentNode = getter("Node", "parentNode"),
+      firstChild = getter("Node", "firstChild"), nextSibling = getter("Node", "nextSibling"), ownerDocument = getter("Node", "ownerDocument"),
+      localName = getter("Element", "localName"), namespaceURI = getter("Element", "namespaceURI"),
+      getAttribute = method("Element", "getAttribute"), setAttribute = method("Element", "setAttribute"), removeAttribute = method("Element", "removeAttribute"),
+      queries = [method("Element", "querySelectorAll"), method("DocumentFragment", "querySelectorAll"), method("Document", "querySelectorAll")],
+      firstMatches = [method("Element", "querySelector"), method("DocumentFragment", "querySelector")],
+      listLength = getter("NodeList", "length"), listItem = method("NodeList", "item"),
+      appendChild = method("Node", "appendChild"), insertBefore = method("Node", "insertBefore"), replaceChild = method("Node", "replaceChild"),
+      removeChild = method("Node", "removeChild"), createElementNS = method("Document", "createElementNS"), createFragment = method("Document", "createDocumentFragment"),
+      elementReplace = method("Element", "replaceChildren"), fragmentReplace = method("DocumentFragment", "replaceChildren"),
+      contains = method("DOMTokenList", "contains"), remove = method("DOMTokenList", "remove"),
+      templateContent = getter("HTMLTemplateElement", "content"), innerHTML = slot(ElementProto, "innerHTML");
+    if (!innerHTML || typeof innerHTML.set !== "function" || [nodeType, isConnected, parentNode, firstChild, nextSibling, ownerDocument, localName, namespaceURI,
+      getAttribute, setAttribute, removeAttribute, ...queries, ...firstMatches, listLength, listItem, appendChild, insertBefore, replaceChild, removeChild, createElementNS, createFragment]
+      .some(native => typeof native !== "function")) throw 0;
+    const lower = value => {
+      let out = "";
+      for (let i = 0; i < value.length; i++) { const code = apply(charCodeAt, value, [i]); out += fromCharCode(code > 64 && code < 91 ? code + 32 : code); }
+      return out;
+    };
+    const hint = token => token === "preconnect" || token === "dns-prefetch" || token === "prefetch" || token === "prerender" || token === "preload" || token === "modulepreload";
+    // The rel value without hint tokens (ASCII case-insensitive), or null when it has none.
+    const unhinted = value => {
+      let kept = "", token = "", dropped = false;
+      for (let i = 0; i <= value.length; i++) {
+        const code = i < value.length ? apply(charCodeAt, value, [i]) : 32;
+        if (code !== 32 && code !== 9 && code !== 10 && code !== 12 && code !== 13) { token += fromCharCode(code); continue; }
+        if (!token) continue;
+        if (hint(lower(token))) dropped = true; else kept = kept ? kept + " " + token : token;
+        token = "";
+      }
+      return dropped ? kept : null;
+    };
+    const isHint = token => typeof token === "string" && unhinted(token) === "";
+    // URL parsing drops leading C0 controls and spaces and every tab or newline.
+    const scriptAddress = value => {
+      let scheme = "";
+      for (let i = 0; i < value.length && scheme.length < 11; i++) {
+        const code = apply(charCodeAt, value, [i]);
+        if (code === 9 || code === 10 || code === 13 || (code <= 32 && !scheme)) continue;
+        scheme += fromCharCode(code > 64 && code < 91 ? code + 32 : code);
+      }
+      return scheme === "javascript:";
+    };
+    const hasDash = value => { for (let i = 0; i < value.length; i++) if (apply(charCodeAt, value, [i]) === 45) return true; return false; };
+    const htmlName = node => { try { return read(nodeType, node) === 1 && read(namespaceURI, node) === HTML ? read(localName, node) : ""; } catch { return ""; } };
+    const kind = node => { const name = htmlName(node); return name === "link" || name === "iframe" || name === "frame" ? name : ""; };
+    // Only this page's document has a browsing context: a link elsewhere (a
+    // DOMParser or template document) reaches no network until it moves here.
+    const page = document;
+    const connected = node => { try { return read(isConnected, node) === true; } catch { return false; } };
+    const live = node => connected(node) && read(ownerDocument, node) === page;
+    // Reporting must not throw: a check stopped halfway would leave later elements untouched.
+    const frameBlocked = () => { try { fail("Artifact pages cannot show nested documents, so an iframe srcdoc or javascript: address was removed; render that content in the page itself"); } catch {} };
+    // Makes one element inert in place.
+    const neutralize = (element, name) => {
+      if (name === "link") {
+        const rel = apply(getAttribute, element, ["rel"]);
+        const kept = rel === null ? null : unhinted(rel);
+        if (kept !== null) apply(setAttribute, element, ["rel", kept]);
+        return;
+      }
+      let removed = false;
+      if (name === "iframe" && apply(getAttribute, element, ["srcdoc"]) !== null) { apply(removeAttribute, element, ["srcdoc"]); removed = true; }
+      const src = apply(getAttribute, element, ["src"]);
+      if (src !== null && scriptAddress(src)) { apply(setAttribute, element, ["src", "about:blank"]); removed = true; }
+      if (removed) frameBlocked();
+    };
+    const query = (root, selector) => {
+      const type = read(nodeType, root);
+      const run = type === 1 ? queries[0] : type === 11 ? queries[1] : type === 9 ? queries[2] : null;
+      return run ? apply(run, root, [selector]) : null;
+    };
+    const each = (list, action) => { if (list) for (let i = 0, count = read(listLength, list); i < count; i++) action(apply(listItem, list, [i])); };
+    const shadows = new WeakMap();
+    let shadowed = false;
+    // Neutralizes root and everything below it, including shadow roots attached
+    // through attachShadow and, when deep, inert template contents.
+    const scrub = (root, deep) => {
+      const check = element => { const name = kind(element); if (name) neutralize(element, name); };
+      const descend = (element, inner) => { const nested = inner(element); if (nested) scrub(nested, deep); };
+      const shadowOf = element => apply(mapGet, shadows, [element]);
+      const contentOf = element => { try { return read(templateContent, element); } catch { return null; } };
+      const isElement = read(nodeType, root) === 1;
+      if (isElement) check(root);
+      each(query(root, "link,iframe,frame"), check);
+      if (shadowed) { if (isElement) descend(root, shadowOf); each(query(root, "*"), element => descend(element, shadowOf)); }
+      if (deep && templateContent) { if (htmlName(root) === "template") descend(root, contentOf); each(query(root, "template"), element => descend(element, contentOf)); }
+    };
+    const wrap = (owner, key, make) => {
+      const found = slot(owner, key);
+      if (found && typeof found.value === "function") define(owner, key, { ...found, value: make(found.value) });
+    };
+    const wrapSet = (owner, key, make) => {
+      const found = slot(owner, key);
+      if (found && typeof found.set === "function") define(owner, key, { ...found, set: make(found.set) });
+    };
+
+    // Insertion: nodes headed into this page's tree are checked first. Any other
+    // target only parks them; they are checked when that tree is connected here.
+    // The common case stays cheap: the node's own name, then one query that stops
+    // at the first link or frame below it; the full walk runs only when one is
+    // there, or once a shadow root exists (its contents are not query results).
+    const inserted = node => {
+      const type = read(nodeType, node);
+      if (type === 1) {
+        const name = read(localName, node);
+        if ((name === "link" || name === "iframe" || name === "frame") && read(namespaceURI, node) === HTML) neutralize(node, name);
+      } else if (type !== 11) return;
+      if (shadowed || apply(firstMatches[type === 1 ? 0 : 1], node, ["link,iframe,frame"]) !== null) scrub(node, false);
+    };
+    const inserting = (first, count, always) => native => function () {
+      if (always || connected(this)) {
+        const end = count < 0 || first + count > arguments.length ? arguments.length : first + count;
+        for (let i = first; i < end; i++) { const node = arguments[i]; if (node !== null && typeof node === "object") try { inserted(node); } catch {} }
+      }
+      return apply(native, this, arguments);
+    };
+    for (const key of ["appendChild", "insertBefore", "replaceChild"]) wrap(protoOf("Node"), key, inserting(0, 1));
+    for (const owner of [ElementProto, DocumentProto, FragmentProto]) {
+      for (const key of ["append", "prepend", "replaceChildren"]) wrap(owner, key, inserting(0, -1));
+      wrap(owner, "moveBefore", inserting(0, 1));
+    }
+    for (const owner of [ElementProto, protoOf("CharacterData"), protoOf("DocumentType")]) for (const key of ["before", "after", "replaceWith"]) wrap(owner, key, inserting(0, -1));
+    wrap(ElementProto, "insertAdjacentElement", inserting(1, 1));
+    for (const key of ["insertNode", "surroundContents"]) wrap(protoOf("Range"), key, inserting(0, 1, true));
+    wrapSet(DocumentProto, "body", inserting(0, 1));
+    for (const key of ["caption", "tHead", "tFoot"]) wrapSet(protoOf("HTMLTableElement"), key, inserting(0, 1));
+    wrap(protoOf("HTMLSelectElement"), "add", inserting(0, 1));
+    wrap(protoOf("HTMLOptionsCollection"), "add", inserting(0, 1, true));
+    wrap(ElementProto, "attachShadow", native => function () {
+      const root = apply(native, this, arguments);
+      try { apply(mapSet, shadows, [this, root]); shadowed = true; } catch {}
+      return root;
+    });
+
+    // Markup sinks.
+    const MARKUP = /<(?:[\w.-]+:)?(?:link|i?frame)[\t\n\f\r \/>]/i;
+    const mentions = value => typeof value === "string" && apply(exec, MARKUP, [value]) !== null;
+    const markupOf = value => value === null ? "" : text(value);
+    const replaceAll = (target, fragment, replace) => {
+      if (typeof replace === "function") return void apply(replace, target, [fragment]);
+      for (let child = read(firstChild, target); child !== null; child = read(firstChild, target)) apply(removeChild, target, [child]);
+      apply(appendChild, target, [fragment]);
+    };
+    const body = node => apply(createElementNS, read(ownerDocument, node), [HTML, "body"]);
+    // Parses markup in a detached element that parses like context (same document,
+    // namespace and name; a custom element name parses like any other, so no
+    // constructor runs) and returns the checked nodes in a fragment.
+    const parsed = (context, markup) => {
+      const owner = read(ownerDocument, context), space = read(namespaceURI, context);
+      let name = read(localName, context), holder;
+      if (space === HTML && hasDash(name)) name = "div";
+      try { holder = apply(createElementNS, owner, [space, name]); } catch { holder = apply(createElementNS, owner, [space, "div"]); }
+      apply(innerHTML.set, holder, [markup]);
+      const source = htmlName(holder) === "template" ? read(templateContent, holder) : holder;
+      scrub(source, true);
+      const fragment = apply(createFragment, owner, []);
+      for (let child = read(firstChild, source); child !== null; child = read(firstChild, source)) apply(appendChild, fragment, [child]);
+      return fragment;
+    };
+    wrapSet(ElementProto, "innerHTML", native => function (value) {
+      const markup = markupOf(value);
+      if (!mentions(markup)) return apply(native, this, [markup]);
+      if (!live(this) || htmlName(this) === "template") {
+        apply(native, this, [markup]);
+        try { scrub(this, true); } catch {}
+        return;
+      }
+      replaceAll(this, parsed(this, markup), elementReplace);
+    });
+    const shadowHost = getter("ShadowRoot", "host");
+    wrapSet(protoOf("ShadowRoot"), "innerHTML", native => function (value) {
+      const markup = markupOf(value);
+      if (!mentions(markup)) return apply(native, this, [markup]);
+      if (!live(this) || !shadowHost) {
+        apply(native, this, [markup]);
+        try { scrub(this, true); } catch {}
+        return;
+      }
+      replaceAll(this, parsed(read(shadowHost, this), markup), fragmentReplace);
+    });
+    wrapSet(ElementProto, "outerHTML", native => function (value) {
+      const markup = markupOf(value);
+      if (!mentions(markup)) return apply(native, this, [markup]);
+      let parent = null;
+      try { parent = read(parentNode, this); } catch {}
+      if (parent === null || read(nodeType, parent) === 9 || !live(this)) {
+        apply(native, this, [markup]);
+        if (parent !== null) try { scrub(parent, true); } catch {}
+        return;
+      }
+      apply(replaceChild, parent, [parsed(read(nodeType, parent) === 1 ? parent : body(this), markup), this]);
+    });
+    wrap(ElementProto, "insertAdjacentHTML", native => function (position, value) {
+      if (arguments.length < 2) return apply(native, this, arguments);
+      const where = text(position), markup = text(value);
+      if (typeof where !== "string" || !mentions(markup)) return apply(native, this, [where, markup]);
+      const at = lower(where), outside = at === "beforebegin" || at === "afterend";
+      let parent = null;
+      try { parent = read(parentNode, this); } catch {}
+      if (!live(this) || (!outside && at !== "afterbegin" && at !== "beforeend") || (outside && (parent === null || read(nodeType, parent) === 9))) {
+        const result = apply(native, this, [where, markup]);
+        try { scrub(outside && parent !== null ? parent : this, true); } catch {}
+        return result;
+      }
+      let context = outside ? parent : this;
+      if (read(nodeType, context) !== 1 || htmlName(context) === "html") context = body(this);
+      const fragment = parsed(context, markup);
+      if (at === "beforebegin") apply(insertBefore, parent, [fragment, this]);
+      else if (at === "afterbegin") apply(insertBefore, this, [fragment, read(firstChild, this)]);
+      else if (at === "beforeend") apply(appendChild, this, [fragment]);
+      else apply(insertBefore, parent, [fragment, read(nextSibling, this)]);
+    });
+    const TAG = /<(\/?)(link|i?frame)(?=[\t\n\f\r \/>])/gi;
+    // Renames link and frame tags in markup a sink parses on its own; end tags of
+    // the raw-text noembed stand-in keep an iframe's content where it was.
+    const inert = value => {
+      let out = "", last = 0, match;
+      TAG.lastIndex = 0;
+      while ((match = apply(exec, TAG, [value])) !== null) {
+        const name = lower(match[2]);
+        out += apply(cut, value, [last, match.index]) + (match[1] ? (name === "iframe" ? "</noembed" : match[0])
+          : name === "link" ? "<basefont data-aiqsa-link" : name === "iframe" ? "<noembed data-aiqsa-iframe" : "<basefont data-aiqsa-frame");
+        last = match.index + match[0].length;
+      }
+      return last ? out + apply(cut, value, [last]) : value;
+    };
+    const renaming = native => function (value) {
+      const markup = arguments.length ? text(value) : value;
+      if (typeof markup !== "string") return apply(native, this, arguments);
+      return apply(native, this, arguments.length > 1 ? [inert(markup), arguments[1]] : [inert(markup)]);
+    };
+    for (const owner of [ElementProto, protoOf("ShadowRoot")]) for (const key of ["setHTMLUnsafe", "setHTML"]) wrap(owner, key, renaming);
+    for (const key of ["parseHTMLUnsafe", "parseHTML"]) wrap(typeof window.Document === "function" ? window.Document : null, key, renaming);
+    wrap(DocumentProto, "execCommand", native => function (command, showUI, value) {
+      if (arguments.length < 3) return apply(native, this, arguments);
+      const name = text(command), markup = text(value);
+      const html = typeof name === "string" && typeof markup === "string" && lower(name) === "inserthtml";
+      return apply(native, this, [name, showUI, html ? inert(markup) : markup]);
+    });
+    // document.write feeds the parser in pieces: a tag name split across calls is
+    // held back until the next call completes it, or dropped at the end of the
+    // task, where the parser would only have joined it with the following source.
+    const TAIL = /<\/?(?:l(?:i(?:nk?)?)?|i(?:f(?:r(?:a(?:me?)?)?)?)?|f(?:r(?:a(?:me?)?)?)?)?$/i;
+    const queue = typeof window.queueMicrotask === "function" ? window.queueMicrotask : null;
+    let held = "", clearing = false;
+    const writing = (native, newline) => function () {
+      let markup = held;
+      for (let i = 0; i < arguments.length; i++) {
+        const part = text(arguments[i]);
+        if (typeof part !== "string") return apply(native, this, arguments);
+        markup += part;
+      }
+      held = "";
+      if (newline) markup += "\n";
+      const tail = apply(exec, TAIL, [markup]);
+      if (tail !== null) {
+        held = tail[0];
+        markup = apply(cut, markup, [0, tail.index]);
+        if (queue && !clearing) { clearing = true; apply(queue, window, [() => { held = ""; clearing = false; }]); }
+      }
+      return apply(native, this, [inert(markup)]);
+    };
+    // Some engines alias HTMLDocument to Document: one prototype is wrapped once.
+    for (const owner of new Set([DocumentProto, protoOf("HTMLDocument")])) {
+      const write = slot(owner, "write"), writeln = slot(owner, "writeln");
+      if (!write || typeof write.value !== "function") continue;
+      define(owner, "write", { ...write, value: writing(write.value, false) });
+      if (writeln) define(owner, "writeln", { ...writeln, value: writing(write.value, true) });
+    }
+    // Detached results are checked before any script can connect them.
+    const scrubbing = native => function () {
+      const result = apply(native, this, arguments);
+      try { if (result !== null && typeof result === "object") scrub(result, true); } catch {}
+      return result;
+    };
+    wrap(protoOf("DOMParser"), "parseFromString", scrubbing);
+    wrap(protoOf("Range"), "createContextualFragment", scrubbing);
+    for (const key of ["transformToFragment", "transformToDocument"]) wrap(protoOf("XSLTProcessor"), key, scrubbing);
+
+    // Attribute writes.
+    const watched = name => name === "rel" || name === "href" || name === "src" || name === "srcdoc";
+    const attributeName = value => {
+      if (typeof value !== "string" || value.length < 3 || value.length > 6) return "";
+      const first = apply(charCodeAt, value, [0]) | 32;
+      return first === 104 || first === 114 || first === 115 ? lower(value) : "";
+    };
+    // The value one attribute write may store on element; an href change first
+    // drops any hint a link still carries, so no hint follows a new address.
+    const allowed = (element, name, value) => {
+      const target = kind(element);
+      if (!target || typeof value !== "string") return value;
+      if (target === "link") {
+        if (name === "rel") { const kept = unhinted(value); return kept === null ? value : kept; }
+        if (name === "href") neutralize(element, "link");
+        return value;
+      }
+      if (name === "srcdoc" && target === "iframe") { if (value) frameBlocked(); return ""; }
+      if (name === "src" && scriptAddress(value)) { frameBlocked(); return "about:blank"; }
+      return value;
+    };
+    wrap(ElementProto, "setAttribute", native => function setAttribute(name, value) {
+      if (arguments.length < 2) return apply(native, this, arguments);
+      const key = text(name), normalized = attributeName(key);
+      return apply(native, this, [key, watched(normalized) ? allowed(this, normalized, text(value)) : value]);
+    });
+    wrap(ElementProto, "setAttributeNS", native => function setAttributeNS(space, name, value) {
+      if (arguments.length < 3) return apply(native, this, arguments);
+      const ns = space === null || space === undefined ? null : text(space), key = text(name);
+      const plain = (ns === null || ns === "") && watched(key);
+      return apply(native, this, [ns, key, plain ? allowed(this, key, text(value)) : value]);
+    });
+    wrap(ElementProto, "toggleAttribute", native => function toggleAttribute(name) {
+      if (!arguments.length) return apply(native, this, arguments);
+      const key = text(name);
+      if (watched(attributeName(key)) && kind(this) === "link") neutralize(this, "link");
+      return apply(native, this, arguments.length > 1 ? [key, arguments[1]] : [key]);
+    });
+    const AttrProto = protoOf("Attr"), attrValue = slot(AttrProto, "value");
+    const attrSpace = getter("Attr", "namespaceURI"), attrName = getter("Attr", "localName"), attrOwner = getter("Attr", "ownerElement");
+    if (attrValue && attrValue.get && attrValue.set && attrSpace && attrName && attrOwner) {
+      // The value an attribute node may hold on owner (its own element by default).
+      const attrAllowed = (attr, value, owner) => {
+        try {
+          if (read(attrSpace, attr) !== null) return value;
+          const holder = read(attrOwner, attr);
+          if (owner === undefined) owner = holder;
+          else if (holder !== null && holder !== owner) return value;
+          return owner ? allowed(owner, read(attrName, attr), value) : value;
+        } catch { return value; }
+      };
+      define(AttrProto, "value", { ...attrValue, set(value) {
+        const content = text(value);
+        return apply(attrValue.set, this, [typeof content === "string" ? attrAllowed(this, content) : value]);
+      } });
+      for (const key of ["nodeValue", "textContent"]) wrapSet(protoOf("Node"), key, native => function (value) {
+        let attribute = false;
+        try { attribute = read(nodeType, this) === 2; } catch {}
+        if (!attribute) return apply(native, this, arguments);
+        const content = value === null ? "" : text(value);
+        return apply(native, this, [typeof content === "string" ? attrAllowed(this, content) : value]);
+      });
+      const placing = ownerOf => native => function (attr) {
+        const owner = ownerOf(this);
+        if (owner) try {
+          if (read(nodeType, attr) === 2) {
+            const current = read(attrValue.get, attr), next = attrAllowed(attr, current, owner);
+            if (next !== current) apply(attrValue.set, attr, [next]);
+          }
+        } catch {}
+        return apply(native, this, arguments);
+      };
+      for (const key of ["setAttributeNode", "setAttributeNodeNS"]) wrap(ElementProto, key, placing(element => element));
+      const maps = new WeakMap(), attributes = slot(ElementProto, "attributes");
+      if (attributes && attributes.get) define(ElementProto, "attributes", { ...attributes, get() {
+        const map = apply(attributes.get, this, []);
+        if (kind(this)) try { apply(mapSet, maps, [map, this]); } catch {}
+        return map;
+      } });
+      const mapOwner = map => { try { return apply(mapGet, maps, [map]); } catch { return undefined; } };
+      for (const key of ["setNamedItem", "setNamedItemNS"]) wrap(protoOf("NamedNodeMap"), key, placing(mapOwner));
+    }
+    const reflecting = name => native => function (value) {
+      const content = text(value);
+      return apply(native, this, [typeof content === "string" ? allowed(this, name, content) : value]);
+    };
+    const LinkProto = protoOf("HTMLLinkElement");
+    wrapSet(LinkProto, "rel", reflecting("rel"));
+    wrapSet(LinkProto, "href", reflecting("href"));
+    wrapSet(protoOf("HTMLIFrameElement"), "srcdoc", reflecting("srcdoc"));
+    wrapSet(protoOf("HTMLIFrameElement"), "src", reflecting("src"));
+    wrapSet(protoOf("HTMLFrameElement"), "src", reflecting("src"));
+    // relList: every token list a link hands out is remembered, so its add,
+    // toggle, replace and value writes keep hint tokens out of that link.
+    const relList = slot(LinkProto, "relList"), TokenProto = protoOf("DOMTokenList");
+    if (relList && relList.get && TokenProto && contains && remove) {
+      const relLists = new WeakMap();
+      define(LinkProto, "relList", { ...relList, get() {
+        const list = apply(relList.get, this, []);
+        try { apply(mapSet, relLists, [list, this]); } catch {}
+        return list;
+      }, ...(relList.set ? { set: reflecting("rel")(relList.set) } : {}) });
+      const linkOf = list => { try { return apply(mapGet, relLists, [list]); } catch { return undefined; } };
+      wrap(TokenProto, "add", native => function add() {
+        const link = linkOf(this);
+        if (!link) return apply(native, this, arguments);
+        neutralize(link, "link");
+        const tokens = [];
+        for (let i = 0; i < arguments.length; i++) {
+          const token = text(arguments[i]);
+          if (typeof token !== "string") return apply(native, this, arguments);
+          if (!isHint(token)) define(tokens, tokens.length, { value: token, writable: true, enumerable: true, configurable: true });
+        }
+        return apply(native, this, tokens);
+      });
+      wrap(TokenProto, "toggle", native => function toggle(token) {
+        const link = linkOf(this);
+        if (!link || !arguments.length) return apply(native, this, arguments);
+        neutralize(link, "link");
+        const value = text(token);
+        if (isHint(value)) return false;
+        return apply(native, this, typeof value !== "string" ? arguments : arguments.length > 1 ? [value, arguments[1]] : [value]);
+      });
+      wrap(TokenProto, "replace", native => function replace(token, newToken) {
+        const link = linkOf(this);
+        if (!link || arguments.length < 2) return apply(native, this, arguments);
+        neutralize(link, "link");
+        const old = text(token), next = text(newToken);
+        if (typeof old !== "string" || !isHint(next)) return apply(native, this, [old, next]);
+        // A hint never replaces a token: the old one only goes away.
+        const present = apply(contains, this, [old]);
+        apply(remove, this, [old]);
+        return present;
+      });
+      wrapSet(TokenProto, "value", native => function (value) {
+        const link = linkOf(this);
+        if (!link) return apply(native, this, arguments);
+        const content = text(value);
+        return apply(native, this, [typeof content === "string" ? allowed(link, "rel", content) : value]);
+      });
+    }
+  } catch {}
+
   // Local artifact files: relative, root-relative or below the base directory
   // of this srcdoc document (the viewer's URL). Query and fragment never select a file.
   const files = new Map((Array.isArray(site.files) ? site.files : []).map(([path, mime, kind]) => [path, { mime, kind }]));
