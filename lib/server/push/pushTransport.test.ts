@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { ClientRequest, IncomingMessage } from "node:http";
-import type { RequestOptions } from "node:https";
+import { request as httpsRequest, type RequestOptions } from "node:https";
+import { createServer, type AddressInfo, type LookupFunction } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPinnedPushPost, PushTransportError } from "./pushTransport";
 
@@ -40,6 +41,18 @@ function harness() {
   return { attempts, connect, factory, post, ready, resolve };
 }
 
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** The pinned answer, which like `dns.lookup` never arrives synchronously. */
+async function pinnedAnswer(options: RequestOptions, all: boolean): Promise<unknown[]> {
+  const callback = vi.fn();
+  options.lookup!("push.example", { all }, callback);
+  expect(callback).not.toHaveBeenCalled();
+  await nextTurn();
+  expect(callback).toHaveBeenCalledOnce();
+  return callback.mock.calls[0]!;
+}
+
 afterEach(() => vi.useRealTimers());
 
 describe("pinned push transport", () => {
@@ -75,19 +88,20 @@ describe("pinned push transport", () => {
     const h = harness();
     const delivery = h.post(request());
     await h.ready();
+    await expect(pinnedAnswer(h.attempts[0]!.options, true)).resolves.toEqual([null, [addresses[0]]]);
     h.attempts[0]!.outgoing.emit("error", failure(code));
     await h.ready();
     expect(h.attempts[0]!.destroy).toHaveBeenCalledOnce();
     expect(h.attempts[0]!.end).not.toHaveBeenCalled();
+    // The abandoned attempt never opens a late connection.
+    await expect(pinnedAnswer(h.attempts[0]!.options, true)).resolves.toEqual([expect.objectContaining({ code: "ABORT_ERR" }), ""]);
+    await expect(pinnedAnswer(h.attempts[1]!.options, false)).resolves.toEqual([null, addresses[1]!.address, addresses[1]!.family]);
     h.connect(1);
     h.attempts[1]!.respond(201).emit("end");
     await expect(delivery).resolves.toEqual({ status: 201 });
     expect(h.resolve).toHaveBeenCalledOnce();
     expect(h.factory).toHaveBeenCalledTimes(2);
     for (const [index, attempt] of h.attempts.entries()) {
-      const callback = vi.fn();
-      attempt.options.lookup!("push.example", { all: true }, callback);
-      expect(callback).toHaveBeenCalledWith(null, [addresses[index]]);
       expect(attempt.options).toMatchObject({ agent: false, host: "push.example", method: "POST", path: "/device", servername: "push.example" });
       expect(attempt.end).toHaveBeenCalledTimes(index);
     }
@@ -218,5 +232,50 @@ describe("pinned push transport", () => {
     await expect(delivery).resolves.toEqual({ status });
     expect(h.factory).toHaveBeenCalledOnce();
     expect(h.attempts[0]!.end).toHaveBeenCalledOnce();
+  });
+});
+
+describe("pinned push transport over real sockets", () => {
+  it("falls back to the next address when connect() fails synchronously, without an uncaught exception", async () => {
+    // Linux refuses a TCP connect() to the limited broadcast address with
+    // ENETUNREACH inside the call, as on a host without an IPv6 route.
+    const connections: string[] = [];
+    const server = createServer((socket) => {
+      connections.push(socket.remoteAddress ?? "");
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const uncaught = vi.fn();
+    process.on("uncaughtException", uncaught);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const target = (address: string) => address === addresses[0]!.address
+        ? { address: "255.255.255.255", family: 4 }
+        : { address: "127.0.0.1", family: 4 };
+      // Sends each pinned public address to a local outcome while keeping the
+      // transport's own lookup timing.
+      const realRequest = (options: RequestOptions, response: (incoming: IncomingMessage) => void) => {
+        const pinned = options.lookup!;
+        const lookup: LookupFunction = (hostname, lookupOptions, callback) => pinned(hostname, lookupOptions, (error, answer) => {
+          if (error) callback(error, "");
+          else if (Array.isArray(answer)) callback(null, answer.map((record) => target(record.address)));
+          else callback(null, target(answer).address, 4);
+        });
+        return httpsRequest({ ...options, lookup }, response);
+      };
+      const post = createPinnedPushPost({ request: realRequest, resolve: async () => addresses, timeoutMs: 5_000 });
+
+      await expect(post(request(`https://push.example:${port}/device`)))
+        .rejects.toMatchObject({ code: "push_transport_failed", category: "reset" });
+      await nextTurn();
+      expect(connections).toEqual(["127.0.0.1"]);
+      expect(uncaught).not.toHaveBeenCalled();
+    } finally {
+      process.off("uncaughtException", uncaught);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
