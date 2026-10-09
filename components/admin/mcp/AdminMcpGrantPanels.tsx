@@ -229,7 +229,7 @@ export function AdminMcpGroupAccessPanel({
             selected={selected}
             total={servers.length}
           />
-          <p className="text-xs leading-5 text-ink-muted">All current servers, including hidden rows. Personal field permissions stay separate.</p>
+          <p className="text-xs leading-5 text-ink-muted">All current servers, including hidden rows. Members fill required personal values themselves; overriding a shared value stays a per-user permission.</p>
         </div>
       ) : null}
       {controller.state.bulkGrantProgress?.groupId === group.id ? (
