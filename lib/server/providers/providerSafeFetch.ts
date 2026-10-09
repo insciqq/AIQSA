@@ -1,3 +1,4 @@
+import { retainFailureCause } from "../observability/failureFacts.cjs";
 import {
   McpSafeFetchError,
   mcpSafeFetch,
@@ -36,9 +37,11 @@ export interface ProviderSafeFetchError {
 export class ProviderSafeFetchError extends Error {
   readonly code: ProviderSafeFetchErrorCode;
 
-  /** `cause` keeps the transport error for its content-free telemetry facts. */
-  constructor(code: ProviderSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean; cause?: unknown }>) {
-    super(code, options?.cause === undefined ? undefined : { cause: options.cause });
+  /** `factsOf` is the transport error: only its content-free telemetry facts
+   * are retained, never the error itself. */
+  constructor(code: ProviderSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean; factsOf?: unknown }>) {
+    super(code);
+    if (options?.factsOf !== undefined) retainFailureCause(this, options.factsOf);
     this.code = code;
     this.name = "ProviderSafeFetchError";
     if (options?.requestNotSent === true) {
@@ -75,7 +78,7 @@ function mapSafeFetchError(error: McpSafeFetchError): ProviderSafeFetchError {
     case "mcp_http_address_forbidden":
       return new ProviderSafeFetchError("provider_http_address_forbidden");
     case "mcp_http_dns_failed":
-      return new ProviderSafeFetchError("provider_http_dns_failed", { cause: error });
+      return new ProviderSafeFetchError("provider_http_dns_failed", { factsOf: error });
     case "mcp_http_https_required":
       return new ProviderSafeFetchError("provider_http_https_required");
     case "mcp_http_redirect_forbidden":
@@ -83,10 +86,10 @@ function mapSafeFetchError(error: McpSafeFetchError): ProviderSafeFetchError {
     case "mcp_http_too_many_redirects":
       return new ProviderSafeFetchError("provider_http_redirect_forbidden");
     case "mcp_http_request_failed":
-      return new ProviderSafeFetchError("provider_http_request_failed", { requestNotSent: error.requestNotSent, cause: error });
+      return new ProviderSafeFetchError("provider_http_request_failed", { requestNotSent: error.requestNotSent, factsOf: error });
     // A handshake that failed before the session existed keeps that proof.
     case "mcp_http_tls_failed":
-      return new ProviderSafeFetchError("provider_http_tls_failed", { requestNotSent: error.requestNotSent, cause: error });
+      return new ProviderSafeFetchError("provider_http_tls_failed", { requestNotSent: error.requestNotSent, factsOf: error });
     case "mcp_http_request_body_too_large":
       return new ProviderSafeFetchError("provider_http_request_body_too_large");
     case "mcp_http_protocol_forbidden":

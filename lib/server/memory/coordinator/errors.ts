@@ -8,18 +8,18 @@ export function isMemoryCoordinatorErrorCode(value: unknown): value is string {
 }
 
 /** Content-free coordinator failure. Private source/provider text must never
- * be attached to queue state, logs, or this error: a replaced `cause` leaves
- * only its content-free telemetry facts, never the error itself. */
+ * be attached to queue state, logs, or this error: of the replaced error
+ * (`factsOf`) only its content-free telemetry facts are retained. */
 export class MemoryCoordinatorError extends Error {
   constructor(
     readonly code: string,
     readonly retryable = true,
-    options?: Readonly<{ cause?: unknown }>
+    options?: Readonly<{ factsOf?: unknown }>
   ) {
     super(isMemoryCoordinatorErrorCode(code) ? code : "memory_coordinator_failed");
     this.name = "MemoryCoordinatorError";
     this.code = this.message;
-    if (options?.cause !== undefined) retainFailureCause(this, options.cause);
+    if (options?.factsOf !== undefined) retainFailureCause(this, options.factsOf);
   }
 }
 

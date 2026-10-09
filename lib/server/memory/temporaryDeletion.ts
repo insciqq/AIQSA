@@ -292,7 +292,7 @@ async function removeTemporaryWorkspace(
         ? "memory_temporary_workspace_runtime_unavailable"
         : "memory_temporary_workspace_cleanup_failed",
       true,
-      { cause: error }
+      { factsOf: error }
     );
   }
 }
@@ -333,7 +333,7 @@ async function deleteExclusiveObjects(
         throw new MemoryCoordinatorError(
           "memory_temporary_object_delete_failed",
           true,
-          { cause: error }
+          { factsOf: error }
         );
       }
     }

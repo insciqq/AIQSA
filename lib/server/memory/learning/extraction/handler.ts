@@ -757,7 +757,7 @@ export function createMemoryFactExtractionHandler(
         }
         await deps.probeAuthority(job.userId).catch((error: unknown) => {
           const decision = authorityGate(error);
-          throw new MemoryCoordinatorError(decision.errorCode, true, { cause: error });
+          throw new MemoryCoordinatorError(decision.errorCode, true, { factsOf: error });
         });
         const extracted = await extractWithinBudget(deps, job, input, context);
         if (extracted.kind === "TERMINAL") return extracted.result;
@@ -806,7 +806,7 @@ export function createMemoryFactExtractionHandler(
         };
       } catch (error) {
         if (error instanceof MemoryCoordinatorError) throw error;
-        throw new MemoryCoordinatorError("memory_fact_apply_retryable", true, { cause: error });
+        throw new MemoryCoordinatorError("memory_fact_apply_retryable", true, { factsOf: error });
       }
     }
   });
