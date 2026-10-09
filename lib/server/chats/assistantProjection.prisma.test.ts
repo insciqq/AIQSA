@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { PrismaClient, type Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import { createQueryCountingClient } from "@/tests/support/prismaQueryLog";
 import {
   CHAT_ASSISTANT_DELETED_MARKER,
   decodeChatDetailResponse,
@@ -332,11 +333,7 @@ describe("chat detail Assistant projection", () => {
       if (created.kind !== "ok") throw new Error(created.kind);
       const projectId = created.value.id;
       // Counts every SQL statement, relation loads included.
-      let statements = 0;
-      const counting = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
-      counting.$on("query", () => {
-        statements += 1;
-      });
+      const counting = createQueryCountingClient();
       try {
         await prisma.projectAssistantBinding.create({ data: { addedByUserId: userId, assistantId: assistants.own, projectId } });
         const personalChat = (assistantId: string | null) => prisma.chat.create({
@@ -362,18 +359,18 @@ describe("chat detail Assistant projection", () => {
           ["project-unbound", await projectChat(null)]
         ] as const;
         // The application's default catalog read, on the counting client.
-        const chats = createPrismaChatRepository(counting);
-        await counting.$queryRaw`SELECT 1`;
+        const chats = createPrismaChatRepository(counting.client);
         const counts: Record<string, { detail: number; projection: number }> = {};
         for (const [name, chat] of cases) {
-          statements = 0;
-          const projection = await loadChatAssistantProjection(counting, {
+          await counting.reset();
+          const projection = await loadChatAssistantProjection(counting.client, {
             chat: { assistantId: chat.assistantId, assistantOverrides: chat.assistantOverrides, projectId: chat.projectId },
             userId
           }, { loadProjectChatAssistant });
-          const projectionStatements = statements;
-          statements = 0;
+          const projectionStatements = await counting.count();
+          await counting.reset();
           const detail = await chats.getChat({ chatId: chat.id, userId });
+          const statements = await counting.count();
           counts[name] = { detail: statements, projection: projectionStatements };
           // The detail read carries exactly this projection.
           expect(detail?.assistant).toEqual(projection);
@@ -391,7 +388,7 @@ describe("chat detail Assistant projection", () => {
         expect(counts["personal-consumer"]!.projection).toBeLessThanOrEqual(21);
         expect(counts["project-bound"]!.projection).toBeLessThanOrEqual(18);
       } finally {
-        await counting.$disconnect();
+        await counting.client.$disconnect();
         await prisma.chat.deleteMany({ where: { projectId } });
         await prisma.project.deleteMany({ where: { id: projectId } });
       }
