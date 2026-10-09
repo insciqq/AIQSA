@@ -1,10 +1,12 @@
 import type { AdminAttentionItem } from "../../../contracts/adminAttention";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
+import { runReferenceLabel } from "../../../contracts/runReference";
 import type { TelemetryCounterGroup, TelemetryCounterQuery, TelemetryStore } from "../../telemetry/store";
+import type { FailedRunLoad } from "../health/failedRuns";
 
 /**
- * Health attention rules: thresholds over the content-free telemetry counters
- * and Memory rebuild counts, evaluated on every read and never persisted. An
+ * Health attention rules: thresholds over the content-free telemetry counters,
+ * Memory rebuild counts and failed runs, evaluated on every read and never persisted. An
  * item exists only while its failures are recent, so it clears by itself once
  * the window passes without them. Every threshold lives here so calibration
  * touches one place.
@@ -43,8 +45,38 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
    * mean a trigger loop re-embedding that owner's Memory again and again.
    */
   memoryRebuildsPerOwnerMin: 3,
-  memoryRebuildWindowMs: 24 * 3_600_000
+  memoryRebuildWindowMs: 24 * 3_600_000,
+  /** Every failed run created within this window raises the failed-runs item. */
+  runsFailedWindowMs: 24 * 3_600_000,
+  /** Failure codes the item names, most runs first; the rest are summed. */
+  runsFailedCodesMax: 4,
+  /** Run references named per failure code, newest first. */
+  runsFailedReferencesPerCode: 2
 });
+
+/**
+ * Failure codes of a run that refused the user's own input (too large for the
+ * model's context, an unsupported or oversized attachment, the model's own
+ * refusal of the request, an exhausted usage budget). Nothing in AIQSA failed,
+ * so they are neither failed runs to investigate nor new errors.
+ */
+export const RUN_FAILURE_USER_INPUT_CODES: ReadonlySet<string> = new Set([
+  "animated_gif_not_supported",
+  "attachment_count_limit_exceeded",
+  "attachment_encoded_size_limit_exceeded",
+  "attachment_materialization_limit_exceeded",
+  "context_length_exceeded",
+  "context_too_large",
+  "image_attachment_not_supported",
+  "pdf_attachment_not_supported",
+  "pdf_page_limit_exceeded",
+  "pdf_preparation_context_limit",
+  "provider_context_length_exceeded",
+  "provider_context_limit_exceeded",
+  "provider_refused",
+  "unsupported_attachment_type",
+  "usage_budget_exhausted"
+]);
 
 export type HealthThresholds = typeof HEALTH_ATTENTION_THRESHOLDS;
 
@@ -56,6 +88,22 @@ const COUNTER_RETENTION_MS = 30 * 24 * HOUR_MS;
 const PROGRAMMING_ERRORS = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError"]);
 /** Codes that say only that nobody classified the failure. */
 const UNCLASSIFIED_CODES = new Set(["unknown", "unexpected"]);
+/**
+ * Codes whose failures another rule judges by rate, so a first occurrence is
+ * not news on its own: rejected keys, exhausted quotas, rate limits and
+ * provider server errors (provider rules) and refused user input (no failure
+ * of AIQSA). Timeout codes match `TIMEOUT_CODE` (operation timeouts). Every
+ * other classified code is a new error when its fingerprint is new.
+ */
+const RULE_COVERED_CODES: ReadonlySet<string> = new Set([
+  "provider_auth_rejected",
+  "provider_quota_exhausted",
+  "provider_rate_limited",
+  "provider_server_error",
+  ...RUN_FAILURE_USER_INPUT_CODES
+]);
+/** Events another rule watches as a whole: provider operations (provider rules). */
+const RULE_COVERED_EVENTS: ReadonlySet<string> = new Set(["provider_operation"]);
 
 export type HealthCounterRows = Readonly<{
   /** `provider_operation` grouped by bucket, connectionId, outcome, code, httpStatus, reason, action. */
@@ -72,13 +120,23 @@ export type HealthCounterRows = Readonly<{
   toolOutcomes: readonly TelemetryCounterGroup[];
   /** `job_attempt` over the timeout window grouped by bucket, subsystem, outcome, code. */
   jobOutcomes: readonly TelemetryCounterGroup[];
-  /** Error and fatal records over the new-error window grouped by fingerprint, class, site and code. */
+  /** Error and fatal records over the new-error window grouped by fingerprint, class, site, code and event. */
   errorFingerprints: readonly TelemetryCounterGroup[];
   /** Error and fatal records over counter retention grouped by fingerprint (their first occurrence). */
   errorFirstSeen: readonly TelemetryCounterGroup[];
 }>;
 
+export type HealthFailedRunCode = Readonly<{
+  /** The runs' stable failure code; `null` when they carry none. */
+  failureCode: string | null;
+  runs: number;
+  users: number;
+  /** Error references of the newest runs (`--run` and the Health run lookup accept them). */
+  references: readonly string[];
+}>;
+
 export type HealthFinding =
+  | Readonly<{ code: "runs_failed"; runs: number; users: number; byCode: readonly HealthFailedRunCode[]; otherRuns: number }>
   | Readonly<{ code: "provider_runtime_key_rejected"; connectionId: string; failures: number }>
   | Readonly<{ code: "provider_runtime_quota_exhausted"; connectionId: string; failures: number }>
   | Readonly<{ code: "provider_runtime_failing"; connectionId: string; failures: number; total: number;
@@ -88,7 +146,7 @@ export type HealthFinding =
   | Readonly<{ code: "logs_dropped"; lines: number }>
   | Readonly<{ code: "background_failures"; subsystem: HealthSubsystem; errors: number }>
   | Readonly<{ code: "operation_timeouts_rising"; operation: HealthTimedOperation; timeouts: number; total: number }>
-  | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; count: number }>
+  | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; failureCode: string | null; count: number }>
   | Readonly<{ code: "new_error"; fingerprint: null; more: number }>
   | Readonly<{ code: "memory_index_rebuilds_repeated"; atLeast: number; maxPerOwner: number; owners: number }>;
 
@@ -174,7 +232,7 @@ export async function readHealthCounterRows(
       reader.readCounters({ ...recent, events: BACKGROUND_EVENTS, levels: ["error", "fatal"], groupBy: ["bucket", "subsystem"], limit: ROW_LIMIT }),
       reader.readCounters({ ...day, events: ["tool_execution"], groupBy: ["bucket", "tool_kind", "stage", "outcome", "reason"], limit: ROW_LIMIT }),
       reader.readCounters({ ...day, events: ["job_attempt"], groupBy: ["bucket", "subsystem", "outcome", "code"], limit: ROW_LIMIT }),
-      reader.readCounters({ ...fresh, levels: ["error", "fatal"], groupBy: ["error_fingerprint", "error_class", "error_site", "code"], limit: ROW_LIMIT }),
+      reader.readCounters({ ...fresh, levels: ["error", "fatal"], groupBy: ["error_fingerprint", "error_class", "error_site", "code", "event"], limit: ROW_LIMIT }),
       reader.readCounters({ ...retained, levels: ["error", "fatal"], groupBy: ["error_fingerprint"], limit: ROW_LIMIT })
     ]);
   return { providerOperations, serverErrors, processStarts, droppedRecords, backgroundErrors, toolOutcomes, jobOutcomes,
@@ -357,10 +415,18 @@ export function evaluateHealthRules(
   return findings;
 }
 
+/** Whether a failure needs no new-error item because another rule judges its code or event. */
+function coveredByRule(code: string | null, event: string | null, errorClass: string): boolean {
+  if (PROGRAMMING_ERRORS.has(errorClass)) return false;
+  if (event !== null && RULE_COVERED_EVENTS.has(event)) return true;
+  return code !== null && (RULE_COVERED_CODES.has(code) || TIMEOUT_CODE.test(code));
+}
+
 /**
- * A failure is new when its fingerprint first appears within the window. Only
- * unclassified failures and programming errors count: a classified failure
- * (a rejected key, a timeout) already has its own rule and copy.
+ * A failure is new when its fingerprint first appears within the window.
+ * Unclassified failures, programming errors and classified codes without a
+ * rule of their own count; a failure another rule already judges (a rejected
+ * key, a provider outage, a timeout, refused user input) does not.
  */
 function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: HealthThresholds): HealthFinding[] {
   const since = now.getTime() - thresholds.newErrorWindowMs;
@@ -369,17 +435,26 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
     const fingerprint = text(row, "error_fingerprint");
     if (fingerprint !== null) firstSeen.set(fingerprint, Math.min(firstSeen.get(fingerprint) ?? Infinity, row.firstSeenAt.getTime()));
   }
-  const candidates = new Map<string, { errorClass: string; site: string | null; siteSeenAt: number; count: number; first: number }>();
+  type Candidate = {
+    errorClass: string; site: string | null; siteSeenAt: number; failureCode: string | null; codeSeenAt: number; count: number; first: number;
+  };
+  const candidates = new Map<string, Candidate>();
   for (const row of within(rows.errorFingerprints, since)) {
     const fingerprint = text(row, "error_fingerprint");
     const errorClass = text(row, "error_class") ?? "Error";
     const code = text(row, "code");
-    if (fingerprint === null || !(code === null || UNCLASSIFIED_CODES.has(code) || PROGRAMMING_ERRORS.has(errorClass))) continue;
-    const entry = candidates.get(fingerprint) ?? { errorClass, site: null, siteSeenAt: -1, count: 0, first: Infinity };
+    if (fingerprint === null || coveredByRule(code, text(row, "event"), errorClass)) continue;
+    const entry = candidates.get(fingerprint) ??
+      { errorClass, site: null, siteSeenAt: -1, failureCode: null, codeSeenAt: -1, count: 0, first: Infinity };
     const site = text(row, "error_site");
-    if (site !== null && row.lastSeenAt.getTime() > entry.siteSeenAt) {
+    const seenAt = row.lastSeenAt.getTime();
+    if (site !== null && seenAt > entry.siteSeenAt) {
       entry.site = site;
-      entry.siteSeenAt = row.lastSeenAt.getTime();
+      entry.siteSeenAt = seenAt;
+    }
+    if (code !== null && !UNCLASSIFIED_CODES.has(code) && seenAt > entry.codeSeenAt) {
+      entry.failureCode = code;
+      entry.codeSeenAt = seenAt;
     }
     entry.count += row.count;
     entry.first = Math.min(entry.first, row.firstSeenAt.getTime(), firstSeen.get(fingerprint) ?? Infinity);
@@ -389,10 +464,33 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
     .filter(([, entry]) => entry.first >= since)
     .sort(([leftKey, left], [rightKey, right]) => right.count - left.count || leftKey.localeCompare(rightKey));
   const named: HealthFinding[] = fresh.slice(0, thresholds.newErrorItemsMax).map(([fingerprint, entry]) => ({
-    code: "new_error", fingerprint, errorClass: entry.errorClass, site: entry.site, count: entry.count
+    code: "new_error", fingerprint, errorClass: entry.errorClass, site: entry.site, failureCode: entry.failureCode, count: entry.count
   }));
   const more = fresh.length - named.length;
   return more > 0 ? [...named, { code: "new_error", fingerprint: null, more }] : named;
+}
+
+/**
+ * Failed runs over the failed-runs window (`readFailedRunLoad`): one is
+ * enough, since each is an answer a user did not get. The item names the
+ * codes with the most runs, how many users they hit and the newest runs'
+ * error references, never user ids.
+ */
+export function failedRunFindings(load: FailedRunLoad, thresholds: HealthThresholds = HEALTH_ATTENTION_THRESHOLDS): HealthFinding[] {
+  if (load.runs === 0) return [];
+  const shown = load.groups.slice(0, thresholds.runsFailedCodesMax);
+  return [{
+    code: "runs_failed",
+    runs: load.runs,
+    users: load.users,
+    byCode: shown.map((group) => ({
+      failureCode: group.code,
+      runs: group.runs,
+      users: group.users,
+      references: group.newest.slice(0, thresholds.runsFailedReferencesPerCode).map((run) => runReferenceLabel(run.runId))
+    })),
+    otherRuns: Math.max(0, load.runs - shown.reduce((total, group) => total + group.runs, 0))
+  }];
 }
 
 /**
@@ -434,6 +532,24 @@ function failureMix(kinds: Readonly<Record<ProviderFailureKind, number>>): strin
     .join(", ");
 }
 
+/** The attention contract's bound on an item's detail. */
+const DETAIL_MAX = 400;
+
+/** `head` and as many whole parts as fit in the detail bound, then `tail`; a part that does not fit becomes "…". */
+function boundedDetail(head: string, parts: readonly string[], tail: string): string {
+  let detail = head;
+  for (const part of parts) {
+    if (detail.length + 3 + part.length + 4 + tail.length > DETAIL_MAX) return `${detail} · …${tail}`;
+    detail += ` · ${part}`;
+  }
+  return `${detail}${tail}`;
+}
+
+function failedRunCodeCopy(entry: HealthFailedRunCode): string {
+  const references = entry.references.length > 0 ? `; ref ${entry.references.join(", ")}` : "";
+  return `${entry.failureCode ?? "no code"} ${entry.runs} (${plural(entry.users, "user")}${references})`;
+}
+
 function operationLabel(operation: HealthTimedOperation): string {
   return operation.kind === "tool" ? toolLabels[operation.name]
     : operation.name === "other" ? "Background jobs" : `${subsystemLabels[operation.name]} jobs`;
@@ -451,6 +567,14 @@ export function healthAttentionItems(
   const items: AdminAttentionItem[] = [];
   for (const finding of findings) {
     switch (finding.code) {
+      case "runs_failed":
+        items.push({ action: "Open Health", code: finding.code, count: finding.runs, id: finding.code, severity: "warn",
+          detail: boundedDetail(
+            `${plural(finding.runs, "run")} of ${plural(finding.users, "user")} failed in the last 24 hours`,
+            [...finding.byCode.map(failedRunCodeCopy), ...(finding.otherRuns > 0 ? [`other codes ${finding.otherRuns}`] : [])],
+            " — look a reference up in Health"),
+          target: { section: "health" }, title: "Runs failed" });
+        break;
       case "provider_runtime_key_rejected":
       case "provider_runtime_quota_exhausted":
       case "provider_runtime_failing": {
@@ -504,7 +628,9 @@ export function healthAttentionItems(
         } else {
           items.push({ action: "Open Health", code: finding.code, count: finding.count, id: `${finding.code}:${finding.fingerprint}`,
             severity: "warn",
-            detail: `${finding.errorClass} ${finding.site ? `at ${finding.site}` : "outside application code"} · ${plural(finding.count, "time")} since it first appeared in the last 24 hours`,
+            detail: boundedDetail(`${finding.errorClass} ${finding.site ? `at ${finding.site}` : "outside application code"}`,
+              [...(finding.failureCode ? [`code ${finding.failureCode}`] : []),
+                `${plural(finding.count, "time")} since it first appeared in the last 24 hours`], ""),
             target: { section: "health" }, title: "A new error appeared" });
         }
         break;

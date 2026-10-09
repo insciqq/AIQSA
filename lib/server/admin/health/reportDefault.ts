@@ -5,6 +5,7 @@ import { listAnswerProblemReports } from "../../answerProblemReports/repository"
 import { prisma } from "../../prisma";
 import type { HealthAgentReportSources } from "./agentReport";
 import { adminHealthProviderNames, adminHealthService, adminHealthTelemetryStore } from "./defaultService";
+import { readFailedRunLoad } from "./failedRuns";
 import { adminHealthQueuesService } from "./queuesDefault";
 import type { HealthReportSources, HealthRunReportSources } from "./report";
 import { adminHealthRunLookup } from "./runLookupDefault";
@@ -26,6 +27,8 @@ export const healthAgentReportSources: HealthAgentReportSources = {
   queues: adminHealthQueuesService,
   problemReports: (query) => listAnswerProblemReports(prisma, query),
   failedRuns: (query) => readAdminHealthUserFailedRuns(prisma, query),
+  // The agent report reads a whole range once; it gets more time than a page read.
+  failedRunGroups: (query) => readFailedRunLoad(prisma, { ...query, statementTimeoutMs: 15_000 }),
   userExists: async (userId) => (await prisma.user.findUnique({ where: { id: userId }, select: { id: true } })) !== null
 };
 
