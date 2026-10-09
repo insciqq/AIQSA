@@ -1,5 +1,7 @@
 export type ObservabilityContext = Readonly<{
   trace_id: string; run_id?: string; job_id?: string; tool_call_id?: string; execution_index?: number;
+  /** The internal id of the user a run or job row names; never a counter dimension. */
+  user_id?: string;
 }>;
 export type ProcessRole = "app" | "memory_coordinator" | "memory_search" | "knowledge_search" | "workspace_runner" | "maintenance" | "bootstrap" | "storage_relay";
 export type Subsystem = "attachments" | "pdf" | "knowledge" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "knowledge_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry" | "dictation" | "answer_review";
@@ -25,7 +27,15 @@ export type SubsystemFailure = CaughtError & Readonly<{
   /** Server-owned identity used only to distinguish internal health states. */
   scope_id?: string;
 }>;
+export type SignInTelemetryMethod = "password" | "token" | "oauth" | "oidc" | "saml" | "ldap" | "trusted_header";
+/** `start` records only a start that ends the attempt; the later step records the rest. */
+export type SignInStep = "start" | "credentials" | "second_factor" | "callback";
+export type SignInOutcome = "succeeded" | "failed" | "refused";
 export type ToolKind = "search" | "knowledge" | "mcp" | "workspace" | "vision";
+/** The family of one model tool call (`tool_call` only); the families with
+ * their own executor records keep the narrower `ToolKind`. */
+export type ToolCallKind = ToolKind | "fetch_url" | "artifact" | "image_generation" | "skill" | "scheduled_task" |
+  "session_status" | "workspace_image" | "answer_review" | "memory" | "monitoring" | "tool_history" | "other";
 export type NestedAbortSource = "parent_signal" | "tool_deadline" | "search_deadline" | "provider_deadline" | "knowledge_deadline" | "mcp_deadline" | "workspace_deadline" | "unknown";
 type ToolOperationFields = Readonly<{
   engine_index?: number; operation_index?: number;
@@ -68,6 +78,12 @@ export type EventFields = {
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
   "http.route_resolver_unavailable": Readonly<{ reason: "missing" | "invalid" | "unsupported" }>;
   "client.error": Readonly<{ kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown" }>;
+  /** One step of a sign-in attempt; `code` is a key of signInCodes.json. */
+  sign_in: CaughtError & Readonly<{
+    /** Absent while the step cannot tell the method yet (a second factor before its challenge). */
+    sign_in_method?: SignInTelemetryMethod;
+    step: SignInStep; outcome: SignInOutcome; code: string; duration_ms?: number;
+  }>;
   "process.failure": EmergencyFailure;
   "process.started": Readonly<{
     node_version: string; attachments?: SubsystemState; memory?: SubsystemState; knowledge?: SubsystemState;
@@ -78,12 +94,16 @@ export type EventFields = {
   "logging.dropped_records": Readonly<{ count: number }>;
   run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf" }>;
   run_preparation: CaughtError & Readonly<{ run_id: string; stage: "preparing"; outcome: PreparationOutcome; duration_ms?: number; code?: string }>;
-  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion"; outcome: OperationOutcome; duration_ms?: number; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number }>;
+  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion" | "first_output"; outcome: OperationOutcome; duration_ms?: number; after?: "dispatch" | "tools"; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number }>;
   run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
   run_stop_requested: Record<string, never>;
   run_stop_admission: Readonly<{ run_id?: string; outcome: "accepted" | "not_found" | "not_cancelable" | "unauthorized" | "failed"; prisma_code?: string }>;
   run_http_failed: CaughtError & Readonly<{ stage: "send" | "regenerate" | "cancel"; code?: string; reason?: Reason; prisma_code?: string }>;
   run_abort_delivery: Readonly<{ run_id: string; outcome: "delivered" | "already_aborted" | "not_running"; abort_source: "stop" }>;
+  /** A user's report on an answer: its reason and whether it was new, never the comment. */
+  answer_problem_report: Readonly<{
+    reason: "wrong_or_made_up" | "did_not_follow_request" | "error_or_broken" | "too_slow" | "other"; outcome: "created" | "updated";
+  }>;
   job_enqueued: Readonly<{ job_id: string; subsystem: "attachments" | "knowledge" | "memory" | "pdf" | "chat_title" }>;
   job_attempt: LifecycleFields & Readonly<{ category?: PushTransportFailureCategory }>;
   job_persistence: Omit<LifecycleFields, "outcome"> & Readonly<{ outcome: "confirmed" | "not_applied" | "unconfirmed" }>;
@@ -97,6 +117,11 @@ export type EventFields = {
     /** Vision phase timings: before the dispatch claim, the provider wait after it, and its deadline. */
     preparation_duration_ms?: number; provider_duration_ms?: number; timeout_ms?: number;
     action?: LifecycleAction; count?: number;
+  }>;
+  /** One terminal record per settled model tool call; never its name, arguments or result. */
+  tool_call: CaughtError & Readonly<{
+    tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled";
+    code?: string; duration_ms?: number; error_category?: "unexpected";
   }>;
   /** Local tool search statistics; never the query or tool names. */
   mcp_discovery: Readonly<{

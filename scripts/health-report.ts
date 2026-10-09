@@ -1,6 +1,9 @@
 // Read-only, content-free health report from the persisted telemetry, run by
 // `./aiqsa.sh health` inside the app image:
-//   node --import tsx scripts/health-report.ts [--since 24h|7d|30d] [--json] [--run <reference>]
+//   node --import tsx scripts/health-report.ts [--since 24h|7d|14d|30d] [--json]
+//     [--run <reference> | --full | --user <id>]
+// --full and --user print internal user ids and problem-report comments; the
+// default report and --run stay safe to paste.
 // Exit codes: 0 report printed, 1 the database could not be read, 2 usage.
 import {
   collectHealthReport,
@@ -28,8 +31,20 @@ async function main(): Promise<void> {
     return;
   }
   // Loaded only now so a usage error never opens a database client.
-  const { closeHealthReportSources, healthReportFailureCode, healthReportSources } = await import("../lib/server/admin/health/reportDefault");
+  const {
+    closeHealthReportSources, healthAgentReportSources, healthReportFailureCode, healthReportSources
+  } = await import("../lib/server/admin/health/reportDefault");
   try {
+    if (args.full || args.user !== undefined) {
+      const { collectHealthFullReport, collectHealthUserReport } = await import("../lib/server/admin/health/agentReport");
+      const { formatHealthFullReport, formatHealthUserReport } = await import("../lib/server/admin/health/agentReportText");
+      const report = args.user === undefined
+        ? await collectHealthFullReport(healthAgentReportSources, args.range)
+        : await collectHealthUserReport(healthAgentReportSources, args.user, args.range);
+      if (args.json) writeReport(`${JSON.stringify(report, null, 2)}\n`);
+      else writeReport(report.kind === "full" ? formatHealthFullReport(report) : formatHealthUserReport(report));
+      return;
+    }
     const report = args.run === null
       ? await collectHealthReport(healthReportSources, args.range)
       : await collectHealthRunReport(healthReportSources, args.run);

@@ -314,6 +314,7 @@ import {
   observationHandlesInProviderMessages
 } from "./contextCompactionPlanner";
 import { applyContextSummaryToRequest, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
+import { toolCallKind, toolExecutionKind, type ToolCallRoutes } from "./toolCallKind";
 import {
   contextCompactionArtifact,
   contextCompactionFailureOutcome,
@@ -937,9 +938,10 @@ async function settleToolLoopRecoveryError(
 
 const recoveryScope = new AsyncLocalStorage<string>();
 
-async function observeRecoveryRun(runId: string, operation: () => Promise<void>): Promise<void> {
+/** Recovers one run in its own root, its records named by the run and its user. */
+async function observeRecoveryRun(runId: string, userId: string, operation: () => Promise<void>): Promise<void> {
   if (recoveryScope.getStore() === runId) return operation();
-  return runInBackground(() => runWithContext({ run_id: runId }, () => recoveryScope.run(runId, async () => {
+  return runInBackground(() => runWithContext({ run_id: runId, user_id: userId }, () => recoveryScope.run(runId, async () => {
     const started = performance.now();
     logEvent("run_recovery", { subsystem: "run_recovery", stage: "recovery", outcome: "started" });
     try {
@@ -1226,6 +1228,16 @@ function isRecoveredMcpDiscoveryCall(
   name: string
 ): boolean {
   return name === MCP_FIND_TOOLS_NAME && context.activeMcpDiscovery !== undefined;
+}
+
+/** The live loop's family routes, read from the recovery's current state. */
+function recoveredToolCallRoutes(context: RecoveryToolContext): ToolCallRoutes {
+  return {
+    search: (name) => isRecoveredSearchCall(context, name),
+    knowledge: (name) => isRecoveredKnowledgeCall(context, name),
+    workspace: (name) => isRecoveredWorkspaceCall(context, name),
+    mcp: (name) => isRecoveredMcpDiscoveryCall(context, name) || resolveMcpRunTool(context.activeMcpSnapshot, name) !== null
+  };
 }
 
 async function currentProjectRecoveryAuthorityAllowed(
@@ -3765,15 +3777,13 @@ async function recoverCheckpointedToolLoop(
     const recoveredReserved = reservedToolCallForRequest(run.normalizedRequest);
     const outcome = await runProviderToolLoop({
       deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
+      toolCallKind: (call) => toolCallKind(run.normalizedRequest, call.name, recoveredToolCallRoutes(context)),
       toolObservation(call) {
         const persisted = persistedCalls.get(call.id);
         if (!persisted) return undefined;
         return {
           tool_call_id: persisted.id, execution_index: persisted.ordinal,
-          tool_kind: isRecoveredSearchCall(context, call.name) ? "search"
-            : isRecoveredKnowledgeCall(context, call.name) ? "knowledge"
-            : isRecoveredWorkspaceCall(context, call.name) ? "workspace"
-            : isRecoveredMcpDiscoveryCall(context, call.name) || resolveMcpRunTool(context.activeMcpSnapshot, call.name) ? "mcp" : undefined
+          tool_kind: toolExecutionKind(call.name, recoveredToolCallRoutes(context))
         };
       },
       adapter: egressAdapter,
@@ -6198,7 +6208,7 @@ export async function refreshProviderRunIfNeeded(
   // constitute recovery attempts.
   if (deps.registry.has(runId)) return;
 
-  const refresh = observeRecoveryRun(runId, () => refreshProviderRunOnce(deps, runId, userId));
+  const refresh = observeRecoveryRun(runId, userId, () => refreshProviderRunOnce(deps, runId, userId));
   runRefreshPromises.set(runId, refresh);
   try {
     await refresh;
@@ -6247,7 +6257,7 @@ export async function reconcileInstallationRuns(
   await Promise.allSettled(candidates.map((run) => {
     if (deps.registry.has(run.id)) return;
     // Observe each rejection before allSettled preserves independent progress.
-    return observeRecoveryRun(run.id, () => recoverOrEndInvalidRun(deps, run.id, run.userId, async () => {
+    return observeRecoveryRun(run.id, run.userId, () => recoverOrEndInvalidRun(deps, run.id, run.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, run.userId);
       if (control && !(await projectRecoveryAuthorityAllowsProceed(
         deps,
@@ -6327,7 +6337,7 @@ export async function reconcileStaleRuns(
     // One run's failure stops neither the other stale runs nor the request
     // that started this pass (a send, a chat read): observeRecoveryRun has
     // logged it, and the run stays for a later attempt.
-    await observeRecoveryRun(run.id, () => recoverOrEndInvalidRun(deps, run.id, input.userId, async () => {
+    await observeRecoveryRun(run.id, input.userId, () => recoverOrEndInvalidRun(deps, run.id, input.userId, async () => {
       const control = await loadRecoveryRunControl(deps, run.id, input.userId);
       if (control && !(await projectRecoveryAuthorityAllowsProceed(
         deps,

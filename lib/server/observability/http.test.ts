@@ -15,7 +15,7 @@ import {
   TRACE_HEADER,
   wrapHttpListener
 } from "./http.cjs";
-import { getContext, runWithContext } from "./runtime.cjs";
+import { attributeRequestUser, getContext, logEvent, runWithContext } from "./runtime.cjs";
 
 const manifest = {
   version: 3,
@@ -167,6 +167,35 @@ describe("HTTP context and completion", () => {
       expect.objectContaining({ routePath: "/api/items/[itemId]", route_source: "manifest", status: 200, outcome: "completed" })
     ]));
     expect(lines.join("")).not.toMatch(/canary|unrelated_run|foreign_callback_run|first|second/);
+  });
+
+  it("attributes each request's records to the user it authenticated as, never to a concurrent request's", async () => {
+    const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const origin = await serve(async (request, response) => {
+      // Stands in for the session lookup: the first request authenticates
+      // while the second one waits, then finishes after it.
+      const first = request.url?.endsWith("/first") === true;
+      request.resume();
+      logEvent("run_http_failed", { stage: "send" });
+      await wait(first ? 0 : 25);
+      attributeRequestUser(first ? "user-a" : "user-b");
+      await wait(first ? 50 : 0);
+      if (first) throw new Error("private-exception-canary");
+      response.statusCode = 503;
+      response.end("unavailable");
+    });
+    const responses = await Promise.all(["first", "second"].map((id) => fetch(`${origin}/api/items/${id}`, { method: "POST" })));
+    await Promise.all(responses.map((response) => response.text()));
+    const users = new Map(responses.map((response, index) => [response.headers.get(TRACE_HEADER), index === 0 ? "user-a" : "user-b"]));
+    expect(users.size).toBe(2);
+    const failures = records().filter((record) => record.event !== "run_http_failed");
+    expect(failures.map((record) => record.event).sort()).toEqual(["http.request_completed", "http.request_completed", "http.request_failed"]);
+    for (const record of failures) expect(record.user_id).toBe(users.get(record.trace_id as string));
+    // A failure before authentication has no user.
+    const early = records().filter((record) => record.event === "run_http_failed");
+    expect(early).toHaveLength(2);
+    for (const record of early) expect(record).not.toHaveProperty("user_id");
+    expect(lines.join("")).not.toContain("canary");
   });
 
   it("preserves trace headers on pre-handler denial, handled failure and safe escaped exceptions", async () => {

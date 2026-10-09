@@ -1,67 +1,66 @@
 ---
 name: aiqsa-troubleshooting
-description: Diagnose an AIQSA installation using bounded application logs and process state. Use for failed or stuck runs, Stop and timeout questions, provider/tool errors, background jobs, startup failures, and preparing a sanitized bug report. Collect existing evidence without changing the installation.
+description: Diagnose an AIQSA installation from its read-only health telemetry, then bounded logs and process state. Use for failed or stuck runs, errors users hit, sign-in failures, timeouts, provider/tool errors, background jobs, startup failures, slow answers, users' problem reports, and preparing a sanitized summary. Collect existing evidence without changing the installation.
 ---
 
 # AIQSA troubleshooting
 
-Read this file directly in Claude Code or Codex; it needs no plugin, registration, or helper service.
+Read this file directly in Claude Code or Codex; it needs no plugin, registration, or helper service. Work from the installation directory, with its existing `.env` and Compose selection; never print `.env` or resolved Compose configuration.
 
-## Establish the incident
+## 1. Identify the installation
 
-Identify the AIQSA version, affected role/service, deployment type, failure time and time zone, and any available `trace_id`, `run_id`, or `job_id`. A failure before admission may have no run ID. Use the release/image tag or `app_version` in logs; do not request credentials or `.env`.
+Note `./aiqsa.sh version`, the deployment type, the affected role/service, the time window and time zone, and any error reference a user reported (the first 8 or more characters of a run id). A failure before admission may have no run. Do not request credentials or `.env` values.
 
-Work from the installation directory with its existing Compose project, files, and profiles. Ordinary `docker compose` preserves its configured selection. An explicit `-f` replaces that file selection: use `docker compose -f docker-compose.dev.yml ...` only for an installation actually using that development topology. For custom deployments, retain all of the operator's selected flags. Do not print resolved Compose configuration or environment snapshots.
+## 2. Read the health report first
 
-## Collect a bounded window
-
-Choose the affected service; `app` is the starting point for HTTP/run incidents. Check `docker compose logs --help` if the installed CLI does not recognize a flag. Capture both stdout and stderr, including process startup and lines before the failure:
+The persisted telemetry keeps 30 days of counters and incidents and works while the app container is down. Start with the complete agent report of the period since the last visit, kept in a private file:
 
 ```sh
 umask 077
-aiqsa_diag_log=$(mktemp "${TMPDIR:-/tmp}/aiqsa-diagnostics.XXXXXX")
-docker compose logs --since 30m --tail 2000 --no-color --no-log-prefix app >"$aiqsa_diag_log" 2>&1
+aiqsa_diag_dir=$(mktemp -d "${TMPDIR:-/tmp}/aiqsa-diagnostics.XXXXXX")
+./aiqsa.sh health --full --since 14d --json >"$aiqsa_diag_dir/health-full.json"
 ```
 
-Adjust the time window to the incident; add `--until` for a closed historical window. Fetch another relevant worker's bounded window when a job crosses services. Rotation, the tail limit, or container replacement can leave gaps; log volume does not promise a number of retained days. Keep captures private and review them before quoting or attaching anything.
+`--full` and `--user` output carries internal user ids and users' problem-report comments: it stays on the host, is never pasted, attached or quoted. The default `./aiqsa.sh health` (counts and codes only) is the one safe to share. Use `--since 24h|7d|14d|30d`; text without `--json` is easier to skim.
 
-First inspect startup/restart and process failures in the whole captured window. They can lack `trace_id`. Next/npm/crash lines are mixed with JSON and may carry the only process evidence. Do not discard them because JSON parsing fails.
+## 3. Triage by user impact
 
-For an exact available ID, use literal text search; `jq` is optional:
+Rank problems by who they hit and since when, not by log volume:
+
+- `errorGroups`: new failures (`newInRange`), their code site, and `usersAtLeast`/`runsAtLeast` — many users versus one persistent user. Incidents are sampled, so these are lower bounds; counters hold the totals.
+- `runs`: failure and cancel rates against `previous`; `failures` and `timeouts` by event, code, provider, route or tool family, with first/last seen and app versions.
+- `signIns`: failures by method, step and code (users who cannot sign in cannot report it).
+- `toolCalls`: families that fail or time out while their runs still complete.
+- `latency`: run duration and time to first output p50/p95 per provider/model (bucket upper bounds).
+- `problemReports`: what users reported, with run references; `operations`: restarts, stalled queues, dropped log lines, telemetry write failures.
+
+## 4. Drill into one case
 
 ```sh
-aiqsa_diag_id='replace-with-an-available-trace-run-or-job-id'
-grep -F -- "$aiqsa_diag_id" "$aiqsa_diag_log"
+./aiqsa.sh health --run 1a2b3c4d                 # runs and incidents of one error reference
+./aiqsa.sh health --user <id> --since 14d --json  # one user's incidents, failed runs, reports
 ```
 
-For a compact JSON overview, parse individual lines and select objects and fields:
+The `--user` id comes from the `--full` report; keep it on the host as well.
+
+## 5. Read the logs of that window
 
 ```sh
-jq -R 'fromjson? | select(type == "object") | select(.event | type == "string")
-  | {timestamp, level, event, app_version, role, instance_id,
-     trace_id, run_id, job_id, tool_call_id, execution_index,
-     subsystem, stage, outcome, status, httpStatus, code, prisma_code,
-     abort_source, effective_timeout_ms, bytes, chunks, action, retry_at, repeat_count}
-  | with_entries(select(.value != null))' "$aiqsa_diag_log"
+./aiqsa.sh logs --errors --since 2h app >"$aiqsa_diag_dir/app.log" 2>&1
+./aiqsa.sh logs --since 2026-01-31T08:00:00Z app >"$aiqsa_diag_dir/app-all.log" 2>&1
 ```
 
-This overview omits fields and non-JSON lines; keep the original window for investigation. Inspect the selected original records for other deadlines, transport progress, provider identity, and tool/attempt ordinals. Field selection does not sanitize arbitrary third-party values. Never assume every JSON line is an AIQSA event; use the installed version's [event definitions](../../lib/server/observability/events.ts) when interpreting unfamiliar fields.
+`logs` masks `.env` secrets; `--errors`/`--warnings` drop plain-text lines, including startup and crash output, so read unfiltered logs for process failures. For a closed historical window use `docker compose logs --since … --until … --no-color <service>` with the installation's Compose selection. Logs rotate and vanish when a container is recreated; telemetry keeps longer. Find an id with `grep -F -- "$id"`; interpret unfamiliar fields with the installed version's [event definitions](../../lib/server/observability/events.ts).
 
-## Reconstruct what happened
+Follow HTTP → accepted run/job → tool/provider or processing stages → operation outcome → persistence, and state each layer's outcome separately:
 
-Follow HTTP → accepted run/job → tool/provider or processing stages → operation outcome → persistence. State the outcome of each layer separately:
+- `trace_id` groups one context; follow `run_id`/`job_id` across requests, claims and restarts. A Stop request has its own trace.
+- HTTP 200 or the absence of ERROR does not prove a successful run. Only a `confirmed` persistence record proves that guarded write; `not_applied` and `unconfirmed` do not.
+- For cancellation, find the first observed `nested_abort` source at the relevant layer; a configured deadline is not proof that it fired, and `parent_signal` alone does not identify Stop.
+- Separate failures before headers, HTTP rejection, stream read and parse failure; missing status or byte counters mean unavailable evidence, not zero.
+- `process.started` is not readiness; read `readiness.changed`. Repeated failures may be suppressed (`repeat_count`, `subsystem.recovered`); `logging.dropped_records` reports lost output.
 
-- `trace_id` groups one context. Follow server-owned `run_id` or `job_id` across requests, claims and restarts. A Stop request has its own trace; nested abort observations retain the cancelled call's context. Restart/recovery can have a new `instance_id` and trace for the same job. Use tool-call IDs, execution/engine/operation ordinals and attempts when calls overlap.
-- `process.started` is a process summary, not readiness. `starting`, `unknown`, `disabled`, and `failed` are different states. Read `readiness.changed` separately. `process.failure` with `framework_managed` does not prove process exit; inspect container state when needed.
-- HTTP 200, successful headers, or absence of ERROR does not prove a successful run. Compare operation/result codes with `run_execution`, tool/job outcomes and the relevant persistence event. A transport stream marked `cancelled` can mean the consumer closed its reader after a terminal provider frame; check the run's outcome before calling it a failed answer.
-- For cancellation, identify the first observed `nested_abort` source at the relevant layer and the deadlines that actually applied there. A configured deadline is not proof that it fired. `parent_signal` alone does not identify Stop; correlate its run with Stop admission/delivery. A pre-aborted signal with `unknown` source supplies neither a cause nor an elapsed duration. A later timer must not replace earlier cancellation evidence.
-- Separate failures before headers, HTTP rejection, body/stream read failure and parse failure. Use observed status, bytes/chunks and progress only when present. Missing status or counters mean unavailable evidence, not zero bytes or proof of an upstream outage. Use the recorded provider identity rather than guessing from an error label.
-- Read retry/degradation decisions separately from processing failure. Only `confirmed` persistence proves that specific guarded write; `not_applied` and `unconfirmed` do not. A retry decision without confirmed scheduling and `retry_at` does not establish when it will run. `prepare`/enqueue confirmation is not completion of cleanup or processing.
-- Repeated subsystem failures may be suppressed; read `repeat_count` and `subsystem.recovered`. Recovery does not establish completion of every job or health of other processes. Idle polls and healthy heartbeats intentionally stay quiet. `logging.dropped_records` reports lost output; its absence does not prove the capture is complete.
-
-## If there is no terminal record
-
-SIGKILL/OOM can prevent application failure or terminal logs. Include stopped containers and inspect only selected state fields, using the same Compose selection and affected service:
+If there is no terminal record, SIGKILL/OOM may have stopped the process. Inspect only selected container state:
 
 ```sh
 for aiqsa_diag_container in $(docker compose ps -a -q app); do
@@ -69,14 +68,16 @@ for aiqsa_diag_container in $(docker compose ps -a -q app); do
 done
 ```
 
-Do not request full `docker inspect`: it contains `Config.Env`. `OOMKilled`, exit status and restart count describe available container state, not complete history after recreation. Exit 137 alone does not prove OOM; a false OOM flag or zero restarts does not rule out an external kill. With missing history, report the cause and persistence outcome as unconfirmed.
+Never request full `docker inspect`: it contains `Config.Env`. Exit 137 alone does not prove OOM.
 
-## Bound the investigation and report
+## 6. Bound the investigation
 
-Collect existing evidence only. Do not restart/recreate services, retry jobs, change settings, migrate/seed, repair integrity, reindex, delete data, or repeat a paid provider call to reproduce the incident. Keep a proposed fix separate from diagnosis; this Skill grants no additional authority.
+Collect existing evidence only. Do not restart/recreate services, retry jobs, change settings, migrate/seed, repair integrity, reindex, delete data, or repeat a paid provider call to reproduce an incident. Keep a proposed fix separate from the diagnosis; this Skill grants no additional authority.
 
-Use the database only for a specific missing durable fact after logs/process evidence. Consult the relevant storage owner/schema and use a bounded read-only query with owner scope. Do not mutate SQL or dump tables, content, payloads, or raw histories.
+Use the database only for a specific durable fact the report and logs lack: consult the relevant schema owner and run a bounded, read-only, owner-scoped query. Never mutate, dump tables, or read message content, payloads or raw histories.
 
-Return a short sanitized report: version and role, time window/time zone, available diagnostic IDs, observed sequence and result codes, confirmed persistence or its uncertainty, known cause versus hypotheses, and the next read-only step. Preserve uncertainty when evidence ends at a boundary.
+## 7. Summarize
 
-Before sharing any output, remove credentials/tokens, environment values, user text, documents, provider/tool bodies, custom endpoints, share URLs, and raw exception messages/stacks. Safe AIQSA records do not make arbitrary third-party logs safe to publish. Post an issue or send the report to others only when explicitly requested.
+Return a short report per problem: severity (who is affected — how many distinct users and runs, how often, since which version and when it first appeared), the observed sequence and result codes, confirmed persistence or its uncertainty, the known cause versus hypotheses, and the next read-only step.
+
+Summaries carry counts, codes, versions and times only — never user ids, problem-report comments, user text, documents, credentials or tokens, environment values, provider/tool bodies, custom endpoints, share URLs, or raw exception messages/stacks. Safe AIQSA records do not make arbitrary third-party logs safe to publish. Post an issue or send the report to others only when explicitly requested.

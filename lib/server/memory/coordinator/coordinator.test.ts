@@ -141,6 +141,7 @@ describe("Memory coordinator", () => {
     const request = { trace_id: "e".repeat(32), run_id: "request-run", job_id: "request-job" };
     const jobs = [jobClaim(), jobClaim({ id: "job-2", userId: "user-2" })];
     const deletions = [deletionClaim({ userId: "user-3" })];
+    const owners = new Map([...jobs, ...deletions].map((claim) => [claim.id, claim.userId]));
     const processed = new Map<string, ObservabilityContext | undefined>();
     const resumed = new Map<string, ObservabilityContext | undefined>();
     const beats = new Map<string, ObservabilityContext | undefined>();
@@ -201,7 +202,8 @@ describe("Memory coordinator", () => {
       expect(resumed).toEqual(processed);
       expect(new Set([...processed.values()].map((context) => context?.trace_id)).size).toBe(3);
       for (const [jobId, context] of processed) {
-        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId });
+        // Each job's records name its own owner.
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId, user_id: owners.get(jobId) });
         expect(context?.trace_id).not.toBe(request.trace_id);
         expect(beats.get(jobId)).toEqual(context);
         expect(committed.get(jobId)).toEqual(context);

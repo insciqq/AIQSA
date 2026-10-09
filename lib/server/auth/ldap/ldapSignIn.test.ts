@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ldapSignInConfigSchema } from "@/lib/contracts/authSignInMethods";
 import { createFakeLdapDirectory } from "@/tests/support/fakeLdapDirectory";
+import { captureSignInRecords } from "@/tests/support/signInRecords";
 import { getAuthConfig } from "../config";
 import type { ExternalSignInResult } from "../externalIdentity";
 import { createPasswordLoginHandler } from "../handlers";
@@ -277,5 +278,27 @@ describe("LDAP on the password form", () => {
     expect(limited.status).toBe(429);
     expect(limited.headers.get("retry-after")).toMatch(/^\d+$/u);
     expect(harness.completeSignIn).not.toHaveBeenCalled();
+  });
+
+  it("records each directory attempt once as an LDAP sign-in, a local password as a password one", async () => {
+    const harness = setup({ localEmail: "admin@example.test" });
+    const unreachable = setup({ directory: createFakeLdapDirectory({ fail: { connect: "tls_failed" }, service: SERVICE, users: [] }) });
+
+    const records = await captureSignInRecords(async () => {
+      expect((await harness.POST(login("jdoe", "correct horse"))).status).toBe(200);
+      expect((await harness.POST(login("jdoe", "wrong password"))).status).toBe(401);
+      expect((await harness.POST(login("admin@example.test", "local password"))).status).toBe(200);
+      expect((await unreachable.POST(login("jdoe", "correct horse"))).status).toBe(503);
+    });
+
+    expect(records.map(({ code, level, outcome, sign_in_method, step }) => ({ code, level, outcome, sign_in_method, step }))).toEqual([
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "ldap", step: "credentials" },
+      { code: "invalid_credentials", level: "warn", outcome: "failed", sign_in_method: "ldap", step: "credentials" },
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "password", step: "credentials" },
+      { code: "tls_failed", level: "error", outcome: "failed", sign_in_method: "ldap", step: "credentials" }
+    ]);
+    // The wrong password's record covers the response floor it waited for.
+    expect(records[1]).toHaveProperty("duration_ms");
+    expect(JSON.stringify(records)).not.toMatch(/jdoe|jane|example\.test|horse|researchers|uuid-/u);
   });
 });

@@ -8,12 +8,12 @@ import {
 } from "./aggregator";
 import { createTelemetryRecorder } from "./recorder";
 import {
-  createPrismaTelemetryStore, TELEMETRY_INCIDENT_MAX_ROWS, telemetryDimensionHash, telemetryWriteIsPermanent
+  createPrismaTelemetryStore, TELEMETRY_INCIDENT_KEY_DAY_ROWS, TELEMETRY_INCIDENT_MAX_ROWS, telemetryDimensionHash,
+  telemetryWriteIsPermanent
 } from "./store";
 
 // Every row this file writes carries its own version or connection, and only
-// those rows are removed afterwards. Times stay within the last day, so the
-// retention case never reaches another case's rows.
+// those rows are removed after each case, so no case sees another's rows.
 const VERSION = `telemetry-test-${randomUUID()}`;
 const CONNECTION = `telemetry-test-${randomBytes(8).toString("hex")}`;
 const HOUR_MS = 3_600_000;
@@ -21,6 +21,27 @@ const DAY_MS = 24 * HOUR_MS;
 const store = createPrismaTelemetryStore(prisma);
 const currentHour = Math.floor(Date.now() / HOUR_MS) * HOUR_MS;
 const BUCKET = new Date(currentHour - 2 * HOUR_MS);
+const currentDay = Math.floor(Date.now() / DAY_MS) * DAY_MS;
+
+/** Bulk-inserts `rows` incidents `stepMs` apart from `start`; `spread` > 1
+ * cycles the code through that many distinct keys. */
+async function insertIncidents(input: Readonly<{
+  rows: number; start: number; stepMs: number; code: string; spread?: number;
+  event?: string; subsystem?: string | null; fingerprint?: string | null;
+}>): Promise<void> {
+  const details = input.fingerprint ? { error_fingerprint: input.fingerprint } : {};
+  const spread = input.spread ?? 1;
+  await prisma.$executeRaw`
+    INSERT INTO "TelemetryIncident" (
+      "id", "occurredAt", "role", "event", "level", "appVersion", "instanceId", "code", "subsystem", "connectionId", "details"
+    )
+    SELECT gen_random_uuid()::text,
+      (${new Date(input.start)}::timestamptz AT TIME ZONE 'UTC') + make_interval(secs => series * ${input.stepMs / 1000}::float8),
+      'app', ${input.event ?? "provider_operation"}::text, 'error', ${VERSION}::text, ${"a".repeat(32)}::text,
+      CASE WHEN ${spread}::int = 1 THEN ${input.code}::text ELSE ${input.code}::text || '_' || (series % ${spread}::int) END,
+      ${input.subsystem ?? null}::text, ${CONNECTION}::text, ${JSON.stringify(details)}::jsonb
+    FROM generate_series(0, ${input.rows - 1}::int) AS series`;
+}
 
 function delta(input: Readonly<{
   code: string; count?: number; durationMs?: number; at?: number; bucket?: Date; event?: string;
@@ -39,12 +60,14 @@ function delta(input: Readonly<{
   };
 }
 
-function incident(input: Readonly<{ at: number; code?: string; runId?: string; traceId?: string; level?: "error" | "fatal" }>): TelemetryIncidentInput {
+function incident(input: Readonly<{
+  at: number; code?: string; runId?: string; traceId?: string; userId?: string; fingerprint?: string; level?: "error" | "fatal";
+}>): TelemetryIncidentInput {
   return {
     occurredAt: new Date(input.at), role: "app", event: "provider_operation", level: input.level ?? "error",
     appVersion: VERSION, instanceId: "a".repeat(32), code: input.code ?? "provider_http_dns_failed", subsystem: null,
-    connectionId: CONNECTION, runId: input.runId ?? null, traceId: input.traceId ?? null,
-    details: { httpStatus: 401, stage: "answer" }
+    connectionId: CONNECTION, runId: input.runId ?? null, traceId: input.traceId ?? null, userId: input.userId ?? null,
+    details: { httpStatus: 401, stage: "answer", ...(input.fingerprint ? { error_fingerprint: input.fingerprint } : {}) }
   };
 }
 
@@ -163,13 +186,70 @@ describe("Prisma telemetry store", () => {
       from: new Date(base + 3_000), to: new Date(base + 3_001) })).items).toHaveLength(1);
   });
 
+  it("keeps each incident's user, filters by it and counts distinct users and runs per fingerprint and key", async () => {
+    const base = BUCKET.getTime() + 10 * 60_000;
+    const [storm, single] = [randomBytes(6).toString("hex"), randomBytes(6).toString("hex")];
+    const users = Array.from({ length: 3 }, () => randomUUID());
+    await store.write({
+      counters: [],
+      incidents: [
+        // One fingerprint across three users and four runs, one of them without a user.
+        incident({ at: base, fingerprint: storm, userId: users[0], runId: "run-a" }),
+        incident({ at: base + 1_000, fingerprint: storm, userId: users[0], runId: "run-a" }),
+        incident({ at: base + 2_000, fingerprint: storm, userId: users[1], runId: "run-b" }),
+        incident({ at: base + 3_000, fingerprint: storm, userId: users[2], runId: "run-c" }),
+        incident({ at: base + 4_000, fingerprint: storm, runId: "run-d" }),
+        // Another one repeating for a single user, with no run.
+        incident({ at: base + 5_000, fingerprint: single, userId: users[0], code: "provider_http_server_error" }),
+        incident({ at: base + 6_000, fingerprint: single, userId: users[0], code: "provider_http_server_error" })
+      ],
+      lostObservations: 0
+    });
+    const own = await store.readIncidents({ userId: users[0]!, connectionIds: [CONNECTION] });
+    expect(own.items.map((item) => [item.userId, item.runId])).toEqual([
+      [users[0], null], [users[0], null], [users[0], "run-a"], [users[0], "run-a"]
+    ]);
+
+    const range = { from: new Date(base), to: new Date(base + 60_000) };
+    expect(await store.countIncidentReachByFingerprint({ ...range, fingerprints: [storm, single, "000000000000"] })).toEqual(new Map([
+      [storm, { incidents: 5, users: 3, runs: 4 }],
+      [single, { incidents: 2, users: 1, runs: 0 }]
+    ]));
+    expect(await store.countIncidentReachByFingerprint({ from: new Date(base + 3_000), to: range.to, fingerprints: [storm] }))
+      .toEqual(new Map([[storm, { incidents: 2, users: 1, runs: 2 }]]));
+    const keys = (await store.countIncidentReachByKey({ ...range, limit: 1_000 })).filter((item) => item.key.connectionId === CONNECTION);
+    expect(keys).toEqual([
+      { key: { event: "provider_operation", code: "provider_http_dns_failed", subsystem: null, connectionId: CONNECTION, fingerprint: storm },
+        incidents: 5, users: 3, runs: 4, firstAt: new Date(base), lastAt: new Date(base + 4_000) },
+      { key: { event: "provider_operation", code: "provider_http_server_error", subsystem: null, connectionId: CONNECTION, fingerprint: single },
+        incidents: 2, users: 1, runs: 0, firstAt: new Date(base + 5_000), lastAt: new Date(base + 6_000) }
+    ]);
+  });
+
+  it("clears in its retention pass the user ids of accounts that no longer exist", async () => {
+    const kept = await prisma.user.create({ data: { displayName: "Telemetry retention user", email: `${CONNECTION}@telemetry.example.test`,
+      role: "user", status: "active" } });
+    try {
+      const deleted = randomUUID();
+      const at = currentHour - 3 * HOUR_MS;
+      await store.write({ counters: [], incidents: [incident({ at, userId: kept.id }), incident({ at: at + 1_000, userId: deleted })],
+        lostObservations: 0 });
+      await store.deleteExpired(new Date(currentHour));
+      const rows = await prisma.$queryRaw<Array<{ userId: string | null }>>`
+        SELECT "userId" FROM "TelemetryIncident" WHERE "appVersion" = ${VERSION} ORDER BY "occurredAt"`;
+      expect(rows).toEqual([{ userId: kept.id }, { userId: null }]);
+    } finally {
+      await prisma.user.deleteMany({ where: { id: kept.id } });
+    }
+  });
+
   it("deletes only rows past the retention cutoffs", async () => {
     const now = new Date(currentHour);
     const expiredBucket = new Date(currentHour - 31 * DAY_MS);
     const keptBucket = new Date(currentHour - 29 * DAY_MS);
     await store.write({
       counters: [delta({ code: "expired", bucket: expiredBucket }), delta({ code: "kept", bucket: keptBucket })],
-      incidents: [incident({ at: currentHour - 15 * DAY_MS }), incident({ at: currentHour - 13 * DAY_MS })],
+      incidents: [incident({ at: currentHour - 31 * DAY_MS }), incident({ at: currentHour - 20 * DAY_MS })],
       lostObservations: 0
     });
     const deleted = await store.deleteExpired(now);
@@ -180,18 +260,75 @@ describe("Prisma telemetry store", () => {
     expect(counters).toEqual([{ code: "kept" }]);
     const incidents = await prisma.$queryRaw<Array<{ occurredAt: Date }>>`
       SELECT "occurredAt" FROM "TelemetryIncident" WHERE "appVersion" = ${VERSION}`;
-    expect(incidents).toEqual([{ occurredAt: new Date(currentHour - 13 * DAY_MS) }]);
+    expect(incidents).toEqual([{ occurredAt: new Date(currentHour - 20 * DAY_MS) }]);
+  });
+
+  it("trims one key's storm to the day's first and latest incidents in one pass, keeping every other key", async () => {
+    const day = currentDay - 2 * DAY_MS;
+    const stormStep = 4_000;
+    const storm = { code: "storm", fingerprint: "aaaaaaaaaaaa" };
+    await insertIncidents({ ...storm, rows: 20_000, start: day, stepMs: stormStep });
+    // Five keys that each differ from the storm in exactly one part, inside its span.
+    const others = [
+      { ...storm, fingerprint: "bbbbbbbbbbbb" },
+      { ...storm, fingerprint: null },
+      { ...storm, subsystem: "jobs" },
+      { ...storm, event: "run_execution" },
+      { ...storm, code: "other" }
+    ];
+    for (const other of others) await insertIncidents({ ...other, rows: 10, start: day + 3 * HOUR_MS, stepMs: 60_000 });
+    // A fingerprint-less storm (NULLs share one key) and the storm's next day.
+    await insertIncidents({ code: "quiet_storm", rows: 300, start: day, stepMs: 1_000 });
+    await insertIncidents({ ...storm, rows: 150, start: day + DAY_MS, stepMs: 1_000 });
+
+    const deleted = await store.deleteExpired(new Date(currentHour));
+    expect(deleted.incidents).toBeGreaterThanOrEqual(19_800 + 100);
+
+    const groups = await prisma.$queryRaw<Array<{ key: string; rows: number }>>`
+      SELECT concat_ws('|', "event", "code", coalesce("subsystem", '-'), coalesce("details" ->> 'error_fingerprint', '-'),
+        to_char(date_trunc('day', "occurredAt"), 'YYYY-MM-DD')) AS key, count(*)::int AS rows
+      FROM "TelemetryIncident" WHERE "appVersion" = ${VERSION} GROUP BY 1 ORDER BY 1`;
+    const dayLabel = (time: number) => new Date(time).toISOString().slice(0, 10);
+    expect(Object.fromEntries(groups.map((group) => [group.key, group.rows]))).toEqual({
+      [`provider_operation|storm|-|aaaaaaaaaaaa|${dayLabel(day)}`]: TELEMETRY_INCIDENT_KEY_DAY_ROWS,
+      [`provider_operation|storm|-|aaaaaaaaaaaa|${dayLabel(day + DAY_MS)}`]: 150,
+      [`provider_operation|storm|-|bbbbbbbbbbbb|${dayLabel(day)}`]: 10,
+      [`provider_operation|storm|-|-|${dayLabel(day)}`]: 10,
+      [`provider_operation|storm|jobs|aaaaaaaaaaaa|${dayLabel(day)}`]: 10,
+      [`run_execution|storm|-|aaaaaaaaaaaa|${dayLabel(day)}`]: 10,
+      [`provider_operation|other|-|aaaaaaaaaaaa|${dayLabel(day)}`]: 10,
+      [`provider_operation|quiet_storm|-|-|${dayLabel(day)}`]: TELEMETRY_INCIDENT_KEY_DAY_ROWS
+    });
+
+    const kept = await prisma.$queryRaw<Array<{ occurredAt: Date }>>`
+      SELECT "occurredAt" FROM "TelemetryIncident"
+      WHERE "appVersion" = ${VERSION} AND "code" = 'storm' AND "subsystem" IS NULL AND "event" = 'provider_operation'
+        AND "details" ->> 'error_fingerprint' = 'aaaaaaaaaaaa' AND "occurredAt" < (${new Date(day + DAY_MS)}::timestamptz AT TIME ZONE 'UTC')
+      ORDER BY "occurredAt"`;
+    const positions = [...Array.from({ length: 100 }, (_, index) => index), ...Array.from({ length: 100 }, (_, index) => 19_900 + index)];
+    expect(kept.map((row) => row.occurredAt.getTime())).toEqual(positions.map((position) => day + position * stormStep));
+  });
+
+  it("trims a storm before the global cap, so the cap never evicts other keys because of it", async () => {
+    // Older incidents of many keys plus a newer storm exceed the cap; trimmed
+    // first, they fit, and the cap leaves the older keys alone.
+    await insertIncidents({ code: "steady", spread: 450, rows: 45_000, start: currentDay - 3 * DAY_MS, stepMs: 1_000 });
+    await insertIncidents({ code: "storm", rows: 20_000, start: currentDay - 2 * DAY_MS, stepMs: 4_000 });
+    await store.deleteExpired(new Date(currentHour));
+    const counts = await prisma.$queryRaw<Array<{ steady: number; storm: number }>>`
+      SELECT count(*) FILTER (WHERE starts_with("code", 'steady_'))::int AS steady, count(*) FILTER (WHERE "code" = 'storm')::int AS storm
+      FROM "TelemetryIncident" WHERE "appVersion" = ${VERSION}`;
+    expect(counts).toEqual([{ steady: 45_000, storm: TELEMETRY_INCIDENT_KEY_DAY_ROWS }]);
   });
 
   it("keeps only the newest incidents beyond the row bound", async () => {
     const newest = currentHour - HOUR_MS;
     const surplus = 5;
-    await prisma.$executeRaw`
-      INSERT INTO "TelemetryIncident" ("id", "occurredAt", "role", "event", "level", "appVersion", "instanceId", "connectionId", "details")
-      SELECT gen_random_uuid()::text, (${new Date(newest)}::timestamptz AT TIME ZONE 'UTC') - make_interval(secs => series / 1000.0),
-        'app', 'provider_operation', 'error', ${VERSION}, ${"a".repeat(32)}, ${CONNECTION}, '{}'::jsonb
-      FROM generate_series(0, ${TELEMETRY_INCIDENT_MAX_ROWS + surplus - 1}) AS series`;
-    await store.deleteExpired(new Date(currentHour));
+    const rows = TELEMETRY_INCIDENT_MAX_ROWS + surplus;
+    // A thousand keys of about fifty incidents each: below the daily key bound, so only the cap applies.
+    await insertIncidents({ code: "cap", spread: 1_000, rows, start: newest - (rows - 1), stepMs: 1 });
+    const deleted = await store.deleteExpired(new Date(currentHour));
+    expect(deleted.incidents).toBeGreaterThanOrEqual(surplus);
     const [total] = await prisma.$queryRaw<Array<{ rows: number }>>`SELECT count(*)::int AS rows FROM "TelemetryIncident"`;
     expect(total!.rows).toBeLessThanOrEqual(TELEMETRY_INCIDENT_MAX_ROWS);
     const [own] = await prisma.$queryRaw<Array<{ rows: number; newest: Date }>>`

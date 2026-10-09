@@ -1,4 +1,5 @@
 import type { AuthSessionSignInMethod } from "@/lib/contracts/authSignInMethods";
+import { attributeRequestUser } from "../observability";
 import { hashToken } from "./token";
 import {
   createSessionSetCookie,
@@ -129,7 +130,15 @@ export function prepareAuthSession(input: {
 
 export async function resolveAuthToken(
   token: string | undefined,
-  deps: { now?: Date; sessions: AuthSessionStore }
+  deps: {
+    /**
+     * False when inspecting a cookie the request may replace (a trusted-header
+     * sign-in): the request is not yet known to be that user's.
+     */
+    attribute?: boolean;
+    now?: Date;
+    sessions: AuthSessionStore;
+  }
 ): Promise<AuthenticatedSession | null> {
   if (!token) {
     return null;
@@ -141,6 +150,8 @@ export async function resolveAuthToken(
   if (!session || session.revokedAt || asDate(session.expiresAt) <= now || !isActiveUser(session.user)) {
     return null;
   }
+  // The request's records name the user its session resolved to from here on.
+  if (deps.attribute !== false) attributeRequestUser(session.userId);
 
   return {
     expiresAt: asDate(session.expiresAt),

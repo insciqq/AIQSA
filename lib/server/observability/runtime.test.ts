@@ -6,9 +6,10 @@ import { Writable } from "node:stream";
 import { createContext, runInContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { version } from "../../../package.json";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import {
-  MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, bindContext, createTraceId, createWriter,
-  getContext, registerRouteTemplates, runInBackground, runWithContext,
+  MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, attributeRequestUser, bindContext, createTraceId, createWriter,
+  getContext, registerRouteTemplates, reportReadiness, runInBackground, runWithContext,
   serializeEvent, setProcessRole, writeEmergencyFailure
 } from "./runtime.cjs";
 
@@ -64,6 +65,26 @@ describe("bounded observability runtime", () => {
     for (const key of ["mode", "candidate_count", "result_count", "loaded_count"]) {
       expect(invalid).not.toHaveProperty(key);
     }
+  });
+
+  it("records one bounded terminal tool call with its family, outcome and code only", () => {
+    expect(record("tool_call", { tool_kind: "fetch_url", outcome: "completed", duration_ms: 12.4 })).toMatchObject({
+      level: "info", tool_kind: "fetch_url", outcome: "completed", duration_ms: 12 });
+    expect(record("tool_call", { tool_kind: "artifact", outcome: "failed", code: "artifact_tool_unavailable" }))
+      .toMatchObject({ level: "warn", code: "artifact_tool_unavailable" });
+    expect(record("tool_call", { tool_kind: "other", outcome: "timeout", code: "tool_call_timeout" })).toMatchObject({ level: "warn" });
+    expect(record("tool_call", { tool_kind: "mcp", outcome: "cancelled", code: "tool_call_cancelled" })).toMatchObject({ level: "info" });
+    const thrown = new TypeError("PRIVATE_EXCEPTION_TEXT");
+    const unexpected = record("tool_call", { tool_kind: "skill", outcome: "failed", code: "tool_call_failed",
+      error_category: "unexpected", error: thrown });
+    expect(unexpected).toMatchObject({ level: "error", error_category: "unexpected", error_class: "TypeError" });
+    expect(unexpected.error_fingerprint).toMatch(/^[0-9a-f]{12}$/u);
+    const hostile = record("tool_call", { tool_kind: "PRIVATE_TOOL_NAME", outcome: "PRIVATE_OUTCOME", code: "PRIVATE_CODE",
+      name: "PRIVATE_TOOL_NAME", arguments: { url: "https://PRIVATE.example" }, error_category: "PRIVATE" } as never);
+    expect(hostile).not.toHaveProperty("tool_kind");
+    expect(hostile).not.toHaveProperty("outcome");
+    expect(hostile).toMatchObject({ code: "unknown", level: "info" });
+    expect(JSON.stringify([unexpected, hostile])).not.toContain("PRIVATE_");
   });
 
   it.each(["native_route_http_error", "native_route_capability_mismatch", "native_route_authority_changed"])(
@@ -133,10 +154,67 @@ describe("bounded observability runtime", () => {
 
   it("generates nonzero lowercase trace ids and immutable allowlisted contexts", () => {
     for (let index = 0; index < 100; index += 1) expect(createTraceId()).toMatch(/^(?!0{32}$)[a-f0-9]{32}$/);
-    runWithContext({ trace_id: "0".repeat(32), run_id: "run-1", user_id: "secret-canary" } as never, () => {
+    runWithContext({ trace_id: "0".repeat(32), run_id: "run-1", user_id: "secret-canary@example.test", email: "secret-canary" } as never, () => {
       expect(getContext()).toEqual({ trace_id: expect.stringMatching(/^(?!0{32}$)[a-f0-9]{32}$/), run_id: "run-1" });
       expect(Object.isFrozen(getContext())).toBe(true);
     });
+  });
+
+  it("binds a row's user, attributes a request once to the user it authenticated as, and never to process facts", async () => {
+    const failure = () => record("run_http_failed", { stage: "send" });
+    const observation = await captureRunObservation();
+    runInBackground(() => {
+      expect(failure()).not.toHaveProperty("user_id");
+      // Frames and callbacks derived before authentication share their root's attribution.
+      const derived = runWithContext({ run_id: "run-1" }, () => bindContext(() => failure()));
+      attributeRequestUser("user@example.test");
+      expect(failure()).not.toHaveProperty("user_id");
+      attributeRequestUser("user-a");
+      attributeRequestUser("user-b");
+      expect(failure()).toMatchObject({ user_id: "user-a", level: "error" });
+      expect(derived()).toMatchObject({ run_id: "run-1", user_id: "user-a" });
+      expect(getContext()).not.toHaveProperty("user_id");
+      // A run or job row's owner wins inside its frame; a new root starts with no user.
+      runWithContext({ run_id: "run-2", user_id: "owner-1" }, () => {
+        expect(getContext()).toMatchObject({ run_id: "run-2", user_id: "owner-1" });
+        expect(failure()).toMatchObject({ user_id: "owner-1" });
+        runWithContext({ tool_call_id: "call-1" }, () => expect(failure()).toMatchObject({ user_id: "owner-1" }));
+      });
+      runInBackground(() => {
+        expect(failure()).not.toHaveProperty("user_id");
+        attributeRequestUser("user-c");
+        expect(failure()).toMatchObject({ user_id: "user-c" });
+      });
+      expect(failure()).toMatchObject({ user_id: "user-a" });
+      reportReadiness("not_ready", "unknown", 41);
+    });
+    attributeRequestUser("user-d");
+    expect(failure()).not.toHaveProperty("user_id");
+    const readiness = observation.records().find((entry) => entry.event === "readiness.changed" && entry.issue_count === 41);
+    expect(readiness).toBeDefined();
+    expect(readiness).not.toHaveProperty("user_id");
+    expect(readiness).not.toHaveProperty("trace_id");
+  });
+
+  it("never attributes one root's records to another root's user, however their work interleaves", async () => {
+    const failure = () => record("run_http_failed", { stage: "send" }).user_id as string | undefined;
+    const authenticated: string[] = [];
+    const observed = await Promise.all(["user-a", "user-b"].map((userId, index) => runInBackground(async () => {
+      const derived = runWithContext({ run_id: `run-${index}` }, () => bindContext(failure));
+      // The first request authenticates while the second one is still waiting.
+      for (let step = 0; step < 2 + index * 3; step += 1) await tick();
+      const beforeOwn = failure();
+      attributeRequestUser(userId);
+      authenticated.push(userId);
+      for (let step = 0; step < 4 - index * 3; step += 1) await tick();
+      const background = await runInBackground(async () => { await tick(); return failure(); });
+      return { beforeOwn, after: failure(), derived: derived(), background };
+    })));
+    expect(authenticated).toEqual(["user-a", "user-b"]);
+    expect(observed).toEqual([
+      { beforeOwn: undefined, after: "user-a", derived: "user-a", background: undefined },
+      { beforeOwn: undefined, after: "user-b", derived: "user-b", background: undefined }
+    ]);
   });
 
   it("emits bounded single-line positive projections without touching raw objects", () => {
@@ -208,6 +286,47 @@ describe("bounded observability runtime", () => {
     }
   });
 
+  it("records a sign-in step with closed fields only, its level decided by outcome and code", () => {
+    const identity = {
+      email: "PRIVATE_alice@example.test", username: "PRIVATE_alice", subject: "PRIVATE_subject", tenant: "PRIVATE_tenant",
+      groups: ["PRIVATE_group"], ip: "PRIVATE_203.0.113.9", user_agent: "PRIVATE_agent", assertion: "PRIVATE_assertion",
+      token: "PRIVATE_token", password: "PRIVATE_password", provider: "PRIVATE_provider", url: "https://PRIVATE.example.test/"
+    };
+    const accepted = record("sign_in", { ...identity, sign_in_method: "oidc", step: "callback", outcome: "succeeded",
+      code: "accepted", duration_ms: 12.4 } as never);
+    expect(accepted).toMatchObject({ event: "sign_in", level: "info", sign_in_method: "oidc", step: "callback",
+      outcome: "succeeded", code: "accepted", duration_ms: 12 });
+    expect(Object.keys(accepted).sort()).toEqual(["app_version", "code", "duration_ms", "event", "instance_id", "level",
+      "outcome", "role", "sign_in_method", "step", "timestamp"]);
+    expect(JSON.stringify(accepted)).not.toContain("PRIVATE");
+
+    const level = (fields: Record<string, unknown>) => record("sign_in", fields as never).level;
+    expect(level({ sign_in_method: "password", step: "credentials", outcome: "failed", code: "invalid_credentials" })).toBe("warn");
+    expect(level({ sign_in_method: "ldap", step: "second_factor", outcome: "failed", code: "invalid_code" })).toBe("warn");
+    expect(level({ sign_in_method: "oauth", step: "callback", outcome: "failed", code: "cancelled" })).toBe("warn");
+    expect(level({ sign_in_method: "saml", step: "callback", outcome: "refused", code: "not_allowed" })).toBe("warn");
+    expect(level({ sign_in_method: "password", step: "credentials", outcome: "refused", code: "rate_limited" })).toBe("warn");
+    expect(level({ sign_in_method: "saml", step: "callback", outcome: "failed", code: "signature_invalid" })).toBe("error");
+    expect(level({ sign_in_method: "oidc", step: "start", outcome: "failed", code: "discovery_unreachable" })).toBe("error");
+    expect(level({ sign_in_method: "ldap", step: "credentials", outcome: "failed", code: "connect_failed" })).toBe("error");
+
+    // A code outside the closed list, an IdP message included, is an unexpected failure.
+    const unknown = record("sign_in", { sign_in_method: "PRIVATE_method", step: "PRIVATE_step", outcome: "failed",
+      code: "invalid_client: PRIVATE_alice@example.test" } as never);
+    expect(unknown).toMatchObject({ code: "sign_in_failed", level: "error", outcome: "failed" });
+    expect(unknown).not.toHaveProperty("sign_in_method");
+    expect(unknown).not.toHaveProperty("step");
+    expect(JSON.stringify(unknown)).not.toContain("PRIVATE");
+
+    // An error names only its class and application site, and only for a step that failed.
+    const failure = record("sign_in", { sign_in_method: "oauth", step: "callback", outcome: "failed", code: "exchange_failed",
+      error: new TypeError("PRIVATE_alice@example.test") });
+    expect(failure).toMatchObject({ level: "error", code: "exchange_failed", error_class: "TypeError" });
+    expect(JSON.stringify(failure)).not.toContain("PRIVATE");
+    expect(record("sign_in", { sign_in_method: "oauth", step: "callback", outcome: "succeeded", code: "accepted",
+      error: new TypeError("unused") })).not.toHaveProperty("error_class");
+  });
+
   it("keeps the bounded provider cause separately from the public run failure", () => {
     const fields = { run_id: "run-1", stage: "execution", outcome: "failed", code: "knowledge_answer_failed" } as const;
     expect(record("run_execution", { ...fields, provider_code: "provider_http_invalid_request" }))
@@ -215,6 +334,18 @@ describe("bounded observability runtime", () => {
     const unsafe = record("run_execution", { ...fields, provider_code: "private-provider-error-body" });
     expect(unsafe.provider_code).toBe("unknown");
     expect(JSON.stringify(unsafe)).not.toContain("private-provider");
+  });
+
+  it("records time to first output as an info stage with a closed after field", () => {
+    const fields = { run_id: "run-1", stage: "first_output", outcome: "completed", duration_ms: 1_234.4,
+      providerFamily: "openai", providerModelId: "model-1" } as const;
+    for (const after of ["dispatch", "tools"] as const) {
+      expect(record("run_execution", { ...fields, after })).toMatchObject({ ...fields, duration_ms: 1_234, after, level: "info" });
+    }
+    const unsafe = record("run_execution", { ...fields, after: "PRIVATE_TOOL_NAME", delta: "PRIVATE_ANSWER" } as never);
+    expect(unsafe).not.toHaveProperty("after");
+    expect(unsafe).not.toHaveProperty("delta");
+    expect(JSON.stringify(unsafe)).not.toContain("PRIVATE_");
   });
 
   it("uses the current event schema after HMR while preserving the singleton sink and context", () => {

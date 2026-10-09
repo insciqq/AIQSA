@@ -148,7 +148,7 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
         leaseExpiresAt: { gt: new Date() }, modelRun: { userId: claim.userId }
       }, include: {
         predecessor: { select: { status: true } },
-        modelRun: { select: { chatId: true, status: true, normalizedRequest: true, workspaceWaitPending: true } }
+        modelRun: { select: { chatId: true, createdAt: true, status: true, normalizedRequest: true, workspaceWaitPending: true } }
       } });
     },
     async markAnswerDispatched(claim: WorkspaceFollowupClaim): Promise<boolean> {

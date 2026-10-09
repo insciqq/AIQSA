@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { TELEMETRY_DURATION_BUCKETS, type TelemetryBatch, type TelemetryCounterDelta } from "./aggregator";
 import {
-  createPrismaTelemetryStore, TelemetryQueryError, telemetryDimensionHash, telemetryWriteIsPermanent,
+  clearTelemetryIncidentUser, createPrismaTelemetryStore, TelemetryQueryError, telemetryDimensionHash, telemetryWriteIsPermanent,
   type TelemetryDatabase
 } from "./store";
 
@@ -32,7 +32,8 @@ function batch(counters: TelemetryCounterDelta[], incidents = 0): TelemetryBatch
     counters,
     incidents: Array.from({ length: incidents }, () => ({
       occurredAt: HOUR, role: "app", event: "provider_operation", level: "error" as const, appVersion: "0.3.7",
-      instanceId: "a".repeat(32), code: null, subsystem: null, connectionId: null, runId: null, traceId: null, details: {}
+      instanceId: "a".repeat(32), code: null, subsystem: null, connectionId: null, runId: null, traceId: null,
+      userId: null, details: {}
     })),
     lostObservations: 0
   };
@@ -68,12 +69,39 @@ describe("Prisma telemetry store", () => {
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(12);
     await expect(store.deleteExpired(new Date("2026-10-07T10:00:00.000Z"))).resolves.toEqual({ counters: 2_007, incidents: 12 });
-    expect(db.$executeRaw).toHaveBeenCalledTimes(5);
+    // Counters (3), expired incidents, the cap, then deleted accounts' user ids.
+    expect(db.$executeRaw).toHaveBeenCalledTimes(6);
 
     const busy = fakeDatabase();
     busy.db.$executeRaw.mockResolvedValue(1_000);
     await expect(busy.store.deleteExpired(new Date())).resolves.toEqual({ counters: 20_000, incidents: 40_000 });
-    expect(busy.db.$executeRaw).toHaveBeenCalledTimes(60);
+    expect(busy.db.$executeRaw).toHaveBeenCalledTimes(80);
+  });
+
+  it("trims a storm's surplus by id after expiry and before the global cap, within the pass bound", async () => {
+    const ids = Array.from({ length: 2_500 }, (_, index) => `00000000-0000-4000-8000-${String(2_499 - index).padStart(12, "0")}`);
+    const { db, statements, store } = fakeDatabase(ids.map((id) => ({ id })));
+    db.$executeRaw.mockImplementation(async (statement: Prisma.Sql) => {
+      statements.push(statement);
+      const list = statement.values.find(Array.isArray);
+      return Array.isArray(list) ? list.length : 0;
+    });
+    await expect(store.deleteExpired(HOUR)).resolves.toEqual({ counters: 0, incidents: 2_500 });
+
+    const kinds = statements.map((statement) => /^\s*SELECT "id" FROM \(/u.test(statement.sql) ? "rank"
+      : /SET "userId" = NULL/u.test(statement.sql) ? "users"
+      : /"id" = ANY/u.test(statement.sql) ? "trim"
+      : /OFFSET/u.test(statement.sql) ? "cap"
+      : /"occurredAt" </u.test(statement.sql) ? "expire" : "counters");
+    expect(kinds).toEqual(["counters", "expire", "rank", "trim", "trim", "trim", "cap", "users"]);
+    expect(statements.at(-1)!.sql).toMatch(/NOT EXISTS \(SELECT 1 FROM "User" AS account WHERE account\."id" = incident\."userId"\)/u);
+    const ranking = statements[2]!;
+    expect(ranking.sql).toContain(`"details" ->> 'error_fingerprint'`);
+    expect(ranking.sql).toMatch(/PARTITION BY "event", "code", "subsystem", "connectionId", .*date_trunc\('day', "occurredAt"\)/su);
+    expect(ranking.values).toEqual([100, 100, 20_000]);
+    const deleted = statements.slice(3, 6).map((statement) => statement.values[0] as string[]);
+    expect(deleted.map((chunk) => chunk.length)).toEqual([1_000, 1_000, 500]);
+    expect(deleted.flat()).toEqual([...ids].sort());
   });
 
   it("rejects malformed reads before any query", async () => {
@@ -83,6 +111,8 @@ describe("Prisma telemetry store", () => {
       { ...range, from: HOUR },
       { ...range, from: new Date(Number.NaN) },
       { ...range, groupBy: ["run_id"] },
+      { ...range, groupBy: ["user_id"] },
+      { ...range, dimensions: { user_id: "user-1" } },
       { ...range, groupBy: ["code", "code"] },
       { ...range, events: ["DROP TABLE"] },
       { ...range, levels: ["debug"] },
@@ -101,6 +131,7 @@ describe("Prisma telemetry store", () => {
       { runIdPrefix: "3F2A9C1E" },
       { runIdPrefix: "3f2a9c1e%" },
       { traceId: "0".repeat(31) },
+      { userId: "user@example.test" },
       { levels: ["warn"] },
       { limit: 201 }
     ]) {
@@ -108,6 +139,14 @@ describe("Prisma telemetry store", () => {
     }
     for (const runIds of [[], ["run id"], Array.from({ length: 65 }, (_, index) => `run-${index}`)]) {
       await expect(store.countIncidentsByRun(runIds)).rejects.toBeInstanceOf(TelemetryQueryError);
+    }
+    for (const fingerprints of [[], ["0123456789AB"], ["0123456789a"], Array.from({ length: 65 }, (_, index) => index.toString(16).padStart(12, "0"))]) {
+      await expect(store.countIncidentReachByFingerprint({ ...range, fingerprints })).rejects.toBeInstanceOf(TelemetryQueryError);
+    }
+    await expect(store.countIncidentReachByFingerprint({ from: HOUR, to: HOUR, fingerprints: ["0123456789ab"] }))
+      .rejects.toBeInstanceOf(TelemetryQueryError);
+    for (const query of [{ from: HOUR, to: HOUR }, { ...range, limit: 0 }, { ...range, limit: 1_001 }, { from: new Date(Number.NaN), to: HOUR }]) {
+      await expect(store.countIncidentReachByKey(query)).rejects.toBeInstanceOf(TelemetryQueryError);
     }
     expect(db.$queryRaw).not.toHaveBeenCalled();
   });
@@ -123,6 +162,78 @@ describe("Prisma telemetry store", () => {
     await expect(counted.store.countIncidentsByRun(["run-1", "run-2", "run-3"]))
       .resolves.toEqual(new Map([["run-1", 3], ["run-2", 1]]));
     expect(counted.statements[0]!.values).toEqual([["run-1", "run-2", "run-3"]]);
+  });
+
+  it("stores and filters an incident's user and counts distinct users and runs per fingerprint and incident key", async () => {
+    const written = fakeDatabase();
+    const attributed = { ...batch([], 1).incidents[0]!, runId: "run-1", userId: "user-1" };
+    await written.store.write({ counters: [], incidents: [attributed], lostObservations: 0 });
+    expect(written.statements[0]!.sql).toMatch(/"runId", "traceId", "userId", "details"/u);
+    expect(written.statements[0]!.values).toEqual(expect.arrayContaining(["run-1", "user-1"]));
+
+    const filtered = fakeDatabase([]);
+    await filtered.store.readIncidents({ userId: "user-1" });
+    expect(filtered.statements[0]!.text).toMatch(/"userId" = \$1/u);
+    expect(filtered.statements[0]!.values[0]).toBe("user-1");
+
+    const range = { from: new Date(HOUR.getTime() - 86_400_000), to: HOUR };
+    const byFingerprint = fakeDatabase([{ fingerprint: "0123456789ab", incidents: 12n, users: 3n, runs: 5n }]);
+    await expect(byFingerprint.store.countIncidentReachByFingerprint({ ...range, fingerprints: ["0123456789ab", "ba9876543210"] }))
+      .resolves.toEqual(new Map([["0123456789ab", { incidents: 12, users: 3, runs: 5 }]]));
+    const fingerprintQuery = byFingerprint.statements[0]!;
+    expect(fingerprintQuery.sql).toMatch(/COUNT\(DISTINCT "userId"\).*COUNT\(DISTINCT "runId"\)/su);
+    expect(fingerprintQuery.sql).toMatch(/"occurredAt" >= .* AND "occurredAt" < /su);
+    expect(fingerprintQuery.values).toEqual([range.from, range.to, ["0123456789ab", "ba9876543210"]]);
+
+    const firstAt = new Date(HOUR.getTime() - 3_600_000);
+    const byKey = fakeDatabase([{ event: "job_attempt", code: "memory_job_failed", subsystem: "memory", connectionId: null,
+      fingerprint: "0123456789ab", incidents: 40n, users: 40n, runs: 0n, firstAt, lastAt: HOUR }]);
+    await expect(byKey.store.countIncidentReachByKey({ ...range, limit: 20 })).resolves.toEqual([{
+      key: { event: "job_attempt", code: "memory_job_failed", subsystem: "memory", connectionId: null, fingerprint: "0123456789ab" },
+      incidents: 40, users: 40, runs: 0, firstAt, lastAt: HOUR
+    }]);
+    expect(byKey.statements[0]!.sql).toMatch(/GROUP BY 1, 2, 3, 4, 5\s+ORDER BY "incidents" DESC/u);
+    expect(byKey.statements[0]!.values).toEqual([range.from, range.to, 20]);
+    await byKey.store.countIncidentReachByKey(range);
+    expect(byKey.statements[1]!.values.at(-1)).toBe(100);
+  });
+
+  it("reads the first incident of each key in a range, newest first, and says when keys were left out", async () => {
+    const range = { from: new Date(HOUR.getTime() - 86_400_000), to: HOUR };
+    const row = (id: string) => ({ id, occurredAt: HOUR, role: "app", event: "job_attempt", level: "fatal", appVersion: "0.3.7",
+      instanceId: "a".repeat(32), code: null, subsystem: "memory", connectionId: null, runId: null, traceId: null, userId: "user-1",
+      details: { error_fingerprint: "0123456789ab", nested: { dropped: true } } });
+    const firsts = fakeDatabase([row("a"), row("b"), row("c")]);
+    const page = await firsts.store.readFirstIncidentPerKey({ ...range, limit: 2 });
+    expect(page.truncated).toBe(true);
+    expect(page.items.map((item) => [item.id, item.level, item.userId, item.details])).toEqual([
+      ["a", "fatal", "user-1", { error_fingerprint: "0123456789ab" }], ["b", "fatal", "user-1", { error_fingerprint: "0123456789ab" }]]);
+    const statement = firsts.statements[0]!;
+    expect(statement.sql).toMatch(/SELECT DISTINCT ON \("event", "code", "subsystem", "connectionId", "details" ->> 'error_fingerprint'\)/u);
+    expect(statement.sql).toMatch(/ORDER BY "event", "code", "subsystem", "connectionId", "details" ->> 'error_fingerprint', "occurredAt", "id"/u);
+    expect(statement.values).toEqual([range.from, range.to, 3]);
+    await expect(firsts.store.readFirstIncidentPerKey(range)).resolves.toMatchObject({ truncated: false });
+    expect(firsts.statements[1]!.values.at(-1)).toBe(101);
+    for (const query of [{ from: HOUR, to: HOUR }, { ...range, limit: 0 }, { ...range, limit: 1_001 }]) {
+      await expect(firsts.store.readFirstIncidentPerKey(query)).rejects.toBeInstanceOf(TelemetryQueryError);
+    }
+  });
+
+  it("groups by up to sixteen keys and refuses more", async () => {
+    const { store } = fakeDatabase([]);
+    const range = { from: HOUR, to: new Date(HOUR.getTime() + 3_600_000) };
+    const keys = ["event", "level", "code", "subsystem", "stage", "reason", "routePath", "status", "httpStatus", "providerFamily",
+      "tool_kind", "overflow", "appVersion", "role", "kind", "outcome", "method"] as const;
+    await expect(store.readCounters({ ...range, groupBy: keys.slice(0, 16) })).resolves.toEqual([]);
+    await expect(store.readCounters({ ...range, groupBy: keys })).rejects.toBeInstanceOf(TelemetryQueryError);
+  });
+
+  it("clears a deleted account's id from its incidents with one statement on the deleting client", async () => {
+    const tx = { $executeRaw: vi.fn(async (statement: Prisma.Sql) => statement.values.length) };
+    await expect(clearTelemetryIncidentUser(tx as unknown as TelemetryDatabase, "user-1")).resolves.toBe(1);
+    const [statement] = tx.$executeRaw.mock.calls[0]!;
+    expect(statement.text).toMatch(/^UPDATE "TelemetryIncident" SET "userId" = NULL WHERE "userId" = \$1$/u);
+    expect(statement.values).toEqual(["user-1"]);
   });
 
   it("returns numeric groups for the requested keys and pages incidents newest first", async () => {

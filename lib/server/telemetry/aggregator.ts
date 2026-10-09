@@ -1,7 +1,8 @@
 /**
  * Pure, bounded aggregation of validated log records into hourly counters and
  * a small set of recent error incidents. It holds only content-free fields the
- * observability leaf already validated, and never ids as counter dimensions.
+ * observability leaf already validated, and never ids as counter dimensions:
+ * an incident keeps its record's run, trace and user ids, a counter none.
  */
 
 export const TELEMETRY_LEVELS = Object.freeze(["info", "warn", "error", "fatal"] as const);
@@ -9,14 +10,14 @@ export type TelemetryLevel = (typeof TELEMETRY_LEVELS)[number];
 export type TelemetryIncidentLevel = Extract<TelemetryLevel, "error" | "fatal">;
 
 /** The only record fields that become counter dimensions: bounded enumerations,
- * codes, statuses and installation-level identities. Never run, job, trace or
- * tool-call ids, counts, durations, timestamps, attempts, bytes or limits. */
+ * codes, statuses and installation-level identities. Never user, run, job, trace
+ * or tool-call ids, counts, durations, timestamps, attempts, bytes or limits. */
 export const TELEMETRY_DIMENSIONS = Object.freeze([
-  "abort_source", "action", "adapterKind", "category", "cause", "code", "connectionId", "db_failure", "error_category",
+  "abort_source", "action", "adapterKind", "after", "category", "cause", "code", "connectionId", "db_failure", "error_category",
   "error_class", "error_fingerprint", "error_site",
   "httpStatus", "kind", "layer", "method", "mode", "operation", "outcome", "prisma_code", "providerFamily",
-  "providerModelId", "provider_code", "provider_status", "reason", "routePath", "stage", "state", "status",
-  "stream_drop", "subsystem", "termination", "tool_kind", "transport", "work_stage"
+  "providerModelId", "provider_code", "provider_status", "reason", "routePath", "sign_in_method", "stage", "state",
+  "status", "step", "stream_drop", "subsystem", "termination", "tool_kind", "transport", "work_stage"
 ] as const);
 export type TelemetryDimension = (typeof TELEMETRY_DIMENSIONS)[number];
 export type TelemetryDimensionValue = string | number | boolean;
@@ -63,6 +64,8 @@ export type TelemetryIncidentInput = Readonly<{
   connectionId: string | null;
   runId: string | null;
   traceId: string | null;
+  /** The internal id of the user the record's request, run or job belonged to. */
+  userId: string | null;
   /** The rest of the validated record. */
   details: Readonly<Record<string, string | number | boolean>>;
 }>;
@@ -111,7 +114,7 @@ const levels = new Set<unknown>(TELEMETRY_LEVELS);
 const dimensionOrder = [...TELEMETRY_DIMENSIONS].sort();
 const incidentColumns = new Set([
   "timestamp", "level", "event", "role", "app_version", "instance_id",
-  "code", "subsystem", "connectionId", "run_id", "trace_id"
+  "code", "subsystem", "connectionId", "run_id", "trace_id", "user_id"
 ]);
 
 type Entry = {
@@ -304,6 +307,7 @@ function incidentFrom(record: ParsedRecord): TelemetryIncidentInput | null {
     connectionId: text(own(record.source, "connectionId"), 128),
     runId: text(own(record.source, "run_id"), 128),
     traceId: typeof traceId === "string" && /^[0-9a-f]{32}$/u.test(traceId) ? traceId : null,
+    userId: text(own(record.source, "user_id"), 128),
     details: Object.freeze(details)
   });
 }

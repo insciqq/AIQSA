@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SmtpProductMessage } from "../email/definitions";
-import { logEvent } from "../observability";
+import { logEvent, runWithContext } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { observedFailureCode } from "../providers/providerObservability";
 import type { ScheduledOccurrenceAdmission, ScheduledResultCopy } from "../runs/runRepositoryContract";
@@ -458,7 +458,9 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       if (candidate.workspace) workspace += 1;
       perUser.set(candidate.userId, (perUser.get(candidate.userId) ?? 0) + 1);
       log({ job_id: candidate.id, outcome: "started", stage: "dispatch" });
-      const execution = background(() => execute(candidate.id)).finally(() => inFlight.delete(candidate.id));
+      // The owner names the occurrence's records, including its run's admission.
+      const execution = background(() => runWithContext({ user_id: candidate.userId }, () => execute(candidate.id)))
+        .finally(() => inFlight.delete(candidate.id));
       inFlight.set(candidate.id, execution);
     }
   }

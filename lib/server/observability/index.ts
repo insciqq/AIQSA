@@ -1,5 +1,5 @@
 export {
-  bindContext, createTraceId, getContext, logEvent, registerRouteTemplates,
+  attributeRequestUser, bindContext, createTraceId, getContext, logEvent, registerRouteTemplates,
   runInBackground, runWithContext, setProcessRole, writeEmergencyFailure,
   announceProcess, reportSubsystemFailure, reportSubsystemHealthy, reportReadiness
 } from "./runtime.cjs";
@@ -8,5 +8,5 @@ export { setFatalExitTask } from "./process.cjs";
 export type {
   EventFields, ObservabilityContext, ProcessRole, Subsystem, SubsystemState,
   LifecycleStage, LifecycleOutcome, LifecycleAction, LifecycleFields, SubsystemFailure,
-  ToolKind, NestedAbortSource
+  ToolKind, ToolCallKind, NestedAbortSource
 } from "./events";
