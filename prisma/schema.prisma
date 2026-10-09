@@ -1127,10 +1127,12 @@ model ArtifactVersionBlob {
   @@index([blobId])
 }
 
+/// One rendered page of a version per renderer version; the entry page is the empty path.
 model ArtifactRender {
   id                 String          @id @default(uuid())
   versionId          String
   rendererVersion    Int
+  page               String          @default("") @db.VarChar(192)
   renderedStorageKey String          @unique @db.VarChar(512)
   renderedChecksum   String          @db.Char(64)
   renderedByteSize   Int
@@ -1138,7 +1140,7 @@ model ArtifactRender {
   createdAt          DateTime        @default(now())
   version            ArtifactVersion @relation(fields: [versionId], references: [id], onDelete: Cascade, onUpdate: Restrict)
 
-  @@unique([versionId, rendererVersion])
+  @@unique([versionId, rendererVersion, page])
 }
 
 /// Only the token hash is stored. Legacy single snapshots retain their bytes;

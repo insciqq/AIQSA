@@ -145,6 +145,42 @@
   flex: 1 1 auto;
 }
 
+/* Away from a multi-page artifact's start page: the page shown, quietly, and the way back. */
+.v2-artifact-page-bar {
+  display: flex;
+  min-width: 0;
+  min-height: 2.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  border-bottom: 1px solid var(--v2-color-border);
+  color: var(--v2-color-text3);
+  background: var(--v2-color-surface);
+  font-size: 0.75rem;
+  user-select: none;
+}
+
+.v2-artifact-page-bar > .v2-button {
+  flex-shrink: 0;
+}
+
+.v2-artifact-page-name {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono), monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-artifact-page-status {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: auto;
+}
+
 .v2-artifact-runtime-error { min-width: 0; }
 .v2-artifact-runtime-error code { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; font-family: var(--font-mono), monospace; }
 
@@ -213,6 +249,18 @@
   color: var(--v2-color-text3);
   font-size: 0.75rem;
   user-select: none;
+}
+
+.v2-artifact-code-note {
+  flex: 0 0 auto;
+  padding: 0 0.75rem 0.5rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+}
+
+.v2-artifact-code-note a {
+  color: var(--v2-color-accent);
+  text-decoration: underline;
 }
 
 .v2-artifact-code-actions > span:first-child {
@@ -555,7 +603,9 @@
 @media (hover: none), (pointer: coarse) {
   .v2-artifact-toolbar .v2-button,
   .v2-artifact-toolbar .v2-icon-button,
-  .v2-public-artifact-toolbar .v2-button {
+  .v2-public-artifact-toolbar .v2-button,
+  .v2-artifact-page-bar .v2-button,
+  .v2-artifact-empty .v2-button {
     min-height: 2.75rem;
   }
   .v2-artifact-toolbar .v2-icon-button {

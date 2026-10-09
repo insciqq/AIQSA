@@ -1,3 +1,5 @@
+import { artifactPagePath } from "./artifacts";
+
 export type ArtifactRuntimeError = Readonly<{
   kind: "error" | "unhandledrejection" | "csp";
   message: string;
@@ -10,7 +12,12 @@ export type ArtifactRuntimeError = Readonly<{
 export const ARTIFACT_VIEW_SANDBOX = "allow-scripts allow-forms allow-pointer-lock allow-downloads";
 export const ARTIFACT_VIEW_ALLOW = "fullscreen; clipboard-write";
 export const ARTIFACT_STORAGE_PLACEHOLDER = "/*AIQSA_ARTIFACT_STORAGE_STATE*/[]";
-export const ARTIFACT_BRIDGE_SCRIPT_OPEN = '<script data-aiqsa-artifact-bridge="3">';
+/** The viewer fills in the #fragment of the link that opened a page; the bridge scrolls there after load. */
+export const ARTIFACT_FRAGMENT_PLACEHOLDER = "/*AIQSA_ARTIFACT_FRAGMENT*/\"\"";
+/** Version 4 adds local files (fetch, XHR, src) and page navigation. */
+export const ARTIFACT_BRIDGE_VERSION = "4";
+export const ARTIFACT_BRIDGE_SCRIPT_OPEN = `<script data-aiqsa-artifact-bridge="${ARTIFACT_BRIDGE_VERSION}">`;
+export const ARTIFACT_NAVIGATE_FRAGMENT_LIMIT = 256;
 export const ARTIFACT_STORAGE_LIMITS = {
   maxKeys: 64,
   maxKeyCharacters: 128,
@@ -76,6 +83,23 @@ export function artifactLinkCarriesData(href: string): boolean {
 
 const clean = (value: unknown, max: number): value is string => typeof value === "string" && value.length <= max &&
   !/[\u0000-\u001f\u007f]/u.test(value);
+
+export type ArtifactNavigateMessage = Readonly<{ path: string; fragment?: string }>;
+
+/** A link in the artifact asks its viewer to show another page of the same bundle. The
+ * path follows the artifact path rules; the viewer still checks that the page exists. */
+export function parseArtifactNavigateMessage(value: unknown): ArtifactNavigateMessage | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const withFragment = Object.hasOwn(input, "fragment");
+  if (input.type !== "aiqsa_artifact_navigate" || !exactFields(input, withFragment ? ["type", "path", "fragment"] : ["type", "path"])) return null;
+  // The exact authored path grammar, `_vendor/` in any letter case excluded (artifactPagePath).
+  const path = artifactPagePath(input.path);
+  if (!path) return null;
+  if (!withFragment) return { path };
+  return typeof input.fragment === "string" && input.fragment.length > 0 && clean(input.fragment, ARTIFACT_NAVIGATE_FRAGMENT_LIMIT)
+    ? { path, fragment: input.fragment } : null;
+}
 
 export function parseArtifactRuntimeError(value: unknown): ArtifactRuntimeError | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;

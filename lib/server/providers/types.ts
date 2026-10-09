@@ -102,6 +102,17 @@ export type ProviderAttachment = {
   status: string;
 };
 
+/** One conversation attachment with stored bytes, listed for the artifact tool. */
+export type ConversationFileReference = Readonly<{
+  attachmentId: string;
+  messageId: string;
+  fileName: string;
+  mimeType: string;
+  byteSize: number;
+  kind: string;
+  origin: "upload" | "generated";
+}>;
+
 export type ProviderImageProvenance = Readonly<
   | { role: "current_message" }
   | { role: "earlier_message"; messageId: string }
@@ -160,6 +171,9 @@ export type NormalizedRunRequest = {
   visionAnalysis?: import("../providerRuntime/visionAnalysis").AcceptedVisionAnalysisPlan;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
   imageReferences?: import("../../contracts/imageGeneration").ConversationImageReference[];
+  /** Stored conversation files the artifact tool may reference by id, frozen
+   * at admission. Absent on runs accepted before it: they use imageReferences. */
+  fileReferences?: ConversationFileReference[];
   attachmentIds: string[];
   chatId: string;
   content: {

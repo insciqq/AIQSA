@@ -11,6 +11,7 @@ export function workspaceCheckpointResult(call: ModelToolCall, checkpoint: Works
     description: checkpoint.description,
     files: files.map(file => ({ attachment_id: file.attachmentId, path: file.relativePath, file_name: file.fileName,
       mime_type: file.mimeType, byte_size: file.byteSize })),
-    meaning: "These exact intermediate files are durably saved. This is not a quality check or confirmation that the overall task is complete."
+    meaning: "These exact intermediate files are durably saved as downloads. This is not a quality check, not an artifact and not confirmation that the overall task is complete. " +
+      "For an artifact the user asked for, call create_artifact with asset_ref = attachment_id and mimeType = mime_type."
   } }], artifacts: [{ type: "artifact", data: { artifactType: "workspace_checkpoint", payload: { checkpoint, files } } }] };
 }
