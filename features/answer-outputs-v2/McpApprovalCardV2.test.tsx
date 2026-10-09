@@ -61,7 +61,7 @@ describe("McpApprovalCardsV2", () => {
     render(<McpApprovalCardsV2 cards={[pending]} onContinue={onContinue} runId="run-1" />);
     fireEvent.click(screen.getByRole("button", { name: "Always allow for this server" }));
     await waitFor(() => expect(screen.getByTestId("mcp-approval-card")).toHaveTextContent(
-      "Tools of Records now run without asking. You can revoke this in Settings › MCP servers."));
+      "Tools of Records now run without asking. You can revoke this in Studio › MCP servers."));
     expect(onContinue).not.toHaveBeenCalled();
   });
 

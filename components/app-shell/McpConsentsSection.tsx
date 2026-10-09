@@ -56,7 +56,7 @@ export function McpConsentsSection() {
         Tools of these servers that may change data run without asking you first. Revoking applies to answers started afterwards.
       </p>
       {state.kind === "error" ? (
-        <p className="v2-settings-field-note">Always allowed servers could not be loaded. Reopen Settings to try again.</p>
+        <p className="v2-settings-field-note">Always allowed servers could not be loaded. Reopen Studio to try again.</p>
       ) : state.consents.length ? (
         <ul>
           {state.consents.map((consent) => (
