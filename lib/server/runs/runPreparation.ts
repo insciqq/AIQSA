@@ -1,7 +1,7 @@
 import { checkpointOutputsTool, WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { analyzeImageTools, visionAnalysisGuidance } from "../tools/analyzeImage";
 import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageGenerationUnavailableGuidance, imageReferenceInstructions } from "../tools/imageGeneration";
-import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
+import { artifactFileInstructions, artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
@@ -68,6 +68,7 @@ import { memorySearchTool, type MemorySearchSnapshot } from "../memory/search/co
 import { hasExplicitMemoryCommandBoundary } from "../memory/actions/actionAdmission";
 import { logEvent } from "../observability";
 import type {
+  ConversationFileReference,
   NormalizedRunRequest,
   ProviderAdapter,
   ProviderAttachment,
@@ -2192,6 +2193,21 @@ async function prepareRunWith(
     const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
     return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
   })).slice(-256);
+  // Any conversation file with stored bytes, extraction outcome aside; ready
+  // images always stay referenceable. The artifact service rechecks each use.
+  const listedFileIds = new Set<string>();
+  const fileReferences: ConversationFileReference[] = artifactToolAvailable
+    ? referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
+      const row = imageRecords.find((entry) => entry.id === id);
+      // Unusable stored metadata (over-long name or MIME) is left out, never truncated.
+      if (!row || listedFileIds.has(id) || !(row.checksum?.trim() || row.kind === "image" && row.status === "ready") ||
+        !row.fileName || row.fileName.length > 256 || !row.mimeType || row.mimeType.length > 255 ||
+        `${row.fileName}${row.mimeType}`.includes("\u0000")) return [];
+      listedFileIds.add(id);
+      return [{ attachmentId: id, messageId: message.id, fileName: row.fileName, mimeType: row.mimeType, byteSize: row.byteSize,
+        kind: row.kind, origin: message.role === "assistant" ? "generated" as const : "upload" as const }];
+    })).slice(-256)
+    : [];
   // Admitted only with something to analyze: a conversation image, or an
   // image this run may generate. A text-only chat keeps its plain tool set.
   const chatVision = chatVisionPlan && (imageReferences.length > 0 || imagePlan) ? chatVisionPlan : undefined;
@@ -2272,13 +2288,12 @@ async function prepareRunWith(
   if (imageUnavailableGuidance) {
     prompt = { ...prompt, system: [prompt.system, imageUnavailableGuidance].filter(Boolean).join("\n\n") };
   }
-  if (imagePlan || artifactToolAvailable || chatVision) {
-    const imageGuidance = imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision));
-    const artifactImageGuidance = artifactToolAvailable
-      ? "When an artifact includes a conversation image, use its exact image_id as the file asset_ref. The server will verify ownership and copy the bytes; never use a URL, filename, or invented identifier."
-      : "";
-    prompt = { ...prompt, system: [prompt.system, imageGuidance, artifactImageGuidance].filter(Boolean).join("\n\n") };
+  if (imagePlan || chatVision) {
+    prompt = { ...prompt, system: [prompt.system,
+      imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision))].filter(Boolean).join("\n\n") };
   }
+  const artifactFileGuidance = artifactToolAvailable ? artifactFileInstructions(fileReferences, workspaceCheckpoints) : null;
+  if (artifactFileGuidance) prompt = { ...prompt, system: [prompt.system, artifactFileGuidance].filter(Boolean).join("\n\n") };
   // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
@@ -2355,7 +2370,7 @@ async function prepareRunWith(
         images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
-          imageReferences } : null,
+          imageReferences, fileReferences } : null,
         mcpMode, mcp: mcpCatalog ?? mcpPlan ?? null
       })
     };
@@ -2524,6 +2539,7 @@ async function prepareRunWith(
       revision: personalInstructions.revision, selectionVersion: personalInstructions.selectionVersion } } : {}),
     ...(imagePlan ? { imagePlan } : {}),
     ...(imageReferences.length > 0 ? { imageReferences } : {}),
+    ...(fileReferences.length > 0 ? { fileReferences } : {}),
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),

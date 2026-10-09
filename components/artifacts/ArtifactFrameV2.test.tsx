@@ -10,7 +10,7 @@ const link = { type: "aiqsa_artifact_open_link", href: "https://example.com/guid
 function message(iframe: HTMLIFrameElement, data: unknown, origin = "null", source = iframe.contentWindow) {
   act(() => window.dispatchEvent(new MessageEvent("message", { data, origin, source })));
 }
-afterEach(() => { localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 beforeEach(() => vi.stubGlobal("navigator", { locks: createBrowserLocksFixture() }));
 
 describe("artifact frame host", () => {
@@ -89,6 +89,81 @@ describe("artifact frame host", () => {
     expect(screen.getByTitle("Preview")).not.toBe(iframe);
     expect(screen.getByTitle("Preview")).toHaveAttribute("srcdoc", expect.stringContaining("const initial=[]"));
     expect(screen.queryByText(/Saved state is unavailable/)).not.toBeInTheDocument();
+  });
+  it("forwards only validated page navigation from its own frame, keeps the latest request inside the 500 ms interval and never acts under a link confirmation", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    const onNavigate = vi.fn();
+    render(<ArtifactFrameV2 body={body} artifactId="pages" title="Preview" onNavigate={onNavigate} />);
+    const iframe = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const navigate = { type: "aiqsa_artifact_navigate", path: "docs/about.html", fragment: "team" };
+    message(iframe, navigate, "https://example.com");
+    message(iframe, navigate, "null", window);
+    for (const forged of [{ ...navigate, path: "../private.html" }, { ...navigate, path: "_vendor/0123456789ab/page.html" }, { ...navigate, trusted: true },
+      { ...navigate, fragment: "" }, { ...navigate, fragment: "x".repeat(257) }, [navigate]]) message(iframe, forged);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(onNavigate).not.toHaveBeenCalled();
+    now = 1000; message(iframe, navigate);
+    expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ path: "docs/about.html", fragment: "team" }, false);
+    // Two quick clicks: the second page opens once the interval has passed.
+    now = 1100; message(iframe, { type: "aiqsa_artifact_navigate", path: "index.html" });
+    expect(onNavigate).toHaveBeenCalledOnce();
+    now = 1499; act(() => vi.advanceTimersByTime(399));
+    expect(onNavigate).toHaveBeenCalledOnce();
+    now = 1500; act(() => vi.advanceTimersByTime(1));
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(onNavigate).toHaveBeenLastCalledWith({ path: "index.html" }, false);
+    // Three quick clicks: the first opens at once, only the last of the others follows.
+    now = 3000; message(iframe, { type: "aiqsa_artifact_navigate", path: "one.html" });
+    now = 3100; message(iframe, { type: "aiqsa_artifact_navigate", path: "two.html" });
+    now = 3200; message(iframe, { type: "aiqsa_artifact_navigate", path: "three.html" });
+    now = 3500; act(() => vi.advanceTimersByTime(500));
+    expect(onNavigate.mock.calls.slice(2).map(([target]) => target.path)).toEqual(["one.html", "three.html"]);
+    // A link confirmation replaces a waiting page request, and requests during it are ignored.
+    now = 4000; message(iframe, { type: "aiqsa_artifact_navigate", path: "four.html" });
+    now = 4100; message(iframe, { type: "aiqsa_artifact_navigate", path: "five.html" });
+    message(iframe, link);
+    const dialog = screen.getByRole("dialog", { name: "Open external link?" });
+    now = 5000; message(iframe, { type: "aiqsa_artifact_navigate", path: "guide.html" });
+    act(() => vi.advanceTimersByTime(2000));
+    expect(onNavigate).toHaveBeenCalledTimes(5);
+    expect(onNavigate).toHaveBeenLastCalledWith({ path: "four.html" }, false);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    act(() => iframe.focus());
+    now = 6000; message(iframe, { type: "aiqsa_artifact_navigate", path: "guide.html" });
+    expect(onNavigate).toHaveBeenLastCalledWith({ path: "guide.html" }, true);
+  });
+  it("keeps a request refused while another page loads until the next document, and forgets it when the viewer closes", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    const onNavigate = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const { rerender, unmount } = render(<ArtifactFrameV2 body={body} artifactId="busy" title="Preview" revision={1} onNavigate={onNavigate} />);
+    const iframe = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    message(iframe, { type: "aiqsa_artifact_navigate", path: "guide.html" });
+    expect(onNavigate).toHaveBeenCalledOnce();
+    now = 2000;
+    rerender(<ArtifactFrameV2 body={body} artifactId="busy" title="Preview" revision={2} onNavigate={onNavigate} />);
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledTimes(2));
+    expect(onNavigate).toHaveBeenLastCalledWith({ path: "guide.html" }, false);
+    const second = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    now = 2100; message(second, { type: "aiqsa_artifact_navigate", path: "late.html" });
+    unmount();
+    now = 9000; act(() => vi.advanceTimersByTime(1000));
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+  });
+  it("loads a new document for a new revision of the same page and moves focus into it only when asked", async () => {
+    const onNavigate = vi.fn();
+    const { rerender } = render(<ArtifactFrameV2 body={body} artifactId="revision" title="Preview" revision={1} onNavigate={onNavigate} />);
+    const first = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    expect(first).not.toHaveFocus();
+    const stale = first.contentWindow;
+    rerender(<ArtifactFrameV2 body={body} artifactId="revision" title="Preview" revision={2} focusOnLoad onNavigate={onNavigate} />);
+    await waitFor(() => expect(screen.getByTitle("Preview")).not.toBe(first));
+    const second = screen.getByTitle("Preview") as HTMLIFrameElement;
+    await waitFor(() => expect(second).toHaveFocus());
+    // The replaced document cannot speak for the new one.
+    act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "aiqsa_artifact_navigate", path: "a.html" }, origin: "null", source: stale })));
+    expect(onNavigate).not.toHaveBeenCalled();
   });
   it("uses the same link protection on public frames and does not surface private runtime repair", async () => {
     vi.stubGlobal("crypto", { randomUUID: crypto.randomUUID.bind(crypto), subtle: { digest: vi.fn().mockResolvedValue(new Uint8Array(32).fill(3).buffer) } });

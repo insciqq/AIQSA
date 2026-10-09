@@ -171,18 +171,29 @@ RUN apt-get update \
 RUN npm install --global --ignore-scripts --no-audit --no-fund @openai/codex@0.160.0 \
   && codex --version
 
+# Bundles a multi-module web page into one self-contained ES module for an
+# artifact, offline too. `--ignore-scripts` skips only the postinstall binary
+# shortcut: the JS launcher runs the native binary from the optional
+# @esbuild/linux-<arch> package npm selects for the build architecture.
+RUN npm install --global --ignore-scripts --no-audit --no-fund esbuild@0.28.1 \
+  && esbuild --version
+
 # Guest code calls the run's MCP tools through `import aiqsa` or `aiqsa-mcp`.
 # The package uses the standard library only; PYTHONPATH (the guest gets it
 # from the OCI config) reaches other interpreters such as `uv run` scripts.
 ENV PYTHONPATH=/opt/aiqsa-guest/python
 COPY ops/workspace-guest/python/aiqsa /opt/aiqsa-guest/python/aiqsa
 COPY ops/workspace-guest/bin/aiqsa-mcp /usr/local/bin/aiqsa-mcp
-RUN chmod 0755 /usr/local/bin/aiqsa-mcp \
+# Shows an Office document in an artifact: a PDF of its visible pages without
+# comments, notes, hidden sheets/slides or document properties.
+COPY ops/workspace-guest/bin/aiqsa-office-pdf /usr/local/bin/aiqsa-office-pdf
+RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-office-pdf \
   && chmod -R u=rwX,go=rX /opt/aiqsa-guest \
   && echo /opt/aiqsa-guest/python > "$(/opt/aiqsa-python/bin/python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/aiqsa-guest.pth" \
   && /opt/aiqsa-python/bin/python3 -I -c 'import aiqsa.cli, aiqsa.mcp; print("aiqsa", aiqsa.__version__)' \
   && aiqsa-mcp --version \
-  && (aiqsa-mcp list; test $? -eq 3)
+  && (aiqsa-mcp list; test $? -eq 3) \
+  && (aiqsa-office-pdf --help; test $? -eq 2)
 
 WORKDIR /workspace/project
 
@@ -197,7 +208,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.32 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.34 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.

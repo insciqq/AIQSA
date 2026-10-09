@@ -28,7 +28,9 @@ describe("artifact patch, privacy and bounded output", () => {
     expect(next.files).toEqual([expect.objectContaining({ text: "<p>three</p>" }), expect.objectContaining({ assetRef: "image" })]);
     expect(() => normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", edits: [{ path: "index.html", old_string: "one", new_string: "two" }] }, base)).toThrow("artifact_edit_ambiguous");
     expect(() => normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", delete_paths: ["index.html"] }, base)).toThrow("artifact_delete_entrypoint");
-    expect(() => normalizeArtifactOperation({ intent: "create", kind: "html", title: "Bad", files: [], edits: [] })).toThrow("artifact_operation_invalid");
+    expect(() => normalizeArtifactOperation({ intent: "create", kind: "html", title: "Bad", files: [], delete_paths: [] })).toThrow("artifact_operation_invalid");
+    expect(() => normalizeArtifactOperation({ intent: "create", kind: "html", title: "Bad", entrypoint: "index.html", files: [{ path: "index.html", mimeType: "text/html", text: "<p>one</p>" }],
+      edits: [{ path: "index.html", old_string: "one", new_string: "two" }] })).toThrow("artifact_edit_path_invalid");
     try {
       normalizeArtifactOperation({ intent: "update", baseVersionId: "v1", edits: [{ path: "index.html", old_string: "one", new_string: "x".repeat(ARTIFACT_LIMITS.maxTextFileBytes + 1) }] }, base);
       throw new Error("expected rejection");
@@ -43,6 +45,7 @@ describe("artifact patch, privacy and bounded output", () => {
     let next: string | undefined; let restored = ""; let firstCursor: string | undefined;
     for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
       const page = artifactReadPage({ ...input, args: { artifact_id: "artifact", ...(next ? { cursor: next } : {}) } });
+      if (!("files" in page)) throw new Error("expected a file page");
       expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(ARTIFACT_LIMITS.maxReadBytes);
       expect(page.files[0]!.offset).toBe(restored.length);
       restored += page.files.map(file => file.text ?? "").join("");
@@ -105,12 +108,14 @@ describe("artifact patch, privacy and bounded output", () => {
     expect(preview.feed('{"files":[{"text":"x","text":"duplicate"}]}')).toEqual([{ draftId: "broken", phase: "reset" }]);
     expect(preview.feed('{"files":[{"text":"later"}]}')).toEqual([]);
   });
-  it("refuses excess rendering work and releases permits after failure", async () => {
+  it("queues rendering work past four, refuses it past the waiting room, and releases permits after failure", async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const active = Array.from({ length: 4 }, () => boundedArtifactWork(() => gate));
+    const waiting = Array.from({ length: 16 }, (_, index) => boundedArtifactWork(async () => index));
     try { await expect(boundedArtifactWork(async () => "extra")).rejects.toBeInstanceOf(ArtifactPublicBusyError); }
     finally { release(); await Promise.all(active); }
+    expect(await Promise.all(waiting)).toEqual(Array.from({ length: 16 }, (_, index) => index));
     await expect(boundedArtifactWork(async () => { throw new Error("synthetic failure"); })).rejects.toThrow("synthetic failure");
     await expect(boundedArtifactWork(async () => "available")).resolves.toBe("available");
   });

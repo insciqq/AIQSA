@@ -56,6 +56,8 @@ describe("public share proxy policy", () => {
         const policy = response.headers.get("Content-Security-Policy");
         expect(policy).toContain("sandbox allow-scripts allow-forms allow-pointer-lock allow-downloads;");
         expect(policy).toContain("connect-src 'none'");
+        expect(policy).toContain("worker-src blob:");
+        expect(policy).toContain("media-src blob: data:;");
         expect(policy).toContain("form-action 'none'");
         expect(policy).not.toContain("allow-same-origin");
         expect(policy).not.toContain("connect-src 'self'");

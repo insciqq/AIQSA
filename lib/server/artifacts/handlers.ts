@@ -1,6 +1,6 @@
 import { ArtifactPublicBusyError } from "./objects";
 import { artifactDownloadDisposition } from "./downloadName";
-import { ARTIFACT_PUBLIC_VERSION_HEADER, decodeArtifactPublicVersion, decodeArtifactPublicationCreate,
+import { ARTIFACT_PAGE_HEADER, ARTIFACT_PUBLIC_VERSION_HEADER, decodeArtifactContentQuery, decodeArtifactPublicVersion, decodeArtifactPublicationCreate,
   decodeArtifactPublicationMutation, decodeArtifactPublicationRevision } from "@/lib/contracts/artifacts";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "@/lib/server/http/requestBody";
@@ -15,9 +15,15 @@ async function session(request: Request, resolveAuth: RequestAuthResolver) {
 }
 
 function errorResponse(error: unknown): Response {
+  // Heavy artifact work is at its process limit: the same answer the public routes give.
+  if (error instanceof ArtifactPublicBusyError) return Response.json({ error: "rate_limit_exceeded" }, { status: 429,
+    headers: { "cache-control": "private, no-store, max-age=0", "retry-after": "1" } });
   const code = error instanceof Error ? error.message : "artifact_unavailable";
+  // Artifact creation is at its process limit; nothing was written.
+  if (code === "artifact_server_busy") return Response.json({ error: code }, { status: 429,
+    headers: { "cache-control": "private, no-store, max-age=0", "retry-after": "5" } });
   const safe = /^artifact_[a-z0-9_]+$/u.test(code) ? code : "artifact_unavailable";
-  const status = safe === "artifact_not_found" || safe === "artifact_version_not_found" || safe === "artifact_publication_not_found" ? 404
+  const status = ["artifact_not_found", "artifact_version_not_found", "artifact_publication_not_found", "artifact_page_not_found"].includes(safe) ? 404
     : ["artifact_version_conflict", "artifact_publication_conflict", "artifact_publication_default_required", "artifact_publication_empty"].includes(safe) ? 409 : 400;
   return Response.json({ error: safe }, { status, headers: { "cache-control": "private, no-store, max-age=0" } });
 }
@@ -141,20 +147,23 @@ export function createArtifactRestoreHandler(deps: Deps) {
   };
 }
 
+/** `?page=<path>` selects an HTML page of the version (default: its entry page); `?download=zip|file` an export instead. */
 export function createArtifactContentHandler(deps: Deps) {
   return async function GET(request: Request, context: { params: Promise<{ artifactId: string; versionId: string }> | { artifactId: string; versionId: string } }): Promise<Response> {
     const auth = await session(request, deps.resolveAuth);
     if (!auth.session) return auth.response!;
     const params = await context.params;
+    const query = decodeArtifactContentQuery(new URL(request.url).searchParams);
+    if (!query) return errorResponse(new Error("artifact_content_query_invalid"));
     try {
-      const result = new URL(request.url).searchParams.get("download") === "zip"
-        ? await deps.service.getPrivateZip({ artifactId: params.artifactId, ownerUserId: auth.session.userId, versionId: params.versionId })
-        : await deps.service.getPrivateBundle({ artifactId: params.artifactId, ownerUserId: auth.session.userId, versionId: params.versionId,
-            ...(new URL(request.url).searchParams.get("download") === "file" ? { mainFile: true } : {}) });
-      if (!result) return Response.json({ error: "artifact_not_found" }, { status: 404 });
+      const target = { artifactId: params.artifactId, ownerUserId: auth.session.userId, versionId: params.versionId };
+      const result = query.download === "zip" ? await deps.service.getPrivateZip(target)
+        : await deps.service.getPrivateBundle({ ...target, ...(query.download === "file" ? { mainFile: true } : {}), ...(query.page !== undefined ? { page: query.page } : {}) });
+      if (!result) return errorResponse(new Error("artifact_not_found"));
       const headers = new Headers({ "cache-control": "private, no-store, max-age=0", "content-type": result.contentType, "content-length": String(result.body.byteLength), "x-content-type-options": "nosniff" });
       headers.set("content-security-policy", ARTIFACT_RESPONSE_CSP);
       headers.set("content-disposition", artifactDownloadDisposition(result.title, result.fileName.split(".").at(-1)!));
+      if ("page" in result && typeof result.page === "string") headers.set(ARTIFACT_PAGE_HEADER, result.page);
       return new Response(result.body, { headers });
     } catch (error) { return errorResponse(error); }
   };
@@ -289,20 +298,21 @@ export function createPublicArtifactHandler(service: ArtifactService) {
     const params = await context.params;
     if (!/^[A-Za-z0-9_-]{32,128}$/u.test(params.artifactToken)) return publicNotFound();
     try {
-      const query = new URL(request.url).searchParams;
-      if ([...query.keys()].some(key => key !== "download" || query.getAll(key).length !== 1) ||
-        query.has("download") && !["zip", "file"].includes(query.get("download")!)) return publicNotFound();
+      // Bounded before any token lookup; an unknown page reads like an unknown publication.
+      const query = decodeArtifactContentQuery(new URL(request.url).searchParams);
+      if (!query) return publicNotFound();
       const selector = request.headers.get(ARTIFACT_PUBLIC_VERSION_HEADER);
       const versionNumber = decodeArtifactPublicVersion(selector);
       if (selector !== null && versionNumber === null) return publicNotFound();
-      const result = query.get("download") === "zip"
+      const result = query.download === "zip"
         ? await service.publicZip(params.artifactToken, versionNumber ?? undefined)
-        : await service.publicBundle(params.artifactToken, query.get("download") === "file", versionNumber ?? undefined);
+        : await service.publicBundle(params.artifactToken, query.download === "file", versionNumber ?? undefined, query.page);
       if (!result) return publicNotFound();
       const headers = new Headers({ "cache-control": "private, no-store, max-age=0", "content-type": result.contentType, "content-length": String(result.body.byteLength), "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-robots-tag": "noindex, nofollow, noarchive" });
       headers.set("content-disposition", artifactDownloadDisposition(result.title, result.fileName.split(".").at(-1)!));
       headers.set("content-security-policy", ARTIFACT_RESPONSE_CSP);
       headers.set(ARTIFACT_PUBLIC_VERSION_HEADER, String(result.versionNumber));
+      if ("page" in result && typeof result.page === "string") headers.set(ARTIFACT_PAGE_HEADER, result.page);
       return new Response(result.body, { headers });
     } catch (error) {
       if (error instanceof ArtifactPublicBusyError) return Response.json({ error: "rate_limit_exceeded" }, { status: 429, headers: { "cache-control": "private, no-store", "retry-after": "1", "x-robots-tag": "noindex, nofollow, noarchive", "referrer-policy": "no-referrer" } });

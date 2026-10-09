@@ -81,6 +81,7 @@
     "preprune": "prisma generate",
     "typecheck": "prisma generate && next typegen && tsc --noEmit",
     "test": "vitest run",
+    "test:artifact-runtime": "playwright test -c playwright.artifact-runtime.config.ts",
     "test:benchmark:knowledge": "vitest run --config benchmarks/knowledge/vitest.config.ts",
     "test:benchmark:longmemeval": "vitest run --config benchmarks/longmemeval/vitest.config.ts",
     "test:benchmark:memory": "vitest run --config benchmarks/aiqsa-memory-live-microbench/vitest.config.ts",

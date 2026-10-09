@@ -6,13 +6,18 @@ import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2IconSprite, UiV2MenuItem } fr
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import type { ArtifactPublicManifest } from "@/lib/contracts/artifacts";
+import type { ArtifactNavigateMessage } from "@/lib/contracts/artifactRuntime";
 import { artifactKindLabel } from "./artifactPresentation";
 import { ArtifactFrameV2 } from "./ArtifactFrameV2";
+import { ArtifactPageBar } from "./ArtifactPageBar";
 import { artifactBrowserStorage, publicArtifactStateKey } from "./artifactBrowserStorage";
+import { artifactResponsePage, injectArtifactArrivalFragment, type ArtifactPageRequest } from "./artifactNavigation";
 import { ArtifactPublicRequestError, fetchPublicArtifactManifest, fetchPublicArtifactVersion, publicArtifactDownloadName, publicArtifactSelection } from "./artifactPublicClient";
 
 type PublicVersion = ArtifactPublicManifest["versions"][number];
-type Content = { attempt: number; selected: PublicVersion; body: string; image: boolean };
+/** The selected version and the page of it shown now (`page` as the server named it). */
+type Content = { attempt: number; selected: PublicVersion; body: string; image: boolean; page: string | null; serial: number; focus: boolean };
+type PageFailure = { message: string; request: ArtifactPageRequest };
 
 function PublicArtifactActions({ onReset }: { onReset(): void }) {
   const [open, setOpen] = useState(false);
@@ -56,8 +61,16 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
   const [notice, setNotice] = useState<string | null>(null);
   const [reset, setReset] = useState(0);
   const [downloading, setDownloading] = useState(false);
+  /** The entry page's path, as the server named it with the selected version's entry page. */
+  const [entry, setEntry] = useState<string | null>(null);
+  /** The page loading now; the page shown stays until it arrives. */
+  const [opening, setOpening] = useState<ArtifactPageRequest | null>(null);
+  const [pageFailure, setPageFailure] = useState<PageFailure | null>(null);
   const loadAbort = useRef<AbortController | null>(null);
   const downloadAbort = useRef<AbortController | null>(null);
+  const pageAbort = useRef<AbortController | null>(null);
+  const pageSerial = useRef(0);
+  const recoveryRef = useRef<HTMLButtonElement>(null);
   const navigation = useRef("");
   const active = useRef(true);
   const ready = content?.attempt === attempt && !error ? content : null;
@@ -69,14 +82,17 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
       if (navigation.current === window.location.hash) return;
       navigation.current = window.location.hash;
       loadAbort.current?.abort(); downloadAbort.current?.abort(); downloadAbort.current = null;
+      pageAbort.current?.abort(); pageAbort.current = null; setOpening(null); setPageFailure(null);
       setError(null); setNotice(null); setDownloading(false); setAttempt(value => value + 1);
     };
     window.addEventListener("hashchange", navigate); window.addEventListener("popstate", navigate);
     return () => {
-      active.current = false; downloadAbort.current?.abort();
+      active.current = false; downloadAbort.current?.abort(); pageAbort.current?.abort();
       window.removeEventListener("hashchange", navigate); window.removeEventListener("popstate", navigate);
     };
   }, []);
+
+  useEffect(() => { if (pageFailure?.request.focus) recoveryRef.current?.focus(); }, [pageFailure]);
 
   useEffect(() => {
     const controller = new AbortController(); loadAbort.current = controller;
@@ -108,10 +124,13 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
           response = await fetchPublicArtifactVersion(token, version.versionNumber, controller.signal);
         }
         const image = (response.headers.get("content-type") ?? "").startsWith("image/");
+        const page = artifactResponsePage(response);
         const body = image ? await response.blob() : await response.text();
         if (controller.signal.aborted) return;
         const source = typeof body === "string" ? body : (objectUrl = URL.createObjectURL(body));
-        setContent({ body: source, image, selected: version, attempt }); setError(null);
+        // A published link, and every version it switches to, opens on the entry page.
+        setEntry(page);
+        setContent({ body: source, image, selected: version, attempt, page, serial: ++pageSerial.current, focus: false }); setError(null);
         document.title = `${version.title} · AIQSA`;
       } catch (failure) {
         if (!controller.signal.aborted) setError(failure instanceof ArtifactPublicRequestError ? failure.message : "Could not load this artifact. Try again.");
@@ -120,12 +139,45 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
     return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [attempt, token]);
 
+  /** Another version, or the same one loaded again, starts from its entry page. */
+  function leavePages() {
+    pageAbort.current?.abort(); pageAbort.current = null; setOpening(null); setPageFailure(null);
+  }
   function changeVersion(number: number) {
     const fragment = `#v${number}`;
     if (window.location.hash === fragment && ready) return;
-    loadAbort.current?.abort(); downloadAbort.current?.abort(); downloadAbort.current = null;
+    loadAbort.current?.abort(); downloadAbort.current?.abort(); downloadAbort.current = null; leavePages();
     window.history.pushState(window.history.state, "", fragment); navigation.current = fragment;
     setError(null); setNotice(null); setDownloading(false); setAttempt(value => value + 1);
+  }
+  /** Shows another page of the displayed version; the shown page stays until it arrives, and links wait meanwhile. */
+  async function openPage(target: Omit<ArtifactPageRequest, "serial">) {
+    if (!ready || ready.image || pageAbort.current) return;
+    const request: ArtifactPageRequest = { ...target, serial: ++pageSerial.current };
+    const controller = new AbortController(); pageAbort.current = controller; setOpening(request);
+    try {
+      const response = await fetchPublicArtifactVersion(token, ready.selected.versionNumber, controller.signal, false, request.page);
+      const page = artifactResponsePage(response);
+      if (request.page !== undefined && page !== request.page) throw new Error("artifact_page_mismatch");
+      const body = injectArtifactArrivalFragment(await response.text(), request.fragment);
+      if (controller.signal.aborted) return;
+      if (request.page === undefined) setEntry(page);
+      setContent(current => current?.attempt === ready.attempt ? { ...current, body, page, serial: request.serial, focus: request.focus } : current);
+      setPageFailure(null);
+    } catch (failure) {
+      if (controller.signal.aborted) return;
+      setPageFailure({ request, message: failure instanceof ArtifactPublicRequestError
+        ? failure.status === 404 ? "This page is unavailable." : failure.message
+        : request.page === undefined ? "Could not load this artifact. Try again." : "Could not open this page. Try again." });
+    } finally {
+      if (pageAbort.current === controller) { pageAbort.current = null; if (active.current) setOpening(null); }
+    }
+  }
+  /** Returns false while another page loads; the frame keeps the request until the next page arrives. */
+  function followLink(target: ArtifactNavigateMessage, focused: boolean) {
+    if (!ready || ready.image || pageAbort.current) return false;
+    void openPage({ ...(target.path === entry ? {} : { page: target.path }), ...(target.fragment ? { fragment: target.fragment } : {}), focus: focused });
+    return true;
   }
   async function resetState() {
     try {
@@ -158,7 +210,7 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
             window.history.replaceState(window.history.state, "", `#v${fresh.defaultVersionNumber}`);
             navigation.current = window.location.hash;
             setNotice(`Requested version is unavailable. Showing v${fresh.defaultVersionNumber}.`);
-            setContent(null); setAttempt(value => value + 1);
+            leavePages(); setContent(null); setAttempt(value => value + 1);
           }
         } catch (refreshFailure) {
           if (active.current && !controller.signal.aborted) setError(refreshFailure instanceof ArtifactPublicRequestError ? refreshFailure.message : "This artifact is unavailable.");
@@ -169,6 +221,9 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
     }
   }
   const displayed = ready?.selected ?? selected;
+  // The page bar shows only away from the entry page, or while another page opens.
+  const shownPage = ready && ready.page !== null && ready.page !== entry ? ready.page : null;
+  const pageBar = opening ? opening.page ?? shownPage : shownPage;
   return <main className="v2-artifact-page v2-public-artifact">
     <UiV2IconSprite />
     <header className="v2-public-artifact-toolbar">
@@ -183,9 +238,17 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
     {notice ? <div className="v2-artifact-banner" role="status">{notice}</div> : null}
     <div className="v2-artifact-scene">
       {error ? <div className="v2-artifact-empty" role="alert"><p>{error}</p>
-        <UiV2Button onClick={() => { setError(null); setContent(null); setNotice(null); setAttempt(value => value + 1); }}>Try again</UiV2Button></div>
-        : ready ? ready.image ? <img alt={ready.selected.title} className="v2-artifact-image" src={ready.body} />
-          : <ArtifactFrameV2 key={`${token}:${reset}`} publicToken={token} body={ready.body} title={ready.selected.title} />
+        <UiV2Button onClick={() => { leavePages(); setError(null); setContent(null); setNotice(null); setAttempt(value => value + 1); }}>Try again</UiV2Button></div>
+        : pageFailure && ready ? <div aria-busy={opening !== null || undefined} className="v2-artifact-empty" role="alert"><p>{pageFailure.message}</p>
+          {pageFailure.request.page !== undefined ? <UiV2Button busy={opening !== null && opening.page === undefined} disabled={opening !== null} icon="arrow-left"
+            onClick={() => void openPage({ focus: true })} ref={recoveryRef} type="button">Start page</UiV2Button> : null}
+          <UiV2Button busy={opening !== null && opening.page !== undefined} disabled={opening !== null} onClick={() => void openPage({ ...pageFailure.request, focus: false })}
+            ref={pageFailure.request.page === undefined ? recoveryRef : undefined} type="button">Try again</UiV2Button></div>
+        : ready ? ready.image ? <img alt={ready.selected.title} className="v2-artifact-image" src={ready.body} /> : <>
+          {pageBar !== null ? <ArtifactPageBar busy={opening !== null} onStart={() => void openPage({ focus: true })} page={pageBar} /> : null}
+          <ArtifactFrameV2 key={`${token}:${reset}`} publicToken={token} body={ready.body} focusOnLoad={ready.focus} revision={ready.serial}
+            title={ready.selected.title} onNavigate={followLink} />
+        </>
           : <div className="v2-artifact-empty" role="status">Loading artifact…</div>}
     </div>
   </main>;
