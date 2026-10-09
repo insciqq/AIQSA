@@ -1,4 +1,4 @@
-import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
+import { databaseFailureCode, databaseFailureKind, rememberDatabaseFailure } from "../observability/databaseFailure";
 import { logEvent } from "../observability";
 import { WorkspaceActivityText, workspaceSecretMatches, type WorkspaceSecretMatch } from "./activityText";
 import { WorkspaceSecretOutputMask } from "./secretOutput";
@@ -69,6 +69,7 @@ import { WorkspaceRuntimeError } from "./runtime";
 import type { WorkspaceOperation } from "./operationFence";
 import { WORKSPACE_OPERATION_LEASE_MS, failWorkspaceExportsForLostDisk, lockWorkspaceSession, workspaceOperationWhere, workspaceRunOperationOwner } from "./sessionOperation";
 import { workspaceRunTools } from "./admission";
+import { retryWorkspaceExportStep } from "./exportRetry";
 import { decryptWorkspaceSecret, type AcceptedWorkspaceSecret } from "./secrets/store";
 import { saveWorkspaceBrowserSessions, type WorkspaceBrowserSaveInput } from "./secrets/browserStore";
 import { readWorkspaceBrowserCollection } from "./secrets/browserCollection";
@@ -139,7 +140,7 @@ class WorkspaceSandboxMissing extends WorkspaceRuntimeError {
 }
 
 /** Content-free names of the export steps, in order. */
-type WorkspaceExportStep = "claim" | "initialize" | "quiesce" | "resume" | "collect" | "seal";
+type WorkspaceExportStep = "claim" | "initialize" | "quiesce" | "resume" | "collect" | "seal" | "publish";
 
 /**
  * An export meets an unproven loss (a runner without the session in its
@@ -172,6 +173,16 @@ export type WorkspaceExportClaim =
 
 /** Lease window for one export attempt; renewed before every long step. */
 export const WORKSPACE_EXPORT_LEASE_MS = 120_000;
+/**
+ * Every export step and lease renewal waits at most this long for any one row
+ * lock, then rolls its whole transaction back with 55P03, well inside its
+ * explicit budget. Blocked behind a longer holder (a Memory history commit
+ * holds the chat row FOR SHARE for seconds), a step thus fails classified and
+ * retries within its lease instead of expiring Prisma's default 5-second
+ * interactive transaction while it waits.
+ */
+const WORKSPACE_EXPORT_LOCK_TIMEOUT_MS = 2_000;
+const WORKSPACE_EXPORT_TRANSACTION = Object.freeze({ maxWait: 2_000, timeout: 10_000 });
 export { WORKSPACE_EXPORT_MAX_ATTEMPTS } from "@/lib/domain/workspace";
 /** Retry spacing also bounds repeated storage failures after a durable handoff. */
 export const WORKSPACE_EXPORT_RECOVERY_GRACE_MS = 30_000;
@@ -449,6 +460,14 @@ export function createPrismaWorkspaceCoordinatorRepository(
     };
   }
 
+  /** An export step or lease transaction: explicit budget, bounded lock waits. */
+  function exportTransaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`SELECT set_config('lock_timeout', ${`${WORKSPACE_EXPORT_LOCK_TIMEOUT_MS}ms`}, true)`);
+      return work(tx);
+    }, WORKSPACE_EXPORT_TRANSACTION);
+  }
+
   return {
     ...createPrismaWorkspaceCodeGrantRepository(prisma),
     saveBrowserSessions: (input) => saveWorkspaceBrowserSessions(prisma, input),
@@ -634,7 +653,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return rows.map(generatedFile);
     },
     async claimExport(request) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, request.sessionId);
         if (await exportAlreadyComplete(tx, request, request.handoff === true)) return { status: "complete" as const };
         if (!session || !request.operation || session.operationOwner !== request.operation.owner ||
@@ -652,7 +671,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async claimExportForRecovery(request) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         const session = await lockWorkspaceSession(tx, request.sessionId);
         if (await exportAlreadyComplete(tx, request)) return { status: "complete" as const };
         if (!session) throw new WorkspaceRuntimeError("workspace_output_export_failed");
@@ -703,7 +722,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return rows.map((row) => ({ runId: row.modelRunId, updatedAt: row.updatedAt, userId: row.modelRun.userId }));
     },
     async reserveOutputCapture(lease) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return null;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: lease.runId } });
         if (binding.outputCapture !== null) return { ...parseOutputCapture(binding.outputCapture), create: false };
@@ -714,7 +733,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
     },
     async sealOutputCapture(lease) {
       const outputs = outputIdentities(lease.capture.outputs);
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: lease.runId } });
         const capture = parseOutputCapture(binding.outputCapture);
@@ -735,7 +754,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return binding?.outputCapture != null && parseOutputCapture(binding.outputCapture).outputs !== null;
     },
     async markExportPending(lease) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: lease.runId } });
         if (binding.outputCapture === null || parseOutputCapture(binding.outputCapture).outputs === null) return false;
@@ -748,7 +767,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async markExportComplete(lease) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({
           select: { outputCapture: true, outputs: { select: {
@@ -768,7 +787,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async markExportFailed(lease) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const updated = await tx.workspaceRunBinding.updateMany({
           data: { exportLeaseExpiresAt: null, exportLeaseToken: null, exportState: "FAILED", lastExportErrorCode: lease.code.slice(0, 64) },
@@ -778,7 +797,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async renewExportLease(lease) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const expiresAt = new Date(Date.now() + lease.leaseMs);
         const updated = await tx.workspaceRunBinding.updateMany({
@@ -792,7 +811,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async prepareOutput(lease) {
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         // A crashed upload retains a leased cleanup obligation. Publication
         // deletes it atomically; otherwise normal retention reclaims it.
@@ -914,7 +933,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         return generatedFile(existing);
       };
       // The session lock serializes all publishers of this binding/path.
-      return prisma.$transaction(async (tx) => {
+      return exportTransaction(async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) throw new WorkspaceRuntimeError("workspace_operation_stale");
         const captureRow = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: binding.runId } });
         const owed = parseOutputCapture(captureRow.outputCapture).outputs?.find((entry) => entry.relativePath === output.relativePath);
@@ -1362,12 +1381,15 @@ function codeCallSignature(summary: WorkspaceCodeCallSummary): string {
 
 export function createWorkspaceCoordinator(input: Readonly<{
   config: WorkspaceConfig;
+  /** One export attempt's lease (default `WORKSPACE_EXPORT_LEASE_MS`); it also bounds that attempt's database retries. */
+  exportLeaseMs?: number;
   registry: WorkspaceExecutionRegistry;
   repository: WorkspaceCoordinatorRepository;
   runtime: WorkspaceRuntime;
   skills?: WorkspaceSkillBundles;
   storage: StorageAdapter;
 }>): WorkspaceCoordinator {
+  const exportLeaseMs = input.exportLeaseMs ?? WORKSPACE_EXPORT_LEASE_MS;
   const initializing = new Map<string, Promise<WorkspaceExecutionBinding>>();
   const initialized = new Map<string, WorkspaceExecutionBinding>();
   const skillPlans = new Map<string, WorkspaceSkillPlan>();
@@ -2439,19 +2461,37 @@ export function createWorkspaceCoordinator(input: Readonly<{
       if (!initial || (workspace && !exactBinding(initial, workspace))) {
         return { code: "workspace_runtime_incompatible", retryable: false, status: "failed" };
       }
-      const leaseInput = { generation: initial.operationGeneration, leaseMs: WORKSPACE_EXPORT_LEASE_MS, runId, runtimeSandboxId: initial.runtimeSandboxId, sessionId: initial.sessionId };
+      const leaseInput = { generation: initial.operationGeneration, leaseMs: exportLeaseMs, runId, runtimeSandboxId: initial.runtimeSandboxId, sessionId: initial.sessionId };
       if (signal?.aborted) return { reason: "cancelled", status: "deferred" };
+      // A conservative local view of the durable lease: a claim or renewal
+      // stores an expiry no earlier than its attempt's start plus the lease.
+      // Before the claim, an attempt retries for at most one lease length.
+      let leaseValidUntil = Date.now() + exportLeaseMs;
+      // A rollback-safe database failure repeats the step while the lease
+      // holds; each step is idempotent (seal compares output identities).
+      const databaseStep = <T>(stage: WorkspaceExportStep | "heartbeat", abort: AbortSignal | undefined, work: () => Promise<T>) =>
+        retryWorkspaceExportStep(work, {
+          leaseValidUntil: () => leaseValidUntil,
+          onRetry: ({ delayMs, error, kind, retry }) => logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export",
+            work_stage: stage, outcome: "degraded", code: "workspace_output_export_failed", prisma_code: databaseFailureCode(error),
+            db_failure: kind, attempt: retry, delay_ms: delayMs, action: "retry", run_id: runId }),
+          signal: abort
+        });
+      const liveClaim = recovery ? null : { ...leaseInput, ...(handoff ? { handoff: true } : {}), operation: {
+        generation: initial.operationGeneration,
+        owner: handoff && initial.operationOwner ? initial.operationOwner : workspaceRunOperationOwner(runId)
+      } };
       let claim: WorkspaceExportClaim;
+      let claimedFrom = Date.now();
       try {
-        claim = recovery
-          ? await input.repository.claimExportForRecovery(leaseInput)
-          : await input.repository.claimExport({ ...leaseInput, ...(handoff ? { handoff: true } : {}), operation: {
-              generation: initial.operationGeneration,
-              owner: handoff && initial.operationOwner ? initial.operationOwner : workspaceRunOperationOwner(runId)
-            } });
+        claim = await databaseStep("claim", signal, () => {
+          claimedFrom = Date.now();
+          return liveClaim ? input.repository.claimExport(liveClaim) : input.repository.claimExportForRecovery(leaseInput);
+        });
       } catch (error) {
         logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export", work_stage: "claim", outcome: "failed",
-          code: runtimeCode(error), action: handoff ? "fail" : "retry", run_id: runId });
+          code: runtimeCode(error), prisma_code: databaseFailureCode(error), db_failure: databaseFailureKind(error),
+          action: handoff ? "fail" : "retry", run_id: runId });
         return failedExport({ code: runtimeCode(error), retryable: true, status: "failed" }, error);
       }
       if (claim.status === "complete") {
@@ -2482,29 +2522,38 @@ export function createWorkspaceCoordinator(input: Readonly<{
         initial.operationOwner?.startsWith(`export:${runId}:`)
         ? { generation: initial.operationGeneration, owner: initial.operationOwner! } : undefined;
       initial = { ...initial, operationGeneration: claim.operation.generation, operationOwner: claim.operation.owner };
+      leaseValidUntil = claimedFrom + exportLeaseMs;
       const lease = { operation: ownedOperation(initial), runId, runtimeSandboxId: initial.runtimeSandboxId, sessionId: initial.sessionId, token: claim.token };
       let retirementOperation = lease.operation;
       let leaseLost = false;
       const heartbeat = new AbortController();
       const exportSignal = signal ? AbortSignal.any([signal, heartbeat.signal]) : heartbeat.signal;
+      let step: WorkspaceExportStep = "claim";
+      const exportStep = <T>(work: () => Promise<T>) => databaseStep(step, exportSignal, work);
       const renewal: { pending: Promise<void> | null } = { pending: null };
       const renew = (): Promise<void> => {
         renewal.pending ??= (async () => {
           exportSignal.throwIfAborted();
           if (leaseLost) throw new WorkspaceRuntimeError("workspace_output_export_failed");
-          if (!(await input.repository.renewExportLease({ ...lease, leaseMs: WORKSPACE_EXPORT_LEASE_MS }))) {
+          let renewedFrom = Date.now();
+          if (!(await databaseStep("heartbeat", exportSignal, () => {
+            renewedFrom = Date.now();
+            return input.repository.renewExportLease({ ...lease, leaseMs: exportLeaseMs });
+          }))) {
             leaseLost = true;
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }
+          leaseValidUntil = Math.max(leaseValidUntil, renewedFrom + exportLeaseMs);
           exportSignal.throwIfAborted();
         })().finally(() => { renewal.pending = null; });
         return renewal.pending;
       };
-      // A worker whose lease was reclaimed stops touching the database; the
-      // owner-guarded terminal updates would refuse it anyway.
+      // A worker whose lease was reclaimed, or could not be renewed before it
+      // ran out, stops touching the database; the owner-guarded terminal
+      // updates would refuse it anyway.
       const heartbeatTimer = setInterval(() => {
-        void renew().catch(() => heartbeat.abort(new WorkspaceRuntimeError("workspace_output_export_failed")));
-      }, Math.max(1_000, Math.floor(WORKSPACE_EXPORT_LEASE_MS / 3)));
+        void renew().catch((error: unknown) => heartbeat.abort(new WorkspaceRuntimeError("workspace_output_export_failed", { factsOf: error })));
+      }, Math.max(1_000, Math.floor(exportLeaseMs / 3)));
       heartbeatTimer.unref?.();
       let batch: Readonly<{ batchId: string; runtimeSandboxId: string }> | null = null;
       const exportStartedAt = new Date();
@@ -2523,10 +2572,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
         runId,
         startedAt: exportStartedAt
       })).catch(() => undefined) ?? Promise.resolve();
-      let step: WorkspaceExportStep = "claim";
       try {
         exportSignal.throwIfAborted();
-        const capture = await input.repository.reserveOutputCapture(lease);
+        const capture = await exportStep(() => input.repository.reserveOutputCapture(lease));
         if (!capture) throw new WorkspaceRuntimeError("workspace_operation_stale");
         // The claim fences new dispatches. Re-read after it to include a guest
         // operation that raced our initial binding read.
@@ -2537,10 +2585,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
         const runtimeSandboxId = initial.runtimeSandboxId;
         if (!current.guestUsed || !runtimeSandboxId) {
           step = "seal";
-          if (!(await input.repository.sealOutputCapture({ ...lease, capture: { id: capture.id, outputs: [] } }))) {
+          if (!(await exportStep(() => input.repository.sealOutputCapture({ ...lease, capture: { id: capture.id, outputs: [] } })))) {
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }
-          if (!(await input.repository.markExportComplete(lease))) {
+          if (!(await exportStep(() => input.repository.markExportComplete(lease)))) {
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }
           return { files: [], status: "complete" };
@@ -2555,7 +2603,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
           binding: WorkspaceExecutionBinding & Readonly<{ runtimeSandboxId: string }>; outputs: readonly WorkspaceOutputStream[];
         }>> => {
           step = "initialize";
-          const binding = await initialize(initial, "export", exportSignal, undefined, predecessor);
+          // Its guest-use marker and seed claim take the chat row too; a
+          // rollback-safe failure of either repeats the whole initialization,
+          // whose steps are idempotent for this same operation.
+          const binding = await exportStep(() => initialize(initial, "export", exportSignal, undefined, predecessor));
           if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_session_lost");
           if (!quiesced) {
             // Freeze the output set: no process of this run may still be writing
@@ -2638,16 +2689,16 @@ export function createWorkspaceCoordinator(input: Readonly<{
         }
         step = "seal";
         const identities = outputIdentities(outputs, input.config);
-        if (!(await input.repository.sealOutputCapture({ ...lease, capture: { id: capture.id, outputs: identities } }))) {
+        if (!(await exportStep(() => input.repository.sealOutputCapture({ ...lease, capture: { id: capture.id, outputs: identities } })))) {
           throw new WorkspaceRuntimeError("workspace_output_export_failed");
         }
         if (handoff) {
           // Returned streams are lazy transport handles; all protected bytes
           // already live in the receiver's durable capture at this boundary.
           await Promise.allSettled(outputs.map((output) => output.body.cancel()));
-          const recorded = outputs.length === 0
-            ? await input.repository.markExportComplete(lease)
-            : await input.repository.markExportPending(lease);
+          const recorded = await exportStep(() => outputs.length === 0
+            ? input.repository.markExportComplete(lease)
+            : input.repository.markExportPending(lease));
           if (!recorded) throw new WorkspaceRuntimeError("workspace_output_export_failed");
           if (outputs.length === 0) {
             await input.runtime.releaseOutputCapture?.({ captureId: capture.id, modelRunId: runId,
@@ -2657,11 +2708,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }
           return { status: "pending" };
         }
+        step = "publish";
         const files: ThreadGeneratedFile[] = [];
         for (const output of outputs) {
           await renew();
           const storageKey = outputStorageKey(binding, output, lease.token);
-          if (!(await input.repository.prepareOutput({ ...lease, storageKey }))) {
+          if (!(await exportStep(() => input.repository.prepareOutput({ ...lease, storageKey })))) {
             throw new WorkspaceRuntimeError("workspace_operation_stale");
           }
           if (!(await objectMatches(input.storage, storageKey, output, exportSignal))) {
@@ -2685,7 +2737,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }
           await renew();
-          files.push(await input.repository.settleOutput({
+          files.push(await exportStep(() => input.repository.settleOutput({
             binding, token: lease.token,
             output: {
               byteSize: output.byteSize,
@@ -2694,10 +2746,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
               relativePath: output.relativePath
             },
             storageKey
-          }));
+          })));
         }
         await renew();
-        if (!(await input.repository.markExportComplete(lease))) {
+        if (!(await exportStep(() => input.repository.markExportComplete(lease)))) {
           throw new WorkspaceRuntimeError("workspace_output_export_failed");
         }
         await input.runtime.releaseOutputCapture?.({ captureId: capture.id, modelRunId: runId,
@@ -2724,13 +2776,16 @@ export function createWorkspaceCoordinator(input: Readonly<{
           : "workspace_output_export_failed";
         const retryable = isRetryableWorkspaceExportErrorCode(recorded);
         logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export", work_stage: step,
-          outcome: leaseLost ? "lost_lease" : "failed", code, action: handoff || !retryable ? "fail" : "retry", run_id: runId });
+          outcome: leaseLost ? "lost_lease" : "failed", code, prisma_code: databaseFailureCode(error),
+          db_failure: databaseFailureKind(error), action: handoff || !retryable ? "fail" : "retry", run_id: runId });
         if (!leaseLost) {
-          await input.repository.markExportFailed({ ...lease, code: recorded }).catch(() => undefined);
+          await exportStep(() => input.repository.markExportFailed({ ...lease, code: recorded })).catch(() => undefined);
         }
         return failedExport({ code, retryable, status: "failed" }, error);
       } finally {
         clearInterval(heartbeatTimer);
+        // A renewal still retrying stops after its current attempt.
+        heartbeat.abort();
         await renewal.pending?.catch(() => undefined);
         if (batch && input.runtime.releaseOutputs) {
           await input.runtime.releaseOutputs({

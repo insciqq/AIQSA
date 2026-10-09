@@ -3,12 +3,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
-import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceRunOutputDirectory } from "@/lib/domain/workspace";
+import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceMessageManifestPath, workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
+import { lockMemorySourceChat } from "@/lib/server/memory/sourceState";
+import { databaseFailureCode, databaseFailureKind } from "@/lib/server/observability/databaseFailure";
 import { prisma } from "@/lib/server/prisma";
+import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
+import { WorkspaceHandoffFailure } from "@/lib/server/runs/settlementFailure";
 import { getWorkspaceConfig } from "./config";
-import { createPrismaWorkspaceCoordinatorRepository, createWorkspaceCoordinator, WORKSPACE_EXPORT_MAX_ATTEMPTS, type WorkspaceExportLease } from "./coordinator";
-import type { WorkspaceOutputIdentity } from "./outputManifest";
+import {
+  createPrismaWorkspaceCoordinatorRepository, createWorkspaceCoordinator, WORKSPACE_EXPORT_MAX_ATTEMPTS, type WorkspaceExportLease
+} from "./coordinator";
+import { parseOutputCapture, type WorkspaceOutputIdentity } from "./outputManifest";
 import { createPrismaWorkspaceExecutionRegistry, workspaceSyncCleanupId } from "./executionRegistry";
 import { WorkspaceRuntimeError } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
@@ -1052,4 +1058,211 @@ describe("Prisma Workspace export concurrency", () => {
       staleBefore: new Date(Date.now() + 1_000)
     })).resolves.not.toContainEqual(expect.objectContaining({ runId: fixture.runId, userId: fixture.userId }));
   });
+});
+
+describe("Prisma Workspace export behind a held chat row", () => {
+  afterAll(async () => {
+    await cleanupFixtures();
+    await prisma.$disconnect();
+  });
+
+  /** A streaming answer whose live deterministic guest holds `report.txt` in the run's output directory. */
+  async function liveRunWithReport() {
+    const userId = `${TEST_USER_PREFIX}${randomUUID()}`;
+    await prisma.user.create({ data: { displayName: "Workspace Export Lease Test", id: userId, status: "active" } });
+    const chat = await prisma.chat.create({ data: { title: "Export contention", userId, workspaceEnabled: true } });
+    const question = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Export a report"),
+      role: "user", status: "complete" } });
+    const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Done"),
+      parentMessageId: question.id, role: "assistant", status: "complete" } });
+    const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, modelId: "fake-qsa",
+      normalizedRequest: {}, provider: "fake", status: "streaming", userId, userMessageId: question.id } });
+    const operation = { generation: 1, owner: `run:${run.id}` };
+    const session = await prisma.workspaceSession.create({ data: { chatId: chat.id, expiresAt: new Date(Date.now() + config.retentionSeconds * 1_000),
+      imageRef: config.imageRef, internetEnabled: false, operationOwner: operation.owner, policyRevision: 1,
+      sandboxName: `aiqsa-ws-${randomUUID()}`, state: "RUNNING", version: operation.generation } });
+    const raw = new DeterministicWorkspaceRuntime(config);
+    const runtime = fenceDeterministicWorkspaceRuntime(raw);
+    const live = await runtime.ensureSession({ cpus: 1, diskMiB: config.diskMiB, imageRef: config.imageRef, internetEnabled: false,
+      memoryMiB: 1024, operation, runtimeSandboxId: null, sandboxName: session.sandboxName, sessionId: session.id });
+    const guest = { operation, runtimeSandboxId: live.runtimeSandboxId, sessionId: session.id };
+    await prisma.workspaceSession.update({ data: { runtimeSandboxId: live.runtimeSandboxId }, where: { id: session.id } });
+    const catalog = await runtime.loadBoundTools(guest);
+    const outputDirectory = workspaceRunOutputDirectory(run.id);
+    await prisma.workspaceRunBinding.create({ data: { guestUsedAt: new Date(), imageRef: config.imageRef, internetEnabled: false,
+      mcpVersion: catalog.mcpVersion, modelRunId: run.id, outputDirectory, policyRevision: 1,
+      runtimeVersion: catalog.runtimeVersion, toolCatalogHash: catalog.hash, toolDefinitions: JSON.parse(JSON.stringify(catalog.tools)),
+      workspaceSessionId: session.id } });
+    await runtime.callBoundTool({ ...guest, arguments: { content: "report", path: `${outputDirectory}/report.txt` },
+      modelRunId: run.id, modelRunToolCallId: randomUUID(), originalName: "sandbox_fs_write" });
+    const workspace: NormalizedRunWorkspace = {
+      enabled: true, imageRef: config.imageRef, inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: false,
+      maxToolCalls: config.maxToolCalls, maxToolRounds: config.maxToolRounds, mcpVersion: catalog.mcpVersion,
+      messageManifestPath: workspaceMessageManifestPath(question.id), outputDirectory, projectDirectory: "/workspace/project",
+      runtimeVersion: catalog.runtimeVersion, sessionId: session.id, syncToolTimeoutSeconds: config.syncToolTimeoutSeconds,
+      toolCatalogHash: catalog.hash, turnTimeoutSeconds: config.turnTimeoutSeconds
+    };
+    return { chatId: chat.id, runId: run.id, runtime, sessionId: session.id, userId, workspace,
+      dispose: () => raw.removeSession({ runtimeSandboxId: live.runtimeSandboxId, sessionId: session.id }) };
+  }
+
+  /** Holds the chat row FOR SHARE, as a Memory history commit verifying its source snapshot does. */
+  function holdChatLikeMemoryCommit(chat: Readonly<{ chatId: string; userId: string }>, milliseconds: number) {
+    let acquired!: () => void;
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const released = prisma.$transaction(async (tx) => {
+      if (!await lockMemorySourceChat(tx, { chatId: chat.chatId, lock: "SHARE", userId: chat.userId })) throw new Error("fixture_chat_missing");
+      acquired();
+      await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    }, { maxWait: 2_000, timeout: milliseconds + 10_000 });
+    return { held: Promise.race([locked, released.then(() => { throw new Error("fixture_hold_not_acquired"); })]), released };
+  }
+
+  /** A step whose first call waits until another transaction holds the chat row for `milliseconds`. */
+  function heldBefore<Input>(original: (input: Input) => Promise<boolean>, chat: Readonly<{ chatId: string; userId: string }>,
+    milliseconds: number) {
+    const holds: Array<Promise<void>> = [];
+    const step = async (input: Input) => {
+      if (holds.length === 0) {
+        const hold = holdChatLikeMemoryCommit(chat, milliseconds);
+        holds.push(hold.released);
+        await hold.held;
+      }
+      return original(input);
+    };
+    return { holds, step };
+  }
+
+  async function exportRecords<T>(action: () => Promise<T>): Promise<Readonly<{ records: Record<string, unknown>[]; result: T }>> {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const result = await action();
+      const records = writer.mock.calls.flatMap(([chunk]) => {
+        try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+      }).filter((record) => record.event === "runtime_lifecycle" && record.stage === "export");
+      return { records, result };
+    } finally { writer.mockRestore(); }
+  }
+
+  // Production (2026-10-09): a finished answer's export sealed its capture while
+  // a Memory history commit of the same chat held the chat row FOR SHARE for
+  // about 6 s; the seal's default 5 s transaction expired waiting for the
+  // chat lock and the run ended with its files lost.
+  it("hands off while a Memory commit holds the chat row through seal and the handoff record, then publishes once", async () => {
+    const live = await liveRunWithReport();
+    try {
+      const base = createPrismaWorkspaceCoordinatorRepository(prisma);
+      const seal = vi.spyOn(base, "sealOutputCapture");
+      const pending = vi.spyOn(base, "markExportPending");
+      const heldSeal = heldBefore(base.sealOutputCapture, live, 7_000);
+      const heldPending = heldBefore(base.markExportPending, live, 7_000);
+      const registry = createPrismaWorkspaceExecutionRegistry(prisma);
+      const coordinator = createWorkspaceCoordinator({ config, registry, runtime: live.runtime, storage: createMemoryStorageAdapter(),
+        repository: { ...base, markExportPending: heldPending.step, sealOutputCapture: heldSeal.step } });
+      const handoff = await exportRecords(() => coordinator.handoff({ runId: live.runId, userId: live.userId, workspace: live.workspace }));
+      await Promise.all([...heldSeal.holds, ...heldPending.holds]);
+      expect(handoff.result).toEqual({ status: "ready" });
+      expect(heldSeal.holds).toHaveLength(1);
+      expect(heldPending.holds).toHaveLength(1);
+      // Each step waited out its bounded lock wait at least once, then ran again in the same claim.
+      expect(seal.mock.calls.length).toBeGreaterThan(1);
+      expect(pending.mock.calls.length).toBeGreaterThan(1);
+      expect(handoff.records.filter((record) => record.outcome !== "degraded")).toEqual([]);
+      expect(handoff.records).toContainEqual(expect.objectContaining({ work_stage: "seal", outcome: "degraded", action: "retry",
+        code: "workspace_output_export_failed", prisma_code: "P2010", db_failure: "lock_timeout", run_id: live.runId }));
+      expect(await bindingState(live.runId)).toMatchObject({ exportAttemptCount: 0, exportLeaseToken: null, exportState: "PENDING",
+        lastExportErrorCode: null });
+      expect(await base.outputHandoffReady({ runId: live.runId, sessionId: live.sessionId })).toBe(true);
+
+      // The completed answer's owed file is published from that capture, again behind a held chat row.
+      await prisma.modelRun.update({ data: { status: "complete" }, where: { id: live.runId } });
+      const storage = createMemoryStorageAdapter();
+      const complete = vi.spyOn(base, "markExportComplete");
+      const heldComplete = heldBefore(base.markExportComplete, live, 7_000);
+      const recovery = createWorkspaceCoordinator({ config, registry, runtime: live.runtime, storage,
+        repository: { ...base, markExportComplete: heldComplete.step } });
+      const recovered = await exportRecords(() => recovery.finalize({ recovery: true, runId: live.runId, userId: live.userId }));
+      await Promise.all(heldComplete.holds);
+      expect(recovered.result).toMatchObject({ status: "complete", files: [{ relativePath: "report.txt" }] });
+      expect(complete.mock.calls.length).toBeGreaterThan(1);
+      expect(recovered.records).toContainEqual(expect.objectContaining({ work_stage: "publish", outcome: "degraded",
+        db_failure: "lock_timeout" }));
+      expect(recovered.records.filter((record) => record.outcome !== "degraded")).toEqual([]);
+      expect(await bindingState(live.runId)).toMatchObject({ exportAttemptCount: 1, exportState: "COMPLETE", lastExportErrorCode: null });
+      const files = await base.generatedFiles({ runId: live.runId, userId: live.userId });
+      expect(files).toEqual([expect.objectContaining({ byteSize: 6, relativePath: "report.txt" })]);
+      expect([...storage.objects.keys()]).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      await live.dispose();
+    }
+  }, 90_000);
+
+  it("hands off after a Memory commit holds the chat row through the export's initialization", async () => {
+    const live = await liveRunWithReport();
+    try {
+      const base = createPrismaWorkspaceCoordinatorRepository(prisma);
+      const marker = vi.spyOn(base, "markGuestUsed");
+      const heldMarker = heldBefore(base.markGuestUsed, live, 7_000);
+      const coordinator = createWorkspaceCoordinator({ config, registry: createPrismaWorkspaceExecutionRegistry(prisma),
+        runtime: live.runtime, storage: createMemoryStorageAdapter(), repository: { ...base, markGuestUsed: heldMarker.step } });
+      const handoff = await exportRecords(() => coordinator.handoff({ runId: live.runId, userId: live.userId, workspace: live.workspace }));
+      await Promise.all(heldMarker.holds);
+      expect(handoff.result).toEqual({ status: "ready" });
+      expect(heldMarker.holds).toHaveLength(1);
+      expect(marker.mock.calls.length).toBeGreaterThan(1);
+      expect(handoff.records.filter((record) => record.outcome !== "degraded")).toEqual([]);
+      expect(handoff.records).toContainEqual(expect.objectContaining({ work_stage: "initialize", outcome: "degraded", action: "retry",
+        prisma_code: "P2028", db_failure: "transaction_expired", run_id: live.runId }));
+      expect(await bindingState(live.runId)).toMatchObject({ exportAttemptCount: 0, exportLeaseToken: null, exportState: "PENDING",
+        lastExportErrorCode: null });
+      expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: live.sessionId } }))
+        .toMatchObject({ lastErrorCode: null, operationOwner: null, state: "STOPPED" });
+      expect(await base.outputHandoffReady({ runId: live.runId, sessionId: live.sessionId })).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      await live.dispose();
+    }
+  }, 90_000);
+
+  it("fails a handoff whose chat row stays held past its lease with the lock timeout as cause, sealing nothing", async () => {
+    const live = await liveRunWithReport();
+    try {
+      const base = createPrismaWorkspaceCoordinatorRepository(prisma);
+      const seal = vi.spyOn(base, "sealOutputCapture");
+      const heldSeal = heldBefore(base.sealOutputCapture, live, 12_000);
+      const coordinator = createWorkspaceCoordinator({ config, exportLeaseMs: 4_000, registry: createPrismaWorkspaceExecutionRegistry(prisma),
+        runtime: live.runtime, storage: createMemoryStorageAdapter(), repository: { ...base, sealOutputCapture: heldSeal.step } });
+      const handoff = await exportRecords(() => coordinator.handoff({ runId: live.runId, userId: live.userId, workspace: live.workspace })
+        .then(() => null, (error: unknown) => error));
+      try {
+        // Still held: the failure never waited for the holder.
+        expect(heldSeal.holds).toHaveLength(1);
+        const failure = handoff.result;
+        expect(failure).toBeInstanceOf(WorkspaceRuntimeError);
+        expect(failure).toMatchObject({ code: "workspace_output_export_failed" });
+        expect([databaseFailureCode(failure), databaseFailureKind(failure)]).toEqual(["P2010", "lock_timeout"]);
+        // The run's terminal record keeps that cause.
+        expect(databaseFailureKind(new WorkspaceHandoffFailure(failure))).toBe("lock_timeout");
+        expect(seal.mock.calls.length).toBeGreaterThan(0);
+        expect(handoff.records.filter((record) => record.outcome === "failed")).toEqual([expect.objectContaining({
+          work_stage: "seal", code: "workspace_output_export_failed", prisma_code: "P2010", db_failure: "lock_timeout",
+          action: "fail", run_id: live.runId })]);
+        const binding = await prisma.workspaceRunBinding.findUniqueOrThrow({ where: { modelRunId: live.runId } });
+        expect(binding).toMatchObject({ exportAttemptCount: 1, exportState: "EXPORTING", exportCompletedAt: null });
+        expect(parseOutputCapture(binding.outputCapture).outputs).toBeNull();
+        expect(await prisma.workspaceRunOutput.count({ where: { workspaceRunBindingId: live.runId } })).toBe(0);
+        expect(await prisma.attachment.count({ where: { producerModelRunId: live.runId } })).toBe(0);
+      } finally {
+        await Promise.all(heldSeal.holds);
+      }
+      // The failed attempt still retired its operation: a later turn is not blocked by it.
+      expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: live.sessionId } }))
+        .toMatchObject({ operationOwner: null, state: "STOPPED" });
+      expect(await base.outputHandoffReady({ runId: live.runId, sessionId: live.sessionId })).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+      await live.dispose();
+    }
+  }, 90_000);
 });
