@@ -2603,7 +2603,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
           binding: WorkspaceExecutionBinding & Readonly<{ runtimeSandboxId: string }>; outputs: readonly WorkspaceOutputStream[];
         }>> => {
           step = "initialize";
-          const binding = await initialize(initial, "export", exportSignal, undefined, predecessor);
+          // Its guest-use marker and seed claim take the chat row too; a
+          // rollback-safe failure of either repeats the whole initialization,
+          // whose steps are idempotent for this same operation.
+          const binding = await exportStep(() => initialize(initial, "export", exportSignal, undefined, predecessor));
           if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_session_lost");
           if (!quiesced) {
             // Freeze the output set: no process of this run may still be writing

@@ -1198,6 +1198,33 @@ describe("Prisma Workspace export behind a held chat row", () => {
     }
   }, 90_000);
 
+  it("hands off after a Memory commit holds the chat row through the export's initialization", async () => {
+    const live = await liveRunWithReport();
+    try {
+      const base = createPrismaWorkspaceCoordinatorRepository(prisma);
+      const marker = vi.spyOn(base, "markGuestUsed");
+      const heldMarker = heldBefore(base.markGuestUsed, live, 7_000);
+      const coordinator = createWorkspaceCoordinator({ config, registry: createPrismaWorkspaceExecutionRegistry(prisma),
+        runtime: live.runtime, storage: createMemoryStorageAdapter(), repository: { ...base, markGuestUsed: heldMarker.step } });
+      const handoff = await exportRecords(() => coordinator.handoff({ runId: live.runId, userId: live.userId, workspace: live.workspace }));
+      await Promise.all(heldMarker.holds);
+      expect(handoff.result).toEqual({ status: "ready" });
+      expect(heldMarker.holds).toHaveLength(1);
+      expect(marker.mock.calls.length).toBeGreaterThan(1);
+      expect(handoff.records.filter((record) => record.outcome !== "degraded")).toEqual([]);
+      expect(handoff.records).toContainEqual(expect.objectContaining({ work_stage: "initialize", outcome: "degraded", action: "retry",
+        prisma_code: "P2028", db_failure: "transaction_expired", run_id: live.runId }));
+      expect(await bindingState(live.runId)).toMatchObject({ exportAttemptCount: 0, exportLeaseToken: null, exportState: "PENDING",
+        lastExportErrorCode: null });
+      expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: live.sessionId } }))
+        .toMatchObject({ lastErrorCode: null, operationOwner: null, state: "STOPPED" });
+      expect(await base.outputHandoffReady({ runId: live.runId, sessionId: live.sessionId })).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      await live.dispose();
+    }
+  }, 90_000);
+
   it("fails a handoff whose chat row stays held past its lease with the lock timeout as cause, sealing nothing", async () => {
     const live = await liveRunWithReport();
     try {

@@ -1984,6 +1984,22 @@ describe("Workspace coordinator export database retries", () => {
       action: "retry" })]);
   });
 
+  it("initializes again in the same lease when the guest-use marker's transaction expired behind the chat row", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    const marker = vi.spyOn(value.repository, "markGuestUsed").mockRejectedValueOnce(known("P2028", {
+      error: "Transaction already closed: A query cannot be executed on an expired transaction." }));
+    const claim = vi.spyOn(value.repository, "claimExport");
+    const records = await exportRecords(() => expect(handoff(value)).resolves.toEqual({ status: "ready" }));
+    expect(marker).toHaveBeenCalledTimes(2);
+    expect(claim).toHaveBeenCalledOnce();
+    // The failed attempt stopped before the runtime; the retry reached it once.
+    expect(value.runtime.ensureSession).toHaveBeenCalledOnce();
+    expect(records).toEqual([expect.objectContaining({ work_stage: "initialize", outcome: "degraded", prisma_code: "P2028",
+      db_failure: "transaction_expired", attempt: 1, action: "retry" })]);
+    expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(true);
+  });
+
   it("ends the attempt at once on any other database failure and keeps it as the handoff's cause", async () => {
     const value = fixture(); value.setRuntimeSandboxId("runtime_1");
     vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
