@@ -253,7 +253,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       // A caller-initiated abort is a cancellation, never a runner outage:
       // reporting it as unavailable would falsely fail the session.
       if (init.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
-      throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
+      throw new WorkspaceRuntimeError("workspace_runtime_unavailable", { cause: error });
     }
   }
 

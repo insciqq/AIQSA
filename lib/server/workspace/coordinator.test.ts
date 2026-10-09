@@ -1494,6 +1494,23 @@ describe("Workspace coordinator export settlement", () => {
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
   });
 
+  it("keeps a failed claim's own error as the handoff failure's cause", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    const unreachable = Object.assign(new Error("connect ENETUNREACH 10.0.0.9:5432"),
+      { code: "ENETUNREACH", syscall: "connect", address: "10.0.0.9", port: 5432 });
+    vi.spyOn(value.repository, "claimExport").mockRejectedValueOnce(unreachable);
+    let failure: unknown;
+    const records = await exportRecords(async () => {
+      failure = await value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace })
+        .catch((error: unknown) => error);
+    });
+    expect(failure).toBeInstanceOf(WorkspaceRuntimeError);
+    expect(failure).toMatchObject({ code: "workspace_runtime_unavailable", cause: unreachable });
+    expect(records).toEqual([expect.objectContaining({ work_stage: "claim", outcome: "failed", sys_code: "ENETUNREACH", syscall: "connect" })]);
+    expect(JSON.stringify(records)).not.toMatch(/10\.0\.0\.9|5432/u);
+  });
+
   it("retires the generation advanced by confirmed disk loss during handoff", async () => {
     const value = fixture();
     value.setRuntimeSandboxId("runtime_lost");

@@ -332,10 +332,11 @@ async function applyDurableResults(
           now
         )
       );
-    } catch {
+    } catch (error) {
       throw new MemoryCoordinatorError(
         "memory_embedding_batch_apply_retryable",
-        true
+        true,
+        { cause: error }
       );
     }
   }
@@ -495,7 +496,7 @@ export function createMemoryEmbeddingBatchHandler(
         MEMORY_EMBEDDING_BATCH_VERSIONS
       ).catch((error: unknown) => {
         const decision = authorityGate(error);
-        throw new MemoryCoordinatorError(decision.errorCode, true);
+        throw new MemoryCoordinatorError(decision.errorCode, true, { cause: error });
       });
       const incompatible = requestItems.filter((item) =>
         !item.target ||

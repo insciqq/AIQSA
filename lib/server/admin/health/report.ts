@@ -323,10 +323,28 @@ export function incidentLines(incident: AdminHealthIncident): string[] {
     const value = incident.details.find((item) => item.key === key)?.value;
     return typeof value === "string" ? value : null;
   };
-  const errorClass = detailText("error_class");
-  const errorSite = detailText("error_site");
+  const detailNumber = (key: string) => {
+    const value = incident.details.find((item) => item.key === key)?.value;
+    return typeof value === "number" ? value : null;
+  };
+  const located = (errorClass: string | null, site: string | null) =>
+    errorClass === null ? null : site === null ? errorClass : `${errorClass} at ${site}`;
+  const causeClass = located(detailText("cause_class"), detailText("cause_site"));
+  const prismaCode = detailText("prisma_code");
+  const database = [prismaCode === "unknown" ? null : prismaCode, detailText("db_failure"),
+    detailText("sqlstate") === null ? null : `SQLSTATE ${detailText("sqlstate")}`]
+    .filter((part): part is string => part !== null).join(" ");
+  const budget = detailNumber("tx_timeout_ms");
+  const elapsed = detailNumber("tx_elapsed_ms");
+  const transaction = budget === null && elapsed === null ? null
+    : `transaction ${elapsed === null ? "?" : elapsed} ms of ${budget === null ? "?" : budget} ms`;
+  const system = [detailText("sys_code"), detailText("syscall")].filter((part): part is string => part !== null).join(" ");
   const detail = [
-    errorClass === null ? null : errorSite === null ? errorClass : `${errorClass} at ${errorSite}`,
+    located(detailText("error_class"), detailText("error_site")),
+    causeClass === null ? null : `cause ${causeClass}`,
+    database || null,
+    transaction,
+    system ? `system ${system}` : null,
     incident.code === null ? null : `code ${incident.code}`,
     where || null,
     incident.connectionName,

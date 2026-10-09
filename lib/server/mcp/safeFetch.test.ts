@@ -432,4 +432,24 @@ describe("MCP safe fetch Node transport", () => {
     (finishResponse as unknown as () => void)();
     await expect(response.text()).resolves.toBe("first-second");
   });
+
+  it("keeps the refused connection as the transport failure's cause", async () => {
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const safeFetch = createMcpSafeFetch({
+      allowInsecureHttp: true,
+      allowPrivateNetwork: true,
+      lookupHostname: async () => [{ address: "127.0.0.1", family: 4 }]
+    });
+
+    const failure = await safeFetch(`http://fixture.invalid:${port}/closed`).catch((error: unknown) => error);
+
+    expectSafeFetchError(failure, "mcp_http_request_failed");
+    expect(failure).toMatchObject({ requestNotSent: true, cause: expect.objectContaining({ code: "ECONNREFUSED", syscall: "connect" }) });
+  });
 });

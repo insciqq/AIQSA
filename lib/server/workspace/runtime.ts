@@ -359,8 +359,9 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_tool_cancelled"
     | "workspace_tool_timeout";
 
-  constructor(code: WorkspaceRuntimeError["code"]) {
-    super(code);
+  /** `cause` keeps a failed step's own error for its content-free telemetry facts. */
+  constructor(code: WorkspaceRuntimeError["code"], options?: Readonly<{ cause?: unknown }>) {
+    super(code, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.name = "WorkspaceRuntimeError";
   }
