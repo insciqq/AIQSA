@@ -18,6 +18,7 @@ import type { FailedRunLoad } from "./failedRuns";
 import { collectHealthReport, formatHealthReport, parseHealthReportArgs } from "./report";
 import type { AdminHealthRunRow } from "./runLookup";
 import { createAdminHealthService } from "./service";
+import { HEALTH_SLOW_TRANSACTION_QUERY } from "./slowTransactions";
 
 // "7d" at this instant covers 2026-10-01T00:00Z to 2026-10-08T00:00Z; the
 // previous period 2026-09-24 to 2026-10-01 is inside counter retention.
@@ -263,7 +264,7 @@ describe("full agent report", () => {
     const full = await collectHealthFullReport(input, "7d");
     expect(Object.keys(full)).toEqual(["privacy", "kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry",
       "previousPeriod", "runs", "failedRuns", "latency", "failures", "timeouts", "errorGroups", "signIns", "toolCalls", "http",
-      "problemReports", "incidents", "operations"]);
+      "problemReports", "slowTransactions", "incidents", "operations"]);
     expect(full).toMatchObject({ privacy: "contains_user_ids_and_comments", kind: "full", version: 1, range: "7d",
       from: "2026-10-01T00:00:00.000Z", to: "2026-10-08T00:00:00.000Z", hasTelemetry: true,
       previousPeriod: { from: "2026-09-24T00:00:00.000Z", to: "2026-10-01T00:00:00.000Z" } });
@@ -360,7 +361,8 @@ describe("full agent report", () => {
     const health = createAdminHealthService({ store: input.store, providerNames: input.providerNames, now: () => NOW });
     const defaultReport = await collectHealthReport({
       health, queues: input.queues, findings: vi.fn().mockResolvedValue([]), connections: vi.fn().mockResolvedValue([]),
-      failedRuns: input.failedRunGroups
+      failedRuns: input.failedRunGroups,
+      slowTransactions: (span) => input.store.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY })
     }, "7d");
     const defaultOutput = JSON.stringify(defaultReport) + formatHealthReport(defaultReport);
     const full = await collectHealthFullReport(input, "7d");
@@ -480,6 +482,7 @@ describe("full agent report text", () => {
       "Tool calls by family, then calls that did not complete by code (2)",
       "HTTP: 4xx and 5xx responses and failed requests by route (3)",
       "Sign-in outcomes by method, step and code (2)",
+      "Slow database transactions (held rows over 2.0 s; ERROR: over the 5.0 s budget) (0)",
       "Incidents (UTC, newest first; 3 listed)",
       "Incident keys (event · code · subsystem · connection · fingerprint), most incidents first (2)",
       "Latency (percentiles are histogram bucket upper bounds)",
@@ -527,5 +530,29 @@ describe("agent report arguments", () => {
   ])("refuses %j", (argv, message) => {
     const parsed = parseHealthReportArgs(argv);
     expect("error" in parsed && parsed.error).toContain(message);
+  });
+});
+
+describe("slow database transactions in the full report", () => {
+  it("lists the holder past the request budget before the waiters past the slow bound, with the longest hold", async () => {
+    const counters = [
+      counter("db_transaction", "warn", { subsystem: "workspace", operation: "export_seal", outcome: "rolled_back",
+        db_failure: "lock_timeout" }, 3, { durations: [2_010, 2_020, 2_031] }),
+      counter("db_transaction", "error", { subsystem: "memory", operation: "job_commit", job_kind: "INDEX_HISTORY",
+        outcome: "committed" }, 1, { durations: [6_020] }),
+      counter("job_persistence", "info", { subsystem: "memory", stage: "complete", outcome: "confirmed" }, 4)
+    ];
+    const full = await collectHealthFullReport(sources(counters, []), "7d");
+    expect(full.slowTransactions).toEqual({ truncated: false, rows: [
+      expect.objectContaining({ level: "error", subsystem: "memory", operation: "job_commit", jobKind: "INDEX_HISTORY",
+        outcome: "committed", count: 1, maxMs: 6_020 }),
+      expect.objectContaining({ level: "warn", subsystem: "workspace", operation: "export_seal", jobKind: null,
+        outcome: "rolled_back", count: 3, maxMs: 2_031 })
+    ] });
+    const heading = "Slow database transactions (held rows over 2.0 s; ERROR: over the 5.0 s budget)";
+    expect(formatHealthFullReport(full)).toContain(`${heading} (2)\n` +
+      "  ERROR  memory/job_commit INDEX_HISTORY · 1 time · max 6.0 s · last 2026-10-06 10:01\n" +
+      "  WARN   workspace/export_seal · rolled back · 3 times · max 2.0 s · last 2026-10-06 10:01\n");
+    expect(formatHealthFullReport(await collectHealthFullReport(sources([], []), "7d"))).toContain(`${heading} (0)\n  none\n`);
   });
 });

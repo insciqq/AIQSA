@@ -61,7 +61,8 @@ import { observedFailure, providerHttpFailureMessage } from "../providers/provid
 import { logEvent, runWithContext } from "../observability";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
 import { workspaceTurnSoftDeadlineMs } from "./workspaceTurnDeadline";
-import { logRunPersistence, runDatabaseFailureCode, runDatabaseFailureKind } from "./runObservability";
+import { logRunPersistence, runDatabaseFailureCode, runDatabaseFailureKind, settleRunWrite } from "./runObservability";
+import type { DbTransactionTiming } from "../observability/transactionTiming";
 import type {
   ProviderAdapter,
   ProviderConversationMessage,
@@ -4034,8 +4035,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const imageFailure = pipelineError?.imageFailure && payload.code === pipelineError.code &&
           payload.message === pipelineError.message ? pipelineError.imageFailure : undefined;
         let failed: boolean;
+        let failTiming: DbTransactionTiming | undefined;
         try {
-          failed = await input.repository.failRun(
+          ({ value: failed, timing: failTiming } = await settleRunWrite(() => input.repository.failRun(
             runId,
             input.created.assistantMessageId,
             imageFailure ? { ...payload, imageFailure } : payload,
@@ -4047,12 +4049,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               failureCode === CONTEXT_COMPACTION_POLICY_RETIRED.code
               ? { recoveryTerminal: true }
               : undefined
-          );
+          )));
         } catch (settlementError) {
           logRunPersistence(runId, "fail", "unconfirmed", settlementError);
           return;
         }
-        logRunPersistence(runId, "fail", failed ? "confirmed" : "not_applied");
+        logRunPersistence(runId, "fail", failed ? "confirmed" : "not_applied", undefined, failTiming);
         await persistReportedUsageForIncompleteRun().catch(() => undefined);
         if (failed) {
           emitTransient(controller, encoder, {
