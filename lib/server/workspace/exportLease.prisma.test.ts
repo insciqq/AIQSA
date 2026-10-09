@@ -65,9 +65,8 @@ async function cleanupFixtures(): Promise<void> {
   await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chatIds } } });
   await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
   await prisma.project.deleteMany({ where: { createdByUserId: { in: userIds } } });
-  // The held-chat-row Memory commit's own job and settings.
+  // The held-chat-row Memory commit's own job; its settings row goes with the user.
   await prisma.memoryJob.deleteMany({ where: { userId: { in: userIds } } });
-  await prisma.userMemorySettings.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
 }
 
