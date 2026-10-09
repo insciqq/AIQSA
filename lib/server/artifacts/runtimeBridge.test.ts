@@ -84,6 +84,18 @@ describe("artifact sandbox bridge", () => {
       message: "Artifact link target not found: api/private", line: 0, column: 0 }, "*");
   });
 
+  it("reports a violation of an enforced policy and ignores report-only ones, which never block", () => {
+    const h = bridge();
+    const listener = vi.mocked(h.window.addEventListener).mock.calls.find(([name]) => name === "securitypolicyviolation")!;
+    expect(listener[2]).toBeUndefined();
+    const violation = listener[1] as unknown as (event: Record<string, unknown>) => void;
+    violation({ disposition: "report", effectiveDirective: "worker-src", blockedURI: "blob", lineNumber: 1, columnNumber: 2 });
+    expect(h.postMessage).not.toHaveBeenCalled();
+    violation({ disposition: "enforce", effectiveDirective: "connect-src", blockedURI: "https://example.invalid/data", lineNumber: 3, columnNumber: 4 });
+    expect(h.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "aiqsa_artifact_runtime_error", kind: "csp", message: "Blocked resource", line: 3, column: 4,
+      directive: "connect-src", blocked: "https://example.invalid" }, "*");
+  });
+
   const WEBRTC_GLOBALS = ["RTCPeerConnection", "webkitRTCPeerConnection", "mozRTCPeerConnection",
     "RTCDataChannel", "RTCIceCandidate", "RTCSessionDescription", "RTCCertificate"] as const;
 

@@ -173,8 +173,11 @@ function PublicArtifactState({ initialManifest, token }: { initialManifest: Arti
       if (pageAbort.current === controller) { pageAbort.current = null; if (active.current) setOpening(null); }
     }
   }
+  /** Returns false while another page loads; the frame keeps the request until the next page arrives. */
   function followLink(target: ArtifactNavigateMessage, focused: boolean) {
+    if (!ready || ready.image || pageAbort.current) return false;
     void openPage({ ...(target.path === entry ? {} : { page: target.path }), ...(target.fragment ? { fragment: target.fragment } : {}), focus: focused });
+    return true;
   }
   async function resetState() {
     try {

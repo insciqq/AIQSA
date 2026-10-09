@@ -165,6 +165,12 @@ describe("authenticated attachment previews", () => {
       expectPrivateHeaders(response, "text/plain; charset=utf-8");
       expect(await response.text()).toBe(text);
       expect(Number(response.headers.get("content-length"))).toBe(Buffer.byteLength(text));
+      // Never an image preview, and the typed original downloads as a sandboxed attachment.
+      expect((await f.read("image")).status).toBe(415);
+      const download = await f.read("");
+      expect(download.headers.get("content-type")).toBe(mimeType);
+      expect(download.headers.get("content-disposition")).toMatch(/^attachment;/u);
+      expect(download.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
     }
     const invalid = await fixture(Buffer.from([0xff, 0xfe, 0, 0]), "text/plain", "note.txt");
     const response = await invalid.read("text");

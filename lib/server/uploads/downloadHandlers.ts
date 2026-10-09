@@ -39,6 +39,8 @@ function privateHeaders(record: AttachmentDownloadRecord): Headers {
     "cache-control": "private, no-store, max-age=0",
     "content-disposition": contentDisposition(record.fileName),
     "content-length": String(record.byteSize),
+    // Typed outputs (HTML, SVG) never run as a document on the app origin, even when opened directly.
+    "content-security-policy": "default-src 'none'; sandbox",
     "content-type": record.mimeType,
     "x-content-type-options": "nosniff"
   });
@@ -96,7 +98,6 @@ export function createAttachmentDownloadHandler(input: Readonly<{
       try {
         const headers = privateHeaders(record);
         headers.set("content-disposition", "inline");
-        headers.set("content-security-policy", "default-src 'none'; sandbox");
         if (preview === "text") {
           // UTF-8 decoding strips its BOM; never substitute extracted model-facing text.
           bytes = new TextEncoder().encode(new TextDecoder("utf-8", { fatal: true }).decode(bytes));

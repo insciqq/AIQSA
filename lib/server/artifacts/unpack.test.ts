@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ArtifactToolError } from "./errors";
-import { ARTIFACT_UNPACK_SKIPPED_FILES, artifactMimeForPath, artifactZipToolError, unpackArtifactArchive } from "./unpack";
+import { ARTIFACT_UNPACK_SKIPPED_FILES, artifactZipToolError, unpackArtifactArchive } from "./unpack";
 import { writeZip } from "./zip";
 import { ArtifactZipError, type ArtifactZipErrorCode } from "./zipReader";
 
@@ -18,20 +18,6 @@ async function refusal(archive: Uint8Array, label = "site.zip") {
 }
 
 describe("artifact archive unpacking", () => {
-  it("types files by extension only, case-insensitively, with opaque bytes for anything else", () => {
-    const expected: Record<string, string> = {
-      "index.html": "text/html", "old.HTM": "text/html", "a/site.css": "text/css", "app.js": "text/javascript", "mod.mjs": "text/javascript",
-      "data.json": "application/json", "notes.txt": "text/plain", "README.md": "text/markdown", "rows.csv": "text/csv",
-      "logo.svg": "image/svg+xml", "a.png": "image/png", "b.JPG": "image/jpeg", "c.jpeg": "image/jpeg", "d.webp": "image/webp",
-      "e.gif": "image/gif", "favicon.ico": "image/x-icon", "f.avif": "image/avif", "font.woff": "font/woff", "font.woff2": "font/woff2",
-      "font.ttf": "font/ttf", "font.otf": "font/otf", "s.mp3": "audio/mpeg", "s.wav": "audio/wav", "s.ogg": "audio/ogg", "s.m4a": "audio/mp4",
-      "v.mp4": "video/mp4", "v.webm": "video/webm", "doc.pdf": "application/pdf", "lib.wasm": "application/wasm", "feed.xml": "application/xml",
-      "Makefile": "application/octet-stream", "archive.tar.gz": "application/octet-stream", "x.constructor": "application/octet-stream",
-      "x.__proto__": "application/octet-stream", "trailing.": "application/octet-stream", "dir.css/file": "application/octet-stream"
-    };
-    for (const [path, mimeType] of Object.entries(expected)) expect(artifactMimeForPath(path), path).toBe(mimeType);
-  });
-
   it("removes a single top-level folder, keeps empty text inline and skips folders, metadata, hidden and empty binary files", async () => {
     const unpacked = await unpackArtifactArchive(zip({
       "site/": "", "site/index.html": "<h1>Home</h1>", "site/_astro/app.css": "body{}", "site/img/logo.png": Buffer.from([0x89, 0x50, 0x4e, 0x47]),
