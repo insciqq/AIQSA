@@ -7,6 +7,7 @@ import {
   MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
   memoryHistoryIndexMinimumPageEnd,
   memoryHistoryIndexPageLimitsAreValid,
+  memoryHistoryIndexWriteCost,
   planMemoryHistoryTailUpdate,
   shrinkMemoryHistoryIndexPageEnd,
   type MemoryHistoryCheckpointMessageIdentity,
@@ -238,6 +239,38 @@ describe("Memory history index pages", () => {
     expect(shrinkMemoryHistoryIndexPageEnd(["assistant", "user"], 0, 1, 1)).toBeNull();
   });
 
+  it("estimates a page's locked writes from its content and settled tool calls", () => {
+    // A reprojected message joins its round; its text becomes chunks and
+    // round segments; every settled call becomes an observation.
+    expect(memoryHistoryIndexWriteCost({ contentBytes: 0, toolCalls: 0 })).toBe(3);
+    expect(memoryHistoryIndexWriteCost({ contentBytes: 220, toolCalls: 0 })).toBe(4);
+    expect(memoryHistoryIndexWriteCost({ contentBytes: 221, toolCalls: 0 })).toBe(5);
+    expect(memoryHistoryIndexWriteCost({ contentBytes: 5_040, toolCalls: 2 })).toBe(3 + 23 + 6);
+    // A message the page does not reproject costs only its rebuilt calls.
+    expect(memoryHistoryIndexWriteCost({ contentBytes: null, toolCalls: 4 })).toBe(12);
+    expect(memoryHistoryIndexWriteCost({ contentBytes: null, toolCalls: 0 })).toBe(0);
+    // A long chat's first page stops at the write budget, not at the chunk,
+    // byte or message bounds: about fifteen turns of 1.5 KB prompts, 5 KB
+    // answers and two settled calls.
+    const turnCost = memoryHistoryIndexWriteCost({ contentBytes: 1_540, toolCalls: 0 }) +
+      memoryHistoryIndexWriteCost({ contentBytes: 5_040, toolCalls: 2 });
+    const roles = Array.from({ length: 600 }, (_, ordinal) => ordinal % 2 === 0 ? "user" : "assistant");
+    const end = alignMemoryHistoryIndexPageEnd(roles, 2, boundMemoryHistoryIndexPageEnd({
+      cost: (ordinal) => memoryHistoryIndexWriteCost({
+        contentBytes: ordinal % 2 === 0 ? 1_540 : 5_040,
+        toolCalls: ordinal % 2 === 0 ? 0 : 2
+      }),
+      costStartOrdinal: 0,
+      limit: DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS.maxIndexWrites,
+      maximumEnd: roles.length,
+      minimumEnd: 2
+    }));
+    expect(end % 2).toBe(0);
+    expect(end / 2).toBe(Math.floor(DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS.maxIndexWrites / turnCost));
+    expect(end / 2).toBeGreaterThanOrEqual(10);
+    expect(end / 2).toBeLessThanOrEqual(20);
+  });
+
   it("keeps per-job limits positive and within the per-call chunk bound", () => {
     expect(memoryHistoryIndexPageLimitsAreValid(DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS))
       .toBe(true);
@@ -252,6 +285,10 @@ describe("Memory history index pages", () => {
     expect(memoryHistoryIndexPageLimitsAreValid({
       ...DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS,
       maxToolCalls: 1.5
+    })).toBe(false);
+    expect(memoryHistoryIndexPageLimitsAreValid({
+      ...DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS,
+      maxIndexWrites: 0
     })).toBe(false);
   });
 });

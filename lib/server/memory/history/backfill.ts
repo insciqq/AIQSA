@@ -100,8 +100,9 @@ function eligibleHistorySourceWhereSql(userId: string): Prisma.Sql {
 }
 
 // A committed partial index page leaves the checkpoint cursor
-// (lastIndexedMessageId) before the active leaf. It never matches here, so
-// reconciliation revives the settled job and the next page resumes from it.
+// (lastIndexedMessageId) before the active leaf. It never matches here: its
+// job is queued again for the next page, and reconciliation revives a job
+// that settled on a partial page (as an earlier release left them).
 function checkpointMatchesSourceSql(): Prisma.Sql {
   return Prisma.sql`
     checkpoint."status" = 'READY'::"MemoryHistoryCheckpointStatus"
