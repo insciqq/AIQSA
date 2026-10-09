@@ -134,9 +134,9 @@ function displayName(value: string | null | undefined): string | null {
 /**
  * Reports last sent at or after `from` (and before `to`, when given; of one
  * user, when `userId` is given), newest first, at most `limit` (1–500), with
- * the total in that window. Connection
- * and model names are the current ones of the run's answer binding; a deleted
- * connection reads as such. Health and the agent report both read this.
+ * the total in that window. Connection and model names are the current ones
+ * of the run's answer binding; a deleted connection reads as such. Health and
+ * the agent report both read this.
  */
 export async function listAnswerProblemReports(
   db: Pick<PrismaClient, "answerProblemReport" | "providerConnection">,
