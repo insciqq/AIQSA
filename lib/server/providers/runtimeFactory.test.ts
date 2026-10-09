@@ -9,6 +9,7 @@ import {
   normalizeProviderExecutionSnapshot
 } from "./runtimeFactory";
 import { markProviderStreamDrop } from "./streamDrop";
+import { captureRunObservation } from "@/tests/support/runObservation";
 
 const runtimeAdapterKinds = [
   "deepseek_responses_native",
@@ -470,25 +471,19 @@ describe("provider runtime factory", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it("records each dropped-round decision content-free under the binding's identity", () => {
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    try {
-      const base = snapshot("openai_responses_compatible");
-      const retry = createProviderRuntimeBinding({ options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() }, secret: "secret",
-        snapshot: { ...base, connection: { ...base.connection, responsesRequestIsolationDetected: true } } }).adapter.droppedRoundRetry!;
-      const drop = markProviderStreamDrop(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), "reset");
-      expect(retry.decision(drop)).toEqual({ retryAfterMs: null });
-      retry.observe({ action: "retry", attempt: 1, delayMs: 125, error: drop });
-      const records = writer.mock.calls.flatMap(([chunk]) => {
-        try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
-      });
-      expect(records).toContainEqual(expect.objectContaining({ event: "provider_retry", level: "warn", action: "retry", attempt: 1, delay_ms: 125,
-        stage: "answer", stream_drop: "reset", adapterKind: "openai_responses_compatible", connectionId: "connection-1",
-        providerModelId: "deployment-1" }));
-      expect(JSON.stringify(records)).not.toContain("PRIVATE_");
-    } finally {
-      writer.mockRestore();
-    }
+  it("records each dropped-round decision content-free under the binding's identity", async () => {
+    const observation = await captureRunObservation();
+    const base = snapshot("openai_responses_compatible");
+    const retry = createProviderRuntimeBinding({ options: { allowFake: false, fetchFn: vi.fn<typeof fetch>() }, secret: "secret",
+      snapshot: { ...base, connection: { ...base.connection, responsesRequestIsolationDetected: true } } }).adapter.droppedRoundRetry!;
+    const drop = markProviderStreamDrop(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), "reset");
+    expect(retry.decision(drop)).toEqual({ retryAfterMs: null });
+    retry.observe({ action: "retry", attempt: 1, delayMs: 125, error: drop });
+    const records = observation.records();
+    expect(records).toContainEqual(expect.objectContaining({ event: "provider_retry", level: "warn", action: "retry", attempt: 1, delay_ms: 125,
+      stage: "answer", stream_drop: "reset", adapterKind: "openai_responses_compatible", connectionId: "connection-1",
+      providerModelId: "deployment-1" }));
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
   });
 
   it.each([
@@ -789,12 +784,12 @@ describe("provider runtime factory", () => {
   });
 
   it("bounded-retries a Gemini rate-limit refusal of the initial dispatch unless the caller disables replay", async () => {
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const observation = await captureRunObservation();
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);
     try {
       for (const disableRequestRetries of [false, true]) {
-        writer.mockClear();
+        const earlier = observation.records().length;
         let attempts = 0;
         const fetchFn = vi.fn<typeof fetch>(async () => ++attempts === 1
           ? Response.json({ error: { message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }, { status: 429 })
@@ -806,9 +801,7 @@ describe("provider runtime factory", () => {
         });
         const pending = collect(runtime.adapter.stream(geminiRequest())).catch((error: unknown) => error);
         await vi.runAllTimersAsync();
-        const records = writer.mock.calls.flatMap(([chunk]) => {
-          try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
-        });
+        const records = observation.records().slice(earlier);
         const retries = records.filter((entry) => entry.event === "provider_retry");
         if (disableRequestRetries) {
           expect(await pending).toMatchObject({ httpStatus: 429, message: "Gemini request failed with status 429" });
@@ -822,7 +815,7 @@ describe("provider runtime factory", () => {
         expect(JSON.stringify(records)).not.toMatch(/PRIVATE_|hello/u);
       }
     } finally {
-      writer.mockRestore();
+      observation.restore();
       vi.restoreAllMocks();
       vi.useRealTimers();
     }
