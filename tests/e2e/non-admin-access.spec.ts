@@ -15,7 +15,8 @@ async function signIn(page: Page, fixture: OrdinaryFixture): Promise<void> {
   await page.getByLabel("Email").fill(fixture.email);
   await page.getByLabel("Password", { exact: true }).fill(fixture.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL("/");
+  // A fresh dev server compiles the sign-in and shell routes on their first request.
+  await expect(page).toHaveURL("/", { timeout: 30_000 });
   await expect(page.getByTestId("app-shell")).toBeVisible();
 }
 
@@ -123,26 +124,22 @@ test.describe("seeded ordinary-user MCP access", () => {
     await expect(page.getByTestId("admin-denied")).toContainText("Admin access required");
   });
 
-  test("Restricted Member sees only the group server and receives no personal-field authority", async ({ page }) => {
+  test("Restricted Member fills the group server's required personal value without a direct grant", async ({ page }) => {
     await signIn(page, LOCAL_RESTRICTED_MEMBER);
+
+    const resetFixturePreference = await page.request.patch(`/api/me/mcp/${LOCAL_SHARED_MCP_FIXTURE.id}`, {
+      data: { enabled: false, values: { workspace: null } }
+    });
+    expect(resetFixturePreference.status()).toBe(200);
 
     const catalog = await userMcpCatalog(page);
     expect(catalog.servers).toHaveLength(1);
     expect(catalog.servers[0]).toMatchObject({
-      fields: [],
+      fields: [expect.objectContaining({ configured: false, slotKey: "workspace", source: "missing" })],
       id: LOCAL_SHARED_MCP_FIXTURE.id,
       name: LOCAL_SHARED_MCP_FIXTURE.displayName
     });
     expect(JSON.stringify(catalog)).not.toContain("member-workspace");
-
-    const personalWrite = await page.request.patch(`/api/me/mcp/${LOCAL_SHARED_MCP_FIXTURE.id}`, {
-      data: { values: { workspace: "restricted-workspace" } }
-    });
-    expect(personalWrite.status()).toBe(400);
-    await expect(personalWrite.json() as Promise<McpErrorResponse>).resolves.toMatchObject({
-      error: "invalid_mcp_values",
-      issues: [{ code: "slot_not_permitted", path: "values.workspace" }]
-    });
 
     const ungrantedWrite = await page.request.patch(`/api/me/mcp/${LOCAL_PRIVATE_MCP_FIXTURE.id}`, {
       data: { enabled: true }
@@ -178,14 +175,30 @@ test.describe("seeded ordinary-user MCP access", () => {
     await expect(settings.getByRole("article", { name: LOCAL_SHARED_MCP_FIXTURE.displayName })).toBeVisible();
     await expect(settings.getByRole("article", { name: LOCAL_PRIVATE_MCP_FIXTURE.displayName })).toHaveCount(0);
     const sheet = await openSharedServerSheet(page);
-    await expect(sheet.getByRole("heading", { exact: true, name: "Personal values" })).toHaveCount(0);
-    await expect(sheet.getByLabel("Fixture workspace", { exact: true })).toHaveCount(0);
+    await expect(sheet.getByRole("heading", { exact: true, name: "Personal values" })).toBeVisible();
+    await expect(sheet.getByLabel("Fixture workspace", { exact: true })).toHaveValue("");
     await sheet.getByRole("button", { exact: true, name: "Close" }).click();
     await expect(sheet).toHaveCount(0);
-    await settings.getByRole("switch", { name: LOCAL_SHARED_MCP_FIXTURE.displayName }).click();
-    await expect(settings.getByRole("alert")).toContainText(
-      "This server needs additional administrator configuration before it can be enabled."
-    );
+    await settings.getByRole("button", { name: `Complete setup for ${LOCAL_SHARED_MCP_FIXTURE.displayName}` }).click();
+    await expect(page.getByTestId("mcp-server-sheet").getByText(
+      "Add and save the required personal values before enabling this server."
+    )).toBeVisible();
+    await expect(page.getByText("This server needs additional administrator configuration before it can be enabled.")).toHaveCount(0);
+
+    const personalWrite = await page.request.patch(`/api/me/mcp/${LOCAL_SHARED_MCP_FIXTURE.id}`, {
+      data: { values: { workspace: "restricted-workspace" } }
+    });
+    expect(personalWrite.status()).toBe(200);
+    await expect(personalWrite.json()).resolves.toMatchObject({
+      server: {
+        enabled: false,
+        fields: [{ configured: true, slotKey: "workspace", source: "personal", value: "restricted-workspace" }]
+      }
+    });
+    const cleared = await page.request.patch(`/api/me/mcp/${LOCAL_SHARED_MCP_FIXTURE.id}`, {
+      data: { values: { workspace: null } }
+    });
+    expect(cleared.status()).toBe(200);
 
     await page.goto("/admin");
     await expect(page.getByTestId("admin-denied")).toContainText("Admin access required");

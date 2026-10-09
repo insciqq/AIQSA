@@ -288,7 +288,7 @@ export function createMemoryItemEmbeddingHandler(
         contract.versions
       ).catch((error: unknown) => {
         const decision = authorityGate(error);
-        throw new MemoryCoordinatorError(decision.errorCode, true);
+        throw new MemoryCoordinatorError(decision.errorCode, true, { factsOf: error });
       });
       if (!memoryItemEmbeddingGenerationMatchesPin(target.generation, pin)) {
         return terminalResult(job, target, "generation_changed");

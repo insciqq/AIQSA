@@ -79,6 +79,7 @@ export function applyMemoryHistorySafetyLite(
         reusedChunkIds: plan.reusedChunkIds,
         reusedRoundIds: plan.reusedRoundIds,
         rounds,
+        toolCallReplay: plan.toolCallReplay,
         toolEvents: plan.toolEvents,
         work: plan.work
       }
@@ -157,14 +158,13 @@ export function createMemoryHistoryIndexHandler(
         }
         return {
           acceptedResultHash: plan.resultHash,
-          apply: async (tx, acceptedClaim) => {
-            await dependencies.repository.apply(
-              tx,
-              acceptedClaim,
-              plan,
-              context.now()
-            );
-          },
+          // A partial page returns its job to the queue for the next page.
+          apply: (tx, acceptedClaim) => dependencies.repository.apply(
+            tx,
+            acceptedClaim,
+            plan,
+            context.now()
+          ),
           operationalCounters: historyOperationalCounters(plan),
           stage: truncated
             ? "lexical_ready:history_message_truncated"
@@ -177,7 +177,8 @@ export function createMemoryHistoryIndexHandler(
         if (error instanceof MemoryCoordinatorError) throw error;
         throw new MemoryCoordinatorError(
           "memory_history_classification_unavailable",
-          true
+          true,
+          { factsOf: error }
         );
       }
     }

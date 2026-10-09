@@ -316,6 +316,7 @@ async function seedHistoryBackfill(userId: string) {
 const pagedHistoryLimits: MemoryHistoryIndexPageLimits = Object.freeze({
   maxChunks: 3,
   maxContentBytes: 1_048_576,
+  maxIndexWrites: 600,
   maxMessages: 4,
   maxToolCalls: 4_096
 });
@@ -2249,7 +2250,7 @@ describe("Memory lexical history index persistence", () => {
   }, 90_000);
 
   it.each(["fresh", "recovered chunk limit"] as const)(
-    "[L07] indexes a %s long chat in bounded cursor pages resumed through backfill", async (mode) => {
+    "[L07] indexes a %s long chat in bounded cursor pages continued by the same job", async (mode) => {
     const userId = await createOwner("memory-history-paged");
     try {
       const { chat, turns } = await createPagedHistoryChat(userId, 6);
@@ -2317,7 +2318,12 @@ describe("Memory lexical history index persistence", () => {
         await expect(activeHistoryChunkIds(userId, chat.id)).resolves.toEqual(activeChunkIds);
         await expect(prisma.memorySearchEntry.count({ where: { userId } }))
           .resolves.toBe(entryCount);
-        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+        // The page's own job is queued again for the next page, so backfill
+        // has nothing to revive.
+        await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: claim.id } })).resolves
+          .toMatchObject({ acceptedResultHash: null, completedAt: null,
+            stage: "lexical_ready:history_page_partial", state: "QUEUED" });
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
         if (mode === "recovered chunk limit" && jobs === 1) {
           // The old writer could fail before dispatch while extending a valid
           // indexed prefix. Seed that persisted shape, then use normal recovery.
@@ -2395,8 +2401,9 @@ describe("Memory lexical history index persistence", () => {
         status: "READY"
       });
 
-      // An append between prepare and commit stales the page atomically.
-      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      // An append between prepare and commit stales the page atomically. The
+      // first page queued its own job again for this second page.
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
       const racedClaim = await claimHistoryJob(userId);
       const raced = await createMemoryHistoryIndexHandler({
         repository: createPrismaMemoryHistoryIndexRepository(prisma, pagedHistoryLimits)
@@ -2466,7 +2473,7 @@ describe("Memory lexical history index persistence", () => {
         if (checkpoint.lastIndexedMessageId === appended.assistantMessage.id) break;
         await expect(readMemoryHistoryIndexingProgress(prisma, userId, true))
           .resolves.toMatchObject({ completedChats: 0, state: "INDEXING" });
-        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+        await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
       }
       await expect(prisma.memoryRecallChunk.findUniqueOrThrow({
         where: { id: excludedJoin.chunkId }
@@ -2558,7 +2565,8 @@ describe("Memory lexical history index persistence", () => {
         where: { assistantMessageId: last.assistantMessage.id, userId }
       })).resolves.toBe(0);
 
-      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      // The job itself continues with the next page.
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
       await processPagedHistoryJob(userId, limits);
       await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
         where: { userId_chatId: { chatId: chat.id, userId } }
@@ -3460,7 +3468,15 @@ describe("Memory lexical history index persistence", () => {
         }
       });
 
-      const { claim, result } = await processHistoryJob(userId);
+      // The oversized prompt's turn alone fills a commit's write budget; the
+      // same job's next pass indexes the second turn.
+      let processed = await processHistoryJob(userId);
+      for (let pass = 1; (await prisma.memoryJob.findUniqueOrThrow({
+        where: { id: processed.claim.id } })).state === "QUEUED"; pass += 1) {
+        expect(pass).toBeLessThan(4);
+        processed = await processHistoryJob(userId);
+      }
+      const { claim, result } = processed;
 
       // The withheld blob is an explicit truncation, never a full safety pass:
       // the persisted job stage records it; a READY checkpoint has no error.

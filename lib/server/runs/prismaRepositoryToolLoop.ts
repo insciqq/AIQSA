@@ -18,6 +18,7 @@ import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspace
 import { validAcceptedAgent } from "../agents/config";
 import { RecoveryStateInvalidError } from "./recoveryStateInvalid";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
+import { measureTransaction } from "../observability/transactionTiming";
 import { signalRunTerminal } from "../push/runTerminalSignal";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import {
@@ -2300,7 +2301,7 @@ export function createPrismaRunToolLoopOperations(
       // and re-applies the same checkpoint entries, so a transaction rolled
       // back by a bounded lock wait or expiry can run again without duplicate
       // usage. No provider or tool work is repeated here.
-      return retryRollbackSafeSettlement(() => prismaClient.$transaction(async (tx) => {
+      return retryRollbackSafeSettlement(() => measureTransaction({ subsystem: "runs", operation: "usage_settlement" }, async (tx) => {
         await boundRunSettlementLockWait(tx);
         // Match admission/settlement lock order before taking the run lock.
         // Concurrent Agent discovery inserts a provider binding referencing
@@ -2390,7 +2391,7 @@ export function createPrismaRunToolLoopOperations(
           }
         }
         return true;
-      })).catch(retainRunPrismaCode);
+      }, (body) => prismaClient.$transaction(body))).catch(retainRunPrismaCode);
     },
     resetToolLoopAssistantDraft: async (input) => {
       if (!Number.isSafeInteger(input.roundIndex) || input.roundIndex < 0 ||

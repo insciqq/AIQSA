@@ -6,7 +6,7 @@ import {
 
 export class AdminProviderSetupResponseError extends Error {
   constructor(readonly code: "provider_setup_response_invalid" | "provider_setup_response_too_large" |
-    "provider_setup_interrupted" | "provider_setup_timeout") { super(code); }
+    "provider_setup_interrupted" | "provider_setup_timeout") { super(code); this.name = "AdminProviderSetupResponseError"; }
 }
 
 export function adminProviderSetupFailureCode(error: unknown, signal?: AbortSignal | null): string {

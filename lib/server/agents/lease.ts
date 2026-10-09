@@ -33,7 +33,11 @@ export async function withAgentLease(
         } catch {
           dispose();
           await reader.cancel().catch(() => undefined);
-          output.error(new Error("agent_request_interrupted"));
+          // The client inside the VM closed its own request: nobody reads the
+          // rest, so the stream just ends. An expired grant or an upstream
+          // failure still interrupts it as a failure.
+          if (request.signal.aborted && !controller.signal.aborted) output.close();
+          else output.error(new Error("agent_request_interrupted"));
         }
       },
       async cancel() {

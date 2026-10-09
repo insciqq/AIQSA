@@ -21,7 +21,7 @@ export const ARTIFACT_LARGE_WORK_BYTES = 8 * 1024 * 1024;
 const HEAVY_WORK_WAIT_MS = 10_000;
 /** Pages other than the entry share this render-cache budget per version; beyond it they render per request. */
 export const ARTIFACT_PAGE_RENDER_CACHE_BYTES = 256 * 1024 * 1024;
-export class ArtifactPublicBusyError extends Error { constructor() { super("artifact_public_busy"); } }
+export class ArtifactPublicBusyError extends Error { constructor() { super("artifact_public_busy"); this.name = "ArtifactPublicBusyError"; } }
 
 /** Turns handed out in arrival order, with a bounded waiting room and wait; overflow is refused at once. */
 type WorkPool = { active: number; readonly limit: number; readonly waitingRoom: number; readonly waitMs: number;
@@ -145,7 +145,8 @@ export function createArtifactObjects(db: PrismaClient, storage: StorageAdapter)
 
   async function writeBlobs(writes: Awaited<ReturnType<typeof bindBlobs>>) {
     for (const blob of writes) {
-      const existing = await storage.getObject(blob.storageKey, { maxBytes: blob.byteSize }).catch(() => null);
+      // A new blob's object does not exist yet: that miss is the expected answer, not a storage failure.
+      const existing = await storage.getObject(blob.storageKey, { maxBytes: blob.byteSize, expectMissing: true }).catch(() => null);
       if (existing) {
         if (existing.body.byteLength !== blob.byteSize || artifactChecksum(existing.body) !== blob.sha256) throw new Error("artifact_blob_unavailable");
         continue;

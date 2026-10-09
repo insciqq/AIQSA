@@ -12,7 +12,10 @@ type Row = Prisma.AnnouncementGetPayload<{ select: typeof select }>;
 type Scope = Readonly<{ userId: string; admin: boolean }>;
 export type AnnouncementUpdate = AnnouncementContent & Readonly<{ expectedVersion: number; published: boolean }>;
 export class AnnouncementRepositoryError extends Error {
-  constructor(readonly code: "announcement_not_found" | "announcement_conflict" | "announcement_delete_published") { super(code); }
+  constructor(readonly code: "announcement_not_found" | "announcement_conflict" | "announcement_delete_published") {
+    super(code);
+    this.name = "AnnouncementRepositoryError";
+  }
 }
 export type AnnouncementsRepository = Readonly<{
   list(scope: Scope, cursor: AnnouncementCursor | null): Promise<AnnouncementPage>;

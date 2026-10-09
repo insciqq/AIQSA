@@ -6,6 +6,7 @@ import {
   retainDatabaseCause,
   retainDatabaseFailure
 } from "../../observability/databaseFailure";
+import { measureTransaction, transactionTimingFields, transactionTimingOf } from "../../observability/transactionTiming";
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -781,7 +782,9 @@ async function commitJobSuccessWithAuthority(
   }
   const applied = await input.apply?.(tx, input.claim);
   // A bounded pass that left work for itself is queued again, as a wake
-  // would queue a completed pass, without reporting completion.
+  // would queue a completed pass, without reporting completion. It is due at
+  // once but orders behind the owner's work that was already due, so a long
+  // backlog of passes never holds back, say, a queued Memory command.
   const requeue = applied?.requeue === true;
   const updated = await tx.memoryJob.updateMany({
     data: {
@@ -792,7 +795,7 @@ async function commitJobSuccessWithAuthority(
       errorMessage: null,
       leaseExpiresAt: null,
       leaseToken: null,
-      nextAttemptAt: null,
+      nextAttemptAt: requeue ? input.now : null,
       ...(input.operationalCounters === undefined
         ? {}
         : {
@@ -1160,9 +1163,10 @@ export function createPrismaMemoryCoordinatorRepository(
                   timeout: HISTORY_JOB_COMMIT_TIMEOUT_MS
                 }
               : undefined;
-          const committed = await (transactionOptions
-            ? client.$transaction(commit, transactionOptions)
-            : client.$transaction(commit)
+          const committed = await measureTransaction(
+            { subsystem: "memory", operation: "job_commit", job_kind: input.claim.kind },
+            commit,
+            (body) => transactionOptions ? client.$transaction(body, transactionOptions) : client.$transaction(body)
           ).catch(retainDatabaseFailure);
           publishEnqueues();
           return committed;
@@ -1175,7 +1179,8 @@ export function createPrismaMemoryCoordinatorRepository(
             logEvent("job_persistence", { subsystem: "memory", job_id: input.claim.id,
               attempt: input.claim.attemptCount, stage: "complete", outcome: "unconfirmed",
               code: "memory_job_commit_failed", prisma_code: databaseFailureCode(error),
-              db_failure: databaseFailureKind(error), action: "retry" });
+              db_failure: databaseFailureKind(error), action: "retry",
+              ...transactionTimingFields(transactionTimingOf(error)) });
             await (options.jobCommitRetryDelay ?? waitForJobCommitRetry)(attempt + 1);
             continue;
           }
@@ -1409,7 +1414,7 @@ export function createPrismaMemoryCoordinatorRepository(
     },
 
     async commitDeletionSuccess(input) {
-      return client.$transaction(async (tx) => {
+      return measureTransaction({ subsystem: "memory", operation: "deletion_commit" }, async (tx) => {
         const lease = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id" FROM "MemoryDeletionOutbox"
           WHERE "id" = ${input.claim.id}
@@ -1442,10 +1447,10 @@ export function createPrismaMemoryCoordinatorRepository(
           }
         });
         return updated.count === 1;
-      }, {
+      }, (body) => client.$transaction(body, {
         maxWait: DELETION_COMMIT_MAX_WAIT_MS,
         timeout: DELETION_COMMIT_TIMEOUT_MS
-      }).catch(retainDatabaseFailure);
+      })).catch(retainDatabaseFailure);
     }
   });
 }

@@ -12,9 +12,11 @@ import type {
 import {
   adminHealthErrorGroupsWithReach, adminHealthQuantile, adminHealthRetentionWindow, adminHealthWindow, foldAdminHealthErrorGroups
 } from "./projection";
+import type { FailedRunLoad, FailedRunQuery } from "./failedRuns";
 import type { AdminHealthQueuesService } from "./queues";
 import { HEALTH_REPORT_VERSION } from "./report";
 import { projectAdminHealthRun, type AdminHealthRunRow } from "./runLookup";
+import { HEALTH_SLOW_TRANSACTION_QUERY, healthSlowTransactions, type HealthSlowTransactions } from "./slowTransactions";
 import type { AdminHealthUserRunsQuery } from "./runLookupRepository";
 import {
   adminHealthBoundedIds, adminHealthConnectionLabel, adminHealthIncidentModelId, adminHealthModelLabel,
@@ -45,6 +47,9 @@ export const HEALTH_PROBLEM_REPORT_LIMIT = 500;
 export const HEALTH_NEWEST_INCIDENT_LIMIT = 1_000;
 export const HEALTH_INCIDENT_KEY_LIMIT = 1_000;
 export const HEALTH_USER_RUN_LIMIT = 500;
+/** Failure codes of the failed-runs section, and the newest runs listed per code. */
+export const HEALTH_FULL_FAILED_RUN_CODE_LIMIT = 200;
+export const HEALTH_FULL_FAILED_RUNS_PER_CODE = 20;
 
 /** The store's own row bound per counter read: a read that fills it may miss rows. */
 const READ_LIMIT = 5_000;
@@ -81,6 +86,26 @@ export type HealthRunTotals = {
   failureRate: number | null;
   cancelRate: number | null;
   stopRequests: number;
+};
+
+export type HealthFailedRunSample = {
+  runId: string;
+  /** The reference `./aiqsa.sh health --run` accepts. */
+  runReference: string;
+  userId: string;
+  /** When the run was created. */
+  startedAt: string;
+};
+
+export type HealthFailedRunCodeRow = {
+  /** The runs' stable failure code; `null` when they carry none. */
+  failureCode: string | null;
+  runs: number;
+  users: number;
+  firstAt: string;
+  lastAt: string;
+  /** The newest runs of the code, newest first. */
+  newest: HealthFailedRunSample[];
 };
 
 export type HealthLatencyProviderRow = HealthDurationStats & {
@@ -200,6 +225,12 @@ export type HealthFullReport = {
   /** The equal period right before, compared in `runs.previous`; `null` beyond counter retention. */
   previousPeriod: { from: string; to: string } | null;
   runs: HealthRunTotals & { previous: HealthRunTotals | null };
+  /**
+   * Runs created in the range that failed, read from the runs themselves, by
+   * failure code with the most runs first. A user's Stop or cancellation and
+   * refused user input are not failures. Counts are runs, not records.
+   */
+  failedRuns: { runs: number; users: number; rows: HealthFailedRunCodeRow[]; truncated: boolean };
   latency: {
     /** Live run executions that completed, from dispatch to completion. */
     runDuration: HealthDurationStats & { byProvider: HealthLatencyProviderRow[] };
@@ -217,6 +248,8 @@ export type HealthFullReport = {
   /** 4xx and 5xx responses, requests that failed before a response, and browser crashes. */
   http: { rows: HealthHttpRow[]; clientErrors: HealthClientErrorRow[]; truncated: boolean };
   problemReports: { rows: HealthProblemReportRow[]; total: number; truncated: boolean };
+  /** Tracked database transactions that held their rows past the slow bound or the foreground budget, errors first. */
+  slowTransactions: HealthSlowTransactions;
   incidents: {
     /** The newest incidents plus the first of each key, newest first. */
     rows: HealthFullIncident[];
@@ -268,6 +301,8 @@ export type HealthAgentReportSources = Readonly<{
   problemReports(query: Readonly<{ from: Date; to: Date; limit: number; userId?: string }>):
     Promise<Readonly<{ rows: readonly AnswerProblemReportListRow[]; total: number }>>;
   failedRuns(query: AdminHealthUserRunsQuery): Promise<readonly AdminHealthRunRow[]>;
+  /** Every user's failed runs of a range by failure code (`readFailedRunLoad`). */
+  failedRunGroups(query: Omit<FailedRunQuery, "statementTimeoutMs">): Promise<FailedRunLoad>;
   userExists(userId: string): Promise<boolean>;
   now?: () => Date;
 }>;
@@ -563,6 +598,27 @@ function sortIncidents<T extends Pick<AdminHealthIncident, "occurredAt" | "id">>
   return items.sort((left, right) => right.occurredAt.localeCompare(left.occurredAt) || (right.id < left.id ? -1 : right.id > left.id ? 1 : 0));
 }
 
+function failedRunSection(load: FailedRunLoad): HealthFullReport["failedRuns"] {
+  return {
+    runs: load.runs,
+    users: load.users,
+    rows: load.groups.map((group) => ({
+      failureCode: group.code,
+      runs: group.runs,
+      users: group.users,
+      firstAt: group.firstAt.toISOString(),
+      lastAt: group.lastAt.toISOString(),
+      newest: group.newest.flatMap((run) => {
+        const runId = runIdOf(run.runId);
+        return runId === null ? [] : [{
+          runId, runReference: runReferenceLabel(runId), userId: run.userId, startedAt: run.startedAt.toISOString()
+        }];
+      })
+    })),
+    truncated: load.groupsTruncated
+  };
+}
+
 // --- Collection
 
 /** Every problem of the range, complete and structured, for an agent on the host. */
@@ -578,7 +634,8 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
   const counters = (query: TelemetryCounterQuery) => read(() => store.readCounters(query));
   const [
     runRows, previousRows, latencyRows, failureCounters, nested, transport, toolTimeouts, runDeadlines, errorRows, errorFirstSeen,
-    signInRows, toolRows, httpRows, clientRows, operationRows, telemetryRows, queues, problemReports, newest, firsts, keyRows
+    signInRows, toolRows, httpRows, clientRows, operationRows, telemetryRows, queues, problemReports, newest, firsts, keyRows,
+    failedRunLoad, slowTransactionRows
   ] = await Promise.all([
     counters({ ...span, ...RUN_TOTAL_QUERY }),
     window.previous ? counters({ ...window.previous, ...RUN_TOTAL_QUERY }) : Promise.resolve(null),
@@ -605,7 +662,9 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     read(() => readProblemReports(sources, span)),
     read(() => readNewestIncidents(store, span, HEALTH_NEWEST_INCIDENT_LIMIT)),
     read(() => store.readFirstIncidentPerKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
-    read(() => store.countIncidentReachByKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT }))
+    read(() => store.countIncidentReachByKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
+    read(() => sources.failedRunGroups({ ...span, perCode: HEALTH_FULL_FAILED_RUNS_PER_CODE, groupLimit: HEALTH_FULL_FAILED_RUN_CODE_LIMIT })),
+    counters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY })
   ]);
 
   const errorFold = foldAdminHealthErrorGroups(errorRows, errorFirstSeen, generatedAt, HEALTH_FULL_ERROR_GROUP_LIMIT);
@@ -687,6 +746,7 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     hasTelemetry: any.length > 0,
     previousPeriod: window.previous ? { from: window.previous.from.toISOString(), to: window.previous.to.toISOString() } : null,
     runs: { ...runTotals(runRows), previous: previousRows === null ? null : runTotals(previousRows) },
+    failedRuns: failedRunSection(failedRunLoad),
     latency: {
       runDuration: { ...stats(runCompletions), byProvider: latencyProviders(runCompletions, names) },
       firstOutput: {
@@ -719,6 +779,7 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
         httpRows.length >= READ_LIMIT || clientRows.length >= READ_LIMIT
     },
     problemReports,
+    slowTransactions: healthSlowTransactions(slowTransactionRows),
     incidents: {
       rows: sortIncidents([...incidentItems.values()].map((item) => ({ ...agentIncident(item, names), firstOfKey: firstIds.has(item.id) }))),
       newestLimit: HEALTH_NEWEST_INCIDENT_LIMIT,

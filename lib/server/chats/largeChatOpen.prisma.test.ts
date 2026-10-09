@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { afterAll, expect, it } from "vitest";
+import { createQueryLoggingClient } from "@/tests/support/prismaQueryLog";
 import type { MessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
@@ -146,8 +147,9 @@ it("opens a thousand-turn chat inside its read budget with the same page, branch
     await prisma.$executeRawUnsafe(`ANALYZE "ModelRunEvent"`);
 
     const statements: Array<{ duration: number; query: string }> = [];
-    const counting = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
-    counting.$on("query", (event) => { statements.push({ duration: event.duration, query: event.query }); });
+    const { client: counting, settle } = createQueryLoggingClient((event) => {
+      statements.push({ duration: event.duration, query: event.query });
+    });
     try {
       const repo = createPrismaChatRepository(counting);
       const estimate = (path: readonly Row[]) => path.reduce((total, message) => total + estimateApproxTokens(message.content), 0);
@@ -184,9 +186,9 @@ it("opens a thousand-turn chat inside its read budget with the same page, branch
         expect(loaded).toEqual(path.map((message) => message.id));
       };
 
-      await counting.$queryRaw`SELECT 1`;
       const samples: Array<{ failure: string | null; ms: number; statements: number; slowest: Array<{ duration: number; query: string }> }> = [];
       for (let attempt = 0; attempt < 4; attempt += 1) {
+        await settle();
         statements.length = 0;
         const started = performance.now();
         // A failed open is measured too: before the bounded read it outlived
@@ -194,6 +196,7 @@ it("opens a thousand-turn chat inside its read budget with the same page, branch
         const failure = await repo.getChat({ chatId, userId }).then(() => null, (error: unknown) =>
           error instanceof Prisma.PrismaClientKnownRequestError ? error.code : "unexpected");
         const ms = Math.round(performance.now() - started);
+        await settle();
         samples.push({
           failure,
           ms,

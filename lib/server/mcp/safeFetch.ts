@@ -9,6 +9,7 @@ import {
 } from "@/lib/server/http/requestBody";
 import { getMcpRequestMaxBytes } from "./responseLimits";
 import { createTransportFailureObserver, observeMcpFetch, transportFailureFacts } from "../providers/providerObservability";
+import { retainFailureCause } from "../observability/failureFacts.cjs";
 
 const DEFAULT_MAX_REDIRECTS = 3;
 const MAX_CONFIGURED_REDIRECTS = 10;
@@ -121,8 +122,11 @@ export interface McpSafeFetchError {
 export class McpSafeFetchError extends Error {
   readonly code: McpSafeFetchErrorCode;
 
-  constructor(code: McpSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean }>) {
+  /** `factsOf` is the transport error: only its content-free telemetry facts
+   * are retained, never the error, its address or its text. */
+  constructor(code: McpSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean; factsOf?: unknown }>) {
     super(code);
+    if (options?.factsOf !== undefined) retainFailureCause(this, options.factsOf);
     this.code = code;
     this.name = "McpSafeFetchError";
     if (options?.requestNotSent === true) {
@@ -441,19 +445,37 @@ function responseHeaders(rawHeaders: string[]): Headers {
   return headers;
 }
 
+/**
+ * A socket `lookup` that answers with the pinned address, never synchronously.
+ * Node calls `lookup` inside `request()`; a synchronous answer whose `connect()`
+ * fails at once (ENETUNREACH without an IPv6 route) emits the socket error
+ * before the request listens to its socket, which is an uncaught exception
+ * that ends the process. A cancelled attempt gets an abort instead of a connect.
+ */
+export function pinnedAddressLookup(
+  address: McpResolvedAddress,
+  cancelled: () => boolean = () => false
+): LookupFunction {
+  const record = { address: address.address, family: address.family };
+  return (_hostname, lookupOptions, callback) => {
+    setImmediate(() => {
+      if (cancelled()) {
+        callback(Object.assign(new Error("The pinned connection was cancelled."), { code: "ABORT_ERR" }), "");
+      } else if (lookupOptions.all) {
+        callback(null, [record]);
+      } else {
+        callback(null, record.address, record.family);
+      }
+    });
+  };
+}
+
 async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
   const observeFailure = createTransportFailureObserver("mcp");
   if (input.signal.aborted) throw abortReason(input.signal);
   const request = input.url.protocol === "https:" ? httpsRequest : httpRequest;
   const hostname = hostnameWithoutBrackets(input.url);
-  const pinnedLookup: LookupFunction = (_hostname, lookupOptions, callback) => {
-    const record = { address: input.address.address, family: input.address.family };
-    if (lookupOptions.all) {
-      callback(null, [record]);
-    } else {
-      callback(null, record.address, record.family);
-    }
-  };
+  const pinnedLookup = pinnedAddressLookup(input.address, () => input.signal.aborted);
 
   return new Promise<Response>((resolve, reject) => {
     let headersReceived = false;
@@ -467,7 +489,7 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
       const failure = input.signal.aborted
         ? abortReason(input.signal)
         : new McpSafeFetchError(tls ? "mcp_http_tls_failed" : "mcp_http_request_failed",
-          { requestNotSent: !connectionEstablished && !headersReceived });
+          { requestNotSent: !connectionEstablished && !headersReceived, factsOf: cause });
       const facts = transportFailureFacts(cause, input.signal);
       if (!headersReceived) observeFailure({ category: facts.category, code: facts.code === "unknown"
         ? tls ? "mcp_http_tls_failed" : "mcp_http_request_failed" : facts.code, timeout_ms: facts.timeout_ms });
