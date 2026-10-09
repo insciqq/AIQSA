@@ -1220,6 +1220,15 @@ export type WorkspaceCoordinator = Readonly<{
   }>): Promise<readonly RunTool[]>;
 }>;
 
+/** The error behind a failed export, so the handoff failure retains its
+ * content-free telemetry facts; the result itself stays a plain code and status. */
+const exportFailureCauses = new WeakMap<object, unknown>();
+
+function failedExport(result: Extract<WorkspaceExportResult, { status: "failed" }>, cause: unknown): WorkspaceExportResult {
+  exportFailureCauses.set(result, cause);
+  return result;
+}
+
 function runtimeCode(error: unknown): WorkspaceRuntimeError["code"] {
   return error instanceof WorkspaceRuntimeError
     ? error.code
@@ -2416,7 +2425,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const result = await this.finalize({ ...request, handoff: true });
       request.signal?.throwIfAborted();
       if (result.status === "busy") return result;
-      if (result.status === "failed") throw new WorkspaceRuntimeError(result.code);
+      if (result.status === "failed") throw new WorkspaceRuntimeError(result.code, { factsOf: exportFailureCauses.get(result) });
       if ((result.status !== "pending" && result.status !== "complete") ||
         !(await input.repository.outputHandoffReady(obligation))) {
         throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
@@ -2443,7 +2452,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       } catch (error) {
         logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export", work_stage: "claim", outcome: "failed",
           code: runtimeCode(error), action: handoff ? "fail" : "retry", run_id: runId });
-        return { code: runtimeCode(error), retryable: true, status: "failed" };
+        return failedExport({ code: runtimeCode(error), retryable: true, status: "failed" }, error);
       }
       if (claim.status === "complete") {
         // Empty capture publication and authority retirement are separate
@@ -2719,7 +2728,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         if (!leaseLost) {
           await input.repository.markExportFailed({ ...lease, code: recorded }).catch(() => undefined);
         }
-        return { code, retryable, status: "failed" };
+        return failedExport({ code, retryable, status: "failed" }, error);
       } finally {
         clearInterval(heartbeatTimer);
         await renewal.pending?.catch(() => undefined);

@@ -12,7 +12,8 @@ export type LifecycleAction = "none" | "retry" | "stop" | "complete" | "fail" | 
 /** The closed kind of a database failure (see databaseCause.cjs). */
 export type DatabaseFailureKind = "transaction_expired" | "transaction_start_timeout" | "lock_timeout" | "statement_timeout" | "serialization_conflict" | "deadlock";
 /** A caught value for events that record its content-free projection
- * (error class, application code site, fingerprint); never serialized itself. */
+ * (error class, application code site, fingerprint) and the closed facts of
+ * its cause chain (failureFacts.cjs); never serialized itself. */
 export type CaughtError = Readonly<{ error?: unknown }>;
 export type LifecycleFields = CaughtError & Readonly<{
   subsystem: Subsystem; stage: LifecycleStage; outcome: LifecycleOutcome;

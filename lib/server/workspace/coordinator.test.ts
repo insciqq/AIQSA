@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { inspect } from "node:util";
 import { runWithContext } from "../observability";
+import { describeFailureFacts } from "../observability/failureFacts.cjs";
 import {
   WORKSPACE_MCP_TOOL_ALLOWLIST,
   workspaceAttachmentPath,
@@ -1492,6 +1494,26 @@ describe("Workspace coordinator export settlement", () => {
     expect(value.runtime.installSkillBundle).not.toHaveBeenCalled();
     expect(value.runtime.completeSkillRunPreparation).not.toHaveBeenCalled();
     expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
+  it("gives the handoff failure the facts of a failed claim's error, never the error itself", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    const unreachable = Object.assign(new Error("connect ENETUNREACH 10.0.0.9:5432"),
+      { code: "ENETUNREACH", syscall: "connect", address: "10.0.0.9", port: 5432 });
+    vi.spyOn(value.repository, "claimExport").mockRejectedValueOnce(unreachable);
+    let failure: unknown;
+    const records = await exportRecords(async () => {
+      failure = await value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace })
+        .catch((error: unknown) => error);
+    });
+    expect(failure).toBeInstanceOf(WorkspaceRuntimeError);
+    expect(failure).toMatchObject({ code: "workspace_runtime_unavailable" });
+    expect((failure as Error).cause).toBeUndefined();
+    expect(describeFailureFacts(failure)).toMatchObject({ sys_code: "ENETUNREACH", syscall: "connect", cause_class: "Error" });
+    expect(inspect(failure, { depth: 8 })).not.toMatch(/10\.0\.0\.9|port: 5432/u);
+    expect(records).toEqual([expect.objectContaining({ work_stage: "claim", outcome: "failed", sys_code: "ENETUNREACH", syscall: "connect" })]);
+    expect(JSON.stringify(records)).not.toMatch(/10\.0\.0\.9|5432/u);
   });
 
   it("retires the generation advanced by confirmed disk loss during handoff", async () => {
