@@ -198,6 +198,36 @@ describe("Prisma telemetry store", () => {
     expect(byKey.statements[1]!.values.at(-1)).toBe(100);
   });
 
+  it("reads the first incident of each key in a range, newest first, and says when keys were left out", async () => {
+    const range = { from: new Date(HOUR.getTime() - 86_400_000), to: HOUR };
+    const row = (id: string) => ({ id, occurredAt: HOUR, role: "app", event: "job_attempt", level: "fatal", appVersion: "0.3.7",
+      instanceId: "a".repeat(32), code: null, subsystem: "memory", connectionId: null, runId: null, traceId: null, userId: "user-1",
+      details: { error_fingerprint: "0123456789ab", nested: { dropped: true } } });
+    const firsts = fakeDatabase([row("a"), row("b"), row("c")]);
+    const page = await firsts.store.readFirstIncidentPerKey({ ...range, limit: 2 });
+    expect(page.truncated).toBe(true);
+    expect(page.items.map((item) => [item.id, item.level, item.userId, item.details])).toEqual([
+      ["a", "fatal", "user-1", { error_fingerprint: "0123456789ab" }], ["b", "fatal", "user-1", { error_fingerprint: "0123456789ab" }]]);
+    const statement = firsts.statements[0]!;
+    expect(statement.sql).toMatch(/SELECT DISTINCT ON \("event", "code", "subsystem", "connectionId", "details" ->> 'error_fingerprint'\)/u);
+    expect(statement.sql).toMatch(/ORDER BY "event", "code", "subsystem", "connectionId", "details" ->> 'error_fingerprint', "occurredAt", "id"/u);
+    expect(statement.values).toEqual([range.from, range.to, 3]);
+    await expect(firsts.store.readFirstIncidentPerKey(range)).resolves.toMatchObject({ truncated: false });
+    expect(firsts.statements[1]!.values.at(-1)).toBe(101);
+    for (const query of [{ from: HOUR, to: HOUR }, { ...range, limit: 0 }, { ...range, limit: 1_001 }]) {
+      await expect(firsts.store.readFirstIncidentPerKey(query)).rejects.toBeInstanceOf(TelemetryQueryError);
+    }
+  });
+
+  it("groups by up to sixteen keys and refuses more", async () => {
+    const { store } = fakeDatabase([]);
+    const range = { from: HOUR, to: new Date(HOUR.getTime() + 3_600_000) };
+    const keys = ["event", "level", "code", "subsystem", "stage", "reason", "routePath", "status", "httpStatus", "providerFamily",
+      "tool_kind", "overflow", "appVersion", "role", "kind", "outcome", "method"] as const;
+    await expect(store.readCounters({ ...range, groupBy: keys.slice(0, 16) })).resolves.toEqual([]);
+    await expect(store.readCounters({ ...range, groupBy: keys })).rejects.toBeInstanceOf(TelemetryQueryError);
+  });
+
   it("clears a deleted account's id from its incidents with one statement on the deleting client", async () => {
     const tx = { $executeRaw: vi.fn(async (statement: Prisma.Sql) => statement.values.length) };
     await expect(clearTelemetryIncidentUser(tx as unknown as TelemetryDatabase, "user-1")).resolves.toBe(1);

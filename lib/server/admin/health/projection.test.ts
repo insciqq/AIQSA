@@ -4,6 +4,7 @@ import {
   adminHealthFailureClass,
   adminHealthIncidentFrom,
   adminHealthP95,
+  adminHealthQuantile,
   adminHealthWindow
 } from "./projection";
 
@@ -70,5 +71,8 @@ describe("admin health projection", () => {
     expect(adminHealthP95([96, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0], 1_800)).toBe(100);
     // The open last bucket reports the observed maximum.
     expect(adminHealthP95([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19], 412_000)).toBe(412_000);
+    // The median of the same kind of histogram, as a bucket bound capped by the maximum.
+    expect(adminHealthQuantile([94, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0], 1_800, 0.5)).toBe(100);
+    expect(adminHealthQuantile([10, 0, 0, 0, 90, 0, 0, 0, 0, 0, 0, 0], 1_800, 0.5)).toBe(1_800);
   });
 });
