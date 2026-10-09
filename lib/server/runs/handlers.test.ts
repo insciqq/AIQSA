@@ -340,7 +340,7 @@ function parseSse(body: string): { data: unknown; type: string }[] {
   return body
     .trim()
     .split("\n\n")
-    .filter(Boolean)
+    .filter((chunk) => chunk && !chunk.startsWith(":"))
     .map((chunk) => {
       const lines = chunk.split("\n");
       const type = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
