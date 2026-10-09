@@ -48,7 +48,7 @@ export function PrivateArtifactView({ artifactId, versionId, onFix, onEscape, fi
   const [entry, setEntry] = useState<string | null>(null);
   const recoveryRef = useRef<HTMLButtonElement>(null);
   const settled = content?.serial === request.serial || failure?.request.serial === request.serial;
-  // One page request at a time: links that arrive while a page loads are ignored.
+  // One page request at a time: the frame keeps a link that arrives while a page loads until it arrives.
   const navigation = useRef({ settled, entry });
   useEffect(() => { navigation.current = { settled, entry }; }, [settled, entry]);
 
@@ -89,9 +89,10 @@ export function PrivateArtifactView({ artifactId, versionId, onFix, onEscape, fi
 
   const open = (next: Omit<ArtifactPageRequest, "serial">) => setRequest(previous => ({ ...next, serial: previous.serial + 1 }));
   const navigate = (target: ArtifactNavigateMessage, focused: boolean) => {
-    if (!navigation.current.settled) return;
+    if (!navigation.current.settled) return false;
     navigation.current = { ...navigation.current, settled: false };
     open({ ...(target.path === navigation.current.entry ? {} : { page: target.path }), ...(target.fragment ? { fragment: target.fragment } : {}), focus: focused });
+    return true;
   };
   const start = () => open({ focus: true });
 

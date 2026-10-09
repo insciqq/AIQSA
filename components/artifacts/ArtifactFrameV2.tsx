@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ARTIFACT_VIEW_ALLOW,
   ARTIFACT_VIEW_SANDBOX,
@@ -14,7 +14,7 @@ import {
 import { ArtifactExternalLinkDialog } from "./ArtifactExternalLinkDialog";
 import { artifactBrowserStorage, injectArtifactStorageSnapshot, privateArtifactStateKey, publicArtifactStateKey } from "./artifactBrowserStorage";
 
-/** Messages that leave the frame (a confirmed link or another page) are accepted at most once per interval. */
+/** Messages that leave the frame (a confirmed link or another page) are acted on at most once per interval. */
 const FRAME_REQUEST_INTERVAL_MS = 500;
 
 type Props = {
@@ -27,8 +27,11 @@ type Props = {
   /** Moves keyboard focus into the next document loaded for a new body or revision. */
   focusOnLoad?: boolean;
   onRuntimeError?(error: ArtifactRuntimeError): void;
-  /** A link asks to show another page of the artifact; `focused` tells whether the frame had keyboard focus. */
-  onNavigate?(target: ArtifactNavigateMessage, focused: boolean): void;
+  /**
+   * A link asks to show another page of the artifact; `focused` tells whether the frame had keyboard focus.
+   * Returns false while another page still loads: the request then waits for the next document.
+   */
+  onNavigate?(target: ArtifactNavigateMessage, focused: boolean): boolean | void;
   onReset?(): void;
   onEscape?(): void;
 };
@@ -47,7 +50,30 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
   // Kept for the life of this host, across the pages it shows: authored code can post
   // navigation itself, so a page that keeps sending it still waits between requests.
   const lastNavigationAt = useRef(-Infinity);
+  // A request inside the interval, or while another page loads, waits here; a newer one replaces it.
+  const pendingNavigation = useRef<{ target: ArtifactNavigateMessage; focused: boolean } | null>(null);
+  const navigationTimer = useRef<number | null>(null);
   useEffect(() => { callbacks.current = { onRuntimeError, onNavigate, onReset, onEscape, focusOnLoad }; }, [onRuntimeError, onNavigate, onReset, onEscape, focusOnLoad]);
+
+  const flushNavigation = useCallback(function flush() {
+    const pending = pendingNavigation.current;
+    if (!pending || navigationTimer.current !== null) return;
+    const wait = lastNavigationAt.current + FRAME_REQUEST_INTERVAL_MS - performance.now();
+    if (wait > 0) {
+      navigationTimer.current = window.setTimeout(() => { navigationTimer.current = null; flush(); }, wait);
+      return;
+    }
+    // Never under an open link confirmation: the dialog stays about the page it came from.
+    if (openLink.current || callbacks.current.onNavigate?.(pending.target, pending.focused) === false) return;
+    pendingNavigation.current = null;
+    lastNavigationAt.current = performance.now();
+  }, []);
+  // Another artifact, or leaving the viewer, forgets a waiting request.
+  useEffect(() => () => {
+    pendingNavigation.current = null;
+    if (navigationTimer.current !== null) window.clearTimeout(navigationTimer.current);
+    navigationTimer.current = null;
+  }, [artifactId, publicToken]);
 
   useEffect(() => {
     let active = true;
@@ -60,17 +86,16 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
         const now = performance.now();
         if (!openLink.current && now - lastLinkAt.current >= FRAME_REQUEST_INTERVAL_MS) {
           lastLinkAt.current = now; openLink.current = link; setHref(link);
+          pendingNavigation.current = null;
         }
         return;
       }
       const navigation = parseArtifactNavigateMessage(event.data);
       if (navigation) {
-        const now = performance.now();
         // Never under an open link confirmation: the dialog stays about the page it came from.
-        if (!openLink.current && now - lastNavigationAt.current >= FRAME_REQUEST_INTERVAL_MS) {
-          lastNavigationAt.current = now;
-          callbacks.current.onNavigate?.(navigation, window.document.activeElement === iframeRef.current);
-        }
+        if (openLink.current) return;
+        pendingNavigation.current = { target: navigation, focused: window.document.activeElement === iframeRef.current };
+        flushNavigation();
         return;
       }
       const message = parseArtifactStorageMessage(event.data);
@@ -109,11 +134,13 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
     window.addEventListener("message", onMessage);
     void prepare();
     return () => { active = false; session?.close(); window.removeEventListener("message", onMessage); };
-  }, [artifactId, body, publicToken, revision]);
+  }, [artifactId, body, flushNavigation, publicToken, revision]);
 
   useEffect(() => {
     if (document?.focus) iframeRef.current?.focus({ preventScroll: true });
-  }, [document]);
+    // The page that was loading has arrived: a request that waited for it goes now.
+    if (document) flushNavigation();
+  }, [document, flushNavigation]);
 
   if (!document || document.source !== body || document.revision !== revision || document.artifactId !== artifactId || document.publicToken !== publicToken) {
     return <div className="v2-artifact-empty" role="status">Loading preview…</div>;
