@@ -1575,7 +1575,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         if (input.signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
         if (deadline.aborted) throw new WorkspaceRuntimeError("workspace_tool_timeout");
         if (error instanceof WorkspaceRuntimeError) throw error;
-        throw new WorkspaceRuntimeError("workspace_output_export_failed");
+        throw new WorkspaceRuntimeError("workspace_output_export_failed", { cause: error });
       } finally { await source?.close(); }
     }
     if (input.capture) {
@@ -1701,7 +1701,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       return outputs;
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError) throw error;
-      throw new WorkspaceRuntimeError("workspace_output_export_failed");
+      throw new WorkspaceRuntimeError("workspace_output_export_failed", { cause: error });
     }
   }
 

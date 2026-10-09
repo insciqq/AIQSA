@@ -291,7 +291,8 @@ async function removeTemporaryWorkspace(
       error instanceof WorkspaceRuntimeError && error.code === "workspace_runtime_unavailable"
         ? "memory_temporary_workspace_runtime_unavailable"
         : "memory_temporary_workspace_cleanup_failed",
-      true
+      true,
+      { cause: error }
     );
   }
 }
@@ -328,10 +329,11 @@ async function deleteExclusiveObjects(
     if (!shared) {
       try {
         await storage.deleteObject(storageKey);
-      } catch {
+      } catch (error) {
         throw new MemoryCoordinatorError(
           "memory_temporary_object_delete_failed",
-          true
+          true,
+          { cause: error }
         );
       }
     }

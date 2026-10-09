@@ -121,8 +121,9 @@ export interface McpSafeFetchError {
 export class McpSafeFetchError extends Error {
   readonly code: McpSafeFetchErrorCode;
 
-  constructor(code: McpSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean }>) {
-    super(code);
+  /** `cause` keeps the transport error for its content-free telemetry facts. */
+  constructor(code: McpSafeFetchErrorCode, options?: Readonly<{ requestNotSent?: boolean; cause?: unknown }>) {
+    super(code, options?.cause === undefined ? undefined : { cause: options.cause });
     this.code = code;
     this.name = "McpSafeFetchError";
     if (options?.requestNotSent === true) {
@@ -467,7 +468,7 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
       const failure = input.signal.aborted
         ? abortReason(input.signal)
         : new McpSafeFetchError(tls ? "mcp_http_tls_failed" : "mcp_http_request_failed",
-          { requestNotSent: !connectionEstablished && !headersReceived });
+          { requestNotSent: !connectionEstablished && !headersReceived, cause });
       const facts = transportFailureFacts(cause, input.signal);
       if (!headersReceived) observeFailure({ category: facts.category, code: facts.code === "unknown"
         ? tls ? "mcp_http_tls_failed" : "mcp_http_request_failed" : facts.code, timeout_ms: facts.timeout_ms });
