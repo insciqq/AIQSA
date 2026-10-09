@@ -50,7 +50,8 @@ describe("artifact references admitted at run acceptance", () => {
     expect(description.length).toBeLessThanOrEqual(16_384);
     for (const rule of ["asset_ref to the exact file_id of a conversation file", "unpack: true on an application/zip reference",
       "edits even at intent=create", "ordinary fetch('data.json')", "Links to other local HTML pages open inside the viewer",
-      "24 MiB per file, 32 MiB per artifact, 64 MiB rendered page"]) expect(description).toContain(rule);
+      "24 MiB per file, 32 MiB per artifact, 64 MiB rendered page", "over 512 KiB, never read it whole (its read_artifact pages hold 32 KiB)",
+      "read only the first page, which usually holds <head>", "A markup error returns an excerpt"]) expect(description).toContain(rule);
     expect(description).toContain("only a download until a create_artifact call references its attachment_id");
     expect(description).toContain("always pass the bytes as data: a URL (getDocument('doc.pdf') or { url }) fails in the viewer");
     const files = artifactTool(description).inputSchema.properties as { files: { items: { properties: { asset_ref: { description: string } } } } };
