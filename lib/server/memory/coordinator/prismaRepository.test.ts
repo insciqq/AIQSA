@@ -541,9 +541,11 @@ describe("Prisma memory coordinator repository preflight", () => {
       now: new Date("2026-08-21T10:00:00.000Z"),
       stage: "catching_up"
     })).resolves.toBe(true);
+    // Due at once, ordered behind the owner's work that was already due.
     expect(tx.memoryJob.updateMany).toHaveBeenCalledWith({
       data: expect.objectContaining({ acceptedResultHash: null, attemptCount: 0, completedAt: null,
-        leaseExpiresAt: null, leaseToken: null, nextAttemptAt: null, state: "QUEUED" }),
+        leaseExpiresAt: null, leaseToken: null, nextAttemptAt: new Date("2026-08-21T10:00:00.000Z"),
+        state: "QUEUED" }),
       where: expect.objectContaining({ leaseToken: "job-commit-claim", state: "CLAIMED" })
     });
   });

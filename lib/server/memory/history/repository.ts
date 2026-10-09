@@ -9,12 +9,17 @@ import {
 import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { prisma } from "../../prisma";
 import { MemoryCoordinatorError } from "../coordinator/errors";
-import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
+import {
+  enqueueMemoryEmbeddingBatchItem,
+  enqueueMemoryEmbeddingBatchItems
+} from "../embedding/enqueue";
 import type {
+  MemoryJobApplyOutcome,
   MemoryJobClaim,
   MemoryJobDescriptor,
   MemoryJobGateDecision
 } from "../coordinator/types";
+import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
 import {
   memorySha256,
   normalizeMemorySearchText
@@ -48,6 +53,7 @@ import {
   memoryHistoryChunkId,
   memoryHistoryIndexClaimIsValid,
   memoryHistoryIndexPlanIndexedThrough,
+  memoryHistoryIndexPlanIsPartial,
   memoryHistoryIndexResultHash,
   type MemoryHistoryIndexPlan,
   type MemoryHistoryIndexSourceIdentity,
@@ -63,6 +69,7 @@ import {
   MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE,
   memoryHistoryIndexMinimumPageEnd,
   memoryHistoryIndexPageLimitsAreValid,
+  memoryHistoryIndexWriteCost,
   planMemoryHistoryTailUpdate,
   shrinkMemoryHistoryIndexPageEnd,
   type MemoryHistoryIndexPageLimits
@@ -82,6 +89,7 @@ import {
 } from "./rounds";
 import {
   MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION,
+  memoryRecallRoundSegmentCount,
   projectMemoryRecallRoundSegments,
   type MemoryRecallRoundSegmentMessageJoin,
   type MemoryRecallRoundSegmentProjection
@@ -203,6 +211,22 @@ export const MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE = "memory_history_message_tru
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Rows grouped by a key, each group in the rows' order. */
+function groupRows<Row>(
+  rows: readonly Row[],
+  key: (row: Row) => string | null
+): ReadonlyMap<string, readonly Row[]> {
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const value = key(row);
+    if (value === null) continue;
+    const group = groups.get(value);
+    if (group) group.push(row);
+    else groups.set(value, [row]);
+  }
+  return groups;
 }
 
 function canonicalTimeZone(value: unknown): string {
@@ -460,6 +484,44 @@ async function loadHistoryAdmission(
   };
 }
 
+type StoredRoundJoin = Readonly<{
+  messageId: string;
+  ordinal: number;
+  role: string;
+  roundEndOffset: number;
+  roundId: string;
+  roundStartOffset: number;
+  safeTextHash: string;
+  sourceEndOffset: number;
+  sourceMessageContentHash: string;
+  sourceMessageUpdatedAt: Date;
+  sourceStartOffset: number;
+}>;
+
+/** Stored round source maps, grouped by round in the given row order. */
+function storedRoundJoinsByRound(
+  rows: readonly StoredRoundJoin[]
+): Map<string, MemoryRecallRoundMessageJoin[]> {
+  const joinsByRound = new Map<string, MemoryRecallRoundMessageJoin[]>();
+  for (const join of rows) {
+    const values = joinsByRound.get(join.roundId) ?? [];
+    values.push({
+      messageId: join.messageId,
+      ordinal: join.ordinal,
+      role: join.role as MemoryRecallRoundMessageJoin["role"],
+      roundEndOffset: join.roundEndOffset,
+      roundStartOffset: join.roundStartOffset,
+      safeTextHash: join.safeTextHash,
+      sourceEndOffset: join.sourceEndOffset,
+      sourceMessageContentHash: join.sourceMessageContentHash,
+      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
+      sourceStartOffset: join.sourceStartOffset
+    });
+    joinsByRound.set(join.roundId, values);
+  }
+  return joinsByRound;
+}
+
 async function loadIncrementalHistoryState(
   tx: MemoryTransaction,
   source: MemorySourceSnapshot
@@ -540,23 +602,7 @@ async function loadIncrementalHistoryState(
     });
     joinsByChunk.set(join.chunkId, values);
   }
-  const joinsByRound = new Map<string, MemoryRecallRoundMessageJoin[]>();
-  for (const join of roundJoins) {
-    const values = joinsByRound.get(join.roundId) ?? [];
-    values.push({
-      messageId: join.messageId,
-      ordinal: join.ordinal,
-      role: join.role as MemoryRecallRoundMessageJoin["role"],
-      roundEndOffset: join.roundEndOffset,
-      roundStartOffset: join.roundStartOffset,
-      safeTextHash: join.safeTextHash,
-      sourceEndOffset: join.sourceEndOffset,
-      sourceMessageContentHash: join.sourceMessageContentHash,
-      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
-      sourceStartOffset: join.sourceStartOffset
-    });
-    joinsByRound.set(join.roundId, values);
-  }
+  const joinsByRound = storedRoundJoinsByRound(roundJoins);
   return Object.freeze({
     checkpointLastSucceededAt: checkpoint?.lastSucceededAt ?? null,
     checkpointPipelineVersion: checkpoint?.pipelineVersion ?? null,
@@ -1037,6 +1083,10 @@ async function prepareWith(
       `);
   const contentBytesById = new Map(contentSizes.map((row) =>
     [row.id, Number(row.bytes ?? 0)]));
+  const settledToolCalls = (ordinal: number): number => {
+    const run = settledRunByMessageId.get(path[ordinal]!.id);
+    return run ? toolCallsByRunId.get(run.id) ?? 0 : 0;
+  };
   let pageEnd = maximumPageEnd;
   if (firstUncovered < path.length) {
     pageEnd = alignMemoryHistoryIndexPageEnd(roles, minimumPageEnd, Math.min(
@@ -1048,12 +1098,25 @@ async function prepareWith(
         minimumEnd: minimumPageEnd
       }),
       boundMemoryHistoryIndexPageEnd({
-        cost: (ordinal) => {
-          const run = settledRunByMessageId.get(path[ordinal]!.id);
-          return run ? toolCallsByRunId.get(run.id) ?? 0 : 0;
-        },
+        cost: settledToolCalls,
         costStartOrdinal: toolEventStart,
         limit: limits.maxToolCalls,
+        maximumEnd: maximumPageEnd,
+        minimumEnd: minimumPageEnd
+      }),
+      // The commit writes the page while it holds the owner row and the source
+      // chat FOR SHARE, which the owner's run settlement and the chat's own
+      // writers wait for. Bounding its writes bounds that hold; the rest of
+      // the tail is the next pass of the same job.
+      boundMemoryHistoryIndexPageEnd({
+        cost: (ordinal) => memoryHistoryIndexWriteCost({
+          contentBytes: ordinal >= tailStart
+            ? contentBytesById.get(path[ordinal]!.id) ?? 0
+            : null,
+          toolCalls: ordinal >= toolEventStart ? settledToolCalls(ordinal) : 0
+        }),
+        costStartOrdinal: Math.min(tailStart, toolEventStart),
+        limit: limits.maxIndexWrites,
         maximumEnd: maximumPageEnd,
         minimumEnd: minimumPageEnd
       })
@@ -1220,7 +1283,12 @@ async function prepareWith(
       publicationState: "ACTIVE"
     })
   );
-  const rebuilt = projectedChunks.filter((chunk) => !retainedIds.has(chunk.id));
+  // A rewound page reprojects chunks the retained prefix already holds. The
+  // rebuilt ones follow the retained ones directly, so the live ordinals stay
+  // contiguous and the next page renumbers (and rewrites) nothing.
+  const rebuilt = projectedChunks
+    .filter((chunk) => !retainedIds.has(chunk.id))
+    .map((chunk, offset) => ({ ...chunk, ordinal: retained.length + offset }));
   const chunks = [...retained, ...rebuilt];
 
   // Tool observations follow the same cursor: this page rebuilds only calls of
@@ -1364,14 +1432,14 @@ async function prepareWith(
   }
   const reusedRoundIds = retainedRounds.map((round) => round.id);
   const rebuiltRoundIds = rebuiltRounds.map((round) => round.id);
-  const previousRoundSegments = previous.rounds.reduce((count, row, ordinal) =>
-    count + projectMemoryRecallRoundSegments(
-      storedRoundProjection(row, source, ordinal)
-    ).length, 0);
+  // Counted from the segment spans alone: the re-prepare under the commit's
+  // locks would otherwise project every retained round's segments twice.
+  const previousRoundSegments = previous.rounds.reduce((count, row) =>
+    count + memoryRecallRoundSegmentCount(row), 0);
   const reusedRoundSegments = retainedRounds.reduce((count, round) =>
-    count + projectMemoryRecallRoundSegments(round).length, 0);
+    count + memoryRecallRoundSegmentCount(round), 0);
   const builtRoundSegments = projectedRounds.reduce((count, round) =>
-    count + projectMemoryRecallRoundSegments(round).length, 0);
+    count + memoryRecallRoundSegmentCount(round), 0);
   const incrementalSnapshot = {
     commonPathMessageCount: incremental.commonPathMessageCount,
     mode: incremental.mode,
@@ -1791,23 +1859,7 @@ async function planAlreadyApplied(
       orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
       where: { roundId: { in: roundIds }, userId: plan.source.userId }
     });
-  const joinsByRound = new Map<string, MemoryRecallRoundMessageJoin[]>();
-  for (const join of roundJoins) {
-    const current = joinsByRound.get(join.roundId) ?? [];
-    current.push({
-      messageId: join.messageId,
-      ordinal: join.ordinal,
-      role: join.role as MemoryRecallRoundMessageJoin["role"],
-      roundEndOffset: join.roundEndOffset,
-      roundStartOffset: join.roundStartOffset,
-      safeTextHash: join.safeTextHash,
-      sourceEndOffset: join.sourceEndOffset,
-      sourceMessageContentHash: join.sourceMessageContentHash,
-      sourceMessageUpdatedAt: join.sourceMessageUpdatedAt.toISOString(),
-      sourceStartOffset: join.sourceStartOffset
-    });
-    joinsByRound.set(join.roundId, current);
-  }
+  const joinsByRound = storedRoundJoinsByRound(roundJoins);
   const rounds: CurrentRoundRow[] = roundRows.map((round) => ({
     ...round,
     messageJoins: joinsByRound.get(round.id) ?? []
@@ -2541,13 +2593,130 @@ async function enqueueChunkEmbedding(
   });
 }
 
+type WrittenSearchEntry = Readonly<{ embeddingState: MemoryEmbeddingState; id: string }>;
+
+/**
+ * Enqueues the pending vectors one commit wrote as one closed set, instead of
+ * a lookup and an append per entry. A generation outside the batch vector
+ * pipeline keeps its per-item jobs.
+ */
+async function enqueuePendingEmbeddings(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  activeIndex: MemoryActiveIndex | null,
+  entries: readonly WrittenSearchEntry[],
+  triggerIdentity: string
+): Promise<void> {
+  const pending = [...new Set(entries.flatMap((entry) =>
+    entry.embeddingState === "PENDING" ? [entry.id] : []))];
+  if (pending.length === 0 || !activeIndex) return;
+  const generation = await tx.memoryIndexGeneration.findFirst({
+    select: { retrievalPipelineVersion: true },
+    where: { id: activeIndex.id, userId: settings.userId }
+  });
+  if (generation?.retrievalPipelineVersion !== MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION) {
+    for (const entryId of pending) {
+      await enqueueMemoryEmbeddingBatchItem(tx, settings, { entryId, triggerIdentity });
+    }
+    return;
+  }
+  await enqueueMemoryEmbeddingBatchItems(
+    tx,
+    settings,
+    pending.map((entryId) => ({ entryId, triggerIdentity }))
+  );
+}
+
+/**
+ * Writes the plan's tool observations. Every commit carries all of them to
+ * the current source position (branch generation, source revision, folder),
+ * which retrieval requires to equal the checkpoint's. A retained observation
+ * whose row and active entry already are the exact projection is not written
+ * again, so the pages of one job do not rewrite each other's observations;
+ * those that differ only in that position move in one statement. Any other
+ * difference is persisted row by row.
+ */
+async function persistToolEvents(
+  tx: MemoryTransaction,
+  activeIndex: MemoryActiveIndex,
+  plan: MemoryHistoryIndexPlan
+): Promise<readonly WrittenSearchEntry[]> {
+  if (plan.toolEvents.length === 0) return [];
+  const userId = plan.source.userId;
+  const ids = plan.toolEvents.map(({ id }) => id);
+  const [storedRows, storedEntries] = await Promise.all([
+    tx.memoryToolEvent.findMany({ where: { id: { in: ids }, userId } }),
+    tx.memorySearchEntry.findMany({
+      where: {
+        indexGenerationId: activeIndex.id,
+        itemType: "TOOL_EVENT",
+        toolEventId: { in: ids },
+        userId
+      }
+    })
+  ]);
+  const storedById = new Map(storedRows.map((row) => [row.id, row]));
+  const entriesByEvent = groupRows(storedEntries, (entry) => entry.toolEventId);
+  const moved = new Map<string, {
+    branchGeneration: number;
+    ids: string[];
+    sourceFolderId: string | null;
+    sourceRevision: number;
+  }>();
+  const written: WrittenSearchEntry[] = [];
+  for (const event of plan.toolEvents) {
+    const stored = storedById.get(event.id);
+    const entries = entriesByEvent.get(event.id) ?? [];
+    if (stored && entries.length === 1 && searchEntryMatchesExpected(
+      activeIndex,
+      entries[0]!,
+      expectedToolEventSearchEntry(plan, event)
+    )) {
+      if (toolEventMatches(stored, event)) continue;
+      if (toolEventMatches({
+        ...stored,
+        branchGeneration: event.branchGeneration,
+        sourceFolderId: event.sourceFolderId,
+        sourceRevisionAtCreation: event.sourceRevision
+      }, event)) {
+        const key = JSON.stringify([event.branchGeneration, event.sourceFolderId, event.sourceRevision]);
+        const group = moved.get(key) ?? {
+          branchGeneration: event.branchGeneration,
+          ids: [],
+          sourceFolderId: event.sourceFolderId,
+          sourceRevision: event.sourceRevision
+        };
+        group.ids.push(event.id);
+        moved.set(key, group);
+        continue;
+      }
+    }
+    written.push(await persistToolEvent(tx, activeIndex, plan, event));
+  }
+  for (const group of moved.values()) {
+    const updated = await tx.memoryToolEvent.updateMany({
+      data: {
+        branchGeneration: group.branchGeneration,
+        invalidatedAt: null,
+        sourceFolderId: group.sourceFolderId,
+        sourceRevisionAtCreation: group.sourceRevision
+      },
+      where: { id: { in: group.ids }, state: "ACTIVE", userId }
+    });
+    if (updated.count !== group.ids.length) {
+      throw new MemoryCoordinatorError("memory_history_plan_stale", true);
+    }
+  }
+  return written;
+}
+
 async function applyPlan(
   tx: MemoryTransaction,
   claim: MemoryJobClaim,
   plan: MemoryHistoryIndexPlan,
   now: Date,
   limits: MemoryHistoryIndexPageLimits = DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS
-): Promise<void> {
+): Promise<MemoryJobApplyOutcome | void> {
   if (
     !memoryHistoryIndexClaimIsValid(claim) ||
     plan.classificationPolicyVersion === null ||
@@ -2578,6 +2747,11 @@ async function applyPlan(
   ) {
     throw new MemoryCoordinatorError("memory_history_plan_invalid", false);
   }
+  // A page that stops short of the active leaf leaves the rest of the tail to
+  // the next pass of this job, queued again in the same transaction.
+  const outcome: MemoryJobApplyOutcome | undefined = memoryHistoryIndexPlanIsPartial(plan)
+    ? { requeue: true }
+    : undefined;
   const settings = await lockMemorySettings(tx, claim.userId, false);
   if (!settings.referenceChatHistory) return;
   const source = await lockMemorySourceChat(tx, {
@@ -2635,7 +2809,7 @@ async function applyPlan(
     for (const entry of pendingEntries) {
       await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
     }
-    return;
+    return outcome;
   }
   const currentPrepared = await prepareWith(tx, claim, now, limits);
   if (
@@ -2770,16 +2944,19 @@ async function applyPlan(
           userId: claim.userId
         }
       });
+  // Grouped once: a long chat's commit compares every retained artifact, and
+  // per-item scans of the whole retained set would grow with its square.
+  const retainedEntriesByChunk = groupRows(retainedEntries, (entry) => entry.recallChunkId);
   const rebuilt = new Set(plan.rebuiltChunkIds);
+  const writtenEntries: WrittenSearchEntry[] = [];
   for (const chunk of plan.chunks) {
     const expected = expectedSearchEntry(plan, chunk);
+    const chunkEntries = retainedEntriesByChunk.get(chunk.id) ?? [];
     const retainedEntry = activeIndex
-      ? retainedEntries.find((entry) =>
-          entry.indexGenerationId === activeIndex.id &&
-          entry.recallChunkId === chunk.id)
+      ? chunkEntries.find((entry) => entry.indexGenerationId === activeIndex.id)
       : null;
     const searchArtifactNeedsRepair = chunk.publicationState === "SUPPRESSED"
-      ? retainedEntries.some((entry) => entry.recallChunkId === chunk.id)
+      ? chunkEntries.length > 0
       : !retainedEntry ||
         !embeddingStateMatchesIndex(activeIndex!.indexMode, retainedEntry.embeddingState) ||
         retainedEntry.languageCode !== expected.languageCode ||
@@ -2790,9 +2967,7 @@ async function applyPlan(
         retainedEntry.suppressionIdentitySnapshot !== expected.suppressionIdentitySnapshot;
     if (!rebuilt.has(chunk.id) && !reorderedIds.has(chunk.id) && !searchArtifactNeedsRepair) continue;
     const entry = await persistChunk(tx, activeIndex, plan, chunk);
-    if (entry) {
-      await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
-    }
+    if (entry) writtenEntries.push(entry);
   }
   const retainedRoundEntries = plan.rounds.length === 0
     ? []
@@ -2848,15 +3023,37 @@ async function applyPlan(
       ...segment,
       messageJoins: retainedJoinsBySegment.get(segment.id) ?? []
     }));
+  const retainedSegmentsByRound = groupRows(retainedRoundSegments, (segment) => segment.roundId);
+  const retainedEntriesByRound = groupRows(retainedRoundEntries, (entry) => entry.recallRoundId);
   const rebuiltRounds = new Set(plan.rebuiltRoundIds);
+  // A page reprojects the rounds its context rewind repeats from the previous
+  // page. One that is already stored exactly, with exact segments and entries,
+  // is not written again, nor are its pending vectors enqueued twice.
+  const storedRebuiltRounds = rebuiltRounds.size === 0 ? [] : await tx.memoryRecallRound.findMany({
+    where: { id: { in: [...rebuiltRounds] }, state: { in: ["ACTIVE", "SUPPRESSED"] }, userId: claim.userId }
+  });
+  const storedRebuiltJoins = storedRoundJoinsByRound(storedRebuiltRounds.length === 0 ? [] :
+    await tx.memoryRecallRoundMessage.findMany({
+      orderBy: [{ roundId: "asc" }, { ordinal: "asc" }],
+      where: { roundId: { in: storedRebuiltRounds.map(({ id }) => id) }, userId: claim.userId }
+    }));
+  const planRoundById = new Map(plan.rounds.map((round) => [round.id, round]));
+  const storedExactRoundIds = new Set(storedRebuiltRounds.flatMap((row) => {
+    const round = planRoundById.get(row.id);
+    const messageJoins = storedRebuiltJoins.get(row.id) ?? [];
+    return round && roundMatches({ ...row, messageJoins }, round) &&
+      messageJoins.length === round.messageJoins.length &&
+      round.messageJoins.every((join, index) =>
+        JSON.stringify(join) === JSON.stringify(messageJoins[index]))
+      ? [row.id]
+      : [];
+  }));
   for (const round of plan.rounds) {
     const expectedSegments = projectMemoryRecallRoundSegments(round);
-    const currentSegments = retainedRoundSegments.filter((segment) =>
-      segment.roundId === round.id);
+    const currentSegments = retainedSegmentsByRound.get(round.id) ?? [];
     const segmentArtifactNeedsRepair =
       !memoryRecallRoundSegmentsMatch(currentSegments, expectedSegments);
-    const allRoundEntries = retainedRoundEntries.filter((entry) =>
-      entry.recallRoundId === round.id);
+    const allRoundEntries = retainedEntriesByRound.get(round.id) ?? [];
     const activeRoundEntries = activeIndex
       ? allRoundEntries.filter((entry) =>
           entry.indexGenerationId === activeIndex.id)
@@ -2869,11 +3066,12 @@ async function applyPlan(
         entry.itemType === "RECALL_ROUND");
       const segmentEntries = activeRoundEntries.filter((entry) =>
         entry.itemType === "RECALL_ROUND_SEGMENT");
+      const segmentEntryById = new Map(segmentEntries.map((entry) =>
+        [entry.recallRoundSegmentId, entry]));
       searchArtifactNeedsRepair = legacyEntries.length !== 0 ||
         segmentEntries.length !== expectedSegments.length ||
         expectedSegments.some((segment) => {
-          const entry = segmentEntries.find((candidate) =>
-            candidate.recallRoundSegmentId === segment.id);
+          const entry = segmentEntryById.get(segment.id);
           return !entry ||
             !searchEntryMatchesExpected(
               activeIndex,
@@ -2896,27 +3094,22 @@ async function applyPlan(
     } else {
       searchArtifactNeedsRepair = activeRoundEntries.length > 0;
     }
-    if (!rebuiltRounds.has(round.id) &&
+    if ((!rebuiltRounds.has(round.id) || storedExactRoundIds.has(round.id)) &&
       !segmentArtifactNeedsRepair &&
       !searchArtifactNeedsRepair) continue;
-    const entries = await persistRound(tx, activeIndex, plan, round);
-    for (const entry of entries) {
-      await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
-    }
+    writtenEntries.push(...await persistRound(tx, activeIndex, plan, round));
   }
   if (plan.toolEvents.length > 0 && !activeIndex) {
     throw new MemoryCoordinatorError("memory_active_generation_invalid", false);
   }
-  for (const event of plan.toolEvents) {
-    const entry = await persistToolEvent(tx, activeIndex!, plan, event);
-    await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
-  }
+  if (activeIndex) writtenEntries.push(...await persistToolEvents(tx, activeIndex, plan));
+  await enqueuePendingEmbeddings(tx, settings, activeIndex, writtenEntries, plan.resultHash);
   // READY states that the cursor proof is consistent; coverage is the cursor.
   // A partial page leaves lastIndexedMessageId before the active leaf, which
   // keeps the source out of retrieval authority, source projections and
   // completion progress (all require cursor = leaf) and visible as backlog.
   // Its active tool events still satisfy the READY-gated database source
-  // guard. History backfill revives the job for the next page.
+  // guard. The job's next pass indexes the next page.
   const indexedThrough = memoryHistoryIndexPlanIndexedThrough(plan);
   const status = "READY" as const;
   // A READY checkpoint carries no error code (ChatMemoryCheckpoint_shape_check).
@@ -2969,6 +3162,7 @@ async function applyPlan(
       }))
     });
   }
+  return outcome;
 }
 
 export function createPrismaMemoryHistoryIndexRepository(

@@ -5,22 +5,26 @@ import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { normalizeTokenUsage } from "../../../domain/usage";
-import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { databaseFailureKind } from "../../observability/databaseFailure";
 import { prisma } from "../../prisma";
 import { createPrismaRunRepository } from "../../runs/prismaRepository";
-import type { RunRepository } from "../../runs/runRepositoryContract";
-import { createUploadHandler } from "../../uploads/handlers";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import {
+  claimContentionJob,
+  cleanupContentionOwner,
+  configureContentionEmbedding,
+  contentionUploadHandler,
+  contentionUploadRequest,
+  createContentionOwner,
+  createForegroundRun,
+  mutateContentionSource,
+  settled,
+  syntheticText
+} from "@/tests/support/memoryForegroundContention";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
-import type { MemoryJobClaim } from "../coordinator/types";
-import type { MemoryItemEmbeddingPin } from "../embedding/contract";
-import { memoryVectorSpaceFingerprint, resolveCurrentMemoryUtilityPolicy } from "../execution/policy";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import { MEMORY_RECLASSIFICATION_PIPELINE_VERSION } from "../reclassification/classifier";
-import { defaultMemorySourceMutationHooks } from "../sourceHooks";
-import { applyMemorySourceMutations, lockMemorySourceChat } from "../sourceState";
 import { parseMemoryRebuildJobFingerprint } from "./contract";
 import { createMemoryRebuildHandler } from "./handler";
 import { createPrismaMemoryRebuildRepository } from "./repository";
@@ -34,52 +38,6 @@ import { wakeCurrentMemoryShadowRebuildInTransaction } from "./wake";
 // database, measured before the fix.
 const HISTORY_CHATS = 60;
 const HISTORY_TURNS = 10;
-const EMBEDDING_DIMENSION = 1_024;
-
-const words = ["alpha", "harbor", "copper", "lantern", "meadow", "quartz", "violet", "summit", "falcon", "ember",
-  "glacier", "orchard", "pixel", "rhythm", "saffron", "timber", "umbra", "vertex", "willow", "zephyr"];
-
-function syntheticText(seed: number, characters: number, label: string): string {
-  let state = seed >>> 0;
-  const parts = [label];
-  let length = label.length;
-  while (length < characters) {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    const word = words[state % words.length]!;
-    parts.push(state % 13 === 0 ? `${word} ${state % 997}.` : word);
-    length += word.length + 1;
-  }
-  return parts.join(" ");
-}
-
-async function createOwner(label: string): Promise<string> {
-  const userId = `memory-contention-${label}-${randomUUID()}`;
-  await prisma.user.create({ data: {
-    displayName: `Memory contention ${label}`, email: `${userId}@example.test`, id: userId, status: "active",
-    settings: { create: { defaultControlValues: {}, defaultProviderModelId: providerTemplateIds.fakeModel,
-      defaultSearchStrategyId: "search-disabled" } }
-  } });
-  await prisma.userMemorySettings.update({
-    data: { learnAutomatically: false, referenceChatHistory: true, useMemoryFacts: true },
-    where: { userId }
-  });
-  return userId;
-}
-
-async function cleanupOwner(userId: string): Promise<void> {
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
-  await prisma.attachment.deleteMany({ where: { userId } });
-  await prisma.user.deleteMany({ where: { id: userId } });
-}
-
-function mutateSource(userId: string, chatId: string,
-  input: Omit<Parameters<typeof applyMemorySourceMutations>[1], "chat" | "hooks">) {
-  return prisma.$transaction(async (tx) => {
-    const chat = await lockMemorySourceChat(tx, { chatId, lock: "UPDATE", userId });
-    if (!chat) throw new Error("memory_contention_chat_missing");
-    return applyMemorySourceMutations(tx, { ...input, chat, hooks: defaultMemorySourceMutationHooks });
-  }, { timeout: 30_000 });
-}
 
 /** One settled personal chat whose turns the real history indexer projects. */
 async function seedChat(userId: string, ordinal: number, turns: number, answerCharacters: number): Promise<void> {
@@ -103,27 +61,11 @@ async function seedChat(userId: string, ordinal: number, turns: number, answerCh
     parentMessageId = answer.id;
     last = { assistantMessageId: answer.id, runId: run.id };
   }
-  await mutateSource(userId, chat.id, { mutations: ["NORMAL_APPEND"], patch: { activeLeafMessageId: last.assistantMessageId } });
-  await mutateSource(userId, chat.id, { mutations: ["TERMINAL_SETTLEMENT"], terminalSettlement: {
+  await mutateContentionSource(userId, chat.id, { mutations: ["NORMAL_APPEND"],
+    patch: { activeLeafMessageId: last.assistantMessageId } });
+  await mutateContentionSource(userId, chat.id, { mutations: ["TERMINAL_SETTLEMENT"], terminalSettlement: {
     assistantMessageId: last.assistantMessageId, runId: last.runId, status: "complete"
   } });
-}
-
-async function claimJob(jobId: string): Promise<MemoryJobClaim> {
-  const claimToken = randomUUID();
-  const leaseExpiresAt = new Date(Date.now() + 10 * 60_000);
-  const job = await prisma.memoryJob.update({
-    data: { attemptCount: { increment: 1 }, leaseExpiresAt, leaseToken: claimToken, state: "CLAIMED", updatedAt: new Date() },
-    where: { id: jobId }
-  });
-  return {
-    activeLeafMessageId: job.activeLeafMessageId, attemptCount: job.attemptCount, branchGeneration: job.branchGeneration,
-    chatId: job.chatId, claimToken, id: job.id, idempotencyFingerprint: job.idempotencyFingerprint, kind: job.kind,
-    leaseExpiresAt, memoryGenerationSnapshot: job.memoryGenerationSnapshot, memoryRevisionSnapshot: job.memoryRevisionSnapshot,
-    pipelineVersion: job.pipelineVersion, recoveredLease: false, sourceHash: job.sourceHash,
-    sourceMessageId: job.sourceMessageId, sourceRevision: job.sourceRevision, stage: job.stage,
-    targetFactVersionId: job.targetFactVersionId, userId: job.userId
-  };
 }
 
 /** Indexes every settled chat through the production handler and commit. */
@@ -141,7 +83,7 @@ async function indexHistory(userId: string): Promise<void> {
       await prisma.memoryJob.updateMany({ data: { errorCode: "memory_source_stale", state: "STALE" },
         where: { chatId: job.chatId, id: { not: job.id }, kind: "INDEX_HISTORY", state: "QUEUED", userId } });
     }
-    const claim = await claimJob(job.id);
+    const claim = await claimContentionJob(job.id);
     const decision = await handler.preflight(claim);
     if (decision.status !== "READY") {
       await coordinator.settleJobGate({ claim, decision, now: new Date() });
@@ -168,157 +110,17 @@ async function seedHistory(userId: string, chats: number, turns: number, answerC
     `"MemoryRecallRoundMessage", "MemoryRecallRoundSegment", "MemoryRecallRoundSegmentMessage", "MemorySearchEntry"`);
 }
 
-async function configureEmbeddingProvider(userId: string): Promise<Readonly<{
-  cleanup(): Promise<void>; modelId: string; pin: MemoryItemEmbeddingPin;
-}>> {
-  const suffix = randomUUID();
-  const connectionId = `memory-contention-connection-${suffix}`;
-  const credentialId = `memory-contention-credential-${suffix}`;
-  const credentialVersionId = `memory-contention-version-${suffix}`;
-  const modelId = `memory-contention-model-${suffix}`;
-  const now = new Date();
-  const configuration = {
-    adapterKind: "openai_embeddings_compatible", answerSelectable: false,
-    capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
-    defaultParams: {},
-    embedding: { nativeDimension: EMBEDDING_DIMENSION, providerFamily: "openai_compatible",
-      queryInstructionTemplate: null, supportsMrl: false, targetDimension: EMBEDDING_DIMENSION },
-    modelClass: "embedding", upstreamModelId: "memory-contention-embedding-v1"
-  } as const;
-  const connection = { allowPrivateNetwork: false, apiRoot: "https://memory-contention.example.test/v1",
-    authenticationMode: "bearer", responseTimeoutMs: 30_000 };
-  await prisma.providerConnection.create({ data: { activeConfig: connection, activeVersion: 1, activatedAt: now,
-    displayName: "Memory contention embedding", draftConfig: connection, draftVersion: 1, enabled: true,
-    family: "openai_compatible", id: connectionId, unassignedPolicy: "use_default" } });
-  await prisma.providerCredential.create({ data: { activatedAt: now, connectionId, draftVersion: 1, enabled: true,
-    id: credentialId, label: "Memory contention credential", testedAt: now } });
-  await prisma.providerCredentialVersion.create({ data: { activatedAt: now, credentialId, id: credentialVersionId,
-    secretEnvelope: "test-only-envelope", testedAt: now, testEvidence: { authenticationMode: "bearer" }, version: 1 } });
-  await prisma.providerCredential.update({ data: { activeVersionId: credentialVersionId }, where: { id: credentialId } });
-  await prisma.providerConnection.update({ data: { defaultCredentialId: credentialId }, where: { id: connectionId } });
-  await prisma.providerModel.create({ data: { activeConfig: configuration, activeVersion: 1, activatedAt: now,
-    capabilities: configuration.capabilities, connectionId, defaultParams: {}, displayName: "Memory contention model",
-    draftConfig: configuration, draftVersion: 1, enabled: true, id: modelId, modelClass: "embedding",
-    modelId: configuration.upstreamModelId, provider: "openai_compatible" } });
-  await prisma.providerModelCredentialCheck.create({ data: { checkedAt: now, connectionId, connectionVersion: 1,
-    credentialId, credentialVersionId, evidence: { embedding: { dimensions: EMBEDDING_DIMENSION, document: true,
-      probeVersion: 1, query: true }, method: "tiny_generation", selectedProviders: [],
-    upstreamModelId: configuration.upstreamModelId }, modelVersion: 1, providerModelId: modelId, status: "available" } });
-  await prisma.accessGrant.create({ data: { enabled: true, providerModelId: modelId, userId } });
-  await prisma.userMemorySettings.update({ data: { embeddingProviderModelId: modelId }, where: { userId } });
-  const policy = await prisma.$transaction(async (tx) => resolveCurrentMemoryUtilityPolicy(tx, userId,
-    await tx.userMemorySettings.findUniqueOrThrow({ where: { userId } })));
-  const target = policy.targets.get("MEMORY_DOCUMENT_EMBED");
-  const vectorSpaceFingerprint = target ? memoryVectorSpaceFingerprint(target) : null;
-  if (!target || !vectorSpaceFingerprint) throw new Error("memory_contention_embedding_unavailable");
-  return {
-    async cleanup() {
-      await prisma.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
-      await prisma.providerConnection.updateMany({ data: { defaultCredentialId: null }, where: { id: connectionId } });
-      await prisma.providerCredential.updateMany({ data: { activeVersionId: null }, where: { id: credentialId } });
-      await prisma.providerModel.deleteMany({ where: { id: modelId } });
-      await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
-      await prisma.providerCredential.deleteMany({ where: { id: credentialId } });
-      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
-    },
-    modelId,
-    pin: { configurationFingerprint: target.compatibilityFingerprints.configFingerprint, connectionId,
-      dimension: EMBEDDING_DIMENSION, providerModelId: modelId, vectorSpaceFingerprint }
-  };
-}
-
-async function createForegroundRun(repository: RunRepository, userId: string, title: string) {
-  const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title, userId } });
-  const content = textMessageContent(title);
-  const created = await repository.createRun({
-    chatId: chat.id, content,
-    defaults: { controlDefaults: {}, modelId: providerTemplateIds.fakeModel, provider: providerTemplateIds.fakeConnection,
-      searchPlan: { mode: "all_selected", optionIds: [] }, userId },
-    expectedActiveLeafId: null, modelId: "fake-qsa",
-    normalizedRequest: { attachmentIds: [], chatId: chat.id, content,
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }, toolMode: "auto",
-      modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
-      modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
-      searchPlan: { mode: "all_selected", options: [] } },
-    provider: "fake", providerRequestPreview: {}, userId
-  });
-  return { assistantMessageId: created.assistantMessageId, chatId: chat.id, runId: created.runId };
-}
-
-/** The upload route's personal persistence: the attachment and its processing
- * job reference the owner through foreign keys. */
-function uploadHandler(userId: string, storage: ReturnType<typeof createMemoryStorageAdapter>) {
-  return createUploadHandler({
-    createAttachment: async (input) => {
-      const attachment = await prisma.$transaction((tx) => tx.attachment.create({
-        data: {
-          byteSize: input.byteSize, checksum: input.checksum, extractedText: input.extractedText,
-          fileName: input.fileName, kind: input.kind, metadata: input.metadata as Prisma.InputJsonValue,
-          mimeType: input.mimeType, processingErrorCode: input.processingErrorCode,
-          ...(input.status === "processing"
-            ? { processingJob: { create: { ownerUserId: input.processingOwnerUserId ?? input.userId } } } : {}),
-          status: input.status, storageKey: input.storageKey, userId: input.userId
-        }
-      }));
-      return { ...input, id: attachment.id, kind: input.kind, processingErrorCode: null, updatedAt: attachment.updatedAt };
-    },
-    deletionOutbox: {
-      async complete(jobId) { await prisma.attachmentDeletionJob.deleteMany({ where: { id: jobId } }); },
-      stage: (storageKey) => prisma.attachmentDeletionJob.upsert({ create: { storageKey }, update: {}, where: { storageKey } })
-    },
-    resolveAuth: async () => ({
-      expiresAt: new Date(Date.now() + 60_000), id: "contention-session",
-      user: { displayName: "Owner", email: `${userId}@example.test`, id: userId, role: "user", status: "active" },
-      userId
-    }),
-    storage
-  });
-}
-
-const png = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
-  "base64"
-);
-
-function uploadRequest(): Request {
-  const form = new FormData();
-  form.set("file", new File([png], "contention.png", { type: "image/png" }));
-  return new Request("http://app.local/api/uploads", { body: form, method: "POST" });
-}
-
-type Outcome<T> = Readonly<{ finishedMs: number } & (
-  | { ok: true; value: T }
-  | { code: string | null; detail: string | null; errorClass: string; ok: false }
-)>;
-
-/** When an operation settled and, for a failure, Prisma's own error class,
- * code and transaction or SQLSTATE detail, never a statement. */
-function settled<T>(operation: Promise<T>, origin: number): Promise<Outcome<T>> {
-  const finishedMs = () => Math.round(performance.now() - origin);
-  return operation.then((value) => ({ finishedMs: finishedMs(), ok: true as const, value }), (error: unknown) => {
-    const known = error instanceof Prisma.PrismaClientKnownRequestError ? error : null;
-    const meta: Record<string, unknown> = known?.meta ?? {};
-    return {
-      code: known?.code ?? null,
-      detail: typeof meta.code === "string" ? meta.code : typeof meta.error === "string" ? meta.error.slice(0, 72) : null,
-      errorClass: error instanceof Error ? error.constructor.name : typeof error,
-      finishedMs: finishedMs(),
-      ok: false as const
-    };
-  });
-}
-
 describe("Memory background commits and the owner's foreground writes", () => {
   afterAll(async () => {
     await prisma.$disconnect();
   });
 
   it("keeps usage settlement, an upload and a stale-run failure writable during every rebuild pass", async () => {
-    const userId = await createOwner("rebuild");
-    let provider: Awaited<ReturnType<typeof configureEmbeddingProvider>> | null = null;
+    const userId = await createContentionOwner("rebuild");
+    let provider: Awaited<ReturnType<typeof configureContentionEmbedding>> | null = null;
     try {
       await seedHistory(userId, HISTORY_CHATS, HISTORY_TURNS, 5_200);
-      provider = await configureEmbeddingProvider(userId);
+      provider = await configureContentionEmbedding(userId);
       const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
       const rebuild = createPrismaMemoryRebuildRepository(prisma);
       const admitted = await rebuild.admit(userId, { embeddingDeploymentId: provider.modelId,
@@ -333,7 +135,7 @@ describe("Memory background commits and the owner's foreground writes", () => {
 
       const runs = createPrismaRunRepository(prisma);
       const storage = createMemoryStorageAdapter();
-      const POST = uploadHandler(userId, storage);
+      const POST = contentionUploadHandler(userId, storage);
       const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
       const handler = createMemoryRebuildHandler(rebuild);
       const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
@@ -358,7 +160,7 @@ describe("Memory background commits and the owner's foreground writes", () => {
         const fixture = { failed: await createForegroundRun(runs, userId, `Stale ${pass}`),
           usage: await createForegroundRun(runs, userId, `Usage ${pass}`) };
         fixtures.push(fixture);
-        const claim = await claimJob(admitted.jobId);
+        const claim = await claimContentionJob(admitted.jobId);
         await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
         const now = new Date();
         const result = await handler.execute(claim, { now: () => now, setStage: async () => undefined,
@@ -376,7 +178,7 @@ describe("Memory background commits and the owner's foreground writes", () => {
         const [recorded, uploaded, failed] = await Promise.all([
           settled(runs.recordRunUsageEvents({ chatId: fixture.usage.chatId, runId: fixture.usage.runId, userId,
             usageAttributions: [{ modelId: "fake-qsa", provider: "fake", purpose: "chat_answer", usage }] }), origin),
-          settled(POST(uploadRequest()).then((response) => response.status), origin),
+          settled(POST(contentionUploadRequest()).then((response) => response.status), origin),
           // The GET chat reconcile ends an orphaned run through this write.
           settled(runs.failRun(fixture.failed.runId, fixture.failed.assistantMessageId,
             { code: "run_orphaned", message: "Run stopped reporting progress and was marked failed." }), origin)
@@ -417,13 +219,13 @@ describe("Memory background commits and the owner's foreground writes", () => {
       expect(attachments.map(({ storageKey }) => storageKey).sort()).toEqual([...storage.objects.keys()].sort());
       expect(attachments).toHaveLength(fixtures.length);
     } finally {
-      await cleanupOwner(userId);
+      await cleanupContentionOwner(userId);
       await provider?.cleanup();
     }
   }, 600_000);
 
   it("never makes a foreign-key insert wait for a held Memory owner lock, yet still orders explicit owner locks", async () => {
-    const userId = await createOwner("foreign-key");
+    const userId = await createContentionOwner("foreign-key");
     try {
       let ownerHeld!: () => void;
       const held = new Promise<void>((resolve) => { ownerHeld = resolve; });
@@ -450,12 +252,12 @@ describe("Memory background commits and the owner's foreground writes", () => {
       expect(chatAt).toBeLessThan(releasedAt);
       expect(ownerLockAt).toBeGreaterThanOrEqual(releasedAt);
     } finally {
-      await cleanupOwner(userId);
+      await cleanupContentionOwner(userId);
     }
   }, 60_000);
 
   it("yields a background commit's owner wait to a foreground holder and retries a usage write past one", async () => {
-    const userId = await createOwner("yield");
+    const userId = await createContentionOwner("yield");
     const writer = vi.spyOn(process.stdout, "write");
     try {
       const runs = createPrismaRunRepository(prisma);
@@ -482,7 +284,7 @@ describe("Memory background commits and the owner's foreground writes", () => {
       const first = holdOwner(2_500);
       await first.held;
       const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
-      const claim = await claimJob(job.id);
+      const claim = await claimContentionJob(job.id);
       const [committed, recorded] = await Promise.all([
         createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({ acceptedResultHash: "c".repeat(64), claim,
           now: new Date(), stage: "contention_settled" }),
@@ -511,12 +313,12 @@ describe("Memory background commits and the owner's foreground writes", () => {
       await expect(prisma.usageEvent.count({ where: { modelRunId: exhaustedRun.runId } })).resolves.toBe(0);
     } finally {
       writer.mockRestore();
-      await cleanupOwner(userId);
+      await cleanupContentionOwner(userId);
     }
   }, 60_000);
 
   it("writes a large catch-up diff in requeued windows and leaves exact round segments untouched", async () => {
-    const userId = await createOwner("window");
+    const userId = await createContentionOwner("window");
     try {
       await seedHistory(userId, 3, 2, 400);
       const segmentRows = () => prisma.$queryRaw<Array<{ id: string; version: string }>>(Prisma.sql`
@@ -544,7 +346,7 @@ describe("Memory background commits and the owner's foreground writes", () => {
       for (let pass = 0; pass < 40; pass += 1) {
         const job = await prisma.memoryJob.findUniqueOrThrow({ where: { id: admitted.jobId } });
         if (job.state !== "QUEUED") break;
-        const claim = await claimJob(job.id);
+        const claim = await claimContentionJob(job.id);
         await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
         const now = new Date();
         const result = await handler.execute(claim, { now: () => now, setStage: async () => undefined,
@@ -570,7 +372,7 @@ describe("Memory background commits and the owner's foreground writes", () => {
       expect(published.map(key).sort()).toEqual(eligible.map(key).sort());
       await expect(segmentRows()).resolves.toEqual(segmentsBefore);
     } finally {
-      await cleanupOwner(userId);
+      await cleanupContentionOwner(userId);
     }
   }, 120_000);
 });

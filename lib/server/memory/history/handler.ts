@@ -157,14 +157,13 @@ export function createMemoryHistoryIndexHandler(
         }
         return {
           acceptedResultHash: plan.resultHash,
-          apply: async (tx, acceptedClaim) => {
-            await dependencies.repository.apply(
-              tx,
-              acceptedClaim,
-              plan,
-              context.now()
-            );
-          },
+          // A partial page returns its job to the queue for the next page.
+          apply: (tx, acceptedClaim) => dependencies.repository.apply(
+            tx,
+            acceptedClaim,
+            plan,
+            context.now()
+          ),
           operationalCounters: historyOperationalCounters(plan),
           stage: truncated
             ? "lexical_ready:history_message_truncated"

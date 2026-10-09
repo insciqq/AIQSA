@@ -782,7 +782,9 @@ async function commitJobSuccessWithAuthority(
   }
   const applied = await input.apply?.(tx, input.claim);
   // A bounded pass that left work for itself is queued again, as a wake
-  // would queue a completed pass, without reporting completion.
+  // would queue a completed pass, without reporting completion. It is due at
+  // once but orders behind the owner's work that was already due, so a long
+  // backlog of passes never holds back, say, a queued Memory command.
   const requeue = applied?.requeue === true;
   const updated = await tx.memoryJob.updateMany({
     data: {
@@ -793,7 +795,7 @@ async function commitJobSuccessWithAuthority(
       errorMessage: null,
       leaseExpiresAt: null,
       leaseToken: null,
-      nextAttemptAt: null,
+      nextAttemptAt: requeue ? input.now : null,
       ...(input.operationalCounters === undefined
         ? {}
         : {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import { rememberMemoryEnqueue } from "../persistence/enqueueObservability";
 import {
   enqueueMemoryJob,
   type MemoryJobEnqueueResult
@@ -295,6 +296,8 @@ export async function enqueueMemoryEmbeddingBatchItems(
   if (createdParents.count !== parents.length) {
     throw new Error("memory_embedding_batch_parent_invalid");
   }
+  // The same content-free receipt the one-item path's enqueue leaves.
+  for (const parent of parents) rememberMemoryEnqueue(tx, parent.id);
   const children = [
     ...appendedChildren,
     ...parents.flatMap((parent) => parent.group.map((target, ordinal) => ({
