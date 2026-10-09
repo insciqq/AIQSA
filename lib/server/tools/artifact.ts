@@ -78,7 +78,8 @@ export function artifactFileInstructions(references: readonly ConversationFileRe
     "- Include an original source file itself only when the user explicitly asks for it.",
     ...(workspace ? [
       `- A data source (xlsx, csv, json, sqlite and similar): extract only the needed data with code in the Workspace into a compact JSON file, ${produced}. Never retype numbers or data from files.`,
-      `- An office document to view as is (docx, pptx, xlsx): convert it in the Workspace with LibreOffice to HTML or PDF (visible sheets only, no hidden sheets, comments or metadata), ${produced}.`,
+      `- An office document to view as is (docx, pptx, xlsx and similar): run aiqsa-office-pdf <file> in the Workspace (a PDF of the visible content only: no hidden sheets or slides, comments, notes or document properties), ${produced}, and render it with pdf.js as the create_artifact description shows. ` +
+        "Never use LibreOffice's HTML export for this: it keeps comments and document properties.",
       "- Open files you cannot read directly (zip, video, audio, sqlite, 3D and similar) in the Workspace first.",
       `- Compress video or audio over ${limit} with ffmpeg in the Workspace; if it still does not fit, tell the user its size and the ${limit} limit.`,
       "- A site with several JavaScript modules (artifact_module_graph_unsupported): bundle it in the Workspace with esbuild main.js --bundle --outfile=app.js (link an emitted app.css as a local stylesheet), then reference the result.",
