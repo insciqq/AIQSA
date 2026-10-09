@@ -241,7 +241,7 @@ async function responseJson(response: Response): Promise<unknown> {
 }
 
 export class SkillRequestError extends Error {
-  constructor(readonly issue: SkillValidationError) { super(issue.code); }
+  constructor(readonly issue: SkillValidationError) { super(issue.code); this.name = "SkillRequestError"; }
 }
 
 export function skillValidationMessage(issue: SkillValidationError): string {

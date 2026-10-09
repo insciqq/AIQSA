@@ -7,7 +7,7 @@ type UserAccessCommands = Pick<AdminRepository, "setUserCredential" | "setUserGr
 type AccessFailure = "user_not_found" | "user_access_stale" | "user_grant_invalid";
 
 class UserAccessRejected extends Error {
-  constructor(readonly result: AccessFailure) { super(result); }
+  constructor(readonly result: AccessFailure) { super(result); this.name = "UserAccessRejected"; }
 }
 
 function staleTransaction(error: unknown): boolean {

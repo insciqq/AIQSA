@@ -10,7 +10,7 @@ export type WorkspaceUploadRecord = Prisma.AttachmentUploadGetPayload<{ include:
 const errorBrand = Symbol.for("aiqsa.workspace-upload-error");
 export class WorkspaceUploadError extends Error {
   readonly [errorBrand] = true;
-  constructor(readonly code: string, readonly status = 409) { super(code); }
+  constructor(readonly code: string, readonly status = 409) { super(code); this.name = "WorkspaceUploadError"; }
 }
 
 // Next builds instrumentation and routes into separate bundles. The process

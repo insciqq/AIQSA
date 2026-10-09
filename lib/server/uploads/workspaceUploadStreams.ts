@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { StorageAdapter } from "./storage";
 
 export class WorkspaceUploadStreamError extends Error {
-  constructor(readonly code: "upload_size_mismatch" | "upload_checksum_mismatch") { super(code); }
+  constructor(readonly code: "upload_size_mismatch" | "upload_checksum_mismatch") { super(code); this.name = "WorkspaceUploadStreamError"; }
 }
 
 /** Reads only on demand. The deadline also interrupts a stalled producer. */

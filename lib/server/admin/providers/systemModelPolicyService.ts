@@ -85,8 +85,8 @@ export class AdminSystemModelPolicyServiceError extends Error {
   }
 }
 
-class ChatTitleAlreadyConfigured extends Error {}
-class DecisionAlreadyConfigured extends Error {}
+class ChatTitleAlreadyConfigured extends Error { override name = "ChatTitleAlreadyConfigured"; }
+class DecisionAlreadyConfigured extends Error { override name = "DecisionAlreadyConfigured"; }
 
 function isPolicyWriteConflict(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError &&

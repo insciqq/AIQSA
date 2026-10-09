@@ -7,7 +7,7 @@ import {
 export class InstructionPresetError extends Error {
   constructor(readonly code: "instruction_preset_invalid" | "instruction_preset_not_found" |
     "instruction_preset_conflict" | "instruction_selection_conflict" | "instruction_preset_name_conflict" |
-    "instruction_preset_limit" | "instruction_presets_unavailable") { super(code); }
+    "instruction_preset_limit" | "instruction_presets_unavailable") { super(code); this.name = "InstructionPresetError"; }
 }
 export type InstructionPresetSelection = Readonly<{
   presetId: string | null;

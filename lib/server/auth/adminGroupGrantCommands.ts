@@ -33,6 +33,7 @@ type GrantTransaction = Pick<Prisma.TransactionClient, "accessGrant" | "group" |
 class GroupGrantBatchRejected extends Error {
   constructor(readonly result: Exclude<AdminSetGroupGrantsResult, { kind: "applied" }>) {
     super(`group grant batch rejected: ${result.kind}`);
+    this.name = "GroupGrantBatchRejected";
   }
 }
 

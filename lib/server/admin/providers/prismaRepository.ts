@@ -53,7 +53,7 @@ import {
 } from "../../memory/execution/lifecycle";
 import { approvedRerankerDeployments } from "./approvedRerankers";
 
-class ProviderActivationStaleError extends Error {}
+class ProviderActivationStaleError extends Error { override name = "ProviderActivationStaleError"; }
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;

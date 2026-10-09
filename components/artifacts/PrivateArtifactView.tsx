@@ -13,7 +13,10 @@ type Content = Readonly<{ body: string; contentType: string; page: string | null
 type Failure = Readonly<{ message: string; detail: string | null; request: ArtifactPageRequest }>;
 
 class ContentRequestError extends Error {
-  constructor(readonly status: number, readonly code: string | null) { super("artifact_content_unavailable"); }
+  constructor(readonly status: number, readonly code: string | null) {
+    super("artifact_content_unavailable");
+    this.name = "ContentRequestError";
+  }
 }
 
 async function errorCode(response: Response): Promise<string | null> {

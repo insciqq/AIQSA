@@ -47,7 +47,7 @@ export type AdminUsageRepository = Readonly<{
 
 /** PostgreSQL rejected a zone the runtime accepted. */
 export class UsageTimeZoneUnsupportedError extends Error {
-  constructor() { super("usage_time_zone_unsupported"); }
+  constructor() { super("usage_time_zone_unsupported"); this.name = "UsageTimeZoneUnsupportedError"; }
 }
 
 type Tx = Prisma.TransactionClient;

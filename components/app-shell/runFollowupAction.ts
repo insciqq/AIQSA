@@ -5,7 +5,7 @@ import { selectThreadSnapshot, useThreadStore } from "./threadStore";
 import { shellFetch } from "./shellApi";
 import { buildComposerMessage } from "./composerComments";
 
-class FollowupSubmissionError extends Error {}
+class FollowupSubmissionError extends Error { override name = "FollowupSubmissionError"; }
 
 /** Capture the chat/run/draft before I/O. Navigation never retargets a submission. */
 export async function submitRunFollowup(runId: string): Promise<void> {
