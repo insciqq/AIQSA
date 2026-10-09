@@ -1,7 +1,7 @@
 import type { NormalizedRunRequest } from "../providers/types";
 import { searchExecutionConfiguration } from "../search/toolExecutor";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
-import { visionAnalysisTimeoutMs } from "../tools/analyzeImage";
+import { VISION_ANALYSIS_LIMITS, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 
 /** Local lexical search takes milliseconds; this covers authorization and
  * materialization checks around the selected servers' startup. */
@@ -18,8 +18,9 @@ export function agentMcpEnvelopeTimeoutSeconds(request: NormalizedRunRequest): n
   const searchMs = Math.max(0, ...request.searchPlan.options.map(option => searchExecutionConfiguration(option).timeoutMs));
   const image = request.imagePlan?.snapshot;
   const imageMs = image && image.model.adapterKind !== "fake" ? effectiveProviderResponseTimeoutMs(image.connection, image.model) + 60_000 : 0;
-  // One deadline already covers analyze_image's capture, decoding and provider wait.
-  const visionMs = request.workspace && request.visionAnalysis?.available ? visionAnalysisTimeoutMs(request.visionAnalysis) : 0;
+  // analyze_image: the preparation allowance (capture, decoding, claim), then the provider deadline.
+  const visionMs = request.workspace && request.visionAnalysis?.available
+    ? VISION_ANALYSIS_LIMITS.preparationTimeoutMs + visionAnalysisTimeoutMs(request.visionAnalysis) : 0;
   // Transport settlement follows the bounded operation, not a second tool call.
   return Math.ceil((Math.max(AGENT_MCP_DISCOVERY_ALLOWANCE_MS + startupMs, callMs + startupMs, searchMs, imageMs, visionMs) + 30_000) / 1000);
 }

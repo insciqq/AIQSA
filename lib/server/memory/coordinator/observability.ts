@@ -1,5 +1,5 @@
 import { logEvent, type LifecycleFields, type LifecycleOutcome, type LifecycleStage } from "../../observability";
-import { databaseFailureCode } from "../../observability/databaseFailure";
+import { databaseFailureCode, databaseFailureKind } from "../../observability/databaseFailure";
 
 export function memoryStage(stage: string): LifecycleStage {
   switch (stage) {
@@ -67,7 +67,7 @@ export async function memoryPersistence(
     logEvent("job_persistence", {
       subsystem: "memory", job_id: work.id, attempt: work.attemptCount, stage,
       action: fields.action, work_stage: fields.work_stage, code: fields.code, outcome: "unconfirmed",
-      prisma_code: databaseFailureCode(error)
+      prisma_code: databaseFailureCode(error), db_failure: databaseFailureKind(error)
     });
     throw error;
   }

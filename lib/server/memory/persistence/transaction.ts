@@ -137,6 +137,23 @@ async function applyTransactionDeadline(
   `);
 }
 
+/** Bounds the next lock waits of this transaction and returns the bound it
+ * replaced, so a caller can restore it once the guarded lock is held. */
+async function boundLockWait(tx: MemoryTransaction, timeoutMs: number): Promise<string> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    return memoryPersistenceFailure("memory_input_invalid");
+  }
+  const [row] = await tx.$queryRaw<Array<{ previous: string }>>(Prisma.sql`
+    SELECT current_setting('lock_timeout') AS "previous",
+      set_config('lock_timeout', ${`${timeoutMs}ms`}, true)
+  `);
+  return row?.previous ?? "0";
+}
+
+async function restoreLockWait(tx: MemoryTransaction, previous: string): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`SELECT set_config('lock_timeout', ${previous}, true)`);
+}
+
 function serializationConflict(error: unknown): boolean {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
   if (error.code === "P2034") return true;
@@ -160,18 +177,30 @@ function transactionDeadlineExceeded(error: unknown): boolean {
 export async function lockMemorySettings(
   tx: MemoryTransaction,
   userId: string,
-  requireActiveOwner: boolean
+  requireActiveOwner: boolean,
+  options: Readonly<{
+    /** Gives up the owner lock after this wait with 55P03, rolling the
+     * transaction back, instead of queueing in front of later writers. */
+    lockTimeoutMs?: number;
+  }> = {}
 ): Promise<LockedMemorySettings> {
+  const previousLockTimeout = options.lockTimeoutMs === undefined
+    ? null
+    : await boundLockWait(tx, options.lockTimeoutMs);
   // A joined `FOR UPDATE OF owner, settings` can acquire the two table locks
   // in opposite orders across concurrent transactions. Materializing the
   // owner lock first gives every Memory path one deterministic lock order,
-  // then the outer query locks the settings row.
+  // then the outer query locks the settings row. NO KEY UPDATE still
+  // conflicts with every other Memory commit, every SHARE or UPDATE owner
+  // lock, status change and deletion, while key-share locks (foreign-key
+  // checks of rows that merely reference the owner: attachments, usage,
+  // chats) never wait for a Memory commit.
   const rows = await tx.$queryRaw<LockedMemorySettingsRow[]>(Prisma.sql`
     WITH locked_owner AS MATERIALIZED (
       SELECT owner."id", owner."status"
       FROM "User" AS owner
       WHERE owner."id" = ${userId}
-      FOR UPDATE OF owner
+      FOR NO KEY UPDATE OF owner
     )
     SELECT
       settings."userId",
@@ -196,6 +225,7 @@ export async function lockMemorySettings(
     WHERE settings."userId" = ${userId}
     FOR UPDATE OF settings
   `);
+  if (previousLockTimeout !== null) await restoreLockWait(tx, previousLockTimeout);
   const row = rows[0];
   if (!row || (requireActiveOwner && row.ownerStatus !== "active")) {
     return memoryPersistenceFailure("memory_owner_unavailable");

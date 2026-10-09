@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createRouteResolver,
@@ -14,7 +15,7 @@ import {
   TRACE_HEADER,
   wrapHttpListener
 } from "./http.cjs";
-import { getContext, runWithContext } from "./runtime.cjs";
+import { attributeRequestUser, getContext, logEvent, runWithContext } from "./runtime.cjs";
 
 const manifest = {
   version: 3,
@@ -168,6 +169,35 @@ describe("HTTP context and completion", () => {
     expect(lines.join("")).not.toMatch(/canary|unrelated_run|foreign_callback_run|first|second/);
   });
 
+  it("attributes each request's records to the user it authenticated as, never to a concurrent request's", async () => {
+    const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const origin = await serve(async (request, response) => {
+      // Stands in for the session lookup: the first request authenticates
+      // while the second one waits, then finishes after it.
+      const first = request.url?.endsWith("/first") === true;
+      request.resume();
+      logEvent("run_http_failed", { stage: "send" });
+      await wait(first ? 0 : 25);
+      attributeRequestUser(first ? "user-a" : "user-b");
+      await wait(first ? 50 : 0);
+      if (first) throw new Error("private-exception-canary");
+      response.statusCode = 503;
+      response.end("unavailable");
+    });
+    const responses = await Promise.all(["first", "second"].map((id) => fetch(`${origin}/api/items/${id}`, { method: "POST" })));
+    await Promise.all(responses.map((response) => response.text()));
+    const users = new Map(responses.map((response, index) => [response.headers.get(TRACE_HEADER), index === 0 ? "user-a" : "user-b"]));
+    expect(users.size).toBe(2);
+    const failures = records().filter((record) => record.event !== "run_http_failed");
+    expect(failures.map((record) => record.event).sort()).toEqual(["http.request_completed", "http.request_completed", "http.request_failed"]);
+    for (const record of failures) expect(record.user_id).toBe(users.get(record.trace_id as string));
+    // A failure before authentication has no user.
+    const early = records().filter((record) => record.event === "run_http_failed");
+    expect(early).toHaveLength(2);
+    for (const record of early) expect(record).not.toHaveProperty("user_id");
+    expect(lines.join("")).not.toContain("canary");
+  });
+
   it("preserves trace headers on pre-handler denial, handled failure and safe escaped exceptions", async () => {
     const origin = await serve(async (request, response) => {
       if (request.url?.includes("denied")) {
@@ -277,6 +307,29 @@ describe("HTTP context and completion", () => {
     ]);
     expect(records()[2]).not.toHaveProperty("routePath");
     expect(lines.join("")).not.toMatch(/canary|CANARY/);
+  });
+
+  it("names an escaped database failure by its Prisma code and closed kind only", async () => {
+    const expired = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", {
+      clientVersion: "test", code: "P2028",
+      meta: { error: "Transaction already closed: A query cannot be executed on an expired transaction. PRIVATE_CANARY" }
+    });
+    reportNextRequestError("POST", "/api/items/new", expired);
+    const response = await runHttpHandler(new Request("http://localhost/private-canary", { method: "GET" }), () => {
+      throw new Error("wrapper", { cause: new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", {
+        clientVersion: "test", code: "P2010", meta: { code: "55P03", message: "PRIVATE_CANARY" }
+      }) });
+    });
+    expect(response.status).toBe(500);
+    reportNextRequestError("GET", "/api/items/new", new Error("not a database failure"));
+    expect(records()).toEqual([
+      expect.objectContaining({ event: "http.request_failed", prisma_code: "P2028", db_failure: "transaction_expired" }),
+      expect.objectContaining({ event: "http.request_failed", prisma_code: "P2010", db_failure: "lock_timeout" }),
+      expect.objectContaining({ event: "http.request_failed" })
+    ]);
+    expect(records()[2]).not.toHaveProperty("prisma_code");
+    expect(records()[2]).not.toHaveProperty("db_failure");
+    expect(lines.join("")).not.toContain("CANARY");
   });
 
   it("sanitizes direct handler failures while keeping the correlation response header", async () => {

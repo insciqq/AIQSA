@@ -29,6 +29,8 @@ describe("admin health handlers", () => {
     expect(health.read).toHaveBeenCalledWith("24h");
     await GET(request("/api/admin/health?range=30d"));
     expect(health.read).toHaveBeenLastCalledWith("30d");
+    await GET(request("/api/admin/health?range=14d"));
+    expect(health.read).toHaveBeenLastCalledWith("14d");
   });
 
   it("rejects anonymous, non-admin and inactive callers before reading telemetry", async () => {

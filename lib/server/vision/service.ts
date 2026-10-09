@@ -33,6 +33,16 @@ const CHAT_IMAGE_HINTS: Readonly<Record<string, string>> = {
   chat_image_limit_exceeded: "The image exceeds the analysis size or pixel limits. Use fewer images, or ask the user for a smaller copy."
 };
 
+/** An abort signal for one phase deadline. Unlike `AbortSignal.timeout`, its
+ * timer is cleared when the phase ends, so an expired preparation allowance
+ * never relabels a later provider failure, and no timer outlives the call. */
+function phaseDeadline(ms: number): { signal: AbortSignal; clear(): void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+  (timer as { unref?: () => void }).unref?.();
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 /** A context-window refusal carries its measured estimate to the model. */
 class VisionContextLimitError extends VisionAnalysisError {
   constructor(readonly detail: Readonly<{ limit: "context_window"; contextWindow: number; estimatedInputTokens: number; maxOutputTokens: number }>) {
@@ -165,7 +175,19 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
         observeVisionAttempt({ stage: "execution", startedAt, code });
         return visionFailure(call, code);
       }
-      const observe = (code: string | undefined) => observeVisionAttempt({ stage: "execution", startedAt, code, snapshot: plan.snapshot });
+      // Preparation (authorization, Workspace capture/restore, decoding and the
+      // dispatch claim) has its own allowance; the provider deadline, by the
+      // plan's effective reasoning effort, starts only once the attempt is claimed.
+      // The run's own signal (Stop, Workspace or Agent turn deadline) still ends either earlier.
+      // A timeout never authorizes a new dispatch.
+      const timeoutMs = visionAnalysisTimeoutMs(plan);
+      const preparationDeadline = phaseDeadline(LIMITS.preparationTimeoutMs);
+      let providerDeadline: ReturnType<typeof phaseDeadline> | undefined;
+      let providerStartedAt: number | undefined;
+      let providerEndedAt: number | undefined;
+      const observe = (code: string | undefined) => observeVisionAttempt({ stage: "execution", startedAt, code, snapshot: plan.snapshot,
+        phases: { preparationMs: (providerStartedAt ?? performance.now()) - startedAt, timeoutMs,
+          ...(providerStartedAt === undefined ? {} : { providerMs: (providerEndedAt ?? performance.now()) - providerStartedAt }) } });
       const c = { runId: context.runId, userId: context.userId, toolCallId: context.persistedToolCallId,
         chatId: context.request.chatId, call, requestHash: hashCanonicalMcpValue(call.arguments) };
       let images: readonly (WorkspaceCapturedImage | ConversationVisionImage)[] = [];
@@ -174,11 +196,8 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
       let dispatched = false;
       let providerCompleted = false;
       let usage = normalizeTokenUsage({});
-      // One deadline, by the plan's effective reasoning effort, covers capture, decoding and the provider;
-      // the run's own signal (Stop, Workspace or Agent turn deadline) still ends it earlier.
-      // A timeout never authorizes a new dispatch.
-      const timeoutMs = visionAnalysisTimeoutMs(plan);
-      const bounded = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
+      // The signal of the current phase: preparation until the claim, then the provider's.
+      let bounded = AbortSignal.any([...(signal ? [signal] : []), preparationDeadline.signal]);
       try {
         let result: ToolExecutionResult;
         let unknown = false;
@@ -224,9 +243,14 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           const claim = await store.dispatch(c, plan, images.map(image => image.descriptor) as unknown as Prisma.InputJsonValue, hooks);
           if (claim.result) return claim.result;
           dispatched = true;
+          preparationDeadline.clear();
+          providerStartedAt = performance.now();
+          providerDeadline = phaseDeadline(timeoutMs);
+          bounded = AbortSignal.any([...(signal ? [signal] : []), providerDeadline.signal]);
           bounded.throwIfAborted();
           const response = await provider(plan.snapshot, request, { signal: bounded, timeoutMs,
             onUsage: update => { usage = mergeTokenUsage(usage, update); } });
+          providerEndedAt = performance.now();
           providerCompleted = true;
           usage = mergeTokenUsage(usage, response.usage);
           bounded.throwIfAborted();
@@ -239,6 +263,7 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
             inputs: images.map((image, index) => ({ ordinal: index + 1, ...image.descriptor }))
           } }] };
         } catch (error) {
+          if (providerStartedAt !== undefined) providerEndedAt ??= performance.now();
           const observed = observedFailureCode(error);
           const code = signal?.aborted ? "vision_analysis_cancelled" : bounded.aborted ? "vision_analysis_timeout" :
             VISION_ERRORS.has(observed) ? observed : dispatched ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
@@ -266,6 +291,8 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
         observe(failureCode);
         return settled;
       } finally {
+        preparationDeadline.clear();
+        providerDeadline?.clear();
         for (const image of images) image.dispose();
         if (reference) await captures.release(reference).catch(() => undefined);
       }

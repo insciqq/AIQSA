@@ -78,6 +78,9 @@ describe("Prisma run repository search evidence", () => {
     const directChatRead = vi.fn(() => {
       throw new Error("chat update escaped its transaction snapshot");
     });
+    const directRawRead = vi.fn(() => {
+      throw new Error("chat stats escaped their transaction snapshot");
+    });
     const transactionChatRead = vi.fn().mockResolvedValue({
       _count: { messages: 2 },
       activeLeafMessageId: "assistant-active",
@@ -91,44 +94,32 @@ describe("Prisma run repository search evidence", () => {
       title: "Atomic update",
       updatedAt: now
     });
-    const transactionMessagesRead = vi.fn().mockResolvedValue([
+    const transactionRawRead = vi.fn().mockResolvedValueOnce([
       {
-        assistantModelRuns: [],
         id: "user-root",
         parentMessageId: null,
         role: "user"
       },
       {
-        assistantModelRuns: [{
-          usageCompleteness: "COMPLETE",
-          cachedInputTokens: 1,
-          cacheWriteInputTokens: 2,
-          inputTokens: 3,
-          outputTokens: 4,
-          status: "complete",
-          totalTokens: 7
-        }],
         id: "assistant-active",
         parentMessageId: "user-root",
         role: "assistant"
       }
-    ]);
-    const transactionRawRead = vi.fn().mockResolvedValueOnce([
+    ]).mockResolvedValueOnce([]) // No context_status artifact on the active branch.
+      .mockResolvedValueOnce([
       {
         blockOrdinal: 1,
         blockValue: null,
-        codePoint: 65,
-        kind: "code_points",
+        classCounts: [4, 0, 0, 0],
         messageId: "user-root",
-        occurrences: 4
+        residualCounts: null
       },
       {
         blockOrdinal: 1,
         blockValue: null,
-        codePoint: 0x1f600,
-        kind: "code_points",
+        classCounts: [0, 0, 0, 0],
         messageId: "assistant-active",
-        occurrences: 1
+        residualCounts: { [0x1f600]: 1 }
       }
     ]).mockResolvedValueOnce([{ hasCompletedAnswer: true, recordCount: 2n, knownCostRecordCount: 1n, incompleteRecordCount: 0n,
       estimatedCostMicros: 15000n, totalTokens: 7n }]);
@@ -142,11 +133,11 @@ describe("Prisma run repository search evidence", () => {
           projectId: null,
           userId: "user-1"
         })
-      },
-      message: { findMany: transactionMessagesRead }
+      }
     };
     const transaction = vi.fn(async (run: (client: typeof tx) => Promise<unknown>) => run(tx));
     const repository = createPrismaRunRepository({
+      $queryRaw: directRawRead,
       $transaction: transaction,
       chat: { findFirst: directChatRead }
     } as never);
@@ -159,6 +150,8 @@ describe("Prisma run repository search evidence", () => {
     });
 
     expect(directChatRead).not.toHaveBeenCalled();
+    expect(directRawRead).not.toHaveBeenCalled();
+    expect(transaction).toHaveBeenCalledOnce();
     expect(transaction).toHaveBeenCalledWith(
       expect.any(Function),
       { isolationLevel: "RepeatableRead" }
@@ -190,12 +183,29 @@ describe("Prisma run repository search evidence", () => {
         })
       })
     }));
-    expect(transactionMessagesRead).toHaveBeenCalledWith(expect.objectContaining({
-      where: { chatId: "chat-1" }
+    expect(transactionRawRead).toHaveBeenCalledTimes(4);
+    expect(transactionRawRead).toHaveBeenCalledWith(expect.objectContaining({
+      sql: expect.stringContaining("WITH RECURSIVE"),
+      values: ["chat-1", "chat-1", "assistant-active", "chat-1"]
+    }));
+    expect(transactionRawRead).toHaveBeenCalledWith(expect.objectContaining({
+      sql: expect.stringContaining("'context_status'"),
+      values: ["chat-1", ["assistant-active"], "chat-1", ["assistant-active"]]
+    }));
+    expect(transactionRawRead).toHaveBeenCalledWith(expect.objectContaining({
+      sql: expect.stringContaining('AS "classCounts"'),
+      values: expect.arrayContaining(["chat-1", ["user-root", "assistant-active"]])
+    }));
+    expect(transactionRawRead).toHaveBeenCalledWith(expect.objectContaining({
+      sql: expect.stringContaining('AS "hasCompletedAnswer"'),
+      values: ["chat-1", "chat-1", "chat-1", "chat-1"]
     }));
     expect(update?.chat).toMatchObject({
       activeLeafMessageId: "assistant-active",
       contextStats: { approximateActiveBranchInputTokens: 3 },
+      id: "chat-1",
+      messageCount: 2,
+      title: "Atomic update",
       usageStats: {
         hasCompletedAnswer: true,
         incompleteRecordCount: 0,

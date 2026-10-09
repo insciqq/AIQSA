@@ -1,11 +1,14 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { parameterControlsForModel } from "../../domain/catalog";
 import { validateRunParams } from "../../domain/runParams";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import { configuredModelParameterControls } from "../providers/providerModelCapabilities";
 import { insertAcceptedProviderRunBindings } from "../runs/prismaRepositoryBindings";
+import { createPrismaRunToolLoopOperations } from "../runs/prismaRepositoryToolLoop";
+import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import type { OpenRouterChatClient } from "../providers/openRouterChatTransport";
+import type { NormalizedRunRequest } from "../providers/types";
 import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
@@ -683,6 +686,20 @@ describe("provider admission", () => {
       searchPlan: { mode: "all_selected", optionIds: [] }, userId: "user-1"
     });
     expect(plan.answer.snapshot.model.capabilities.codexStandaloneWebSearch).toBe(state === "verified");
+    // The accepted request freezes these capabilities; recovery must decode them
+    // unchanged, or every stale run of this model fails its recovery.
+    const modelCapabilities = plan.answer.modelConfiguration.capabilities;
+    const stored: NormalizedRunRequest = { attachmentIds: [], chatId: "chat-1", content: { blocks: [] },
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 }, modelCapabilities,
+      modelId: answer.id, params: {}, prompt: { developer: null, system: null }, provider: "openai",
+      searchPlan: { mode: "all_selected", options: [] }, toolMode: "none" };
+    const recovery = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "user-1" }, chatId: "chat-1", modelId: answer.id,
+      normalizedRequest: JSON.parse(JSON.stringify(stored)), provider: "openai"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const recovered = await recovery.loadProviderDispatchRecoveryRequest!({ runId: "run-1", userId: "user-1" });
+    expect(recovered?.modelCapabilities).toEqual(modelCapabilities);
+    expect(recovered?.modelCapabilities.codexStandaloneWebSearch).toBe(state === "verified");
   });
 
   it("grants strict capabilities only from exact current-tuple probe evidence", async () => {

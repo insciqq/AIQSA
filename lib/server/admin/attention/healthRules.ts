@@ -3,17 +3,18 @@ import type { AdminProviderConnection } from "../../../contracts/adminProviders"
 import type { TelemetryCounterGroup, TelemetryCounterQuery, TelemetryStore } from "../../telemetry/store";
 
 /**
- * Health attention rules: thresholds over the content-free telemetry counters,
- * evaluated on every read and never persisted. An item exists only while its
- * failures are recent, so it clears by itself once the window passes without
- * them. Every threshold lives here so calibration touches one place.
+ * Health attention rules: thresholds over the content-free telemetry counters
+ * and Memory rebuild counts, evaluated on every read and never persisted. An
+ * item exists only while its failures are recent, so it clears by itself once
+ * the window passes without them. Every threshold lives here so calibration
+ * touches one place.
  *
  * Counters are hourly UTC buckets. A window reads every bucket it overlaps and
  * keeps a bucket's row only when the row's `lastSeenAt` falls inside the
  * window, so a count may include up to one earlier hour of the same row.
  */
 export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
-  /** The window of every rule except operation timeouts. */
+  /** The window of every rule except operation timeouts and Memory rebuilds. */
   windowMs: 60 * 60_000,
   /** Final failed operations (rate limits, 5xx, network, timeouts) per connection. */
   providerFailingMinFailures: 5,
@@ -35,7 +36,14 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
   /** A failure fingerprint first seen within this window is new. */
   newErrorWindowMs: 24 * 3_600_000,
   /** New failures named one by one; the rest are summed in one more item. */
-  newErrorItemsMax: 3
+  newErrorItemsMax: 3,
+  /**
+   * Full Memory index rebuilds admitted for one owner within the rebuild
+   * window. A deployment, an embedding change or a Resume admits one; more
+   * mean a trigger loop re-embedding that owner's Memory again and again.
+   */
+  memoryRebuildsPerOwnerMin: 3,
+  memoryRebuildWindowMs: 24 * 3_600_000
 });
 
 export type HealthThresholds = typeof HEALTH_ATTENTION_THRESHOLDS;
@@ -81,7 +89,8 @@ export type HealthFinding =
   | Readonly<{ code: "background_failures"; subsystem: HealthSubsystem; errors: number }>
   | Readonly<{ code: "operation_timeouts_rising"; operation: HealthTimedOperation; timeouts: number; total: number }>
   | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; count: number }>
-  | Readonly<{ code: "new_error"; fingerprint: null; more: number }>;
+  | Readonly<{ code: "new_error"; fingerprint: null; more: number }>
+  | Readonly<{ code: "memory_index_rebuilds_repeated"; atLeast: number; maxPerOwner: number; owners: number }>;
 
 export type ProviderFailureKind = "network" | "other" | "rate_limited" | "server_error" | "timeout";
 
@@ -386,6 +395,24 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
   return more > 0 ? [...named, { code: "new_error", fingerprint: null, more }] : named;
 }
 
+/**
+ * Rebuilds per owner over the rebuild window, read from PostgreSQL as counts
+ * only (owners never leave it), against the per-owner threshold. One owner
+ * suffices: every rebuild re-embeds that owner's whole Memory.
+ */
+export function memoryRebuildFindings(
+  load: Readonly<{ maxPerOwner: number; ownersAtThreshold: number }>,
+  thresholds: HealthThresholds = HEALTH_ATTENTION_THRESHOLDS
+): HealthFinding[] {
+  if (load.maxPerOwner < thresholds.memoryRebuildsPerOwnerMin) return [];
+  return [{
+    atLeast: thresholds.memoryRebuildsPerOwnerMin,
+    code: "memory_index_rebuilds_repeated",
+    maxPerOwner: load.maxPerOwner,
+    owners: Math.max(1, load.ownersAtThreshold)
+  }];
+}
+
 function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
@@ -486,6 +513,12 @@ export function healthAttentionItems(
           id: `${finding.code}:${finding.operation.kind}:${finding.operation.name}`, severity: "warn",
           detail: `${operationLabel(finding.operation)} · ${finding.timeouts} of ${finding.total} ran out of time in the last 24 hours`,
           target: { section: "health" }, title: "Operations are timing out" });
+        break;
+      case "memory_index_rebuilds_repeated":
+        items.push({ action: "Open Health", code: finding.code, count: finding.maxPerOwner, id: finding.code,
+          severity: "warn",
+          detail: `${plural(finding.owners, "owner")} had the Memory index rebuilt ${finding.atLeast} or more times in the last 24 hours, up to ${finding.maxPerOwner} for one owner — each rebuild re-indexes and re-embeds that owner's whole Memory; check the logged rebuild reasons`,
+          target: { section: "health" }, title: "Memory index keeps rebuilding" });
         break;
     }
   }

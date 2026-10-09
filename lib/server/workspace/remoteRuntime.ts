@@ -319,6 +319,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         internetEnabled: input.internetEnabled,
         memoryMiB: input.memoryMiB,
         operation: parseWorkspaceOperation(input.operation), runtimeSandboxId: input.runtimeSandboxId,
+        ...(input.predecessor ? { predecessor: parseWorkspaceOperation(input.predecessor) } : {}),
         sandboxName: input.sandboxName,
         sessionId: input.sessionId
       }),

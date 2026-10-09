@@ -55,7 +55,7 @@ The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains 
 
 Keep every run’s final context measurement for its lifetime; earlier measurements may expire.
 
-The application prunes operator telemetry in bounded batches: hourly counters after 30 days, incidents after 14 days and beyond the newest 50,000. Every recording process adds its own totals; concurrent writers sum per key.
+The application prunes operator telemetry in bounded batches: hourly counters and incidents after 30 days, then per UTC day and incident key (event, code, subsystem, connection, error fingerprint) all but its first and latest 100 incidents, and last any incidents beyond the newest 50,000. Every recording process adds its own totals; concurrent writers sum per key. Telemetry keeps no foreign key on users: deleting an account clears its id from incidents in the same transaction, and pruning clears any written later.
 
 `npm run prune -- --dry-run` is read-only and precedes any explicitly authorized `--execute`. Never prune active sessions/runs, retrieval-visible evidence without a proven cutoff, or referenced objects.
 
@@ -70,6 +70,8 @@ Account deletion archives personal MCP servers and drains them with owned Knowle
 Workspace idle stop preserves disk; expiry/reset/deletion first records exact-session cleanup. Only an existing disk pins a session's guest image; runner startup evicts cached guest versions other than the current and previous ones that no sandbox record uses, never forcing one a disk pins. Continuation archives are private checksum-bound seeds, owned by the claim (or a scheduled rotation, whose seed every destination run must restore before using Workspace) then destination chat. Fence capture/restore leases. Successful restore consumes the seed even after reset or disk loss; interrupted restore retries only after cleanup. Abandoned/failed/reset/deleted seeds enqueue reference-checked object cleanup. Missing disks visibly recreate canonical originals, never claim survival. External provider/tool retention, backups and sent data remain outside application-erasure claims.
 
 Agent threads remain outside exported `project/`, without independent retention/backup/continuation seeds. Ordinary resume requires a compatible completed active-branch predecessor in the surviving session; otherwise use branch context. Follow-up requires the live run's exact settled predecessor/runtime; loss prohibits recreation/replay. Stored identifiers/hashes cannot override disk loss/revocation.
+
+An answer problem report holds a reason and an optional comment administrators read in Health, never the question or answer. Deleting the answer, its chat or the reporting account removes it; deleting its run clears only that reference. The application prunes reports 90 days after their last change.
 
 ## Backup And Restore
 

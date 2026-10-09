@@ -41,21 +41,36 @@ describe("System Vision tool contract", () => {
   it("waits by the effective reasoning effort, keeping the base bound for low and unknown efforts", () => {
     const timeout = (reasoningEffort: string | null,
       model: { defaultParams?: Record<string, unknown>; defaultReasoningEffort?: string; reasoning?: boolean } = {}) =>
-      visionAnalysisTimeoutMs({ reasoningEffort, snapshot: { model: { defaultParams: model.defaultParams ?? {},
+      visionAnalysisTimeoutMs({ reasoningEffort, snapshot: { connection: { responseTimeoutMs: 900_000 }, model: { defaultParams: model.defaultParams ?? {},
         capabilities: { defaultReasoningEffort: model.defaultReasoningEffort, reasoning: model.reasoning } } } } as unknown as AvailableVisionAnalysisPlan);
     expect(["none", "minimal", "low"].map(effort => timeout(effort))).toEqual([60_000, 60_000, 60_000]);
-    expect(timeout("medium")).toBe(120_000);
-    expect(["high", "xhigh", "max"].map(effort => timeout(effort))).toEqual([180_000, 180_000, 180_000]);
+    expect(["medium", "high", "xhigh", "max"].map(effort => timeout(effort))).toEqual([300_000, 300_000, 300_000, 300_000]);
     // Unknown names, including inherited object keys, never stretch the bound.
     expect(["turbo", "constructor", "__proto__"].map(effort => timeout(effort))).toEqual([60_000, 60_000, 60_000]);
     // Unset: the frozen effort wins over defaults; otherwise configured params, then the declared model default.
     expect(timeout("low", { defaultReasoningEffort: "high" })).toBe(60_000);
-    // No effort anywhere: the provider's own default applies, unless the model does not reason.
-    expect(timeout(null)).toBe(120_000);
+    // No effort anywhere: the provider's own default applies (the medium bound), unless the model does not reason.
+    expect(timeout(null)).toBe(300_000);
     expect(timeout(null, { reasoning: false })).toBe(60_000);
-    expect(timeout(null, { defaultReasoningEffort: "medium" })).toBe(120_000);
-    expect(timeout(null, { defaultParams: { reasoning: { effort: "high" } }, defaultReasoningEffort: "low" })).toBe(180_000);
-    expect(timeout(null, { defaultParams: { outputConfig: { effort: "xhigh" } } })).toBe(180_000);
-    expect(timeout(null, { defaultParams: { reasoning: { enabled: true } }, defaultReasoningEffort: "medium" })).toBe(120_000);
+    expect(timeout(null, { defaultReasoningEffort: "medium" })).toBe(300_000);
+    expect(timeout(null, { defaultReasoningEffort: "low" })).toBe(60_000);
+    expect(timeout(null, { defaultParams: { reasoning: { effort: "high" } }, defaultReasoningEffort: "low" })).toBe(300_000);
+    expect(timeout(null, { defaultParams: { outputConfig: { effort: "xhigh" } } })).toBe(300_000);
+    expect(timeout(null, { defaultParams: { reasoning: { enabled: true } }, defaultReasoningEffort: "low" })).toBe(60_000);
+  });
+  it("never waits longer than the destination's own response timeout", () => {
+    const timeout = (reasoningEffort: string | null, reasoning: boolean, connectionMs: number, modelMs?: number) =>
+      visionAnalysisTimeoutMs({ reasoningEffort, snapshot: { connection: { responseTimeoutMs: connectionMs },
+        model: { defaultParams: {}, capabilities: { reasoning }, ...(modelMs === undefined ? {} : { responseTimeoutMs: modelMs }) } } } as unknown as AvailableVisionAnalysisPlan);
+    // Effort x response timeout: the smaller bound wins; the model's own timeout overrides its connection's.
+    const matrix: Array<[string | null, boolean, number, number | undefined, number]> = [
+      ["high", true, 900_000, undefined, 300_000], ["high", true, 300_000, undefined, 300_000],
+      ["high", true, 120_000, undefined, 120_000], ["medium", true, 900_000, 90_000, 90_000],
+      ["medium", true, 30_000, 900_000, 300_000], ["low", true, 900_000, undefined, 60_000],
+      ["low", true, 45_000, undefined, 45_000], [null, false, 300_000, undefined, 60_000],
+      [null, false, 5_000, undefined, 5_000], [null, true, 240_000, undefined, 240_000]
+    ];
+    for (const [effort, reasoning, connectionMs, modelMs, expected] of matrix)
+      expect([effort, reasoning, connectionMs, modelMs, timeout(effort, reasoning, connectionMs, modelMs)]).toEqual([effort, reasoning, connectionMs, modelMs, expected]);
   });
 });

@@ -13,6 +13,8 @@ import {
 } from "./openaiResponsesResponse";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
+import { observedFailure } from "./providerObservability";
+import { providerStreamDrop } from "./streamDrop";
 
 function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -894,5 +896,68 @@ describe("private Responses tool argument observations", () => {
     expect(new Set(observed.map(event => event.callId)).size).toBe(PROVIDER_RESPONSE_MAX_TOOL_CALLS);
     await expect(collectSse(sseInput(framesFor(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1), { onToolArguments: async () => {} })))
       .rejects.toThrow("openai_tool_call_invalid");
+  });
+});
+
+describe("Responses stream drop reasons", () => {
+  const frame = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+  const created = frame({ response: { id: "resp-drop", status: "in_progress" }, type: "response.created" });
+  const delta = frame({ delta: "Partial", type: "response.output_text.delta" });
+  const failure = async (input: ParseOpenAIResponsesSseInput) => collectSse(input).then(() => null, (error: unknown) => error);
+  /** A body that delivers its frames, then breaks the read with `error`. */
+  const breaking = (frames: readonly string[], error: unknown) => {
+    const encoder = new TextEncoder();
+    let index = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (index < frames.length) controller.enqueue(encoder.encode(frames[index++]!));
+        else controller.error(error);
+      }
+    });
+  };
+
+  it.each([
+    ["an end before completion", [created, delta], "truncated"],
+    ["a frame cut mid-JSON", [created, "data: {\"type\":\"response.output_text.del\n\n"], "truncated"],
+    ["an error event", [created, delta, frame({ code: "server_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY", type: "error" })], "error_event"],
+    ["a failed response", [created, delta, frame({ response: { error: { code: "server_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" },
+      id: "resp-drop", status: "failed" }, type: "response.failed" })], "response_failed"]
+  ] as const)("names %s without its content", async (_name, frames, drop) => {
+    const error = await failure(sseInput(frames));
+    expect(providerStreamDrop(error)).toBe(drop);
+    expect(observedFailure(error)).toMatchObject({ stream_drop: drop });
+    expect(Object.keys(error as object)).not.toContain("streamDrop");
+    expect(JSON.stringify(error)).not.toContain("PRIVATE_");
+  });
+
+  it("names a connection reset while the body is read, never Stop, a deadline or a safety limit", async () => {
+    const reset = await failure({ ...sseInput([]), responseBody: breaking([created, delta], Object.assign(new Error("aborted"), { code: "ECONNRESET" })) });
+    expect(providerStreamDrop(reset)).toBe("reset");
+    const undici = await failure({ ...sseInput([]), responseBody: breaking([created], new TypeError("terminated", {
+      cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) })) });
+    expect(providerStreamDrop(undici)).toBe("reset");
+
+    const controller = new AbortController();
+    const stopped = parseOpenAIResponsesSse({ ...sseInput([], { signal: controller.signal }),
+      responseBody: breaking([created], Object.assign(new Error("aborted"), { code: "ECONNRESET" })) });
+    await stopped.next();
+    controller.abort();
+    expect(providerStreamDrop(await stopped.next().then(() => null, (error: unknown) => error))).toBeNull();
+
+    const idle = await failure({ ...sseInput([], { streamLimits: { ...DEFAULT_PROVIDER_STREAM_LIMITS, idleTimeoutMs: 5 } }),
+      responseBody: new ReadableStream<Uint8Array>({ pull: () => new Promise<void>(() => undefined) }) });
+    expect(idle).toMatchObject({ code: "provider_stream_timeout" });
+    expect(providerStreamDrop(idle)).toBeNull();
+  });
+
+  it.each([
+    ["a completed answer", [created, delta, frame({ response: { id: "resp-drop", output: [{ content: [{ text: "Partial", type: "output_text" }],
+      role: "assistant", type: "message" }], status: "completed" }, type: "response.completed" })]],
+    ["an incomplete answer", [created, delta, frame({ response: { id: "resp-drop", incomplete_details: { reason: "max_output_tokens" },
+      status: "incomplete" }, type: "response.incomplete" })]],
+    ["a cancelled answer", [created, frame({ response: { id: "resp-drop", status: "cancelled" }, type: "response.cancelled" })]],
+    ["a malformed completion", [created, frame({ response: { id: "resp-drop", status: "in_progress" }, type: "response.completed" })]]
+  ] as const)("names no drop for %s", async (_name, frames) => {
+    expect(providerStreamDrop(await failure(sseInput(frames)))).toBeNull();
   });
 });

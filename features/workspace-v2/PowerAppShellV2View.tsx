@@ -157,6 +157,7 @@ import { AnswerReviewSettingsDialogV2 } from "@/features/answer-review-v2/Answer
 import type { ComposerPaletteEntry } from "@/features/composer-v2/command-palette/paletteModel";
 import { AnswerReviewHistoryV2, AnswerReviewStatusV2, AnswerReviewTurnV2 } from "@/features/answer-review-v2/AnswerReviewV2";
 import { AnswerReviewDialogV2, type AnswerReviewReviewerPick } from "@/features/answer-review-v2/AnswerReviewDialogV2";
+import { AnswerProblemReportDialogV2 } from "@/features/answer-problem-report-v2/AnswerProblemReportDialogV2";
 import { KnowledgeCitationControl } from "@/features/citations-v2/KnowledgeCitationViewer";
 import {
   presentRunLifecycleV2,
@@ -613,6 +614,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const [answerReviewSettingsOpen, setAnswerReviewSettingsOpen] = useState(false);
   const [answerReviewSettingsError, setAnswerReviewSettingsError] = useState<string | null>(null);
   const [answerReviewStoppingId, setAnswerReviewStoppingId] = useState<string | null>(null);
+  // "Report a problem…": the answer and chat it reports on, while its dialog is open.
+  const [problemReportTarget, setProblemReportTarget] = useState<Readonly<{ chatId: string; messageId: string }> | null>(null);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -1438,6 +1441,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     };
   };
 
+  /** "Report a problem…" on a settled answer of a saved chat; reporting never waits for the chat's run. */
+  const problemReportActionFor = (answer: ThreadMessage): Pick<ConversationMessageActionsV2, "onReportProblem"> => {
+    const report = thread.problemReport;
+    if (!report || answer.role !== "assistant" || answer.status === "streaming") return {};
+    return { onReportProblem: () => setProblemReportTarget({ chatId: report.chatId, messageId: answer.id }) };
+  };
+
   const actionsFor = (message: ThreadMessage): ConversationMessageActionsV2 => {
     const editMutationReason = thread.editingMessageId
       ? "Finish or cancel the inline edit first."
@@ -1472,7 +1482,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         } : {}),
         onRegenerate: () => thread.handleRegenerateMessage(message.id),
         regenerateDisabled: mutationBlocked || regenerateUnavailable,
-        ...reviewActionFor(message, message.id === latestMessage?.id)
+        ...reviewActionFor(message, message.id === latestMessage?.id),
+        ...problemReportActionFor(message)
       })
     };
   };
@@ -2223,6 +2234,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                     })
                     .finally(() => setAnswerReviewStarting(false));
                 }}
+              />
+            ) : null}
+            {problemReportTarget && thread.problemReport?.chatId === problemReportTarget.chatId ? (
+              <AnswerProblemReportDialogV2
+                key={problemReportTarget.messageId}
+                onClose={() => setProblemReportTarget(null)}
+                onSent={(outcome) => thread.problemReport?.confirmSent(outcome)}
+                restoreFocus={() => [...document.querySelectorAll<HTMLElement>("[data-message-id]")]
+                  .find((turn) => turn.dataset.messageId === problemReportTarget.messageId)
+                  ?.querySelector<HTMLButtonElement>("button[aria-label='More answer actions']") ?? null}
+                target={problemReportTarget}
               />
             ) : null}
             <ConversationV2

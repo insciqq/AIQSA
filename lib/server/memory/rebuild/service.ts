@@ -5,6 +5,10 @@ import type {
 import { decodeMemoryRebuildStatus } from "../../../contracts/memory";
 import { MemoryExecutionError } from "../execution";
 import type { MemoryItemEmbeddingPin } from "../embedding/contract";
+import {
+  logMemoryRebuildAdmission,
+  type MemoryRebuildAdmissionReason
+} from "./admissionReason";
 import type {
   MemoryRebuildAdmissionResult,
   MemoryRebuildRepository
@@ -28,7 +32,11 @@ export class MemoryRebuildServiceError extends Error {
 
 export type MemoryRebuildService = Readonly<{
   cancel(userId: string, jobId: string): Promise<MemoryRebuildStatus>;
-  start(userId: string, input: MemoryRebuildInput): Promise<MemoryRebuildStatus>;
+  start(
+    userId: string,
+    input: MemoryRebuildInput,
+    reason: MemoryRebuildAdmissionReason
+  ): Promise<MemoryRebuildStatus>;
   status(userId: string, jobId: string): Promise<MemoryRebuildStatus>;
 }>;
 
@@ -83,7 +91,7 @@ export function createMemoryRebuildService(input: Readonly<{
       return checked(status);
     },
 
-    async start(userId, rebuildInput) {
+    async start(userId, rebuildInput, reason) {
       let pin: MemoryItemEmbeddingPin | null = null;
       if (rebuildInput.operation === "REEMBED") {
         try {
@@ -106,6 +114,7 @@ export function createMemoryRebuildService(input: Readonly<{
         }
       });
       if (admitted.kind !== "ok") return admissionFailure(admitted);
+      logMemoryRebuildAdmission(reason, admitted.jobId);
       kick();
       const status = await input.repository.status(userId, admitted.jobId);
       if (!status) return failure("memory_action_failed");

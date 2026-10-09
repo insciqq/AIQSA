@@ -3,6 +3,9 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import { prisma } from "../prisma";
+import { ImageInputError, imageInputFailure } from "./inputError";
+import { ProviderRequestTimeoutError } from "../providers/network";
+import { imageDispatchMustStop } from "./errors";
 import { createPrismaImageGenerationService } from "./service";
 import { createMemoryStorageAdapter } from "../../../tests/support/storage";
 import { encryptProviderCredentialSecret } from "../providers/credentialSecrets";
@@ -159,7 +162,7 @@ describe("durable conversational images", () => {
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(imageResponse);
     const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
     const unrelated = await f.call([randomUUID()]);
-    await expect(service.execute(unrelated.call, unrelated.context)).rejects.toThrow("image_reference_unavailable");
+    await expect(service.execute(unrelated.call, unrelated.context)).rejects.toThrow("image_reference_not_found");
     expect(fetchFn).not.toHaveBeenCalled();
     await f.db.providerModel.update({ where: { id: f.modelId }, data: { activeVersion: 2, defaultParams: { quality: "high" } } });
     const admitted = await f.call();
@@ -170,6 +173,43 @@ describe("durable conversational images", () => {
     await expect(service.execute(revoked.call, revoked.context)).rejects.toThrow("image_provider_revoked");
     expect(fetchFn).toHaveBeenCalledTimes(1);
   }));
+  it.each(["gif", "mime", "corrupt", "missing", "malformed"])("refuses %s references before a claim and permits a corrected call", async (fault) => fixture(async (f) => {
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).png().toBuffer();
+    const id = randomUUID();
+    const body = fault === "gif" ? await sharp(png).gif().toBuffer() : fault === "corrupt" ? Buffer.alloc(png.length) : png;
+    const mimeType = fault === "gif" ? "image/gif" : fault === "mime" ? "image/jpeg" : "image/png";
+    const storageKey = `image-fixture/${id}`;
+    await f.storage.putObject({ storageKey, contentType: mimeType, body });
+    await f.db.attachment.create({ data: { id, userId: f.userId, chatId: f.request.chatId, kind: "image", status: "ready",
+      fileName: "reference", mimeType, byteSize: body.length, metadata: {}, storageKey } });
+    f.request.imageReferences = [{ attachmentId: id, fileName: "reference", messageId: f.assistantId, origin: "upload" }];
+    const badId = fault === "missing" ? randomUUID() : fault === "malformed" ? `${id}x` : id;
+    const first = await f.call([badId]);
+    await f.db.modelRunToolCall.update({ where: { id: first.context.persistedToolCallId }, data: { state: "pending", startedAt: null } });
+    const beforeDispatch = vi.fn(async () => {});
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(imageResponse);
+    const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
+    const error = await service.execute(first.call, first.context, undefined, { beforeDispatch }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ImageInputError);
+    expect(imageInputFailure(error)).toMatchObject({ code: fault === "missing" || fault === "malformed" ? "image_reference_not_found" : "image_reference_unsupported",
+      message: expect.stringContaining(badId) });
+    expect(imageDispatchMustStop(error)).toBe(false);
+    expect(beforeDispatch).not.toHaveBeenCalled();
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(await f.db.modelRunToolCall.findUnique({ where: { id: first.context.persistedToolCallId } })).toMatchObject({ state: "pending", startedAt: null });
+    expect(await f.db.usageEvent.count({ where: { modelRunId: f.runId } })).toBe(0);
+    expect(await f.db.modelRun.findUnique({ where: { id: f.runId } })).toMatchObject({ status: "streaming" });
+    // A new corrected call uses the original valid PNG bytes, without conversion by the service.
+    await f.storage.putObject({ storageKey, contentType: "image/png", body: png });
+    await f.db.attachment.update({ where: { id }, data: { mimeType: "image/png", byteSize: png.length } });
+    const corrected = await f.call([id]);
+    await service.execute(corrected.call, corrected.context);
+    expect(fetchFn).toHaveBeenCalledOnce();
+    const form = fetchFn.mock.calls[0]![1]!.body as FormData;
+    expect(Buffer.from(await (form.get("image[]") as Blob).arrayBuffer())).toEqual(png);
+    expect(await f.db.usageEvent.count({ where: { modelRunId: f.runId } })).toBe(1);
+  }));
+
   it("prices an image reported without a cost from the model's stored image prices", async () => fixture(async (f) => {
     await f.db.providerModel.update({ where: { id: f.modelId },
       data: { inputTokenPriceUsdPerMillion: 5, outputTokenPriceUsdPerMillion: 40 } });
@@ -347,11 +387,15 @@ describe("durable conversational images", () => {
     expect(await f.db.userSettings.findUniqueOrThrow({ where: { userId: f.userId } })).toMatchObject({ imageProviderModelId: null });
   }));
 
-  it("never estimates usage when the provider call fails", async () => fixture(async (f) => {
+  it.each(["http", "timeout"])("never estimates usage when the provider call fails with %s", async (fault) => fixture(async (f) => {
     const { call, context } = await f.call();
-    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { message: "synthetic failure" } }, { status: 500 }));
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => {
+      if (fault === "timeout") throw new ProviderRequestTimeoutError(300_000);
+      return Response.json({ error: { message: "synthetic failure" } }, { status: 500 });
+    });
     const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });
-    await expect(service.execute(call, context)).rejects.toThrow("image_provider_http_error");
+    await expect(service.execute(call, context)).rejects.toThrow(fault === "timeout" ? "image_request_timed_out" : "image_provider_http_error");
+    expect(fetchFn).toHaveBeenCalledOnce();
     const where = { imageToolCallId: context.persistedToolCallId! };
     expect(await f.db.usageEvent.count({ where })).toBe(0);
     expect(await f.db.attachment.count({ where })).toBe(0);

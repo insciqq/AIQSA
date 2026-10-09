@@ -1,25 +1,37 @@
-import { Prisma } from "@prisma/client";
+import {
+  describeDatabaseFailure,
+  rememberDatabaseFailure as rememberProjection,
+  type DatabaseFailureKind
+} from "./databaseCause.cjs";
+
+export type { DatabaseFailureKind } from "./databaseCause.cjs";
 
 // Error payloads never enter the writer. Repository boundaries retain only a
 // proven code and preserve the original exception for the existing policy.
-const databaseFailureCodes = new WeakMap<object, string>();
+// A Prisma error, or a wrapper keeping it in `cause`, projects its code
+// directly; a wrapper without a cause carries what its boundary remembered.
 
 export function rememberDatabaseFailure(error: unknown, code: string): void {
-  if (error !== null && typeof error === "object" && /^P\d{4}$/.test(code)) {
-    databaseFailureCodes.set(error, code);
-  }
+  rememberProjection(error, { prisma_code: code });
+}
+
+/** Gives `wrapper` the database projection of `cause` it replaces. */
+export function retainDatabaseCause(wrapper: unknown, cause: unknown): void {
+  rememberProjection(wrapper, describeDatabaseFailure(cause));
 }
 
 export function databaseFailureCode(error: unknown): string {
-  return error !== null && typeof error === "object" ? databaseFailureCodes.get(error) ?? "unknown" : "unknown";
+  return describeDatabaseFailure(error).prisma_code ?? "unknown";
+}
+
+/** Expired transaction, unavailable transaction start, lock or statement
+ * timeout, serialization conflict or deadlock; undefined otherwise. */
+export function databaseFailureKind(error: unknown): DatabaseFailureKind | undefined {
+  return describeDatabaseFailure(error).db_failure;
 }
 
 /** Call at an actual database boundary, before policy mapping. */
 export function retainDatabaseFailure(error: unknown): never {
-  try {
-    const code = error instanceof Prisma.PrismaClientKnownRequestError ? error.code
-      : error instanceof Prisma.PrismaClientInitializationError ? error.errorCode : undefined;
-    if (typeof code === "string") rememberDatabaseFailure(error, code);
-  } catch { /* Diagnostics cannot replace the database rejection. */ }
+  retainDatabaseCause(error, error);
   throw error;
 }

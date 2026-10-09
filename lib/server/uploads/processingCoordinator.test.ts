@@ -29,6 +29,7 @@ function claim(attemptCount: number): AttachmentProcessingRecord {
     jobId: "job-1",
     kind: "document",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ownerUserId: "user-1",
     storageKey: "private/object"
   };
 }
@@ -121,9 +122,10 @@ describe("attachment processing coordinator", () => {
     const firstRequest = { trace_id: "a".repeat(32), run_id: "upload-run", job_id: "request-job" };
     const secondRequest = { trace_id: "b".repeat(32), run_id: "other-run" };
     const queued = [
-      { ...claim(1), id: "other-owner-attachment", jobId: "other-owner-job" },
+      { ...claim(1), id: "other-owner-attachment", jobId: "other-owner-job", ownerUserId: "user-2" },
       { ...claim(1), id: "next-attachment", jobId: "next-job" }
     ];
+    const owners = new Map(queued.map((record) => [record.jobId, record.ownerUserId]));
     const claims: Array<ObservabilityContext | undefined> = [];
     const processed = new Map<string, ObservabilityContext | undefined>();
     const resumed = new Map<string, ObservabilityContext | undefined>();
@@ -174,7 +176,8 @@ describe("attachment processing coordinator", () => {
       await runWithContext(secondRequest, () => coordinator.reconcileNow());
 
       for (const [jobId, context] of processed) {
-        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId });
+        // Each job's records name the uploader of its attachment.
+        expect(context).toEqual({ trace_id: expect.stringMatching(/^[0-9a-f]{32}$/u), job_id: jobId, user_id: owners.get(jobId) });
         expect(context?.trace_id).not.toBe(firstRequest.trace_id);
         expect(context?.trace_id).not.toBe(secondRequest.trace_id);
         expect(settled.get(jobId)).toEqual(context);

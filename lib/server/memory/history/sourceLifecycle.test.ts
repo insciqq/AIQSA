@@ -139,6 +139,89 @@ function sqlText(query: unknown): string {
     : String((query as { sql?: unknown }).sql ?? "");
 }
 
+/** A Regenerate (or edit, branch switch, subtree delete) that moved the
+ * active leaf of a Normal chat and advanced the owner's revision 7 -> 8. */
+function branchPathChangeEvent(
+  memoryRevisionAdvance: MemoryRetainedSourceMutationEvent["memoryRevisionAdvance"] | null =
+    { from: 7, to: 8 }
+): MemoryRetainedSourceMutationEvent {
+  const snapshot: MemorySourceSnapshot = {
+    activeLeafMessageId: "assistant-regenerated",
+    archived: false,
+    folderId: null,
+    id: "chat-1",
+    memoryBranchGeneration: 3,
+    memoryMode: "NORMAL",
+    memorySourceRevision: 9,
+    messages: [],
+    projectId: null,
+    sourceHash: "d".repeat(64),
+    temporaryRetentionDeadline: null,
+    temporaryRetentionPolicyVersion: null,
+    userId: "owner-1"
+  };
+  const { messages: _messages, sourceHash: _sourceHash, ...chat } = snapshot;
+  return {
+    ...(memoryRevisionAdvance ? { memoryRevisionAdvance } : {}),
+    mutations: ["BRANCH_PATH_CHANGE"],
+    previous: {
+      ...chat,
+      activeLeafMessageId: "assistant-original",
+      memoryBranchGeneration: 2,
+      memorySourceRevision: 8
+    },
+    snapshot
+  };
+}
+
+/** History whose invalidation query finds the given derivatives off the new path. */
+function branchTransaction(input: Readonly<{
+  invalidatedChunkIds?: readonly string[];
+  memoryRevision?: number;
+  settledGenerations?: number;
+}> = {}) {
+  const generationUpdate = vi.fn(async (_input: unknown) => ({
+    count: input.settledGenerations ?? 1
+  }));
+  const tx = {
+    $queryRaw: vi.fn(async (query: unknown) => {
+      const text = sqlText(query);
+      if (text.includes("\"UserMemorySettings\"")) {
+        return [{
+          activeIndexGenerationId: "generation-active",
+          memoryGeneration: 2,
+          memoryRevision: input.memoryRevision ?? 8,
+          ownerStatus: "active",
+          referenceChatHistory: true,
+          useMemoryFacts: true,
+          userId: "owner-1"
+        }];
+      }
+      return text.includes("SELECT DISTINCT chunk.\"id\"")
+        ? (input.invalidatedChunkIds ?? []).map((id) => ({ id }))
+        : [];
+    }),
+    chatMemoryCheckpoint: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    memoryDeletionOutbox: {
+      create: vi.fn(async () => ({ id: "deletion-1" })),
+      findUnique: vi.fn(async () => null)
+    },
+    memoryIndexGeneration: {
+      findFirst: vi.fn(async () => ({
+        contextualKeyPolicyVersion: null,
+        id: "generation-active",
+        indexMode: "HYBRID",
+        roundProjectionVersion: null,
+        roundSegmentProjectionVersion: null
+      })),
+      updateMany: generationUpdate
+    },
+    memoryRecallChunk: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    memorySearchEntry: { deleteMany: vi.fn(async () => ({ count: 1 })) }
+  } as unknown as MemoryTransaction;
+  return { generationUpdate, tx };
+}
+
 /** A settled turn on a chat whose indexed history stays on the active path. */
 function settlementTransaction() {
   const create = vi.fn(async (_input: { data: Record<string, unknown> }) => ({
@@ -185,6 +268,55 @@ describe("memory history source lifecycle", () => {
     const notBefore = (data.nextAttemptAt as Date).getTime();
     expect(notBefore).toBeGreaterThanOrEqual(before + MEMORY_HISTORY_QUIET_WINDOW_MS);
     expect(notBefore).toBeLessThanOrEqual(after + MEMORY_HISTORY_QUIET_WINDOW_MS);
+  });
+
+  it("settles an index that was current when a branch change invalidated nothing", async () => {
+    const { generationUpdate, tx } = branchTransaction();
+
+    await applyMemoryHistorySourceMutation(tx, branchPathChangeEvent());
+
+    expect(generationUpdate).toHaveBeenCalledOnce();
+    expect(generationUpdate).toHaveBeenCalledWith({
+      data: { indexedThroughMemoryRevision: 8 },
+      where: {
+        id: "generation-active",
+        indexedThroughMemoryRevision: 7,
+        state: "ACTIVE",
+        userId: "owner-1"
+      }
+    });
+  });
+
+  it("leaves a lagging index alone when its generation was behind the advanced revision", async () => {
+    // The guarded update matches no generation that was not current at 7.
+    const { generationUpdate, tx } = branchTransaction({ settledGenerations: 0 });
+
+    await expect(applyMemoryHistorySourceMutation(tx, branchPathChangeEvent()))
+      .resolves.toBeUndefined();
+    expect(generationUpdate).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["no revision advance", branchPathChangeEvent(null), 8],
+    ["a later revision advance", branchPathChangeEvent(), 9]
+  ])("does not settle a branch change with %s", async (_label, event, memoryRevision) => {
+    const { generationUpdate, tx } = branchTransaction({ memoryRevision });
+
+    await applyMemoryHistorySourceMutation(tx, event);
+
+    expect(generationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the unconditional invalidation settle for an indexed answer", async () => {
+    const { generationUpdate, tx } = branchTransaction({ invalidatedChunkIds: ["chunk-old"] });
+
+    await applyMemoryHistorySourceMutation(tx, branchPathChangeEvent());
+
+    expect(generationUpdate).toHaveBeenCalledOnce();
+    expect(generationUpdate).toHaveBeenCalledWith({
+      data: { indexedThroughMemoryRevision: 8 },
+      where: { id: "generation-active", state: "ACTIVE", userId: "owner-1" }
+    });
   });
 
   it("does not read, write, or enqueue artifacts for project chats", async () => {

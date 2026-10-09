@@ -729,6 +729,10 @@ export type PreparingRunMemoryMaterializer = (
 ) => PreparingRunMaterializedRequest | null;
 
 export type CreatedRun = Readonly<{
+  /** When admission committed: this process's clock at the `run_accepted`
+   * record (a deferred run reads its row's creation time). In memory only; the
+   * start of the run's time to first output. */
+  acceptedAt?: Date;
   deferredPdf?: true;
   deferredWorkspace?: true;
   assistantMessageId: string;
@@ -1295,6 +1299,20 @@ export type RunRepository = {
     userId: string;
   }): Promise<SettleToolLoopCallResult>;
   resetToolLoopAssistantDraft(input: {
+    roundIndex: number;
+    runId: string;
+    userId: string;
+  }): Promise<boolean>;
+  /**
+   * Re-opens a dispatchable run's current provider round whose request
+   * dropped, immediately before the round is sent again (PROVIDERS.md:
+   * Codex LB). The dropped request's partial usage leaves the round's
+   * checkpointed usage while the run's attribution rows keep it as one
+   * operation, so a lost next request is the round's own unknown operation.
+   * The draft, answer start and provider response id are cleared. False when
+   * the round is no longer that one or recorded no partial usage.
+   */
+  reopenToolLoopProviderRound?(input: {
     roundIndex: number;
     runId: string;
     userId: string;

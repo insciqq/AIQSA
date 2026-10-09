@@ -6,7 +6,7 @@ import type { ErrorResponse } from "./http";
  * It carries counts, stable codes, enumerations and provider display names,
  * never user content, raw errors, secrets or internal job/tool identities.
  */
-export const adminHealthRanges = ["24h", "7d", "30d"] as const;
+export const adminHealthRanges = ["24h", "7d", "14d", "30d"] as const;
 export type AdminHealthRange = (typeof adminHealthRanges)[number];
 export const defaultAdminHealthRange: AdminHealthRange = "24h";
 
@@ -96,6 +96,13 @@ export type AdminHealthErrorGroup = {
   firstSeenAt: string;
   /** First seen within the last day. */
   isNew: boolean;
+  /**
+   * Distinct signed-in users and runs among the failure's retained incidents in
+   * the range. Incidents are a sample (per-minute admission, daily trim), so
+   * these are lower bounds; 0 when no retained incident names one. Never ids.
+   */
+  usersAtLeast: number;
+  runsAtLeast: number;
 };
 
 export type AdminHealth = {
@@ -167,7 +174,7 @@ export function adminHealthEventCategory(event: string): AdminHealthCategory {
   if (REQUEST_EVENTS.has(event)) return "requests";
   if (event.startsWith("provider_")) return "providers";
   if (event.startsWith("run_")) return "runs";
-  if (event === "tool_execution") return "tools";
+  if (event === "tool_execution" || event === "tool_call") return "tools";
   return "other";
 }
 
@@ -177,7 +184,7 @@ export const ADMIN_HEALTH_CATEGORY_EVENTS: Readonly<Record<AdminHealthIncidentCa
   requests: [...REQUEST_EVENTS],
   runs: ["run_execution", "run_persistence", "run_http_failed", "run_preparation", "run_stop_admission"],
   background: [...BACKGROUND_EVENTS],
-  tools: ["tool_execution"]
+  tools: ["tool_execution", "tool_call"]
 };
 
 export const ADMIN_HEALTH_INCIDENT_EVENT_PATTERN = /^[a-z][a-z0-9_.]{0,63}$/u;
@@ -326,11 +333,12 @@ function decodeErrorGroup(value: unknown): AdminHealthErrorGroup | null {
   if (!isRecord(value) || typeof value.fingerprint !== "string" || !FINGERPRINT_PATTERN.test(value.fingerprint) ||
     !text(value.errorClass, 64) || !nullableText(value.site, 160) || !count(value.count) ||
     !textList(value.events, 8, 64) || !textList(value.roles, 8, 32) || !textList(value.codes, 8, 128) ||
-    !time(value.lastSeenAt) || !time(value.firstSeenAt) || typeof value.isNew !== "boolean") return null;
+    !time(value.lastSeenAt) || !time(value.firstSeenAt) || typeof value.isNew !== "boolean" ||
+    !count(value.usersAtLeast) || !count(value.runsAtLeast)) return null;
   return {
     fingerprint: value.fingerprint, errorClass: value.errorClass, site: value.site, count: value.count,
     events: value.events, roles: value.roles, codes: value.codes, lastSeenAt: value.lastSeenAt,
-    firstSeenAt: value.firstSeenAt, isNew: value.isNew
+    firstSeenAt: value.firstSeenAt, isNew: value.isNew, usersAtLeast: value.usersAtLeast, runsAtLeast: value.runsAtLeast
   };
 }
 

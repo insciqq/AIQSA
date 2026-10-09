@@ -48,6 +48,7 @@ function record(
     jobId: "job-1",
     kind: "document",
     mimeType: "text/plain",
+    ownerUserId: "user-1",
     storageKey: "private/object",
     ...overrides
   };

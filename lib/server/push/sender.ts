@@ -1,6 +1,7 @@
 import type { BrowserPushMessage } from "../../contracts/browserPush";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
+import type { PushTransportFailureCategory } from "../observability/events";
 import { browserPushMessage } from "./payload";
 import { PushTransportError, type PushPost } from "./pushTransport";
 import type { AnswerReviewEndedEvent } from "../answerReviews/autoDriver";
@@ -44,9 +45,9 @@ const SHOWN_RUNS_LIMIT = 1_000;
 /** How long a push service keeps an undelivered message for an offline device. */
 const MESSAGE_TTL_SECONDS = 24 * 60 * 60;
 
-/** Content-free: run or occurrence identity, stable codes and HTTP status only. */
+/** Content-free: run or occurrence identity, stable codes, transport categories and HTTP status only. */
 function log(fields: Readonly<{
-  action?: "fail" | "skip"; code?: string; count?: number; httpStatus?: number; job_id?: string;
+  action?: "fail" | "skip"; category?: PushTransportFailureCategory; code?: string; count?: number; httpStatus?: number; job_id?: string;
   outcome: "completed" | "failed" | "skipped"; prisma_code?: string; run_id?: string; stage: "claim" | "dispatch";
 }>): void {
   logEvent("job_attempt", { subsystem: "push", ...fields });
@@ -120,6 +121,7 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
     } catch (error) {
       outcome = "failed";
       log({ action: "skip", code: error instanceof PushTransportError ? error.code : "push_delivery_failed",
+        category: error instanceof PushTransportError ? error.category : undefined,
         job_id: jobId, outcome: "failed", stage: "dispatch" });
     }
     if (status !== undefined) {

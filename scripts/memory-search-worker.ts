@@ -1,6 +1,7 @@
 import "./worker-bootstrap.cjs";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy } from "../lib/server/observability";
 import { PrismaClient } from "@prisma/client";
+import { aiqsaPostgresRuntimeUrl } from "../lib/server/postgresRuntimeOptions";
 import {
   createPrismaMemoryLexicalProjectionStore
 } from "../lib/server/memory/searchProjection/repository";
@@ -35,7 +36,9 @@ if ([rebuild, integrityOnly, retryBlocked].filter(Boolean).length > 1 ||
   throw new Error("memory_search_worker_argument_invalid");
 }
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasourceUrl: aiqsaPostgresRuntimeUrl(process.env.DATABASE_URL)
+});
 // Only the long-running projection loop records telemetry.
 const telemetry = once || drain || rebuild || integrityOnly || retryBlocked
   ? null : startTelemetryRecorder({ prisma });
