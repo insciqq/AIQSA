@@ -324,7 +324,9 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         return result(call, image);
       } catch (error) {
         const code = observedFailureCode(error);
-        logEvent("image_execution", { stage, code: code === "unknown" ? "tool_call_failed" : code,
+        // A refused input the model can correct, or a stop, warns; anything else is an image generation failure.
+        const outcome = signal?.aborted === true ? "cancelled" : error instanceof ImageInputError ? "refused" : "failed";
+        logEvent("image_execution", { stage, outcome, code: code === "unknown" ? "tool_call_failed" : code,
           duration_ms: performance.now() - startedAt, error, ...databaseFields(error),
           ...(error instanceof ImageGenerationError && error.finishReason ? { finish_reason: error.finishReason } : {}) });
         throw error;

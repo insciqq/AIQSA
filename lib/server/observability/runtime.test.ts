@@ -53,6 +53,26 @@ describe("bounded observability runtime", () => {
     expect(invalid).not.toHaveProperty("finish_reason");
   });
 
+  it("warns on a refused or stopped image request and keeps a real image failure an error", () => {
+    const fields = { stage: "reference_read", code: "image_reference_not_found", duration_ms: 3 } as const;
+    expect(record("image_execution", { ...fields, outcome: "refused" })).toMatchObject({ level: "warn", outcome: "refused" });
+    expect(record("image_execution", { ...fields, outcome: "cancelled" })).toMatchObject({ level: "warn", outcome: "cancelled" });
+    expect(record("image_execution", { ...fields, outcome: "failed" })).toMatchObject({ level: "error" });
+    // A record without an outcome (an unrecorded paid usage row) stays an error.
+    expect(record("image_execution", { stage: "usage", code: "image_usage_unrecorded", duration_ms: 3 })).toMatchObject({ level: "error" });
+    expect(record("image_execution", { ...fields, outcome: "PRIVATE" } as never)).toMatchObject({ level: "error" });
+  });
+
+  it("keeps a model command's non-zero exit out of the error level, and other workspace tool failures in it", () => {
+    for (const stage of ["request", "execution", "result"] as const) {
+      expect(record("tool_execution", { tool_kind: "workspace", stage, outcome: "failed", code: "workspace_command_failed" }))
+        .toMatchObject({ level: "info", outcome: "failed", code: "workspace_command_failed" });
+    }
+    expect(record("tool_execution", { tool_kind: "workspace", stage: "result", outcome: "failed", code: "workspace_operation_failed" }))
+      .toMatchObject({ level: "error" });
+    expect(record("tool_execution", { tool_kind: "workspace", stage: "execution", outcome: "failed" })).toMatchObject({ level: "error" });
+  });
+
   it("projects local tool search counts without the query or tool names", () => {
     const fields = { outcome: "completed", duration_ms: 3, mode: "keywords", candidate_count: 180,
       result_count: 4, loaded_count: 3, already_loaded_count: 1, unknown_name_count: 0 } as const;

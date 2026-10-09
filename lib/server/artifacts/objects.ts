@@ -145,7 +145,8 @@ export function createArtifactObjects(db: PrismaClient, storage: StorageAdapter)
 
   async function writeBlobs(writes: Awaited<ReturnType<typeof bindBlobs>>) {
     for (const blob of writes) {
-      const existing = await storage.getObject(blob.storageKey, { maxBytes: blob.byteSize }).catch(() => null);
+      // A new blob's object does not exist yet: that miss is the expected answer, not a storage failure.
+      const existing = await storage.getObject(blob.storageKey, { maxBytes: blob.byteSize, expectMissing: true }).catch(() => null);
       if (existing) {
         if (existing.body.byteLength !== blob.byteSize || artifactChecksum(existing.body) !== blob.sha256) throw new Error("artifact_blob_unavailable");
         continue;

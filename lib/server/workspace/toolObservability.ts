@@ -47,8 +47,11 @@ export async function observeWorkspaceToolExecution<T extends { status: "complet
   try {
     const result = await operation();
     const outcome = result.status === "error" ? "failed" : "completed";
-    finish({ outcome });
-    logEvent("tool_execution", { tool_kind: "workspace", stage: "result", outcome, code: resultCodes.get(result) });
+    const code = resultCodes.get(result);
+    // The result's code also tells the execution record why it failed, e.g. a
+    // command's own non-zero exit, which is the model's result, not an error.
+    finish({ outcome, code });
+    logEvent("tool_execution", { tool_kind: "workspace", stage: "result", outcome, code });
     return result;
   } catch (error) {
     const failure = workspaceToolFailure(error);
