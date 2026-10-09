@@ -187,6 +187,7 @@ function processingRecord(
     jobId: `parser-smoke-${input.kind}-job`,
     kind: input.kind,
     mimeType: input.mimeType,
+    ownerUserId: "parser-smoke-user",
     storageKey: `parser-smoke/${input.fileName}`
   };
 }
