@@ -1,5 +1,7 @@
 import { databaseFailureCode, databaseFailureKind, rememberDatabaseFailure } from "../observability/databaseFailure";
 import { logEvent } from "../observability";
+import type { DbTransactionOperation } from "../observability/events";
+import { measureTransaction, transactionTimingFields, transactionTimingOf } from "../observability/transactionTiming";
 import { WorkspaceActivityText, workspaceSecretMatches, type WorkspaceSecretMatch } from "./activityText";
 import { WorkspaceSecretOutputMask } from "./secretOutput";
 import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
@@ -183,6 +185,8 @@ export const WORKSPACE_EXPORT_LEASE_MS = 120_000;
  */
 const WORKSPACE_EXPORT_LOCK_TIMEOUT_MS = 2_000;
 const WORKSPACE_EXPORT_TRANSACTION = Object.freeze({ maxWait: 2_000, timeout: 10_000 });
+/** The export's timed transactions, one per repository step. */
+type WorkspaceExportTransaction = Extract<DbTransactionOperation, `export_${string}`>;
 export { WORKSPACE_EXPORT_MAX_ATTEMPTS } from "@/lib/domain/workspace";
 /** Retry spacing also bounds repeated storage failures after a durable handoff. */
 export const WORKSPACE_EXPORT_RECOVERY_GRACE_MS = 30_000;
@@ -460,12 +464,12 @@ export function createPrismaWorkspaceCoordinatorRepository(
     };
   }
 
-  /** An export step or lease transaction: explicit budget, bounded lock waits. */
-  function exportTransaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-    return prisma.$transaction(async (tx) => {
+  /** An export step or lease transaction: explicit budget, bounded lock waits, timed (`db_transaction`). */
+  function exportTransaction<T>(operation: WorkspaceExportTransaction, work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return measureTransaction({ subsystem: "workspace", operation }, async (tx: Prisma.TransactionClient) => {
       await tx.$queryRaw(Prisma.sql`SELECT set_config('lock_timeout', ${`${WORKSPACE_EXPORT_LOCK_TIMEOUT_MS}ms`}, true)`);
       return work(tx);
-    }, WORKSPACE_EXPORT_TRANSACTION);
+    }, (body) => prisma.$transaction(body, WORKSPACE_EXPORT_TRANSACTION));
   }
 
   return {
@@ -653,7 +657,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return rows.map(generatedFile);
     },
     async claimExport(request) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_claim", async (tx) => {
         const session = await lockWorkspaceSession(tx, request.sessionId);
         if (await exportAlreadyComplete(tx, request, request.handoff === true)) return { status: "complete" as const };
         if (!session || !request.operation || session.operationOwner !== request.operation.owner ||
@@ -671,7 +675,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async claimExportForRecovery(request) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_recovery_claim", async (tx) => {
         const session = await lockWorkspaceSession(tx, request.sessionId);
         if (await exportAlreadyComplete(tx, request)) return { status: "complete" as const };
         if (!session) throw new WorkspaceRuntimeError("workspace_output_export_failed");
@@ -722,7 +726,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return rows.map((row) => ({ runId: row.modelRunId, updatedAt: row.updatedAt, userId: row.modelRun.userId }));
     },
     async reserveOutputCapture(lease) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_reserve", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return null;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: lease.runId } });
         if (binding.outputCapture !== null) return { ...parseOutputCapture(binding.outputCapture), create: false };
@@ -733,7 +737,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
     },
     async sealOutputCapture(lease) {
       const outputs = outputIdentities(lease.capture.outputs);
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_seal", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: lease.runId } });
         const capture = parseOutputCapture(binding.outputCapture);
@@ -754,7 +758,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return binding?.outputCapture != null && parseOutputCapture(binding.outputCapture).outputs !== null;
     },
     async markExportPending(lease) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_pending", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: lease.runId } });
         if (binding.outputCapture === null || parseOutputCapture(binding.outputCapture).outputs === null) return false;
@@ -767,7 +771,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async markExportComplete(lease) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_complete", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({
           select: { outputCapture: true, outputs: { select: {
@@ -787,7 +791,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async markExportFailed(lease) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_failed", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const updated = await tx.workspaceRunBinding.updateMany({
           data: { exportLeaseExpiresAt: null, exportLeaseToken: null, exportState: "FAILED", lastExportErrorCode: lease.code.slice(0, 64) },
@@ -797,7 +801,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async renewExportLease(lease) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_renew", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const expiresAt = new Date(Date.now() + lease.leaseMs);
         const updated = await tx.workspaceRunBinding.updateMany({
@@ -811,7 +815,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       });
     },
     async prepareOutput(lease) {
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_prepare_output", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         // A crashed upload retains a leased cleanup obligation. Publication
         // deletes it atomically; otherwise normal retention reclaims it.
@@ -933,7 +937,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
         return generatedFile(existing);
       };
       // The session lock serializes all publishers of this binding/path.
-      return exportTransaction(async (tx) => {
+      return exportTransaction("export_settle_output", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) throw new WorkspaceRuntimeError("workspace_operation_stale");
         const captureRow = await tx.workspaceRunBinding.findUniqueOrThrow({ select: { outputCapture: true }, where: { modelRunId: binding.runId } });
         const owed = parseOutputCapture(captureRow.outputCapture).outputs?.find((entry) => entry.relativePath === output.relativePath);
@@ -2474,7 +2478,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
           leaseValidUntil: () => leaseValidUntil,
           onRetry: ({ delayMs, error, kind, retry }) => logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export",
             work_stage: stage, outcome: "degraded", code: "workspace_output_export_failed", prisma_code: databaseFailureCode(error),
-            db_failure: kind, attempt: retry, delay_ms: delayMs, action: "retry", run_id: runId }),
+            db_failure: kind, attempt: retry, delay_ms: delayMs, action: "retry", run_id: runId,
+            ...transactionTimingFields(transactionTimingOf(error)) }),
           signal: abort
         });
       const liveClaim = recovery ? null : { ...leaseInput, ...(handoff ? { handoff: true } : {}), operation: {
@@ -2491,7 +2496,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
       } catch (error) {
         logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export", work_stage: "claim", outcome: "failed",
           code: runtimeCode(error), prisma_code: databaseFailureCode(error), db_failure: databaseFailureKind(error),
-          action: handoff ? "fail" : "retry", run_id: runId });
+          action: handoff ? "fail" : "retry", run_id: runId, ...transactionTimingFields(transactionTimingOf(error)) });
         return failedExport({ code: runtimeCode(error), retryable: true, status: "failed" }, error);
       }
       if (claim.status === "complete") {
@@ -2777,7 +2782,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
         const retryable = isRetryableWorkspaceExportErrorCode(recorded);
         logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export", work_stage: step,
           outcome: leaseLost ? "lost_lease" : "failed", code, prisma_code: databaseFailureCode(error),
-          db_failure: databaseFailureKind(error), action: handoff || !retryable ? "fail" : "retry", run_id: runId });
+          db_failure: databaseFailureKind(error), action: handoff || !retryable ? "fail" : "retry", run_id: runId,
+          ...transactionTimingFields(transactionTimingOf(error)) });
         if (!leaseLost) {
           await exportStep(() => input.repository.markExportFailed({ ...lease, code: recorded })).catch(() => undefined);
         }

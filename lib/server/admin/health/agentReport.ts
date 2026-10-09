@@ -16,6 +16,7 @@ import type { FailedRunLoad, FailedRunQuery } from "./failedRuns";
 import type { AdminHealthQueuesService } from "./queues";
 import { HEALTH_REPORT_VERSION } from "./report";
 import { projectAdminHealthRun, type AdminHealthRunRow } from "./runLookup";
+import { HEALTH_SLOW_TRANSACTION_QUERY, healthSlowTransactions, type HealthSlowTransactions } from "./slowTransactions";
 import type { AdminHealthUserRunsQuery } from "./runLookupRepository";
 import {
   adminHealthBoundedIds, adminHealthConnectionLabel, adminHealthIncidentModelId, adminHealthModelLabel,
@@ -247,6 +248,8 @@ export type HealthFullReport = {
   /** 4xx and 5xx responses, requests that failed before a response, and browser crashes. */
   http: { rows: HealthHttpRow[]; clientErrors: HealthClientErrorRow[]; truncated: boolean };
   problemReports: { rows: HealthProblemReportRow[]; total: number; truncated: boolean };
+  /** Tracked database transactions that held their rows past the slow bound or the foreground budget, errors first. */
+  slowTransactions: HealthSlowTransactions;
   incidents: {
     /** The newest incidents plus the first of each key, newest first. */
     rows: HealthFullIncident[];
@@ -632,7 +635,7 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
   const [
     runRows, previousRows, latencyRows, failureCounters, nested, transport, toolTimeouts, runDeadlines, errorRows, errorFirstSeen,
     signInRows, toolRows, httpRows, clientRows, operationRows, telemetryRows, queues, problemReports, newest, firsts, keyRows,
-    failedRunLoad
+    failedRunLoad, slowTransactionRows
   ] = await Promise.all([
     counters({ ...span, ...RUN_TOTAL_QUERY }),
     window.previous ? counters({ ...window.previous, ...RUN_TOTAL_QUERY }) : Promise.resolve(null),
@@ -660,7 +663,8 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     read(() => readNewestIncidents(store, span, HEALTH_NEWEST_INCIDENT_LIMIT)),
     read(() => store.readFirstIncidentPerKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
     read(() => store.countIncidentReachByKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
-    read(() => sources.failedRunGroups({ ...span, perCode: HEALTH_FULL_FAILED_RUNS_PER_CODE, groupLimit: HEALTH_FULL_FAILED_RUN_CODE_LIMIT }))
+    read(() => sources.failedRunGroups({ ...span, perCode: HEALTH_FULL_FAILED_RUNS_PER_CODE, groupLimit: HEALTH_FULL_FAILED_RUN_CODE_LIMIT })),
+    counters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY })
   ]);
 
   const errorFold = foldAdminHealthErrorGroups(errorRows, errorFirstSeen, generatedAt, HEALTH_FULL_ERROR_GROUP_LIMIT);
@@ -775,6 +779,7 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
         httpRows.length >= READ_LIMIT || clientRows.length >= READ_LIMIT
     },
     problemReports,
+    slowTransactions: healthSlowTransactions(slowTransactionRows),
     incidents: {
       rows: sortIncidents([...incidentItems.values()].map((item) => ({ ...agentIncident(item, names), firstOfKey: firstIds.has(item.id) }))),
       newestLimit: HEALTH_NEWEST_INCIDENT_LIMIT,
