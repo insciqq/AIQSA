@@ -86,6 +86,7 @@ function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSour
       { id: "conn-disabled", displayName: "Old key", enabled: false }
     ]),
     failedRuns: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false }),
+    slowTransactions: vi.fn().mockResolvedValue([]),
     ...overrides
   };
 }
@@ -99,8 +100,9 @@ describe("health report collection", () => {
     expect(input.failedRuns).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to), perCode: 3, groupLimit: 50 });
     expect(Object.keys(report)).toEqual(["kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry", "attention",
       "failedRuns", "summary", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
-      "queues", "queuesCheckedAt",
+      "queues", "queuesCheckedAt", "slowTransactions",
       "incidents", "incidentsTruncated"]);
+    expect(input.slowTransactions).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to) });
     // A disabled connection has nothing left to fix; only the stalled queue that raises its own item joins.
     expect(report.attention.map((item) => item.id)).toEqual([
       "provider_runtime_quota_exhausted:conn-openai", "process_restarting:app", "queue_stalled:chat_titles"
@@ -238,6 +240,52 @@ describe("health report text", () => {
     const runs = { lookup: vi.fn().mockResolvedValue({ truncated: false, runs: [] }) };
     const looked = joined(formatHealthRunReport(await collectHealthRunReport({ health: { incidents }, runs }, RUN.slice(0, 8))));
     expect(looked).toContain(handoffLine);
+  });
+
+  it("lists slow transactions errors first and shows the holder's hold beside the waiter's lock wait", async () => {
+    const counter = (group: Record<string, string>, count: number, maxMs: number, lastSeenAt: string) => ({
+      group, count, valueSum: 0, durationCount: count, durationSumMs: maxMs * count, durationMaxMs: maxMs,
+      durationBuckets: [], firstSeenAt: new Date("2026-10-07T09:00:00.000Z"), lastSeenAt: new Date(lastSeenAt)
+    });
+    const slowTransactions = vi.fn().mockResolvedValue([
+      counter({ level: "warn", subsystem: "workspace", operation: "export_seal", outcome: "rolled_back" }, 3, 2_031,
+        "2026-10-07T09:41:31.000Z"),
+      counter({ level: "error", subsystem: "memory", operation: "job_commit", job_kind: "INDEX_HISTORY", outcome: "committed" }, 1,
+        6_020, "2026-10-07T09:41:35.000Z")
+    ]);
+    const holder = incident(0, { event: "db_transaction", code: null, subsystem: "memory", stage: null, connectionId: null,
+      connectionName: null, modelName: null, httpStatus: null, runId: null, details: [
+        { key: "duration_ms", value: 6_020 }, { key: "job_kind", value: "INDEX_HISTORY" }, { key: "lock_wait_ms", value: 3 },
+        { key: "operation", value: "job_commit" }, { key: "outcome", value: "committed" }
+      ] });
+    const waiter = incident(1, { event: "runtime_lifecycle", code: "workspace_output_export_failed", subsystem: "workspace",
+      stage: "export", connectionId: null, connectionName: null, modelName: null, httpStatus: null, details: [
+        { key: "db_failure", value: "lock_timeout" }, { key: "duration_ms", value: 2_031 }, { key: "lock_wait_ms", value: 2_004 },
+        { key: "prisma_code", value: "P2010" }, { key: "work_stage", value: "seal" }
+      ] });
+    const report = await collectHealthReport(sources({
+      health: { read: vi.fn().mockResolvedValue(health), incidents: vi.fn().mockResolvedValue({ incidents: [holder, waiter], nextCursor: null }) },
+      slowTransactions
+    }), "24h");
+    expect(report.slowTransactions).toEqual({ truncated: false, rows: [
+      { level: "error", subsystem: "memory", operation: "job_commit", jobKind: "INDEX_HISTORY", outcome: "committed", count: 1,
+        maxMs: 6_020, firstSeenAt: "2026-10-07T09:00:00.000Z", lastSeenAt: "2026-10-07T09:41:35.000Z" },
+      { level: "warn", subsystem: "workspace", operation: "export_seal", jobKind: null, outcome: "rolled_back", count: 3,
+        maxMs: 2_031, firstSeenAt: "2026-10-07T09:00:00.000Z", lastSeenAt: "2026-10-07T09:41:31.000Z" }
+    ] });
+    const text = formatHealthReport(report);
+    const lines = text.split("\n");
+    const section = lines.indexOf("Slow database transactions (held rows over 2.0 s; ERROR: over the 5.0 s budget)");
+    expect(section).toBeGreaterThan(-1);
+    expect(lines.slice(section + 1, section + 3)).toEqual([
+      "  ERROR  memory/job_commit INDEX_HISTORY · 1 time · max 6.0 s · last 2026-10-07 09:41",
+      "  WARN   workspace/export_seal · rolled back · 3 times · max 2.0 s · last 2026-10-07 09:41"
+    ]);
+    // The section sits right before the incidents it explains.
+    expect(lines[section + 4]).toMatch(/^Latest incidents/u);
+    expect(text).toContain("  2026-10-07 09:59:12  error  app  db_transaction\n      held 6.0 s, lock wait 3 ms · memory/job_commit INDEX_HISTORY\n");
+    expect(text.replace(/\n {6}/gu, " · "))
+      .toContain(" · P2010 lock_timeout · lock wait 2.0 s of 2.0 s · code workspace_output_export_failed · workspace/export\n");
   });
 
   it("prints how many users and runs a failure hit as counts only, in text and JSON", async () => {

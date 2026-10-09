@@ -9,6 +9,7 @@ import { readFailedRunLoad } from "./failedRuns";
 import { adminHealthQueuesService } from "./queuesDefault";
 import type { HealthReportSources, HealthRunReportSources } from "./report";
 import { adminHealthRunLookup } from "./runLookupDefault";
+import { HEALTH_SLOW_TRANSACTION_QUERY } from "./slowTransactions";
 import { readAdminHealthUserFailedRuns } from "./runLookupRepository";
 
 /** Failed runs of a report's whole range, read once; it gets more time than a page read. */
@@ -22,7 +23,8 @@ export const healthReportSources: HealthReportSources & HealthRunReportSources =
   runs: adminHealthRunLookup,
   findings: readDefaultHealthFindings,
   connections: () => prisma.providerConnection.findMany({ select: { id: true, displayName: true, enabled: true } }),
-  failedRuns: readReportFailedRuns
+  failedRuns: readReportFailedRuns,
+  slowTransactions: (span) => adminHealthTelemetryStore.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY })
 };
 
 /** The agent reports (`--full`, `--user`) over the same database; they only read. */

@@ -15,6 +15,7 @@ import { WORKSPACE_ATTACHMENT_STORAGE_WAIT_MS } from "./attachmentAcquisition";
 import { getWorkspaceConfig } from "./config";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
+import { measureTransaction, transactionTimingOf } from "../observability/transactionTiming";
 import { WorkspaceHandoffFailure } from "../runs/settlementFailure";
 import {
   createPrismaWorkspaceCoordinatorRepository,
@@ -1978,6 +1979,26 @@ describe("Workspace coordinator export database retries", () => {
     expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(true);
   });
 
+  it("records how long a seal waited for the chat row on its retry record", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    // The chat row is held elsewhere: the seal's lock statement waits out its bound and the transaction rolls back.
+    const blockedSeal = () => measureTransaction({ subsystem: "workspace", operation: "export_seal" },
+      async (tx: { $queryRaw: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown> }) => {
+        await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${"chat_1"} FOR UPDATE`;
+        return true;
+      }, async (body) => body({ $queryRaw: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        throw lockTimeout();
+      } }));
+    vi.spyOn(value.repository, "sealOutputCapture").mockImplementationOnce(blockedSeal);
+    const records = await exportRecords(() => expect(handoff(value)).resolves.toEqual({ status: "ready" }));
+    expect(records).toEqual([expect.objectContaining({ work_stage: "seal", outcome: "degraded", db_failure: "lock_timeout",
+      action: "retry", lock_wait_ms: expect.any(Number), duration_ms: expect.any(Number) })]);
+    expect(records[0]!.lock_wait_ms).toBeGreaterThanOrEqual(50);
+    expect(records[0]!.duration_ms).toBeGreaterThanOrEqual(records[0]!.lock_wait_ms as number);
+  });
+
   it.each([
     ["claimExport", "claim", () => known("P2028", { error: "Unable to start a transaction in the given time." }), "transaction_start_timeout"],
     ["reserveOutputCapture", "claim", () => known("P2028", {
@@ -2125,6 +2146,39 @@ describe("Workspace export transactions", () => {
     const statement = queryRaw.mock.calls[0]![0];
     expect(statement.text).toBe("SELECT set_config('lock_timeout', $1, true)");
     expect(statement.values).toEqual(["2000ms"]);
+  });
+
+  it("times the session's chat lock wait and names the step on a slow transaction", async () => {
+    const failure = new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", { clientVersion: "test", code: "P2010",
+      meta: { code: "55P03" } });
+    const queryRaw = vi.fn(async (statement: Prisma.Sql | TemplateStringsArray) => {
+      const text = "strings" in statement ? statement.strings.join("?") : statement.join("?");
+      if (text.includes("FOR UPDATE")) {
+        await new Promise((resolve) => setTimeout(resolve, 2_050));
+        throw failure;
+      }
+      return [];
+    });
+    const tx = { $queryRaw: queryRaw, workspaceSession: { findUnique: vi.fn(async () => ({ chatId: "chat_1" })) } };
+    const transaction = vi.fn(async (work: (value: unknown) => Promise<unknown>) => work(tx));
+    const repository = createPrismaWorkspaceCoordinatorRepository({ $transaction: transaction } as unknown as PrismaClient);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const claimed = repository.claimExport({ leaseMs: 60_000, operation: { generation: 1, owner: "run:run_1" }, runId: "run_1",
+        runtimeSandboxId: "runtime_1", sessionId: "session_1" }).then(() => null, (error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(2_050);
+      const error = await claimed;
+      expect(error).toBe(failure);
+      expect(transactionTimingOf(error)).toEqual({ duration_ms: 2_050, lock_wait_ms: 2_050, outcome: "rolled_back" });
+      const slow = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+        .filter((record) => record.event === "db_transaction");
+      expect(slow).toEqual([expect.objectContaining({ level: "warn", subsystem: "workspace", operation: "export_claim",
+        duration_ms: 2_050, lock_wait_ms: 2_050, outcome: "rolled_back", db_failure: "lock_timeout" })]);
+    } finally {
+      writer.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 

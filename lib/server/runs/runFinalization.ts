@@ -6,7 +6,8 @@ import {
 import { providerModelUsageCostMicros } from "../usage";
 import type { RunRepository, RunUsageAttribution } from "./runRepositoryContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
-import { logRunPersistence } from "./runObservability";
+import { logRunPersistence, settleRunWrite } from "./runObservability";
+import type { DbTransactionTiming } from "../observability/transactionTiming";
 import type { KnowledgeAnswerContractVersions } from "../knowledge/answerGroundingV5";
 import type { KnowledgeAnswerV21ContractVersions } from "../knowledge/answerGroundingV21";
 import type { KNOWLEDGE_ANSWER_CONTRIBUTION_CONTRACTS_V1 } from "../knowledge/answerGroundingSnapshotV40";
@@ -292,13 +293,14 @@ export async function finalizeRunCompletion(input: Readonly<{
     await input.afterAnswerPublished({ finalText: completion.finalText, usage });
   }
   let completed: boolean;
+  let timing: DbTransactionTiming | undefined;
   try {
-    completed = await input.repository.completeRun(completion);
+    ({ value: completed, timing } = await settleRunWrite(() => input.repository.completeRun(completion)));
   } catch (error) {
     logRunPersistence(input.run.runId, "complete", "unconfirmed", error);
     throw new RunSettlementError("completion", error);
   }
-  logRunPersistence(input.run.runId, "complete", completed ? "confirmed" : "not_applied");
+  logRunPersistence(input.run.runId, "complete", completed ? "confirmed" : "not_applied", undefined, timing);
 
   return completed
     ? {

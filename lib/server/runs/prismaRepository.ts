@@ -123,6 +123,7 @@ import type { WorkspaceAvailabilityService } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { workspaceAvailabilityService as defaultWorkspaceAvailabilityService } from "../workspace/defaultServices";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
+import { measureTransaction } from "../observability/transactionTiming";
 import { createPrismaRunAnswerOperations, persistCompletedAnswerUsage } from "./prismaRepositoryAnswer";
 import { runAttributionUsageWhere, storedRunAttributionPurpose } from "./prismaRepositoryUsage";
 import { createPrismaRunFollowupOperations, runFollowupSelect, runFollowupsAllowCompletion } from "./prismaRepositoryFollowups";
@@ -680,7 +681,7 @@ export function createPrismaRunRepository(
       }).catch(retainRunPrismaCode);
     },
     cancelRun: async (input) => {
-      const cancellation = await prismaClient.$transaction(async (tx) => {
+      const cancellation = await measureTransaction({ subsystem: "runs", operation: "run_cancel" }, async (tx) => {
         const lockedRun = await lockPreparingRun(tx, input.runId, input.userId);
         const updatedCount = lockedRun?.status === "preparing"
           ? Number(await settlePreparingRunInTransaction(tx, {
@@ -772,7 +773,7 @@ export function createPrismaRunRepository(
             status: "cancelled"
           }
         } as const;
-      }).catch(retainRunPrismaCode);
+      }, (body) => prismaClient.$transaction(body)).catch(retainRunPrismaCode);
       // After commit; browser push never notifies the user's own cancellation.
       if (cancellation.kind === "cancelled") signalRunCancelled(input.runId);
       return cancellation;
@@ -780,7 +781,7 @@ export function createPrismaRunRepository(
     completeRun: async (input) => {
       const usage = normalizeTokenUsage(input.usage);
 
-      const completed = await prismaClient.$transaction(async (tx) => {
+      const completed = await measureTransaction({ subsystem: "runs", operation: "run_complete" }, async (tx) => {
         await lockRunSettlementScope(tx, input.runId);
         const [existingRun] = await tx.$queryRaw<
           Array<{
@@ -899,7 +900,7 @@ export function createPrismaRunRepository(
         if (!existingRun.answerCompletedAt) await persistCompletedAnswerUsage(tx, input, existingRun.projectId);
         if (!existingRun.answerCompletedAt) await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
         return true;
-      }).catch(retainRunPrismaCode);
+      }, (body) => prismaClient.$transaction(body)).catch(retainRunPrismaCode);
       // After commit; the push sender claims the run at most once.
       if (completed) signalRunTerminal(input.runId);
       return completed;
@@ -1003,7 +1004,7 @@ export function createPrismaRunRepository(
       }).catch(retainRunPrismaCode);
     },
     failRun: async (runId, assistantMessageId, error, options) => {
-      const failed = await prismaClient.$transaction(async (tx) => {
+      const failed = await measureTransaction({ subsystem: "runs", operation: "run_fail" }, async (tx) => {
         await lockRunSettlementScope(tx, runId);
         const [lockedRun] = await tx.$queryRaw<Array<{
           status: ModelRunStatus;
@@ -1079,7 +1080,7 @@ export function createPrismaRunRepository(
           }, memorySourceHooks);
         }
         return true;
-      }).catch(retainRunPrismaCode);
+      }, (body) => prismaClient.$transaction(body)).catch(retainRunPrismaCode);
       if (failed) signalRunTerminal(runId);
       return failed;
     },

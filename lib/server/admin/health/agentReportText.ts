@@ -11,7 +11,10 @@ import {
   type HealthRunTotals,
   type HealthUserReport
 } from "./agentReport";
-import { duration, fit, incidentLines, minute, percent, plural, RANGE_COPY, second, wrap, wrapParts } from "./report";
+import {
+  duration, fit, incidentLines, minute, percent, plural, RANGE_COPY, second, SLOW_TRANSACTION_TITLE, slowTransactionLines, wrap,
+  wrapParts
+} from "./report";
 
 /**
  * Text of the agent reports: every section is printed, an empty one as
@@ -238,6 +241,11 @@ function incidentSection(report: HealthFullReport): string[] {
   ];
 }
 
+function slowTransactionSection(report: HealthFullReport): string[] {
+  const { rows, truncated } = report.slowTransactions;
+  return section(heading(SLOW_TRANSACTION_TITLE, rows.length, truncated), slowTransactionLines(rows));
+}
+
 function operationSection(report: HealthFullReport): string[] {
   const { operations } = report;
   return section(`Operations${operations.truncated ? " (some rows cut)" : ""}`, [
@@ -270,7 +278,7 @@ function operationSection(report: HealthFullReport): string[] {
  */
 const FULL_SECTIONS: ReadonlyArray<(report: HealthFullReport) => string[]> = [
   failedRunSection, (report) => problemSection("Answer problem reports", report.problemReports), runSection,
-  errorGroupSection, failureSection, timeoutSection, toolSection, httpSection, signInSection, incidentSection,
+  errorGroupSection, failureSection, timeoutSection, toolSection, httpSection, signInSection, slowTransactionSection, incidentSection,
   latencySection, operationSection
 ];
 
