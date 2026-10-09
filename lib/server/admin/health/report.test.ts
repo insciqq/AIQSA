@@ -151,6 +151,33 @@ describe("health report text", () => {
       "      code provider_rate_limited · answer · OpenAI · gpt-5 · HTTP 429\n");
   });
 
+  it("puts failed runs first in what needs attention, with codes, user counts and references to look up", async () => {
+    const report = await collectHealthReport(sources({
+      health: { read: vi.fn().mockResolvedValue(health), incidents: vi.fn().mockResolvedValue({ incidents: [], nextCursor: null }) },
+      findings: vi.fn().mockResolvedValue([
+        { code: "runs_failed", runs: 13, users: 5, otherRuns: 0, byCode: [
+          { failureCode: "provider_server_error", runs: 12, users: 4, references: ["1a2b3c4d", "5e6f7a8b"] },
+          { failureCode: "workspace_output_export_failed", runs: 1, users: 1, references: ["9c8d7e6f"] }
+        ] },
+        { code: "new_error", fingerprint: "0123456789ab", errorClass: "WorkspaceHandoffFailure",
+          site: "lib/server/runs/runExecution.ts:3832", failureCode: "workspace_output_export_failed", count: 1 }
+      ])
+    }), "24h");
+    expect(report.attention.map((item) => item.id)).toEqual(["runs_failed", "new_error:0123456789ab", "queue_stalled:chat_titles"]);
+    expect(JSON.stringify(report)).not.toMatch(/"user_?[iI]d"/u);
+    const text = formatHealthReport(report);
+    const lines = text.trimEnd().split("\n");
+    expect(lines.every((line) => line.length <= 100)).toBe(true);
+    expect(text).toContain("Needs attention (3)\n  WARN  Runs failed\n" +
+      "        13 runs of 5 users failed in the last 24 hours · provider_server_error 12 (4 users; ref\n" +
+      "        1a2b3c4d, 5e6f7a8b) · workspace_output_export_failed 1 (1 user; ref 9c8d7e6f) — look a\n" +
+      "        reference up in Health\n");
+    expect(text).toContain("        WorkspaceHandoffFailure at lib/server/runs/runExecution.ts:3832 · code\n" +
+      "        workspace_output_export_failed · 1 time since it first appeared in the last 24 hours\n");
+    // Without incidents of their own, the failed runs' references still get the lookup hint.
+    expect(lines.at(-1)).toBe("Look up a reference: ./aiqsa.sh health --run <reference>");
+  });
+
   it("names the class and code site of an incident that has them", async () => {
     const failure = incident(0, { event: "http.request_failed", code: null, stage: "next_request", connectionName: null,
       modelName: null, httpStatus: null, runId: null,

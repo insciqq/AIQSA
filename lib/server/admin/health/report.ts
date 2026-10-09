@@ -474,7 +474,8 @@ export function formatHealthReport(report: HealthReport): string {
       ...(report.hasTelemetry ? [] : ["No telemetry at all was recorded in this range."])
     ].join("\n") + "\n";
   }
-  const footer = report.incidents.some((incident) => incident.runId !== null)
+  const footer = report.incidents.some((incident) => incident.runId !== null) ||
+    report.attention.some((item) => item.code === "runs_failed")
     ? ["Look up a reference: ./aiqsa.sh health --run <reference>"] : [];
   return [header, ...sections.flatMap((lines) => ["", ...lines]), ...(footer.length > 0 ? ["", ...footer] : [])].join("\n") + "\n";
 }

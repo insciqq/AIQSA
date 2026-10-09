@@ -14,6 +14,7 @@ import {
   type HealthAgentReportSources
 } from "./agentReport";
 import { formatHealthFullReport, formatHealthUserReport } from "./agentReportText";
+import type { FailedRunLoad } from "./failedRuns";
 import { collectHealthReport, formatHealthReport, parseHealthReportArgs } from "./report";
 import type { AdminHealthRunRow } from "./runLookup";
 import { createAdminHealthService } from "./service";
@@ -161,6 +162,19 @@ const runRow: AdminHealthRunRow = {
   connectionId: "conn-openai", connectionName: "OpenAI", providerModelId: "model-gpt", modelDisplayName: "gpt-5", modelProviderId: "gpt-5"
 };
 
+const failedRunLoad: FailedRunLoad = {
+  runs: 3, users: 2, groupsTruncated: false,
+  groups: [
+    { code: "provider_server_error", runs: 2, users: 2, firstAt: IN_RANGE, lastAt: new Date(IN_RANGE.getTime() + 60_000), newest: [
+      { runId: RUN_B, userId: USER_B, startedAt: new Date(IN_RANGE.getTime() + 60_000) },
+      { runId: RUN_A, userId: USER_A, startedAt: IN_RANGE }
+    ] },
+    { code: "workspace_output_export_failed", runs: 1, users: 1, firstAt: IN_RANGE, lastAt: IN_RANGE, newest: [
+      { runId: RUN_A, userId: USER_A, startedAt: IN_RANGE }
+    ] }
+  ]
+};
+
 function sources(counters: readonly Counter[], incidents: readonly TelemetryIncident[], overrides: Partial<HealthAgentReportSources> = {}) {
   return {
     store: memoryStore(counters, incidents),
@@ -172,6 +186,7 @@ function sources(counters: readonly Counter[], incidents: readonly TelemetryInci
       return { rows, total: rows.length };
     }),
     failedRuns: vi.fn().mockResolvedValue([runRow]),
+    failedRunGroups: vi.fn().mockResolvedValue(failedRunLoad),
     userExists: vi.fn().mockResolvedValue(true),
     now: () => NOW,
     ...overrides
@@ -247,8 +262,8 @@ describe("full agent report", () => {
     const input = sources(fixtureCounters, fixtureIncidents);
     const full = await collectHealthFullReport(input, "7d");
     expect(Object.keys(full)).toEqual(["privacy", "kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry",
-      "previousPeriod", "runs", "latency", "failures", "timeouts", "errorGroups", "signIns", "toolCalls", "http", "problemReports",
-      "incidents", "operations"]);
+      "previousPeriod", "runs", "failedRuns", "latency", "failures", "timeouts", "errorGroups", "signIns", "toolCalls", "http",
+      "problemReports", "incidents", "operations"]);
     expect(full).toMatchObject({ privacy: "contains_user_ids_and_comments", kind: "full", version: 1, range: "7d",
       from: "2026-10-01T00:00:00.000Z", to: "2026-10-08T00:00:00.000Z", hasTelemetry: true,
       previousPeriod: { from: "2026-09-24T00:00:00.000Z", to: "2026-10-01T00:00:00.000Z" } });
@@ -258,6 +273,19 @@ describe("full agent report", () => {
       failedInRecovery: 1, cancelled: 1, unconfirmed: 1, failureRate: 3 / 8, cancelRate: 1 / 8, stopRequests: 2,
       previous: expect.objectContaining({ accepted: 6, completed: 6, failed: 0, failureRate: 0, stopRequests: 0 })
     });
+
+    expect(input.failedRunGroups).toHaveBeenCalledWith({ from: new Date("2026-10-01T00:00:00.000Z"),
+      to: new Date("2026-10-08T00:00:00.000Z"), perCode: 20, groupLimit: 200 });
+    expect(full.failedRuns).toEqual({ runs: 3, users: 2, truncated: false, rows: [
+      { failureCode: "provider_server_error", runs: 2, users: 2, firstAt: "2026-10-06T10:00:00.000Z", lastAt: "2026-10-06T10:01:00.000Z",
+        newest: [
+          { runId: RUN_B, runReference: "5e6f7a8b", userId: USER_B, startedAt: "2026-10-06T10:01:00.000Z" },
+          { runId: RUN_A, runReference: "1a2b3c4d", userId: USER_A, startedAt: "2026-10-06T10:00:00.000Z" }
+        ] },
+      { failureCode: "workspace_output_export_failed", runs: 1, users: 1, firstAt: "2026-10-06T10:00:00.000Z",
+        lastAt: "2026-10-06T10:00:00.000Z",
+        newest: [{ runId: RUN_A, runReference: "1a2b3c4d", userId: USER_A, startedAt: "2026-10-06T10:00:00.000Z" }] }
+    ] });
 
     expect(full.latency.runDuration).toMatchObject({ measured: 4, p50Ms: 2_500, p95Ms: 25_000, maxMs: 25_000 });
     expect(full.latency.runDuration.byProvider).toEqual([expect.objectContaining({
@@ -440,21 +468,34 @@ describe("full agent report text", () => {
     expect(lines[0]).toBe("PRIVATE: contains internal user ids and problem-report comments. Keep it on the host; do not paste it anywhere.");
     expect(lines[1]).toBe("AIQSA health · full report · last 7 days · 2026-10-01 00:00 to 2026-10-08 00:00 UTC");
     expect(lines.slice(2).every((line) => line.length <= 100)).toBe(true);
+    // Sections by user impact: failed runs and user reports first, then failures, then performance and operations.
     expect(lines.filter((line) => /^[A-Z]/u.test(line)).slice(3)).toEqual([
+      "Failed runs by code (3 runs, 2 users; no stops or refused input)",
+      "Answer problem reports (2, newest first)",
       "Runs (accepted runs; outcomes counted once per run from its terminal write)",
-      "Latency (percentiles are histogram bucket upper bounds)",
+      "Error groups (class · where in AIQSA; NEW = first seen in this range) (1)",
       "Failures: warn, error and fatal records by key (17)",
       "Timeouts: deadline aborts, transport timeouts, tool and run deadlines (4)",
-      "Error groups (class · where in AIQSA; NEW = first seen in this range) (1)",
-      "Sign-in outcomes by method, step and code (2)",
       "Tool calls by family, then calls that did not complete by code (2)",
       "HTTP: 4xx and 5xx responses and failed requests by route (3)",
-      "Answer problem reports (2, newest first)",
+      "Sign-in outcomes by method, step and code (2)",
       "Incidents (UTC, newest first; 3 listed)",
       "Incident keys (event · code · subsystem · connection · fingerprint), most incidents first (2)",
+      "Latency (percentiles are histogram bucket upper bounds)",
       "Operations",
       "Drill in: ./aiqsa.sh health --run <reference> · ./aiqsa.sh health --user <user id>"
     ]);
+    expect(text).toContain("Failed runs by code (3 runs, 2 users; no stops or refused input)\n" +
+      "  code provider_server_error · 2 runs · 2 users\n" +
+      "      first 2026-10-06 10:00 · last 2026-10-06 10:01\n" +
+      "      ref 5e6f7a8b user user_b 2026-10-06 10:01 · ref 1a2b3c4d user user_a 2026-10-06 10:00\n" +
+      "  code workspace_output_export_failed · 1 run · 1 user\n" +
+      "      first 2026-10-06 10:00 · last 2026-10-06 10:00\n" +
+      "      ref 1a2b3c4d user user_a 2026-10-06 10:00\n");
+    const empty = formatHealthFullReport(await collectHealthFullReport(sources(fixtureCounters, fixtureIncidents, {
+      failedRunGroups: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false })
+    }), "7d"));
+    expect(empty).toContain("Failed runs by code (0 runs, 0 users; no stops or refused input)\n  none\n");
     expect(text).toContain("  accepted 8: send 5 · regenerate 2 · project 1\n" +
       "  completed 4 · failed 3 (37.5%) · cancelled 1 (12.5%) · stop requests 2\n");
     expect(text).toContain("  run duration      4 measured · p50 ≤ 2.5 s · p95 ≤ 25.0 s · max 25.0 s\n");
