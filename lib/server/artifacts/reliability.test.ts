@@ -45,6 +45,7 @@ describe("artifact patch, privacy and bounded output", () => {
     let next: string | undefined; let restored = ""; let firstCursor: string | undefined;
     for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
       const page = artifactReadPage({ ...input, args: { artifact_id: "artifact", ...(next ? { cursor: next } : {}) } });
+      if (!("files" in page)) throw new Error("expected a file page");
       expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(ARTIFACT_LIMITS.maxReadBytes);
       expect(page.files[0]!.offset).toBe(restored.length);
       restored += page.files.map(file => file.text ?? "").join("");
