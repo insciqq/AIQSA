@@ -14,6 +14,7 @@ import {
   workspaceMessageManifestPath,
   workspaceToolIsAllowed
 } from "@/lib/domain/workspace";
+import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
 import { projectArchiveLimits, projectArchiveTarMaxBytes } from "./projectArchive";
@@ -167,29 +168,6 @@ function bytes(value: string | Uint8Array): Uint8Array {
 
 function hash(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function mimeTypeForPath(relativePath: string): string {
-  const extension = relativePath.toLowerCase().split(".").pop();
-  const known: Record<string, string> = {
-    csv: "text/csv",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    gz: "application/gzip",
-    html: "text/html",
-    jpeg: "image/jpeg",
-    jpg: "image/jpeg",
-    json: "application/json",
-    md: "text/markdown",
-    pdf: "application/pdf",
-    png: "image/png",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    tar: "application/x-tar",
-    tgz: "application/gzip",
-    txt: "text/plain",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    zip: "application/zip"
-  };
-  return extension ? known[extension] ?? "application/octet-stream" : "application/octet-stream";
 }
 
 function tarPathFields(path: string): Readonly<{ name: string; prefix: string }> {
@@ -947,7 +925,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
           if (content.byteLength) controller.enqueue(content);
           controller.close();
         } }, { highWaterMark: 0 }), byteSize: content.byteLength,
-          checksum: hash(content), mimeType: mimeTypeForPath(file.relativePath), relativePath, opaqueFileId: hash(bytes(relativePath)) };
+          checksum: hash(content), mimeType: mimeTypeForFileName(file.relativePath), relativePath, opaqueFileId: hash(bytes(relativePath)) };
       });
     });
     if (input.capture) {
@@ -1030,7 +1008,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
         } }, { highWaterMark: 0 }),
       byteSize: candidate.content.byteLength,
       checksum: hash(candidate.content),
-      mimeType: mimeTypeForPath(candidate.relativePath),
+      mimeType: mimeTypeForFileName(candidate.relativePath),
       opaqueFileId: createHash("sha256")
         .update(`${session.runtimeSandboxId}\0${input.modelRunId}\0${candidate.relativePath}`)
         .digest("hex"),

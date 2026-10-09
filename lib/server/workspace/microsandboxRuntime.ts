@@ -39,6 +39,7 @@ import {
   type WorkspaceMcpToolName,
   type WorkspaceStagedAttachmentEntry
 } from "@/lib/domain/workspace";
+import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { AgentExecutionOutput } from "../agents/executionOutput";
 import { CodexJsonlDecoder } from "../agents/codexProtocol";
@@ -288,29 +289,6 @@ function execSessionIdFrom(value: unknown): string | null {
   return null;
 }
 
-function mimeTypeForPath(relativePath: string): string {
-  const extension = relativePath.toLowerCase().split(".").pop();
-  const known: Record<string, string> = {
-    csv: "text/csv",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    gz: "application/gzip",
-    html: "text/html",
-    jpeg: "image/jpeg",
-    jpg: "image/jpeg",
-    json: "application/json",
-    md: "text/markdown",
-    pdf: "application/pdf",
-    png: "image/png",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    tar: "application/x-tar",
-    tgz: "application/gzip",
-    txt: "text/plain",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    zip: "application/zip"
-  };
-  return extension ? known[extension] ?? "application/octet-stream" : "application/octet-stream";
-}
-
 function readStreamBody(
   open: () => Promise<FsReadStream>,
   onFinalize?: () => Promise<void>
@@ -426,7 +404,7 @@ async function openSelectedFiles(sandbox: Sandbox, selection: WorkspaceFileSelec
       const source = selection.files[index]!;
       const relativePath = `${source.root}/${source.relativePath}`;
       return { byteSize: file.byteSize as number, checksum: file.checksum as string,
-        mimeType: mimeTypeForPath(source.relativePath), relativePath,
+        mimeType: mimeTypeForFileName(source.relativePath), relativePath,
         opaqueFileId: createHash("sha256").update(relativePath).digest("hex"),
         body: readStreamBody(() => sandbox.fs().readStream(`/proc/${pid}/fd/${file.fd}`)) };
     });
@@ -1714,7 +1692,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         byteSize: file.byteSize,
         checksum: await hashGuestFile(session.sandbox, file.path, file.byteSize, input.signal),
         body: readStreamBody(() => fs.readStream(file.path)),
-        mimeType: mimeTypeForPath(file.relativePath),
+        mimeType: mimeTypeForFileName(file.relativePath),
         opaqueFileId: createHash("sha256")
           .update(`${session.runtimeSandboxId}\0${input.modelRunId}\0${file.relativePath}`)
           .digest("hex"),

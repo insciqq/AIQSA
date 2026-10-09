@@ -1,4 +1,5 @@
 import type { Buffer } from "node:buffer";
+import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import { ARTIFACT_LIMITS, isArtifactTextMime, isReservedArtifactPath, normalizedArtifactPath, type NormalizedArtifactFile } from "@/lib/contracts/artifacts";
 import { ArtifactToolError } from "./errors";
 import { artifactTextFromBytes } from "./referencedFiles";
@@ -7,28 +8,6 @@ import { ARTIFACT_ZIP_LIMITS, ARTIFACT_ZIP_PATH_LIMITS, ArtifactZipError, readZi
 const MIB = 1024 * 1024;
 /** Skipped files named in a report; `skippedEntries` counts every one. */
 export const ARTIFACT_UNPACK_SKIPPED_FILES = 20;
-
-// Types follow the extension; content is never sniffed. Text types are checked
-// as UTF-8 and stay editable; every other type is opaque bytes.
-const EXTENSION_TYPES = new Map<string, string>([
-  ["html", "text/html"], ["htm", "text/html"], ["css", "text/css"],
-  ["js", "text/javascript"], ["mjs", "text/javascript"], ["cjs", "text/javascript"],
-  ["json", "application/json"], ["txt", "text/plain"], ["md", "text/markdown"], ["csv", "text/csv"],
-  ["svg", "image/svg+xml"], ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"], ["webp", "image/webp"],
-  ["gif", "image/gif"], ["ico", "image/x-icon"], ["avif", "image/avif"], ["bmp", "image/bmp"],
-  ["woff", "font/woff"], ["woff2", "font/woff2"], ["ttf", "font/ttf"], ["otf", "font/otf"],
-  ["mp3", "audio/mpeg"], ["wav", "audio/wav"], ["ogg", "audio/ogg"], ["m4a", "audio/mp4"],
-  ["mp4", "video/mp4"], ["webm", "video/webm"], ["pdf", "application/pdf"],
-  // Stored as bytes: the viewer's policy does not run WebAssembly.
-  ["wasm", "application/wasm"], ["xml", "application/xml"]
-]);
-
-/** The type an unpacked file gets from its extension; an unknown one is opaque bytes. */
-export function artifactMimeForPath(path: string): string {
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  const dot = name.lastIndexOf(".");
-  return (dot > 0 ? EXTENSION_TYPES.get(name.slice(dot + 1).toLowerCase()) : undefined) ?? "application/octet-stream";
-}
 
 const REZIP = "Create the archive again in the Workspace (zip -r site.zip . inside the site folder) and reference the new file.";
 const ZIP_HINTS: ReadonlyMap<ArtifactZipErrorCode, string> = new Map<ArtifactZipErrorCode, string>([
@@ -99,7 +78,9 @@ export async function unpackArtifactArchive(archive: Uint8Array, label: string, 
   const retained: Array<{ archivePath: string; path: string; bytes: Buffer; mimeType: string }> = [];
   for (const entry of read.entries) {
     const archivePath = read.strippedRoot === null ? entry.path : `${read.strippedRoot}/${entry.path}`;
-    const mimeType = artifactMimeForPath(entry.path);
+    // Types follow the extension; content is never sniffed. Text types are checked
+    // as UTF-8 and stay editable; every other type is opaque bytes.
+    const mimeType = mimeTypeForFileName(entry.path);
     // Hidden files and folders (.htaccess, .git, .nojekyll) are tooling metadata
     // no page shows; an empty file can be kept only as text.
     if (entry.path.split("/").some(part => part.startsWith(".")) || !entry.bytes.byteLength && !isArtifactTextMime(mimeType)) {
