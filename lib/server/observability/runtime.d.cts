@@ -4,9 +4,15 @@ export const MAX_RECORD_BYTES: number;
 export const MAX_OUTPUT_BYTES: number;
 export function createTraceId(): string;
 export function getContext(): ObservabilityContext | undefined;
+/** Derives a frame from the current one. `user_id` comes only from a server-owned
+ * run or job row and wins over the user the root's request authenticated as. */
 export function runWithContext<T>(fields: Partial<ObservabilityContext>, fn: () => T): T;
+/** A new root frame: its own trace and attribution slot, nothing of the caller's. */
 export function runInBackground<T>(fn: () => T): T;
 export function bindContext<T extends (...args: never[]) => unknown>(fn: T): T;
+/** The current root's request authenticated as this server-resolved user; the
+ * first one wins and its records carry the id from now on. */
+export function attributeRequestUser(userId: string): void;
 export function registerRouteTemplates(paths: Iterable<string>): void;
 export function setProcessRole(role: ProcessRole): void;
 export function logEvent<E extends keyof EventFields>(event: E, fields: EventFields[E]): void;

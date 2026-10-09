@@ -1,8 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { serializeEvent } from "../observability/runtime.cjs";
+import type { EventFields } from "../observability/events";
+import { attributeRequestUser, runInBackground, runWithContext, serializeEvent } from "../observability/runtime.cjs";
 import {
-  createTelemetryAggregator, DEFAULT_TELEMETRY_AGGREGATOR_LIMITS, TELEMETRY_DURATION_BUCKETS,
+  createTelemetryAggregator, DEFAULT_TELEMETRY_AGGREGATOR_LIMITS, TELEMETRY_DIMENSIONS, TELEMETRY_DURATION_BUCKETS,
   telemetryDurationBucket, type TelemetryAggregatorLimits
 } from "./aggregator";
 
@@ -80,6 +81,77 @@ describe("telemetry aggregation", () => {
       details: { method: "GET", status: 502, duration_ms: 12, outcome: "completed" } })]);
   });
 
+  it("keeps a time-to-first-output histogram per provider family, model and what came first", () => {
+    const aggregator = createTelemetryAggregator();
+    const firstOutput = (runId: string, durationMs: number, after: "dispatch" | "tools", providerModelId = "model-1") =>
+      aggregator.observe(Object.freeze(JSON.parse(serializeEvent("run_execution", { run_id: runId, stage: "first_output",
+        outcome: "completed", duration_ms: durationMs, after, providerFamily: "openai", connectionId: "connection-1",
+        providerModelId })!)));
+    firstOutput("run-1", 800, "dispatch");
+    firstOutput("run-2", 2_000, "dispatch");
+    firstOutput("run-3", 40_000, "tools");
+    firstOutput("run-4", 90, "dispatch", "model-2");
+    const { counters, incidents } = aggregator.drain();
+    expect(incidents).toEqual([]);
+    const dimensions = { after: "dispatch", connectionId: "connection-1", outcome: "completed", providerFamily: "openai",
+      providerModelId: "model-1", stage: "first_output" };
+    expect(counters).toHaveLength(3);
+    expect(counters).toContainEqual(expect.objectContaining({ event: "run_execution", level: "info", dimensions,
+      count: 2, durationCount: 2, durationSumMs: 2_800, durationMaxMs: 2_000, durationBuckets: buckets({ 3: 1, 4: 1 }) }));
+    expect(counters).toContainEqual(expect.objectContaining({ dimensions: { ...dimensions, after: "tools" },
+      count: 1, durationBuckets: buckets({ 8: 1 }) }));
+    expect(counters).toContainEqual(expect.objectContaining({ dimensions: { ...dimensions, providerModelId: "model-2" },
+      count: 1, durationBuckets: buckets({ 0: 1 }) }));
+    expect(JSON.stringify(counters)).not.toContain("run-");
+  });
+
+  it("counts terminal tool calls by family, outcome and code, never by call identity", () => {
+    const aggregator = createTelemetryAggregator();
+    const observe = (fields: EventFields["tool_call"], toolCallId: string) =>
+      aggregator.observe(Object.freeze({ ...JSON.parse(serializeEvent("tool_call", fields)!), tool_call_id: toolCallId }));
+    observe({ tool_kind: "fetch_url", outcome: "completed", duration_ms: 80 }, "call-1");
+    observe({ tool_kind: "fetch_url", outcome: "completed", duration_ms: 90 }, "call-2");
+    observe({ tool_kind: "fetch_url", outcome: "failed", code: "fetch_timeout", duration_ms: 15_000 }, "call-3");
+    observe({ tool_kind: "fetch_url", outcome: "failed", code: "fetch_timeout", duration_ms: 15_000 }, "call-4");
+    observe({ tool_kind: "artifact", outcome: "failed", code: "artifact_tool_unavailable" }, "call-5");
+    observe({ tool_kind: "fetch_url", outcome: "timeout", code: "tool_call_timeout" }, "call-6");
+    const { counters } = aggregator.drain();
+    const toolCalls = counters.filter((item) => item.event === "tool_call").map(({ count, dimensions, level }) => ({ count, dimensions, level }));
+    expect(toolCalls).toHaveLength(4);
+    expect(toolCalls).toEqual(expect.arrayContaining([
+      { count: 2, level: "info", dimensions: { outcome: "completed", tool_kind: "fetch_url" } },
+      { count: 2, level: "warn", dimensions: { code: "fetch_timeout", outcome: "failed", tool_kind: "fetch_url" } },
+      { count: 1, level: "warn", dimensions: { code: "artifact_tool_unavailable", outcome: "failed", tool_kind: "artifact" } },
+      { count: 1, level: "warn", dimensions: { code: "tool_call_timeout", outcome: "timeout", tool_kind: "fetch_url" } }
+    ]));
+    expect(JSON.stringify(counters)).not.toContain("call-");
+  });
+
+  it("counts sign-in attempts by method, step, outcome and code, with incidents only for errors", () => {
+    const aggregator = createTelemetryAggregator();
+    const observe = (fields: EventFields["sign_in"]) =>
+      aggregator.observe(Object.freeze(JSON.parse(serializeEvent("sign_in", fields)!)));
+    for (let index = 0; index < 3; index += 1) {
+      observe({ sign_in_method: "saml", step: "callback", outcome: "failed", code: "signature_invalid", duration_ms: 40 });
+    }
+    observe({ sign_in_method: "saml", step: "callback", outcome: "failed", code: "browser_mismatch", duration_ms: 5 });
+    observe({ sign_in_method: "password", step: "credentials", outcome: "failed", code: "invalid_credentials" });
+    observe({ sign_in_method: "password", step: "credentials", outcome: "succeeded", code: "accepted" });
+
+    const { counters, incidents } = aggregator.drain();
+    const rows = counters.map((counter) => ({ count: counter.count, dimensions: counter.dimensions, level: counter.level }));
+    expect(rows).toHaveLength(4);
+    expect(rows).toEqual(expect.arrayContaining([
+      { count: 3, level: "error", dimensions: { code: "signature_invalid", outcome: "failed", sign_in_method: "saml", step: "callback" } },
+      { count: 1, level: "warn", dimensions: { code: "browser_mismatch", outcome: "failed", sign_in_method: "saml", step: "callback" } },
+      { count: 1, level: "warn", dimensions: { code: "invalid_credentials", outcome: "failed", sign_in_method: "password", step: "credentials" } },
+      { count: 1, level: "info", dimensions: { code: "accepted", outcome: "succeeded", sign_in_method: "password", step: "credentials" } }
+    ]));
+    expect(incidents).toHaveLength(3);
+    expect(incidents.every((incident) => incident.code === "signature_invalid" &&
+      incident.details.sign_in_method === "saml" && incident.details.step === "callback")).toBe(true);
+  });
+
   it("keeps rate-limited error incidents with the record's remaining fields", () => {
     const aggregator = createTelemetryAggregator(limits({ incidentsPerMinute: 3, maxIncidents: 6 }));
     for (let index = 0; index < 5; index += 1) {
@@ -99,12 +171,35 @@ describe("telemetry aggregation", () => {
     expect(incidents[0]).toEqual({
       occurredAt: new Date(HOUR), role: "app", event: "provider_operation", level: "error", appVersion: "0.3.7",
       instanceId: INSTANCE, code: "provider_http_dns_failed", subsystem: null, connectionId: "connection-1",
-      runId: "run-1", traceId: "b".repeat(32),
+      runId: "run-1", traceId: "b".repeat(32), userId: null,
       details: { outcome: "failed", stage: "answer", providerFamily: "openai", providerModelId: "model-1",
         httpStatus: 401, job_id: "job-1" }
     });
     // Suppressed and unadmitted incidents remain in the counters.
     expect(counters.filter((item) => item.level !== "warn").reduce((sum, item) => sum + item.count, 0)).toBe(9);
+  });
+
+  it("keeps the user id in its incident column only and never counts by user", () => {
+    expect(TELEMETRY_DIMENSIONS).not.toContain("user_id");
+    const aggregator = createTelemetryAggregator();
+    const failure = (userId: string | null, runId: string) => runInBackground(() => {
+      if (userId !== null) attributeRequestUser(userId);
+      return runWithContext({ run_id: runId }, () => Object.freeze(JSON.parse(serializeEvent("run_execution", {
+        run_id: runId, stage: "execution", outcome: "failed", code: "provider_stream_failed", providerFamily: "openai"
+      })!) as Record<string, unknown>));
+    });
+    const records = [failure("user-a", "run-1"), failure("user-b", "run-2"), failure("user-a", "run-3"), failure(null, "run-4")];
+    expect(records.map((item) => item.user_id)).toEqual(["user-a", "user-b", "user-a", undefined]);
+    for (const item of records) aggregator.observe(item);
+
+    const { counters, incidents } = aggregator.drain();
+    expect(counters).toEqual([expect.objectContaining({ event: "run_execution", level: "error", count: 4,
+      dimensions: { code: "provider_stream_failed", outcome: "failed", providerFamily: "openai", stage: "execution" } })]);
+    expect(JSON.stringify(counters)).not.toMatch(/user-|run-\d/u);
+    expect(incidents.map((incident) => [incident.runId, incident.userId])).toEqual([
+      ["run-1", "user-a"], ["run-2", "user-b"], ["run-3", "user-a"], ["run-4", null]
+    ]);
+    for (const incident of incidents) expect(incident.details).not.toHaveProperty("user_id");
   });
 
   it("folds keys beyond the bound into a per-event overflow key and counts what still does not fit", () => {

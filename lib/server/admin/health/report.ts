@@ -53,7 +53,7 @@ export type HealthReport = {
   summary: AdminHealthSummary;
   /** Error and fatal records over the range per chart category. */
   errorsByCategory: Record<AdminHealthCategory, number>;
-  /** Failures by fingerprint: class and application code site, new ones first. */
+  /** Failures by fingerprint: class, application code site and at least how many users and runs they hit, new ones first. */
   errorGroups: AdminHealthErrorGroup[];
   errorGroupsTruncated: boolean;
   /** Provider rows with at least one failure, most failures first. */
@@ -163,9 +163,19 @@ export async function collectHealthRunReport(sources: HealthRunReportSources, re
 
 // --- Arguments
 
-export type HealthReportArgs = Readonly<{ help: boolean; json: boolean; range: AdminHealthRange; run: string | null }>;
+/**
+ * `full` and `user` select the agent reports (`agentReport.ts`); each is
+ * present only when given, so the default report's arguments stay as they were.
+ */
+export type HealthReportArgs = Readonly<{
+  help: boolean; json: boolean; range: AdminHealthRange; run: string | null; full?: true; user?: string;
+}>;
 
-export const HEALTH_REPORT_USAGE = `Usage: health-report [--since ${adminHealthRanges.join("|")}] [--json] [--run <reference>]`;
+export const HEALTH_REPORT_USAGE =
+  `Usage: health-report [--since ${adminHealthRanges.join("|")}] [--json] [--run <reference> | --full | --user <id>]`;
+
+/** An internal user id as the server writes it (telemetry `user_id`). */
+const USER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 
 /** Strict flags: an unknown, repeated or malformed one is a usage error, never ignored. */
 export function parseHealthReportArgs(argv: readonly string[]): HealthReportArgs | Readonly<{ error: string }> {
@@ -173,6 +183,8 @@ export function parseHealthReportArgs(argv: readonly string[]): HealthReportArgs
   let json = false;
   let range: AdminHealthRange | null = null;
   let run: string | null = null;
+  let full = false;
+  let user: string | null = null;
   const queue = [...argv];
   while (queue.length > 0) {
     const argument = queue.shift()!;
@@ -204,36 +216,55 @@ export function parseHealthReportArgs(argv: readonly string[]): HealthReportArgs
         run = normalized;
         break;
       }
+      case "--full":
+        if (inline !== null) return { error: "--full takes no value." };
+        if (full) return { error: "--full was given twice." };
+        full = true;
+        break;
+      case "--user": {
+        const id = value();
+        if (user !== null) return { error: "--user was given twice." };
+        if (id === null || !USER_ID_PATTERN.test(id)) return { error: "--user needs an internal user id (letters, digits, _ and -)." };
+        user = id;
+        break;
+      }
       default:
         return { error: `Unknown argument: ${argument}` };
     }
   }
   if (run !== null && range !== null) return { error: "--run and --since are mutually exclusive." };
-  return { help, json, range: range ?? defaultAdminHealthRange, run };
+  if (run !== null && full) return { error: "--run and --full are mutually exclusive." };
+  if (run !== null && user !== null) return { error: "--run and --user are mutually exclusive." };
+  if (full && user !== null) return { error: "--full and --user are mutually exclusive." };
+  return {
+    help, json, range: range ?? defaultAdminHealthRange, run,
+    ...(full ? { full: true as const } : {}),
+    ...(user !== null ? { user } : {})
+  };
 }
 
 // --- Text
 
-const RANGE_COPY: Readonly<Record<AdminHealthRange, string>> = { "24h": "24 hours", "7d": "7 days", "30d": "30 days" };
+export const RANGE_COPY: Readonly<Record<AdminHealthRange, string>> = { "24h": "24 hours", "7d": "7 days", "14d": "14 days", "30d": "30 days" };
 const SEVERITY_TAG = { bad: "BAD ", neutral: "INFO", warn: "WARN" } as const;
 
-function minute(iso: string): string {
+export function minute(iso: string): string {
   return iso.slice(0, 16).replace("T", " ");
 }
 
-function second(iso: string): string {
+export function second(iso: string): string {
   return iso.slice(0, 19).replace("T", " ");
 }
 
-function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+export function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
-function percent(value: number | null): string {
+export function percent(value: number | null): string {
   return value === null ? "-" : `${(value * 100).toFixed(1)}%`;
 }
 
-function fit(value: string, width: number): string {
+export function fit(value: string, width: number): string {
   return value.length > width ? `${value.slice(0, width - 1)}…` : value.padEnd(width);
 }
 
@@ -242,7 +273,7 @@ function fit(value: string, width: number): string {
  * Continuation lines take the first line's indent width; a part longer than a
  * line stays whole.
  */
-function wrapParts(parts: readonly string[], first: string, separator: string): string[] {
+export function wrapParts(parts: readonly string[], first: string, separator: string): string[] {
   const indent = " ".repeat(first.length);
   const lines: string[] = [];
   let line = first;
@@ -260,11 +291,11 @@ function wrapParts(parts: readonly string[], first: string, separator: string): 
   return lines;
 }
 
-function wrap(text: string, indent: string): string[] {
+export function wrap(text: string, indent: string): string[] {
   return wrapParts(text.split(/\s+/u).filter(Boolean), indent, " ");
 }
 
-function duration(ms: number | null): string {
+export function duration(ms: number | null): string {
   if (ms === null) return "still running";
   if (ms < 1_000) return `${ms} ms`;
   if (ms < 60_000) return `${(ms / 1_000).toFixed(1)} s`;
@@ -284,7 +315,7 @@ function mainCause(row: AdminHealthProviderRow): string {
   return best;
 }
 
-function incidentLines(incident: AdminHealthIncident): string[] {
+export function incidentLines(incident: AdminHealthIncident): string[] {
   const head = [second(incident.occurredAt), incident.level, incident.role, incident.event];
   if (incident.runId !== null) head.push(`ref ${runReferenceLabel(incident.runId)}`);
   const where = [incident.subsystem, incident.stage].filter((part): part is string => part !== null).join("/");
@@ -339,6 +370,14 @@ function errorSection(report: HealthReport): string[] {
   ];
 }
 
+/** At least how many users and runs a failure hit, from its sampled incidents: counts, never ids. */
+function reachParts(group: AdminHealthErrorGroup): string[] {
+  return [
+    group.usersAtLeast > 0 ? `at least ${plural(group.usersAtLeast, "user")}` : null,
+    group.runsAtLeast > 0 ? `at least ${plural(group.runsAtLeast, "run")}` : null
+  ].filter((part): part is string => part !== null);
+}
+
 function failureSection(report: HealthReport): string[] {
   if (report.errorGroups.length === 0) return [];
   const shown = report.errorGroups.slice(0, TEXT_ERROR_GROUPS);
@@ -347,8 +386,8 @@ function failureSection(report: HealthReport): string[] {
     "Failures by location (class · where in AIQSA)",
     ...shown.flatMap((group) => [
       `  ${group.isNew ? "NEW " : "    "}  ${group.errorClass} · ${group.site ?? "outside application code"}`,
-      ...wrapParts([plural(group.count, "time"), ...group.events, ...group.codes, ...group.roles, `last ${minute(group.lastSeenAt)}`],
-        "        ", " · ")
+      ...wrapParts([plural(group.count, "time"), ...reachParts(group), ...group.events, ...group.codes, ...group.roles,
+        `last ${minute(group.lastSeenAt)}`], "        ", " · ")
     ]),
     ...(hidden > 0 || report.errorGroupsTruncated ? [`  and more (--json lists ${report.errorGroupsTruncated ? "the most frequent" : "every"} group)`] : [])
   ];

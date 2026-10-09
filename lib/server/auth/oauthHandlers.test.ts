@@ -16,6 +16,7 @@ import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { createAuthSession, resolveAuthToken } from "./requestAuth";
 import { readCookie, SESSION_COOKIE_NAME } from "./session";
 import { createMemoryAuthSessionStore, createTestUser } from "@/tests/support/auth";
+import { captureSignInRecords, captureSignIns } from "@/tests/support/signInRecords";
 
 const config = getAuthConfig({
   AIQSA_APP_BASE_URL: "https://aiqsa.example",
@@ -1035,5 +1036,94 @@ describe("OAuth handlers with admin-panel configuration", () => {
       state: failing.location.searchParams.get("state")!
     }), { params: { provider: "google" } });
     expect(recordOutcome).toHaveBeenLastCalledWith("exchange_failed");
+  });
+});
+
+describe("OAuth and OIDC sign-in telemetry", () => {
+  const profile = { displayName: "OAuth User", email: "private.person@example.com", providerAccountId: "private-subject" };
+  const callback = (input: { exchange?: typeof exchangeOAuthCode; status?: Parameters<typeof repository>[0] } = {}) =>
+    createOAuthCallbackHandler({
+      exchangeCode: input.exchange ?? (async () => profile),
+      getConfig: () => config,
+      now: () => now,
+      repository: repository(input.status).repository,
+      sessions: createMemoryAuthSessionStore({ user: createTestUser({ id: "oauth-user" }) })
+    });
+  const finish = async (handler: ReturnType<typeof callback>, query: { code?: string; error?: string; state?: string }) => {
+    const flow = await startFlow();
+    return handler(callbackRequest({
+      ...query,
+      flowToken: flow.flowToken,
+      provider: "google",
+      state: query.state ?? flow.location.searchParams.get("state")!
+    }), { params: { provider: "google" } });
+  };
+
+  it("records one callback outcome per Google sign-in and nothing for the redirect to the provider", async () => {
+    const records = await captureSignInRecords(async () => {
+      await startFlow();
+      await finish(callback(), { code: "authorization-code" });
+      await finish(callback(), { error: "access_denied" });
+      await finish(callback({ status: "not_allowed" }), { code: "authorization-code" });
+      await finish(callback(), { code: "authorization-code", state: "tampered-state" });
+      await finish(callback({ exchange: async () => { throw new TypeError("invalid_client: private.person@example.com"); } }), {
+        code: "authorization-code"
+      });
+    });
+
+    expect(records.map(({ code, level, outcome, sign_in_method, step }) => ({ code, level, outcome, sign_in_method, step }))).toEqual([
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "oauth", step: "callback" },
+      { code: "cancelled", level: "warn", outcome: "failed", sign_in_method: "oauth", step: "callback" },
+      { code: "not_allowed", level: "warn", outcome: "refused", sign_in_method: "oauth", step: "callback" },
+      { code: "state_mismatch", level: "warn", outcome: "failed", sign_in_method: "oauth", step: "callback" },
+      { code: "exchange_failed", level: "error", outcome: "failed", sign_in_method: "oauth", step: "callback" }
+    ]);
+    expect(records[4]).toMatchObject({ error_class: "TypeError" });
+    expect(JSON.stringify(records)).not.toMatch(/private|example\.com|authorization-code|google|aiqsa\.example/u);
+  });
+
+  it("records OIDC as its own method, at the start when the IdP cannot be reached", async () => {
+    let startFailure: string | null = null;
+    let signInFailure: string | null = null;
+    const resolveProvider = async () => ({
+      flow: {
+        authorizationUrl: async ({ state }: { state: string }) =>
+          startFailure ? { code: startFailure } : { url: new URL(`https://idp.example/authorize?state=${state}`) },
+        signIn: async () => signInFailure
+          ? { code: signInFailure, status: "failed" as const }
+          : { cookie: "aiqsa_session=oidc", status: "active" as const }
+      }
+    });
+    let token = 0;
+    const start = createOAuthStartHandler({ getConfig: () => config, now: () => now, randomToken: () => `token-${++token}`, resolveProvider });
+    const finishOidc = createOAuthCallbackHandler({
+      getConfig: () => config,
+      now: () => now,
+      repository: repository().repository,
+      resolveProvider,
+      sessions: createMemoryAuthSessionStore()
+    });
+    const signIn = async () => {
+      const started = await start(new Request("https://aiqsa.example/api/auth/oauth/oidc"), { params: { provider: "oidc" } });
+      const state = new URL(started.headers.get("location")!).searchParams.get("state")!;
+      const flowToken = readCookie(started.headers.get("set-cookie"), OAUTH_FLOW_COOKIE_NAME)!;
+      return finishOidc(new Request(`https://aiqsa.example/api/auth/oauth/oidc/callback?state=${state}&code=idp-code`, {
+        headers: { cookie: `${OAUTH_FLOW_COOKIE_NAME}=${flowToken}`, "x-forwarded-for": `2001:db8:5${token}::1` }
+      }), { params: { provider: "oidc" } });
+    };
+
+    const signIns = await captureSignIns(async () => {
+      expect((await signIn()).headers.get("location")).toBe("https://aiqsa.example/");
+      signInFailure = "token_exchange_failed";
+      await signIn();
+      startFailure = "discovery_unreachable";
+      await start(new Request("https://aiqsa.example/api/auth/oauth/oidc"), { params: { provider: "oidc" } });
+    });
+
+    expect(signIns).toEqual([
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "oidc", step: "callback" },
+      { code: "token_exchange_failed", level: "error", outcome: "failed", sign_in_method: "oidc", step: "callback" },
+      { code: "discovery_unreachable", level: "error", outcome: "failed", sign_in_method: "oidc", step: "start" }
+    ]);
   });
 });

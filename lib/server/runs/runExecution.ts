@@ -287,6 +287,7 @@ import {
 } from "../workspace/toolCatalog";
 
 import { activeRunControllers, runSettlements } from "./activeRunControllerRegistry";
+import { toolCallKind, toolExecutionKind, type ToolCallRoutes } from "./toolCallKind";
 export { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
 
 export type RunExecutionRepository = Pick<
@@ -352,6 +353,8 @@ export type RunExecutionInput = Readonly<{
   /** Names a personal chat after its first answer; absent on recovery paths. */
   chatTitleGenerator?: ChatTitleGenerator;
   created: Readonly<{
+    /** When admission committed; without it the run records no time to first output. */
+    acceptedAt?: Date;
     assistantMessageId: string;
     runId: string;
     userMessageId: string;
@@ -701,7 +704,8 @@ async function persistPlanSearchExecution(input: Readonly<{
 }
 
 export function createRunExecutionResponse(input: RunExecutionInput): Response {
-  return runWithContext({ run_id: input.created.runId }, () => createBoundRunExecutionResponse(input));
+  // The run's own user (a Project run's initiator) names its records, whoever's request carries it.
+  return runWithContext({ run_id: input.created.runId, user_id: input.userId }, () => createBoundRunExecutionResponse(input));
 }
 
 function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
@@ -742,6 +746,21 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const executionStartedAt = Date.now();
       let executionStage: "dispatch" | "execution" | "completion" = "dispatch";
       let answerPublished = false;
+      // Time to first output: one record at the first answer text this run
+      // publishes, measured from admission, so queueing, preparation and any
+      // tool rounds before the text are included. Later text records nothing.
+      const acceptedAt = input.created.acceptedAt;
+      let firstOutputPending = true;
+      let toolRoundsBeforeOutput = false;
+      const recordFirstOutput = (text: string) => {
+        if (!firstOutputPending || acceptedAt === undefined || text.length === 0) return;
+        firstOutputPending = false;
+        const answer = input.prepared.providerAdmissionPlan?.answer?.snapshot;
+        logEvent("run_execution", { run_id: runId, stage: "first_output", outcome: "completed",
+          duration_ms: Math.max(0, Date.now() - acceptedAt.getTime()), after: toolRoundsBeforeOutput ? "tools" : "dispatch",
+          connectionId: answer?.connectionId, providerModelId: answer?.providerModelId,
+          providerFamily: answer?.providerFamily, adapterKind: answer?.model?.adapterKind });
+      };
       const compactionPublisher = createContextCompactionPublisher(async status => {
         const event = contextCompactionArtifact(status);
         await input.repository.appendRunOutputEvent(runId, event);
@@ -1058,6 +1077,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
           await tokenBuffer.push(effectiveEvent.data.delta).catch(error => { throw new RunSettlementError("publication", error); });
           emitTransient(controller, encoder, effectiveEvent);
+          recordFirstOutput(effectiveEvent.data.delta);
           return;
         }
 
@@ -2401,6 +2421,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             );
           }
         };
+        const toolCallRoutes: ToolCallRoutes = { search: isSearchCall, knowledge: isKnowledgeCall, workspace: isWorkspaceCall,
+          mcp: (name) => isMcpDiscoveryCall(name) || resolveMcpRunTool(activeMcpSnapshot, name) !== null };
         const outcome = await continueProviderToolLoop({
           // Every checkpoint of a v1 non-Agent run carries the rebuild record.
           allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
@@ -2425,15 +2447,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               return true;
             }
           } } : {}),
+          toolCallKind: (call) => toolCallKind(normalizedRequest, call.name, toolCallRoutes),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
             if (!persisted) return undefined;
             return {
               tool_call_id: persisted.id, execution_index: persisted.ordinal,
-              tool_kind: searchPlanRouter?.accepts(call.name) ? "search"
-                : isKnowledgeCall(call.name) ? "knowledge"
-                : isWorkspaceCall(call.name) ? "workspace"
-                : isMcpDiscoveryCall(call.name) || resolveMcpRunTool(activeMcpSnapshot, call.name) ? "mcp" : undefined
+              tool_kind: toolExecutionKind(call.name, toolCallRoutes)
             };
           },
           adapter: egressAdapter,
@@ -3326,6 +3346,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             ? normalizeWorkspaceProviderToolName
             : undefined,
           persistToolBatch: async ({ calls, continuation, round }) => {
+            toolRoundsBeforeOutput = true;
             skillResultBudget.begin({ calls, bridge: toolBridge, observations: runObservations(), request: {
               ...sessionRequest, providerToolMessages: [...continuation.providerToolMessages]
             } });
@@ -3655,6 +3676,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           if (!input.agentResponses || !input.workspace?.executeAgent) {
             throw new RunPipelineError("agent_unavailable", "Agent execution is unavailable.");
           }
+          // An Agent answer is published only after its Codex exec, a Workspace tool call.
+          toolRoundsBeforeOutput = true;
           providerResult = await executeCodexTurn({
             request: providerRequest, runId, userId: input.userId, signal,
             transport: input.agentResponses, workspace: input.workspace,
@@ -3779,6 +3802,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             answerPublished = true;
             if (knowledgeCitationAnswer && answer.finalText) {
               emitTransient(controller, encoder, { data: { delta: answer.finalText }, type: "token" });
+              recordFirstOutput(answer.finalText);
             }
             emitTransient(controller, encoder, contextStatusEvent);
             emitTransient(controller, encoder, { data: answer.usage, type: "usage" });
@@ -3817,8 +3841,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;
         }
+        // The admitted answer identity, as on failure: run durations per provider.
+        const completedAnswer = input.prepared.providerAdmissionPlan?.answer?.snapshot;
         logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "completed",
-          duration_ms: Math.max(0, Date.now() - executionStartedAt) });
+          duration_ms: Math.max(0, Date.now() - executionStartedAt),
+          connectionId: completedAnswer?.connectionId, providerModelId: completedAnswer?.providerModelId,
+          providerFamily: completedAnswer?.providerFamily, adapterKind: completedAnswer?.model?.adapterKind });
 
         if (!answerPublished) emitTransient(controller, encoder, contextStatusEvent);
 
@@ -3827,6 +3855,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             data: { delta: finalization.finalText },
             type: "token"
           });
+          recordFirstOutput(finalization.finalText);
         }
 
         if (!answerPublished) emitTransient(controller, encoder, {

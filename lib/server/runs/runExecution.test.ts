@@ -60,7 +60,7 @@ import { markProviderStreamDrop } from "../providers/streamDrop";
 import { ProviderSearchExecutionError } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
-import { runWithContext } from "../observability";
+import { attributeRequestUser, runInBackground, runWithContext } from "../observability";
 import { rememberDatabaseFailure } from "../observability/databaseFailure";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { isRunOutputArtifactEvent } from "./runOutputEvents";
@@ -2779,6 +2779,30 @@ describe("run execution", () => {
     } } });
     expect(repository.persistedEvents.filter(({ event }) => isContextEvent(event))).toHaveLength(3);
     expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("ends each live tool call with one content-free record of its shared family", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    let requests = 0;
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      requests += 1;
+      if (requests === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }] });
+      return providerResult({ finalText: "We have room to continue." });
+    });
+    const observation = await captureRunObservation();
+    await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository })).text();
+    const terminal = observation.records().filter((record) => record.event === "tool_call");
+    observation.restore();
+    expect(repository.failedRuns).toEqual([]);
+    expect(terminal).toEqual([expect.objectContaining({ level: "info", tool_kind: "session_status", outcome: "completed",
+      run_id: expect.any(String), tool_call_id: expect.any(String) })]);
+    expect(JSON.stringify(terminal)).not.toContain("get_session_status");
   });
 
   it("loads Skills through the durable loop without exposing their bodies or file arguments in SSE", async () => {
@@ -9478,5 +9502,109 @@ describe("scheduled task management execution", () => {
     expect(repository.failedRuns).toEqual([]);
     expect(manageScheduledTaskForCall).toHaveBeenCalledOnce();
     expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete" })]);
+  });
+});
+
+describe("user attribution", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("names the run's own user on every run record and its failure, whoever's request carries it", async () => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const adapter = createAdapter(async function* () {
+      yield { type: "token", data: { delta: "partial" } };
+      throw new Error("openrouter_stream_truncated");
+    });
+    await runInBackground(async () => {
+      attributeRequestUser("other-user");
+      await createRunExecutionResponse(executionInput({ adapter, repository: repository.repository })).text();
+    });
+    expect(repository.failedRuns).toHaveLength(1);
+    const records = observation.records().filter((entry) => entry.run_id === "run-1");
+    expect(records).toContainEqual(expect.objectContaining({ event: "run_execution", outcome: "failed", level: "error", user_id: "user-1" }));
+    expect(records.length).toBeGreaterThan(1);
+    expect(records.every((entry) => entry.user_id === "user-1")).toBe(true);
+  });
+});
+
+describe("time to first output", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const firstOutputs = (records: readonly Record<string, unknown>[]) =>
+    records.filter((entry) => entry.event === "run_execution" && entry.stage === "first_output");
+
+  it("records one first output at the first published delta, measured from acceptance", async () => {
+    const observation = await captureRunObservation();
+    const repository = createRepository();
+    const acceptedAt = new Date(Date.now() - 1_500);
+    let firstDeltaAt = 0;
+    const input = executionInput({
+      adapter: createAdapter(async function* () {
+        firstDeltaAt = Date.now();
+        yield { type: "token", data: { delta: "PRIVATE_FIRST_DELTA" } };
+        yield { type: "token", data: { delta: " PRIVATE_LATER_DELTA" } };
+        return providerResult({ finalText: "PRIVATE_FIRST_DELTA PRIVATE_LATER_DELTA" });
+      }),
+      repository: repository.repository
+    });
+    await createRunExecutionResponse({ ...input, created: { ...input.created, acceptedAt } }).text();
+    const settledAt = Date.now();
+    const records = firstOutputs(observation.records());
+    expect(records).toEqual([expect.objectContaining({ run_id: "run-1", level: "info", outcome: "completed", after: "dispatch",
+      providerFamily: "fake", providerModelId: "fake-qsa", connectionId: "fake", adapterKind: "fake" })]);
+    expect(records[0]!.duration_ms).toBeGreaterThanOrEqual(firstDeltaAt - acceptedAt.getTime());
+    expect(records[0]!.duration_ms).toBeLessThanOrEqual(settledAt - acceptedAt.getTime());
+    expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+  });
+
+  it.each([false, true])("records whether tool rounds came before the first text (preamble=%s)", async (preamble) => {
+    const observation = await captureRunObservation();
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, tools: [sessionStatusTool] }
+    };
+    const repository = createRepository();
+    let rounds = 0;
+    const input = executionInput({
+      adapter: createAdapter(async function* () {
+        rounds += 1;
+        if (rounds === 1) {
+          if (preamble) yield { type: "token", data: { delta: "Checking the session." } };
+          return providerResult({ finalText: preamble ? "Checking the session." : "",
+            toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }] });
+        }
+        yield { type: "token", data: { delta: "The answer" } };
+        yield { type: "token", data: { delta: " follows." } };
+        return providerResult({ finalText: "The answer follows." });
+      }),
+      prepared,
+      repository: repository.repository
+    });
+    await createRunExecutionResponse({ ...input, created: { ...input.created, acceptedAt: new Date() } }).text();
+    expect(rounds).toBe(2);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(firstOutputs(observation.records())).toEqual([expect.objectContaining({ outcome: "completed",
+      after: preamble ? "dispatch" : "tools", providerFamily: "openai", providerModelId: "gpt-tool-model" })]);
+  });
+
+  it("records nothing for a run without text or without an acceptance time", async () => {
+    const observation = await captureRunObservation();
+    const silent = createRepository();
+    const silentInput = executionInput({
+      adapter: createAdapter(async function* () { return providerResult({ finalText: "" }); }),
+      repository: silent.repository
+    });
+    await createRunExecutionResponse({ ...silentInput, created: { ...silentInput.created, acceptedAt: new Date() } }).text();
+    await createRunExecutionResponse(executionInput({
+      adapter: createAdapter(async function* () {
+        yield { type: "token", data: { delta: "Unaccepted text" } };
+        return providerResult({ finalText: "Unaccepted text" });
+      }),
+      repository: createRepository().repository,
+      runId: "run-2"
+    })).text();
+    expect(firstOutputs(observation.records())).toEqual([]);
   });
 });

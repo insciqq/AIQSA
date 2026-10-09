@@ -37,7 +37,7 @@ function failure(error: unknown): Response {
   return json({ error: "admin_health_failed" }, 503);
 }
 
-/** GET /api/admin/health?range=24h|7d|30d */
+/** GET /api/admin/health?range=24h|7d|14d|30d */
 export function createAdminHealthHandler(input: HandlerInput) {
   return async function GET(request: Request): Promise<Response> {
     const denial = await adminDenial(request, input.resolveAuth);

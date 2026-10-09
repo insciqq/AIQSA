@@ -80,6 +80,9 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
         claimToken: claim.claimToken, created: admitted
       });
       prepared = applyPreparingMaterialization(prepared, created);
+      // The run's first execution: its wait for the answer began at admission.
+      // A run resumed after a crash records no time to first output.
+      created = { ...created, acceptedAt: loaded.modelRun.createdAt };
     } else if (!recovered) throw new WorkspaceFollowupError("workspace_followup_invalid");
     const searchRuntimes: Record<string, ProviderRuntimeBinding> = {};
     for (const option of prepared.normalizedRequest.searchPlan.options) {

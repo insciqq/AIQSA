@@ -219,6 +219,12 @@ export type ShellThreadView = {
     answerMessageId: string;
     reviewers: readonly Readonly<{ modelId: string; provider: string }>[];
   }>): Promise<Readonly<{ ok: true }> | Readonly<{ error: string; ok: false }>>;
+  /**
+   * "Report a problem…" on the open chat's settled answers: the chat the
+   * report goes to and the quiet confirmation after a send. Absent before
+   * the chat exists.
+   */
+  problemReport?: Readonly<{ chatId: string; confirmSent(outcome: "created" | "updated"): void }> | null;
   /** Revise, or Continue review: starts a session's next step. */
   continueAnswerReview?(sessionId: string, kind: "review" | "revision"): Promise<void>;
   /** Stops an automatic review session and its running step. */

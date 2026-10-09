@@ -96,14 +96,12 @@ export function AdminHealthIncidents({
   controller,
   filters,
   onChangeFilters,
-  requestRunLookup,
-  retentionNote
+  requestRunLookup
 }: Readonly<{
   controller: AdminHealthIncidentsController;
   filters: AdminHealthIncidentFilterState;
   onChangeFilters(next: AdminHealthIncidentFilterState): void;
   requestRunLookup?: AdminHealthRunLookupRequest;
-  retentionNote: boolean;
 }>) {
   const [codeDraft, setCodeDraft] = useState(filters.code ?? "");
   const [queryDraft, setQueryDraft] = useState(filters.q ?? "");
@@ -206,7 +204,6 @@ export function AdminHealthIncidents({
             : "Codes use letters, digits, dots, dashes and underscores."}
         </p>
       ) : null}
-      {retentionNote ? <p className="mt-2 text-xs text-ink-muted">Incidents are kept for 14 days.</p> : null}
       {runReference ? <AdminHealthRunLookup reference={runReference} request={requestRunLookup} /> : null}
 
       <div className="mt-3 min-w-0 overflow-hidden rounded-[12px] border border-trace-subtle bg-answer-paper">

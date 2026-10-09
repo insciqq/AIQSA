@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { hashToken } from "../../auth/token";
+import { runInBackground, serializeEvent } from "../../observability/runtime.cjs";
 import type { InboundMcpAuthorizationRequest } from "./contracts";
 import {
   createInboundMcpOAuthService,
@@ -427,5 +428,18 @@ describe("inbound Memory MCP OAuth service", () => {
     expect(repository.revokeTokenFamily).toHaveBeenCalledWith(expect.objectContaining({
       tokenHash: hashToken(accessToken)
     }));
+  });
+
+  it("attributes an inbound MCP request to its grant's owner once the access token resolves", async () => {
+    const { repository, service } = dependencies();
+    const failure = () => JSON.parse(serializeEvent("run_http_failed", { stage: "send" })!) as Record<string, unknown>;
+    const accessToken = `aiqsa_ma_${"A".repeat(43)}`;
+    await runInBackground(async () => {
+      repository.resolveAccessToken.mockResolvedValueOnce(null as never);
+      await service.resolveAccessToken(accessToken);
+      expect(failure()).not.toHaveProperty("user_id");
+      await service.resolveAccessToken(accessToken);
+      expect(failure()).toMatchObject({ user_id: "user-1" });
+    });
   });
 });

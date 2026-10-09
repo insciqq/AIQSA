@@ -212,7 +212,7 @@ export class KnowledgeIngestionCoordinator {
       processed = true;
       // The processing artifact is the durable work row claimed by this coordinator.
       await runInBackground(() => runWithContext(
-        { job_id: claim.artifact.id },
+        { job_id: claim.artifact.id, user_id: claim.ownerUserId },
         () => this.#processClaim(claim)
       ));
     }
