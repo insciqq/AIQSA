@@ -1,6 +1,5 @@
 import type { AdminAttentionItem } from "../../../contracts/adminAttention";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
-import { runReferenceLabel } from "../../../contracts/runReference";
 import type { TelemetryCounterGroup, TelemetryCounterQuery, TelemetryStore } from "../../telemetry/store";
 import type { FailedRunLoad } from "../health/failedRuns";
 
@@ -47,11 +46,7 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
   memoryRebuildsPerOwnerMin: 3,
   memoryRebuildWindowMs: 24 * 3_600_000,
   /** Every failed run created within this window raises the failed-runs item. */
-  runsFailedWindowMs: 24 * 3_600_000,
-  /** Failure codes the item names, most runs first; the rest are summed. */
-  runsFailedCodesMax: 4,
-  /** Run references named per failure code, newest first. */
-  runsFailedReferencesPerCode: 2
+  runsFailedWindowMs: 24 * 3_600_000
 });
 
 /**
@@ -86,8 +81,6 @@ const ROW_LIMIT = 5_000;
 const COUNTER_RETENTION_MS = 30 * 24 * HOUR_MS;
 /** Classes that almost always mean a defect in AIQSA's own code, whatever the record's code. */
 const PROGRAMMING_ERRORS = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError"]);
-/** Codes that say only that nobody classified the failure. */
-const UNCLASSIFIED_CODES = new Set(["unknown", "unexpected"]);
 /**
  * Codes whose failures another rule judges by rate, so a first occurrence is
  * not news on its own: rejected keys, exhausted quotas, rate limits and
@@ -126,17 +119,8 @@ export type HealthCounterRows = Readonly<{
   errorFirstSeen: readonly TelemetryCounterGroup[];
 }>;
 
-export type HealthFailedRunCode = Readonly<{
-  /** The runs' stable failure code; `null` when they carry none. */
-  failureCode: string | null;
-  runs: number;
-  users: number;
-  /** Error references of the newest runs (`--run` and the Health run lookup accept them). */
-  references: readonly string[];
-}>;
-
 export type HealthFinding =
-  | Readonly<{ code: "runs_failed"; runs: number; users: number; byCode: readonly HealthFailedRunCode[]; otherRuns: number }>
+  | Readonly<{ code: "runs_failed"; runs: number; users: number }>
   | Readonly<{ code: "provider_runtime_key_rejected"; connectionId: string; failures: number }>
   | Readonly<{ code: "provider_runtime_quota_exhausted"; connectionId: string; failures: number }>
   | Readonly<{ code: "provider_runtime_failing"; connectionId: string; failures: number; total: number;
@@ -146,7 +130,7 @@ export type HealthFinding =
   | Readonly<{ code: "logs_dropped"; lines: number }>
   | Readonly<{ code: "background_failures"; subsystem: HealthSubsystem; errors: number }>
   | Readonly<{ code: "operation_timeouts_rising"; operation: HealthTimedOperation; timeouts: number; total: number }>
-  | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; failureCode: string | null; count: number }>
+  | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; count: number }>
   | Readonly<{ code: "new_error"; fingerprint: null; more: number }>
   | Readonly<{ code: "memory_index_rebuilds_repeated"; atLeast: number; maxPerOwner: number; owners: number }>;
 
@@ -435,26 +419,16 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
     const fingerprint = text(row, "error_fingerprint");
     if (fingerprint !== null) firstSeen.set(fingerprint, Math.min(firstSeen.get(fingerprint) ?? Infinity, row.firstSeenAt.getTime()));
   }
-  type Candidate = {
-    errorClass: string; site: string | null; siteSeenAt: number; failureCode: string | null; codeSeenAt: number; count: number; first: number;
-  };
-  const candidates = new Map<string, Candidate>();
+  const candidates = new Map<string, { errorClass: string; site: string | null; siteSeenAt: number; count: number; first: number }>();
   for (const row of within(rows.errorFingerprints, since)) {
     const fingerprint = text(row, "error_fingerprint");
     const errorClass = text(row, "error_class") ?? "Error";
-    const code = text(row, "code");
-    if (fingerprint === null || coveredByRule(code, text(row, "event"), errorClass)) continue;
-    const entry = candidates.get(fingerprint) ??
-      { errorClass, site: null, siteSeenAt: -1, failureCode: null, codeSeenAt: -1, count: 0, first: Infinity };
+    if (fingerprint === null || coveredByRule(text(row, "code"), text(row, "event"), errorClass)) continue;
+    const entry = candidates.get(fingerprint) ?? { errorClass, site: null, siteSeenAt: -1, count: 0, first: Infinity };
     const site = text(row, "error_site");
-    const seenAt = row.lastSeenAt.getTime();
-    if (site !== null && seenAt > entry.siteSeenAt) {
+    if (site !== null && row.lastSeenAt.getTime() > entry.siteSeenAt) {
       entry.site = site;
-      entry.siteSeenAt = seenAt;
-    }
-    if (code !== null && !UNCLASSIFIED_CODES.has(code) && seenAt > entry.codeSeenAt) {
-      entry.failureCode = code;
-      entry.codeSeenAt = seenAt;
+      entry.siteSeenAt = row.lastSeenAt.getTime();
     }
     entry.count += row.count;
     entry.first = Math.min(entry.first, row.firstSeenAt.getTime(), firstSeen.get(fingerprint) ?? Infinity);
@@ -464,7 +438,7 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
     .filter(([, entry]) => entry.first >= since)
     .sort(([leftKey, left], [rightKey, right]) => right.count - left.count || leftKey.localeCompare(rightKey));
   const named: HealthFinding[] = fresh.slice(0, thresholds.newErrorItemsMax).map(([fingerprint, entry]) => ({
-    code: "new_error", fingerprint, errorClass: entry.errorClass, site: entry.site, failureCode: entry.failureCode, count: entry.count
+    code: "new_error", fingerprint, errorClass: entry.errorClass, site: entry.site, count: entry.count
   }));
   const more = fresh.length - named.length;
   return more > 0 ? [...named, { code: "new_error", fingerprint: null, more }] : named;
@@ -472,25 +446,11 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
 
 /**
  * Failed runs over the failed-runs window (`readFailedRunLoad`): one is
- * enough, since each is an answer a user did not get. The item names the
- * codes with the most runs, how many users they hit and the newest runs'
- * error references, never user ids.
+ * enough, since each is an answer a user did not get. The item carries counts
+ * only; the health report lists the runs by failure code with references.
  */
-export function failedRunFindings(load: FailedRunLoad, thresholds: HealthThresholds = HEALTH_ATTENTION_THRESHOLDS): HealthFinding[] {
-  if (load.runs === 0) return [];
-  const shown = load.groups.slice(0, thresholds.runsFailedCodesMax);
-  return [{
-    code: "runs_failed",
-    runs: load.runs,
-    users: load.users,
-    byCode: shown.map((group) => ({
-      failureCode: group.code,
-      runs: group.runs,
-      users: group.users,
-      references: group.newest.slice(0, thresholds.runsFailedReferencesPerCode).map((run) => runReferenceLabel(run.runId))
-    })),
-    otherRuns: Math.max(0, load.runs - shown.reduce((total, group) => total + group.runs, 0))
-  }];
+export function failedRunFindings(load: Pick<FailedRunLoad, "runs" | "users">): HealthFinding[] {
+  return load.runs === 0 ? [] : [{ code: "runs_failed", runs: load.runs, users: load.users }];
 }
 
 /**
@@ -532,24 +492,6 @@ function failureMix(kinds: Readonly<Record<ProviderFailureKind, number>>): strin
     .join(", ");
 }
 
-/** The attention contract's bound on an item's detail. */
-const DETAIL_MAX = 400;
-
-/** `head` and as many whole parts as fit in the detail bound, then `tail`; a part that does not fit becomes "…". */
-function boundedDetail(head: string, parts: readonly string[], tail: string): string {
-  let detail = head;
-  for (const part of parts) {
-    if (detail.length + 3 + part.length + 4 + tail.length > DETAIL_MAX) return `${detail} · …${tail}`;
-    detail += ` · ${part}`;
-  }
-  return `${detail}${tail}`;
-}
-
-function failedRunCodeCopy(entry: HealthFailedRunCode): string {
-  const references = entry.references.length > 0 ? `; ref ${entry.references.join(", ")}` : "";
-  return `${entry.failureCode ?? "no code"} ${entry.runs} (${plural(entry.users, "user")}${references})`;
-}
-
 function operationLabel(operation: HealthTimedOperation): string {
   return operation.kind === "tool" ? toolLabels[operation.name]
     : operation.name === "other" ? "Background jobs" : `${subsystemLabels[operation.name]} jobs`;
@@ -569,10 +511,8 @@ export function healthAttentionItems(
     switch (finding.code) {
       case "runs_failed":
         items.push({ action: "Open Health", code: finding.code, count: finding.runs, id: finding.code, severity: "warn",
-          detail: boundedDetail(
-            `${plural(finding.runs, "run")} of ${plural(finding.users, "user")} failed in the last 24 hours`,
-            [...finding.byCode.map(failedRunCodeCopy), ...(finding.otherRuns > 0 ? [`other codes ${finding.otherRuns}`] : [])],
-            " — look a reference up in Health"),
+          detail: `${plural(finding.runs, "answer")} failed for ${plural(finding.users, "user")} in the last 24 hours — ` +
+            "the health report lists them by cause",
           target: { section: "health" }, title: "Runs failed" });
         break;
       case "provider_runtime_key_rejected":
@@ -628,9 +568,7 @@ export function healthAttentionItems(
         } else {
           items.push({ action: "Open Health", code: finding.code, count: finding.count, id: `${finding.code}:${finding.fingerprint}`,
             severity: "warn",
-            detail: boundedDetail(`${finding.errorClass} ${finding.site ? `at ${finding.site}` : "outside application code"}`,
-              [...(finding.failureCode ? [`code ${finding.failureCode}`] : []),
-                `${plural(finding.count, "time")} since it first appeared in the last 24 hours`], ""),
+            detail: `${finding.errorClass} ${finding.site ? `at ${finding.site}` : "outside application code"} · ${plural(finding.count, "time")} since it first appeared in the last 24 hours`,
             target: { section: "health" }, title: "A new error appeared" });
         }
         break;

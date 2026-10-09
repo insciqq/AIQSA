@@ -16,9 +16,10 @@ import {
 } from "../../../contracts/adminHealth";
 import { adminHealthQueueCopy, type AdminHealthQueueRow } from "../../../contracts/adminHealthQueues";
 import type { AdminHealthRunSummary } from "../../../contracts/adminHealthRunLookup";
-import { normalizeRunReference, runReferenceLabel } from "../../../contracts/runReference";
+import { normalizeRunReference, RUN_ID_LENGTH, runReferenceLabel } from "../../../contracts/runReference";
 import { healthAttentionItems, type HealthFinding } from "../attention/healthRules";
 import { queueAgeCopy, queueAttentionItems } from "../attention/queueRules";
+import type { FailedRunLoad, FailedRunQuery } from "./failedRuns";
 import { adminHealthQueueFindings, type AdminHealthQueuesService } from "./queues";
 import type { AdminHealthRunLookup } from "./runLookup";
 import type { AdminHealthService } from "./service";
@@ -34,8 +35,12 @@ import type { AdminHealthService } from "./service";
 export const HEALTH_REPORT_VERSION = 1;
 /** Incidents listed in a report; the Health page pages through the rest. */
 export const HEALTH_REPORT_INCIDENT_LIMIT = 10;
+/** Failure codes of the failed-runs section, and the newest runs' references per code. */
+export const HEALTH_REPORT_FAILED_RUN_CODE_LIMIT = 50;
+export const HEALTH_REPORT_FAILED_RUN_REFERENCES = 3;
 /** Provider rows the text output lists; `--json` carries every failing row. */
 const TEXT_PROVIDER_ROWS = 10;
+const TEXT_FAILED_RUN_CODES = 10;
 const TEXT_ERROR_GROUPS = 10;
 const WIDTH = 100;
 
@@ -50,6 +55,12 @@ export type HealthReport = {
   hasTelemetry: boolean;
   /** "Needs attention" items of the health and queue rules, evaluated now over their own windows. */
   attention: AdminAttentionItem[];
+  /**
+   * Runs created in the range that failed, by failure code with the most runs
+   * first, with the error references of the newest; counts of users, never
+   * their ids. A user's Stop or cancellation and refused user input are not failures.
+   */
+  failedRuns: HealthReportFailedRuns;
   summary: AdminHealthSummary;
   /** Error and fatal records over the range per chart category. */
   errorsByCategory: Record<AdminHealthCategory, number>;
@@ -84,6 +95,18 @@ export type HealthRunReport = {
   incidentsTruncated: boolean;
 };
 
+export type HealthReportFailedRunCode = {
+  /** The runs' stable failure code; `null` when they carry none. */
+  failureCode: string | null;
+  runs: number;
+  users: number;
+  lastAt: string;
+  /** Error references of the newest runs, newest first (`--run` accepts them). */
+  references: string[];
+};
+
+export type HealthReportFailedRuns = { runs: number; users: number; rows: HealthReportFailedRunCode[]; truncated: boolean };
+
 /** A provider connection as the attention copy names it; a missing or disabled one stays quiet. */
 export type HealthReportConnection = Readonly<{ id: string; displayName: string; enabled: boolean }>;
 
@@ -92,6 +115,8 @@ export type HealthReportSources = Readonly<{
   queues: Pick<AdminHealthQueuesService, "read">;
   findings(): Promise<readonly HealthFinding[]>;
   connections(): Promise<readonly HealthReportConnection[]>;
+  /** Every user's failed runs of a range by failure code (`readFailedRunLoad`). */
+  failedRuns(query: Omit<FailedRunQuery, "statementTimeoutMs">): Promise<FailedRunLoad>;
 }>;
 
 export type HealthRunReportSources = Readonly<{
@@ -106,11 +131,13 @@ function incidentFilters(range: AdminHealthRange, q: string | null): AdminHealth
 export async function collectHealthReport(sources: HealthReportSources, range: AdminHealthRange): Promise<HealthReport> {
   // The counters first: an unreachable database fails once instead of once per queue.
   const health = await sources.health.read(range);
-  const [queues, findings, connections, page] = await Promise.all([
+  const [queues, findings, connections, page, failedRuns] = await Promise.all([
     sources.queues.read(),
     sources.findings(),
     sources.connections(),
-    sources.health.incidents(incidentFilters(range, null))
+    sources.health.incidents(incidentFilters(range, null)),
+    sources.failedRuns({ from: new Date(health.from), to: new Date(health.to),
+      perCode: HEALTH_REPORT_FAILED_RUN_REFERENCES, groupLimit: HEALTH_REPORT_FAILED_RUN_CODE_LIMIT })
   ]);
   const errorsByCategory = Object.fromEntries(adminHealthCategories.map((category) =>
     [category, health.series.reduce((total, bucket) => total + bucket.counts[category], 0)])) as Record<AdminHealthCategory, number>;
@@ -126,6 +153,19 @@ export async function collectHealthReport(sources: HealthReportSources, range: A
       ...healthAttentionItems(findings, connections),
       ...queueAttentionItems(adminHealthQueueFindings(queues.queues))
     ],
+    failedRuns: {
+      runs: failedRuns.runs,
+      users: failedRuns.users,
+      rows: failedRuns.groups.map((group) => ({
+        failureCode: group.code,
+        runs: group.runs,
+        users: group.users,
+        lastAt: group.lastAt.toISOString(),
+        references: group.newest.filter((run) => run.runId.length === RUN_ID_LENGTH && normalizeRunReference(run.runId) === run.runId)
+          .map((run) => runReferenceLabel(run.runId))
+      })),
+      truncated: failedRuns.groupsTruncated
+    },
     summary: health.summary,
     errorsByCategory,
     errorGroups: health.errorGroups,
@@ -367,6 +407,23 @@ function attentionSection(report: HealthReport): string[] {
   ];
 }
 
+function failedRunSection(report: HealthReport): string[] {
+  const { failedRuns } = report;
+  if (failedRuns.runs === 0) return [];
+  const shown = failedRuns.rows.slice(0, TEXT_FAILED_RUN_CODES);
+  const hidden = failedRuns.rows.length - shown.length;
+  return [
+    `Failed runs: ${plural(failedRuns.runs, "run")} of ${plural(failedRuns.users, "user")} (stops and refused input not counted)`,
+    ...shown.flatMap((row) => [
+      ...wrapParts([row.failureCode === null ? "no code" : `code ${row.failureCode}`, plural(row.runs, "run"),
+        plural(row.users, "user"), `last ${minute(row.lastAt)}`], "  ", " · "),
+      ...(row.references.length > 0 ? wrapParts(row.references, "      ref ", ", ") : [])
+    ]),
+    ...(hidden > 0 || failedRuns.truncated
+      ? [`  and more codes (--json lists ${failedRuns.truncated ? `the ${failedRuns.rows.length} most frequent` : "every code"})`] : [])
+  ];
+}
+
 function errorSection(report: HealthReport): string[] {
   const { summary } = report;
   if (summary.errors === 0 && summary.http5xx === 0 && summary.providerFailures === 0 &&
@@ -460,8 +517,8 @@ function incidentSection(report: HealthReport): string[] {
   ];
 }
 
-/** Report sections in order, attention first; a section without findings prints nothing. */
-const SECTIONS: readonly Section[] = [attentionSection, errorSection, failureSection, providerSection, restartSection, queueSection, incidentSection];
+/** Report sections in order, attention and failed runs first; a section without findings prints nothing. */
+const SECTIONS: readonly Section[] = [attentionSection, failedRunSection, errorSection, failureSection, providerSection, restartSection, queueSection, incidentSection];
 
 export function formatHealthReport(report: HealthReport): string {
   const header = `AIQSA health · last ${RANGE_COPY[report.range]} · ${minute(report.from)} to ${minute(report.to)} UTC`;
@@ -475,7 +532,7 @@ export function formatHealthReport(report: HealthReport): string {
     ].join("\n") + "\n";
   }
   const footer = report.incidents.some((incident) => incident.runId !== null) ||
-    report.attention.some((item) => item.code === "runs_failed")
+    report.failedRuns.rows.some((row) => row.references.length > 0)
     ? ["Look up a reference: ./aiqsa.sh health --run <reference>"] : [];
   return [header, ...sections.flatMap((lines) => ["", ...lines]), ...(footer.length > 0 ? ["", ...footer] : [])].join("\n") + "\n";
 }
