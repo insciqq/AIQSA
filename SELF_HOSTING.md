@@ -89,6 +89,8 @@ To diagnose a problem, read the telemetry first, then the logs around its incide
 
 `health` works while the app container is down, takes `--since 7d`, `14d` or `30d`, and `--json` for scripts and agents. Its output contains no message content, secrets or `.env` values, only codes, counts and provider connection and model names, so it is safe to paste into an issue or give to an agent.
 
+An agent working on the host can read everything at once: `./aiqsa.sh health --full --since 14d --json` lists every failure, timeout, run outcome, latency, incident and problem report of the range, and `--user <id>` one user's incidents, failed runs and problem reports. These two outputs carry internal user ids and users' problem-report comments, so they stay on the host: never paste them.
+
 ```bash
 ./aiqsa.sh logs                            # last 200 lines of every service
 ./aiqsa.sh logs --errors --since 1h app    # AIQSA errors of the last hour
