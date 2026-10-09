@@ -840,6 +840,25 @@ describe("McpSettingsSection", () => {
     expect(await screen.findByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "false");
   });
 
+  it("asks for the user's own value, not an administrator, when a refused enable names a listed personal field", async () => {
+    const catalog = patchableCatalog([{ ...userServer("mem0", "Mem0"), fields: [secondKey] }], {
+      refuseEnable: response({
+        error: "invalid_mcp_values",
+        issues: [{ code: "slot_value_required", path: "values.workspace_id" }]
+      }, 400)
+    });
+    vi.stubGlobal("fetch", catalog.fetchMock);
+    render(<McpSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup for Mem0" }));
+    const sheet = await screen.findByRole("dialog", { name: "Mem0" });
+    fireEvent.change(within(sheet).getByLabelText("Workspace ID"), { target: { value: "team-a" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent(
+      "Add and save the required personal values before enabling this server."
+    );
+    expect(within(sheet).queryByText(/administrator configuration/u)).toBeNull();
+  });
+
   it("keeps Save busy and every exit blocked across both setup requests, then releases them after a failed enable", async () => {
     const mem0 = userServer("mem0", "Mem0");
     const answers: Array<(answer: Response) => void> = [];

@@ -631,6 +631,120 @@ describe("MCP stored values bound to their endpoint origin", () => {
   });
 });
 
+describe("MCP personal values through group access", () => {
+  const groupDraft: McpDraftConfiguration = {
+    ...draft,
+    slots: [{
+      label: "API key", policy: { kind: "shared", allowPersonalOverride: true }, sensitive: true,
+      slotKey: "api_key", target: { kind: "header", name: "X-Api-Key" }, valueType: "secret"
+    }, {
+      label: "User token", policy: { kind: "personal", required: true }, sensitive: true,
+      slotKey: "user_token", target: { kind: "header", name: "Authorization" }, valueType: "secret"
+    }]
+  };
+
+  async function member(groupId: string | null) {
+    const user = await prisma.user.create({ data: {
+      displayName: "MCP group member", email: `mcp-member-${randomUUID()}@example.test`, role: "user", status: "active"
+    } });
+    userIds.push(user.id);
+    if (groupId) await prisma.userGroup.create({ data: { groupId, userId: user.id } });
+    return user.id;
+  }
+
+  it("lets a group-only member fill a required personal value, enable and launch, but not override a shared value", async () => {
+    const adminId = await admin();
+    const key = Buffer.alloc(32, 1);
+    const repository = createPrismaMcpRepository({
+      prisma, draftValidator: { validate: vi.fn(async () => valid) }, encryptionKey: () => key
+    });
+    const created = await repository.createServer({
+      description: "Group personal value fixture", draft: groupDraft, name: `Group ${randomUUID()}`,
+      sharedValues: { api_key: "canary-shared-key" }
+    });
+    if (created.kind !== "ok") throw new Error(`fixture_create_${created.kind}`);
+    const serverId = created.value.id;
+    serverIds.push(serverId);
+    expect((await repository.testDraft({ expectedUpdatedAt: created.value.updatedAt, oneTimeValues: { user_token: "one-time" },
+      publish: true, serverId, validationUserId: adminId })).kind).toBe("ok");
+    const group = await prisma.group.create({ data: { name: `mcp-group-${randomUUID()}` } });
+    groupIds.push(group.id);
+    const memberId = await member(group.id);
+    const outsiderId = await member(null);
+
+    // Override permission stays direct-only; server use on the group is enough for the required field.
+    expect(await repository.setGrant({ canUse: true, groupId: group.id, personalSlotKeys: ["api_key"], serverId, userId: null }))
+      .toEqual({ issues: [{ code: "personal_slot_not_permitted", path: "personalSlotKeys" }], kind: "invalid_grant" });
+    expect(await repository.setGrant({ canUse: true, groupId: group.id, personalSlotKeys: [], serverId, userId: null }))
+      .toMatchObject({ kind: "ok" });
+
+    const listed = (await repository.listUserServers(memberId)).find(({ id }) => id === serverId);
+    expect(listed?.fields.map(({ slotKey }) => slotKey)).toEqual(["user_token"]);
+    expect(await repository.updateUserServer({ enabled: true, serverId, userId: memberId }))
+      .toMatchObject({ issues: [{ code: "slot_value_required", path: "values.user_token" }] });
+    expect(await repository.updateUserServer({ serverId, userId: memberId, values: { api_key: "canary-member-override" } }))
+      .toEqual({ issues: [{ code: "slot_not_permitted", path: "values.api_key" }], kind: "invalid_values" });
+    expect(await repository.updateUserServer({ enabled: true, serverId, userId: memberId, values: { user_token: "canary-member-token" } }))
+      .toMatchObject({ kind: "ok" });
+    expect((await repository.listUserServers(memberId)).find(({ id }) => id === serverId)?.fields)
+      .toMatchObject([{ configured: true, slotKey: "user_token", source: "personal" }]);
+
+    const launch = async () => remoteRuntimeCandidate({ key, record: await prisma.mcpUserServer.findFirstOrThrow({
+      include: {
+        server: { include: { activeRevision: true, grants: true, oauthConnections: { include: { oauthClient: { select: { clientId: true } } } } } },
+        user: { select: { groups: { select: { groupId: true } }, id: true } }
+      },
+      where: { serverId, userId: memberId }
+    }) });
+    const launched = await launch();
+    expect(launched?.headers).toMatchObject({ Authorization: "Bearer canary-member-token", "X-Api-Key": "canary-shared-key" });
+    expect(JSON.stringify(launched)).not.toContain("canary-member-override");
+
+    // A Project run never borrows the member's personal value.
+    expect((await loadMcpRunPlanRecordsForProjectServers(memberId, [serverId]))[0])
+      .toMatchObject({ errorCode: "mcp_project_credentials_unavailable", generationId: null });
+
+    // Without server use there is no field, no value and no runtime.
+    expect((await repository.listUserServers(outsiderId)).some(({ id }) => id === serverId)).toBe(false);
+    expect(await repository.updateUserServer({ enabled: true, serverId, userId: outsiderId, values: { user_token: "canary-outsider" } }))
+      .toEqual({ kind: "not_found" });
+    expect(await repository.setGrant({ canUse: false, groupId: group.id, personalSlotKeys: [], serverId, userId: null }))
+      .toMatchObject({ kind: "ok" });
+    expect(await launch()).toBeNull();
+    expect(await repository.updateUserServer({ serverId, userId: memberId, values: { user_token: "canary-after-revoke" } }))
+      .toEqual({ kind: "not_found" });
+  });
+
+  it("keeps a shared-value override behind the direct per-user permission", async () => {
+    const adminId = await admin();
+    const repository = createPrismaMcpRepository({
+      prisma, draftValidator: { validate: vi.fn(async () => valid) }, encryptionKey: () => Buffer.alloc(32, 1)
+    });
+    const created = await repository.createServer({
+      description: "Direct override fixture", draft: groupDraft, name: `Override ${randomUUID()}`,
+      sharedValues: { api_key: "canary-shared-key" }
+    });
+    if (created.kind !== "ok") throw new Error(`fixture_create_${created.kind}`);
+    const serverId = created.value.id;
+    serverIds.push(serverId);
+    expect((await repository.testDraft({ expectedUpdatedAt: created.value.updatedAt, oneTimeValues: { user_token: "one-time" },
+      publish: true, serverId, validationUserId: adminId })).kind).toBe("ok");
+    const userId = await member(null);
+
+    await repository.setGrant({ canUse: true, groupId: null, personalSlotKeys: [], serverId, userId });
+    expect((await repository.listUserServers(userId)).find(({ id }) => id === serverId)?.fields.map(({ slotKey }) => slotKey))
+      .toEqual(["user_token"]);
+    expect(await repository.updateUserServer({ serverId, userId, values: { api_key: "canary-direct-override" } }))
+      .toEqual({ issues: [{ code: "slot_not_permitted", path: "values.api_key" }], kind: "invalid_values" });
+
+    await repository.setGrant({ canUse: true, groupId: null, personalSlotKeys: ["api_key"], serverId, userId });
+    expect((await repository.listUserServers(userId)).find(({ id }) => id === serverId)?.fields.map(({ slotKey }) => slotKey))
+      .toEqual(["api_key", "user_token"]);
+    expect(await repository.updateUserServer({ serverId, userId, values: { api_key: "canary-direct-override" } }))
+      .toMatchObject({ kind: "ok" });
+  });
+});
+
 describe("MCP published tool inventory", () => {
   const checkedTools = [
     { definitionHash: "a".repeat(64), name: "search" },
