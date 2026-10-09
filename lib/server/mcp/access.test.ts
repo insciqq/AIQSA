@@ -1,6 +1,7 @@
 import type { McpConfigurationSlot } from "@/lib/contracts/mcp";
 import { describe, expect, it } from "vitest";
 import {
+  authorizedMcpPersonalSlotKeys,
   mcpRuntimeFingerprint,
   mcpSharedRuntimeFingerprint,
   resolveEffectiveMcpGrant,
@@ -64,6 +65,55 @@ describe("effective MCP grants", () => {
     })).toEqual({
       canUse: false,
       personalSlotKeys: new Set(["workspace"])
+    });
+  });
+});
+
+describe("authorized MCP personal slots", () => {
+  it("authorizes a required personal value through group-only server use but not a shared override", () => {
+    const grant = resolveEffectiveMcpGrant({
+      direct: null,
+      groups: [{ canUse: true, personalSlotKeys: ["api-key"] }]
+    });
+
+    expect([...authorizedMcpPersonalSlotKeys(grant, slots)]).toEqual(["workspace"]);
+  });
+
+  it("keeps a shared override behind the direct per-user permission", () => {
+    const grant = resolveEffectiveMcpGrant({
+      direct: { canUse: false, personalSlotKeys: ["api-key", "endpoint", "region"] },
+      groups: [{ canUse: true, personalSlotKeys: [] }]
+    });
+
+    expect([...authorizedMcpPersonalSlotKeys(grant, slots)]).toEqual(["api-key", "workspace"]);
+  });
+
+  it("authorizes nothing without server use or a direct permission", () => {
+    const grant = resolveEffectiveMcpGrant({
+      direct: null,
+      groups: [{ canUse: false, personalSlotKeys: ["workspace"] }]
+    });
+
+    expect(authorizedMcpPersonalSlotKeys(grant, slots).size).toBe(0);
+  });
+
+  it("feeds a group member's required personal value into the effective values", () => {
+    const grant = resolveEffectiveMcpGrant({ direct: null, groups: [{ canUse: true, personalSlotKeys: [] }] });
+    const result = resolveEffectiveMcpValues({
+      personalSlotKeys: authorizedMcpPersonalSlotKeys(grant, slots),
+      personalValues: { "api-key": "unauthorized-override", workspace: "team-a" },
+      personalVersion: 4,
+      sharedValues: { "api-key": "shared-key", endpoint: "https://service.example.test" },
+      sharedVersion: 2,
+      slots
+    });
+
+    expect(result.missingSlotKeys).toEqual([]);
+    expect(result.values).toEqual({
+      "api-key": "shared-key",
+      endpoint: "https://service.example.test",
+      region: "eu",
+      workspace: "team-a"
     });
   });
 });
