@@ -4,6 +4,7 @@ import type { StorageAdapter } from "../uploads/storage";
 import { ARTIFACT_LIMITS } from "@/lib/contracts/artifacts";
 import { ARTIFACT_MAX_RENDER_BYTES, ARTIFACT_RENDERER_VERSION, decodeArtifactBundle, hydrateArtifactBundleFile, renderArtifactBundle, type ArtifactBundle, type ArtifactBundleAsset, type ArtifactBundleFile } from "./bundle";
 import { ARTIFACT_RESOURCE_LIMITS } from "./resourcePolicy";
+import { ArtifactToolError } from "./errors";
 
 export const artifactChecksum = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 type BundleRow = { id: string; bundleStorageKey: string; byteSize: number; checksum: string };
@@ -22,26 +23,44 @@ const HEAVY_WORK_WAIT_MS = 10_000;
 export const ARTIFACT_PAGE_RENDER_CACHE_BYTES = 256 * 1024 * 1024;
 export class ArtifactPublicBusyError extends Error { constructor() { super("artifact_public_busy"); } }
 
-/** Turns handed out in arrival order, with a bounded waiting room; overflow is refused at once. */
-type WorkPool = { active: number; readonly limit: number; readonly waitingRoom: number; readonly waiting: Array<() => void> };
+/** Turns handed out in arrival order, with a bounded waiting room and wait; overflow is refused at once. */
+type WorkPool = { active: number; readonly limit: number; readonly waitingRoom: number; readonly waitMs: number;
+  readonly busy: () => Error; readonly waiting: Array<() => void> };
+const publicBusy = () => new ArtifactPublicBusyError();
 /** Heavy artifact work in this process (renders, exports, large reads): four at once, sixteen waiting. */
-const heavyWork: WorkPool = { active: 0, limit: 4, waitingRoom: 16, waiting: [] };
+const heavyWork: WorkPool = { active: 0, limit: 4, waitingRoom: 16, waitMs: HEAVY_WORK_WAIT_MS, busy: publicBusy, waiting: [] };
 /** Large work also takes this single turn, so two large jobs never run together. */
-const largeWork: WorkPool = { active: 0, limit: 1, waitingRoom: 4, waiting: [] };
+const largeWork: WorkPool = { active: 0, limit: 1, waitingRoom: 4, waitMs: HEAVY_WORK_WAIT_MS, busy: publicBusy, waiting: [] };
+/**
+ * Artifact creations in this process, from the first read of a base or an attachment until the
+ * version settles: each holds up to 32 MiB of referenced bytes and their text, unpacked and
+ * vendored files and the built bundle. Four at once and eight waiting up to 30 s (a 499-page
+ * site builds in about 12 s); validation inside them stays at two.
+ */
+const creationWork: WorkPool = { active: 0, limit: 4, waitingRoom: 8, waitMs: 30_000, waiting: [],
+  busy: () => new ArtifactToolError("artifact_server_busy", { hint: "The server is building other artifacts right now and nothing was saved. Retry the same call once shortly; if it is refused again, tell the user to try again in a minute." }) };
 /** One render of each cold page at a time in this process; concurrent requests share its result. */
 const renderFlights = new Map<string, Promise<RenderedContent>>();
 
-async function acquire(pool: WorkPool): Promise<void> {
+/** A stopped caller leaves the queue and rejects with its signal's reason. */
+async function acquire(pool: WorkPool, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (pool.active < pool.limit && !pool.waiting.length) { pool.active += 1; return; }
-  if (pool.waiting.length >= pool.waitingRoom) throw new ArtifactPublicBusyError();
+  if (pool.waiting.length >= pool.waitingRoom) throw pool.busy();
   await new Promise<void>((resolve, reject) => {
-    const grant = () => { clearTimeout(timer); resolve(); };
-    const timer = setTimeout(() => {
+    const settle = (error?: unknown) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (error === undefined) return resolve();
       const index = pool.waiting.indexOf(grant);
       if (index >= 0) pool.waiting.splice(index, 1);
-      reject(new ArtifactPublicBusyError());
-    }, HEAVY_WORK_WAIT_MS);
+      reject(error);
+    };
+    const grant = () => settle();
+    const abort = () => settle(signal!.reason);
+    const timer = setTimeout(() => settle(pool.busy()), pool.waitMs);
     pool.waiting.push(grant);
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
@@ -65,6 +84,12 @@ export async function boundedArtifactWork<T>(work: () => Promise<T>, bytes = 0):
     release(heavyWork);
     if (large) release(largeWork);
   }
+}
+
+/** Runs one artifact creation within the process limit; a refusal is the tool error `artifact_server_busy`. */
+export async function boundedArtifactCreation<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  await acquire(creationWork, signal);
+  try { return await work(); } finally { release(creationWork); }
 }
 
 export function createArtifactObjects(db: PrismaClient, storage: StorageAdapter) {

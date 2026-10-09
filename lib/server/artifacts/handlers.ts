@@ -19,6 +19,9 @@ function errorResponse(error: unknown): Response {
   if (error instanceof ArtifactPublicBusyError) return Response.json({ error: "rate_limit_exceeded" }, { status: 429,
     headers: { "cache-control": "private, no-store, max-age=0", "retry-after": "1" } });
   const code = error instanceof Error ? error.message : "artifact_unavailable";
+  // Artifact creation is at its process limit; nothing was written.
+  if (code === "artifact_server_busy") return Response.json({ error: code }, { status: 429,
+    headers: { "cache-control": "private, no-store, max-age=0", "retry-after": "5" } });
   const safe = /^artifact_[a-z0-9_]+$/u.test(code) ? code : "artifact_unavailable";
   const status = ["artifact_not_found", "artifact_version_not_found", "artifact_publication_not_found", "artifact_page_not_found"].includes(safe) ? 404
     : ["artifact_version_conflict", "artifact_publication_conflict", "artifact_publication_default_required", "artifact_publication_empty"].includes(safe) ? 409 : 400;
