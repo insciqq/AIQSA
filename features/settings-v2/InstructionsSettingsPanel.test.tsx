@@ -195,7 +195,8 @@ describe("instruction preset editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText(/Preset saved/);
     expect(request).toHaveBeenLastCalledWith({ action: "create", value: { name: "Work copy", systemInstructions: preset.systemInstructions, responseReminder: preset.responseReminder, answerRules: null } });
-    expect(screen.getByRole("button", { name: "Edit Work" })).toHaveFocus();
+    // Focus returns to the original row after the saved list renders.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Work" })).toHaveFocus());
   });
 
   it("reports subview/busy state and delegates Cancel to the shared exit guard", async () => {

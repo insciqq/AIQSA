@@ -49,6 +49,24 @@ export async function snapshotComposerDefaults(prisma: PrismaClient, userId: str
         defaultSearchPlan: settings.defaultSearchPlan === null ? Prisma.DbNull : settings.defaultSearchPlan as Prisma.InputJsonValue
       } });
     }
-    if (memory) await prisma.userMemorySettings.update({ where: { userId }, data: memory });
+    if (memory) await restoreMemoryToggles(prisma, userId, memory);
   };
+}
+
+type MemoryToggles = Readonly<{ learnAutomatically: boolean; referenceChatHistory: boolean; useMemoryFacts: boolean }>;
+
+/** Through the product's settings repository, as the settings route patches
+ * them: a resumed toggle closes its open MemoryPauseInterval, which a raw row
+ * update would leave open and make the next pause fail its unique scope. */
+async function restoreMemoryToggles(prisma: PrismaClient, userId: string, memory: MemoryToggles): Promise<void> {
+  const { createPrismaMemorySettingsRepository } = await import("../../../lib/server/memory/persistence/settings");
+  const settings = createPrismaMemorySettingsRepository(prisma);
+  const current = await settings.get(userId);
+  if (current.learnAutomatically === memory.learnAutomatically && current.referenceChatHistory === memory.referenceChatHistory &&
+    current.useMemoryFacts === memory.useMemoryFacts) return;
+  // Unchanged toggles in the patch open or close nothing.
+  await settings.patch(userId, {
+    expectedMemoryRevision: current.memoryRevision, expectedSettingsRevision: current.settingsRevision,
+    learnAutomatically: memory.learnAutomatically, referenceChatHistory: memory.referenceChatHistory, useMemoryFacts: memory.useMemoryFacts
+  });
 }

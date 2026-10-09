@@ -8,7 +8,7 @@ import { getSecretEncryptionKey } from "../secrets/envelope";
 import { resolveChatAccess } from "../projects/access";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
-import type { StorageAdapter } from "../uploads/storage";
+import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
 import type { ProviderRunRequest, ProviderAttachment } from "../providers/types";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUsage } from "../usage";
@@ -33,9 +33,11 @@ type ImageExecutionOptions = {
 };
 
 /** Connection loss, pool exhaustion, or an expired, timed-out, conflicting or
- * deadlocked statement: the write did not commit, or its outcome is unknown. */
+ * deadlocked statement: the write did not commit, or its outcome is unknown.
+ * An uncoded engine failure (a raw dropped connection) is equally unknown, and
+ * the unique tool-call link keeps its repeat idempotent. */
 function transientUsageWriteFailure(error: unknown): boolean {
-  return databaseFailureKind(error) !== undefined ||
+  return error instanceof Prisma.PrismaClientUnknownRequestError || databaseFailureKind(error) !== undefined ||
     ["P1001", "P1002", "P1008", "P1017", "P2024", "P2028"].includes(databaseFailureCode(error));
 }
 
@@ -200,7 +202,15 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             throw new ImageInputError("image_reference_unsupported", id);
           }
           stage = "reference_read";
-          const stored = await storage.getObject(row.storageKey, { maxBytes: IMAGE_MAX_BYTES, signal });
+          let stored: Awaited<ReturnType<StorageAdapter["getObject"]>>;
+          // Nothing has been sent yet, so a lost or unreadable reference is a
+          // correctable refusal for the model, never a failed paid dispatch.
+          try { stored = await storage.getObject(row.storageKey, { maxBytes: IMAGE_MAX_BYTES, signal }); }
+          catch (error) {
+            signal?.throwIfAborted();
+            throw new ImageInputError(isStoredObjectMissingError(error) ? "image_reference_not_found"
+              : isStoredObjectTooLargeError(error) ? "image_reference_invalid" : "image_reference_unavailable", id);
+          }
           if (stored.body.byteLength !== row.byteSize || row.checksum && hash(stored.body) !== row.checksum) throw new ImageInputError("image_reference_invalid", id);
           stage = "reference_validation";
           try { await validateImageReference(stored.body, row.mimeType); }
