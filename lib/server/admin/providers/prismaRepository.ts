@@ -5,7 +5,7 @@ import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
 import { decodeDecisionEvidence } from "../../providers/decisionEvidence";
 import { decodeCapabilitySetupEvidence, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   adminSearchExecutionDefaults,
@@ -370,6 +370,16 @@ async function lockInstallationModelPolicies(tx: Prisma.TransactionClient): Prom
   `);
 }
 
+// Concurrent administrator writes conflict under RepeatableRead/Serializable.
+// Retrying at once can meet the same still-open competitor again; a jittered
+// pause lets it commit so the retry reads its result.
+const TRANSACTION_RETRY_BASE_DELAY_MS = 25;
+
+async function waitForTransactionRetry(retryOrdinal: number): Promise<void> {
+  const ceiling = TRANSACTION_RETRY_BASE_DELAY_MS * 2 ** (retryOrdinal - 1);
+  await new Promise<void>((resolve) => setTimeout(resolve, randomInt(1, ceiling + 1)));
+}
+
 async function repeatableRead<Value>(
   prisma: PrismaClient,
   operation: (tx: Prisma.TransactionClient) => Promise<Value>
@@ -387,6 +397,7 @@ async function repeatableRead<Value>(
         error.code === "P2034" &&
         attempt < 2
       ) {
+        await waitForTransactionRetry(attempt + 1);
         continue;
       }
       throw error;
@@ -412,6 +423,7 @@ async function serializable<Value>(
         error.code === "P2034" &&
         attempt < 2
       ) {
+        await waitForTransactionRetry(attempt + 1);
         continue;
       }
       throw error;
