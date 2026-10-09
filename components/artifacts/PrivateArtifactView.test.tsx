@@ -59,7 +59,7 @@ describe("private artifact pages", () => {
     expect(requested(fetch)).toEqual(["", "?page=docs%2Fabout.html", "", "?page=guide.html", ""]);
   });
 
-  it("loads one page at a time and keeps the shown page until the next one arrives", async () => {
+  it("loads one page at a time, keeps the shown page until the next one arrives, then opens the link clicked meanwhile", async () => {
     let release!: () => void;
     const fetch = contentRoute({ "docs/about.html": () => new Promise<Response>(resolve => { release = () => resolve(html("docs/about.html", "About")); }) });
     vi.stubGlobal("fetch", fetch);
@@ -72,9 +72,22 @@ describe("private artifact pages", () => {
     expect(within(bar).getByRole("button", { name: "Start page" })).toBeDisabled();
     expect(frame().srcdoc).toContain("<h1>Home</h1>");
     now = 1000; post({ type: "aiqsa_artifact_navigate", path: "guide.html" });
-    await act(async () => release());
-    await waitFor(() => expect(frame()).toHaveAttribute("srcdoc", expect.stringContaining("<h1>About</h1>")));
     expect(requested(fetch)).toEqual(["", "?page=docs%2Fabout.html"]);
+    await act(async () => release());
+    await waitFor(() => expect(frame()).toHaveAttribute("srcdoc", expect.stringContaining("<h1>Guide</h1>")));
+    expect(requested(fetch)).toEqual(["", "?page=docs%2Fabout.html", "?page=guide.html"]);
+  });
+
+  it("opens the second of two quick clicks once the interval has passed", async () => {
+    const fetch = contentRoute(); vi.stubGlobal("fetch", fetch);
+    render(<PrivateArtifactView artifactId="site" versionId="v1" />);
+    await waitFor(() => expect(frame()).toHaveAttribute("srcdoc", expect.stringContaining("<h1>Home</h1>")));
+    post({ type: "aiqsa_artifact_navigate", path: "docs/about.html" });
+    now = 100; post({ type: "aiqsa_artifact_navigate", path: "index.html" });
+    now = 1000;
+    await waitFor(() => expect(requested(fetch)).toEqual(["", "?page=docs%2Fabout.html", ""]));
+    await waitFor(() => expect(frame()).toHaveAttribute("srcdoc", expect.stringContaining("<h1>Home</h1>")));
+    expect(screen.queryByRole("navigation", { name: "Artifact page" })).not.toBeInTheDocument();
   });
 
   it("explains a page that cannot open, offers the way back, and never shows a blank frame", async () => {

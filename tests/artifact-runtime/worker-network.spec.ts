@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
   ARTIFACT_META_POLICY,
   PROBE_OUTCOME_SOURCE,
+  developmentReportOnlyPolicy,
   productionViewerPolicies,
   renderArtifactDocument,
   startRuntimeServer,
@@ -104,3 +105,34 @@ test("the previous worker-src 'none' policy keeps a blob: worker from starting",
   await page.waitForTimeout(750);
   expect(foreignTrap.hits).toEqual([]);
 });
+
+// The development app sends its policy as report-only, and the srcdoc frame inherits it.
+// A report-only violation never blocks anything, so the bridge must not report it as a
+// runtime error; the current policy also allows blob: workers, so none is raised.
+function reportOnlyWorkerDocument(): string {
+  return `<!doctype html><html><head><title>Report-only worker</title></head><body><script>
+const dispositions = [];
+addEventListener("securitypolicyviolation", event => dispositions.push(event.effectiveDirective + ":" + event.disposition));
+const instance = new Worker(URL.createObjectURL(new Blob(["postMessage('started')"], { type: "text/javascript" })));
+instance.onmessage = () => setTimeout(() => parent.postMessage({ type: "aiqsa_probe", name: "report-only", started: true, dispositions }, "*"), 300);
+instance.onerror = event => { event.preventDefault(); parent.postMessage({ type: "aiqsa_probe", name: "report-only", started: false, dispositions }, "*"); };
+</script></body></html>`;
+}
+
+const reportOnlyModes = [
+  { name: "the development report-only policy", policy: developmentReportOnlyPolicy, violation: false },
+  { name: "a report-only policy without worker-src", policy: () => developmentReportOnlyPolicy().replace(/; worker-src [^;]*/u, ""), violation: true }
+];
+
+for (const mode of reportOnlyModes) {
+  test(`a parent with ${mode.name} starts a blob: worker without a runtime error`, async ({ page }) => {
+    const policy = mode.policy();
+    expect(policy.includes("worker-src")).toBe(!mode.violation);
+    await page.goto(host.hostPage(renderArtifactDocument(reportOnlyWorkerDocument()), [], [policy]));
+    const { result, messages } = await waitForProbe(page, "report-only");
+    expect(result.started).toBe(true);
+    if (!mode.violation) expect(result.dispositions).toEqual([]);
+    else expect(result.dispositions, "the control must raise a report-only violation").toContain("worker-src:report");
+    expect(messages.filter(message => (message as { type?: string })?.type === "aiqsa_artifact_runtime_error")).toEqual([]);
+  });
+}

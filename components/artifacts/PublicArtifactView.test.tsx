@@ -205,6 +205,29 @@ describe("public artifact body", () => {
     expect(fetch.mock.calls.filter(([path]) => !path.endsWith("/manifest")).map(([path, init]) => [new URL(path, "https://app.example").search, number(init)]))
       .toEqual([["", 3], ["?page=about.html", 3], ["", 1], ["?page=missing.html", 1], ["", 1]]);
   });
+  it("opens the link clicked while another page loads once that page has arrived", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    let release!: () => void;
+    const page = (path: string) => new Response(`${ARTIFACT_BRIDGE_SCRIPT_OPEN}const initial=${ARTIFACT_STORAGE_PLACEHOLDER};</script><p>${path} page</p>`,
+      { headers: { "content-type": "text/html", [ARTIFACT_PUBLIC_VERSION_HEADER]: "1", [ARTIFACT_PAGE_HEADER]: path } });
+    const fetch = vi.fn(async (path: string) => {
+      if (path.endsWith("/manifest")) return Response.json({ publication: manifest() });
+      const selected = new URL(path, "https://app.example").searchParams.get("page");
+      return selected === "about.html" ? new Promise<Response>(resolve => { release = () => resolve(page("about.html")); }) : page(selected ?? "index.html");
+    });
+    vi.stubGlobal("fetch", fetch);
+    const post = (data: unknown) => act(() => window.dispatchEvent(new MessageEvent("message", { origin: "null",
+      source: (screen.getByLabelText("Public v1", { selector: "iframe" }) as HTMLIFrameElement).contentWindow, data })));
+    render(<PublicArtifactView initialManifest={manifest()} token="fixture" />);
+    expect(await screen.findByLabelText("Public v1")).toHaveAttribute("srcdoc", expect.stringContaining("index.html page"));
+    post({ type: "aiqsa_artifact_navigate", path: "about.html" });
+    await screen.findByRole("navigation", { name: "Artifact page" });
+    now = 1000; post({ type: "aiqsa_artifact_navigate", path: "guide.html" });
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByLabelText("Public v1")).toHaveAttribute("srcdoc", expect.stringContaining("guide.html page")));
+    expect(fetch.mock.calls.filter(([path]) => !path.endsWith("/manifest")).map(([path]) => new URL(path, "https://app.example").search))
+      .toEqual(["", "?page=about.html", "?page=guide.html"]);
+  });
   it("downloads exactly the displayed version using the bounded header", async () => {
     const value = manifest("version_set", [1, 3], 3); let downloaded: HTMLAnchorElement | undefined;
     const fetch = vi.fn(async (path: string, init?: RequestInit) => path.endsWith("?download=zip")

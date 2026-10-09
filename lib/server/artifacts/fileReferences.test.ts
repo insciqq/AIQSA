@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { ConversationFileReference } from "../providers/types";
-import { artifactTool, describeArtifactTool } from "../tools/artifact";
+import { ARTIFACT_SAVED_FILE_RULE, artifactFileInstructions, artifactTool, describeArtifactTool } from "../tools/artifact";
 import type { ToolExecutionContext } from "../tools/types";
 import type { StorageAdapter } from "../uploads/storage";
 import { createArtifactService } from "./service";
@@ -31,6 +31,16 @@ describe("artifact references admitted at run acceptance", () => {
     expect(findMany.mock.calls[0]![0].where.OR).toEqual([{ id: { in: allowed } }, { producerModelRunId: "run" }]);
   });
 
+  it("tells a Workspace run that a saved file is only the input of the artifact the user asked for", () => {
+    const workspace = artifactFileInstructions([file], true)!;
+    expect(workspace).toContain(ARTIFACT_SAVED_FILE_RULE);
+    expect(workspace).toContain("call create_artifact with asset_ref = the returned attachment_id and mimeType = its mime_type");
+    expect(workspace.trimEnd().endsWith(ARTIFACT_SAVED_FILE_RULE)).toBe(true);
+    const offline = artifactFileInstructions([file], false)!;
+    expect(offline).not.toContain("checkpoint_outputs");
+    expect(artifactFileInstructions([], false)).toBeNull();
+  });
+
   it("keeps the frozen description within the snapshot bound under the widest resource policy", () => {
     const host = (prefix: string, index: number) => `${prefix}${index}-${"a".repeat(40)}.${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.example`;
     const widest = { on: true, libraryHosts: ["cdnjs.cloudflare.com", "cdn.jsdelivr.net", "unpkg.com", "fonts.googleapis.com", "fonts.gstatic.com",
@@ -41,6 +51,8 @@ describe("artifact references admitted at run acceptance", () => {
     for (const rule of ["asset_ref to the exact file_id of a conversation file", "unpack: true on an application/zip reference",
       "edits even at intent=create", "ordinary fetch('data.json')", "Links to other local HTML pages open inside the viewer",
       "24 MiB per file, 32 MiB per artifact, 64 MiB rendered page"]) expect(description).toContain(rule);
+    expect(description).toContain("only a download until a create_artifact call references its attachment_id");
+    expect(description).toContain("always pass the bytes as data: a URL (getDocument('doc.pdf') or { url }) fails in the viewer");
     const files = artifactTool(description).inputSchema.properties as { files: { items: { properties: { asset_ref: { description: string } } } } };
     expect(files.files.items.properties.asset_ref.description).toContain("mimeType must equal the file's MIME type");
   });

@@ -687,7 +687,7 @@ test("xlsx-dashboard: a revenue dashboard uses Workspace JSON with the file's to
     const fixture = salesWorkbookXlsx();
     await startChat(stand);
     await attach(stand, [composerFile(fixture)]);
-    const turn = await sendTurn(stand, "Сделай дашборд выручки по регионам из этого файла");
+    const turn = await sendTurn(stand, "Сделай из этого файла артефакт: дашборд выручки по регионам");
     const bundle = await latestBundle(stand, turn);
     stand.step = "oracles";
     const workbook = workbookInBundle(bundle, fixture);
@@ -733,7 +733,7 @@ test("xlsx-view: the workbook as is shows its visible sheet from a Workspace con
     const fixture = salesWorkbookXlsx();
     await startChat(stand);
     await attach(stand, [composerFile(fixture)]);
-    const turn = await sendTurn(stand, "Покажи этот xlsx как есть");
+    const turn = await sendTurn(stand, "Покажи этот xlsx как есть — артефактом");
     const bundle = await latestBundle(stand, turn);
     stand.step = "oracles";
     const files = contentFiles(bundle);
@@ -763,7 +763,7 @@ test("docx-view: the document is shown through an HTML or PDF made with LibreOff
     const fixture = reportDocx();
     await startChat(stand);
     await attach(stand, [composerFile(fixture)]);
-    const turn = await sendTurn(stand, "Покажи этот документ");
+    const turn = await sendTurn(stand, "Покажи этот документ артефактом");
     const bundle = await latestBundle(stand, turn);
     stand.step = "oracles";
     officeView(stand, bundle, fixture.expected.phrases, 1);
@@ -777,7 +777,7 @@ test("pptx-view: the deck is shown through an HTML or PDF made with LibreOffice 
     const fixture = deckPptx();
     await startChat(stand);
     await attach(stand, [composerFile(fixture)]);
-    const turn = await sendTurn(stand, "Покажи эту презентацию");
+    const turn = await sendTurn(stand, "Покажи эту презентацию артефактом");
     const bundle = await latestBundle(stand, turn);
     stand.step = "oracles";
     officeView(stand, bundle, fixture.expected.slideTitles, fixture.expected.slideCount);
@@ -953,7 +953,7 @@ test("zip-site: a website ZIP becomes a multi-page artifact at its root, with lo
   });
 });
 
-test("module-site: a site of several ES modules is bundled in the Workspace and its page computes the result", async ({ page }, testInfo) => {
+test("module-site: a site of several ES modules is built in the Workspace and its page computes the result", async ({ page }, testInfo) => {
   test.setTimeout(SCENARIO_TIMEOUT_MS);
   await withScenario(page, testInfo, "module-site", async (stand) => {
     const fixture = multiModuleSiteZip();
@@ -965,9 +965,12 @@ test("module-site: a site of several ES modules is bundled in the Workspace and 
     const bundle = await latestBundle(stand, turn);
     stand.step = "oracles";
     const scripts = [...bundle.outputs.values()].filter((file) => /javascript/iu.test(file.mimeType) || /\.m?js$/iu.test(file.fileName));
-    Object.assign(stand.summary, { workspaceScripts: scripts.length, bundledScriptInArtifact: bundle.manifest.some((file) =>
-      sourceOf(bundle, file.path) === "workspace" && /\.m?js$/iu.test(file.path)) });
-    expect(scripts.length, "the run bundled the modules into a script in the Workspace").toBeGreaterThan(0);
+    const workspaceCommands = turn.calls.filter((call) => /sandbox_(shell|exec)/u.test(call.toolName)).length;
+    const scriptSources = bundle.manifest.filter((file) => /\.m?js$/iu.test(file.path)).map((file) => sourceOf(bundle, file.path));
+    // Recorded, not asserted: the model may reference the saved bundle by attachment id or write it into the call.
+    Object.assign(stand.summary, { workspaceScripts: scripts.length, workspaceCommands,
+      bundleReference: scriptSources.includes("workspace") ? "attachment" : scriptSources.includes("inline") ? "inline" : "page" });
+    expect(workspaceCommands, "the run built the site with a Workspace command").toBeGreaterThan(0);
     await openInChat(stand, bundle);
     await expect(artifactFrame(page).locator(fixture.expected.resultSelector), "the bundled page computes the result")
       .toHaveText(fixture.expected.result, { timeout: 60_000 });
@@ -982,7 +985,7 @@ test("attach-original: on explicit request the dashboard also carries the origin
     const fixture = salesWorkbookXlsx();
     await startChat(stand);
     await attach(stand, [composerFile(fixture)]);
-    const turn = await sendTurn(stand, "Сделай дашборд по регионам и приложи исходный xlsx-файл");
+    const turn = await sendTurn(stand, "Сделай артефакт-дашборд по регионам и приложи исходный xlsx-файл");
     const bundle = await latestBundle(stand, turn);
     stand.step = "oracles";
     const held = holdsBytes(bundle, fixture.bytes);
