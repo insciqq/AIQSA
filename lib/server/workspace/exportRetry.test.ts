@@ -43,7 +43,7 @@ describe("Workspace export retry classification", () => {
     ["an unavailable database", new Prisma.PrismaClientInitializationError("PRIVATE_CANARY", "test", "P1001")],
     ["another connector failure", connector("23505")],
     ["an application refusal", new WorkspaceRuntimeError("workspace_operation_stale")],
-    ["an application refusal keeping a database cause", new WorkspaceRuntimeError("workspace_output_export_failed", { cause: lockTimeout })],
+    ["an application refusal keeping a database cause's facts", new WorkspaceRuntimeError("workspace_output_export_failed", { factsOf: lockTimeout })],
     ["a plain error", new Error("canceling statement due to lock timeout")],
     ["an imposter", Object.assign(new Error("x"), { code: "P2034", name: "PrismaClientKnownRequestError" })],
     ["no value", undefined]
