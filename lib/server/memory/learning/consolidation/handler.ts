@@ -464,7 +464,7 @@ export function createMemoryFactConsolidationHandler(
       }
       await deps.probeAuthority(job.userId, "MEMORY_CONSOLIDATE").catch((error) => {
         const decision = authorityGate(error);
-        throw new MemoryCoordinatorError(decision.errorCode, true, { cause: error });
+        throw new MemoryCoordinatorError(decision.errorCode, true, { factsOf: error });
       });
       await context.setStage("consolidation_binding");
       const binding = await deps.execution.admission.bind(job.userId, {
@@ -648,7 +648,7 @@ export function createMemoryFactVerificationHandler(
       }
       await deps.probeAuthority(job.userId, "MEMORY_VERIFY").catch((error) => {
         const decision = authorityGate(error);
-        throw new MemoryCoordinatorError(decision.errorCode, true, { cause: error });
+        throw new MemoryCoordinatorError(decision.errorCode, true, { factsOf: error });
       });
       await context.setStage("verification_binding");
       const binding = await deps.execution.admission.bind(job.userId, {

@@ -336,7 +336,7 @@ async function applyDurableResults(
       throw new MemoryCoordinatorError(
         "memory_embedding_batch_apply_retryable",
         true,
-        { cause: error }
+        { factsOf: error }
       );
     }
   }
@@ -496,7 +496,7 @@ export function createMemoryEmbeddingBatchHandler(
         MEMORY_EMBEDDING_BATCH_VERSIONS
       ).catch((error: unknown) => {
         const decision = authorityGate(error);
-        throw new MemoryCoordinatorError(decision.errorCode, true, { cause: error });
+        throw new MemoryCoordinatorError(decision.errorCode, true, { factsOf: error });
       });
       const incompatible = requestItems.filter((item) =>
         !item.target ||

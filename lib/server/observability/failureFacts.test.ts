@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { inspect } from "node:util";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
@@ -42,7 +43,12 @@ function expectContentFree(value: unknown): void {
 describe("failure facts of a cause chain", () => {
   it("names an expired transaction behind a Workspace handoff failure", () => {
     const expired = expiredTransaction();
-    const handoff = new WorkspaceHandoffFailure(new WorkspaceRuntimeError("workspace_runtime_unavailable", { cause: expired }));
+    const step = new WorkspaceRuntimeError("workspace_runtime_unavailable", { factsOf: expired });
+    const handoff = new WorkspaceHandoffFailure(step);
+    // The chain stops at the facts-retaining wrapper: no raw database error is reachable.
+    expect(handoff.cause).toBe(step);
+    expect(step.cause).toBeUndefined();
+    expect(inspect(handoff, { depth: 8 })).not.toContain(CANARY);
     expect([databaseFailureCode(handoff), databaseFailureKind(handoff)]).toEqual(["P2028", "transaction_expired"]);
     const event = record("run_execution", {
       error: handoff, run_id: "run_1", stage: "completion", outcome: "failed", code: "workspace_runtime_unavailable",
@@ -70,10 +76,12 @@ describe("failure facts of a cause chain", () => {
 
   it("names the system code and syscall behind the MCP and provider transport wrappers without the address", () => {
     const system = unreachable();
-    const mcp = new McpSafeFetchError("mcp_http_request_failed", { requestNotSent: true, cause: system });
-    expect(mcp).toMatchObject({ code: "mcp_http_request_failed", message: "mcp_http_request_failed", requestNotSent: true, cause: system });
-    const provider = new ProviderSafeFetchError("provider_http_request_failed", { cause: mcp });
+    const mcp = new McpSafeFetchError("mcp_http_request_failed", { requestNotSent: true, factsOf: system });
+    expect(mcp).toMatchObject({ code: "mcp_http_request_failed", message: "mcp_http_request_failed", requestNotSent: true });
+    const provider = new ProviderSafeFetchError("provider_http_request_failed", { factsOf: mcp });
     for (const error of [mcp, provider]) {
+      expect(error.cause).toBeUndefined();
+      expectContentFree(inspect(error, { depth: 8 }));
       const event = record("service_operation", { error, subsystem: "memory", stage: "process", outcome: "failed", code: "unknown" });
       expect(event).toMatchObject({ sys_code: "ENETUNREACH", syscall: "connect", cause_class: "Error" });
       expect(event.cause_site).toMatch(TEST_SITE);
@@ -95,7 +103,7 @@ describe("failure facts of a cause chain", () => {
 
   it("keeps a coordinator failure free of its cause yet retains the cause's facts", () => {
     const expired = expiredTransaction();
-    const failure = new MemoryCoordinatorError("memory_fact_apply_retryable", true, { cause: expired });
+    const failure = new MemoryCoordinatorError("memory_fact_apply_retryable", true, { factsOf: expired });
     expect(failure).not.toHaveProperty("cause");
     expect(failure.message).toBe("memory_fact_apply_retryable");
     expect([databaseFailureCode(failure), databaseFailureKind(failure)]).toEqual(["P2028", "transaction_expired"]);
