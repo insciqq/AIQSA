@@ -188,6 +188,7 @@ function orderedAncestorPath<TMessage extends { id: string; parentMessageId: str
 class BranchAttachmentCloneError extends Error {
   constructor() {
     super("branch_attachment_clone_failed");
+    this.name = "BranchAttachmentCloneError";
   }
 }
 

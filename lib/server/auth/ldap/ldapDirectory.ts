@@ -35,6 +35,7 @@ export type LdapAuthenticationResult =
 class LdapStepError extends Error {
   constructor(readonly code: LdapUnavailableCode) {
     super(code);
+    this.name = "LdapStepError";
   }
 }
 

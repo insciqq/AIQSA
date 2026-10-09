@@ -564,7 +564,7 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error.message === "provider_run_aborted");
 }
 
-class RunPipelineError extends Error {
+export class RunPipelineError extends Error {
   code: string;
   readonly report?: ProviderStreamSafetyReport;
   readonly imageFailure?: ImageFailureEvidence;
@@ -574,6 +574,7 @@ class RunPipelineError extends Error {
     httpStatus?: number, cause?: unknown) {
     // The cause is kept only for content-free database diagnostics.
     super(message, cause === undefined ? undefined : { cause });
+    this.name = "RunPipelineError";
     this.code = code;
     if (report) this.report = report;
     if (imageFailure) this.imageFailure = imageFailure;

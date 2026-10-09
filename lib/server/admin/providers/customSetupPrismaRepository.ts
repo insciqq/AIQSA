@@ -21,7 +21,7 @@ type CustomSetupRepositoryOptions = Readonly<{
   exposeFake?: boolean;
 }>;
 
-class CustomSetupCatalogUnavailableError extends Error {}
+class CustomSetupCatalogUnavailableError extends Error { override name = "CustomSetupCatalogUnavailableError"; }
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;

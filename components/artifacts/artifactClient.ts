@@ -1,7 +1,7 @@
 import { decodeArtifactDetail, decodeArtifactVersionPage, decodeArtifactPublicationPage } from "@/lib/contracts/artifacts";
 
 export class ArtifactRequestError extends Error {
-  constructor(message: string, readonly status: number, readonly code: string | null) { super(message); }
+  constructor(message: string, readonly status: number, readonly code: string | null) { super(message); this.name = "ArtifactRequestError"; }
 }
 
 export async function artifactRequest(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
