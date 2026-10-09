@@ -1,5 +1,8 @@
 import { logEvent, type LifecycleFields, type LifecycleOutcome, type LifecycleStage } from "../../observability";
 import { databaseFailureCode, databaseFailureKind } from "../../observability/databaseFailure";
+import {
+  observeTransactionTimings, transactionTimingFields, type DbTransactionTiming
+} from "../../observability/transactionTiming";
 
 export function memoryStage(stage: string): LifecycleStage {
   switch (stage) {
@@ -54,20 +57,24 @@ export async function memoryPersistence(
   fields: Readonly<{ action?: LifecycleFields["action"]; work_stage?: LifecycleStage; code?: string; delay_ms?: number; retry_at?: string }> = {},
   quietSuccess = false
 ): Promise<boolean> {
+  // The write's last timed transaction (a commit), if it ran one.
+  let timing: DbTransactionTiming | undefined;
   try {
-    const accepted = await write();
+    const accepted = await observeTransactionTimings(write, (settled) => { timing = settled; });
     if (!quietSuccess || !accepted) logEvent("job_persistence", {
       subsystem: "memory", job_id: work.id, attempt: work.attemptCount, stage,
       ...fields, outcome: accepted ? "confirmed" : "not_applied",
       retry_at: accepted ? fields.retry_at : undefined,
-      delay_ms: accepted ? fields.delay_ms : undefined
+      delay_ms: accepted ? fields.delay_ms : undefined,
+      ...transactionTimingFields(timing)
     });
     return accepted;
   } catch (error) {
     logEvent("job_persistence", {
       subsystem: "memory", job_id: work.id, attempt: work.attemptCount, stage,
       action: fields.action, work_stage: fields.work_stage, code: fields.code, outcome: "unconfirmed",
-      prisma_code: databaseFailureCode(error), db_failure: databaseFailureKind(error)
+      prisma_code: databaseFailureCode(error), db_failure: databaseFailureKind(error),
+      ...transactionTimingFields(timing)
     });
     throw error;
   }

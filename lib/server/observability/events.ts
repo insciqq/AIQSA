@@ -19,6 +19,8 @@ export type LifecycleFields = CaughtError & Readonly<{
   subsystem: Subsystem; stage: LifecycleStage; outcome: LifecycleOutcome;
   work_stage?: LifecycleStage;
   job_id?: string; run_id?: string; generation_id?: string; attempt?: number; duration_ms?: number;
+  /** Time a timed transaction spent in its lock statements (transactionTiming.ts). */
+  lock_wait_ms?: number;
   code?: string; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number; action?: LifecycleAction;
   delay_ms?: number; retry_at?: string; count?: number; repeat_count?: number;
   claimed_count?: number; failed_count?: number; completed_count?: number; pending_count?: number;
@@ -67,6 +69,17 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   /** Why an answer stream ended before its completion event. */
   stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
 }>;
+/** Subsystems whose hot-path interactive transactions are timed (`db_transaction`). */
+export type DbTransactionSubsystem = "memory" | "workspace" | "runs";
+/** The closed set of timed transactions: Memory job and deletion commits, Workspace export steps, run terminal writes. */
+export type DbTransactionOperation = "job_commit" | "deletion_commit" |
+  "export_claim" | "export_recovery_claim" | "export_reserve" | "export_seal" | "export_pending" | "export_complete" |
+  "export_failed" | "export_renew" | "export_prepare_output" | "export_settle_output" |
+  "run_complete" | "run_fail" | "run_cancel" | "usage_settlement";
+/** The Memory job kinds (Prisma `MemoryJobKind`). */
+export type DbTransactionJobKind = "MEMORY_COMMAND" | "INDEX_HISTORY" | "EXTRACT_FACTS" | "CONSOLIDATE_CANDIDATE" |
+  "VERIFY_CANDIDATE" | "EMBED_ITEMS" | "RECONCILE_BRANCH" | "RECONCILE_SOURCE" | "REBUILD_INDEX" | "RECLASSIFY_FACTS" |
+  "RESOLVE_FACT_RELATIONS" | "SYNTHESIZE_MEMORIES";
 export type PushTransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "unknown";
 export type EventFields = {
   image_execution: CaughtError & Readonly<{
@@ -98,7 +111,12 @@ export type EventFields = {
   run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf" }>;
   run_preparation: CaughtError & Readonly<{ run_id: string; stage: "preparing"; outcome: PreparationOutcome; duration_ms?: number; code?: string }>;
   run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion" | "first_output"; outcome: OperationOutcome; duration_ms?: number; after?: "dispatch" | "tools"; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number }>;
-  run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;
+  run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string; db_failure?: DatabaseFailureKind; duration_ms?: number; lock_wait_ms?: number }>;
+  /** A timed transaction that held its rows past the slow bound: warn, error past the foreground budget. */
+  db_transaction: Readonly<{
+    subsystem: DbTransactionSubsystem; operation: DbTransactionOperation; job_kind?: DbTransactionJobKind;
+    duration_ms: number; lock_wait_ms: number; outcome: "committed" | "rolled_back"; db_failure?: DatabaseFailureKind;
+  }>;
   run_stop_requested: Record<string, never>;
   run_stop_admission: Readonly<{ run_id?: string; outcome: "accepted" | "not_found" | "not_cancelable" | "unauthorized" | "failed"; prisma_code?: string }>;
   run_http_failed: CaughtError & Readonly<{ stage: "send" | "regenerate" | "cancel"; code?: string; reason?: Reason; prisma_code?: string }>;

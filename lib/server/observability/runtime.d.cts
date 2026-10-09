@@ -2,6 +2,10 @@ import type { EventFields, ObservabilityContext, ProcessRole, EmergencyFailure, 
 import type { Writable } from "node:stream";
 export const MAX_RECORD_BYTES: number;
 export const MAX_OUTPUT_BYTES: number;
+/** A tracked transaction holding its rows longer than this is an error: the foreground request budget. */
+export const DB_TRANSACTION_FOREGROUND_BUDGET_MS: number;
+/** A tracked transaction holding its rows longer than this warns; a shorter one logs nothing. */
+export const DB_TRANSACTION_SLOW_MS: number;
 export function createTraceId(): string;
 export function getContext(): ObservabilityContext | undefined;
 /** Derives a frame from the current one. `user_id` comes only from a server-owned

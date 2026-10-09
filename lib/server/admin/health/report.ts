@@ -23,6 +23,9 @@ import type { FailedRunLoad, FailedRunQuery } from "./failedRuns";
 import { adminHealthQueueFindings, type AdminHealthQueuesService } from "./queues";
 import type { AdminHealthRunLookup } from "./runLookup";
 import type { AdminHealthService } from "./service";
+import { healthSlowTransactions, slowTransactionName, type HealthSlowTransactions } from "./slowTransactions";
+import type { TelemetryCounterGroup } from "../../telemetry/store";
+import { DB_TRANSACTION_FOREGROUND_BUDGET_MS, DB_TRANSACTION_SLOW_MS } from "../../observability/runtime.cjs";
 
 /**
  * The operator's command-line health report (`./aiqsa.sh health`): the same
@@ -76,6 +79,12 @@ export type HealthReport = {
   /** Background queues that are slow, stalled or could not be read. */
   queues: AdminHealthQueueRow[];
   queuesCheckedAt: string;
+  /**
+   * Tracked database transactions that held their rows past the slow bound
+   * (warn) or the foreground budget (error) in the range, errors first: the
+   * holder of a contended row beside the transactions that waited for it.
+   */
+  slowTransactions: HealthSlowTransactions;
   /** The newest error and fatal incidents of the range, newest first. */
   incidents: AdminHealthIncident[];
   /** More incidents exist in the range than are listed. */
@@ -117,6 +126,8 @@ export type HealthReportSources = Readonly<{
   connections(): Promise<readonly HealthReportConnection[]>;
   /** Every user's failed runs of a range by failure code (`readFailedRunLoad`). */
   failedRuns(query: Omit<FailedRunQuery, "statementTimeoutMs">): Promise<FailedRunLoad>;
+  /** The `db_transaction` counters of a range (`HEALTH_SLOW_TRANSACTION_QUERY`). */
+  slowTransactions(span: Readonly<{ from: Date; to: Date }>): Promise<readonly TelemetryCounterGroup[]>;
 }>;
 
 export type HealthRunReportSources = Readonly<{
@@ -131,13 +142,14 @@ function incidentFilters(range: AdminHealthRange, q: string | null): AdminHealth
 export async function collectHealthReport(sources: HealthReportSources, range: AdminHealthRange): Promise<HealthReport> {
   // The counters first: an unreachable database fails once instead of once per queue.
   const health = await sources.health.read(range);
-  const [queues, findings, connections, page, failedRuns] = await Promise.all([
+  const span = { from: new Date(health.from), to: new Date(health.to) };
+  const [queues, findings, connections, page, failedRuns, slowTransactions] = await Promise.all([
     sources.queues.read(),
     sources.findings(),
     sources.connections(),
     sources.health.incidents(incidentFilters(range, null)),
-    sources.failedRuns({ from: new Date(health.from), to: new Date(health.to),
-      perCode: HEALTH_REPORT_FAILED_RUN_REFERENCES, groupLimit: HEALTH_REPORT_FAILED_RUN_CODE_LIMIT })
+    sources.failedRuns({ ...span, perCode: HEALTH_REPORT_FAILED_RUN_REFERENCES, groupLimit: HEALTH_REPORT_FAILED_RUN_CODE_LIMIT }),
+    sources.slowTransactions(span)
   ]);
   const errorsByCategory = Object.fromEntries(adminHealthCategories.map((category) =>
     [category, health.series.reduce((total, bucket) => total + bucket.counts[category], 0)])) as Record<AdminHealthCategory, number>;
@@ -176,6 +188,7 @@ export async function collectHealthReport(sources: HealthReportSources, range: A
     restarts: health.summary.roleStarts.filter((role) => role.restarts > 0),
     queues: queues.queues.filter((row) => row.state !== "ok"),
     queuesCheckedAt: queues.checkedAt,
+    slowTransactions: healthSlowTransactions(slowTransactions),
     incidents: page.incidents.slice(0, HEALTH_REPORT_INCIDENT_LIMIT),
     incidentsTruncated: page.incidents.length > HEALTH_REPORT_INCIDENT_LIMIT || page.nextCursor !== null
   };
@@ -379,14 +392,25 @@ export function incidentLines(incident: AdminHealthIncident): string[] {
   const transaction = budget === null && elapsed === null ? null
     : `transaction ${elapsed === null ? "?" : elapsed} ms of ${budget === null ? "?" : budget} ms`;
   const system = [detailText("sys_code"), detailText("syscall")].filter((part): part is string => part !== null).join(" ");
+  // A slow transaction names itself and how long it held its rows; a waiter
+  // (any record with a lock wait) how long it waited and in how long a transaction.
+  const slow = incident.event === "db_transaction";
+  const held = detailNumber("duration_ms");
+  const lockWait = detailNumber("lock_wait_ms");
+  const hold = slow
+    ? [held === null ? null : `held ${duration(held)}`, lockWait === null ? null : `lock wait ${duration(lockWait)}`]
+      .filter((part): part is string => part !== null).join(", ")
+    : lockWait === null ? null : `lock wait ${duration(lockWait)}${held === null ? "" : ` of ${duration(held)}`}`;
   const detail = [
     located(detailText("error_class"), detailText("error_site")),
     causeClass === null ? null : `cause ${causeClass}`,
     database || null,
     transaction,
+    hold || null,
     system ? `system ${system}` : null,
     incident.code === null ? null : `code ${incident.code}`,
-    where || null,
+    slow ? slowTransactionName({ subsystem: incident.subsystem, operation: detailText("operation"), jobKind: detailText("job_kind") })
+      : where || null,
     incident.connectionName,
     incident.modelName,
     incident.httpStatus === null ? null : `HTTP ${incident.httpStatus}`
@@ -509,6 +533,31 @@ function queueSection(report: HealthReport): string[] {
   ];
 }
 
+const TEXT_SLOW_TRANSACTIONS = 10;
+
+/** The slow transaction section's title in both reports. */
+export const SLOW_TRANSACTION_TITLE = `Slow database transactions (held rows over ${duration(DB_TRANSACTION_SLOW_MS)}; ` +
+  `ERROR: over the ${duration(DB_TRANSACTION_FOREGROUND_BUDGET_MS)} budget)`;
+
+/** Slow transaction rows as both reports print them. */
+export function slowTransactionLines(rows: HealthSlowTransactions["rows"]): string[] {
+  return rows.flatMap((row) => wrapParts([
+    slowTransactionName(row), row.outcome === "rolled_back" ? "rolled back" : null, plural(row.count, "time"),
+    row.maxMs === null ? null : `max ${duration(row.maxMs)}`, `last ${minute(row.lastSeenAt)}`
+  ].filter((part): part is string => part !== null), `  ${fit(row.level.toUpperCase(), 5)}  `, " · "));
+}
+
+function slowTransactionSection(report: HealthReport): string[] {
+  const { rows, truncated } = report.slowTransactions;
+  if (rows.length === 0) return [];
+  const shown = rows.slice(0, TEXT_SLOW_TRANSACTIONS);
+  return [
+    SLOW_TRANSACTION_TITLE,
+    ...slowTransactionLines(shown),
+    ...(rows.length > shown.length || truncated ? ["  and more (--json lists them)"] : [])
+  ];
+}
+
 function incidentSection(report: HealthReport): string[] {
   if (report.incidents.length === 0) return [];
   return [
@@ -518,7 +567,8 @@ function incidentSection(report: HealthReport): string[] {
 }
 
 /** Report sections in order, attention and failed runs first; a section without findings prints nothing. */
-const SECTIONS: readonly Section[] = [attentionSection, failedRunSection, errorSection, failureSection, providerSection, restartSection, queueSection, incidentSection];
+const SECTIONS: readonly Section[] = [attentionSection, failedRunSection, errorSection, failureSection, providerSection, restartSection,
+  queueSection, slowTransactionSection, incidentSection];
 
 export function formatHealthReport(report: HealthReport): string {
   const header = `AIQSA health · last ${RANGE_COPY[report.range]} · ${minute(report.from)} to ${minute(report.to)} UTC`;

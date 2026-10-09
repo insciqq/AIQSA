@@ -165,7 +165,7 @@ export type AdminHealthIncidentFilters = {
   range: AdminHealthRange;
 };
 
-const BACKGROUND_EVENTS = new Set(["job_attempt", "job_persistence", "run_recovery", "runtime_lifecycle", "service_operation"]);
+const BACKGROUND_EVENTS = new Set(["job_attempt", "job_persistence", "run_recovery", "runtime_lifecycle", "service_operation", "db_transaction"]);
 const REQUEST_EVENTS = new Set(["http.request_completed", "http.request_failed"]);
 
 /** Every error-level event belongs to exactly one chart category. */
