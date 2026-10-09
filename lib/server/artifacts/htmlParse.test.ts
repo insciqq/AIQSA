@@ -3,7 +3,7 @@ import { parse } from "parse5";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeArtifactOperation } from "@/lib/contracts/artifacts";
 import type { ArtifactBundle, ArtifactBundleFile } from "./bundle";
-import { ARTIFACT_HTML_MAX_START_TAGS, parseArtifactHtml } from "./htmlParse";
+import { ARTIFACT_HTML_ATTRIBUTE_LIMITS, ARTIFACT_HTML_MAX_START_TAGS, parseArtifactHtml } from "./htmlParse";
 
 /** The whole tree, source locations included, without the parent back-references. */
 const tree = (node: unknown) => JSON.stringify(node, (key, value: unknown) => key === "parentNode" ? undefined : value);
@@ -114,6 +114,20 @@ describe("artifact markup size bound", () => {
     const tags = "<i></i>".repeat(ARTIFACT_HTML_MAX_START_TAGS + 1);
     expect(() => parseArtifactHtml(tags, { path: "big.html" }))
       .toThrowError(expect.objectContaining({ code: "artifact_page_too_complex", path: "big.html", hint: expect.stringContaining("250,000") }));
+  });
+
+  it("refuses a tag with more distinct attributes than the bound before the quadratic duplicate check", () => {
+    const attributes = Array.from({ length: 75_000 }, (_, index) => ` a${index}`).join("");
+    const started = performance.now();
+    expect(() => parseArtifactHtml(`<div${attributes}></div>`, { path: "wide.html" }))
+      .toThrowError(expect.objectContaining({ code: "artifact_page_too_complex", path: "wide.html" }));
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("keeps ordinary attributes, duplicates and the exact tree within the bounds", () => {
+    const own = Array.from({ length: ARTIFACT_HTML_ATTRIBUTE_LIMITS.perTag }, (_, index) => ` data-a${index}="${index}"`).join("");
+    const html = `<p${own}>x</p><i a a a b>y</i>`;
+    expect(parseArtifactHtml(html, { sourceCodeLocationInfo: true })).toEqual(parse(html, { sourceCodeLocationInfo: true }));
   });
 
   it("counts only a < followed by a letter, so scripts, data and text stay unbounded", () => {

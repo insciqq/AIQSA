@@ -58,6 +58,25 @@ function collectCharacterRuns(tokenizer: CharacterTokenizer): void {
   };
 }
 
+/**
+ * Attributes one start tag, and one markup text, may carry. parse5 checks each
+ * new attribute against every earlier one of its tag, so a single tag with tens
+ * of thousands of distinct attributes takes seconds of synchronous work.
+ */
+export const ARTIFACT_HTML_ATTRIBUTE_LIMITS = Object.freeze({ perTag: 128, total: 1_000_000 });
+
+type AttributeTokenizer = { currentToken: { attrs?: readonly unknown[] } | null; _leaveAttrName(): void };
+
+/** Refuses before parse5's duplicate check runs past the bound, so its cost stays linear. */
+function boundAttributes(tokenizer: AttributeTokenizer, refuse: () => never): void {
+  const leave = tokenizer._leaveAttrName.bind(tokenizer);
+  let total = 0;
+  tokenizer._leaveAttrName = () => {
+    if (++total > ARTIFACT_HTML_ATTRIBUTE_LIMITS.total || (tokenizer.currentToken?.attrs?.length ?? 0) >= ARTIFACT_HTML_ATTRIBUTE_LIMITS.perTag) refuse();
+    leave();
+  };
+}
+
 /** The default tree adapter, with adjacent text of one node joined after parsing instead of with `+=`. */
 function textCollectingAdapter(): Readonly<{ adapter: TreeAdapter<DefaultTreeAdapterMap>; finish(): void }> {
   const pending = new Map<TextNode, TextPieces>();
@@ -106,13 +125,16 @@ function startTagBound(html: string): number {
  * script otherwise needs most of a gigabyte while it parses.
  */
 export function parseArtifactHtml(html: string, options: Readonly<{ sourceCodeLocationInfo?: boolean; path?: string }> = {}): Document {
-  if (startTagBound(html) > ARTIFACT_HTML_MAX_START_TAGS) {
+  const refuse = (): never => {
     throw new ArtifactToolError("artifact_page_too_complex", { ...(options.path ? { path: options.path } : {}),
-      hint: `This markup has more than ${ARTIFACT_HTML_MAX_START_TAGS.toLocaleString("en-US")} tags; split it into several pages, or convert a large table to a PDF or a smaller page in the Workspace.` });
-  }
+      hint: `This markup has more than ${ARTIFACT_HTML_MAX_START_TAGS.toLocaleString("en-US")} tags or ${ARTIFACT_HTML_ATTRIBUTE_LIMITS.perTag} attributes on one tag; ` +
+        "split it into several pages, or convert a large table to a PDF or a smaller page in the Workspace." });
+  };
+  if (startTagBound(html) > ARTIFACT_HTML_MAX_START_TAGS) refuse();
   const text = textCollectingAdapter();
   const parser = new Parser<DefaultTreeAdapterMap>({ sourceCodeLocationInfo: options.sourceCodeLocationInfo ?? false, treeAdapter: text.adapter });
   collectCharacterRuns(parser.tokenizer as unknown as CharacterTokenizer);
+  boundAttributes(parser.tokenizer as unknown as AttributeTokenizer, refuse);
   parser.tokenizer.write(html, true);
   text.finish();
   return parser.document;
