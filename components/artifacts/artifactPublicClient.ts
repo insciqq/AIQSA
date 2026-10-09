@@ -6,6 +6,7 @@ export class ArtifactPublicRequestError extends Error {
     super(status === 429 ? "Too many requests. Wait a moment and try again."
       : status === 404 || status === 410 ? "This artifact is unavailable."
       : "Could not load this artifact. Try again.");
+    this.name = "ArtifactPublicRequestError";
   }
 }
 

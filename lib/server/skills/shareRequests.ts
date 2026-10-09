@@ -4,7 +4,7 @@ import type { SkillAudience, SkillRevisionSummary, SkillShareRequestState, Skill
 import { renderSkillMarkdown } from "./bundle";
 
 export class SkillSharingError extends Error {
-  constructor(readonly code: string, readonly status = 409) { super(code); }
+  constructor(readonly code: string, readonly status = 409) { super(code); this.name = "SkillSharingError"; }
 }
 
 export const skillRevisionSummary = (revision: { id: string; revisionNumber: number; name: string; createdAt: Date }): SkillRevisionSummary => ({

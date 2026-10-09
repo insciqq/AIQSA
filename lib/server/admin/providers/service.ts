@@ -413,7 +413,7 @@ type ActiveCheckResult =
   | { check?: AdminProviderActiveCheck; kind: "cancelled" | "failed" | "save_failed" | "stale" };
 
 class ActiveCheckpointError extends Error {
-  constructor(readonly kind: "save_failed" | "stale") { super("provider_checkpoint_failed"); }
+  constructor(readonly kind: "save_failed" | "stale") { super("provider_checkpoint_failed"); this.name = "ActiveCheckpointError"; }
 }
 
 export function createAdminProviderService(input: Readonly<{

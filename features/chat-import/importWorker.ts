@@ -13,7 +13,7 @@ type ImportWorkerScope = {
   postMessage(message: ImportWorkerResponse): void;
 };
 
-class UnreadableFilesError extends Error {}
+class UnreadableFilesError extends Error { override name = "UnreadableFilesError"; }
 
 const scope = globalThis as unknown as ImportWorkerScope;
 let steps: AsyncGenerator<ImportBatch, void> | null = null;

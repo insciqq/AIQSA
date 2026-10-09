@@ -74,7 +74,7 @@ type QuickSetupRepositoryOptions = Readonly<{
   exposeFake?: boolean;
 }>;
 
-class QuickSetupCatalogUnavailableError extends Error {}
+class QuickSetupCatalogUnavailableError extends Error { override name = "QuickSetupCatalogUnavailableError"; }
 
 const MAX_QUICK_SETUP_PRESERVED_MODELS = 64;
 const ANTHROPIC_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001405";

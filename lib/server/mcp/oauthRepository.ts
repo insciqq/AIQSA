@@ -406,7 +406,7 @@ function parseTokenEnvelope(
 }
 
 export class McpEndpointBindingChangedError extends Error {
-  constructor() { super("mcp_endpoint_binding_changed"); }
+  constructor() { super("mcp_endpoint_binding_changed"); this.name = "McpEndpointBindingChangedError"; }
 }
 
 // Called only inside the same guarded transaction that publishes the checked URL.
