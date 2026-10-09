@@ -84,6 +84,19 @@ function runSection(report: HealthFullReport): string[] {
   ]);
 }
 
+function failedRunSection(report: HealthFullReport): string[] {
+  const { failedRuns } = report;
+  const title = `Failed runs by code (${plural(failedRuns.runs, "run")}, ${plural(failedRuns.users, "user")}; ` +
+    `no stops or refused input${failedRuns.truncated ? "; more codes exist" : ""})`;
+  return section(title, failedRuns.rows.flatMap((row) => [
+    ...wrapParts([row.failureCode === null ? "no code" : `code ${row.failureCode}`, plural(row.runs, "run"),
+      plural(row.users, "user")], "  ", " · "),
+    `      first ${minute(row.firstAt)} · last ${minute(row.lastAt)}`,
+    ...wrapParts(row.newest.map((run) => `ref ${run.runReference} user ${run.userId} ${minute(run.startedAt)}`),
+      row.newest.length < row.runs ? `      newest ${row.newest.length}: ` : "      ", " · ")
+  ]));
+}
+
 function providerName(row: HealthLatencyProviderRow): string {
   return present([row.providerFamily, row.connectionName, row.modelName]).join(" · ") || "unattributed";
 }
@@ -251,9 +264,14 @@ function operationSection(report: HealthFullReport): string[] {
   ]);
 }
 
+/**
+ * Sections by user impact: runs that failed and what users reported first,
+ * then where AIQSA failed, then how it performed and ran.
+ */
 const FULL_SECTIONS: ReadonlyArray<(report: HealthFullReport) => string[]> = [
-  runSection, latencySection, failureSection, timeoutSection, errorGroupSection, signInSection, toolSection, httpSection,
-  (report) => problemSection("Answer problem reports", report.problemReports), incidentSection, operationSection
+  failedRunSection, (report) => problemSection("Answer problem reports", report.problemReports), runSection,
+  errorGroupSection, failureSection, timeoutSection, toolSection, httpSection, signInSection, incidentSection,
+  latencySection, operationSection
 ];
 
 export function formatHealthFullReport(report: HealthFullReport): string {

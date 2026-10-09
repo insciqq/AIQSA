@@ -1,10 +1,11 @@
 import type { AdminAttentionItem } from "../../../contracts/adminAttention";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import type { TelemetryCounterGroup, TelemetryCounterQuery, TelemetryStore } from "../../telemetry/store";
+import type { FailedRunLoad } from "../health/failedRuns";
 
 /**
- * Health attention rules: thresholds over the content-free telemetry counters
- * and Memory rebuild counts, evaluated on every read and never persisted. An
+ * Health attention rules: thresholds over the content-free telemetry counters,
+ * Memory rebuild counts and failed runs, evaluated on every read and never persisted. An
  * item exists only while its failures are recent, so it clears by itself once
  * the window passes without them. Every threshold lives here so calibration
  * touches one place.
@@ -43,8 +44,34 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
    * mean a trigger loop re-embedding that owner's Memory again and again.
    */
   memoryRebuildsPerOwnerMin: 3,
-  memoryRebuildWindowMs: 24 * 3_600_000
+  memoryRebuildWindowMs: 24 * 3_600_000,
+  /** Every failed run created within this window raises the failed-runs item. */
+  runsFailedWindowMs: 24 * 3_600_000
 });
+
+/**
+ * Failure codes of a run that refused the user's own input (too large for the
+ * model's context, an unsupported or oversized attachment, the model's own
+ * refusal of the request, an exhausted usage budget). Nothing in AIQSA failed,
+ * so they are neither failed runs to investigate nor new errors.
+ */
+export const RUN_FAILURE_USER_INPUT_CODES: ReadonlySet<string> = new Set([
+  "animated_gif_not_supported",
+  "attachment_count_limit_exceeded",
+  "attachment_encoded_size_limit_exceeded",
+  "attachment_materialization_limit_exceeded",
+  "context_length_exceeded",
+  "context_too_large",
+  "image_attachment_not_supported",
+  "pdf_attachment_not_supported",
+  "pdf_page_limit_exceeded",
+  "pdf_preparation_context_limit",
+  "provider_context_length_exceeded",
+  "provider_context_limit_exceeded",
+  "provider_refused",
+  "unsupported_attachment_type",
+  "usage_budget_exhausted"
+]);
 
 export type HealthThresholds = typeof HEALTH_ATTENTION_THRESHOLDS;
 
@@ -54,8 +81,22 @@ const ROW_LIMIT = 5_000;
 const COUNTER_RETENTION_MS = 30 * 24 * HOUR_MS;
 /** Classes that almost always mean a defect in AIQSA's own code, whatever the record's code. */
 const PROGRAMMING_ERRORS = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError"]);
-/** Codes that say only that nobody classified the failure. */
-const UNCLASSIFIED_CODES = new Set(["unknown", "unexpected"]);
+/**
+ * Codes whose failures another rule judges by rate, so a first occurrence is
+ * not news on its own: rejected keys, exhausted quotas, rate limits and
+ * provider server errors (provider rules) and refused user input (no failure
+ * of AIQSA). Timeout codes match `TIMEOUT_CODE` (operation timeouts). Every
+ * other classified code is a new error when its fingerprint is new.
+ */
+const RULE_COVERED_CODES: ReadonlySet<string> = new Set([
+  "provider_auth_rejected",
+  "provider_quota_exhausted",
+  "provider_rate_limited",
+  "provider_server_error",
+  ...RUN_FAILURE_USER_INPUT_CODES
+]);
+/** Events another rule watches as a whole: provider operations (provider rules). */
+const RULE_COVERED_EVENTS: ReadonlySet<string> = new Set(["provider_operation"]);
 
 export type HealthCounterRows = Readonly<{
   /** `provider_operation` grouped by bucket, connectionId, outcome, code, httpStatus, reason, action. */
@@ -72,13 +113,14 @@ export type HealthCounterRows = Readonly<{
   toolOutcomes: readonly TelemetryCounterGroup[];
   /** `job_attempt` over the timeout window grouped by bucket, subsystem, outcome, code. */
   jobOutcomes: readonly TelemetryCounterGroup[];
-  /** Error and fatal records over the new-error window grouped by fingerprint, class, site and code. */
+  /** Error and fatal records over the new-error window grouped by fingerprint, class, site, code and event. */
   errorFingerprints: readonly TelemetryCounterGroup[];
   /** Error and fatal records over counter retention grouped by fingerprint (their first occurrence). */
   errorFirstSeen: readonly TelemetryCounterGroup[];
 }>;
 
 export type HealthFinding =
+  | Readonly<{ code: "runs_failed"; runs: number; users: number }>
   | Readonly<{ code: "provider_runtime_key_rejected"; connectionId: string; failures: number }>
   | Readonly<{ code: "provider_runtime_quota_exhausted"; connectionId: string; failures: number }>
   | Readonly<{ code: "provider_runtime_failing"; connectionId: string; failures: number; total: number;
@@ -174,7 +216,7 @@ export async function readHealthCounterRows(
       reader.readCounters({ ...recent, events: BACKGROUND_EVENTS, levels: ["error", "fatal"], groupBy: ["bucket", "subsystem"], limit: ROW_LIMIT }),
       reader.readCounters({ ...day, events: ["tool_execution"], groupBy: ["bucket", "tool_kind", "stage", "outcome", "reason"], limit: ROW_LIMIT }),
       reader.readCounters({ ...day, events: ["job_attempt"], groupBy: ["bucket", "subsystem", "outcome", "code"], limit: ROW_LIMIT }),
-      reader.readCounters({ ...fresh, levels: ["error", "fatal"], groupBy: ["error_fingerprint", "error_class", "error_site", "code"], limit: ROW_LIMIT }),
+      reader.readCounters({ ...fresh, levels: ["error", "fatal"], groupBy: ["error_fingerprint", "error_class", "error_site", "code", "event"], limit: ROW_LIMIT }),
       reader.readCounters({ ...retained, levels: ["error", "fatal"], groupBy: ["error_fingerprint"], limit: ROW_LIMIT })
     ]);
   return { providerOperations, serverErrors, processStarts, droppedRecords, backgroundErrors, toolOutcomes, jobOutcomes,
@@ -357,10 +399,18 @@ export function evaluateHealthRules(
   return findings;
 }
 
+/** Whether a failure needs no new-error item because another rule judges its code or event. */
+function coveredByRule(code: string | null, event: string | null, errorClass: string): boolean {
+  if (PROGRAMMING_ERRORS.has(errorClass)) return false;
+  if (event !== null && RULE_COVERED_EVENTS.has(event)) return true;
+  return code !== null && (RULE_COVERED_CODES.has(code) || TIMEOUT_CODE.test(code));
+}
+
 /**
- * A failure is new when its fingerprint first appears within the window. Only
- * unclassified failures and programming errors count: a classified failure
- * (a rejected key, a timeout) already has its own rule and copy.
+ * A failure is new when its fingerprint first appears within the window.
+ * Unclassified failures, programming errors and classified codes without a
+ * rule of their own count; a failure another rule already judges (a rejected
+ * key, a provider outage, a timeout, refused user input) does not.
  */
 function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: HealthThresholds): HealthFinding[] {
   const since = now.getTime() - thresholds.newErrorWindowMs;
@@ -373,8 +423,7 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
   for (const row of within(rows.errorFingerprints, since)) {
     const fingerprint = text(row, "error_fingerprint");
     const errorClass = text(row, "error_class") ?? "Error";
-    const code = text(row, "code");
-    if (fingerprint === null || !(code === null || UNCLASSIFIED_CODES.has(code) || PROGRAMMING_ERRORS.has(errorClass))) continue;
+    if (fingerprint === null || coveredByRule(text(row, "code"), text(row, "event"), errorClass)) continue;
     const entry = candidates.get(fingerprint) ?? { errorClass, site: null, siteSeenAt: -1, count: 0, first: Infinity };
     const site = text(row, "error_site");
     if (site !== null && row.lastSeenAt.getTime() > entry.siteSeenAt) {
@@ -393,6 +442,15 @@ function newErrorFindings(rows: HealthCounterRows, now: Date, thresholds: Health
   }));
   const more = fresh.length - named.length;
   return more > 0 ? [...named, { code: "new_error", fingerprint: null, more }] : named;
+}
+
+/**
+ * Failed runs over the failed-runs window (`readFailedRunLoad`): one is
+ * enough, since each is an answer a user did not get. The item carries counts
+ * only; the health report lists the runs by failure code with references.
+ */
+export function failedRunFindings(load: Pick<FailedRunLoad, "runs" | "users">): HealthFinding[] {
+  return load.runs === 0 ? [] : [{ code: "runs_failed", runs: load.runs, users: load.users }];
 }
 
 /**
@@ -451,6 +509,12 @@ export function healthAttentionItems(
   const items: AdminAttentionItem[] = [];
   for (const finding of findings) {
     switch (finding.code) {
+      case "runs_failed":
+        items.push({ action: "Open Health", code: finding.code, count: finding.runs, id: finding.code, severity: "warn",
+          detail: `${plural(finding.runs, "answer")} failed for ${plural(finding.users, "user")} in the last 24 hours — ` +
+            "the health report lists them by cause",
+          target: { section: "health" }, title: "Runs failed" });
+        break;
       case "provider_runtime_key_rejected":
       case "provider_runtime_quota_exhausted":
       case "provider_runtime_failing": {

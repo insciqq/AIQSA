@@ -94,6 +94,42 @@ describe("content-free storage operation evidence", () => {
     expect(JSON.stringify(records)).not.toContain("canary");
   });
 
+  it("records an expected miss as a completed read, while a missing object that must exist stays an error", async () => {
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const missing = () => new S3ServiceException({ name: "NoSuchKey", $fault: "client", $metadata: { httpStatusCode: 404 },
+      message: "private-storage-message-canary" });
+    const storage = createS3StorageAdapter(s3Env);
+    s3Send.mockRejectedValueOnce(missing()).mockRejectedValueOnce(missing()).mockRejectedValueOnce(new Error("socket hang up"));
+    // A write-once check before writing the object: absence is its answer.
+    await expect(storage.getObject("artifact-blobs/new", { expectMissing: true })).rejects.toMatchObject({ name: "NoSuchKey" });
+    // An attachment the run needs: absence is a lost file.
+    await expect(storage.getObject("attachments/lost")).rejects.toMatchObject({ name: "NoSuchKey" });
+    // Expecting a miss never hides a real storage failure.
+    await expect(storage.getObject("artifact-blobs/other", { expectMissing: true })).rejects.toThrow("socket hang up");
+    const records = output.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .filter((record) => record.event === "service_operation");
+    expect(records).toEqual([
+      expect.objectContaining({ level: "info", stage: "read", outcome: "completed", code: "NoSuchKey", httpStatus: 404 }),
+      expect.objectContaining({ level: "error", stage: "read", outcome: "failed", code: "NoSuchKey", httpStatus: 404 }),
+      expect.objectContaining({ level: "error", stage: "read", outcome: "failed", code: "unknown" })
+    ]);
+    expect(records[0]).not.toHaveProperty("error_class");
+    expect(JSON.stringify(records)).not.toContain("canary");
+  });
+
+  it("records an expected filesystem miss as a completed read", async () => {
+    const root = await mkdtemp(join(tmpdir(), "aiqsa-storage-miss-"));
+    temporaryRoots.push(root);
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const storage = createFileSystemStorageAdapter(root);
+    await expect(storage.getObject("artifact-blobs/new", { expectMissing: true })).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(storage.getObject("attachments/lost")).rejects.toMatchObject({ code: "ENOENT" });
+    const records = output.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .filter((record) => record.event === "service_operation");
+    expect(records.map((record) => [record.level, record.outcome, record.code])).toEqual([
+      ["info", "completed", "ENOENT"], ["error", "failed", "ENOENT"]]);
+  });
+
   it("reports stream completion only after EOF, with the context that opened the read", async () => {
     const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const source = new PassThrough();
