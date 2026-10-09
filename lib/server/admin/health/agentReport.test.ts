@@ -359,7 +359,8 @@ describe("full agent report", () => {
     const input = sources(fixtureCounters, fixtureIncidents);
     const health = createAdminHealthService({ store: input.store, providerNames: input.providerNames, now: () => NOW });
     const defaultReport = await collectHealthReport({
-      health, queues: input.queues, findings: vi.fn().mockResolvedValue([]), connections: vi.fn().mockResolvedValue([])
+      health, queues: input.queues, findings: vi.fn().mockResolvedValue([]), connections: vi.fn().mockResolvedValue([]),
+      failedRuns: input.failedRunGroups
     }, "7d");
     const defaultOutput = JSON.stringify(defaultReport) + formatHealthReport(defaultReport);
     const full = await collectHealthFullReport(input, "7d");

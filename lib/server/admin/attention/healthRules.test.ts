@@ -173,10 +173,9 @@ describe("new errors", () => {
       errorFirstSeen: [row({ error_fingerprint: "eeeeeeeeeeee" }, 50, 60 * 24 * 3)]
     }), now);
     expect(findings).toEqual([
-      { code: "new_error", fingerprint: "aaaaaaaaaaaa", errorClass: "Error", site: "lib/server/x.ts:10", failureCode: null, count: 4 },
-      { code: "new_error", fingerprint: "bbbbbbbbbbbb", errorClass: "TypeError", site: "lib/server/memory/a.ts:3",
-        failureCode: "memory_job_failed", count: 2 },
-      { code: "new_error", fingerprint: "dddddddddddd", errorClass: "Error", site: "lib/server/x.ts:10", failureCode: null, count: 1 }
+      { code: "new_error", fingerprint: "aaaaaaaaaaaa", errorClass: "Error", site: "lib/server/x.ts:10", count: 4 },
+      { code: "new_error", fingerprint: "bbbbbbbbbbbb", errorClass: "TypeError", site: "lib/server/memory/a.ts:3", count: 2 },
+      { code: "new_error", fingerprint: "dddddddddddd", errorClass: "Error", site: "lib/server/x.ts:10", count: 1 }
     ]);
   });
 
@@ -192,10 +191,10 @@ describe("new errors", () => {
       ]
     }), now);
     expect(findings).toEqual([{ code: "new_error", fingerprint: "aaaaaaaaaaaa", errorClass: "WorkspaceRuntimeError",
-      site: "lib/server/workspace/coordinator.ts:900", failureCode: "workspace_output_export_failed", count: 1 }]);
+      site: "lib/server/workspace/coordinator.ts:900", count: 1 }]);
+    // The code stays in the report's failure section, not in the attention copy.
     expect(healthAttentionItems(findings, null)[0]).toMatchObject({ code: "new_error", count: 1,
-      detail: "WorkspaceRuntimeError at lib/server/workspace/coordinator.ts:900 · code workspace_output_export_failed · " +
-        "1 time since it first appeared in the last 24 hours" });
+      detail: "WorkspaceRuntimeError at lib/server/workspace/coordinator.ts:900 · 1 time since it first appeared in the last 24 hours" });
   });
 
   it("names the most frequent new failures and sums the rest in one item", () => {
@@ -223,46 +222,27 @@ describe("Memory index rebuilds per owner", () => {
 
 describe("failed runs", () => {
   const RUN_A = "1a2b3c4d-1111-4111-8111-111111111111";
-  const RUN_B = "5e6f7a8b-2222-4222-8222-222222222222";
-  const RUN_C = "9c8d7e6f-3333-4333-8333-333333333333";
-  const sample = (runId: string, userId = "user-1") => ({ runId, userId, startedAt: minutesAgo(30) });
-  const group = (code: string | null, runs: number, users: number, newest: ReturnType<typeof sample>[]) =>
-    ({ code, runs, users, firstAt: minutesAgo(60), lastAt: minutesAgo(30), newest });
+  const load = {
+    runs: 1, users: 1, groupsTruncated: false,
+    groups: [{ code: "workspace_output_export_failed", runs: 1, users: 1, firstAt: minutesAgo(30), lastAt: minutesAgo(30),
+      newest: [{ runId: RUN_A, userId: "user-1", startedAt: minutesAgo(30) }] }]
+  };
 
-  it("raises one item for a single failed run, with its code, user count and run reference", () => {
-    const findings = failedRunFindings({ runs: 1, users: 1, groupsTruncated: false,
-      groups: [group("workspace_output_export_failed", 1, 1, [sample(RUN_A)])] });
-    expect(findings).toEqual([{ code: "runs_failed", runs: 1, users: 1, otherRuns: 0, byCode: [
-      { failureCode: "workspace_output_export_failed", runs: 1, users: 1, references: ["1a2b3c4d"] }] }]);
+  it("raises one item for a single failed run, with counts and navigation only", () => {
+    const findings = failedRunFindings(load);
+    expect(findings).toEqual([{ code: "runs_failed", runs: 1, users: 1 }]);
     const [item] = healthAttentionItems(findings, null);
     expect(item).toEqual({ action: "Open Health", code: "runs_failed", count: 1, id: "runs_failed", severity: "warn",
       target: { section: "health" }, title: "Runs failed",
-      detail: "1 run of 1 user failed in the last 24 hours · workspace_output_export_failed 1 (1 user; ref 1a2b3c4d) — " +
-        "look a reference up in Health" });
-    expect(JSON.stringify(item)).not.toContain("user-1");
+      detail: "1 answer failed for 1 user in the last 24 hours — the health report lists them by cause" });
+    // Human copy only: no failure code, run reference or user id.
+    expect(JSON.stringify(item)).not.toMatch(/workspace_output_export_failed|1a2b3c4d|user-1/u);
+    expect(healthAttentionItems(failedRunFindings({ runs: 14, users: 5 }), null)[0]!.detail)
+      .toBe("14 answers failed for 5 users in the last 24 hours — the health report lists them by cause");
   });
 
   it("stays quiet without failed runs", () => {
-    expect(failedRunFindings({ runs: 0, users: 0, groups: [], groupsTruncated: false })).toEqual([]);
-  });
-
-  it("names the codes with the most runs, sums the rest and keeps the detail within the contract bound", () => {
-    const long = (index: number) => `failure_${index}_${"x".repeat(110)}`;
-    const groups = [
-      group("provider_server_error", 8, 3, [sample(RUN_A), sample(RUN_B), sample(RUN_C)]),
-      group(null, 2, 1, [sample(RUN_C)]),
-      ...[1, 2, 3, 4].map((index) => group(long(index), 1, 1, [sample(RUN_B)]))
-    ];
-    const findings = failedRunFindings({ runs: 14, users: 5, groups, groupsTruncated: true });
-    expect(findings).toEqual([expect.objectContaining({ runs: 14, users: 5, otherRuns: 2, byCode: [
-      { failureCode: "provider_server_error", runs: 8, users: 3, references: ["1a2b3c4d", "5e6f7a8b"] },
-      { failureCode: null, runs: 2, users: 1, references: ["9c8d7e6f"] },
-      expect.objectContaining({ failureCode: long(1) }), expect.objectContaining({ failureCode: long(2) })
-    ] })]);
-    const [item] = healthAttentionItems(findings, null);
-    expect(item!.detail.length).toBeLessThanOrEqual(400);
-    expect(item!.detail).toMatch(/^14 runs of 5 users failed in the last 24 hours · provider_server_error 8 \(3 users; ref 1a2b3c4d, 5e6f7a8b\) · no code 2 \(1 user; ref 9c8d7e6f\) · /u);
-    expect(item!.detail).toMatch(/ · … — look a reference up in Health$/u);
+    expect(failedRunFindings({ runs: 0, users: 0 })).toEqual([]);
   });
 });
 

@@ -11,13 +11,18 @@ import type { HealthReportSources, HealthRunReportSources } from "./report";
 import { adminHealthRunLookup } from "./runLookupDefault";
 import { readAdminHealthUserFailedRuns } from "./runLookupRepository";
 
+/** Failed runs of a report's whole range, read once; it gets more time than a page read. */
+const readReportFailedRuns: HealthReportSources["failedRuns"] = (query) =>
+  readFailedRunLoad(prisma, { ...query, statementTimeoutMs: 15_000 });
+
 /** The health report over this installation's database, through the Health page's own services. */
 export const healthReportSources: HealthReportSources & HealthRunReportSources = {
   health: adminHealthService,
   queues: adminHealthQueuesService,
   runs: adminHealthRunLookup,
   findings: readDefaultHealthFindings,
-  connections: () => prisma.providerConnection.findMany({ select: { id: true, displayName: true, enabled: true } })
+  connections: () => prisma.providerConnection.findMany({ select: { id: true, displayName: true, enabled: true } }),
+  failedRuns: readReportFailedRuns
 };
 
 /** The agent reports (`--full`, `--user`) over the same database; they only read. */
@@ -27,8 +32,7 @@ export const healthAgentReportSources: HealthAgentReportSources = {
   queues: adminHealthQueuesService,
   problemReports: (query) => listAnswerProblemReports(prisma, query),
   failedRuns: (query) => readAdminHealthUserFailedRuns(prisma, query),
-  // The agent report reads a whole range once; it gets more time than a page read.
-  failedRunGroups: (query) => readFailedRunLoad(prisma, { ...query, statementTimeoutMs: 15_000 }),
+  failedRunGroups: readReportFailedRuns,
   userExists: async (userId) => (await prisma.user.findUnique({ where: { id: userId }, select: { id: true } })) !== null
 };
 

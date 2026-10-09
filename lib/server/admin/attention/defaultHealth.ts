@@ -13,8 +13,6 @@ import {
 } from "./healthRules";
 
 const telemetry = createPrismaTelemetryStore(prisma);
-/** Failure codes read for the failed-runs item: well above the codes it names, so its counts stay exact. */
-const FAILED_RUN_CODE_LIMIT = 50;
 
 /** A database read of one rule; a failure is logged and only drops that rule. */
 async function readOptionalFindings(read: () => Promise<HealthFinding[]>): Promise<HealthFinding[]> {
@@ -39,8 +37,9 @@ export async function readDefaultHealthFindings(): Promise<HealthFinding[]> {
     readOptionalFindings(async () => failedRunFindings(await readFailedRunLoad(prisma, {
       from: new Date(now.getTime() - thresholds.runsFailedWindowMs),
       to: new Date(now.getTime() + 1),
-      perCode: thresholds.runsFailedReferencesPerCode,
-      groupLimit: FAILED_RUN_CODE_LIMIT
+      // The item needs only the totals, which count every code.
+      perCode: 1,
+      groupLimit: 1
     }))),
     readHealthFindings(telemetry, now),
     readOptionalFindings(async () => memoryRebuildFindings(await readMemoryRebuildLoad(prisma, {
