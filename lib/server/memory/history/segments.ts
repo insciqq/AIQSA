@@ -260,6 +260,14 @@ function positionFor(index: number, count: number): MemoryRecallRoundSegmentPosi
   return "MIDDLE";
 }
 
+/** How many segments `projectMemoryRecallRoundSegments` makes of a round,
+ * from the same spans but without hashing or analysing any segment text. */
+export function memoryRecallRoundSegmentCount(
+  round: Pick<MemoryRecallRoundSegmentSource, "rawSafeText">
+): number {
+  return segmentSpans(round.rawSafeText).length;
+}
+
 export function projectMemoryRecallRoundSegments(
   round: MemoryRecallRoundSegmentSource
 ): readonly MemoryRecallRoundSegmentProjection[] {
