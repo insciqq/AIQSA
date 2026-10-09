@@ -5,6 +5,7 @@ import type {
   AdminTrustedHeaderProbe,
   AdminTrustedHeaderProbeErrorCode
 } from "@/lib/contracts/trustedHeaderSignIn";
+import { attributeRequestUser } from "../../observability";
 import { resolveLoginRateLimitIdentity } from "../clientIdentity";
 import type { AuthConfig } from "../config";
 import {
@@ -113,11 +114,14 @@ export function createTrustedHeaderSignInHandler(deps: TrustedHeaderSignInDeps) 
 
     const now = deps.now?.() ?? new Date();
     const token = getSessionFromRequest(request);
-    const current = token ? await resolveAuthToken(token, { now, sessions: deps.sessions }) : null;
+    // The cookie may belong to the account this sign-in replaces: the request is
+    // attributed only once it is known whose sign-in it is, never to that account.
+    const current = token ? await resolveAuthToken(token, { attribute: false, now, sessions: deps.sessions }) : null;
     let replaced = false;
 
     if (token && current) {
       if ((await deps.repository.findLinkedUserId(read.identity.email)) === current.userId) {
+        attributeRequestUser(current.userId);
         return attempt.end(await succeeded(), "succeeded", "accepted");
       }
       // The proxy now vouches for someone else in this browser.
@@ -136,6 +140,7 @@ export function createTrustedHeaderSignInHandler(deps: TrustedHeaderSignInDeps) 
       });
 
       if (result.status === "active") {
+        attributeRequestUser(result.userId);
         await record("accepted");
         return attempt.end(await succeeded([prepared.cookie]), "succeeded", "accepted");
       }

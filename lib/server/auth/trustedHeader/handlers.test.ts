@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { trustedHeaderSignInConfigSchema } from "@/lib/contracts/authSignInMethods";
 import { createTestAuth, createTestUser } from "@/tests/support/auth";
 import { captureSignInRecords } from "@/tests/support/signInRecords";
+import { runInBackground } from "../../observability";
 import { getAuthConfig } from "../config";
 import { createFixedWindowLoginRateLimiter } from "../rateLimit";
 import type { AuthSessionRecord, AuthSessionStore } from "../requestAuth";
@@ -268,6 +269,27 @@ describe("trusted-header sign-in route", () => {
       { code: "environment_unsupported", level: "error", outcome: "refused", sign_in_method: "trusted_header", step: "callback" }
     ]);
     expect(JSON.stringify(records)).not.toMatch(/member|example\.com|staff|engineering|198\.51/u);
+  });
+});
+
+describe("trusted-header sign-in attribution", () => {
+  // Each request is its own observability root, as the HTTP listener makes it.
+  const attributed = async (handler: (request: Request) => Promise<Response>, input: Parameters<typeof request>[0]) =>
+    (await captureSignInRecords(() => runInBackground(() => handler(request(input)))))[0]?.user_id;
+
+  it("never attributes a replacing sign-in to the account whose cookie it replaces", async () => {
+    const failed = setup({ linked: { [EMAIL]: "header-user" }, result: new Error("database unavailable"),
+      sessions: { "other-token": "other-user" } });
+    expect(await attributed(failed.handler, { cookie: "other-token" })).toBeUndefined();
+    expect(failed.repository.revokeReplacedSession).toHaveBeenCalledTimes(1);
+
+    const replaced = setup({ linked: { [EMAIL]: "header-user" }, sessions: { "other-token": "other-user" } });
+    expect(await attributed(replaced.handler, { cookie: "other-token" })).toBe("header-user");
+  });
+
+  it("attributes a kept session to its own account", async () => {
+    const { handler } = setup({ linked: { [EMAIL]: "header-user" }, sessions: { "own-token": "header-user" } });
+    expect(await attributed(handler, { cookie: "own-token" })).toBe("header-user");
   });
 });
 
