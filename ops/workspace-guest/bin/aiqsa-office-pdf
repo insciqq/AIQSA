@@ -1,0 +1,111 @@
+#!/opt/aiqsa-python/bin/python3 -I
+"""aiqsa-office-pdf INPUT [OUTPUT.pdf]: a PDF of an Office document's visible content only.
+
+LibreOffice prints the document without comments, notes or hidden sheets and
+slides; pypdf then copies only the pages into a new file, without document
+properties, XMP, outlines, scripts, attachments or annotations other than links.
+"""
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PyPdfError
+from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
+
+FILTERS = {**dict.fromkeys(("docx", "doc", "odt", "rtf"), "writer_pdf_Export"),
+           **dict.fromkeys(("xlsx", "xls", "ods"), "calc_pdf_Export"),
+           **dict.fromkeys(("pptx", "ppt", "odp"), "impress_pdf_Export")}
+OFF = ("ExportNotes", "ExportNotesInMargin", "ExportNotesPages", "ExportOnlyNotesPages", "ExportHiddenSlides",
+       "ExportBookmarks", "ExportPlaceholders", "ExportFormFields")
+OPTIONS = json.dumps({name: {"type": "boolean", "value": "false"} for name in OFF}, separators=(",", ":"))
+PAGE_KEYS = ("/AA", "/Metadata", "/PieceInfo", "/Thumb", "/B", "/StructParents")
+
+
+def fail(message):
+    print(f"aiqsa-office-pdf: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def convert(source, work):
+    ext = source.suffix.lower().lstrip(".")
+    if ext not in FILTERS:
+        fail(f"unsupported file type .{ext or '?'} (use {', '.join(FILTERS)})")
+    copy = work / f"input.{ext}"
+    shutil.copyfile(source, copy)
+    command = ["soffice", f"-env:UserInstallation={(work / 'profile').as_uri()}", "--headless", "--norestore",
+               "--nolockcheck", "--convert-to", f"pdf:{FILTERS[ext]}:{OPTIONS}", "--outdir", str(work / "out"), str(copy)]
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    try:
+        log = process.communicate(timeout=120)[0].decode(errors="replace").strip()
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        fail("LibreOffice did not finish within 120 s")
+    pdf = work / "out" / "input.pdf"
+    if not pdf.is_file():
+        fail(f"LibreOffice could not convert {source.name}: {log.splitlines()[-1] if log else 'no output'}")
+    return pdf
+
+
+def link_only(annotation):
+    """A bare URI link, or None: no other annotation, action or internal destination survives."""
+    action = annotation.get("/A")
+    action = action.get_object() if action is not None else {}
+    if annotation.get("/Subtype") != "/Link" or "/Rect" not in annotation or action.get("/S") != "/URI" \
+            or "/URI" not in action:
+        return None
+    uri = DictionaryObject({NameObject("/S"): NameObject("/URI"), NameObject("/URI"): action["/URI"]})
+    return DictionaryObject({NameObject("/Type"): NameObject("/Annot"), NameObject("/Subtype"): NameObject("/Link"),
+                             NameObject("/Rect"): annotation["/Rect"], NameObject("/A"): uri,
+                             NameObject("/Border"): ArrayObject([NumberObject(0)] * 3)})
+
+
+def rewrite(pdf, target):
+    reader = PdfReader(pdf)
+    if not reader.pages:
+        fail("the PDF has no pages")
+    writer = PdfWriter()
+    for page in reader.pages:
+        for key in PAGE_KEYS:
+            page.pop(key, None)
+        links = [link for link in (link_only(annotation.get_object()) for annotation in page.get("/Annots", []))
+                 if link is not None]
+        page.pop("/Annots", None)
+        if links:
+            page[NameObject("/Annots")] = ArrayObject(links)
+        writer.add_page(page)
+    writer.add_metadata({"/Producer": "aiqsa-office-pdf"})
+    with open(target, "wb") as stream:
+        writer.write(stream)
+    return len(writer.pages)
+
+
+def main(argv):
+    if len(argv) not in (1, 2) or argv[0] in ("-h", "--help"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    source = Path(argv[0])
+    output = Path(argv[1]) if len(argv) == 2 else Path.cwd() / f"{source.stem}.pdf"
+    if not source.is_file():
+        fail(f"{source} is not a file")
+    if output.resolve() == source.resolve():
+        fail("the output would overwrite the input")
+    with tempfile.TemporaryDirectory(prefix="aiqsa-office-pdf-") as temp:
+        work = Path(temp)
+        try:
+            pages = rewrite(convert(source, work), work / "clean.pdf")
+            shutil.move(work / "clean.pdf", output)
+        except (OSError, ValueError, KeyError, PyPdfError) as error:
+            fail(f"could not write {output}: {error}")
+    print(f"{output} {pages} pages {output.stat().st_size} bytes")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

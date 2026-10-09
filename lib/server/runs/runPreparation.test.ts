@@ -1404,7 +1404,7 @@ describe("run preparation", () => {
       const workspace = preparedFrom(await prepareRun({ ...h.deps, artifacts, workspace: contractWorkspace() },
         sendInput({ ...body, workspace: { enabled: true } }))).normalizedRequest;
       const system = workspace.prompt.system ?? "";
-      for (const rule of ["Never retype numbers or data from files", "LibreOffice to HTML or PDF (visible sheets only",
+      for (const rule of ["Never retype numbers or data from files", "run aiqsa-office-pdf <file> in the Workspace (a PDF of the visible content only",
         "save it with checkpoint_outputs, then call create_artifact with asset_ref = the returned attachment_id", "with ffmpeg in the Workspace",
         "never finish with only the saved file", "esbuild main.js --bundle --outfile=app.js",
         "Open files you cannot read directly (zip, video, audio, sqlite, 3D and similar) in the Workspace first"]) expect(system).toContain(rule);
