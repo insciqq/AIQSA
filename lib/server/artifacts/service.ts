@@ -22,7 +22,7 @@ import { artifactZip } from "./zip";
 import { ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { ARTIFACT_ASSET_HINTS, ArtifactToolError, artifactToolError, type ArtifactAssetErrorCode } from "./errors";
 import { materializeArtifactReferences } from "./referencedFiles";
-import { boundedArtifactWork, createArtifactObjects } from "./objects";
+import { boundedArtifactCreation, boundedArtifactWork, createArtifactObjects } from "./objects";
 import { artifactRenderBytes, artifactRenderExtension, artifactRequestedPage } from "./pages";
 import { createArtifactPublications, publicManifestFromPrivate } from "./publications";
 import { artifactDownloadName } from "./downloadName";
@@ -202,7 +202,7 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     }));
   }
 
-  async function createVersion(input: {
+  type VersionInput = {
     artifactId?: string;
     operation: ArtifactOperation;
     ownerUserId: string;
@@ -214,7 +214,9 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     assertActive?: ArtifactExecutionOptions["assertActive"];
     onReady?: (tx: Prisma.TransactionClient, version: NonNullable<Awaited<ReturnType<typeof getArtifactVersion>>>) => Promise<void>;
     signal?: AbortSignal;
-  }) {
+  };
+
+  async function createVersion(input: VersionInput) {
     if (input.sourceToolCallId) {
       const existing = await db.artifactVersion.findUnique({ where: { sourceToolCallId: input.sourceToolCallId } });
       if (existing?.status === "READY") {
@@ -222,6 +224,12 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
       }
       if (existing) throw new Error("artifact_version_in_progress");
     }
+    // A turn is taken before the base or any attachment is read and kept until the version
+    // settles: the referenced and built bytes stay reachable through the storage writes.
+    return boundedArtifactCreation(() => writeVersion(input), input.signal);
+  }
+
+  async function writeVersion(input: VersionInput) {
     let baseSnapshot: ArtifactBase | undefined;
     let baseOperation: Pick<NormalizedArtifactOperation, "kind" | "title" | "entrypoint" | "files"> | undefined;
     if (input.operation?.intent === "update") {
@@ -778,7 +786,12 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
     return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value: page }] };
   }
 
+  /** A copy hydrates and rebuilds the whole bundle, so it takes a creation turn like a new version. */
   async function duplicate(input: { artifactId: string; ownerUserId: string }) {
+    return boundedArtifactCreation(() => copyArtifact(input));
+  }
+
+  async function copyArtifact(input: { artifactId: string; ownerUserId: string }) {
     const version = await getArtifactVersion(input);
     if (!version) throw new Error("artifact_not_found");
     const row = await db.artifactVersion.findUniqueOrThrow({ where: { id: version.id } });
