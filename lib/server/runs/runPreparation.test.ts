@@ -1405,7 +1405,8 @@ describe("run preparation", () => {
         sendInput({ ...body, workspace: { enabled: true } }))).normalizedRequest;
       const system = workspace.prompt.system ?? "";
       for (const rule of ["Never retype numbers or data from files", "LibreOffice to HTML or PDF (visible sheets only",
-        "save it with checkpoint_outputs and reference the returned attachment_id", "with ffmpeg in the Workspace", "esbuild main.js --bundle --outfile=app.js",
+        "save it with checkpoint_outputs, then call create_artifact with asset_ref = the returned attachment_id", "with ffmpeg in the Workspace",
+        "never finish with only the saved file", "esbuild main.js --bundle --outfile=app.js",
         "Open files you cannot read directly (zip, video, audio, sqlite, 3D and similar) in the Workspace first"]) expect(system).toContain(rule);
       expect(system).not.toContain("The Workspace is unavailable");
       expect(workspace.fileReferences).toHaveLength(6);

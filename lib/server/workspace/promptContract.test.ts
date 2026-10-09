@@ -27,6 +27,9 @@ describe("Workspace capability contract", () => {
     expect(text).toContain("Try to answer directly first;");
     expect(text).toContain("After changing code or files in the Workspace, run appropriate tests or checks.");
     expect(text).toContain("Do not claim that a file was created or a check passed until a tool verified it.");
+    // Exported files become downloads; nothing suggests they are published as anything more.
+    expect(text).toContain("the interface lists successfully exported files as downloads automatically.");
+    expect(text).not.toContain("publishes");
     expect(text).toContain("/workspace/SECRETS.md");
     expect(text).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
     expect(text).toContain(`Before building, changing or saving a reusable script Skill, read ${WORKSPACE_GUIDE_PATHS.skills}.`);
