@@ -359,8 +359,9 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_tool_cancelled"
     | "workspace_tool_timeout";
 
-  constructor(code: WorkspaceRuntimeError["code"]) {
-    super(code);
+  /** `cause` keeps a replaced failure, such as a database error, reachable for telemetry. */
+  constructor(code: WorkspaceRuntimeError["code"], options?: ErrorOptions) {
+    super(code, options);
     this.code = code;
     this.name = "WorkspaceRuntimeError";
   }
