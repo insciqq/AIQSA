@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { imageDispatchMustStop, imageGenerationFailure } from "./errors";
 import { ImageGenerationError, type ImageGenerationErrorCode } from "../providers/imageGeneration";
+import { ImageInputError } from "./inputError";
+import { observedFailureCode } from "../providers/providerObservability";
 import { imageFailureDiagnostic } from "../providers/imageFailure";
 
 const NOT_REPEATED = "The request was not repeated.";
@@ -85,6 +87,22 @@ describe("image generation failure causes", () => {
     const outOfRange = new ImageGenerationError("image_provider_http_error", 700, { category: "unknown" });
     expect(imageGenerationFailure(outOfRange).evidence.httpStatus).toBeNull();
   });
+
+  it.each(["safety", "blocked", "other"] as const)("retains only the %s finish category of a Gemini refusal", (finishReason) => {
+    const error = new ImageGenerationError("image_generation_refused", null, undefined, finishReason);
+    const failure = imageGenerationFailure(error);
+    expect(failure.evidence).toEqual({ code: "image_generation_refused", category: null, httpStatus: null, finishReason });
+    expect(failure.message).toContain(finishReason === "safety" ? "content policy" : finishReason === "blocked" ? "blocked" : "without a completed image");
+    expect(imageDispatchMustStop(error)).toBe(true);
+    expect(observedFailureCode(error)).toBe(error.code);
+  });
+
+  it.each(["image_reference_not_found", "image_reference_unsupported", "image_reference_invalid", "image_input_invalid", "image_parameters_invalid"] as const)(
+    "registers the correctable %s refusal without fatal dispatch semantics", (code) => {
+      const error = new ImageInputError(code, "private-id");
+      expect(imageDispatchMustStop(error)).toBe(false);
+      expect(observedFailureCode(error)).toBe(code);
+    });
 
   it("keeps input failures non-fatal and every dispatched failure fatal", () => {
     for (const code of ["image_input_invalid", "image_parameters_invalid"] as const satisfies readonly ImageGenerationErrorCode[]) {

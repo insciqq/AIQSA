@@ -40,6 +40,8 @@ export type AttachmentProcessingRecord = Readonly<{
   jobId: string;
   kind: string;
   mimeType: string;
+  /** The user whose upload the job processes; names the job's records. */
+  ownerUserId: string;
   storageKey: string;
 }>;
 

@@ -157,7 +157,8 @@ describe("durable PDF coordinator", () => {
     h.deps.fail.mockRejectedValue(error);
     await expect(h.coordinator().runOne()).rejects.toBe(error);
     const records = writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
-    expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "fail", outcome: "failed", run_id: "run" }));
+    expect(records).toContainEqual(expect.objectContaining({ event: "job_attempt", stage: "fail", outcome: "failed", run_id: "run",
+      user_id: "owner" }));
     expect(h.deps.repository.release).toHaveBeenCalledOnce();
     expect(JSON.stringify(records)).not.toContain("PRIVATE_");
   });
@@ -175,6 +176,7 @@ describe("durable PDF coordinator", () => {
     }));
     expect(seen).toHaveLength(1);
     expect(seen[0]?.run_id).toBe("run");
+    expect(seen[0]?.user_id).toBe("owner");
     expect(seen[0]?.trace_id).not.toBe(requestTrace);
     expect(seen[0]?.job_id).toBeUndefined();
   });

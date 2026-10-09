@@ -1,5 +1,6 @@
 import { observedFailureWithoutHttpClass } from "../providers/providerObservability";
-import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
+import { retainDatabaseCause } from "../observability/databaseFailure";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 
 const failures = {
   publication: { code: "run_result_publication_failed", message: "The application could not publish the provider response. Do not repeat an operation whose outcome is uncertain." },
@@ -14,7 +15,22 @@ export class RunSettlementError extends Error {
     super(failures[stage].message, { cause });
     this.name = "RunSettlementError";
     this.code = failures[stage].code;
-    rememberDatabaseFailure(this, databaseFailureCode(cause));
+    retainDatabaseCause(this, cause);
+  }
+}
+
+/**
+ * The Workspace handoff of an already published answer failed. Text and usage
+ * stay; the foreground and the recovery path end the run with this message
+ * and its Workspace code, without replaying the provider or any tool.
+ */
+export class WorkspaceHandoffFailure extends Error {
+  readonly code: string;
+  constructor(cause: unknown) {
+    super("The answer was saved, but Workspace could not finish preparing its files.", { cause });
+    this.name = "WorkspaceHandoffFailure";
+    this.code = cause instanceof WorkspaceRuntimeError ? cause.code : "workspace_output_export_failed";
+    retainDatabaseCause(this, cause);
   }
 }
 

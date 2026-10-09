@@ -317,7 +317,7 @@ async function executeMemoryLexicalProjectionPass(
     now
   });
   const contexts = new Map(claims.map(claim => [claim.id, runInBackground(() =>
-    runWithContext({ job_id: claim.id }, () => {
+    runWithContext({ job_id: claim.id, user_id: claim.userId }, () => {
       logEvent("job_attempt", { subsystem: "memory_search", stage: "claim", outcome: "started", attempt: claim.attemptCount });
       return bindContext((operation: () => void | Promise<void>) => operation());
     }))]));

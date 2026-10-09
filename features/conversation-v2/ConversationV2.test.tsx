@@ -360,6 +360,35 @@ describe("Conversation v2", () => {
     expect(onReview).toHaveBeenCalledOnce();
   });
 
+  it("offers Report a problem… after Review… and before Delete, and closes the menu when chosen", async () => {
+    const onReportProblem = vi.fn();
+    render(
+      <ConversationTurnV2
+        actions={{ onBranchFromHere: vi.fn(), onDelete: vi.fn(), onReadAloud: vi.fn(), onReportProblem, onReview: vi.fn(),
+          reviewDisabledReason: null }}
+        content="Reportable answer"
+        role="assistant"
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "More answer actions" }));
+    const menu = screen.getByRole("menu", { name: "Answer menu" });
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Branch from here", "Read aloud", "Review…", "Report a problem…", "Delete"
+    ]);
+    const report = within(menu).getByRole("menuitem", { name: "Report a problem…" });
+    expect(report).toBeEnabled();
+    fireEvent.click(report);
+    expect(onReportProblem).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menu", { name: "Answer menu" })).toBeNull();
+  });
+
+  it("gives an answer with only Report a problem… a More menu without a separator", () => {
+    render(<ConversationTurnV2 actions={{ onCopy: vi.fn(), onReportProblem: vi.fn() }} content="Answer" role="assistant" />);
+    fireEvent.click(screen.getByRole("button", { name: "More answer actions" }));
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Report a problem…"]);
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+
   it("gives an answer with only Read aloud a More menu, and none without it", () => {
     const { rerender } = render(
       <ConversationTurnV2 actions={{ onCopy: vi.fn(), onReadAloud: vi.fn() }} content="Answer" role="assistant" />

@@ -345,6 +345,17 @@ export function normalizeProviderConnectionConfiguration(
   };
 }
 
+/**
+ * codex-lb identity of an `openai_compatible` endpoint: its validated catalog
+ * marker, or for connections that predate it, the explicit Codex root.
+ * Accepts stored JSON; the `20260930130000_model_token_prices` migration
+ * mirrors this predicate in SQL.
+ */
+export function codexLbConnection(connection: Readonly<{ apiRoot?: unknown; responsesRequestIsolationDetected?: unknown }> | null | undefined): boolean {
+  if (typeof connection?.responsesRequestIsolationDetected === "boolean") return connection.responsesRequestIsolationDetected;
+  return typeof connection?.apiRoot === "string" && connection.apiRoot.endsWith("/backend-api/codex");
+}
+
 export function providerResponsesRequestIsolationEnabled(
   configuration: ProviderConnectionConfiguration
 ): boolean {

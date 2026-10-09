@@ -4,6 +4,7 @@ import {
   adminHealthFailureClass,
   adminHealthIncidentFrom,
   adminHealthP95,
+  adminHealthQuantile,
   adminHealthWindow
 } from "./projection";
 
@@ -23,10 +24,18 @@ describe("admin health projection", () => {
     expect(week.to.toISOString()).toBe("2026-10-08T00:00:00.000Z");
     expect(week.previous?.from.toISOString()).toBe("2026-09-24T00:00:00.000Z");
 
+    const fortnight = adminHealthWindow("14d", now);
+    expect(fortnight.interval).toBe("day");
+    expect(fortnight.buckets).toHaveLength(14);
+    expect(fortnight.from.toISOString()).toBe("2026-09-24T00:00:00.000Z");
+    expect(fortnight.to.toISOString()).toBe("2026-10-08T00:00:00.000Z");
+    expect(fortnight.previous).toEqual({ from: new Date("2026-09-10T00:00:00.000Z"), to: fortnight.from });
+
     const month = adminHealthWindow("30d", now);
     expect(month.buckets).toHaveLength(30);
     expect(month.previous).toBeNull();
     expect(adminHealthIncidentFrom("7d", now).toISOString()).toBe("2026-09-30T12:34:56.000Z");
+    expect(adminHealthIncidentFrom("14d", now).toISOString()).toBe("2026-09-23T12:34:56.000Z");
   });
 
   it("puts every error event in exactly one category", () => {
@@ -37,6 +46,7 @@ describe("admin health projection", () => {
     expect(adminHealthEventCategory("run_recovery")).toBe("background");
     expect(adminHealthEventCategory("job_attempt")).toBe("background");
     expect(adminHealthEventCategory("tool_execution")).toBe("tools");
+    expect(adminHealthEventCategory("tool_call")).toBe("tools");
     expect(adminHealthEventCategory("process.failure")).toBe("other");
   });
 
@@ -61,5 +71,8 @@ describe("admin health projection", () => {
     expect(adminHealthP95([96, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0], 1_800)).toBe(100);
     // The open last bucket reports the observed maximum.
     expect(adminHealthP95([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19], 412_000)).toBe(412_000);
+    // The median of the same kind of histogram, as a bucket bound capped by the maximum.
+    expect(adminHealthQuantile([94, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0], 1_800, 0.5)).toBe(100);
+    expect(adminHealthQuantile([10, 0, 0, 0, 90, 0, 0, 0, 0, 0, 0, 0], 1_800, 0.5)).toBe(1_800);
   });
 });

@@ -18,7 +18,7 @@ export function createChatTitleWorker(input: Readonly<{
           const work = await input.repository.take(new Date());
           if (work === null) return;
           if (work === "skipped") continue;
-          await runInBackground(() => runWithContext({ run_id: work.runId }, async () => {
+          await runInBackground(() => runWithContext({ run_id: work.runId, user_id: work.userId }, async () => {
             let usage: ModelRunUsage | null = null;
             let title: string | null = null;
             try {

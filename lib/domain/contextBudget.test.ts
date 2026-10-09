@@ -1,6 +1,6 @@
 import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { describe, expect, it } from "vitest";
-import { applyContextBudget, calculateContextBudgetLimits, estimateApproxTokens, estimateApproxTokensFromProjectedParts, type ContextBudgetMessage } from "./contextBudget";
+import { APPROX_TOKEN_WEIGHT_CLASSES, applyContextBudget, calculateContextBudgetLimits, estimateApproxTokens, estimateApproxTokensFromProjectedParts, type ContextBudgetMessage } from "./contextBudget";
 import {
   TOKEN_ESTIMATE_LIMITS,
   TOKEN_ESTIMATE_MULTIPLIERS,
@@ -75,6 +75,32 @@ describe("context budget", () => {
     ])).toBe(estimateApproxTokens({
       blocks: [{ text, type: "text" }, attachment]
     }));
+  });
+
+  it("estimates exactly, whatever order the characters are counted in", () => {
+    // 24 × 0.25 + 5 × 0.8 is exactly 10; summed one character at a time in
+    // floating point it came out above 10 and rounded up to 11.
+    const text = `${"a".repeat(24)}αβγδε`;
+    expect(estimateApproxTokens(text)).toBe(10);
+    expect(estimateApproxTokensFromProjectedParts([{ counts: [
+      { codePoint: "α".codePointAt(0)!, occurrences: 5 }, { codePoint: "a".codePointAt(0)!, occurrences: 24 }
+    ], kind: "code_points" }])).toBe(10);
+  });
+
+  it("weighs every character of a fixed-weight class with that class's weight", () => {
+    const seen = new Set<number>();
+    for (const { ranges, weight } of APPROX_TOKEN_WEIGHT_CLASSES) {
+      for (const [first, last] of ranges) {
+        for (let codePoint = first; codePoint <= last; codePoint += 1) {
+          expect(seen.has(codePoint)).toBe(false);
+          seen.add(codePoint);
+          // Twenty occurrences tell the weights 0.25, 0.5, 0.8, 1 and 2 apart.
+          expect(estimateApproxTokensFromProjectedParts([
+            { counts: [{ codePoint, occurrences: 20 }], kind: "code_points" }
+          ])).toBe(Math.ceil(weight * 20));
+        }
+      }
+    }
   });
 
   it("calculates the safe input budget after output reserve and margin", () => {

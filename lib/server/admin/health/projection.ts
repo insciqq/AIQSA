@@ -5,6 +5,7 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 /** Counter retention (Persistence): an older previous period cannot be compared. */
 const COUNTER_RETENTION_MS = 30 * DAY_MS;
+const RANGE_DAYS: Readonly<Record<AdminHealthRange, number>> = { "24h": 1, "7d": 7, "14d": 14, "30d": 30 };
 
 export type AdminHealthWindow = Readonly<{
   range: AdminHealthRange;
@@ -16,14 +17,14 @@ export type AdminHealthWindow = Readonly<{
 }>;
 
 /**
- * Whole UTC buckets ending with the current one: 24 hours, or 7/30 days. The
+ * Whole UTC buckets ending with the current one: 24 hours, or 7/14/30 days. The
  * previous period is the same length right before; it is omitted once it
  * reaches past counter retention.
  */
 export function adminHealthWindow(range: AdminHealthRange, now: Date): AdminHealthWindow {
   const interval = range === "24h" ? "hour" : "day";
   const step = interval === "hour" ? HOUR_MS : DAY_MS;
-  const size = range === "24h" ? 24 : range === "7d" ? 7 : 30;
+  const size = range === "24h" ? 24 : RANGE_DAYS[range];
   const end = Math.floor(now.getTime() / step) * step + step;
   const start = end - size * step;
   const previousStart = start - size * step;
@@ -40,8 +41,7 @@ export function adminHealthWindow(range: AdminHealthRange, now: Date): AdminHeal
 
 /** Incidents look back exactly the range length from now. */
 export function adminHealthIncidentFrom(range: AdminHealthRange, now: Date): Date {
-  const length = range === "24h" ? DAY_MS : range === "7d" ? 7 * DAY_MS : 30 * DAY_MS;
-  return new Date(now.getTime() - length);
+  return new Date(now.getTime() - RANGE_DAYS[range] * DAY_MS);
 }
 
 /**
@@ -65,14 +65,14 @@ export function adminHealthFailureClass(
 }
 
 /**
- * The 95th percentile from the fixed duration histogram: the upper bound of
- * the bucket holding it, capped by the observed maximum (the open last bucket
- * reports the maximum itself).
+ * A quantile (0 < q <= 1) from the fixed duration histogram: the upper bound
+ * of the bucket holding it, capped by the observed maximum (the open last
+ * bucket reports the maximum itself).
  */
-export function adminHealthP95(buckets: readonly number[], maxMs: number | null): number | null {
+export function adminHealthQuantile(buckets: readonly number[], maxMs: number | null, quantile: number): number | null {
   const total = buckets.reduce((sum, value) => sum + value, 0);
   if (total <= 0) return null;
-  const target = Math.ceil(total * 0.95);
+  const target = Math.ceil(total * quantile);
   let seen = 0;
   for (let index = 0; index < buckets.length; index += 1) {
     seen += buckets[index] ?? 0;
@@ -84,6 +84,11 @@ export function adminHealthP95(buckets: readonly number[], maxMs: number | null)
   return maxMs === null ? null : Math.round(maxMs);
 }
 
+/** The 95th percentile from the fixed duration histogram (`adminHealthQuantile`). */
+export function adminHealthP95(buckets: readonly number[], maxMs: number | null): number | null {
+  return adminHealthQuantile(buckets, maxMs, 0.95);
+}
+
 /**
  * Incident fields an administrator may see beside the dedicated columns:
  * bounded enumerations, stable codes and measurements. Internal job, tool
@@ -91,11 +96,12 @@ export function adminHealthP95(buckets: readonly number[], maxMs: number | null)
  */
 export const ADMIN_HEALTH_INCIDENT_DETAIL_KEYS: ReadonlySet<string> = new Set([
   "abort_source", "action", "adapterKind", "attempt", "category", "cause", "claimed_count", "completed_count",
-  "configured_timeout_ms", "count", "deadline_kind", "delay_ms", "duration_ms", "durationMs", "effective_timeout_ms",
+  "configured_timeout_ms", "count", "db_failure", "deadline_kind", "delay_ms", "duration_ms", "durationMs", "effective_timeout_ms",
   "engine_index", "error_category", "error_class", "error_fingerprint", "error_site", "failed_count", "headers_ms", "issue_count", "kind", "layer", "limit", "method",
   "mode", "node_version", "observed", "operation", "operation_index", "operation_stage", "outcome", "pending_count",
   "prisma_code", "providerFamily", "provider_code", "provider_status", "reason", "repeat_count", "retry_at",
-  "routePath", "route_source", "state", "status", "stream", "termination", "timeout_ms", "tool_kind",
+  "routePath", "route_source", "sign_in_method", "state", "status", "step", "stream", "stream_drop", "termination", "timeout_ms",
+  "tool_kind",
   "totalStreamBytes", "transport", "unit", "work_stage"
 ]);
 
@@ -139,6 +145,9 @@ function addBounded(set: Set<string>, value: string | null): void {
   if (value !== null && set.size < LIST_LIMIT) set.add(value);
 }
 
+/** A failure group from the counters, before its incidents' reach is read. */
+export type AdminHealthErrorGroupFold = Omit<AdminHealthErrorGroup, "usersAtLeast" | "runsAtLeast">;
+
 /**
  * Failures grouped by fingerprint from counter rows of the range (grouped by
  * fingerprint, class, site, event, role and code) and the first occurrence of
@@ -150,7 +159,7 @@ export function foldAdminHealthErrorGroups(
   firstSeen: readonly ErrorGroupRow[],
   now: Date,
   limit: number
-): Readonly<{ groups: AdminHealthErrorGroup[]; truncated: boolean }> {
+): Readonly<{ groups: AdminHealthErrorGroupFold[]; truncated: boolean }> {
   const folds = new Map<string, ErrorGroupFold>();
   for (const row of rows) {
     const fingerprint = groupText(row, "error_fingerprint");
@@ -180,7 +189,7 @@ export function foldAdminHealthErrorGroups(
     if (fold) fold.firstSeenAt = Math.min(fold.firstSeenAt, row.firstSeenAt.getTime());
   }
   const newSince = now.getTime() - ADMIN_HEALTH_NEW_ERROR_MS;
-  const groups = [...folds.values()].map((fold): AdminHealthErrorGroup => ({
+  const groups = [...folds.values()].map((fold): AdminHealthErrorGroupFold => ({
     fingerprint: fold.fingerprint,
     errorClass: [...fold.classes.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]![0],
     site: fold.site,
@@ -194,4 +203,20 @@ export function foldAdminHealthErrorGroups(
   })).sort((left, right) => Number(right.isNew) - Number(left.isNew) || right.count - left.count ||
     right.lastSeenAt.localeCompare(left.lastSeenAt) || left.fingerprint.localeCompare(right.fingerprint));
   return { groups: groups.slice(0, limit), truncated: groups.length > limit };
+}
+
+/**
+ * Each failure with how many distinct users and runs its retained incidents of
+ * the range name (`countIncidentReachByFingerprint`): lower bounds, since
+ * incidents are sampled; none when no retained incident names one.
+ */
+export function adminHealthErrorGroupsWithReach(
+  groups: readonly AdminHealthErrorGroupFold[],
+  reach: ReadonlyMap<string, Readonly<{ users: number; runs: number }>>
+): AdminHealthErrorGroup[] {
+  return groups.map((group) => ({
+    ...group,
+    usersAtLeast: reach.get(group.fingerprint)?.users ?? 0,
+    runsAtLeast: reach.get(group.fingerprint)?.runs ?? 0
+  }));
 }

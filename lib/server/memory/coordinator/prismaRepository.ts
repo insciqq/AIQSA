@@ -1,6 +1,11 @@
 import { logEvent } from "../../observability";
 import { observeMemoryEnqueues } from "../persistence/enqueueObservability";
-import { databaseFailureCode, rememberDatabaseFailure, retainDatabaseFailure } from "../../observability/databaseFailure";
+import {
+  databaseFailureCode,
+  databaseFailureKind,
+  retainDatabaseCause,
+  retainDatabaseFailure
+} from "../../observability/databaseFailure";
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -68,6 +73,11 @@ const HISTORY_JOB_COMMIT_TIMEOUT_MS = 20_000;
 // the lease checked against `now` is still unexpired.
 const DELETION_COMMIT_MAX_WAIT_MS = 2_000;
 const DELETION_COMMIT_TIMEOUT_MS = 18_000;
+// Background work yields the owner to foreground writers. A job commit that
+// cannot take the owner lock within this bound rolls back with 55P03 and
+// retries after its backoff instead of queueing in front of the owner's next
+// foreground transaction, whose own budget is Prisma's 5-second default.
+const JOB_COMMIT_OWNER_LOCK_TIMEOUT_MS = 1_000;
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const safeInternalFailure = /^memory_[a-z0-9_]{1,56}$/u;
@@ -665,7 +675,9 @@ async function commitJobSuccessWithAuthority(
   // closure later upgrades it, allowing concurrent jobs to form a lock-upgrade
   // deadlock. Provider execution remains parallel; only durable mutation is
   // ordered here.
-  await lockMemorySettings(tx, input.claim.userId, false);
+  await lockMemorySettings(tx, input.claim.userId, false, {
+    lockTimeoutMs: JOB_COMMIT_OWNER_LOCK_TIMEOUT_MS
+  });
   if (input.claim.kind === "MEMORY_COMMAND") {
     // The command's effect and terminal receipt were already committed under
     // its exact-message authority. Queue settlement must not reapply it, or
@@ -767,11 +779,15 @@ async function commitJobSuccessWithAuthority(
     }
     return staled.count === 1;
   }
-  await input.apply?.(tx, input.claim);
+  const applied = await input.apply?.(tx, input.claim);
+  // A bounded pass that left work for itself is queued again, as a wake
+  // would queue a completed pass, without reporting completion.
+  const requeue = applied?.requeue === true;
   const updated = await tx.memoryJob.updateMany({
     data: {
-      acceptedResultHash: input.acceptedResultHash,
-      completedAt: input.now,
+      acceptedResultHash: requeue ? null : input.acceptedResultHash,
+      ...(requeue ? { attemptCount: 0 } : {}),
+      completedAt: requeue ? null : input.now,
       errorCode: null,
       errorMessage: null,
       leaseExpiresAt: null,
@@ -784,7 +800,7 @@ async function commitJobSuccessWithAuthority(
               input.operationalCounters as Prisma.InputJsonObject
           }),
       stage: input.stage,
-      state: "SUCCEEDED",
+      state: requeue ? "QUEUED" : "SUCCEEDED",
       progressAt: input.now,
       updatedAt: input.now
     },
@@ -1158,7 +1174,8 @@ export function createPrismaMemoryCoordinatorRepository(
           ) {
             logEvent("job_persistence", { subsystem: "memory", job_id: input.claim.id,
               attempt: input.claim.attemptCount, stage: "complete", outcome: "unconfirmed",
-              code: "memory_job_commit_failed", prisma_code: databaseFailureCode(error), action: "retry" });
+              code: "memory_job_commit_failed", prisma_code: databaseFailureCode(error),
+              db_failure: databaseFailureKind(error), action: "retry" });
             await (options.jobCommitRetryDelay ?? waitForJobCommitRetry)(attempt + 1);
             continue;
           }
@@ -1167,7 +1184,7 @@ export function createPrismaMemoryCoordinatorRepository(
             jobCommitFailureCode(error),
             rollbackSafeJobCommitTimeout(error)
           );
-          rememberDatabaseFailure(failure, databaseFailureCode(error));
+          retainDatabaseCause(failure, error);
           throw failure;
         }
       }

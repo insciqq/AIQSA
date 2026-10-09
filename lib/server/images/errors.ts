@@ -1,8 +1,10 @@
 import { decodeImageFailureDiagnostic, type ImageFailureDiagnostic } from "../../contracts/imageGeneration";
-import { ImageGenerationError, type ImageGenerationErrorCode } from "../providers/imageGeneration";
+import { ImageGenerationError, type ImageGenerationErrorCode, type ImageFinishReason } from "../providers/imageGeneration";
+import { ImageInputError } from "./inputError";
 
 /** A new LLM call must not automatically retry an uncertain paid image dispatch. */
 export function imageDispatchMustStop(error: unknown): boolean {
+  if (error instanceof ImageInputError) return false;
   const code = error instanceof Error ? error.message : "";
   return !["image_input_invalid", "image_parameters_invalid", "image_reference_unavailable", "image_reference_invalid"].includes(code);
 }
@@ -10,7 +12,7 @@ export function imageDispatchMustStop(error: unknown): boolean {
 const adapterCodes: Readonly<Record<ImageGenerationErrorCode, true>> = {
   image_input_invalid: true, image_parameters_invalid: true, image_response_invalid: true, image_response_too_large: true,
   image_provider_http_error: true, image_provider_request_failed: true, image_request_timed_out: true,
-  image_request_cancelled: true, image_output_missing: true
+  image_request_cancelled: true, image_output_missing: true, image_generation_refused: true
 };
 // Stable codes the image service and run paths throw before or around dispatch.
 const serviceCodes = new Set([
@@ -27,6 +29,7 @@ export type ImageFailureEvidence = Readonly<{
   /** The adapter's classification of an HTTP rejection; null without one. */
   category: ImageFailureDiagnostic["category"] | null;
   httpStatus: number | null;
+  finishReason?: ImageFinishReason;
   parameter?: NonNullable<ImageFailureDiagnostic["parameter"]>;
 }>;
 
@@ -42,6 +45,7 @@ const categoryMessages: Readonly<Record<Exclude<ImageFailureDiagnostic["category
   upstream_unavailable: `Image generation failed because the image provider is temporarily unavailable. ${NOT_REPEATED} Try again later. ${SAVED}`
 };
 const codeMessages: Readonly<Partial<Record<ImageGenerationErrorCode, string>>> = {
+  image_generation_refused: `The image provider answered without a completed image. ${NOT_REPEATED} Rephrasing the request may help. ${SAVED}`,
   image_request_timed_out: `Image generation timed out waiting for the image provider, so its outcome is unknown. ${NOT_REPEATED} ${SAVED}`,
   image_provider_request_failed: `The connection to the image provider failed before a response arrived, so the outcome is unknown. ${NOT_REPEATED} ${SAVED}`,
   image_response_invalid: `The image provider returned a response that could not be read as an image. ${NOT_REPEATED} ${SAVED}`,
@@ -56,6 +60,10 @@ const capabilityMessages: Readonly<Record<string, string>> = {
 };
 
 function evidenceMessage(evidence: ImageFailureEvidence): string {
+  if (evidence.code === "image_generation_refused" && evidence.finishReason === "safety") return categoryMessages.safety;
+  if (evidence.code === "image_generation_refused" && evidence.finishReason === "blocked") {
+    return `The image provider blocked the request and did not complete an image. ${NOT_REPEATED} Rephrasing the request may help. ${SAVED}`;
+  }
   if (evidence.category === "invalid_parameter") {
     return `Image generation failed because the image provider rejected ${evidence.parameter ? `the “${evidence.parameter}” parameter` : "a request parameter"}. ${NOT_REPEATED} Try different image settings or a different request. ${SAVED}`;
   }
@@ -76,6 +84,8 @@ export function imageGenerationFailure(error: unknown): Readonly<{ evidence: Ima
     const diagnostic = error.code === "image_provider_http_error" && httpStatus !== null
       ? decodeImageFailureDiagnostic(error.diagnostic) : null;
     evidence = { category: diagnostic?.category ?? (httpStatus !== null ? "unknown" : null), code: error.code, httpStatus,
+      ...(error.code === "image_generation_refused" && ["safety", "blocked", "other"].includes(error.finishReason ?? "")
+        ? { finishReason: error.finishReason } : {}),
       ...(diagnostic?.parameter ? { parameter: diagnostic.parameter } : {}) };
   } else {
     const code = error instanceof Error && serviceCodes.has(error.message) ? error.message : "unknown";

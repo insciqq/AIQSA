@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { trustedHeaderSignInConfigSchema } from "@/lib/contracts/authSignInMethods";
 import { createTestAuth, createTestUser } from "@/tests/support/auth";
+import { captureSignInRecords } from "@/tests/support/signInRecords";
+import { runInBackground } from "../../observability";
 import { getAuthConfig } from "../config";
 import { createFixedWindowLoginRateLimiter } from "../rateLimit";
 import type { AuthSessionRecord, AuthSessionStore } from "../requestAuth";
@@ -248,6 +250,46 @@ describe("trusted-header sign-in route", () => {
 
     const anonymous = await setup().handler(request({ headers: { "x-forwarded-for": "" } }));
     expect(location(anonymous).searchParams.get("trusted_header")).toBe("failed");
+  });
+
+  it("records each attempt once without the proxy's identity, a missing header as an error", async () => {
+    const records = await captureSignInRecords(async () => {
+      await setup().handler(request());
+      await setup({ result: { status: "not_allowed" } }).handler(request());
+      await setup().handler(request({ headers: { "x-auth-request-email": "" } }));
+      await setup({ result: new Error("database unavailable") }).handler(request());
+      await setup({ mode: "direct_peer" }).handler(request());
+    });
+
+    expect(records.map(({ code, level, outcome, sign_in_method, step }) => ({ code, level, outcome, sign_in_method, step }))).toEqual([
+      { code: "accepted", level: "info", outcome: "succeeded", sign_in_method: "trusted_header", step: "callback" },
+      { code: "not_allowed", level: "warn", outcome: "refused", sign_in_method: "trusted_header", step: "callback" },
+      { code: "header_missing", level: "error", outcome: "failed", sign_in_method: "trusted_header", step: "callback" },
+      { code: "sign_in_failed", level: "error", outcome: "failed", sign_in_method: "trusted_header", step: "callback" },
+      { code: "environment_unsupported", level: "error", outcome: "refused", sign_in_method: "trusted_header", step: "callback" }
+    ]);
+    expect(JSON.stringify(records)).not.toMatch(/member|example\.com|staff|engineering|198\.51/u);
+  });
+});
+
+describe("trusted-header sign-in attribution", () => {
+  // Each request is its own observability root, as the HTTP listener makes it.
+  const attributed = async (handler: (request: Request) => Promise<Response>, input: Parameters<typeof request>[0]) =>
+    (await captureSignInRecords(() => runInBackground(() => handler(request(input)))))[0]?.user_id;
+
+  it("never attributes a replacing sign-in to the account whose cookie it replaces", async () => {
+    const failed = setup({ linked: { [EMAIL]: "header-user" }, result: new Error("database unavailable"),
+      sessions: { "other-token": "other-user" } });
+    expect(await attributed(failed.handler, { cookie: "other-token" })).toBeUndefined();
+    expect(failed.repository.revokeReplacedSession).toHaveBeenCalledTimes(1);
+
+    const replaced = setup({ linked: { [EMAIL]: "header-user" }, sessions: { "other-token": "other-user" } });
+    expect(await attributed(replaced.handler, { cookie: "other-token" })).toBe("header-user");
+  });
+
+  it("attributes a kept session to its own account", async () => {
+    const { handler } = setup({ linked: { [EMAIL]: "header-user" }, sessions: { "own-token": "header-user" } });
+    expect(await attributed(handler, { cookie: "own-token" })).toBe("header-user");
   });
 });
 

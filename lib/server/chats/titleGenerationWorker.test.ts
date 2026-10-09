@@ -39,6 +39,7 @@ describe("background chat title worker", () => {
       expect(getContext()!.run_id).toBe("request-run");
     }));
     expect(seen.map((item) => item?.run_id)).toEqual([work.runId, second.runId]);
+    expect(seen.map((item) => item?.user_id)).toEqual([work.userId, "second-owner"]);
     expect(new Set(seen.map((item) => item?.trace_id)).size).toBe(2);
     for (const context of seen) expect(context?.trace_id).not.toBe(requestTrace);
   });

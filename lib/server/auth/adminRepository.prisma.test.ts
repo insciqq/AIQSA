@@ -1517,6 +1517,34 @@ describe("Prisma-backed admin repository", () => {
     });
   });
 
+  it("clears a deleted account's id from its telemetry incidents in the deleting transaction, keeping other users'", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const stale = await createPasswordUser({
+        displayName: "Telemetry Delete User",
+        domain,
+        emailLocalPart: "telemetry-delete",
+        status: "pending",
+        verified: false
+      });
+      // Only these incidents carry this version, and only they are removed.
+      const version = `admin-telemetry-${randomUUID()}`;
+      const incident = (userId: string) => prisma.$executeRaw`
+        INSERT INTO "TelemetryIncident" ("id", "occurredAt", "role", "event", "level", "appVersion", "instanceId", "userId", "details")
+        VALUES (${randomUUID()}, CURRENT_TIMESTAMP, 'app', 'run_execution', 'error', ${version}, ${"a".repeat(32)}, ${userId}, '{}'::jsonb)`;
+      try {
+        await incident(stale.id);
+        await incident(stale.id);
+        await incident(adminId);
+        await expect(repository.deleteStaleUser({ actingAdminUserId: adminId, userId: stale.id })).resolves.toBe("deleted");
+        const rows = await prisma.$queryRaw<Array<{ userId: string | null }>>`
+          SELECT "userId" FROM "TelemetryIncident" WHERE "appVersion" = ${version} ORDER BY "userId" NULLS FIRST`;
+        expect(rows).toEqual([{ userId: null }, { userId: null }, { userId: adminId }]);
+      } finally {
+        await prisma.$executeRaw`DELETE FROM "TelemetryIncident" WHERE "appVersion" = ${version}`;
+      }
+    });
+  });
+
   it("does not treat Project-owned run evidence as account-owned deletion data", async () => {
     await withAdminData(async ({ adminId, domain, repository }) => {
       const participant = await createPasswordUser({

@@ -30,6 +30,7 @@ import {
 } from "../knowledge/automaticEvidence";
 import { KNOWLEDGE_FOCUSED_OPERATION_NAME } from "../knowledge/retrievalTypes";
 import { createPrismaRunRepository } from "./prismaRepository";
+import { registerRunTerminalListener } from "../push/runTerminalSignal";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
@@ -1734,6 +1735,50 @@ describe("Prisma-backed run repository", () => {
         toolName: "local_search" }], providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1,
       runId: persistedRound.runId, userId })).resolves.toMatchObject({ kind: "persisted" });
       expect(await repository.beginToolLoopProviderRound({ ...synthesis, runId: persistedRound.runId })).toBe("conflict");
+    });
+  });
+
+  it("re-opens a dropped provider round once, keeping the dropped request in the run's usage rows", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Dropped round");
+      expect(await repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+        roundIndex: 1, runId: active.runId, userId })).toBe("started");
+      await repository.updateRunProviderResponseId(active.runId, "dropped-response");
+      await repository.appendAssistantText(active.assistantMessageId, "Dropped par", { runId: active.runId });
+      await repository.markRunAnswerStarted({ at: new Date(), runId: active.runId });
+      const dropped = normalizeTokenUsage({ completeness: "partial", inputTokens: 9 });
+      const attribution = { modelId: "fake-qsa", operationCount: 1, provider: "fake", purpose: "chat_answer" as const, usage: dropped };
+      // Before the dropped request's usage is recorded the round cannot re-open.
+      expect(await repository.reopenToolLoopProviderRound!({ roundIndex: 1, runId: active.runId, userId })).toBe(false);
+      expect(await repository.recordRunUsageEvents({ answerRoundUsage: { completeness: "partial", roundIndex: 1, usage: dropped },
+        chatId: active.chatId, runId: active.runId, usageAttributions: [attribution], userId })).toBe(true);
+
+      expect(await repository.reopenToolLoopProviderRound!({ roundIndex: 2, runId: active.runId, userId })).toBe(false);
+      expect(await repository.reopenToolLoopProviderRound!({ roundIndex: 1, runId: active.runId, userId })).toBe(true);
+      expect(await repository.loadCheckpointedToolLoopRun({ runId: active.runId, userId })).toMatchObject({
+        assistantText: "", providerResponseId: null, checkpoint: { answerRoundUsage: [], phase: "provider_running", roundIndex: 1 } });
+      await expect(prisma.modelRun.findUniqueOrThrow({ select: { answerStartedAt: true }, where: { id: active.runId } }))
+        .resolves.toEqual({ answerStartedAt: null });
+      await expect(prisma.message.findUniqueOrThrow({ select: { content: true, status: true }, where: { id: active.assistantMessageId } }))
+        .resolves.toEqual({ content: textMessageContent(""), status: "streaming" });
+      // The dropped request stays one operation of the run.
+      await expect(repository.loadRunUsageAttributions({ runId: active.runId, userId })).resolves.toEqual([
+        expect.objectContaining({ operationCount: 1, purpose: "chat_answer", usage: expect.objectContaining({ inputTokens: 9 }) })]);
+      expect(await repository.reopenToolLoopProviderRound!({ roundIndex: 1, runId: active.runId, userId })).toBe(false);
+
+      // A completed round, or a run that is no longer live, never re-opens.
+      const terminal = normalizeTokenUsage({ inputTokens: 5, outputTokens: 2, totalTokens: 7 });
+      expect(await repository.recordRunUsageEvents({ answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage: terminal },
+        chatId: active.chatId, runId: active.runId, usageAttributions: [attribution, { ...attribution, usage: terminal }], userId })).toBe(true);
+      expect(await repository.reopenToolLoopProviderRound!({ roundIndex: 1, runId: active.runId, userId })).toBe(false);
+      const cancelled = await createActiveRun(repository, userId, "Cancelled dropped round");
+      expect(await repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+        roundIndex: 1, runId: cancelled.runId, userId })).toBe("started");
+      expect(await repository.recordRunUsageEvents({ answerRoundUsage: { completeness: "partial", roundIndex: 1, usage: dropped },
+        chatId: cancelled.chatId, runId: cancelled.runId, usageAttributions: [attribution], userId })).toBe(true);
+      await prisma.modelRun.update({ data: { status: "cancelled" }, where: { id: cancelled.runId } });
+      expect(await repository.reopenToolLoopProviderRound!({ roundIndex: 1, runId: cancelled.runId, userId })).toBe(false);
     });
   });
 
@@ -4501,15 +4546,23 @@ describe("Prisma-backed run repository", () => {
         userId
       };
 
-      const settlements = await Promise.all([
-        repository.settleRecoveredRunError(settlement),
-        repository.settleRecoveredRunError(settlement)
-      ]);
+      const signalled: string[] = [];
+      registerRunTerminalListener((terminalRunId) => signalled.push(terminalRunId));
+      try {
+        const settlements = await Promise.all([
+          repository.settleRecoveredRunError(settlement),
+          repository.settleRecoveredRunError(settlement)
+        ]);
 
-      expect(settlements.sort()).toEqual([false, true]);
-      await expect(
-        repository.settleRecoveredRunError({ ...settlement, userId: "another-user" })
-      ).resolves.toBe(false);
+        expect(settlements.sort()).toEqual([false, true]);
+        await expect(
+          repository.settleRecoveredRunError({ ...settlement, userId: "another-user" })
+        ).resolves.toBe(false);
+        // Browser push hears of the committed transition once; lost ones send nothing.
+        expect(signalled).toEqual([recovered.runId]);
+      } finally {
+        registerRunTerminalListener(null);
+      }
       const [run, message, events, usageEvents, chats, controls] = await Promise.all([
         prisma.modelRun.findUniqueOrThrow({
           select: {

@@ -6,7 +6,7 @@ import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
-import { RunSettlementError, isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
+import { RunSettlementError, WorkspaceHandoffFailure, isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 import { isWorkspaceOperationFailureCode, workspaceOperationFailureMessage } from "@/lib/contracts/workspaceFailure";
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
@@ -58,7 +58,8 @@ import { warnProviderStreamSafetyOnce } from "../providers/streamSafetyObservabi
 import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { logEvent, runWithContext } from "../observability";
 import { withKnowledgeToolDeadline } from "./knowledgeToolDeadline";
-import { logRunPersistence, runDatabaseFailureCode } from "./runObservability";
+import { workspaceTurnSoftDeadlineMs } from "./workspaceTurnDeadline";
+import { logRunPersistence, runDatabaseFailureCode, runDatabaseFailureKind } from "./runObservability";
 import type {
   ProviderAdapter,
   ProviderConversationMessage,
@@ -286,6 +287,7 @@ import {
 } from "../workspace/toolCatalog";
 
 import { activeRunControllers, runSettlements } from "./activeRunControllerRegistry";
+import { toolCallKind, toolExecutionKind, type ToolCallRoutes } from "./toolCallKind";
 export { activeRunControllerRegistry, type ActiveRunControllerRegistry } from "./activeRunControllerRegistry";
 
 export type RunExecutionRepository = Pick<
@@ -330,6 +332,7 @@ export type RunExecutionRepository = Pick<
   | "loadRunMcpApprovalCards"
   | "loadRunSearchSourceUrls"
   | "recordRunUsageEvents"
+  | "reopenToolLoopProviderRound"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
   | "updateRunProviderResponseId"
@@ -350,6 +353,8 @@ export type RunExecutionInput = Readonly<{
   /** Names a personal chat after its first answer; absent on recovery paths. */
   chatTitleGenerator?: ChatTitleGenerator;
   created: Readonly<{
+    /** When admission committed; without it the run records no time to first output. */
+    acceptedAt?: Date;
     assistantMessageId: string;
     runId: string;
     userMessageId: string;
@@ -564,8 +569,9 @@ class RunPipelineError extends Error {
   readonly httpStatus?: number;
 
   constructor(code: string, message: string, report?: ProviderStreamSafetyReport, imageFailure?: ImageFailureEvidence,
-    httpStatus?: number) {
-    super(message);
+    httpStatus?: number, cause?: unknown) {
+    // The cause is kept only for content-free database diagnostics.
+    super(message, cause === undefined ? undefined : { cause });
     this.code = code;
     if (report) this.report = report;
     if (imageFailure) this.imageFailure = imageFailure;
@@ -698,7 +704,8 @@ async function persistPlanSearchExecution(input: Readonly<{
 }
 
 export function createRunExecutionResponse(input: RunExecutionInput): Response {
-  return runWithContext({ run_id: input.created.runId }, () => createBoundRunExecutionResponse(input));
+  // The run's own user (a Project run's initiator) names its records, whoever's request carries it.
+  return runWithContext({ run_id: input.created.runId, user_id: input.userId }, () => createBoundRunExecutionResponse(input));
 }
 
 function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
@@ -739,6 +746,21 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       const executionStartedAt = Date.now();
       let executionStage: "dispatch" | "execution" | "completion" = "dispatch";
       let answerPublished = false;
+      // Time to first output: one record at the first answer text this run
+      // publishes, measured from admission, so queueing, preparation and any
+      // tool rounds before the text are included. Later text records nothing.
+      const acceptedAt = input.created.acceptedAt;
+      let firstOutputPending = true;
+      let toolRoundsBeforeOutput = false;
+      const recordFirstOutput = (text: string) => {
+        if (!firstOutputPending || acceptedAt === undefined || text.length === 0) return;
+        firstOutputPending = false;
+        const answer = input.prepared.providerAdmissionPlan?.answer?.snapshot;
+        logEvent("run_execution", { run_id: runId, stage: "first_output", outcome: "completed",
+          duration_ms: Math.max(0, Date.now() - acceptedAt.getTime()), after: toolRoundsBeforeOutput ? "tools" : "dispatch",
+          connectionId: answer?.connectionId, providerModelId: answer?.providerModelId,
+          providerFamily: answer?.providerFamily, adapterKind: answer?.model?.adapterKind });
+      };
       const compactionPublisher = createContextCompactionPublisher(async status => {
         const event = contextCompactionArtifact(status);
         await input.repository.appendRunOutputEvent(runId, event);
@@ -770,12 +792,22 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         ? setTimeout(
             () => {
               logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "failed",
-                code: "workspace_tool_timeout", reason: "deadline", abort_source: "workspace_deadline",
-                timeout_ms: workspaceTurnTimeoutSeconds! * 1_000 });
-              workspaceTurnController.abort(normalizedRequest.agent ? new AgentExecutionError("agent_time_limit") : new WorkspaceRuntimeError("workspace_tool_timeout"));
+                code: normalizedRequest.agent ? "workspace_tool_timeout" : "workspace_turn_time_limit", reason: "deadline",
+                abort_source: "workspace_deadline", timeout_ms: workspaceTurnTimeoutSeconds! * 1_000 });
+              workspaceTurnController.abort(normalizedRequest.agent ? new AgentExecutionError("agent_time_limit") : new WorkspaceRuntimeError("workspace_turn_time_limit"));
             },
             workspaceTurnTimeoutSeconds! * 1_000
           )
+        : null;
+      // The soft deadline of a Workspace tool loop: once only the reserve for
+      // finishing remains, the existing forced tool-free answer and the normal
+      // handoff follow (see `workspaceTurnSoftDeadlineMs`). It only sets a
+      // flag: running work is never interrupted, and Stop and the hard
+      // deadline above keep their own signals.
+      let workspaceTimeBudgetExhausted = false;
+      const workspaceSoftDeadlineTimer = workspaceTurnTimer && normalizedRequest.workspace && !normalizedRequest.agent
+        ? setTimeout(() => { workspaceTimeBudgetExhausted = true; }, workspaceTurnSoftDeadlineMs(
+            normalizedRequest.workspace.turnTimeoutSeconds, normalizedRequest.workspace.syncToolTimeoutSeconds))
         : null;
       const signal = workspaceTurnController
         ? AbortSignal.any([abortController.signal, workspaceTurnController.signal])
@@ -1045,6 +1077,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
           await tokenBuffer.push(effectiveEvent.data.delta).catch(error => { throw new RunSettlementError("publication", error); });
           emitTransient(controller, encoder, effectiveEvent);
+          recordFirstOutput(effectiveEvent.data.delta);
           return;
         }
 
@@ -2388,6 +2421,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             );
           }
         };
+        const toolCallRoutes: ToolCallRoutes = { search: isSearchCall, knowledge: isKnowledgeCall, workspace: isWorkspaceCall,
+          mcp: (name) => isMcpDiscoveryCall(name) || resolveMcpRunTool(activeMcpSnapshot, name) !== null };
         const outcome = await continueProviderToolLoop({
           // Every checkpoint of a v1 non-Agent run carries the rebuild record.
           allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
@@ -2396,15 +2431,29 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // first report, is reserved outside the business tool budgets; a
           // repeated one counts as an ordinary call.
           ...(reservedToolCall ? { reservedCall: { called: false, ...reservedToolCall } } : {}),
+          // A dropped round of a binding that admits it is sent again with the
+          // request it dispatched; its text is replaced, never appended.
+          ...(input.adapter.droppedRoundRetry && input.repository.reopenToolLoopProviderRound ? { roundRetry: {
+            policy: input.adapter.droppedRoundRetry,
+            reopen: async ({ publishedText, round }) => {
+              await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
+              const reopened = await input.repository.reopenToolLoopProviderRound!({ roundIndex: round, runId, userId: input.userId })
+                .catch(error => { throw new RunSettlementError("publication", error); });
+              if (!reopened) return false;
+              tokenBuffer.resetLocal();
+              answerStartMarked = false;
+              persistedProviderResponseId = null;
+              if (publishedText) emitTransient(controller, encoder, { data: { round }, type: "message_reset" });
+              return true;
+            }
+          } } : {}),
+          toolCallKind: (call) => toolCallKind(normalizedRequest, call.name, toolCallRoutes),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
             if (!persisted) return undefined;
             return {
               tool_call_id: persisted.id, execution_index: persisted.ordinal,
-              tool_kind: searchPlanRouter?.accepts(call.name) ? "search"
-                : isKnowledgeCall(call.name) ? "knowledge"
-                : isWorkspaceCall(call.name) ? "workspace"
-                : isMcpDiscoveryCall(call.name) || resolveMcpRunTool(activeMcpSnapshot, call.name) ? "mcp" : undefined
+              tool_kind: toolExecutionKind(call.name, toolCallRoutes)
             };
           },
           adapter: egressAdapter,
@@ -2535,6 +2584,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             maxToolCalls: toolBudgets.maxToolCalls,
             maxToolRounds: toolBudgets.maxToolRounds
           },
+          ...(workspaceSoftDeadlineTimer ? { timeBudgetExhausted: () => workspaceTimeBudgetExhausted } : {}),
           executeTool: async (call, context) => {
               const persisted = persistedCalls.get(call.id);
               if (!persisted) {
@@ -3296,6 +3346,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             ? normalizeWorkspaceProviderToolName
             : undefined,
           persistToolBatch: async ({ calls, continuation, round }) => {
+            toolRoundsBeforeOutput = true;
             skillResultBudget.begin({ calls, bridge: toolBridge, observations: runObservations(), request: {
               ...sessionRequest, providerToolMessages: [...continuation.providerToolMessages]
             } });
@@ -3470,7 +3521,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
             streamSafetyReport,
             outcome.failure.imageFailure,
-            outcome.failure.httpStatus
+            outcome.failure.httpStatus,
+            outcome.failure.cause
           );
         }
         let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | undefined;
@@ -3624,6 +3676,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           if (!input.agentResponses || !input.workspace?.executeAgent) {
             throw new RunPipelineError("agent_unavailable", "Agent execution is unavailable.");
           }
+          // An Agent answer is published only after its Codex exec, a Workspace tool call.
+          toolRoundsBeforeOutput = true;
           providerResult = await executeCodexTurn({
             request: providerRequest, runId, userId: input.userId, signal,
             transport: input.agentResponses, workspace: input.workspace,
@@ -3748,6 +3802,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             answerPublished = true;
             if (knowledgeCitationAnswer && answer.finalText) {
               emitTransient(controller, encoder, { data: { delta: answer.finalText }, type: "token" });
+              recordFirstOutput(answer.finalText);
             }
             emitTransient(controller, encoder, contextStatusEvent);
             emitTransient(controller, encoder, { data: answer.usage, type: "usage" });
@@ -3755,12 +3810,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               assistantMessageId: input.created.assistantMessageId, runId
             } });
             // The published answer is immutable. Run completion still requires
-            // captured outputs and retirement of the previous guest authority.
+            // captured outputs and retirement of the previous guest authority;
+            // their failure keeps the answer and ends the run terminally. Stop
+            // and the turn deadline keep their own outcome.
             const handoff = await input.workspace!.handoff({
               onActivity: onWorkspaceActivity, runId, signal, userId: input.userId,
               workspace: normalizedRequest.workspace!
-            });
-            if (handoff.status !== "ready") throw new WorkspaceRuntimeError("workspace_operation_stale");
+            }).catch((error: unknown) => { throw signal.aborted ? error : new WorkspaceHandoffFailure(error); });
+            if (handoff.status !== "ready") throw new WorkspaceHandoffFailure(new WorkspaceRuntimeError("workspace_operation_stale"));
             throwIfAborted(signal);
             await assertProjectRunAccessCurrent(true);
           } } : {}),
@@ -3784,8 +3841,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;
         }
+        // The admitted answer identity, as on failure: run durations per provider.
+        const completedAnswer = input.prepared.providerAdmissionPlan?.answer?.snapshot;
         logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "completed",
-          duration_ms: Math.max(0, Date.now() - executionStartedAt) });
+          duration_ms: Math.max(0, Date.now() - executionStartedAt),
+          connectionId: completedAnswer?.connectionId, providerModelId: completedAnswer?.providerModelId,
+          providerFamily: completedAnswer?.providerFamily, adapterKind: completedAnswer?.model?.adapterKind });
 
         if (!answerPublished) emitTransient(controller, encoder, contextStatusEvent);
 
@@ -3794,6 +3855,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             data: { delta: finalization.finalText },
             type: "token"
           });
+          recordFirstOutput(finalization.finalText);
         }
 
         if (!answerPublished) emitTransient(controller, encoder, {
@@ -3844,7 +3906,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           provider_code: error instanceof KnowledgeAnswerProviderError ? error.providerCode : undefined,
           abort_source: abortController.signal.aborted ? "stop" : workspaceTurnTimedOut ? "workspace_deadline"
             : originalFailure.abort_source === "provider_deadline" ? "provider_deadline" : undefined,
-          timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error)
+          timeout_ms: originalFailure.timeout_ms, prisma_code: runDatabaseFailureCode(error),
+          db_failure: runDatabaseFailureKind(error)
         });
         if (cancelled) {
           await compactionPublisher.terminate("unknown").catch(() => undefined);
@@ -3911,7 +3974,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             : isRecord(failure) && isProviderStreamSafetyCode(failure.code)
               ? failure.code
               : null);
-        const settlement = runSettlementFailure(failure);
+        const settlement = failure instanceof WorkspaceHandoffFailure
+          ? { code: failure.code, message: failure.message } : runSettlementFailure(failure);
         const observedCode = observedFailure(failure).code;
         const failureCode = settlement?.code ?? contractFailureCode ?? routingCode ??
           (knowledgeAnswerAttempted
@@ -3961,7 +4025,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             runId,
             input.created.assistantMessageId,
             imageFailure ? { ...payload, imageFailure } : payload,
-            safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode || isRunPersistenceFailureCode(failureCode) ||
+            failure instanceof WorkspaceHandoffFailure ||
+              safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode || isRunPersistenceFailureCode(failureCode) ||
               isToolSynthesisFailure(failureCode) ||
               isMcpAutoDiscoveryFailureCode(failureCode) ||
               failureCode === "memory_answer_model_tools_retired" ||
@@ -3985,6 +4050,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         followups?.release();
         await artifactGeneration.stop(signal.aborted ? "cancelled" : "failed").catch(() => undefined);
         if (workspaceTurnTimer) clearTimeout(workspaceTurnTimer);
+        if (workspaceSoftDeadlineTimer) clearTimeout(workspaceSoftDeadlineTimer);
         if (input.prepared.project) notifyProjectEvent(input.prepared.project.projectId);
         if (activeRunControllers.get(runId) === abortController) {
           activeRunControllers.delete(runId);

@@ -2255,6 +2255,12 @@ export function PowerAppShellV2({
     stopAnswerReview: (sessionId: string) => activeChatId
       ? stopAnswerReviewSessionV2({ chatId: activeChatId, refreshActiveChat, sessionId, setNotice })
       : Promise.resolve(),
+    problemReport: activeChatId ? {
+      chatId: activeChatId,
+      confirmSent: (outcome: "created" | "updated") => setNotice({
+        chatId: activeChatId, kind: "success", text: outcome === "created" ? "Report sent. Thank you." : "Report updated."
+      })
+    } : null,
     jumpToLatest,
     refreshLayout: refreshThreadLayout,
     hasOlderMessages: activeThreadHistory.hasOlder,

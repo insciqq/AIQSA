@@ -296,7 +296,9 @@ describe("durable Agent authority and accounting", () => {
     const f = await imageFixture();
     try {
       const invalid = await f.dispatch()({ ...f.call, id: "foreign", arguments: { ...f.call.arguments, image_ids: [randomUUID()] } }, new AbortController().signal);
-      expect(invalid).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "image_reference_unavailable" } }] });
+      expect(invalid).toMatchObject({ status: "error", content: [{ type: "json", value: { error: "image_reference_not_found" } }] });
+      expect(JSON.stringify(invalid)).toContain("Nothing was sent to the image provider");
+      expect(JSON.stringify(invalid)).not.toContain("Do not repeat");
       expect(f.fetchFn).not.toHaveBeenCalled();
       f.fetchFn.mockRejectedValueOnce(new Error("synthetic_network_loss_after_dispatch"));
       const result = await f.dispatch()(f.call, new AbortController().signal);

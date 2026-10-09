@@ -268,7 +268,7 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       }
     });
     if (!claim) return false;
-    return runInBackground(() => runWithContext({ run_id: claim.runId }, () => processClaim(claim)));
+    return runInBackground(() => runWithContext({ run_id: claim.runId, user_id: claim.userId }, () => processClaim(claim)));
   }
 
   async function processClaim(claim: ChatPdfClaim): Promise<boolean> {

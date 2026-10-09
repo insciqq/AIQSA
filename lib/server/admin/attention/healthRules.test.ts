@@ -4,6 +4,7 @@ import type { TelemetryCounterGroup } from "../../telemetry/store";
 import {
   evaluateHealthRules,
   healthAttentionItems,
+  memoryRebuildFindings,
   readHealthCounterRows,
   type HealthCounterRows,
   type HealthFinding
@@ -191,6 +192,15 @@ describe("new errors", () => {
   });
 });
 
+describe("Memory index rebuilds per owner", () => {
+  it("raises once one owner reaches the daily rebuild threshold, naming how many owners did", () => {
+    expect(memoryRebuildFindings({ maxPerOwner: 2, ownersAtThreshold: 0 })).toEqual([]);
+    expect(memoryRebuildFindings({ maxPerOwner: 5, ownersAtThreshold: 2 })).toEqual([
+      { atLeast: 3, code: "memory_index_rebuilds_repeated", maxPerOwner: 5, owners: 2 }
+    ]);
+  });
+});
+
 describe("readHealthCounterRows", () => {
   it("reads the current and previous hourly buckets for the hour rules and a day of buckets for timeouts", async () => {
     const readCounters = vi.fn().mockResolvedValue([]);
@@ -231,7 +241,8 @@ describe("healthAttentionItems", () => {
     { code: "process_restarting", role: "memory_coordinator", starts: 4 },
     { code: "logs_dropped", lines: 1 },
     { code: "background_failures", subsystem: "knowledge", errors: 25 },
-    { code: "operation_timeouts_rising", operation: { kind: "tool", name: "vision" }, timeouts: 3, total: 8 }
+    { code: "operation_timeouts_rising", operation: { kind: "tool", name: "vision" }, timeouts: 3, total: 8 },
+    { atLeast: 3, code: "memory_index_rebuilds_repeated", maxPerOwner: 5, owners: 2 }
   ];
 
   it("writes plain-English copy with a provider page or Health jump and no raw codes", () => {
@@ -247,7 +258,8 @@ describe("healthAttentionItems", () => {
       { code: "process_restarting", count: 4, id: "process_restarting:memory_coordinator", severity: "bad", target: { section: "health" }, title: "A service keeps restarting" },
       { code: "logs_dropped", count: 1, id: "logs_dropped", severity: "warn", target: { section: "health" }, title: "Log lines were dropped" },
       { code: "background_failures", count: 25, id: "background_failures:knowledge", severity: "warn", target: { section: "health" }, title: "Background work is failing" },
-      { code: "operation_timeouts_rising", count: 3, id: "operation_timeouts_rising:tool:vision", severity: "warn", target: { section: "health" }, title: "Operations are timing out" }
+      { code: "operation_timeouts_rising", count: 3, id: "operation_timeouts_rising:tool:vision", severity: "warn", target: { section: "health" }, title: "Operations are timing out" },
+      { code: "memory_index_rebuilds_repeated", count: 5, id: "memory_index_rebuilds_repeated", severity: "warn", target: { section: "health" }, title: "Memory index keeps rebuilding" }
     ]);
     expect(items.map((item) => item.detail)).toEqual([
       "OpenAI rejected its key 3 times in the last hour, after its last successful request — check the key",
@@ -257,7 +269,8 @@ describe("healthAttentionItems", () => {
       "The Memory worker started 4 times in the last hour — check its logs",
       "1 log line could not be written in the last hour, so some diagnostics are missing",
       "Knowledge · 25 errors in the last hour",
-      "Image analysis · 3 of 8 ran out of time in the last 24 hours"
+      "Image analysis · 3 of 8 ran out of time in the last 24 hours",
+      "2 owners had the Memory index rebuilt 3 or more times in the last 24 hours, up to 5 for one owner — each rebuild re-indexes and re-embeds that owner's whole Memory; check the logged rebuild reasons"
     ]);
     const copy = JSON.stringify(items.map(({ action, detail, title }) => ({ action, detail, title })));
     expect(copy).not.toMatch(/provider_|_rejected|memory_coordinator|conn-|\b40[0-9]\b/u);

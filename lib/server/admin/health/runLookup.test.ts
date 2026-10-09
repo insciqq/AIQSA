@@ -9,7 +9,12 @@ import {
   type AdminHealthRunLookup,
   type AdminHealthRunRow
 } from "./runLookup";
-import { adminHealthRunLookupStatement, createPrismaAdminHealthRunRepository } from "./runLookupRepository";
+import {
+  adminHealthRunLookupStatement,
+  adminHealthUserFailedRunsStatement,
+  createPrismaAdminHealthRunRepository,
+  readAdminHealthUserFailedRuns
+} from "./runLookupRepository";
 
 const RUN = "3f2a9c1e-7b4d-4e8a-9c21-5d6e7f809a1b";
 
@@ -63,6 +68,22 @@ describe("run references", () => {
     const repository = createPrismaAdminHealthRunRepository(db as never);
     await expect(repository.findByReference("3f2a9c1", 6)).rejects.toThrow(RangeError);
     expect(db.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("reads one user's failed and cancelled runs of a range with the same content-free columns", async () => {
+    const from = new Date("2026-10-01T00:00:00.000Z");
+    const to = new Date("2026-10-08T00:00:00.000Z");
+    const statement = adminHealthUserFailedRunsStatement({ userId: "user-1", from, to, limit: 501 });
+    expect(statement.text).toMatch(/run\."userId" = \$1 AND run\."createdAt" >= .* AND run\."createdAt" < .*\s+AND run\."status" IN \('error', 'cancelled'\)/su);
+    expect(statement.text).toMatch(/ORDER BY run\."createdAt" DESC, run\."id" DESC\s+LIMIT \$4/u);
+    expect(statement.sql).not.toMatch(/"errorPayload" ->> 'message'|"title"|"content"|"email"/u);
+    expect(statement.values).toEqual(["user-1", from, to, 501]);
+    for (const query of [{ userId: "user 1", from, to, limit: 5 }, { userId: "user-1", from: to, to: from, limit: 5 },
+      { userId: "user-1", from, to, limit: 502 }, { userId: "user-1", from: new Date(Number.NaN), to, limit: 5 }]) {
+      expect(() => adminHealthUserFailedRunsStatement(query)).toThrow(RangeError);
+    }
+    const db = { $queryRaw: vi.fn().mockResolvedValue([row()]) };
+    await expect(readAdminHealthUserFailedRuns(db as never, { userId: "user-1", from, to, limit: 5 })).resolves.toEqual([row()]);
   });
 });
 

@@ -131,6 +131,32 @@ class WorkspaceConfirmedSessionLoss extends WorkspaceRuntimeError {
   }
 }
 
+/** The runtime's ensure, which looks the sandbox up by its name, found none. */
+class WorkspaceSandboxMissing extends WorkspaceRuntimeError {
+  constructor() {
+    super("workspace_session_lost");
+  }
+}
+
+/** Content-free names of the export steps, in order. */
+type WorkspaceExportStep = "claim" | "initialize" | "quiesce" | "resume" | "collect" | "seal";
+
+/**
+ * An export meets an unproven loss (a runner without the session in its
+ * cache, or a lookup right after the export's own stop) at most once: after
+ * this pause it initializes once more within the same lease.
+ */
+const WORKSPACE_EXPORT_LOSS_RETRY_DELAY_MS = 1_000;
+
+function exportRetryDelay(signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, WORKSPACE_EXPORT_LOSS_RETRY_DELAY_MS);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
 /**
  * Result of one atomic export claim. Exactly one worker owns an `EXPORTING`
  * binding at a time through a bounded lease; `busy` means another live lease
@@ -1581,7 +1607,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
     binding: WorkspaceExecutionBinding,
     purpose: "execution" | "export",
     signal?: AbortSignal,
-    onActivity?: WorkspaceActivityListener
+    onActivity?: WorkspaceActivityListener,
+    predecessor?: WorkspaceOperation
   ): Promise<WorkspaceExecutionBinding> {
     ownedOperation(binding);
     const ready = initialized.get(binding.runId);
@@ -1630,8 +1657,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
           memoryMiB: input.config.memoryMiB,
           runtimeSandboxId: binding.runtimeSandboxId,
           sandboxName: binding.sandboxName,
-          operation: ownedOperation(binding), sessionId: binding.sessionId,
+          operation: ownedOperation(binding), ...(predecessor ? { predecessor } : {}), sessionId: binding.sessionId,
           signal
+        }).catch((error: unknown) => {
+          throw error instanceof WorkspaceRuntimeError && error.code === "workspace_session_lost" ? new WorkspaceSandboxMissing() : error;
         });
         const continuationSeed = await input.repository.claimContinuationSeed?.({
           chatId: binding.chatId, operation: ownedOperation(binding), sessionId: binding.sessionId
@@ -1790,7 +1819,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
           startedAt
         });
         let lostOperation: WorkspaceOperation | null = null;
+        // An export confirms a loss itself, only through a second lookup within its lease.
         if (
+          purpose === "execution" &&
           error instanceof WorkspaceRuntimeError &&
           error.code === "workspace_session_lost" &&
           binding.runtimeSandboxId
@@ -2410,6 +2441,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
               owner: handoff && initial.operationOwner ? initial.operationOwner : workspaceRunOperationOwner(runId)
             } });
       } catch (error) {
+        logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export", work_stage: "claim", outcome: "failed",
+          code: runtimeCode(error), action: handoff ? "fail" : "retry", run_id: runId });
         return { code: runtimeCode(error), retryable: true, status: "failed" };
       }
       if (claim.status === "complete") {
@@ -2433,6 +2466,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
       }
       if (claim.status === "busy") return { status: "busy" };
       if (claim.status === "exhausted") return { reason: "attempts_exhausted", status: "deferred" };
+      // The same run's operation this export continues. Its receiver may hand
+      // over without a VM stop, because quiescence below stops whatever the run
+      // may have left running before any guest byte is read.
+      const predecessor = initial.operationOwner === workspaceRunOperationOwner(runId) ||
+        initial.operationOwner?.startsWith(`export:${runId}:`)
+        ? { generation: initial.operationGeneration, owner: initial.operationOwner! } : undefined;
       initial = { ...initial, operationGeneration: claim.operation.generation, operationOwner: claim.operation.owner };
       const lease = { operation: ownedOperation(initial), runId, runtimeSandboxId: initial.runtimeSandboxId, sessionId: initial.sessionId, token: claim.token };
       let retirementOperation = lease.operation;
@@ -2475,6 +2514,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         runId,
         startedAt: exportStartedAt
       })).catch(() => undefined) ?? Promise.resolve();
+      let step: WorkspaceExportStep = "claim";
       try {
         exportSignal.throwIfAborted();
         const capture = await input.repository.reserveOutputCapture(lease);
@@ -2485,7 +2525,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
         if (!current || current.operationOwner !== lease.operation.owner || current.operationGeneration !== lease.operation.generation) {
           throw new WorkspaceRuntimeError("workspace_operation_stale");
         }
-        if (!current.guestUsed || !initial.runtimeSandboxId) {
+        const runtimeSandboxId = initial.runtimeSandboxId;
+        if (!current.guestUsed || !runtimeSandboxId) {
+          step = "seal";
           if (!(await input.repository.sealOutputCapture({ ...lease, capture: { id: capture.id, outputs: [] } }))) {
             throw new WorkspaceRuntimeError("workspace_output_export_failed");
           }
@@ -2494,41 +2536,80 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }
           return { files: [], status: "complete" };
         }
+        let quiesced = false;
+        let browserSessionsSaved = !handoff;
         // A provider-complete run may be finalized by a fresh app process after
         // the runner itself was restarted. Reconnect and restage originals
         // before collecting output, but never recreate a genuinely lost VM:
         // doing so would silently turn missing deliverables into a success.
-        const binding = await initialize(initial, "export", exportSignal);
-        if (!binding.runtimeSandboxId) {
-          throw new WorkspaceRuntimeError("workspace_session_lost");
-        }
-        // Freeze the output set: no process of this run may still be writing
-        // between the listing/hash and the upload.
-        const quiescence = await quiesceRun(binding, exportSignal);
-        if (!quiescence.proven) throw new WorkspaceRuntimeError(quiescence.failureCode ?? "workspace_execution_cleanup_failed");
-        if (quiescence.stoppedVm) {
-          // Stopping proves descendants are gone; resume only this exact disk
-          // for file I/O. No accepted command is dispatched again.
-          const resumed = await input.runtime.ensureSession({
-            cpus: input.config.cpus, diskMiB: input.config.diskMiB, imageRef: binding.imageRef,
-            internetEnabled: binding.internetEnabled, memoryMiB: input.config.memoryMiB,
-            runtimeSandboxId: binding.runtimeSandboxId, sandboxName: binding.sandboxName,
-            operation: ownedOperation(binding), sessionId: binding.sessionId, signal: exportSignal
-          });
-          if (resumed.runtimeSandboxId !== binding.runtimeSandboxId || resumed.sandboxName !== binding.sandboxName) {
-            throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+        const collect = async (): Promise<Readonly<{
+          binding: WorkspaceExecutionBinding & Readonly<{ runtimeSandboxId: string }>; outputs: readonly WorkspaceOutputStream[];
+        }>> => {
+          step = "initialize";
+          const binding = await initialize(initial, "export", exportSignal, undefined, predecessor);
+          if (!binding.runtimeSandboxId) throw new WorkspaceRuntimeError("workspace_session_lost");
+          if (!quiesced) {
+            // Freeze the output set: no process of this run may still be writing
+            // between the listing/hash and the upload. The proof outlives a
+            // later attempt, which starts no process of the run either.
+            step = "quiesce";
+            const quiescence = await quiesceRun(binding, exportSignal);
+            if (!quiescence.proven) throw new WorkspaceRuntimeError(quiescence.failureCode ?? "workspace_execution_cleanup_failed");
+            quiesced = true;
+            if (quiescence.stoppedVm) {
+              // Stopping proves descendants are gone; resume only this exact disk
+              // for file I/O. No accepted command is dispatched again.
+              step = "resume";
+              const resumed = await input.runtime.ensureSession({
+                cpus: input.config.cpus, diskMiB: input.config.diskMiB, imageRef: binding.imageRef,
+                internetEnabled: binding.internetEnabled, memoryMiB: input.config.memoryMiB,
+                runtimeSandboxId: binding.runtimeSandboxId, sandboxName: binding.sandboxName,
+                operation: ownedOperation(binding), sessionId: binding.sessionId, signal: exportSignal
+              });
+              if (resumed.runtimeSandboxId !== binding.runtimeSandboxId || resumed.sandboxName !== binding.sandboxName) {
+                throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
+              }
+            }
+          }
+          step = "collect";
+          await renew();
+          if (!browserSessionsSaved) {
+            browserSessionsSaved = true;
+            await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS)]), claim.token);
+          }
+          return { binding: { ...binding, runtimeSandboxId: binding.runtimeSandboxId }, outputs: await input.runtime.collectOutputs({
+            capture: { create: capture.create, id: capture.id },
+            modelRunId: runId,
+            outputDirectory: binding.outputDirectory,
+            runtimeSandboxId: binding.runtimeSandboxId,
+            operation: ownedOperation(binding), sessionId: binding.sessionId,
+            signal: exportSignal
+          }) };
+        };
+        let collected: Awaited<ReturnType<typeof collect>>;
+        try {
+          collected = await collect();
+        } catch (error) {
+          // Unproven: the runner may not hold the session in its cache, or a
+          // lookup came right after this export's own stop. Initialize once
+          // more in this lease; only that lookup by name may prove the loss.
+          if (!(error instanceof WorkspaceRuntimeError) || error.code !== "workspace_session_lost" || exportSignal.aborted) throw error;
+          logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "export", work_stage: step, outcome: "degraded",
+            code: error.code, action: "retry", run_id: runId });
+          initialized.delete(runId);
+          await exportRetryDelay(exportSignal);
+          await renew();
+          try {
+            collected = await collect();
+          } catch (retryError) {
+            if (!(retryError instanceof WorkspaceSandboxMissing) || exportSignal.aborted) throw retryError;
+            // The second lookup by name in this lease proves the disk gone.
+            await renew();
+            const lost = await input.repository.markSessionLost({ operation: lease.operation, runtimeSandboxId, sessionId: initial.sessionId });
+            throw lost ? new WorkspaceConfirmedSessionLoss(lost) : retryError;
           }
         }
-        await renew();
-        if (handoff) await persistBrowserSessions(binding, AbortSignal.any([exportSignal, AbortSignal.timeout(BROWSER_SESSION_SAVE_TIMEOUT_MS)]), claim.token);
-        const outputs = await input.runtime.collectOutputs({
-          capture: { create: capture.create, id: capture.id },
-          modelRunId: runId,
-          outputDirectory: binding.outputDirectory,
-          runtimeSandboxId: binding.runtimeSandboxId,
-          operation: ownedOperation(binding), sessionId: binding.sessionId,
-          signal: exportSignal
-        });
+        const { binding, outputs } = collected;
         const batchId = outputs.find((output) => output.batchId)?.batchId;
         if (batchId) batch = { batchId, runtimeSandboxId: binding.runtimeSandboxId };
         exportCount = outputs.length;
@@ -2546,6 +2627,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         ) {
           throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
         }
+        step = "seal";
         const identities = outputIdentities(outputs, input.config);
         if (!(await input.repository.sealOutputCapture({ ...lease, capture: { id: capture.id, outputs: identities } }))) {
           throw new WorkspaceRuntimeError("workspace_output_export_failed");
@@ -2620,21 +2702,24 @@ export function createWorkspaceCoordinator(input: Readonly<{
         return { files, status: "complete" };
       } catch (error) {
         if (error instanceof WorkspaceConfirmedSessionLoss) retirementOperation = error.operation;
-        const code = runtimeCode(error);
+        // A lost lease or a loss this export did not confirm is an ordinary
+        // failed attempt, never a missing disk.
+        const code: WorkspaceRuntimeError["code"] = leaseLost || !(error instanceof WorkspaceRuntimeError) ||
+          (error.code === "workspace_session_lost" && !(error instanceof WorkspaceConfirmedSessionLoss))
+          ? "workspace_output_export_failed" : error.code;
         await exportActivity("failed", code === "workspace_output_limit_exceeded" ? code : "workspace_output_export_failed");
         const recorded = code === "workspace_output_limit_exceeded" ||
           code === "workspace_session_lost" ||
           code === "workspace_runtime_incompatible"
           ? code
           : "workspace_output_export_failed";
+        const retryable = isRetryableWorkspaceExportErrorCode(recorded);
+        logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage: "export", work_stage: step,
+          outcome: leaseLost ? "lost_lease" : "failed", code, action: handoff || !retryable ? "fail" : "retry", run_id: runId });
         if (!leaseLost) {
           await input.repository.markExportFailed({ ...lease, code: recorded }).catch(() => undefined);
         }
-        return {
-          code: error instanceof WorkspaceRuntimeError ? error.code : "workspace_output_export_failed",
-          retryable: isRetryableWorkspaceExportErrorCode(recorded),
-          status: "failed"
-        };
+        return { code, retryable, status: "failed" };
       } finally {
         clearInterval(heartbeatTimer);
         await renewal.pending?.catch(() => undefined);

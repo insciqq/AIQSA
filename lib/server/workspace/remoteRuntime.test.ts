@@ -124,6 +124,26 @@ describe("remote Workspace runner protocol", () => {
     expect(interruptAgent).toHaveBeenCalledOnce();
   });
 
+  it("sends the run's own operation with an export claim so the receiver hands over without a stop", async () => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "ws_" + "f".repeat(40);
+    const ensure = { sessionId, sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef,
+      cpus: 1, diskMiB: 1024, memoryMiB: 512, internetEnabled: false };
+    const created = await remote.ensureSession({ ...ensure, runtimeSandboxId: null, operation });
+    const stop = vi.spyOn(local, "stopSession");
+    const handover = { generation: 2, owner: "export:protocol_fixture:token" };
+    await expect(remote.ensureSession({ ...ensure, runtimeSandboxId: created.runtimeSandboxId, operation: handover, predecessor: operation }))
+      .resolves.toMatchObject({ runtimeSandboxId: created.runtimeSandboxId });
+    expect(stop).not.toHaveBeenCalled();
+    await expect(remote.stopSession({ sessionId, runtimeSandboxId: created.runtimeSandboxId, operation }))
+      .rejects.toMatchObject({ code: "workspace_operation_stale" });
+    await remote.removeSession({ sessionId, runtimeSandboxId: created.runtimeSandboxId, operation: handover });
+  });
+
   it("installs a 201-file Skill with one fenced streaming request and rejects invalid envelopes before dispatch", async () => {
     const local = new DeterministicWorkspaceRuntime(deterministicConfig);
     const install = vi.spyOn(local, "installSkillBundle");

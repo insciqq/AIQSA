@@ -86,7 +86,11 @@ import {
   type MemoryRecallRoundSegmentMessageJoin,
   type MemoryRecallRoundSegmentProjection
 } from "./segments";
-import { persistMemoryRecallRoundSegmentProjection } from "./segmentPersistence";
+import {
+  memoryRecallRoundSegmentsMatch,
+  persistMemoryRecallRoundSegmentProjection,
+  type PersistedMemoryRecallRoundSegment
+} from "./segmentPersistence";
 import {
   memoryHistoryChunkEvidenceRootHash,
   memoryHistoryEvidenceRootHash
@@ -158,35 +162,6 @@ type CurrentRoundRow = Readonly<{
   state: MemoryHistoryItemState;
   supportingRoundIds: string[];
   messageJoins: readonly MemoryRecallRoundMessageJoin[];
-}>;
-
-type CurrentRoundSegmentRow = Readonly<{
-  approxTokens: number;
-  contextualKeyPolicyVersion: string;
-  contextualKeyState: string;
-  contextualNarrativeText: string;
-  contextualSearchHash: string;
-  contextualSearchText: string;
-  evidenceRootHash: string;
-  id: string;
-  languageCode: string;
-  occurredFrom: Date;
-  occurredTo: Date;
-  position: string;
-  projectionVersion: string;
-  rawEndOffsetUtf16: number;
-  rawSafeText: string;
-  rawSafeTextHash: string;
-  rawStartOffsetUtf16: number;
-  redactionReasonCodes: string[];
-  redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
-  roundId: string;
-  safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
-  segmentOrdinal: number;
-  sourceRevisionAtCreation: number;
-  state: MemoryHistoryItemState;
-  supportingRoundIds: string[];
-  messageJoins: readonly MemoryRecallRoundSegmentMessageJoin[];
 }>;
 
 type HistoryPathMessageMetadata = Readonly<{
@@ -1629,37 +1604,6 @@ function roundMatches(left: CurrentRoundRow, right: MemoryHistoryPreparedRound):
     JSON.stringify(left.supportingRoundIds) === JSON.stringify(right.supportingRoundIds);
 }
 
-function roundSegmentMatches(
-  left: CurrentRoundSegmentRow,
-  right: MemoryRecallRoundSegmentProjection
-): boolean {
-  return left.id === right.id &&
-    left.approxTokens === right.approxTokens &&
-    left.contextualKeyPolicyVersion === right.contextualKeyPolicyVersion &&
-    left.contextualKeyState === right.contextualKeyState &&
-    left.contextualNarrativeText === right.contextualNarrativeText &&
-    left.contextualSearchHash === right.contextualSearchHash &&
-    left.contextualSearchText === right.contextualSearchText &&
-    left.evidenceRootHash === right.evidenceRootHash &&
-    left.languageCode === right.languageCode &&
-    left.occurredFrom.toISOString() === right.occurredFrom &&
-    left.occurredTo.toISOString() === right.occurredTo &&
-    left.position === right.position &&
-    left.projectionVersion === right.projectionVersion &&
-    left.rawEndOffsetUtf16 === right.rawEndOffsetUtf16 &&
-    left.rawSafeText === right.rawSafeText &&
-    left.rawSafeTextHash === right.rawSafeTextHash &&
-    left.rawStartOffsetUtf16 === right.rawStartOffsetUtf16 &&
-    JSON.stringify(left.redactionReasonCodes) === JSON.stringify(right.redactionReasonCodes) &&
-    left.redactionState === right.redactionState &&
-    left.roundId === right.roundId &&
-    left.safetyClass === right.safetyClass &&
-    left.segmentOrdinal === right.ordinal &&
-    left.sourceRevisionAtCreation === right.sourceRevision &&
-    left.state === right.publicationState &&
-    JSON.stringify(left.supportingRoundIds) === JSON.stringify(right.supportingRoundIds);
-}
-
 function toolEventMatches(
   left: Readonly<{
     assistantMessageId: string;
@@ -1913,20 +1857,11 @@ async function planAlreadyApplied(
     });
     joinsBySegment.set(join.segmentId, current);
   }
-  const currentSegments: CurrentRoundSegmentRow[] = segmentRows.map((segment) => ({
+  const currentSegments: PersistedMemoryRecallRoundSegment[] = segmentRows.map((segment) => ({
     ...segment,
     messageJoins: joinsBySegment.get(segment.id) ?? []
   }));
-  if (
-    currentSegments.length !== planSegments.length ||
-    planSegments.some((segment) => {
-      const current = currentSegments.find((candidate) => candidate.id === segment.id);
-      return !current || !roundSegmentMatches(current, segment) ||
-        current.messageJoins.length !== segment.messageJoins.length ||
-        segment.messageJoins.some((expected, index) =>
-          JSON.stringify(expected) !== JSON.stringify(current.messageJoins[index]));
-    })
-  ) return false;
+  if (!memoryRecallRoundSegmentsMatch(currentSegments, planSegments)) return false;
 
   const toolEventRows = await tx.memoryToolEvent.findMany({
     where: {
@@ -2908,7 +2843,7 @@ async function applyPlan(
     });
     retainedJoinsBySegment.set(join.segmentId, current);
   }
-  const retainedRoundSegments: CurrentRoundSegmentRow[] =
+  const retainedRoundSegments: PersistedMemoryRecallRoundSegment[] =
     retainedRoundSegmentRows.map((segment) => ({
       ...segment,
       messageJoins: retainedJoinsBySegment.get(segment.id) ?? []
@@ -2919,15 +2854,7 @@ async function applyPlan(
     const currentSegments = retainedRoundSegments.filter((segment) =>
       segment.roundId === round.id);
     const segmentArtifactNeedsRepair =
-      currentSegments.length !== expectedSegments.length ||
-      expectedSegments.some((segment) => {
-        const current = currentSegments.find((candidate) =>
-          candidate.id === segment.id);
-        return !current || !roundSegmentMatches(current, segment) ||
-          current.messageJoins.length !== segment.messageJoins.length ||
-          segment.messageJoins.some((expected, index) =>
-            JSON.stringify(expected) !== JSON.stringify(current.messageJoins[index]));
-      });
+      !memoryRecallRoundSegmentsMatch(currentSegments, expectedSegments);
     const allRoundEntries = retainedRoundEntries.filter((entry) =>
       entry.recallRoundId === round.id);
     const activeRoundEntries = activeIndex

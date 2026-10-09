@@ -48,6 +48,40 @@ describe("Workspace receiver operation drain", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("hands over to a successor without a VM stop only while its exact predecessor is active and idle", async () => {
+    const stop = vi.fn(async () => undefined);
+    const fence = new WorkspaceOperationFence({ stop });
+    await fence.claim({ ...identity, operation: operation(1) });
+    stop.mockClear();
+    const handover = { generation: 2, owner: "export:fixture_1:token" };
+    await fence.claim({ ...identity, operation: handover, predecessor: operation(1) });
+    expect(stop).not.toHaveBeenCalled();
+    await expect(fence.run({ ...identity, operation: operation(1) }, async () => undefined))
+      .rejects.toMatchObject({ code: "workspace_operation_stale" });
+    await expect(fence.run({ ...identity, operation: handover }, async () => "served")).resolves.toBe("served");
+
+    // A request still in flight is aborted and drained behind a stop.
+    const entered = barrier();
+    const running = fence.run({ ...identity, operation: handover }, async (signal) => {
+      entered.release();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    });
+    await entered.wait;
+    const next = { generation: 3, owner: "export:fixture_1:next" };
+    await fence.claim({ ...identity, operation: next, predecessor: handover });
+    await running;
+    expect(stop).toHaveBeenCalled();
+
+    // Neither an older operation nor a retired one counts as the predecessor.
+    stop.mockClear();
+    await fence.claim({ ...identity, operation: operation(4), predecessor: operation(1) });
+    expect(stop).toHaveBeenCalled();
+    await fence.retire({ ...identity, operation: operation(4) });
+    stop.mockClear();
+    await fence.claim({ ...identity, operation: operation(5), predecessor: operation(4) });
+    expect(stop).toHaveBeenCalled();
+  });
+
   it("lets Stop abort the current run without waiting for its own request lock", async () => {
     const stop = vi.fn(async () => undefined);
     const fence = new WorkspaceOperationFence({ stop });

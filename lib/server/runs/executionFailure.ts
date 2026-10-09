@@ -3,11 +3,14 @@ import { mcpRuntimeErrorCode, mcpRuntimeErrorMessage } from "@/lib/contracts/mcp
 import { observedFailureWithoutHttpClass } from "../providers/providerObservability";
 import { runSettlementFailure } from "./settlementFailure";
 import { observationFailure } from "../toolObservations/contract";
+import { imageInputFailure } from "../images/inputError";
 
 /** The code is evidence; arbitrary exception prose is never tool guidance.
  * Tool results keep `tool_call_failed` for a status-only provider HTTP failure:
  * callers branch on it, and provider HTTP classes name run failures only. */
 export function executionFailure(error: unknown): Readonly<{ code: string; message: string }> {
+  const imageInput = imageInputFailure(error);
+  if (imageInput) return imageInput;
   const observation = observationFailure(error);
   if (observation) return observation;
   const settlement = runSettlementFailure(error);

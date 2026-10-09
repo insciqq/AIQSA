@@ -5,7 +5,8 @@ import {
   providerStreamSafetyReport,
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
-import { bindContext, logEvent, runWithContext, type ToolKind } from "../observability";
+import { bindContext, logEvent, runWithContext, type ToolCallKind, type ToolKind } from "../observability";
+import { recordToolCall } from "./toolCallTelemetry";
 import { isProviderHttpFailureClass, observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 
@@ -100,6 +101,9 @@ export type ToolLoopBudgets = Readonly<{
 export type ToolLoopFailure = ToolLoopIssue &
   Readonly<{
     callId?: string;
+    /** The original exception of a local persistence failure, kept only for
+     * its content-free database diagnostics; never serialized or shown. */
+    cause?: unknown;
     round?: number;
     stage: "budget" | "configuration" | "persistence" | "provider" | "protocol" | "signal" | "tool";
     toolName?: string;
@@ -140,6 +144,8 @@ export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonl
   /** Read-only context expansion waits for other results, then settles serially. */
   deferToolUntilBatchEnd?(call: ToolLoopCall): boolean;
   toolObservation?(call: ToolLoopCall): ToolLoopObservation | undefined;
+  /** The call's content-free family for its terminal `tool_call` record; `other` without it. */
+  toolCallKind?(call: ToolLoopCall): ToolCallKind;
   afterToolBatch?(input: Readonly<{
     continuation: Continuation;
     progress: ToolLoopProgress;
@@ -201,6 +207,10 @@ export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonl
     progress?: ToolLoopProgress;
     seenCallIds?: readonly string[];
   }>;
+  /** The run's time budget is used up: a batch returned from now on is
+   * refused into its synthesis round, exactly like a batch over the call
+   * budget. A batch already dispatched is never interrupted. */
+  timeBudgetExhausted?(): boolean;
   onSignal?(signal: ToolLoopSignal): Promise<void> | void;
   runProviderRound(input: Readonly<{
     continuation: Continuation;
@@ -409,8 +419,10 @@ async function settleToolCall<ToolValue>(input: Readonly<{
   parentSignal?: AbortSignal;
   round: number;
   timeoutMs?: number;
+  toolCallKind: ToolCallKind;
   toolKind?: ToolKind;
 }>): Promise<ToolLoopSettledCall<ToolValue>> {
+  const startedAt = performance.now();
   const execution = await runBoundedOperation({
     operation: (signal) =>
       input.executeTool(input.call, {
@@ -449,6 +461,12 @@ async function settleToolCall<ToolValue>(input: Readonly<{
       status: "error"
     };
   }
+  recordToolCall({
+    durationMs: performance.now() - startedAt,
+    kind: input.toolCallKind,
+    result,
+    ...(execution.kind === "error" ? { thrown: { error: execution.error } } : {})
+  });
 
   return {
     call: input.call,
@@ -467,6 +485,7 @@ async function settleToolBatch<ToolValue>(input: Readonly<{
   round: number;
   timeoutMs?: number;
   toolObservation?: ContinueToolLoopInput<unknown, ToolValue, unknown>["toolObservation"];
+  toolCallKind?: ContinueToolLoopInput<unknown, ToolValue, unknown>["toolCallKind"];
 }>): Promise<Array<ToolLoopSettledCall<ToolValue> | undefined>> {
   const results = new Array<ToolLoopSettledCall<ToolValue> | undefined>(input.calls.length);
   const immediate = input.calls.map((call, ordinal) => ({ call, ordinal })).filter(({ call }) => !input.deferToolUntilBatchEnd?.(call));
@@ -484,6 +503,8 @@ async function settleToolBatch<ToolValue>(input: Readonly<{
 
       let observation: ToolLoopObservation | undefined;
       try { observation = input.toolObservation?.(call); } catch { /* Diagnostics cannot prevent dispatch. */ }
+      let toolCallKind: ToolCallKind = "other";
+      try { toolCallKind = input.toolCallKind?.(call) ?? "other"; } catch { /* Diagnostics cannot prevent dispatch. */ }
       const execute = () => settleToolCall({
         call,
         executeTool: input.executeTool,
@@ -491,6 +512,7 @@ async function settleToolBatch<ToolValue>(input: Readonly<{
         parentSignal: input.parentSignal,
         round: input.round,
         timeoutMs: input.timeoutMs,
+        toolCallKind,
         toolKind: observation?.tool_kind
       });
       results[ordinal] = await (observation ? runWithContext(observation, execute) : execute());
@@ -625,6 +647,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
           errorMessage(providerRound.error, `Provider round ${round} failed.`),
         round,
         stage: signalFailure ? "signal" : settlement || providerErrorCode && isRunPersistenceFailureCode(providerErrorCode) ? "persistence" : "provider",
+        ...(settlement ? { cause: providerRound.error } : {}),
         ...(streamSafetyReport ? { streamSafetyReport } : {}),
         ...(httpClassStatus !== undefined ? { httpStatus: httpClassStatus } : {})
       });
@@ -662,7 +685,10 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     const exemptCall = budgetExemptCallMade ? undefined : calls.find((call) => input.isBudgetExempt?.(call));
     const budgetedCalls = calls.length - (exemptCall ? 1 : 0);
     const roundsExceeded = budgetedCalls > 0 && progress.toolRounds >= input.budgets.maxToolRounds;
-    if (roundsExceeded || progress.toolCalls + budgetedCalls > input.budgets.maxToolCalls) {
+    const callsExceeded = progress.toolCalls + budgetedCalls > input.budgets.maxToolCalls;
+    // Without a synthesis round a used-up time budget leaves the batch alone.
+    const timeExhausted = providerResult.synthesisContinuation !== undefined && input.timeBudgetExhausted?.() === true;
+    if (roundsExceeded || callsExceeded || timeExhausted) {
       const synthesis = providerResult.synthesisContinuation;
       if (synthesis === undefined) {
         return failed(progress, roundsExceeded ? {
@@ -750,7 +776,8 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       parentSignal: input.signal,
       round,
       timeoutMs: input.budgets.toolCallTimeoutMs,
-      toolObservation: input.toolObservation
+      toolObservation: input.toolObservation,
+      toolCallKind: input.toolCallKind
     });
 
     const settledResults = results.filter(
@@ -766,8 +793,12 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       });
     } catch (error) {
       if (input.signal?.aborted) return cancelled(progress);
+      // A local settlement failure (the batch's accounting) keeps its own
+      // code, exactly as when a provider round reports it, so its terminal
+      // and recovery handling cannot depend on where it was raised.
       return failed(progress, {
-        code: "tool_loop_evidence_failed",
+        cause: error,
+        code: runSettlementFailure(error)?.code ?? "tool_loop_evidence_failed",
         message: errorMessage(error, "Settled tool-call evidence could not be persisted."),
         round,
         stage: "persistence"

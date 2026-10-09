@@ -24,7 +24,8 @@ function abortReason(signal: AbortSignal): unknown {
     : signal.reason;
 }
 
-async function sleepWithSignal(delayMs: number, signal: AbortSignal): Promise<void> {
+/** The default wait between attempts: it ends early with the signal's reason. */
+export async function sleepWithSignal(delayMs: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) throw abortReason(signal);
   await new Promise<void>((resolve, reject) => {
     const handleAbort = () => {
@@ -51,10 +52,13 @@ function unitInterval(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
-function retryDelayMs(
+/** The jittered exponential backoff after a failed attempt, never shorter
+ * than the provider's Retry-After; null when that asks for more than five
+ * minutes. */
+export function providerRetryDelayMs(
   failedAttempt: number,
   retryAfterMs: number | null,
-  random: () => number
+  random: () => number = Math.random
 ): number | null {
   if (retryAfterMs !== null && retryAfterMs > PROVIDER_RETRY_MAX_RETRY_AFTER_MS) {
     return null;
@@ -121,6 +125,9 @@ export function initialRequestTransportFailure(error: unknown, signal: AbortSign
 export async function executeWithProviderRetry<T>(input: Readonly<{
   operation: () => Promise<T>;
   options?: ProviderRetryOptions;
+  /** Time left before the operation's own deadline: a wait that would
+   * outlast it ends the retries with the failure instead of the deadline. */
+  remainingMs?: () => number;
   shouldRetry: (error: unknown) => ProviderRetryDecision | null;
   signal: AbortSignal;
 }>): Promise<T> {
@@ -138,8 +145,8 @@ export async function executeWithProviderRetry<T>(input: Readonly<{
         observeProviderRetry(error, attempt, "stop");
         throw error;
       }
-      const delayMs = retryDelayMs(attempt, decision.retryAfterMs, random);
-      if (delayMs === null) {
+      const delayMs = providerRetryDelayMs(attempt, decision.retryAfterMs, random);
+      if (delayMs === null || input.remainingMs !== undefined && delayMs >= input.remainingMs()) {
         observeProviderRetry(error, attempt, "stop");
         throw error;
       }

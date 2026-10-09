@@ -3,7 +3,7 @@ import {
   logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext,
   type LifecycleOutcome, type LifecycleStage
 } from "../../observability";
-import { databaseFailureCode } from "../../observability/databaseFailure";
+import { databaseFailureCode, databaseFailureKind } from "../../observability/databaseFailure";
 import { memoryAttempt, memoryFailureOutcome, memoryPersistence, memoryStage } from "./observability";
 import type { MemoryDeletionOperation, MemoryJobKind } from "@prisma/client";
 import {
@@ -494,7 +494,7 @@ export class MemoryCoordinator {
       this.#runningJobs += 1;
       try {
         await runInBackground(() => runWithContext(
-          { job_id: claimedJob.id },
+          { job_id: claimedJob.id, user_id: claimedJob.userId },
           () => this.#processJob(claimedJob)
         ));
       } finally {
@@ -549,7 +549,7 @@ export class MemoryCoordinator {
       }
       claims += 1;
       await runInBackground(() => runWithContext(
-        { job_id: claim.id },
+        { job_id: claim.id, user_id: claim.userId },
         () => this.#processDeletion(claim)
       ));
     }
@@ -735,6 +735,7 @@ export class MemoryCoordinator {
       const fence = retry ? null : await this.#failureFence(registeredHandler, claim, failure);
       const now = this.#clock();
       memoryAttempt(claim, { stage, code: failure.code, prisma_code: databaseFailureCode(error),
+        db_failure: databaseFailureKind(error),
         outcome: fence && failure instanceof MemoryJobFencedError
           ? fenceOutcome(fence) : memoryFailureOutcome(failure.code),
         action: retry ? "retry" : fence ? "none" : "fail" });

@@ -77,7 +77,7 @@ If `docker compose pull` reports `pull access denied for minio/mc`, the checkout
 
 ## Health and logs
 
-Control Center → Health shows recent provider failures, server errors and background work problems. This telemetry contains no message content and stays inside the instance's PostgreSQL: counters for 30 days, incidents for 14; nothing is sent elsewhere. `./aiqsa.sh doctor` checks the host, `.env` and every container.
+Control Center → Health shows recent provider failures, server errors and background work problems. This telemetry contains no message content and stays inside the instance's PostgreSQL: counters and incidents for 30 days; nothing is sent elsewhere. `./aiqsa.sh doctor` checks the host, `.env` and every container.
 
 To diagnose a problem, read the telemetry first, then the logs around its incidents, then any error reference a user reports:
 
@@ -87,7 +87,9 @@ To diagnose a problem, read the telemetry first, then the logs around its incide
 ./aiqsa.sh health --run 1a2b3c4d           # one failed answer's run and incidents by its reference
 ```
 
-`health` works while the app container is down, takes `--since 7d` or `30d`, and `--json` for scripts and agents. Its output contains no message content, secrets or `.env` values, only codes, counts and provider connection and model names, so it is safe to paste into an issue or give to an agent.
+`health` works while the app container is down, takes `--since 7d`, `14d` or `30d`, and `--json` for scripts and agents. Its output contains no message content, secrets or `.env` values, only codes, counts and provider connection and model names, so it is safe to paste into an issue or give to an agent.
+
+An agent working on the host can read everything at once: `./aiqsa.sh health --full --since 14d --json` lists every failure, timeout, run outcome, latency, incident and problem report of the range, and `--user <id>` one user's incidents, failed runs and problem reports. These two outputs carry internal user ids and users' problem-report comments, so they stay on the host: never paste them.
 
 ```bash
 ./aiqsa.sh logs                            # last 200 lines of every service

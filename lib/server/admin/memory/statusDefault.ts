@@ -37,7 +37,7 @@ const repository = createPrismaAdminMemoryStatusRepository(
       expectedMemoryRevision: candidate.expectedMemoryRevision,
       expectedSettingsRevision: candidate.expectedSettingsRevision,
       operation: candidate.operation
-    });
+    }, "admin");
   },
   async ({ limit, now }) => {
     const recovered = await defaultMemoryCoordinatorRepository.recoverEligibleJobs({ limit, now });
