@@ -18,7 +18,7 @@ import {
 import { TELEMETRY_DURATION_BUCKETS } from "../../telemetry/aggregator";
 import { normalizeRunReference, RUN_ID_LENGTH } from "../../../contracts/runReference";
 import type {
-  TelemetryCounterGroup, TelemetryGroupValue, TelemetryIncidentQuery, TelemetryIncidentReach, TelemetryStore
+  TelemetryCounterGroup, TelemetryGroupValue, TelemetryIncident, TelemetryIncidentQuery, TelemetryIncidentReach, TelemetryStore
 } from "../../telemetry/store";
 import {
   ADMIN_HEALTH_INCIDENT_DETAIL_KEYS,
@@ -125,19 +125,20 @@ function foldProviders(rows: readonly TelemetryCounterGroup[], stageOverride: st
   }
 }
 
-function connectionLabel(id: string | null, names: AdminHealthProviderNames): Pick<AdminHealthProviderRow, "connectionName" | "connectionState"> {
+export function adminHealthConnectionLabel(id: string | null, names: AdminHealthProviderNames): Pick<AdminHealthProviderRow, "connectionName" | "connectionState"> {
   if (id === null) return { connectionName: UNATTRIBUTED, connectionState: "unattributed" };
   const name = names.connections.get(id);
   return name === undefined ? { connectionName: DELETED_CONNECTION, connectionState: "deleted" }
     : { connectionName: name, connectionState: "known" };
 }
 
-function modelLabel(id: string | null, names: AdminHealthProviderNames): string | null {
+export function adminHealthModelLabel(id: string | null, names: AdminHealthProviderNames): string | null {
   if (id === null) return null;
   return names.models.get(id) ?? DELETED_MODEL;
 }
 
-function boundedIds(values: Iterable<string | null>): string[] {
+/** Distinct non-null ids, bounded for one name lookup. */
+export function adminHealthBoundedIds(values: Iterable<string | null>): string[] {
   return [...new Set([...values].filter((value): value is string => value !== null))].slice(0, MAX_NAME_IDS);
 }
 
@@ -155,6 +156,34 @@ function incidentDetails(details: Readonly<Record<string, string | number | bool
     .filter(([key]) => ADMIN_HEALTH_INCIDENT_DETAIL_KEYS.has(key))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => ({ key, value }));
+}
+
+/** The provider model an incident names, for its display name. */
+export function adminHealthIncidentModelId(item: Pick<TelemetryIncident, "details">): string | null {
+  return typeof item.details.providerModelId === "string" ? item.details.providerModelId : null;
+}
+
+/** One retained incident as administrators read it: display names, an HTTP status and allowlisted details. */
+export function projectAdminHealthIncident(item: TelemetryIncident, names: AdminHealthProviderNames): AdminHealthIncident {
+  const stage = item.details.stage;
+  const status = item.details.httpStatus ?? (item.event.startsWith("http.") ? item.details.status : undefined);
+  return {
+    id: item.id,
+    occurredAt: item.occurredAt.toISOString(),
+    role: item.role,
+    event: item.event,
+    level: item.level,
+    code: item.code,
+    subsystem: item.subsystem,
+    stage: typeof stage === "string" ? stage : null,
+    connectionId: item.connectionId,
+    connectionName: item.connectionId === null ? null : adminHealthConnectionLabel(item.connectionId, names).connectionName,
+    modelName: adminHealthModelLabel(adminHealthIncidentModelId(item), names),
+    httpStatus: typeof status === "number" && Number.isSafeInteger(status) && status >= 100 && status <= 599 ? status : null,
+    runId: item.runId,
+    traceId: item.traceId,
+    details: incidentDetails(item.details)
+  };
 }
 
 /**
@@ -230,15 +259,15 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
       foldProviders(providerRows, null, accumulators);
       foldProviders(visionRows, "vision", accumulators);
       const [names, reach] = await Promise.all([dependencies.providerNames({
-        connectionIds: boundedIds([...accumulators.values()].map((entry) => entry.connectionId)),
-        modelIds: boundedIds([...accumulators.values()].map((entry) => entry.providerModelId))
+        connectionIds: adminHealthBoundedIds([...accumulators.values()].map((entry) => entry.connectionId)),
+        modelIds: adminHealthBoundedIds([...accumulators.values()].map((entry) => entry.providerModelId))
       }), errorReach]);
       const providers = [...accumulators.entries()].map(([key, entry]): AdminHealthProviderRow => ({
         key,
         connectionId: entry.connectionId,
-        ...connectionLabel(entry.connectionId, names),
+        ...adminHealthConnectionLabel(entry.connectionId, names),
         providerModelId: entry.providerModelId,
-        modelName: modelLabel(entry.providerModelId, names),
+        modelName: adminHealthModelLabel(entry.providerModelId, names),
         stage: entry.stage,
         operations: entry.operations,
         failures: entry.failures,
@@ -301,33 +330,11 @@ export function createAdminHealthService(dependencies: AdminHealthDependencies):
         cursor: filters.cursor,
         limit: INCIDENT_PAGE
       });
-      const modelOf = (details: Readonly<Record<string, string | number | boolean>>) =>
-        typeof details.providerModelId === "string" ? details.providerModelId : null;
       const names = await dependencies.providerNames({
-        connectionIds: boundedIds(page.items.map((item) => item.connectionId)),
-        modelIds: boundedIds(page.items.map((item) => modelOf(item.details)))
+        connectionIds: adminHealthBoundedIds(page.items.map((item) => item.connectionId)),
+        modelIds: adminHealthBoundedIds(page.items.map((item) => adminHealthIncidentModelId(item)))
       });
-      const incidents = page.items.map((item): AdminHealthIncident => {
-        const stage = item.details.stage;
-        const status = item.details.httpStatus ?? (item.event.startsWith("http.") ? item.details.status : undefined);
-        return {
-          id: item.id,
-          occurredAt: item.occurredAt.toISOString(),
-          role: item.role,
-          event: item.event,
-          level: item.level,
-          code: item.code,
-          subsystem: item.subsystem,
-          stage: typeof stage === "string" ? stage : null,
-          connectionId: item.connectionId,
-          connectionName: item.connectionId === null ? null : connectionLabel(item.connectionId, names).connectionName,
-          modelName: modelLabel(modelOf(item.details), names),
-          httpStatus: typeof status === "number" && Number.isSafeInteger(status) && status >= 100 && status <= 599 ? status : null,
-          runId: item.runId,
-          traceId: item.traceId,
-          details: incidentDetails(item.details)
-        };
-      });
+      const incidents = page.items.map((item) => projectAdminHealthIncident(item, names));
       return { incidents, nextCursor: page.nextCursor };
     }
   });

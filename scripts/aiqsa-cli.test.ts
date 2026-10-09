@@ -1280,6 +1280,17 @@ describe("health", () => {
     expectNoSecrets(result.output, body);
   });
 
+  it("passes the agent modes through with their range", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    fixture.rules.push({ match: " exec -T app node --import tsx scripts/health-report.ts", stdout: report });
+    expect(fixture.run(["health", "--full", "--since", "14d", "--json"]).status).toBe(0);
+    expect(fixture.run(["health", "--user", "user_A-1", "--since=7d"]).status).toBe(0);
+    expect(fixture.dockerLog).toMatch(/ exec -T app node --import tsx scripts\/health-report\.ts --since 14d --full --json\n/u);
+    expect(fixture.dockerLog).toMatch(/ exec -T app node --import tsx scripts\/health-report\.ts --since 7d --user user_A-1\n/u);
+    expectNoSecrets(fixture.dockerLog, body);
+  });
+
   it("passes the report's read failure through and explains a Compose failure", () => {
     const fixture = new Fixture();
     const body = fixture.writeEnv();
@@ -1306,6 +1317,13 @@ describe("health", () => {
     [["health", "--run", "1a2b3c4d;id"], "--run needs an error reference"],
     [["health", "--run"], "--run needs a value."],
     [["health", "--tail", "5"], "--tail is not valid for health"],
+    [["health", "--full", "--run", "1a2b3c4d"], "--run and --full are mutually exclusive."],
+    [["health", "--user", "user_a", "--run", "1a2b3c4d"], "--run and --user are mutually exclusive."],
+    [["health", "--full", "--user", "user_a"], "--full and --user are mutually exclusive."],
+    [["health", "--user", "user a"], "--user needs an internal user id"],
+    [["health", "--user", "_user"], "--user needs an internal user id"],
+    [["health", "--user"], "--user needs a value."],
+    [["logs", "--full"], "--full is not valid for logs"],
     [["health", "app"], "Unexpected argument: app"],
     [["logs", "--json"], "--json is not valid for logs"],
     [["logs", "--since", "7d"], "--since must be a duration"]
@@ -1323,5 +1341,8 @@ describe("health", () => {
     expect(help).toMatch(/^ {2}health +Read-only report of recent problems/mu);
     expect(help).toMatch(/--since 24h\|7d\|14d\|30d +health: report range \(default 24h\)/u);
     expect(help).toMatch(/--run <reference> +health: look up/u);
+    expect(help).toMatch(/--full +health: every problem of the range/u);
+    expect(help).toMatch(/--user <id> +health: one user's incidents/u);
+    expect(help).toContain("keep their output on the host, never paste it");
   });
 });

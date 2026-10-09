@@ -75,7 +75,7 @@ TARGET_TAG="" BACKUP_CONFIRMED=0 BACKUP_NOW=0 ADD_MISSING_KEYS=0 PREVIOUS_REF=""
 OUTPUT_DIR="" RESTORE_DIR=""
 LOGS_ERRORS=0 LOGS_WARNINGS=0 LOGS_FOLLOW=0 LOGS_TAIL="" LOG_SERVICES=()
 # --since: a log window for logs, a Health range for health.
-SINCE="" HEALTH_JSON=0 HEALTH_RUN=""
+SINCE="" HEALTH_JSON=0 HEALTH_RUN="" HEALTH_FULL=0 HEALTH_USER=""
 declare -A GIVEN=()
 
 # State.
@@ -2123,6 +2123,8 @@ cmd_health() {
   docker_ready || die "$EXIT_FAILURE" "Cannot read health: Docker is not usable ($DOCKER_STATE)${DOCKER_ERROR:+: $DOCKER_ERROR}."
   if [[ -n $SINCE ]]; then args+=(--since "$SINCE"); fi
   if [[ -n $HEALTH_RUN ]]; then args+=(--run "$HEALTH_RUN"); fi
+  if (( HEALTH_FULL )); then args+=(--full); fi
+  if [[ -n $HEALTH_USER ]]; then args+=(--user "$HEALTH_USER"); fi
   if (( HEALTH_JSON )); then args+=(--json); fi
   ensure_temp_dir
   errors=$TEMP_DIR/health.err
@@ -2209,6 +2211,10 @@ Options:
   --json                 health: machine-readable JSON instead of text.
   --run <reference>      health: look up the runs and incidents of an error reference
                          (the first 8 or more characters of a run id).
+  --full                 health: every problem of the range, complete, for an agent on the host.
+  --user <id>            health: one user's incidents, failed runs and problem reports.
+                         --full and --user print internal user ids and problem-report
+                         comments: keep their output on the host, never paste it.
 
 Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight or doctor
 check failed (before any container change), 5 stack not ready after a start,
@@ -2273,6 +2279,8 @@ parse_args() {
       --since) option_value "$argument" "$@"; SINCE=$1; shift ;;
       --json) HEALTH_JSON=1 ;;
       --run) option_value "$argument" "$@"; HEALTH_RUN=$1; shift ;;
+      --full) HEALTH_FULL=1 ;;
+      --user) option_value "$argument" "$@"; HEALTH_USER=$1; shift ;;
       --tail) option_value "$argument" "$@"; LOGS_TAIL=$1; shift ;;
       -f | --follow) LOGS_FOLLOW=1 ;;
       -*) usage_error "Unknown option: $argument" ;;
@@ -2303,7 +2311,7 @@ validate_args() {
     backup) allowed=" --output " ;;
     restore) allowed=" --skip-preflight " ;;
     logs) allowed=" --errors --warnings --since --tail -f --follow " ;;
-    health) allowed=" --since --json --run " ;;
+    health) allowed=" --since --json --run --full --user " ;;
     __upgrade-apply) allowed=" --previous-ref --add-missing-keys --skip-preflight " ;;
     version | help) allowed=" " ;;
     "") usage_error "Missing command." ;;
@@ -2321,6 +2329,12 @@ validate_args() {
   if [[ $COMMAND == health ]]; then
     if [[ -n $SINCE && ! $SINCE =~ ^(24h|7d|14d|30d)$ ]]; then usage_error "--since must be 24h, 7d, 14d or 30d for health."; fi
     if [[ -n $SINCE && -n $HEALTH_RUN ]]; then usage_error "--run and --since are mutually exclusive."; fi
+    if [[ -n $HEALTH_RUN ]] && (( HEALTH_FULL )); then usage_error "--run and --full are mutually exclusive."; fi
+    if [[ -n $HEALTH_RUN && -n $HEALTH_USER ]]; then usage_error "--run and --user are mutually exclusive."; fi
+    if (( HEALTH_FULL )) && [[ -n $HEALTH_USER ]]; then usage_error "--full and --user are mutually exclusive."; fi
+    if [[ -n $HEALTH_USER && ! $HEALTH_USER =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]]; then
+      usage_error "--user needs an internal user id (letters, digits, _ and -)."
+    fi
     if [[ -n $HEALTH_RUN && ! $HEALTH_RUN =~ ^[0-9A-Fa-f][0-9A-Fa-f-]{7,35}$ ]]; then
       usage_error "--run needs an error reference: at least the first 8 characters of a run id."
     fi
