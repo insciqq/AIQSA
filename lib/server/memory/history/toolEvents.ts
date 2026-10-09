@@ -9,6 +9,9 @@ export const MEMORY_TOOL_EVENT_MAX_SOURCE_CALLS = 4_096;
 // Keyset read size. Raw call results are projected and released per read so
 // a page never holds every source payload of a long chat at once.
 export const MEMORY_TOOL_EVENT_SOURCE_READ_BATCH = 256;
+// Changed-call identities one index page reads, including calls it replays;
+// the next page resumes after the last one it handled.
+export const MEMORY_TOOL_EVENT_REPLAY_SCAN_CALLS = 1_024;
 export const MEMORY_TOOL_EVENT_MAX_SAFE_TEXT_LENGTH = 2_000;
 const MEMORY_TOOL_EVENT_MAX_SEARCH_TEXT_LENGTH = 4_000;
 

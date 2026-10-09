@@ -8,6 +8,7 @@ import {
   memoryHistoryIndexMinimumPageEnd,
   memoryHistoryIndexPageLimitsAreValid,
   memoryHistoryIndexWriteCost,
+  memoryHistoryToolCallReplayLimit,
   planMemoryHistoryTailUpdate,
   shrinkMemoryHistoryIndexPageEnd,
   type MemoryHistoryCheckpointMessageIdentity,
@@ -269,6 +270,37 @@ describe("Memory history index pages", () => {
     expect(end / 2).toBe(Math.floor(DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS.maxIndexWrites / turnCost));
     expect(end / 2).toBeGreaterThanOrEqual(10);
     expect(end / 2).toBeLessThanOrEqual(20);
+  });
+
+  it("replays changed prefix calls only within what a page's own writes leave of its budgets", () => {
+    const limits = DEFAULT_MEMORY_HISTORY_INDEX_PAGE_LIMITS;
+    const replayLimit = (input: Readonly<{
+      indexesNewMessages: boolean;
+      pageToolCalls: number;
+      pageWrites: number;
+    }>) => memoryHistoryToolCallReplayLimit({ ...input, limits });
+    // A page that only replays spends its whole write budget, three per call.
+    expect(replayLimit({ indexesNewMessages: false, pageToolCalls: 0, pageWrites: 0 }))
+      .toBe(limits.maxIndexWrites / 3);
+    expect(replayLimit({ indexesNewMessages: true, pageToolCalls: 4, pageWrites: 93 }))
+      .toBe(Math.floor((limits.maxIndexWrites - 93) / 3));
+    // A page that filled its budget with new messages leaves the replay to
+    // the next page of its job; one that indexes none still advances it.
+    expect(replayLimit({ indexesNewMessages: true, pageToolCalls: 0, pageWrites: 900 })).toBe(0);
+    expect(replayLimit({ indexesNewMessages: false, pageToolCalls: 0, pageWrites: 900 })).toBe(1);
+    // Raw call results loaded by one job stay within the tool-call bound too.
+    expect(memoryHistoryToolCallReplayLimit({
+      indexesNewMessages: true,
+      limits: { ...limits, maxToolCalls: 20 },
+      pageToolCalls: 15,
+      pageWrites: 45
+    })).toBe(5);
+    expect(memoryHistoryToolCallReplayLimit({
+      indexesNewMessages: false,
+      limits: { ...limits, maxToolCalls: 20 },
+      pageToolCalls: 20,
+      pageWrites: 60
+    })).toBe(1);
   });
 
   it("keeps per-job limits positive and within the per-call chunk bound", () => {

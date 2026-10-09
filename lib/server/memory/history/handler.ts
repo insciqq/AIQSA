@@ -79,6 +79,7 @@ export function applyMemoryHistorySafetyLite(
         reusedChunkIds: plan.reusedChunkIds,
         reusedRoundIds: plan.reusedRoundIds,
         rounds,
+        toolCallReplay: plan.toolCallReplay,
         toolEvents: plan.toolEvents,
         work: plan.work
       }

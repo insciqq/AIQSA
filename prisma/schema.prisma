@@ -6121,21 +6121,23 @@ model MemoryScope {
 }
 
 model ChatMemoryCheckpoint {
-  id                    String                        @id @default(uuid())
-  userId                String
-  chatId                String
-  pipelineVersion       String                        @default("memory-history-incremental-v10") @db.VarChar(64)
-  branchGeneration      Int
-  sourceRevision        Int
-  activeLeafMessageId   String
-  sourceContentHash     String                        @db.VarChar(128)
-  lastIndexedMessageId  String?
-  status                MemoryHistoryCheckpointStatus @default(PENDING)
-  lastSucceededAt       DateTime?
-  lastErrorCode         String?                       @db.VarChar(64)
-  resumeCreatedAtCutoff DateTime?
-  createdAt             DateTime                      @default(now())
-  updatedAt             DateTime                      @default(now()) @updatedAt
+  id                           String                        @id @default(uuid())
+  userId                       String
+  chatId                       String
+  pipelineVersion              String                        @default("memory-history-incremental-v10") @db.VarChar(64)
+  branchGeneration             Int
+  sourceRevision               Int
+  activeLeafMessageId          String
+  sourceContentHash            String                        @db.VarChar(128)
+  lastIndexedMessageId         String?
+  status                       MemoryHistoryCheckpointStatus @default(PENDING)
+  lastSucceededAt              DateTime?
+  lastErrorCode                String?                       @db.VarChar(64)
+  resumeCreatedAtCutoff        DateTime?
+  toolCallReplayAfterUpdatedAt DateTime?
+  toolCallReplayAfterId        String?
+  createdAt                    DateTime                      @default(now())
+  updatedAt                    DateTime                      @default(now()) @updatedAt
 
   @@unique([userId, id])
   @@unique([userId, chatId])
