@@ -65,14 +65,14 @@ export function adminHealthFailureClass(
 }
 
 /**
- * The 95th percentile from the fixed duration histogram: the upper bound of
- * the bucket holding it, capped by the observed maximum (the open last bucket
- * reports the maximum itself).
+ * A quantile (0 < q <= 1) from the fixed duration histogram: the upper bound
+ * of the bucket holding it, capped by the observed maximum (the open last
+ * bucket reports the maximum itself).
  */
-export function adminHealthP95(buckets: readonly number[], maxMs: number | null): number | null {
+export function adminHealthQuantile(buckets: readonly number[], maxMs: number | null, quantile: number): number | null {
   const total = buckets.reduce((sum, value) => sum + value, 0);
   if (total <= 0) return null;
-  const target = Math.ceil(total * 0.95);
+  const target = Math.ceil(total * quantile);
   let seen = 0;
   for (let index = 0; index < buckets.length; index += 1) {
     seen += buckets[index] ?? 0;
@@ -82,6 +82,11 @@ export function adminHealthP95(buckets: readonly number[], maxMs: number | null)
     return Math.round(maxMs === null ? bound : Math.min(bound, maxMs));
   }
   return maxMs === null ? null : Math.round(maxMs);
+}
+
+/** The 95th percentile from the fixed duration histogram (`adminHealthQuantile`). */
+export function adminHealthP95(buckets: readonly number[], maxMs: number | null): number | null {
+  return adminHealthQuantile(buckets, maxMs, 0.95);
 }
 
 /**

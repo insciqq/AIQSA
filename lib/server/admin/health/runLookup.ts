@@ -56,7 +56,8 @@ function displayName(value: string | null): string | null {
   return trimmed ? trimmed.slice(0, 300) : null;
 }
 
-function summary(row: AdminHealthRunRow, incidentCount: number): AdminHealthRunSummary | null {
+/** A run row as administrators read it; `null` for a row that is not a well-formed run. */
+export function projectAdminHealthRun(row: AdminHealthRunRow, incidentCount: number): AdminHealthRunSummary | null {
   if (row.id.length !== RUN_ID_LENGTH || normalizeRunReference(row.id) !== row.id ||
     !(adminHealthRunStatuses as readonly string[]).includes(row.status)) return null;
   const status = row.status as AdminHealthRunStatus;
@@ -95,7 +96,7 @@ export function createAdminHealthRunLookup(dependencies: Readonly<{
         ? await dependencies.incidents.countIncidentsByRun(selected.map((row) => row.id))
         : new Map<string, number>();
       const runs = selected
-        .map((row) => summary(row, counts.get(row.id) ?? 0))
+        .map((row) => projectAdminHealthRun(row, counts.get(row.id) ?? 0))
         .filter((run): run is AdminHealthRunSummary => run !== null);
       return { runs, truncated: rows.length > ADMIN_HEALTH_RUN_LOOKUP_LIMIT };
     }

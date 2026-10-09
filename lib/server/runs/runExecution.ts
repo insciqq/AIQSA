@@ -3808,8 +3808,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           await persistReportedUsageForIncompleteRun().catch(() => undefined);
           return;
         }
+        // The admitted answer identity, as on failure: run durations per provider.
+        const completedAnswer = input.prepared.providerAdmissionPlan?.answer?.snapshot;
         logEvent("run_execution", { run_id: runId, stage: executionStage, outcome: "completed",
-          duration_ms: Math.max(0, Date.now() - executionStartedAt) });
+          duration_ms: Math.max(0, Date.now() - executionStartedAt),
+          connectionId: completedAnswer?.connectionId, providerModelId: completedAnswer?.providerModelId,
+          providerFamily: completedAnswer?.providerFamily, adapterKind: completedAnswer?.model?.adapterKind });
 
         if (!answerPublished) emitTransient(controller, encoder, contextStatusEvent);
 
