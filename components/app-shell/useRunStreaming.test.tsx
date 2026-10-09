@@ -5,7 +5,9 @@ import {
   resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RUN_STREAM_KEEPALIVE, RUN_STREAM_KEEPALIVE_MS } from "@/lib/domain/modelRunEvents";
 import { selectRunSurface, useRunSurfaceStore } from "./runSurfaceStore";
+import { RUN_TRANSPORT_SILENCE_MS } from "./runTransportLifecycle";
 import { selectThreadSnapshot, useThreadStore } from "./threadStore";
 import type { WorkspaceChatSummary } from "./types";
 import { useRunStreaming } from "./useRunStreaming";
@@ -55,6 +57,7 @@ describe("run streaming", () => {
   });
 
   it.each(["visibility", "resume", "pageshow"])("detaches a suspended stream on %s without reporting a cancelled run", async (event) => {
+    vi.useFakeTimers();
     const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
     const cancel = vi.fn();
     const pending = result.current.consumeRunStream({
@@ -70,9 +73,47 @@ describe("run streaming", () => {
       expect(cancel).not.toHaveBeenCalled();
       state.mockReturnValue("visible");
       document.dispatchEvent(new Event("visibilitychange"));
+      // Only a silent transport is detached after a visible return.
+      await vi.advanceTimersByTimeAsync(RUN_TRANSPORT_SILENCE_MS - 1);
+      expect(cancel).not.toHaveBeenCalled();
     } else if (event === "pageshow") {
       window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
     } else document.dispatchEvent(new Event("resume"));
+    // Detachment settles on the browser task after the wake or silence limit.
+    await vi.advanceTimersByTimeAsync(2);
+    await interrupted;
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a stream that kept delivering in the background attached until it goes silent", async () => {
+    vi.useFakeTimers();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const { result } = renderHook(() => useRunStreaming({ applyChatUpdate: () => false }));
+    const encoder = new TextEncoder();
+    const cancel = vi.fn();
+    const push = vi.fn();
+    let writer!: ReadableStreamDefaultController<Uint8Array>;
+    const pending = result.current.consumeRunStream({
+      chatId: "chat-a", failurePrefix: "send_failed", onRunId: vi.fn(), onMessageIds: vi.fn(),
+      tokenBuffer: { flush: vi.fn(), push },
+      response: new Response(new ReadableStream<Uint8Array>({ start(controller) { writer = controller; }, cancel }))
+    });
+    const interrupted = expect(pending).rejects.toThrow("stream_connection_lost");
+    visibility.mockReturnValue("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    for (let beat = 0; beat < 6; beat++) {
+      await vi.advanceTimersByTimeAsync(RUN_STREAM_KEEPALIVE_MS);
+      writer.enqueue(encoder.encode(RUN_STREAM_KEEPALIVE));
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+    writer.enqueue(encoder.encode('event: token\ndata: {"delta":"Live answer"}\n\n'));
+    await vi.advanceTimersByTimeAsync(RUN_TRANSPORT_SILENCE_MS - 1);
+    expect(push).toHaveBeenCalledExactlyOnceWith("Live answer");
+    expect(cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2);
     await interrupted;
     expect(cancel).toHaveBeenCalledOnce();
   });

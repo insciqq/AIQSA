@@ -6,6 +6,7 @@ import {
 } from "@/tests/support/appShellStores";
 import { executeMessageRunLifecycle, type ConsumeMessageRunStream } from "./messageRunLifecycle";
 import { useRunLifecycleStore } from "./runLifecycleStore";
+import { RUN_TRANSPORT_SILENCE_MS } from "./runTransportLifecycle";
 import {
   selectRunSurface,
   useRunSurfaceStore
@@ -33,7 +34,7 @@ function surfaceEvents(chatId = "chat-1") {
 }
 
 describe("message run lifecycle", () => {
-  it.each(["headers", "admission", "refusal", "stream"] as const)("reconciles a wake during %s even when transport ignores abort and fences its late response", async (stage) => {
+  it.each(["headers", "admission", "refusal", "stream"] as const)("reconciles a silent wake during %s even when transport ignores abort and fences its late response", async (stage) => {
     vi.useFakeTimers();
     prepareThread();
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -81,7 +82,11 @@ describe("message run lifecycle", () => {
     expect(transportSignal.aborted).toBe(false);
     visibility.mockReturnValue("visible");
     document.dispatchEvent(new Event("visibilitychange"));
-    await vi.advanceTimersByTimeAsync(0);
+    // A transport that might still be delivering is watched, not replaced.
+    await vi.advanceTimersByTimeAsync(RUN_TRANSPORT_SILENCE_MS - 1);
+    expect(transportSignal.aborted).toBe(false);
+    // Detachment settles on the browser task after the silence limit.
+    await vi.advanceTimersByTimeAsync(2);
     expect(await running).toMatchObject({ failed: true, cancelled: false, runId: stage === "stream" ? "run-server" : null });
     expect(stopController.signal.aborted).toBe(false);
     expect(transportSignal.aborted).toBe(true);

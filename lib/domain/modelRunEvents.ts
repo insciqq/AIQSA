@@ -151,6 +151,13 @@ export function encodeSseEvent(event: ModelRunSseEvent): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`;
 }
 
+/**
+ * A live run stream sends this SSE comment at this interval, so a returning
+ * browser can tell a quiet answer from a frozen connection. Parsers ignore it.
+ */
+export const RUN_STREAM_KEEPALIVE = ": keepalive\n\n";
+export const RUN_STREAM_KEEPALIVE_MS = 5_000;
+
 export function textFromContentBlocks(content: { blocks?: unknown[] }): string {
   if (!Array.isArray(content.blocks)) {
     return "";

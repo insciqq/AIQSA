@@ -38,6 +38,8 @@ import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { textMessageContent } from "../../domain/content";
 import {
   encodeSseEvent,
+  RUN_STREAM_KEEPALIVE,
+  RUN_STREAM_KEEPALIVE_MS,
   textFromContentBlocks,
   type ModelRunChatUpdateData,
   type ModelRunSseEvent,
@@ -3565,6 +3567,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         };
       }
 
+      // Quiet phases (reasoning, tools, preparation) still prove the connection
+      // is live, so a returning browser keeps observing instead of reconnecting.
+      const keepalive = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(RUN_STREAM_KEEPALIVE));
+        } catch {
+          // The client may already have disconnected.
+        }
+      }, RUN_STREAM_KEEPALIVE_MS);
+      keepalive.unref?.();
+
       try {
         throwIfAborted(signal);
         await assertProjectRunAccessCurrent(true);
@@ -4047,6 +4060,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           });
         }
       } finally {
+        clearInterval(keepalive);
         followups?.release();
         await artifactGeneration.stop(signal.aborted ? "cancelled" : "failed").catch(() => undefined);
         if (workspaceTurnTimer) clearTimeout(workspaceTurnTimer);

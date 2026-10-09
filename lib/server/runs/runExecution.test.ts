@@ -17,7 +17,7 @@ import { mcpAutoDiscoveryFailure, RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESI
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
-import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { RUN_STREAM_KEEPALIVE, RUN_STREAM_KEEPALIVE_MS, textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringVerdictTool } from "../tools/monitoringVerdict";
@@ -1452,7 +1452,7 @@ function isContextEvent(event: ModelRunSseEvent) {
 function parseSse(text: string, includeContext = false): ModelRunSseEvent[] {
   return text
     .split("\n\n")
-    .filter(Boolean)
+    .filter((chunk) => chunk && !chunk.startsWith(":"))
     .map((chunk) => {
       const lines = chunk.split("\n");
       const type = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
@@ -2856,6 +2856,29 @@ describe("run execution", () => {
     expect(events.filter(isContextEvent)).toMatchObject([
       { data: { payload: { phase: "request" } } }, { data: { payload: { phase: "after_answer" } } }
     ]);
+  });
+
+  it("keeps a quiet answer stream alive with comments until the run settles", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const entered = deferred<void>(), held = deferred<void>();
+      const adapter = createAdapter(async function* () {
+        entered.resolve();
+        await held.promise;
+        yield { type: "token" as const, data: { delta: "Late answer" } };
+        return providerResult({ finalText: "Late answer" });
+      });
+      const body = createRunExecutionResponse(executionInput({ adapter, repository: createRepository().repository })).text();
+      await entered.promise;
+      vi.advanceTimersByTime(RUN_STREAM_KEEPALIVE_MS * 2);
+      held.resolve();
+      const text = await body;
+      expect(text.split(RUN_STREAM_KEEPALIVE)).toHaveLength(3);
+      expect(parseSse(text).map((event) => event.type)).toEqual(expect.arrayContaining(["token", "done"]));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each(["ready", "failed", "lost", "cancelled", "completion_lost"] as const)("waits for safe Workspace handoff and respects %s settlement", async (outcome) => {
