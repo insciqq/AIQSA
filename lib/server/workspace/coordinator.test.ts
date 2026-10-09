@@ -13,7 +13,9 @@ import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
 import { createMemoryStorageAdapter, createPooledStorageAdapter } from "@/tests/support/storage";
 import { WORKSPACE_ATTACHMENT_STORAGE_WAIT_MS } from "./attachmentAcquisition";
 import { getWorkspaceConfig } from "./config";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
+import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
+import { WorkspaceHandoffFailure } from "../runs/settlementFailure";
 import {
   createPrismaWorkspaceCoordinatorRepository,
   createWorkspaceCoordinator,
@@ -1947,6 +1949,182 @@ describe("Workspace coordinator export settlement", () => {
     });
     expect(recoveryClaim).toHaveBeenCalledTimes(1);
     expect(liveClaim).not.toHaveBeenCalled();
+  });
+});
+
+describe("Workspace coordinator export database retries", () => {
+  const known = (code: string, meta?: Record<string, unknown>) =>
+    new Prisma.PrismaClientKnownRequestError("PRIVATE_SQL_CANARY", { clientVersion: "test", code, meta });
+  const lockTimeout = () => known("P2010", { code: "55P03", message: "canceling statement due to lock timeout" });
+  const typedLockTimeout = () => new Prisma.PrismaClientUnknownRequestError("Error occurred during query execution: " +
+    "ConnectorError(ConnectorError { user_facing_error: None, kind: QueryError(PostgresError { code: \"55P03\", " +
+    "message: \"PRIVATE_CANARY\", severity: \"ERROR\" }) })", { clientVersion: "test" });
+  const handoff = (value: ReturnType<typeof fixture>, coordinator = value.coordinator) =>
+    coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+
+  it("retries a seal that waited out its lock bound and hands off once, within the same claim", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    const seal = vi.spyOn(value.repository, "sealOutputCapture").mockRejectedValueOnce(lockTimeout()).mockRejectedValueOnce(lockTimeout());
+    const claim = vi.spyOn(value.repository, "claimExport");
+    const failed = vi.spyOn(value.repository, "markExportFailed");
+    const records = await exportRecords(() => expect(handoff(value)).resolves.toEqual({ status: "ready" }));
+    expect(seal).toHaveBeenCalledTimes(3);
+    expect(claim).toHaveBeenCalledOnce();
+    expect(failed).not.toHaveBeenCalled();
+    expect(records).toEqual([1, 2].map((attempt) => expect.objectContaining({ work_stage: "seal", outcome: "degraded",
+      code: "workspace_output_export_failed", prisma_code: "P2010", db_failure: "lock_timeout", attempt, action: "retry",
+      run_id: value.runId })));
+    expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(true);
+  });
+
+  it.each([
+    ["claimExport", "claim", () => known("P2028", { error: "Unable to start a transaction in the given time." }), "transaction_start_timeout"],
+    ["reserveOutputCapture", "claim", () => known("P2028", {
+      error: "Transaction already closed: A query cannot be executed on an expired transaction." }), "transaction_expired"],
+    ["renewExportLease", "heartbeat", typedLockTimeout, "lock_timeout"],
+    ["sealOutputCapture", "seal", () => known("P2010", { code: "40P01" }), "deadlock"],
+    ["prepareOutput", "publish", () => known("P2034"), "serialization_conflict"],
+    ["settleOutput", "publish", () => known("P2010", { code: "40001" }), "serialization_conflict"],
+    ["markExportComplete", "publish", lockTimeout, "lock_timeout"]
+  ] as const)("retries %s after a rollback-safe failure and publishes once", async (method, stage, failure, kind) => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    const original = (value.repository[method] as (...args: unknown[]) => Promise<unknown>).bind(value.repository);
+    let calls = 0;
+    // The failed attempt rolled back: it reaches none of the step's effects.
+    Object.assign(value.repository, { [method]: async (...args: unknown[]) => {
+      calls += 1;
+      if (calls === 1) throw failure();
+      return original(...args);
+    } });
+    const records = await exportRecords(() => expect(value.coordinator.finalize({ runId: value.runId, userId: "user_1",
+      workspace: value.workspace })).resolves.toMatchObject({ status: "complete", files: [{ relativePath: "report.txt" }] }));
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(await value.repository.generatedFiles({ runId: value.runId, userId: "user_1" })).toHaveLength(1);
+    expect(records).toEqual([expect.objectContaining({ work_stage: stage, outcome: "degraded", db_failure: kind, attempt: 1,
+      action: "retry" })]);
+  });
+
+  it("initializes again in the same lease when the guest-use marker's transaction expired behind the chat row", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    const marker = vi.spyOn(value.repository, "markGuestUsed").mockRejectedValueOnce(known("P2028", {
+      error: "Transaction already closed: A query cannot be executed on an expired transaction." }));
+    const claim = vi.spyOn(value.repository, "claimExport");
+    const records = await exportRecords(() => expect(handoff(value)).resolves.toEqual({ status: "ready" }));
+    expect(marker).toHaveBeenCalledTimes(2);
+    expect(claim).toHaveBeenCalledOnce();
+    // The failed attempt stopped before the runtime; the retry reached it once.
+    expect(value.runtime.ensureSession).toHaveBeenCalledOnce();
+    expect(records).toEqual([expect.objectContaining({ work_stage: "initialize", outcome: "degraded", prisma_code: "P2028",
+      db_failure: "transaction_expired", attempt: 1, action: "retry" })]);
+    expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(true);
+  });
+
+  it("ends the attempt at once on any other database failure and keeps its facts on the handoff's error", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    const unique = known("P2002");
+    const seal = vi.spyOn(value.repository, "sealOutputCapture").mockRejectedValue(unique);
+    const failed = vi.spyOn(value.repository, "markExportFailed");
+    let caught: unknown;
+    const records = await exportRecords(async () => { caught = await handoff(value).catch((error: unknown) => error); });
+    expect(seal).toHaveBeenCalledOnce();
+    expect(failed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "workspace_output_export_failed" }));
+    expect(caught).toBeInstanceOf(WorkspaceRuntimeError);
+    expect(caught).toMatchObject({ code: "workspace_output_export_failed" });
+    // Only the content-free facts are retained, never the database error itself.
+    expect((caught as Error).cause).toBeUndefined();
+    expect(describeFailureFacts(caught)).toMatchObject({ prisma_code: "P2002" });
+    // The run's terminal record names the database cause.
+    expect(databaseFailureCode(new WorkspaceHandoffFailure(caught))).toBe("P2002");
+    expect(records).toEqual([expect.objectContaining({ work_stage: "seal", outcome: "failed", code: "workspace_output_export_failed",
+      prisma_code: "P2002", action: "fail" })]);
+    expect(records[0]).not.toHaveProperty("db_failure");
+  });
+
+  it("does not retry a step once the heartbeat finds the lease gone", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    // Renewed before the capture; the first heartbeat finds another owner.
+    vi.spyOn(value.repository, "renewExportLease").mockResolvedValueOnce(true).mockResolvedValue(false);
+    // The seal waits on a lock past that heartbeat, then times out.
+    const seal = vi.spyOn(value.repository, "sealOutputCapture").mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      throw lockTimeout();
+    });
+    const failed = vi.spyOn(value.repository, "markExportFailed");
+    const coordinator = createWorkspaceCoordinator({ ...value, exportLeaseMs: 3_000 });
+    const records = await exportRecords(() => expect(coordinator.finalize({ handoff: true, runId: value.runId, userId: "user_1",
+      workspace: value.workspace })).resolves.toEqual({ code: "workspace_output_export_failed", retryable: true, status: "failed" }));
+    expect(seal).toHaveBeenCalledOnce();
+    expect(failed).not.toHaveBeenCalled();
+    expect(records).toEqual([expect.objectContaining({ work_stage: "seal", outcome: "lost_lease", code: "workspace_output_export_failed",
+      prisma_code: "P2010", db_failure: "lock_timeout", action: "fail" })]);
+  });
+
+  it("stops retrying a blocked step before an attempt could start after its lease, and fails with the lock timeout", async () => {
+    const value = fixture(); value.setRuntimeSandboxId("runtime_1");
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([outputStream("report", "report.txt")]);
+    const blocked = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      throw lockTimeout();
+    };
+    // The heartbeat is blocked by the same holder, so nothing extends the lease.
+    vi.spyOn(value.repository, "renewExportLease").mockResolvedValueOnce(true).mockImplementation(blocked);
+    const starts: number[] = [];
+    vi.spyOn(value.repository, "sealOutputCapture").mockImplementation(async () => { starts.push(Date.now()); return blocked(); });
+    const coordinator = createWorkspaceCoordinator({ ...value, exportLeaseMs: 2_000 });
+    const started = Date.now();
+    let caught: unknown;
+    const records = await exportRecords(async () => { caught = await handoff(value, coordinator).catch((error: unknown) => error); });
+    expect(starts.length).toBeGreaterThan(1);
+    for (const start of starts) expect(start).toBeLessThan(started + 2_100);
+    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(records.at(-1)).toMatchObject({ work_stage: "seal", outcome: "failed", code: "workspace_output_export_failed",
+      prisma_code: "P2010", db_failure: "lock_timeout" });
+    expect(records.filter((record) => record.outcome === "degraded" && record.work_stage === "seal")).toHaveLength(starts.length - 1);
+    expect(databaseFailureKind(caught)).toBe("lock_timeout");
+    expect(await value.repository.outputHandoffReady({ runId: value.runId, sessionId: value.workspace.sessionId })).toBe(false);
+  });
+});
+
+describe("Workspace export transactions", () => {
+  const lease = { operation: { generation: 2, owner: "export:run_1:token" }, runId: "run_1", runtimeSandboxId: "runtime_1",
+    sessionId: "session_1", token: "token" };
+  const output = { byteSize: 6, checksum: "c".repeat(64), mimeType: "text/plain", relativePath: "report.txt" };
+  const binding = { operationGeneration: 2, operationOwner: lease.operation.owner, projectId: null, runId: "run_1",
+    runtimeSandboxId: "runtime_1", sessionId: "session_1", userId: "user_1" } as unknown as WorkspaceExecutionBinding;
+
+  it.each([
+    ["claimExport", (repository: WorkspaceCoordinatorRepository) => repository.claimExport({ leaseMs: 60_000,
+      operation: { generation: 1, owner: "run:run_1" }, runId: "run_1", runtimeSandboxId: "runtime_1", sessionId: "session_1" })],
+    ["claimExportForRecovery", (repository: WorkspaceCoordinatorRepository) => repository.claimExportForRecovery({ generation: 1,
+      leaseMs: 60_000, runId: "run_1", runtimeSandboxId: "runtime_1", sessionId: "session_1" })],
+    ["reserveOutputCapture", (repository: WorkspaceCoordinatorRepository) => repository.reserveOutputCapture(lease)],
+    ["sealOutputCapture", (repository: WorkspaceCoordinatorRepository) => repository.sealOutputCapture({ ...lease,
+      capture: { id: "a".repeat(32), outputs: [output] } })],
+    ["markExportPending", (repository: WorkspaceCoordinatorRepository) => repository.markExportPending(lease)],
+    ["markExportComplete", (repository: WorkspaceCoordinatorRepository) => repository.markExportComplete(lease)],
+    ["markExportFailed", (repository: WorkspaceCoordinatorRepository) => repository.markExportFailed({ ...lease,
+      code: "workspace_output_export_failed" })],
+    ["renewExportLease", (repository: WorkspaceCoordinatorRepository) => repository.renewExportLease({ ...lease, leaseMs: 60_000 })],
+    ["prepareOutput", (repository: WorkspaceCoordinatorRepository) => repository.prepareOutput({ ...lease, storageKey: "key" })],
+    ["settleOutput", (repository: WorkspaceCoordinatorRepository) => repository.settleOutput({ binding, output, storageKey: "key",
+      token: lease.token })]
+  ])("bounds every lock wait of %s inside an explicit transaction budget", async (_method, call) => {
+    const stop = new Error("after_lock_bound");
+    const queryRaw = vi.fn(async (_statement: Prisma.Sql) => { throw stop; });
+    const transaction = vi.fn(async (work: (tx: unknown) => Promise<unknown>, _options?: unknown) => work({ $queryRaw: queryRaw }));
+    const repository = createPrismaWorkspaceCoordinatorRepository({ $transaction: transaction } as unknown as PrismaClient);
+    await expect(call(repository)).rejects.toBe(stop);
+    expect(transaction).toHaveBeenCalledExactlyOnceWith(expect.any(Function), { maxWait: 2_000, timeout: 10_000 });
+    // The first statement of the transaction, before any lock is requested.
+    expect(queryRaw).toHaveBeenCalledOnce();
+    const statement = queryRaw.mock.calls[0]![0];
+    expect(statement.text).toBe("SELECT set_config('lock_timeout', $1, true)");
+    expect(statement.values).toEqual(["2000ms"]);
   });
 });
 
