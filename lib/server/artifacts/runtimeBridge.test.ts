@@ -1,4 +1,5 @@
 import { resolveObjectURL } from "node:buffer";
+import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { ARTIFACT_FRAGMENT_PLACEHOLDER, ARTIFACT_STORAGE_PLACEHOLDER, parseArtifactNavigateMessage } from "../../contracts/artifactRuntime";
 import { ARTIFACT_RUNTIME_BRIDGE, ARTIFACT_SITE_PLACEHOLDER, artifactRuntimeBridge, type ArtifactRuntimeSite } from "./runtimeBridge";
@@ -470,5 +471,374 @@ describe("artifact local files", () => {
     for (const plain of [run(null), run("")]) {
       expect(plain.window.addEventListener.mock.calls.some(([name]) => name === "load")).toBe(false);
     }
+  });
+});
+
+type HintWindow = Window & typeof globalThis & { eval(source: string): unknown };
+// jsdom ships without type declarations; this is the one constructor the hint tests use.
+const { JSDOM } = createRequire(import.meta.url)("jsdom") as {
+  JSDOM: new (html: string, options: { runScripts: "outside-only"; url: string }) => { window: HintWindow };
+};
+type Native = (...args: never[]) => unknown;
+const XHTML = "http://www.w3.org/1999/xhtml";
+const HINT = /(?:^|[\t\n\f\r ])(?:preconnect|dns-prefetch|prefetch|prerender|preload|modulepreload)(?:$|[\t\n\f\r ])/iu;
+const MARKUP_HINT = /<link\b[^>]*\brel\s*=\s*["']?[^"'>]*\b(?:preconnect|dns-prefetch|prefetch|prerender|preload|modulepreload)\b|<i?frame\b[^>]*\b(?:srcdoc|src\s*=\s*["']?\s*javascript:)/iu;
+
+/**
+ * A real DOM (jsdom) with the shipped bridge on top. Before the bridge runs, every
+ * native operation it captures is wrapped so that it records a violation whenever it
+ * would connect a hint link or a nested document, or hand one to a connected link or
+ * frame, as the engine would see it at that moment. Sinks jsdom lacks are recorders.
+ * The wrappers read the DOM through natives captured first, so a page that later
+ * replaces built-ins cannot hide a violation from them.
+ */
+function hintPage(body = '<div id="host"></div>') {
+  const { window } = new JSDOM(`<!doctype html><html><head></head><body>${body}</body></html>`, { runScripts: "outside-only", url: "https://app.example/c/chat-1" });
+  const proto = (name: string) => (window as unknown as Record<string, { prototype: Record<string, unknown> }>)[name]!.prototype;
+  const descriptor = (name: string, key: string) => Object.getOwnPropertyDescriptor(proto(name), key)!;
+  const reader = (name: string, key: string) => { const get = descriptor(name, key).get!; return (self: unknown) => Reflect.apply(get, self, []); };
+  const methodOf = (name: string, key: string) => proto(name)[key] as Native;
+  const call = (native: Native, self: unknown, ...args: unknown[]) => Reflect.apply(native, self, args);
+  const raw = { getAttribute: methodOf("Element", "getAttribute"), setAttribute: methodOf("Element", "setAttribute"), appendChild: methodOf("Node", "appendChild") };
+  const isConnected = reader("Node", "isConnected"), nodeType = reader("Node", "nodeType"), localName = reader("Element", "localName"),
+    namespace = reader("Element", "namespaceURI"), shadowRoot = reader("Element", "shadowRoot"), listLength = reader("NodeList", "length"),
+    attrOwner = reader("Attr", "ownerElement"), attrName = reader("Attr", "localName"), attrValue = reader("Attr", "value");
+  const item = methodOf("NodeList", "item");
+  const queries: Record<number, Native> = { 1: methodOf("Element", "querySelectorAll"), 9: methodOf("Document", "querySelectorAll"), 11: methodOf("DocumentFragment", "querySelectorAll") };
+  const attribute = (element: unknown, name: string) => call(raw.getAttribute, element, name) as string | null;
+  const connected = (node: unknown) => { try { return isConnected(node) === true; } catch { return false; } };
+  const scriptUrl = (value: string) => value.replace(/[\t\n\r]/gu, "").replace(/^[\u0000- ]+/u, "").toLowerCase().startsWith("javascript:");
+  const htmlName = (node: unknown) => { try { return nodeType(node) === 1 && namespace(node) === XHTML ? localName(node) as string : ""; } catch { return ""; } };
+  // What a native insertion of node would connect that must never be connected.
+  const unsafe = (node: unknown): string[] => {
+    const found: string[] = [];
+    const visit = (element: unknown) => {
+      const name = htmlName(element);
+      if (name === "link" && HINT.test(attribute(element, "rel") ?? "")) found.push(`link ${attribute(element, "rel")}`);
+      if (name === "iframe" && attribute(element, "srcdoc")) found.push("iframe srcdoc");
+      if ((name === "iframe" || name === "frame") && scriptUrl(attribute(element, "src") ?? "")) found.push(`${name} javascript:`);
+      const shadow = name ? shadowRoot(element) : null;
+      if (shadow) found.push(...unsafe(shadow));
+    };
+    let type: unknown;
+    try { type = nodeType(node); } catch { return found; }
+    if (type === 1) visit(node);
+    const query = queries[type as number];
+    if (query) {
+      const list = call(query, node, "*");
+      for (let i = 0, count = listLength(list) as number; i < count; i++) visit(call(item, list, i));
+    }
+    return found;
+  };
+  // What one attribute write would hand to an element that must never hold it.
+  const attributeWrite = (element: unknown, name: string, value: unknown) => {
+    const local = htmlName(element), text = String(value);
+    if (local === "link" && name === "rel" && HINT.test(text) && connected(element)) return `link rel ${text}`;
+    if (local === "link" && name === "href" && HINT.test(attribute(element, "rel") ?? "") && connected(element)) return "link href under a hint";
+    if (local === "iframe" && name === "srcdoc" && text) return "iframe srcdoc";
+    if ((local === "iframe" || local === "frame") && name === "src" && scriptUrl(text)) return `${local} src javascript:`;
+    return null;
+  };
+  const violations: string[] = [], sinks: unknown[][] = [], written: string[] = [], executed: unknown[][] = [], posted: unknown[] = [];
+  const flag = (where: string, found: string | null) => { if (found) violations.push(`${where}: ${found}`); };
+  const spyMethod = (name: string, key: string, check: (self: unknown, args: unknown[]) => void) => {
+    const owner = proto(name), native = owner[key] as Native | undefined;
+    if (typeof native === "function") owner[key] = function (this: unknown, ...args: unknown[]) { check(this, args); return Reflect.apply(native, this, args); };
+  };
+  const spySetter = (name: string, key: string, check: (self: unknown, value: unknown) => void) => {
+    const found = descriptor(name, key);
+    Object.defineProperty(proto(name), key, { ...found, set(value: unknown) { check(this, value); Reflect.apply(found.set!, this, [value]); } });
+  };
+  const inserting = (first: number, count: number, always = false) => (self: unknown, args: unknown[]) => {
+    if (always || connected(self)) for (const node of args.slice(first, count < 0 ? undefined : first + count)) for (const found of unsafe(node)) flag("insert", found);
+  };
+  for (const key of ["appendChild", "insertBefore", "replaceChild"]) spyMethod("Node", key, inserting(0, 1));
+  for (const name of ["Element", "Document", "DocumentFragment"]) for (const key of ["append", "prepend", "replaceChildren"]) spyMethod(name, key, inserting(0, -1));
+  for (const name of ["Element", "CharacterData"]) for (const key of ["before", "after", "replaceWith"]) spyMethod(name, key, inserting(0, -1));
+  spyMethod("Element", "insertAdjacentElement", inserting(1, 1));
+  spyMethod("Range", "insertNode", inserting(0, 1, true));
+  spyMethod("Element", "setAttribute", (self, [name, value]) => flag("setAttribute", attributeWrite(self, String(name).toLowerCase(), value)));
+  spyMethod("Element", "setAttributeNS", (self, [space, name, value]) => { if (space === null || space === "") flag("setAttributeNS", attributeWrite(self, String(name), value)); });
+  for (const key of ["setAttributeNode", "setAttributeNodeNS"]) spyMethod("Element", key, (self, [attr]) => flag(key, attributeWrite(self, attrName(attr) as string, attrValue(attr))));
+  const maps = new WeakMap<object, unknown>(), relLists = new WeakMap<object, unknown>();
+  const attributes = descriptor("Element", "attributes");
+  Object.defineProperty(proto("Element"), "attributes", { ...attributes, get() { const map = Reflect.apply(attributes.get!, this, []) as object; maps.set(map, this); return map; } });
+  for (const key of ["setNamedItem", "setNamedItemNS"]) spyMethod("NamedNodeMap", key, (self, [attr]) => flag(key, attributeWrite(maps.get(self as object), attrName(attr) as string, attrValue(attr))));
+  for (const [name, key] of [["HTMLLinkElement", "rel"], ["HTMLLinkElement", "href"], ["HTMLIFrameElement", "srcdoc"], ["HTMLIFrameElement", "src"], ["HTMLFrameElement", "src"]] as const) {
+    spySetter(name, key, (self, value) => flag(`${name}.${key}`, attributeWrite(self, key, value)));
+  }
+  spySetter("Attr", "value", (self, value) => flag("Attr.value", attributeWrite(attrOwner(self), attrName(self) as string, value)));
+  for (const key of ["textContent", "nodeValue"]) spySetter("Node", key, (self, value) => { if (nodeType(self) === 2) flag(`Attr.${key}`, attributeWrite(attrOwner(self), attrName(self) as string, value)); });
+  const relList = descriptor("HTMLLinkElement", "relList");
+  Object.defineProperty(proto("HTMLLinkElement"), "relList", { ...relList, get() { const list = Reflect.apply(relList.get!, this, []) as object; relLists.set(list, this); return list; } });
+  const relWrite = (self: unknown, tokens: unknown[]) => {
+    const link = relLists.get(self as object);
+    if (link && connected(link) && tokens.some(token => HINT.test(String(token)))) violations.push(`relList: ${tokens.join(" ")}`);
+  };
+  spyMethod("DOMTokenList", "add", (self, tokens) => relWrite(self, tokens));
+  spyMethod("DOMTokenList", "toggle", (self, [token, force]) => { if (force !== false) relWrite(self, [token]); });
+  spyMethod("DOMTokenList", "replace", (self, [, token]) => relWrite(self, [token]));
+  spySetter("DOMTokenList", "value", (self, value) => relWrite(self, [value]));
+  const markupSink = (key: string) => (self: unknown, markup: unknown) => {
+    sinks.push([key, self, markup]);
+    // A template's markup lands in its inert content, never in the page.
+    if (connected(self) && htmlName(self) !== "template" && MARKUP_HINT.test(String(markup))) violations.push(`${key}: native parse into this page`);
+  };
+  for (const name of ["Element", "ShadowRoot"]) spySetter(name, "innerHTML", markupSink(`${name}.innerHTML`));
+  spySetter("Element", "outerHTML", markupSink("outerHTML"));
+  spyMethod("Element", "insertAdjacentHTML", (self, [, markup]) => markupSink("insertAdjacentHTML")(self, markup));
+  // Sinks that parse on their own are recorders: jsdom lacks some, and document.write
+  // must not replace the test document.
+  const record = (owner: Record<string, unknown>, key: string, log: (args: unknown[]) => void) => { owner[key] = (...args: unknown[]) => { log(args); }; };
+  record(proto("Document"), "write", args => written.push(args.join("")));
+  record(proto("Document"), "writeln", args => written.push(`${args.join("")}\n`));
+  record(proto("Document"), "execCommand", args => executed.push(["execCommand", ...args]));
+  for (const name of ["Element", "ShadowRoot"]) record(proto(name), "setHTMLUnsafe", args => executed.push([`${name}.setHTMLUnsafe`, ...args]));
+  record(window.Document as unknown as Record<string, unknown>, "parseHTMLUnsafe", args => executed.push(["parseHTMLUnsafe", ...args]));
+  window.postMessage = ((message: unknown) => { posted.push(message); }) as typeof window.postMessage;
+  window.eval(ARTIFACT_RUNTIME_BRIDGE);
+  return { window, document: window.document, violations, sinks, written, executed, posted, raw, unsafe };
+}
+
+describe("artifact resource hints and nested documents", () => {
+  it("keeps hint tokens out of a link on every attribute path, case-insensitively and in order", () => {
+    const page = hintPage();
+    const { document } = page;
+    const connectedLink = () => { const link = document.createElement("link"); link.href = "https://trap.example/"; document.head.append(link); return link; };
+    const attr = (value: string) => { const node = document.createAttribute("rel"); node.value = value; return node; };
+    const writes: Record<string, (link: HTMLLinkElement) => void> = {
+      property: link => { link.rel = "Stylesheet PRECONNECT\ticon"; },
+      setAttribute: link => link.setAttribute("REL", "dns-prefetch stylesheet"),
+      setAttributeNS: link => link.setAttributeNS(null, "rel", "prefetch"),
+      relListAdd: link => link.relList.add("preload", "icon"),
+      relListToggle: link => { expect(link.relList.toggle("modulepreload")).toBe(false); },
+      relListReplace: link => { link.rel = "author"; expect(link.relList.replace("author", "prerender")).toBe(true); },
+      relListValue: link => { link.relList.value = "preconnect author"; },
+      relListAssign: link => { Reflect.set(link, "relList", "preconnect"); },
+      attrValue: link => { link.rel = "author"; link.getAttributeNode("rel")!.value = "preconnect"; },
+      attrNodeValue: link => { link.rel = "author"; link.getAttributeNode("rel")!.nodeValue = "dns-prefetch"; },
+      attrTextContent: link => { link.rel = "author"; link.getAttributeNode("rel")!.textContent = "prefetch"; },
+      setAttributeNode: link => { link.setAttributeNode(attr("preconnect icon")); },
+      setNamedItem: link => { link.attributes.setNamedItem(attr("dns-prefetch")); }
+    };
+    const rels = Object.fromEntries(Object.entries(writes).map(([name, write]) => { const link = connectedLink(); write(link); return [name, link.getAttribute("rel")]; }));
+    expect(rels).toEqual({ property: "Stylesheet icon", setAttribute: "stylesheet", setAttributeNS: "", relListAdd: "icon", relListToggle: null, relListReplace: "",
+      relListValue: "author", relListAssign: "", attrValue: "", attrNodeValue: "", attrTextContent: "", setAttributeNode: "icon", setNamedItem: "" });
+    // A detached link is kept clean as well, so a later insertion has nothing to drop.
+    const detached = document.createElement("link");
+    detached.rel = "preconnect";
+    expect(detached.getAttribute("rel")).toBe("");
+    expect(page.violations).toEqual([]);
+    expect(page.posted).toEqual([]);
+  });
+
+  it("drops a hint a link already carries before any insertion connects it or a new address reaches it", () => {
+    const page = hintPage('<div id="host"></div><select id="select"></select>');
+    const { document } = page;
+    // A link that carries a hint through some path the bridge missed.
+    const missed = () => { const link = document.createElement("link"); Reflect.apply(page.raw.setAttribute, link, ["rel", "preconnect stylesheet"]); return link; };
+    const host = document.getElementById("host")!;
+    const inserts: Record<string, (link: HTMLLinkElement) => void> = {
+      appendChild: link => document.head.appendChild(link),
+      insertBefore: link => document.body.insertBefore(link, host),
+      replaceChild: link => { const old = document.createElement("i"); host.append(old); host.replaceChild(link, old); },
+      append: link => document.head.append("text", link),
+      prepend: link => host.prepend(link),
+      before: link => host.before(link),
+      after: link => host.after(link),
+      replaceWith: link => { const old = document.createElement("i"); host.append(old); old.replaceWith(link); },
+      replaceChildren: link => { const holder = document.createElement("div"); document.body.append(holder); holder.replaceChildren(link); },
+      insertAdjacentElement: link => host.insertAdjacentElement("afterend", link),
+      textAfter: link => { const text = document.createTextNode("t"); host.append(text); text.after(link); },
+      rangeInsertNode: link => { const range = document.createRange(); range.selectNodeContents(host); range.insertNode(link); },
+      fragment: link => { const fragment = document.createDocumentFragment(); fragment.append(link); host.append(fragment); },
+      subtree: link => { const holder = document.createElement("div"); holder.append(document.createElement("b"), link); host.append(holder); },
+      selectAdd: link => { const option = document.createElement("option"); option.append(link); (document.getElementById("select") as HTMLSelectElement).add(option); }
+    };
+    const rels = Object.fromEntries(Object.entries(inserts).map(([name, insert]) => { const link = missed(); insert(link); return [name, link.getAttribute("rel")]; }));
+    expect(rels).toEqual(Object.fromEntries(Object.keys(inserts).map(name => [name, "stylesheet"])));
+    // A detached parent only parks the link; the hint goes when that tree is connected.
+    const parked = missed(), holder = document.createElement("div");
+    holder.append(parked);
+    expect(parked.getAttribute("rel")).toBe("preconnect stylesheet");
+    host.append(holder);
+    expect(parked.getAttribute("rel")).toBe("stylesheet");
+    // Inside a closed shadow root of a detached host, connected with that host.
+    const shadowHost = document.createElement("div"), shadowed = missed();
+    Reflect.apply(page.raw.appendChild, shadowHost.attachShadow({ mode: "closed" }), [shadowed]);
+    host.append(shadowHost);
+    expect(shadowed.getAttribute("rel")).toBe("stylesheet");
+    // A link connected around the bridge never takes a new address under its hint.
+    const moved = missed();
+    Reflect.apply(page.raw.appendChild, document.head, [moved]);
+    moved.href = "https://trap.example/new";
+    expect(moved.getAttribute("rel")).toBe("stylesheet");
+    expect(page.violations).toEqual([]);
+  });
+
+  it("parses markup for this page like the target would and inserts only checked nodes", () => {
+    const page = hintPage('<div id="host"></div><table id="table"></table><section id="shadow-host"></section><div id="positions"><p id="target">t</p></div><template id="template"></template>');
+    const { document, window } = page;
+    const markup = '<p>a</p><link rel="preconnect stylesheet" href="https://trap.example/"><iframe srcdoc="<b>nested</b>" src="https://example.invalid/"></iframe>' +
+      '<template><link rel="preload" href="https://trap.example/t"></template>';
+    const host = document.getElementById("host")!;
+    host.innerHTML = markup;
+    const detached = document.createElement("div");
+    detached.innerHTML = markup;
+    expect(host.innerHTML).toBe(detached.innerHTML);
+    expect(host.innerHTML).toBe('<p>a</p><link rel="stylesheet" href="https://trap.example/"><iframe src="https://example.invalid/"></iframe><template><link rel="" href="https://trap.example/t"></template>');
+    // Rows in a table get the implied tbody exactly as the native parse gives them.
+    const table = document.getElementById("table")!, rows = '<tr><td>1</td></tr><link rel="dns-prefetch" href="https://trap.example/">';
+    table.innerHTML = rows;
+    const detachedTable = document.createElement("table");
+    detachedTable.innerHTML = rows;
+    expect(table.innerHTML).toBe(detachedTable.innerHTML);
+    expect(table.querySelector("tbody > tr > td")?.textContent).toBe("1");
+    const target = document.getElementById("target")!;
+    for (const position of ["beforebegin", "afterbegin", "beforeend", "afterend"] as const) target.insertAdjacentHTML(position, `<link rel="prefetch" href="https://trap.example/${position}"><i>${position}</i>`);
+    expect([...document.getElementById("positions")!.children].map(element => element.localName)).toEqual(["link", "i", "p", "link", "i"]);
+    expect(target.innerHTML).toBe('<link rel="" href="https://trap.example/afterbegin"><i>afterbegin</i>t<link rel="" href="https://trap.example/beforeend"><i>beforeend</i>');
+    target.outerHTML = '<link rel="preload" href="https://trap.example/outer"><b>outer</b>';
+    const shadow = document.getElementById("shadow-host")!.attachShadow({ mode: "open" });
+    shadow.innerHTML = '<link rel="modulepreload" href="https://trap.example/shadow"><i>shadow</i>';
+    expect(shadow.innerHTML).toBe('<link rel="" href="https://trap.example/shadow"><i>shadow</i>');
+    const template = document.getElementById("template") as HTMLTemplateElement;
+    template.innerHTML = '<link rel="preconnect" href="https://trap.example/template">';
+    expect(template.content.querySelector("link")!.getAttribute("rel")).toBe("");
+    // A custom element target parses like any element; no extra constructor runs.
+    window.eval('window.built = 0; customElements.define("x-widget", class extends HTMLElement { constructor() { super(); window.built++; } });');
+    const widget = document.createElement("x-widget");
+    host.append(widget);
+    widget.innerHTML = '<link rel="preconnect" href="https://trap.example/widget"><span>s</span>';
+    expect([(window as unknown as { built: number }).built, widget.innerHTML]).toEqual([1, '<link rel="" href="https://trap.example/widget"><span>s</span>']);
+    // Detached results are checked before any script can connect them.
+    const range = document.createRange();
+    range.selectNodeContents(document.body);
+    expect(page.unsafe(range.createContextualFragment('<link rel="preconnect" href="https://trap.example/range">'))).toEqual([]);
+    const parsed = new window.DOMParser().parseFromString('<link rel="prefetch" href="https://trap.example/parsed"><template><link rel="preload" href="https://trap.example/inner"></template>', "text/html");
+    expect([parsed.querySelector("link")!.getAttribute("rel"), (parsed.querySelector("template") as HTMLTemplateElement).content.querySelector("link")!.getAttribute("rel")]).toEqual(["", ""]);
+    expect(page.unsafe(document)).toEqual([]);
+    expect(page.violations).toEqual([]);
+    expect(page.posted).toEqual([expect.objectContaining({ type: "aiqsa_artifact_runtime_error", message: expect.stringContaining("cannot show nested documents") })]);
+  });
+
+  it("leaves unrelated markup, nodes and attributes to the native operations", () => {
+    const page = hintPage();
+    const { document } = page;
+    const host = document.getElementById("host")!;
+    const plain = "<p>plain <b>markup</b> with &lt;link rel=preconnect&gt; as text</p>";
+    page.sinks.length = 0;
+    host.innerHTML = plain;
+    host.insertAdjacentHTML("beforeend", "<i>more</i>");
+    expect(page.sinks).toEqual([["Element.innerHTML", host, plain], ["insertAdjacentHTML", host, "<i>more</i>"]]);
+    const anchor = document.createElement("a");
+    anchor.setAttribute("rel", "prefetch");
+    const svgLink = document.createElementNS("http://www.w3.org/2000/svg", "link");
+    svgLink.setAttribute("rel", "preconnect");
+    host.append(anchor, svgLink);
+    const div = document.createElement("div");
+    div.classList.add("preload");
+    const frame = document.createElement("iframe");
+    frame.src = "https://example.invalid/page";
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://example.invalid/style.css";
+    document.head.append(link);
+    expect([anchor.rel, svgLink.getAttribute("rel"), div.className, frame.getAttribute("src"), link.getAttribute("rel")])
+      .toEqual(["prefetch", "preconnect", "preload", "https://example.invalid/page", "stylesheet"]);
+    expect(() => document.body.appendChild({} as Node)).toThrow();
+    expect(() => document.body.setAttribute(Symbol("name") as unknown as string, "x")).toThrow();
+    expect(page.posted).toEqual([]);
+    expect(page.violations).toEqual([]);
+  });
+
+  it("renames link and frame tags in markup that a sink parses on its own and holds back a split tag name", async () => {
+    const page = hintPage();
+    const { document, window } = page;
+    document.write('<p>x</p><link rel="preconnect" href="https://trap.example/a"><LINK/>');
+    document.write("<if", "rame srcdoc='z'>q</iframe><frameset><frame src=x>");
+    document.write("<li");
+    document.write('nk rel="dns-prefetch" href="https://trap.example/b">');
+    document.writeln("<lin");
+    document.write("tail </IFRA");
+    await Promise.resolve();
+    // The end of the task dropped the dangling tag name instead of joining it later.
+    document.write("me>");
+    expect(page.written).toEqual([
+      '<p>x</p><basefont data-aiqsa-link rel="preconnect" href="https://trap.example/a"><basefont data-aiqsa-link/>',
+      "<noembed data-aiqsa-iframe srcdoc='z'>q</noembed><frameset><basefont data-aiqsa-frame src=x>",
+      "",
+      '<basefont data-aiqsa-link rel="dns-prefetch" href="https://trap.example/b">',
+      "<lin\n",
+      "tail ",
+      "me>"
+    ]);
+    document.execCommand("insertHTML", false, '<link rel="preconnect" href="https://trap.example/c"><iframe src="javascript:1"></iframe>');
+    document.execCommand("bold", false, "<link rel=preconnect>");
+    document.execCommand("insertHTML");
+    const host = document.getElementById("host")!;
+    host.setHTMLUnsafe('<template shadowrootmode="closed"><link rel="preconnect" href="https://trap.example/d"></template>');
+    (window.Document as unknown as { parseHTMLUnsafe(html: string): unknown }).parseHTMLUnsafe("<link rel=prefetch href=https://trap.example/e>");
+    expect(page.executed).toEqual([
+      ["execCommand", "insertHTML", false, '<basefont data-aiqsa-link rel="preconnect" href="https://trap.example/c"><noembed data-aiqsa-iframe src="javascript:1"></noembed>'],
+      ["execCommand", "bold", false, "<link rel=preconnect>"],
+      ["execCommand", "insertHTML"],
+      ["Element.setHTMLUnsafe", '<template shadowrootmode="closed"><basefont data-aiqsa-link rel="preconnect" href="https://trap.example/d"></template>'],
+      ["parseHTMLUnsafe", "<basefont data-aiqsa-link rel=prefetch href=https://trap.example/e>"]
+    ]);
+  });
+
+  it("removes what a frame would show as a nested document and reports that once", () => {
+    const page = hintPage();
+    const { document } = page;
+    const frame = document.createElement("iframe");
+    frame.srcdoc = "<b>nested</b>";
+    const srcdoc = frame.getAttribute("srcdoc");
+    frame.setAttribute("SRCDOC", "<b>nested</b>");
+    const values = [srcdoc, frame.getAttribute("srcdoc")];
+    for (const address of [" \u0001java\tscript:alert(1)", "JAVASCRIPT:alert(1)", "https://example.invalid/", "about:blank"]) { frame.src = address; values.push(frame.getAttribute("src")); }
+    const old = document.createElement("frame");
+    old.setAttribute("src", "javascript:1");
+    values.push(old.getAttribute("src"));
+    const host = document.getElementById("host")!;
+    host.innerHTML = '<iframe srcdoc="<b>x</b>" src="javascript:1"></iframe>';
+    values.push(host.innerHTML);
+    expect(values).toEqual(["", "", "about:blank", "about:blank", "https://example.invalid/", "about:blank", "about:blank", '<iframe src="about:blank"></iframe>']);
+    expect(page.posted).toEqual([{ type: "aiqsa_artifact_runtime_error", kind: "error", line: 0, column: 0,
+      message: "Artifact pages cannot show nested documents, so an iframe srcdoc or javascript: address was removed; render that content in the page itself" }]);
+    expect(page.violations).toEqual([]);
+  });
+
+  it("keeps its decisions when the page later replaces the built-ins they use", () => {
+    const page = hintPage();
+    const { document, window } = page;
+    window.eval(`
+      Object.defineProperty(Array.prototype, "0", { set() {}, configurable: true });
+      Object.defineProperty(NodeList.prototype, "length", { get: () => 0 });
+      String.prototype.toLowerCase = () => "x"; String.prototype.split = () => []; String.prototype.slice = () => "";
+      String.prototype.charCodeAt = () => 120; String.fromCharCode = () => "x";
+      RegExp.prototype.exec = () => null; RegExp.prototype.test = () => false;
+      Array.prototype[Symbol.iterator] = function* () {}; NodeList.prototype[Symbol.iterator] = function* () {};
+      NodeList.prototype.item = () => null; Element.prototype.querySelectorAll = () => []; DocumentFragment.prototype.querySelectorAll = () => [];
+      Element.prototype.getAttribute = () => null; WeakMap.prototype.get = () => undefined; WeakMap.prototype.set = function () { return this; };
+      Function.prototype.call = () => undefined; Function.prototype.apply = () => undefined; Reflect.apply = () => undefined; Object.defineProperty = () => {};
+    `);
+    const rel = (element: Element) => Reflect.apply(page.raw.getAttribute, element, ["rel"]) as string | null;
+    const link = document.createElement("link");
+    document.head.append(link);
+    link.rel = "preconnect icon";
+    const listed = document.createElement("link");
+    document.head.append(listed);
+    listed.relList.add("preload");
+    const host = document.getElementById("host")!;
+    host.innerHTML = '<p>a</p><link rel="dns-prefetch" href="https://trap.example/">';
+    const missed = document.createElement("link");
+    Reflect.apply(page.raw.setAttribute, missed, ["rel", "prefetch"]);
+    host.append(missed);
+    document.write('<link rel="preconnect" href="https://trap.example/w">');
+    expect([rel(link), rel(listed), rel(missed)]).toEqual(["icon", null, ""]);
+    expect(page.written).toEqual(['<basefont data-aiqsa-link rel="preconnect" href="https://trap.example/w">']);
+    expect(page.unsafe(document)).toEqual([]);
+    expect(page.violations).toEqual([]);
   });
 });
