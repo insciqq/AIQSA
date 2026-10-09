@@ -48,6 +48,7 @@ export function describeArtifactTool(policy: ArtifactResourcePolicy = getArtifac
     "A file saved with checkpoint_outputs is only a download until a create_artifact call references its attachment_id. " +
     "The server verifies ownership and copies the bytes; never use URLs, file names or invented ids, and never reprint a referenced file. " +
     "Referenced text files can be changed with edits even at intent=create, for example to remove an unsupported construct. " +
+    `To change a referenced text file over ${ARTIFACT_LIMITS.maxTextFileBytes / 1024} KiB, never read it whole (its read_artifact pages hold ${ARTIFACT_LIMITS.maxLargeReadBytes / 1024} KiB): find the text with read_artifact query, or read only the first page, which usually holds <head>; then use edits with a short distinctive old_string. A markup error returns an excerpt to edit. ` +
     `unpack: true on an application/zip reference unpacks a website into the artifact root (index.html entry, or set entrypoint; at most ${ARTIFACT_ZIP_LIMITS.maxEntries} files). ` +
     `Limits: ${ARTIFACT_LIMITS.maxAssetBytes / MIB} MiB per file, ${ARTIFACT_LIMITS.maxBundleBytes / MIB} MiB per artifact, ${ARTIFACT_MAX_RENDER_BYTES / MIB} MiB rendered page; text written in the call up to ${ARTIFACT_LIMITS.maxTextFileBytes / 1024} KiB per file. ` +
     "Make layouts responsive with viewport metadata, border-box sizing and no fixed minimum widths. " +
@@ -153,10 +154,13 @@ export function artifactTool(description = LEGACY_ARTIFACT_DESCRIPTION): RunTool
 export const READ_ARTIFACT_TOOL_NAME = "read_artifact";
 export function readArtifactTool(): RunTool {
   return { capability: "artifact", name: READ_ARTIFACT_TOOL_NAME, strict: false,
-    description: "Read file text from an artifact version accepted for this message. Supply artifact_id from the manifest, optional paths and unchanged next_cursor to continue. Each bounded page includes path and UTF-16 text offset; binary files expose metadata only.",
+    description: "Read file text from an artifact version accepted for this message. Supply artifact_id from the manifest, optional paths and unchanged next_cursor to continue. Each bounded page includes path and UTF-16 text offset; binary files expose metadata only. " +
+      `A text file over ${ARTIFACT_LIMITS.maxTextFileBytes / 1024} KiB was supplied by reference: its pages hold at most ${ARTIFACT_LIMITS.maxLargeReadBytes / 1024} KiB and state its total size, so never page through it whole. ` +
+      `query finds literal, case-sensitive text instead: up to ${ARTIFACT_LIMITS.maxReadQueryMatches} matches, each with path, offset, about ${ARTIFACT_LIMITS.readQueryContextChars} characters of context on each side and a cursor that reads from there; next_cursor with the same query finds more.`,
     inputSchema: { type: "object", additionalProperties: false, properties: {
       artifact_id: { type: "string", minLength: 1, maxLength: 128 },
       paths: { type: "array", minItems: 1, maxItems: ARTIFACT_LIMITS.maxFiles, items: { type: "string", maxLength: ARTIFACT_LIMITS.maxPathBytes } },
-      cursor: { type: "string", maxLength: 1024 }
+      cursor: { type: "string", maxLength: 1024 },
+      query: { type: "string", minLength: 1, maxLength: ARTIFACT_LIMITS.maxReadQueryLength }
     }, required: ["artifact_id"] } };
 }

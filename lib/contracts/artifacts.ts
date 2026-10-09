@@ -19,6 +19,12 @@ export const ARTIFACT_LIMITS = Object.freeze({
   maxBundleBytes: 32 * 1024 * 1024,
   maxInlineSourceBytes: 160 * 1024,
   maxReadBytes: 256 * 1024,
+  /** One read_artifact page of a text file larger than maxTextFileBytes (supplied by reference), about 10k tokens. */
+  maxLargeReadBytes: 32 * 1024,
+  /** read_artifact query: literal text length, occurrences per call and UTF-16 code units of context on each side. */
+  maxReadQueryLength: 256,
+  maxReadQueryMatches: 5,
+  readQueryContextChars: 300,
   maxEdits: 64,
   maxContextArtifacts: 8,
   maxPublicationDays: 365,
