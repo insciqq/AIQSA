@@ -36,6 +36,10 @@ describe("artifact references admitted at run acceptance", () => {
     expect(workspace).toContain(ARTIFACT_SAVED_FILE_RULE);
     expect(workspace).toContain("call create_artifact with asset_ref = the returned attachment_id and mimeType = its mime_type");
     expect(workspace.trimEnd().endsWith(ARTIFACT_SAVED_FILE_RULE)).toBe(true);
+    // LibreOffice's HTML export kept a cell comment and the document properties; the helper prints visible pages only.
+    expect(workspace).toContain("run aiqsa-office-pdf <file> in the Workspace (a PDF of the visible content only: no hidden sheets or slides, comments, notes or document properties)");
+    expect(workspace).toContain("Never use LibreOffice's HTML export for this");
+    expect(workspace).not.toContain("LibreOffice to HTML or PDF");
     const offline = artifactFileInstructions([file], false)!;
     expect(offline).not.toContain("checkpoint_outputs");
     expect(artifactFileInstructions([], false)).toBeNull();
