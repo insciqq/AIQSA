@@ -15,7 +15,8 @@ async function signIn(page: Page, fixture: OrdinaryFixture): Promise<void> {
   await page.getByLabel("Email").fill(fixture.email);
   await page.getByLabel("Password", { exact: true }).fill(fixture.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL("/");
+  // A fresh dev server compiles the sign-in and shell routes on their first request.
+  await expect(page).toHaveURL("/", { timeout: 30_000 });
   await expect(page.getByTestId("app-shell")).toBeVisible();
 }
 
