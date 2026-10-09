@@ -148,6 +148,26 @@ export function shrinkMemoryHistoryIndexPageEnd(
   );
 }
 
+/**
+ * Changed settled calls of the indexed prefix a page may replay: what its own
+ * messages and tool calls leave of the write and tool-call budgets. A page
+ * that indexes no new message replays at least one, so a replay always
+ * advances; a page that does may leave the whole replay to later pages.
+ */
+export function memoryHistoryToolCallReplayLimit(input: Readonly<{
+  indexesNewMessages: boolean;
+  limits: MemoryHistoryIndexPageLimits;
+  pageToolCalls: number;
+  pageWrites: number;
+}>): number {
+  const limit = Math.min(
+    Math.floor(Math.max(0, input.limits.maxIndexWrites - input.pageWrites) /
+      memoryHistoryIndexWriteCost({ contentBytes: null, toolCalls: 1 })),
+    Math.max(0, input.limits.maxToolCalls - input.pageToolCalls)
+  );
+  return input.indexesNewMessages ? limit : Math.max(1, limit);
+}
+
 export type MemoryHistoryCheckpointMessageIdentity = Readonly<{
   messageId: string;
   sourceMessageUpdatedAt: string;
