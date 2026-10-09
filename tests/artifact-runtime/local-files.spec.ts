@@ -218,9 +218,10 @@ for (const mode of modes) {
   });
 
   test(`${mode.name}: a local file link downloads the file from a blob: URL`, async ({ page, browserName }) => {
-    // Firefox checks every download from the frame (blob: and data:, including the
-    // authored blob downloads artifacts already use) against the viewer's frame-src.
+    // Firefox and WebKit check every download from the frame (blob: and data:, including
+    // the authored blob downloads artifacts already use) against the viewer's frame-src.
     test.fixme(browserName === "firefox" && mode.name.startsWith("B"), "Firefox blocks frame downloads under the viewer's frame-src 'none'");
+    test.fixme(browserName === "webkit" && mode.name.startsWith("B"), "WebKit blocks frame downloads under the viewer's frame-src 'none'");
     await page.goto(host.hostPage(renderArtifactPage(files(LINKS), "app/index.html"), mode.policies()));
     const download = page.waitForEvent("download");
     await page.frameLocator("#artifact").locator("#file").click();
