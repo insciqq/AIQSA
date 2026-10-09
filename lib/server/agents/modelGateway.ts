@@ -36,7 +36,7 @@ function observeAdmissionRejection(error: unknown, snapshot: AgentResponsesTrans
 }
 
 class RetryableProviderError extends Error {
-  constructor(code: AgentFailureCode) { super(code); }
+  constructor(code: AgentFailureCode) { super(code); this.name = "RetryableProviderError"; }
 }
 
 function retryableProviderFailure(error: unknown): boolean {

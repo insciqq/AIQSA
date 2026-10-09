@@ -71,7 +71,7 @@ export class SearchToolCancelledError extends Error {
 
 class SearchDeadlineError extends Error {
   readonly code = "search_timeout";
-  constructor() { super("search_timeout"); }
+  constructor() { super("search_timeout"); this.name = "SearchDeadlineError"; }
 }
 
 function parentAbortCode(signal?: AbortSignal): "search_cancelled" | "search_timeout" {

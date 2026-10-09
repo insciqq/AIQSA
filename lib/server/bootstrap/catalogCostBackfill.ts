@@ -23,7 +23,10 @@ function sqlState(error: unknown): string | null {
 }
 
 class TransientRowFailure extends Error {
-  constructor(cause: unknown) { super("catalog_cost_backfill_row_transient", { cause }); }
+  constructor(cause: unknown) {
+    super("catalog_cost_backfill_row_transient", { cause });
+    this.name = "TransientRowFailure";
+  }
 }
 
 function prismaCode(error: unknown): string | undefined {

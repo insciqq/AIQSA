@@ -76,6 +76,7 @@ export type ScimRepository = {
 class ScimRefusal<T> extends Error {
   constructor(readonly result: T) {
     super("scim_write_refused");
+    this.name = "ScimRefusal";
   }
 }
 
@@ -83,6 +84,7 @@ class ScimRefusal<T> extends Error {
 class ScimWriteRetry extends Error {
   constructor() {
     super("scim_write_retry");
+    this.name = "ScimWriteRetry";
   }
 }
 

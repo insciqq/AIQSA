@@ -29,7 +29,7 @@ export const IMAGE_UPLOAD_FAILURE_MESSAGES = Object.freeze({
 const FINAL_SETTLEMENT_CODES: ReadonlySet<string> = new Set(["unsupported_type", "image_invalid", "image_limit_exceeded"]);
 
 class UploadFailure extends Error {
-  constructor(readonly code: string, readonly retryable = true) { super(code); }
+  constructor(readonly code: string, readonly retryable = true) { super(code); this.name = "UploadFailure"; }
 }
 function failureMessage(error: unknown): string {
   const code = error instanceof UploadFailure ? error.code : "upload_unavailable";

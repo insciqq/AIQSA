@@ -551,7 +551,7 @@ class ToolLoopRecoveryError extends Error {
   }
 }
 
-class WorkspaceHandoffDeferred extends Error {}
+class WorkspaceHandoffDeferred extends Error { override name = "WorkspaceHandoffDeferred"; }
 
 class ToolLoopRecoveryStopped extends Error {
   constructor() {
