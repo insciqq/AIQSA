@@ -324,7 +324,9 @@ export function AdminShell({
     >
       <UiV2IconSprite />
 
-      <nav aria-label="Workspace" className="v2-rail sticky top-0 max-md:hidden" data-testid="admin-rail">
+      {/* Production CSS chunks may load navigation.css after Tailwind, so
+          utilities that `.v2-rail` and `.v2-navigation-footer` also set are important. */}
+      <nav aria-label="Workspace" className="v2-rail !sticky top-0 max-md:!hidden" data-testid="admin-rail">
         <span aria-hidden="true" className="v2-rail-brand">
           <UiV2Icon name="brand" />
         </span>
@@ -383,7 +385,7 @@ export function AdminShell({
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-4" data-testid="admin-section-scroll">
           {sectionIndex}
         </div>
-        <div className="v2-navigation-footer md:hidden">
+        <div className="v2-navigation-footer md:!hidden">
           <ChatsLink onClick={onReturnToChat} returnPath={returnPath} variant="row" />
           <AccountMenuV2 accountId={accountId} accountLabel={accountLabel} variant="row" />
         </div>
