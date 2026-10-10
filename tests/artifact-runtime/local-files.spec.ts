@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { parseArtifactNavigateMessage, parseArtifactRuntimeError } from "../../lib/contracts/artifactRuntime";
 import type { ArtifactBundleFile } from "../../lib/server/artifacts/bundle";
@@ -217,18 +216,17 @@ for (const mode of modes) {
     expect(host.hits).toEqual([]);
   });
 
-  test(`${mode.name}: a local file link downloads the file from a blob: URL`, async ({ page, browserName }) => {
-    // Firefox and WebKit check every download from the frame (blob: and data:, including
-    // the authored blob downloads artifacts already use) against the viewer's frame-src.
-    test.fixme(browserName === "firefox" && mode.name.startsWith("B"), "Firefox blocks frame downloads under the viewer's frame-src 'none'");
-    test.fixme(browserName === "webkit" && mode.name.startsWith("B"), "WebKit blocks frame downloads under the viewer's frame-src 'none'");
+  test(`${mode.name}: a local file link hands the file to the viewer instead of downloading in the frame`, async ({ page }) => {
+    // downloads.spec.ts saves it through the viewer's real module in every engine.
     await page.goto(host.hostPage(renderArtifactPage(files(LINKS), "app/index.html"), mode.policies()));
-    const download = page.waitForEvent("download");
     await page.frameLocator("#artifact").locator("#file").click();
-    const file = await download;
-    expect(file.suggestedFilename()).toBe("report.csv");
-    expect(await readFile((await file.path())!, "utf8")).toBe("a,b\n1,2\n");
-    expect(await messages(page)).toEqual([]);
+    const download = await waitForMessage(page, "aiqsa_artifact_download");
+    expect(download).toMatchObject({ type: "aiqsa_artifact_download", name: "report.csv" });
+    expect(await page.evaluate(async () => {
+      const value = (window as unknown as { __artifactMessages: Array<{ type?: string; blob?: Blob }> }).__artifactMessages
+        .find(message => message?.type === "aiqsa_artifact_download")!.blob!;
+      return [value instanceof Blob, value.type, await value.text()];
+    })).toEqual([true, "text/csv", "a,b\n1,2\n"]);
     expect(host.hits).toEqual([]);
   });
 }

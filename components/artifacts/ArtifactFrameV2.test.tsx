@@ -4,13 +4,27 @@ import { createBrowserLocksFixture } from "@/tests/support/browserLocks";
 import { ARTIFACT_BRIDGE_SCRIPT_OPEN, ARTIFACT_STORAGE_PLACEHOLDER } from "@/lib/contracts/artifactRuntime";
 import { ArtifactFrameV2 } from "./ArtifactFrameV2";
 import { artifactBrowserStorage, privateArtifactStateKey, publicArtifactStateKey } from "./artifactBrowserStorage";
+import { ARTIFACT_DOWNLOAD_LIMITS, artifactDownloadTurns } from "./artifactDownload";
 
 const body = `${ARTIFACT_BRIDGE_SCRIPT_OPEN}const initial=${ARTIFACT_STORAGE_PLACEHOLDER};</script><h1>Small world</h1>`;
 const link = { type: "aiqsa_artifact_open_link", href: "https://example.com/guide" };
 function message(iframe: HTMLIFrameElement, data: unknown, origin = "null", source = iframe.contentWindow) {
   act(() => window.dispatchEvent(new MessageEvent("message", { data, origin, source })));
 }
-afterEach(() => { vi.useRealTimers(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); artifactDownloadTurns.reset(); });
+
+/** Saves go through an anchor click on an object URL; jsdom has neither download nor object URLs. */
+function captureSaves() {
+  const blobs: Blob[] = [];
+  vi.stubGlobal("URL", Object.assign(class extends URL {}, {
+    createObjectURL: (blob: Blob) => { blobs.push(blob); return `blob:https://app.example/${blobs.length}`; }, revokeObjectURL: vi.fn() }));
+  const saves: Array<{ name: string; type: string; href: string }> = [];
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    saves.push({ name: this.download, type: blobs.at(-1)?.type ?? "", href: this.getAttribute("href") ?? "" });
+  });
+  return saves;
+}
+const download = (name: string, blob: Blob = new Blob(["a,b\n"], { type: "text/html" })) => ({ type: "aiqsa_artifact_download", name, blob });
 beforeEach(() => vi.stubGlobal("navigator", { locks: createBrowserLocksFixture() }));
 
 describe("artifact frame host", () => {
@@ -177,5 +191,69 @@ describe("artifact frame host", () => {
     expect(screen.queryByText("private detail")).not.toBeInTheDocument();
     message(iframe, link);
     expect(screen.getByRole("dialog", { name: "Open external link?" })).toBeVisible();
+  });
+
+  it("saves a frame's download only from its own frame, during user activation and within the burst, as a cleaned octet-stream copy", async () => {
+    let now = 0; vi.spyOn(performance, "now").mockImplementation(() => now);
+    let active = true;
+    vi.stubGlobal("navigator", { locks: navigator.locks, get userActivation() { return { isActive: active }; } });
+    const saves = captureSaves();
+    render(<ArtifactFrameV2 body={body} artifactId="downloads" title="Preview" />);
+    const iframe = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    // Forged: another origin, another window, extra fields, a name past the bound, bytes that are no Blob.
+    message(iframe, download("forged.csv"), "https://example.com");
+    message(iframe, download("forged.csv"), "null", window);
+    for (const forged of [{ ...download("forged.csv"), trusted: true }, download("x".repeat(ARTIFACT_DOWNLOAD_LIMITS.maxRequestedNameCharacters + 1)),
+      { ...download("forged.csv"), blob: new Uint8Array([1, 2]) }, { ...download("forged.csv"), blob: "a,b" }]) message(iframe, forged);
+    expect(saves).toEqual([]);
+    expect(screen.queryByTestId("artifact-download-prompt")).not.toBeInTheDocument();
+    // Activation from elsewhere in the app, while focus is outside the frame, only asks.
+    message(iframe, download("unfocused.csv"));
+    expect(saves).toEqual([]);
+    fireEvent.click(within(screen.getByTestId("artifact-download-prompt")).getByRole("button", { name: "Dismiss" }));
+    now = 1_000;
+    act(() => iframe.focus());
+    message(iframe, download("..\\..\\inv‮oice​.html"));
+    expect(saves).toEqual([{ name: "_.._invoice.html", type: "application/octet-stream", href: "blob:https://app.example/1" }]);
+    // A flood after one click: the burst saves, the rest waits for one confirmation at a time.
+    for (let index = 0; index < 10; index++) message(iframe, download(`flood-${index}.txt`));
+    expect(saves.map(save => save.name)).toEqual(["_.._invoice.html", "flood-0.txt", "flood-1.txt"]);
+    const prompt = screen.getByTestId("artifact-download-prompt");
+    expect(prompt).toHaveTextContent("Save “flood-2.txt” (4 bytes) from this artifact?");
+    fireEvent.click(within(prompt).getByRole("button", { name: "Save file" }));
+    expect(saves.map(save => save.name).at(-1)).toBe("flood-2.txt");
+    expect(screen.queryByTestId("artifact-download-prompt")).not.toBeInTheDocument();
+    expect(saves).toHaveLength(4);
+    // Without user activation nothing saves by itself; a dismissed request is gone.
+    active = false; now = 20_000;
+    message(iframe, download("later.csv"));
+    expect(saves).toHaveLength(4);
+    fireEvent.click(within(screen.getByTestId("artifact-download-prompt")).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByTestId("artifact-download-prompt")).not.toBeInTheDocument();
+    expect(saves).toHaveLength(4);
+    // A request soon after a prompt waits out the interval; a file over the limit is refused with its reason.
+    now = 20_100; message(iframe, download("soon.csv"));
+    expect(screen.queryByTestId("artifact-download-prompt")).not.toBeInTheDocument();
+    const huge = new Blob(["x"]);
+    Object.defineProperty(huge, "size", { value: ARTIFACT_DOWNLOAD_LIMITS.maxBytes + 1 });
+    active = true; now = 21_000;
+    message(iframe, download("huge.bin", huge));
+    expect(screen.getByTestId("artifact-download-prompt")).toHaveTextContent("“huge.bin” is too large to save from the preview. Files up to 64 MB can be saved.");
+    expect(within(screen.getByTestId("artifact-download-prompt")).queryByRole("button", { name: "Save file" })).not.toBeInTheDocument();
+    expect(saves).toHaveLength(4);
+  });
+
+  it("asks before saving where the browser cannot report user activation, and forgets the question with its document", async () => {
+    vi.stubGlobal("navigator", { locks: navigator.locks });
+    const saves = captureSaves();
+    const { rerender } = render(<ArtifactFrameV2 body={body} artifactId="old-browser" title="Preview" />);
+    const iframe = await screen.findByTitle("Preview") as HTMLIFrameElement;
+    message(iframe, download("report.csv"));
+    expect(saves).toEqual([]);
+    expect(screen.getByTestId("artifact-download-prompt")).toHaveTextContent("Save “report.csv” (4 bytes) from this artifact?");
+    rerender(<ArtifactFrameV2 body={`${body}<p>Next page</p>`} artifactId="old-browser" title="Preview" />);
+    await waitFor(() => expect(screen.getByTitle("Preview")).not.toBe(iframe));
+    expect(screen.queryByTestId("artifact-download-prompt")).not.toBeInTheDocument();
+    expect(saves).toEqual([]);
   });
 });
