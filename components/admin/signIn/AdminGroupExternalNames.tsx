@@ -19,6 +19,12 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 export type AdminGroupSignInState = Readonly<{
   busy: boolean;
+  /**
+   * Members the managed projection has answered for. Until it has, a member
+   * may be managed, so the page offers no manual Remove. A failed load counts
+   * as answered: the server still refuses to remove a managed membership.
+   */
+  checkedMembers: ReadonlySet<string>;
   error: string | null;
   group: AdminGroupSignIn | null;
   /** Members whose membership an IdP or SCIM manages. */
@@ -29,14 +35,21 @@ export type AdminGroupSignInState = Readonly<{
 }>;
 
 const EMPTY_MANAGED: ReadonlyMap<string, AdminMembershipManager> = new Map();
+const NO_MEMBERS: ReadonlySet<string> = new Set();
+
+function membersOf(membershipKey: string): ReadonlySet<string> {
+  return new Set(membershipKey.split(",").filter(Boolean));
+}
 
 /** One group's external names and IdP-managed members, owned by the group page. */
 export function useAdminGroupSignIn(groupId: string, membershipKey: string): AdminGroupSignInState {
   const [group, setGroup] = useState<AdminGroupSignIn | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [checkedMembers, setCheckedMembers] = useState<ReadonlySet<string>>(NO_MEMBERS);
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
+  const membershipKeyRef = useRef(membershipKey);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -45,26 +58,31 @@ export function useAdminGroupSignIn(groupId: string, membershipKey: string): Adm
     };
   }, []);
 
-  const apply = useCallback((result: Awaited<ReturnType<typeof requestAdminGroupSignIn>>) => {
+  /** `members`: the page's members when the request left, which the answer covers. */
+  const apply = useCallback((result: Awaited<ReturnType<typeof requestAdminGroupSignIn>>, members: ReadonlySet<string>) => {
     if (result.ok) {
       setGroup(result.data);
       setError(null);
     } else {
       setError(adminSignInErrorMessage(result.error));
     }
+    setCheckedMembers(members);
   }, []);
 
   const refresh = useCallback(async () => {
     const generation = ++generationRef.current;
+    const members = membersOf(membershipKeyRef.current);
     const result = await requestAdminGroupSignIn(groupId);
-    if (mountedRef.current && generation === generationRef.current) apply(result);
+    if (mountedRef.current && generation === generationRef.current) apply(result, members);
   }, [apply, groupId]);
 
   // Membership changes can make a member managed, so the page passes a key of its members.
   useEffect(() => {
+    membershipKeyRef.current = membershipKey;
     const generation = ++generationRef.current;
+    const members = membersOf(membershipKey);
     void requestAdminGroupSignIn(groupId).then((result) => {
-      if (mountedRef.current && generation === generationRef.current) apply(result);
+      if (mountedRef.current && generation === generationRef.current) apply(result, members);
     });
   }, [apply, groupId, membershipKey]);
 
@@ -73,11 +91,13 @@ export function useAdminGroupSignIn(groupId: string, membershipKey: string): Adm
   ): Promise<string | null> => {
     setBusy(true);
     ++generationRef.current;
+    const members = membersOf(membershipKeyRef.current);
     try {
       const result = await changeAdminGroupSignIn(groupId, body);
       if (!mountedRef.current) return null;
       if (result.ok) {
         setGroup(result.data);
+        setCheckedMembers(members);
         return null;
       }
       if (result.error === "external_name_not_found") void refresh();
@@ -90,6 +110,7 @@ export function useAdminGroupSignIn(groupId: string, membershipKey: string): Adm
   return {
     add: (source, value) => change({ action: "add_external_name", source, value }),
     busy,
+    checkedMembers,
     error,
     group,
     managedMembers: group

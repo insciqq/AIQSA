@@ -48,6 +48,38 @@ type AuthorizedScope = Readonly<{
   userId: string;
 }>;
 
+type LifecycleRequest = Readonly<{ chatId: string; userId: string }>;
+
+type ExclusiveClaim = Readonly<{
+  cleanupClaimToken: string | null;
+  scope: AuthorizedScope;
+  session: MutableSession;
+}>;
+
+/** A carried project seed that a start of this chat's Workspace has yet to restore. */
+const PENDING_CONTINUATION_SEED_STATUSES = ["TRANSFERRED", "RESTORING"] as const;
+
+async function hasPendingContinuationSeed(tx: Prisma.TransactionClient, chatId: string): Promise<boolean> {
+  return (await tx.chatContinuationWorkspaceSeed.count({
+    where: { newChatId: chatId, status: { in: [...PENDING_CONTINUATION_SEED_STATUSES] } }
+  })) > 0;
+}
+
+/** A reset consumes the chat's carried project: it is never restored afterwards and its archive is queued for deletion. */
+async function abandonContinuationSeedsForReset(tx: Prisma.TransactionClient, chatId: string): Promise<void> {
+  const consumed = [...PENDING_CONTINUATION_SEED_STATUSES, "RESTORED" as const];
+  const continuationSeeds = await tx.chatContinuationWorkspaceSeed.findMany({
+    select: { id: true, storageKey: true }, where: { newChatId: chatId, status: { in: consumed } }
+  });
+  await tx.chatContinuationWorkspaceSeed.updateMany({
+    data: { status: "ABANDONED", failureCode: "workspace_reset_consumed", leaseToken: null, leaseExpiresAt: null },
+    where: { newChatId: chatId, status: { in: consumed } }
+  });
+  for (const seed of continuationSeeds) if (seed.storageKey) {
+    await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey }, create: { storageKey: seed.storageKey }, update: {} });
+  }
+}
+
 export type WorkspaceLifecycleErrorCode =
   | "workspace_archive_limit_exceeded"
   | "workspace_busy"
@@ -142,14 +174,13 @@ export function createWorkspaceLifecycleService(input: Readonly<{
     return rows[0] ?? null;
   }
 
-  async function beginExclusive(
-    request: Readonly<{ chatId: string; userId: string }>,
+  function beginExclusive(request: LifecycleRequest, operation: "archive"): Promise<ExclusiveClaim>;
+  /** `null`: the chat had no Workspace session, so the reset only abandoned its pending carried seed. */
+  function beginExclusive(request: LifecycleRequest, operation: "reset"): Promise<ExclusiveClaim | null>;
+  function beginExclusive(
+    request: LifecycleRequest,
     operation: "archive" | "reset"
-  ): Promise<Readonly<{
-    cleanupClaimToken: string | null;
-    scope: AuthorizedScope;
-    session: MutableSession;
-  }>> {
+  ): Promise<ExclusiveClaim | null> {
     return input.prisma.$transaction(async (tx) => {
       const chat = await lockChat(tx, request.chatId);
       const scope = chat && await authorizedScope(tx, chat, request.userId, true);
@@ -166,7 +197,16 @@ export function createWorkspaceLifecycleService(input: Readonly<{
       await tx.$queryRaw`SELECT "id" FROM "WorkspaceSession" WHERE "chatId" = ${chat.id} FOR UPDATE`;
       const session = await tx.workspaceSession.findUnique({ where: { chatId: chat.id } });
       if (!session?.runtimeSandboxId) {
-        throw new WorkspaceLifecycleError("workspace_not_started");
+        // A carried project that was never restored keeps a Workspace without a
+        // guest identity blocked. Only a reset may consume it; the session path
+        // below still removes any guest a failed start left behind by name.
+        if (operation !== "reset" || !await hasPendingContinuationSeed(tx, chat.id)) {
+          throw new WorkspaceLifecycleError("workspace_not_started");
+        }
+        if (!session) {
+          await abandonContinuationSeedsForReset(tx, chat.id);
+          return null;
+        }
       }
       if (session.operationOwner || session.state === "RUNNING" || session.state === "CREATING" || session.state === "DELETING") {
         throw new WorkspaceLifecycleError(
@@ -442,7 +482,9 @@ export function createWorkspaceLifecycleService(input: Readonly<{
       }
     },
     async reset(request) {
-      const { cleanupClaimToken, session } = await beginExclusive(request, "reset");
+      const claim = await beginExclusive(request, "reset");
+      if (!claim) return readStatus(request);
+      const { cleanupClaimToken, session } = claim;
       const operation = operationFor(session);
       try {
         if (!input.runtime.claimSessionOperation || !input.runtime.retireSessionOperation) {
@@ -475,16 +517,7 @@ export function createWorkspaceLifecycleService(input: Readonly<{
           }
           const lastActiveAt = new Date();
           await acknowledgeWorkspaceCommandsStopped(tx, session.id);
-          const continuationSeeds = await tx.chatContinuationWorkspaceSeed.findMany({
-            select: { id: true, storageKey: true }, where: { newChatId: request.chatId, status: { in: ["TRANSFERRED", "RESTORING", "RESTORED"] } }
-          });
-          await tx.chatContinuationWorkspaceSeed.updateMany({
-            data: { status: "ABANDONED", failureCode: "workspace_reset_consumed", leaseToken: null, leaseExpiresAt: null },
-            where: { newChatId: request.chatId, status: { in: ["TRANSFERRED", "RESTORING", "RESTORED"] } }
-          });
-          for (const seed of continuationSeeds) if (seed.storageKey) {
-            await tx.attachmentDeletionJob.upsert({ where: { storageKey: seed.storageKey }, create: { storageKey: seed.storageKey }, update: {} });
-          }
+          await abandonContinuationSeedsForReset(tx, request.chatId);
           await failWorkspaceExportsForLostDisk(tx, session.id);
           const settled = await tx.workspaceSession.updateMany({
             data: {

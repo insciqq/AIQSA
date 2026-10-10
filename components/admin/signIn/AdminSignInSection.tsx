@@ -175,7 +175,8 @@ export function AdminSignInSection({ active = true, feedback, requestConfirmatio
         <p className="text-xs leading-5 text-ink-muted">
           Save the settings, test them, then activate. Secrets are stored encrypted and never shown again.
         </p>
-        <div className="grid min-w-0 gap-4 xl:grid-cols-2">
+        {/* Short cards keep their own height instead of stretching to a taller row neighbour. */}
+        <div className="grid min-w-0 items-start gap-4 xl:grid-cols-2" data-testid="admin-sign-in-methods">
           {methods.map((state) => (
             <MethodCard appBaseUrl={overview.appBaseUrl} controller={controller} key={state.method} state={state} />
           ))}
