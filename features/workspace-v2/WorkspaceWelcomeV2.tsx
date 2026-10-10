@@ -700,26 +700,26 @@ export function CompactKnowledgePollingV2({
   return null;
 }
 
-/** Calm cadence for picking up facts learned after a chat finished. */
+/** Calm cadence for picking up facts saved after a chat finished. */
 export const MEMORY_LIST_POLL_INTERVAL_MS = 30_000;
 
+/**
+ * Both automatic learning and "remember that…" requests commit in the
+ * background worker after the answer, and the requests work with learning
+ * off, so polling follows only the main switch being on and ready.
+ */
 export function memoryListPollingActiveV2(input: Readonly<{
   activeTab: LibraryTabIdV2;
-  memory: Readonly<{
-    settings: Readonly<{ learnAutomatically: boolean }>;
-    status: string;
-  }> | null;
+  memory: Readonly<{ status: string }> | null;
 }>): boolean {
-  return input.activeTab === "memory" &&
-    input.memory?.status === "ON" &&
-    input.memory.settings.learnAutomatically;
+  return input.activeTab === "memory" && input.memory?.status === "ON";
 }
 
 /**
- * Background extraction finishes in a worker after the chat run, with no
- * channel to the browser. While the Memory list is open, visible and learning,
- * re-read it quietly on a calm interval and once when the page becomes visible
- * again. A hidden page schedules nothing.
+ * Background Memory writes finish in a worker after the chat run, with no
+ * channel to the browser. While the Memory list is open, visible and Memory is
+ * on, re-read it quietly on a calm interval and once when the page becomes
+ * visible again. A hidden page schedules nothing.
  */
 export function MemoryListPollingV2({
   active,
