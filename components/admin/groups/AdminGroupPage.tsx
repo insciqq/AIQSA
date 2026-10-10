@@ -81,7 +81,9 @@ function CapabilityChip({ children }: Readonly<{ children: string }>) {
   );
 }
 
-function MembersSection({ controller, disabled, editable, group, managed, users }: Readonly<{
+function MembersSection({ checked, controller, disabled, editable, group, managed, users }: Readonly<{
+  /** Members the managed projection has answered for; others get no Remove yet. */
+  checked: ReadonlySet<string>;
   controller: AdminGroupsController;
   disabled: boolean;
   editable: boolean;
@@ -131,7 +133,7 @@ function MembersSection({ controller, disabled, editable, group, managed, users 
                 </div>
                 {managed.has(user.id) ? (
                   <UsersTag>Managed by {membershipManagerLabel(managed.get(user.id)!)}</UsersTag>
-                ) : editable ? (
+                ) : editable && checked.has(user.id) ? (
                   <UiV2Button
                     disabled={disabled}
                     onClick={() => void controller.actions.setMembership(group, user.id, false)}
@@ -493,6 +495,7 @@ export function AdminGroupPage({
       ) : null}
 
       <MembersSection
+        checked={signIn.checkedMembers}
         controller={controller}
         disabled={controller.actionsDisabled}
         editable={editable}

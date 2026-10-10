@@ -64,13 +64,22 @@ const pillTone: Record<"accent" | "caution" | "critical" | "neutral" | "ok", str
   ok: "border-positive/25 bg-positive/10 text-positive"
 };
 
-/** Status pill for the user page header: a dot plus one status word. */
-export function UserStatusPill({ status }: Readonly<{ status: "active" | "denied" | "disabled" | "pending" }>) {
-  const tone = status === "active" ? "ok" : status === "pending" ? "caution" : status === "denied" ? "critical" : "neutral";
-  const label = status === "active" ? "Active" : status === "pending" ? "Pending" : status === "denied" ? "Denied" : "Disabled";
+/**
+ * Status pill for the user page header: a dot plus one status word. An active
+ * account whose SCIM deactivation waits for a Project ownership transfer
+ * already cannot sign in, so it never reads as Active.
+ */
+export function UserStatusPill({ deactivationPending = false, status }: Readonly<{
+  deactivationPending?: boolean;
+  status: "active" | "denied" | "disabled" | "pending";
+}>) {
+  const pendingDeactivation = deactivationPending && status === "active";
+  const tone = pendingDeactivation ? "caution" : status === "active" ? "ok" : status === "pending" ? "caution" : status === "denied" ? "critical" : "neutral";
+  const label = pendingDeactivation ? "Deactivation pending" : status === "active" ? "Active" : status === "pending" ? "Pending" : status === "denied" ? "Denied" : "Disabled";
   return (
     <span
       className={`inline-flex h-[22px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-pill border px-2 text-metadata font-semibold ${pillTone[tone]}`}
+      data-deactivation-pending={pendingDeactivation || undefined}
       data-user-status={status}
     >
       <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />

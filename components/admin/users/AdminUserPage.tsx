@@ -165,7 +165,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
           <h2 className="break-words text-xl font-semibold leading-tight text-ink [overflow-wrap:anywhere]">{user.displayName}</h2>
           <p className="mt-0.5 break-words text-[13px] text-ink-muted [overflow-wrap:anywhere]">{identity}</p>
         </div>
-        <UserStatusPill status={user.status} />
+        <UserStatusPill deactivationPending={Boolean(user.scimDeactivationPending)} status={user.status} />
       </header>
 
       {user.scimDeactivationPending ? (
