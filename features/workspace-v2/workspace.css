@@ -15,7 +15,7 @@
   overflow: hidden;
 }
 
-.v2-live-conversation { position: relative; display: grid; min-width: 0; min-height: 0; width: 100%; flex: 1 1 0; grid-template-rows: auto minmax(0, 1fr); }
+.v2-live-conversation { --v2-live-dock-band: 2.75rem; position: relative; display: grid; min-width: 0; min-height: 0; width: 100%; flex: 1 1 0; grid-template-rows: auto minmax(0, 1fr); }
 .v2-live-workspace[data-artifact-docked] > .v2-live-conversation { min-width: 24rem; }
 .v2-live-artifact-panel { display: flex; flex: 0 0 clamp(28rem, 56%, 60rem); width: clamp(28rem, 56%, 60rem); max-width: calc(100% - 24rem); min-height: 0; overflow: hidden; border-left: 1px solid var(--v2-color-border); background: var(--v2-color-canvas); }
 
@@ -1045,7 +1045,7 @@
   width: 100%;
   margin: 0 auto;
   gap: 0.375rem;
-  padding: 2.75rem 1rem max(2.125rem, var(--v2-safe-area-bottom));
+  padding: var(--v2-live-dock-band) 1rem max(2.125rem, var(--v2-safe-area-bottom));
   background: linear-gradient(
     to bottom,
     transparent,
@@ -1075,6 +1075,28 @@
 @media (max-width: 840px), (max-height: 32rem) {
   .v2-live-composer-dock {
     padding-bottom: max(1.75rem, var(--v2-safe-area-bottom));
+  }
+}
+
+/*
+ * From 768px the jump-to-latest control rests in the dock's fade band, below
+ * the reading area and above the composer, so it never covers readable thread
+ * content where the column leaves no side gutter for it (a phone on its side,
+ * a tablet upright, a narrow window beside the sidebar). It paints over the
+ * band; an open composer layer still lifts the dock above it. Phones keep the
+ * control over the reserved left lane: their band is too short for it.
+ */
+@media (min-width: 768px) {
+  .v2-live-conversation .v2-conversation-jump-latest {
+    z-index: 16;
+    bottom: max(1rem, calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band) + (var(--v2-live-dock-band) - 2rem) / 2));
+  }
+}
+
+@media (min-width: 768px) and ((hover: none) or (pointer: coarse)) {
+  /* The 44px touch control fills the band exactly. */
+  .v2-live-conversation .v2-conversation-jump-latest {
+    bottom: max(1rem, calc(var(--v2-jump-latest-offset, 0px) - var(--v2-live-dock-band) + (var(--v2-live-dock-band) - 2.75rem) / 2));
   }
 }
 
@@ -1605,8 +1627,11 @@
     display: none;
   }
 
+  .v2-live-conversation {
+    --v2-live-dock-band: 1.5rem;
+  }
+
   .v2-live-composer-dock {
-    padding-top: 1.5rem;
     padding-right: 0.625rem;
     padding-left: 0.625rem;
     background: linear-gradient(to bottom, transparent, var(--v2-color-canvas) 1.25rem);
