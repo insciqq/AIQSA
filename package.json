@@ -102,9 +102,9 @@
     "@aws-crypto/sha256-js": "5.2.0",
     "@aws-sdk/client-s3": "^3.1063.0",
     "@aws-sdk/s3-request-presigner": "3.1063.0",
-    "@modelcontextprotocol/client": "2.0.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/server": "2.3.1",
     "@mozilla/readability": "0.6.0",
     "@napi-rs/canvas": "^0.1.100",
     "@node-saml/node-saml": "5.1.0",
@@ -142,7 +142,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
-    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/node": "2.1.1",
     "@playwright/test": "1.60.0",
     "@testing-library/jest-dom": "6.6.3",
     "@testing-library/react": "16.1.0",

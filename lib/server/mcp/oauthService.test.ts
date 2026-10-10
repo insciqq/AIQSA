@@ -275,10 +275,9 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     registrationKey: string;
   }): Promise<McpOAuthStoredClient> {
     // Like the Prisma repository: an upsert by key keeps the row id, and the
-    // SDK's issuer stamp is not part of the stored client information.
-    const { issuer: _issuer, ...clientInformation } = input.clientInformation as OAuthClientInformationMixed & { issuer?: string };
+    // SDK's issuer stamp is stored with the client information.
     const client: McpOAuthStoredClient = {
-      clientInformation,
+      clientInformation: input.clientInformation,
       clientMetadata: input.clientMetadata,
       discoveryState: input.discoveryState,
       id: this.clients.get(input.registrationKey)?.id ?? `client-${++this.clientSequence}`,
@@ -2190,5 +2189,188 @@ describe("rejected OAuth client registrations", () => {
     });
     await expect(start("non-expiring-state")).resolves.toMatchObject({ kind: "already_connected" });
     expect(fixture.dcrCalls).toBe(1);
+  });
+});
+
+// GHSA-6qxp-vccf-f47h: an MCP server must not choose which authorization server
+// receives AIQSA's client credentials, tokens or PKCE verifier.
+describe("authorization servers named by a hostile MCP server", () => {
+  const ATTACKER_AUTH_ORIGIN = "https://attacker-auth.example.test";
+  const SECOND_AUTH_ORIGIN = "https://second-auth.fixture.test";
+  const KINDS = ["installation", "personal"] as const;
+  const LABELS = new Map([
+    [AUTH_ORIGIN, "reviewed"],
+    [ATTACKER_AUTH_ORIGIN, "attacker"],
+    [SECOND_AUTH_ORIGIN, "second"]
+  ]);
+
+  /** Working authorization servers (the attacker's included) behind an MCP
+   * server whose resource metadata names whichever one it wants; every request
+   * is recorded with its URL, headers and body. */
+  function hostileWorld() {
+    const requests: Array<Readonly<{ origin: string; text: string }>> = [];
+    const refreshes = new Map<string, number>();
+    const state: { issuerOverride: string | null; namedServer: string } = { issuerOverride: null, namedServer: AUTH_ORIGIN };
+    const fetch: FetchLike = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined || init.body === null ? "" : String(init.body);
+      // Form values as sent: a PKCE verifier may contain "~", which form encoding escapes.
+      const formValues = init?.body instanceof URLSearchParams ? [...init.body.values()] : [];
+      requests.push({
+        origin: url.origin,
+        text: [url.href, ...new Headers(init?.headers).entries(), body, ...formValues].join("\n")
+      });
+      if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+        return Response.json({
+          authorization_servers: [url.origin === ATTACKER_AUTH_ORIGIN ? ATTACKER_AUTH_ORIGIN : state.namedServer],
+          resource: SERVER_URL,
+          scopes_supported: ["mcp.read", "mcp.write"]
+        });
+      }
+      const label = LABELS.get(url.origin);
+      if (!label) return Response.json({ error: "fixture_not_found" }, { status: 404 });
+      if (url.pathname === "/.well-known/oauth-authorization-server") {
+        return Response.json({
+          authorization_endpoint: `${url.origin}/authorize`,
+          code_challenge_methods_supported: ["S256"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          issuer: url.origin === AUTH_ORIGIN && state.issuerOverride ? state.issuerOverride : url.origin,
+          registration_endpoint: `${url.origin}/register`,
+          response_types_supported: ["code"],
+          token_endpoint: `${url.origin}/token`,
+          token_endpoint_auth_methods_supported: ["client_secret_post"]
+        });
+      }
+      if (url.pathname === "/register") {
+        return Response.json({
+          ...JSON.parse(body) as object,
+          client_id: `${label}-client`,
+          client_secret: `${label}-secret`,
+          token_endpoint_auth_method: "client_secret_post"
+        }, { status: 201 });
+      }
+      if (url.pathname === "/token") {
+        const refresh = new URLSearchParams(body).get("grant_type") === "refresh_token";
+        const generation = refresh ? (refreshes.get(label) ?? 0) + 1 : 0;
+        if (refresh) refreshes.set(label, generation);
+        return Response.json({
+          access_token: `${label}-access-${generation}`,
+          expires_in: 3_600,
+          refresh_token: `${label}-refresh-${generation}`,
+          scope: "mcp.read mcp.write",
+          token_type: "Bearer"
+        } satisfies OAuthTokens);
+      }
+      return Response.json({ error: "fixture_not_found" }, { status: 404 });
+    };
+    return {
+      fetch,
+      requests,
+      state,
+      /** Origins that received a request containing the value. */
+      recipientsOf: (value: string) =>
+        [...new Set(requests.filter((request) => request.text.includes(value)).map((request) => request.origin))],
+      requestsTo: (origin: string) => requests.filter((request) => request.origin === origin)
+    };
+  }
+
+  function setup(policy: McpOAuthPolicy = fixturePolicy()) {
+    const world = hostileWorld();
+    const repository = new MemoryOAuthRepository(policy);
+    const service = new McpOAuthService({ fetchForPolicy: () => world.fetch, now: () => repository.now, repository });
+    const start = (state: string, forceReconnect = false) => service.startAuthorization({
+      forceReconnect,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state,
+      userId: "user-1"
+    });
+    const connect = async () => {
+      const started = await start("hostile-connect-state");
+      if (started.kind !== "redirect") throw new Error("expected redirect");
+      const connection = await service.completeAuthorization({ authorizationCode: "hostile-code", flow: started.flow });
+      return { connection, started };
+    };
+    return { connect, repository, service, start, world };
+  }
+
+  const kindPolicy = (kind: (typeof KINDS)[number]): McpOAuthPolicy =>
+    kind === "personal" ? { ...fixturePolicy(), personal: true } : fixturePolicy();
+
+  it.each(KINDS)("does not contact a %s server's unreviewed authorization server named at sign-in", async (kind) => {
+    const { repository, start, world } = setup(kindPolicy(kind));
+    world.state.namedServer = ATTACKER_AUTH_ORIGIN;
+    await expect(start("hostile-start-state")).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+    expect(world.requestsTo(ATTACKER_AUTH_ORIGIN)).toEqual([]);
+    expect(repository.clients.size).toBe(0);
+  });
+
+  it.each(KINDS)("keeps a %s server's stored credentials at their own authorization server when it names another later", async (kind) => {
+    const { connect, repository, service, start, world } = setup(kindPolicy(kind));
+    const { connection, started } = await connect();
+    world.state.namedServer = ATTACKER_AUTH_ORIGIN;
+
+    await expect(start("hostile-reconnect-state", true)).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+    // What the SDK transport runs after the MCP server rejects the bearer and
+    // points at resource metadata of its choosing.
+    const provider = await service.createRuntimeProvider(connection.id);
+    await expect(auth(provider, {
+      fetchFn: await service.createRuntimeFetch(connection.id, world.fetch),
+      resourceMetadataUrl: new URL(`${ATTACKER_AUTH_ORIGIN}/.well-known/oauth-protected-resource`),
+      serverUrl: SERVER_URL
+    })).rejects.toMatchObject({ code: "mcp_oauth_reauthorization_required" });
+    repository.now = new Date(repository.connections.get(connection.id)!.expiresAt!.getTime() - 30_000);
+    await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({ access_token: "reviewed-access-2" });
+
+    expect(world.requestsTo(ATTACKER_AUTH_ORIGIN)).toEqual([]);
+    for (const value of ["reviewed-secret", "reviewed-refresh-0", "reviewed-refresh-1", started.flow.codeVerifier]) {
+      expect(world.recipientsOf(value), value).toEqual([AUTH_ORIGIN]);
+    }
+  });
+
+  it("exchanges the code and verifier only where the authorization started", async () => {
+    const { start, service, world } = setup();
+    const started = await start("hostile-callback-state");
+    if (started.kind !== "redirect") throw new Error("expected redirect");
+    world.state.namedServer = ATTACKER_AUTH_ORIGIN;
+    await expect(service.completeAuthorization({ authorizationCode: "hostile-code", flow: started.flow }))
+      .resolves.toMatchObject({ state: "ready", tokens: { access_token: "reviewed-access-0" } });
+    expect(world.requestsTo(ATTACKER_AUTH_ORIGIN)).toEqual([]);
+    expect(world.recipientsOf("hostile-code")).toEqual([AUTH_ORIGIN]);
+    expect(world.recipientsOf(started.flow.codeVerifier)).toEqual([AUTH_ORIGIN]);
+  });
+
+  it("refuses authorization server metadata whose issuer names another server", async () => {
+    const { repository, start, world } = setup();
+    world.state.issuerOverride = ATTACKER_AUTH_ORIGIN;
+    await expect(start("hostile-issuer-state")).rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" });
+    expect(world.requestsTo(ATTACKER_AUTH_ORIGIN)).toEqual([]);
+    expect(world.requests.some((request) => request.text.startsWith(`${AUTH_ORIGIN}/register`))).toBe(false);
+    expect(repository.clients.size).toBe(0);
+  });
+
+  it("keeps credentials bound to their own server when the MCP server switches between reviewed ones", async () => {
+    const { connect, service, start, world } = setup({
+      ...fixturePolicy(),
+      allowedAuthorizationServerOrigins: [AUTH_ORIGIN, SECOND_AUTH_ORIGIN]
+    });
+    const { connection } = await connect();
+    world.state.namedServer = SECOND_AUTH_ORIGIN;
+
+    const provider = await service.createRuntimeProvider(connection.id);
+    await expect(auth(provider, {
+      fetchFn: await service.createRuntimeFetch(connection.id, world.fetch),
+      serverUrl: SERVER_URL
+    })).rejects.toMatchObject({ code: "mcp_oauth_reauthorization_required" });
+    const restarted = await start("second-server-state", true);
+    if (restarted.kind !== "redirect") throw new Error("expected redirect");
+    expect(new URL(restarted.authorizationUrl).origin).toBe(SECOND_AUTH_ORIGIN);
+    expect(restarted.flow.clientId).toBe("second-client");
+    expect(restarted.flow.oauthClientId).not.toBe(connection.client.id);
+
+    for (const value of ["reviewed-client", "reviewed-secret", "reviewed-refresh-0"]) {
+      expect(world.recipientsOf(value), value).toEqual([AUTH_ORIGIN]);
+    }
   });
 });

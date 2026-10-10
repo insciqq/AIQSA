@@ -407,21 +407,17 @@ class DurableOAuthProvider implements OAuthClientProvider {
     return { connectionId: connection.id, policyFingerprint: connection.policyFingerprint, tokenVersion: connection.tokenVersion };
   }
 
-  clientInformation(): OAuthClientInformationMixed | undefined {
+  async clientInformation(): Promise<OAuthClientInformationMixed | undefined> {
+    // The SDK reads client information only inside an authorization flow,
+    // which a runtime request enters after the MCP server rejected its bearer
+    // or demanded more scope. AIQSA settles that itself; the SDK never
+    // refreshes, registers or redirects from a runtime request.
+    if (this.#mode === "runtime") return this.#settleRejectedRuntime();
     return this.#client?.clientInformation;
   }
 
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
-    if (this.#mode === "runtime") {
-      // Only the SDK's recovery after the server rejected the bearer reaches
-      // this. Settle the connection instead of leaving it ready: a forced
-      // refresh either rotates usable tokens or marks reauthorization (and
-      // retires a rejected client).
-      if (this.#connection && !this.#invalidated) {
-        await this.#service.recoverRejectedAuthorization(this.#connection.id);
-      }
-      throw new McpOAuthError("mcp_oauth_reauthorization_required");
-    }
+    if (this.#mode === "runtime") return this.#settleRejectedRuntime();
     this.#client = await this.#repository.saveClient({
       clientInformation,
       clientMetadata: this.clientMetadata,
@@ -512,6 +508,16 @@ class DurableOAuthProvider implements OAuthClientProvider {
 
   discoveryState(): OAuthDiscoveryState {
     return this.#discoveryState;
+  }
+
+  /** Settles a connection whose bearer the MCP server rejected instead of
+   * leaving it ready: a forced refresh either rotates usable tokens or marks
+   * reauthorization (and retires a rejected client). */
+  async #settleRejectedRuntime(): Promise<never> {
+    if (this.#connection && !this.#invalidated) {
+      await this.#service.recoverRejectedAuthorization(this.#connection.id);
+    }
+    throw new McpOAuthError("mcp_oauth_reauthorization_required");
   }
 
   async #invalidateRuntime(): Promise<void> {
@@ -638,9 +644,11 @@ export class McpOAuthService {
         // The pinned SDK accepts HTTP discovery and registration, but its SEP-991
         // helper rejects HTTP URL-based client IDs before invoking the provider.
         // The administrator-reviewed policy has already validated this exact URL,
-        // so persist it before entering the SDK flow.
+        // so persist it before entering the SDK flow, bound like an SDK-saved
+        // client to the authorization server that accepted it.
         await provider.saveClientInformation({
-          client_id: policy.clientIdMetadataDocumentUrl
+          client_id: policy.clientIdMetadataDocumentUrl,
+          issuer: discovered.authorizationServerMetadata?.issuer ?? discovered.authorizationServerUrl
         });
       }
       const result = await withinDeadline(deadline, auth(provider, {
