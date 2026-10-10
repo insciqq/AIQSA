@@ -69,18 +69,19 @@ export type RuntimeServer = Readonly<{
    * socket without ever sending an HTTP request, so it never reaches `hits`;
    * this counter is the only evidence that the connection was made. */
   connections: string[];
-  /** Serves a viewer-like host page for an already rendered artifact document. */
-  hostPage(document: string, policies?: readonly string[], reportOnlyPolicies?: readonly string[]): string;
+  /** Serves a viewer-like host page for an already rendered artifact document; hostScript runs before the frame loads. */
+  hostPage(document: string, policies?: readonly string[], reportOnlyPolicies?: readonly string[], hostScript?: string): string;
   close(): Promise<void>;
 }>;
 
 const attribute = (value: string) => value.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;");
 
-function hostDocument(document: string): string {
+function hostDocument(document: string, hostScript = ""): string {
   // The listener precedes the frame so no early artifact message is lost.
   return "<!doctype html><html><head><meta charset=\"utf-8\"><title>Artifact host</title><script>" +
     "window.__artifactMessages = [];" +
     "addEventListener('message', event => { if (event.source === document.getElementById('artifact')?.contentWindow) window.__artifactMessages.push(event.data); });" +
+    hostScript.replace(/<\/script/giu, "<\\/script") +
     `</script></head><body><iframe id="artifact" title="Artifact" sandbox="${ARTIFACT_VIEW_SANDBOX}" allow="${ARTIFACT_VIEW_ALLOW}" srcdoc="${attribute(document)}"></iframe></body></html>`;
 }
 
@@ -125,9 +126,9 @@ export async function startRuntimeServer(): Promise<RuntimeServer> {
     wsOrigin: `ws://127.0.0.1:${port}`,
     hits,
     connections,
-    hostPage(document, policies = [], reportOnlyPolicies = []) {
+    hostPage(document, policies = [], reportOnlyPolicies = [], hostScript = "") {
       const path = `/host/${++next}`;
-      pages.set(path, { body: hostDocument(document), policies, reportOnlyPolicies });
+      pages.set(path, { body: hostDocument(document, hostScript), policies, reportOnlyPolicies });
       return `http://127.0.0.1:${port}${path}`;
     },
     close: () => new Promise<void>((resolve, reject) => {

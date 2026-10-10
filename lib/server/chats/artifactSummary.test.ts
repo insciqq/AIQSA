@@ -575,6 +575,34 @@ describe("summarizeMessageRunArtifacts", () => {
     expect(summary?.contextCompaction).toEqual(complete);
     expect(JSON.stringify(summary)).not.toContain("private");
   });
+
+  it("shows a checkpoint the final export delivers unchanged once, as the export, and keeps every changed or other file", () => {
+    const createdAt = new Date("2026-10-01T10:00:00.000Z");
+    const [same, older, other] = ["a", "b", "c"].map(digit => digit.repeat(64));
+    const checkpoint = (id: string, relativePath: string, checksum: string | null, byteSize = 10, state = "SETTLED") => ({
+      id, byteSize, checksum, fileName: relativePath.split("/").at(-1)!, mimeType: "application/pdf", workspaceRunOutput: null,
+      workspaceCheckpointFile: { relativePath, checkpoint: { id: `checkpoint-${id}`, description: "Draft", createdAt, state } } });
+    const exported = (id: string, relativePath: string, checksum: string, byteSize = 10) => ({
+      id, byteSize, checksum, fileName: relativePath.split("/").at(-1)!, mimeType: "application/pdf",
+      workspaceRunOutput: { relativePath }, workspaceCheckpointFile: null });
+    const summary = summarizeMessageRunArtifacts({ events: [], searchRuns: [], workspaceProducedAttachments: [
+      checkpoint("draft-identical", "output/report.pdf", same),
+      checkpoint("draft-older", "output/report.pdf", older),
+      checkpoint("draft-other-size", "output/report.pdf", same, 11),
+      checkpoint("draft-project", "project/report.pdf", same),
+      checkpoint("draft-nested", "output/docs/report.pdf", same),
+      checkpoint("draft-unverified", "output/report.pdf", null),
+      checkpoint("draft-unsettled", "output/report.pdf", same, 10, "PENDING"),
+      exported("final", "report.pdf", same),
+      exported("final-nested", "docs/report.pdf", other)
+    ] });
+    expect(summary?.generatedFiles?.map(file => [file.attachmentId, file.relativePath, Boolean(file.checkpoint)])).toEqual([
+      ["draft-older", "output/report.pdf", true], ["draft-other-size", "output/report.pdf", true], ["draft-project", "project/report.pdf", true],
+      ["draft-nested", "output/docs/report.pdf", true], ["draft-unverified", "output/report.pdf", true],
+      ["final", "report.pdf", false], ["final-nested", "docs/report.pdf", false]
+    ]);
+    expect(JSON.stringify(summary)).not.toContain(same);
+  });
 });
 
 describe("summarizeMessageRunToolActivity", () => {

@@ -259,6 +259,7 @@ const assistantRunDetailSelect = {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
       byteSize: true,
+      checksum: true,
       fileName: true,
       id: true,
       mimeType: true,
@@ -434,6 +435,8 @@ type ArtifactSummaryRun = {
   userId?: string;
   workspaceProducedAttachments?: readonly {
     byteSize: number;
+    /** Private identity for deduplication; never projected. */
+    checksum?: string | null;
     fileName: string;
     id: string;
     mimeType: string;
@@ -1477,9 +1480,21 @@ export function summarizeMessageRunArtifacts(
     const image = attachment.origin === "IMAGE_OUTPUT" && isRecord(attachment.metadata) ? decodeThreadGeneratedImage(attachment.metadata.image) : null;
     return image && image.attachmentId === attachment.id ? [image] : [];
   });
-  const generatedFiles = (run.workspaceProducedAttachments ?? []).flatMap((attachment) =>
+  const produced = run.workspaceProducedAttachments ?? [];
+  // Final exports name paths below the run's output directory, which a checkpoint names
+  // "output/<path>". A checkpoint the export delivers unchanged (same path, checksum and
+  // size) shows once, as the export; a changed later version keeps both cards.
+  const identity = (path: string, checksum: string, byteSize: number) => JSON.stringify([path, checksum, byteSize]);
+  const exported = new Set(produced.flatMap((attachment) => attachment.workspaceRunOutput && attachment.checksum
+    ? [identity(attachment.workspaceRunOutput.relativePath, attachment.checksum, attachment.byteSize)] : []));
+  const repeatsExport = (attachment: (typeof produced)[number]) => {
+    const path = attachment.workspaceCheckpointFile?.relativePath;
+    return Boolean(attachment.checksum && path?.startsWith("output/") &&
+      exported.has(identity(path.slice("output/".length), attachment.checksum, attachment.byteSize)));
+  };
+  const generatedFiles = produced.flatMap((attachment) =>
     attachment.workspaceCheckpointFile?.checkpoint.state === "SETTLED"
-      ? [{ attachmentId: attachment.id, byteSize: attachment.byteSize, fileName: attachment.fileName, mimeType: attachment.mimeType,
+      ? repeatsExport(attachment) ? [] : [{ attachmentId: attachment.id, byteSize: attachment.byteSize, fileName: attachment.fileName, mimeType: attachment.mimeType,
         relativePath: attachment.workspaceCheckpointFile.relativePath, checkpoint: { id: attachment.workspaceCheckpointFile.checkpoint.id,
           description: attachment.workspaceCheckpointFile.checkpoint.description, createdAt: attachment.workspaceCheckpointFile.checkpoint.createdAt.toISOString() } }]
       : attachment.workspaceRunOutput

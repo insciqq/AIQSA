@@ -890,6 +890,34 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
     document.addEventListener("DOMContentLoaded", () => adopt(document.documentElement));
   }
 
+  // Downloads go to the viewer, which saves the bytes after a user gesture or asks first:
+  // Firefox and WebKit refuse any download from this frame under the viewer's frame-src
+  // 'none'. Only bytes this page already holds are handed over: Blobs it made object URLs
+  // for, data: URLs and its embedded files. Nothing comes back from the viewer.
+  const objectBlobs = new Map();
+  try {
+    const nativeCreate = URL.createObjectURL, nativeRevoke = URL.revokeObjectURL;
+    if (typeof nativeCreate === "function") URL.createObjectURL = function createObjectURL(object) {
+      const address = nativeCreate.apply(this, arguments);
+      try { if (typeof Blob === "function" && object instanceof Blob) objectBlobs.set(String(address), object); } catch {}
+      return address;
+    };
+    if (typeof nativeRevoke === "function") URL.revokeObjectURL = function revokeObjectURL(address) {
+      try { objectBlobs.delete(String(address)); } catch {}
+      return nativeRevoke.apply(this, arguments);
+    };
+  } catch {}
+  const save = (blob, name) => send({ type: "aiqsa_artifact_download", name: String(name || "").slice(0, 1024), blob });
+  // The bytes a download anchor names, or null when this page does not hold them.
+  const downloadOf = (anchor, raw) => {
+    if (!anchor.hasAttribute("download")) return null;
+    const name = (anchor.getAttribute("download") || "").trim();
+    if (/^blob:/i.test(raw)) { const blob = objectBlobs.get(raw); return blob ? { blob, name } : null; }
+    if (!/^data:/i.test(raw)) return null;
+    const data = dataRequest(raw);
+    return data && data.bytes ? { blob: new Blob([data.bytes], { type: data.mime }), name } : null;
+  };
+
   const link = value => {
     if (typeof value !== "string" || !value || value.length > 2048 || /[\u0000-\u001f\u007f]/.test(value)) return null;
     try {
@@ -906,7 +934,7 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
   };
   // A link on another page named an anchor of this one; scroll once the page has loaded.
   if (typeof arrival === "string" && arrival) window.addEventListener("load", () => scrollToFragment(arrival), { once: true });
-  // Another page asks the viewer to show it; any other local file downloads from a blob: URL.
+  // Another page asks the viewer to show it; any other local file goes to the viewer to save.
   const follow = (target, anchor, raw) => {
     if (!target.file) return void fail("Artifact link target not found: " + (target.path || raw));
     if (target.file.kind === "page") {
@@ -914,15 +942,9 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
       return send({ type: "aiqsa_artifact_navigate", path: target.path,
         ...(target.fragment && target.fragment.length <= 256 ? { fragment: target.fragment } : {}) });
     }
-    const address = target.file.kind === "block" ? addressFor(target) : null;
-    if (!address) return void unavailable(target, "a link");
-    const download = document.createElement("a");
-    download.href = address;
-    download.download = (anchor.getAttribute("download") || "").trim() || target.path.slice(target.path.lastIndexOf("/") + 1);
-    download.style.display = "none";
-    (document.body || document.documentElement).appendChild(download);
-    download.click();
-    download.remove();
+    const blob = target.file.kind === "block" ? blobFor(target) : null;
+    if (!blob) return void unavailable(target, "a link");
+    save(blob, (anchor.getAttribute("download") || "").trim() || target.path.slice(target.path.lastIndexOf("/") + 1));
   };
   const intercept = event => {
     if (event.type === "keydown" && event.key !== "Enter") return;
@@ -936,7 +958,13 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
       scrollToFragment(raw.slice(1));
       return;
     }
-    // Blob downloads remain local. Other navigation always goes through the host.
+    const download = downloadOf(anchor, raw.trim());
+    if (download) {
+      event.preventDefault();
+      return void save(download.blob, download.name);
+    }
+    // A blob: or data: download whose bytes this page does not hold stays with the browser.
+    // Other navigation always goes through the host.
     if (anchor.hasAttribute("download") && /^(blob:|data:)/.test(raw)) return;
     event.preventDefault();
     const target = lookup(raw);
@@ -945,6 +973,38 @@ export const ARTIFACT_RUNTIME_BRIDGE = String.raw`(() => {
   };
   document.addEventListener("click", intercept, true);
   document.addEventListener("keydown", intercept, true);
+  // Download helpers often click an anchor outside the document, with click() or, like
+  // FileSaver.js and jsPDF, an untrusted MouseEvent: no document listener sees that click,
+  // so it is answered at the root of the anchor's own tree. A click on an anchor that cannot
+  // be cancelled is dispatched as a cancelable copy, so the browser never acts on it as well.
+  try {
+    const anchorOf = node => { try { return typeof node?.closest === "function" ? node.closest("a[href]") : null; } catch { return null; } };
+    const detached = node => { try { return node.isConnected === false; } catch { return false; } };
+    const atRoot = (node, run) => {
+      let root = null;
+      try { root = node.getRootNode(); } catch {}
+      if (!root || typeof root.addEventListener !== "function") return run();
+      root.addEventListener("click", intercept, true);
+      try { return run(); } finally { root.removeEventListener("click", intercept, true); }
+    };
+    const Html = window.HTMLElement, Target = window.EventTarget, Mouse = window.MouseEvent;
+    const nativeClick = Html?.prototype.click, nativeDispatch = Target?.prototype.dispatchEvent;
+    if (typeof nativeClick === "function") Html.prototype.click = function click() {
+      return detached(this) && anchorOf(this) ? atRoot(this, () => nativeClick.apply(this, arguments)) : nativeClick.apply(this, arguments);
+    };
+    if (typeof nativeDispatch === "function" && typeof Mouse === "function") Target.prototype.dispatchEvent = function dispatchEvent(event) {
+      let anchor = null;
+      try { anchor = event instanceof Mouse && event.type === "click" ? anchorOf(this) : null; } catch {}
+      if (!anchor) return nativeDispatch.apply(this, arguments);
+      let sent = event;
+      if (!event.cancelable) try {
+        sent = new Mouse("click", { bubbles: event.bubbles, cancelable: true, composed: event.composed, view: event.view, detail: event.detail,
+          screenX: event.screenX, screenY: event.screenY, clientX: event.clientX, clientY: event.clientY, ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey, button: event.button, buttons: event.buttons, relatedTarget: event.relatedTarget });
+      } catch {}
+      return detached(this) ? atRoot(this, () => nativeDispatch.call(this, sent)) : nativeDispatch.call(this, sent);
+    };
+  } catch {}
   try { Object.defineProperty(window, "open", { value: value => { open(String(value)); return null; } }); } catch {}
   window.addEventListener("error", event => report({ kind: "error", message: clean(event.message, 300), line: position(event.lineno), column: position(event.colno) }), { once: true });
   window.addEventListener("unhandledrejection", event => {
