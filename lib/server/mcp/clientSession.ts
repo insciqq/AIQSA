@@ -707,6 +707,10 @@ export class McpClientSession {
         }
         return response;
       },
+      // Redirects stay with AIQSA's fetch, which re-checks network policy and
+      // pins DNS on every hop and strips headers across origins; OAuth
+      // connections refuse them there.
+      redirectPolicy: "follow",
       requestInit: { headers: staticHeaders }
     });
     this.client = new Client(
