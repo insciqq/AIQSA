@@ -607,8 +607,9 @@ function reductionFloor(input: Readonly<{
 
 /**
  * A hybrid request's irreducible minimum (as `planContextCompaction` measures
- * it) and the reducible material no committed notes cover yet, which the next
- * notes would have to stand for.
+ * it, without the room its fit checks keep reserved) and the reducible
+ * material no committed notes cover yet, which the next notes would have to
+ * stand for.
  */
 export function contextReductionFloor(input: Readonly<{
   assembledTokens: number;
@@ -710,6 +711,11 @@ export type ContextCompactionPlan = Readonly<{
  * introduce a handle into masking, checkpoints or summaries. Requests without
  * the policy (Agent, standalone document guards) and unknown windows are
  * measured only: nothing is masked, summarized or trimmed.
+ *
+ * `reservedTokens` is room the request keeps free (the follow-up admission
+ * reserve), never dispatched: the trigger, the target, the headroom decision
+ * and the measurement read the request alone, while every fit decision (the
+ * minimum and the budget) keeps that room free beside it.
  */
 export function planContextCompaction(input: Readonly<{
   assembledTokens?: number | null;
@@ -717,11 +723,14 @@ export function planContextCompaction(input: Readonly<{
   bridge?: ProviderToolBridge;
   observations?: readonly ContextObservation[];
   request: ProviderRunRequest;
+  reservedTokens?: number;
 }>): ContextCompactionPlan {
   const request = input.request;
   const estimate = contextTokenEstimator(request);
   const budgetTokens = typeof input.budgetTokens === "number" && Number.isFinite(input.budgetTokens)
     ? input.budgetTokens : null;
+  const reservedTokens = typeof input.reservedTokens === "number" && Number.isFinite(input.reservedTokens)
+    ? Math.max(0, Math.ceil(input.reservedTokens)) : 0;
   const original = request.providerToolMessages ?? [];
   const providerMessageTokens = estimate(original);
   const beforeTokens = input.assembledTokens === undefined || input.assembledTokens === null
@@ -749,13 +758,14 @@ export function planContextCompaction(input: Readonly<{
 
   if (request.agent || request.contextCompactionPolicy?.mode !== "hybrid" || budgetTokens === null) {
     // Measurement only. The fit check owns any refusal; it never trims.
-    return result(budgetTokens !== null && beforeTokens > budgetTokens ? "irreducible_overflow" : "already_fits");
+    return result(budgetTokens !== null && beforeTokens + reservedTokens > budgetTokens ? "irreducible_overflow" : "already_fits");
   }
 
   const { history, minimumTokens, retainedTranscriptTokens, summaryTokens, transcript } = reductionFloor({
     beforeTokens, budgetTokens, estimate, observations: input.observations, providerMessageTokens, request });
+  // The fixed part a refusal names includes the room kept reserved.
   const overflow = (): ContextOverflow => ({
-    fixedTokens: Math.max(0, minimumTokens - retainedTranscriptTokens),
+    fixedTokens: Math.max(0, minimumTokens + reservedTokens - retainedTranscriptTokens),
     notes: summaryTokens > 0,
     transcriptTokens: retainedTranscriptTokens
   });
@@ -766,18 +776,19 @@ export function planContextCompaction(input: Readonly<{
     request.modelCapabilities.toolCalling === true && request.toolChoice !== "none" &&
     request.tools?.some(tool => tool.name === READ_TOOL_RESULT_NAME && tool.capability === "session") === true &&
     input.bridge.supportsToolCalling({ modelId: request.modelId, provider: request.provider });
-  if (minimumTokens > budgetTokens) {
+  const minimumExcess = minimumTokens + reservedTokens - budgetTokens;
+  if (minimumExcess > 0) {
     // The newest batch has never reached the model, so its whole results and
     // previews may still arrive as their references (nothing it has seen
     // leaves): this lossless reduction comes first.
     const degraded = maskingAvailable
-      ? newestBatchAsReferences(request, input.bridge!, input.observations, transcript, minimumTokens - budgetTokens) : null;
+      ? newestBatchAsReferences(request, input.bridge!, input.observations, transcript, minimumExcess) : null;
     if (!degraded) {
       // Only then does the record of earlier attempts of the current message
       // render smaller, never below the compact line (call_ref and outcome)
       // of every executed call or call of unknown outcome. A minimum that
       // floor cannot bring within the budget is irreducible.
-      const fitted = fitCurrentTurnToolHistory(request, minimumTokens - budgetTokens, estimate);
+      const fitted = fitCurrentTurnToolHistory(request, minimumExcess, estimate);
       if (!fitted) return result("irreducible_overflow", { overflow: overflow() });
       const plan = planContextCompaction({ ...input, assembledTokens: beforeTokens - fitted.releasedTokens, request: fitted.request });
       return { ...plan, measurement: { ...plan.measurement, beforeTokens } };
@@ -791,7 +802,9 @@ export function planContextCompaction(input: Readonly<{
       outcome: plan.measurement.outcome === "already_fits" ? "masking_applied" : plan.measurement.outcome
     } };
   }
-  if (beforeTokens <= budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio) return result("already_fits");
+  // The trigger reads the request alone; the reserved room only has to fit.
+  const triggered = beforeTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio;
+  if (!triggered && beforeTokens + reservedTokens <= budgetTokens) return result("already_fits");
 
   const targetTokens = Math.floor(budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio);
   const coveredOlder = transcript.older.filter((unit) => transcript.covered.has(unit));
@@ -842,12 +855,12 @@ export function planContextCompaction(input: Readonly<{
   maskedBatches = maskedGroups.filter(group => group.some(candidate => maskedByIndex.has(candidate.index))).length;
   const settled = (): ContextPlanMeasurement["outcome"] => maskedObservations > 0 ? "masking_applied" : "already_fits";
   const uncoveredUnits = transcript.older.filter((unit) => transcript.noteable.has(unit) && !transcript.covered.has(unit));
-  if (afterTokens > budgetTokens) {
+  if (afterTokens + reservedTokens > budgetTokens) {
     if (history.uncovered.length > 0 || uncoveredUnits.length > 0) return result("needs_summary");
     // Nothing uncovered remains: covered turns leave; notes already stand for them.
-    const trimmed = trimCoveredHistory(planned, history, afterTokens - budgetTokens);
+    const trimmed = trimCoveredHistory(planned, history, afterTokens + reservedTokens - budgetTokens);
     const tokens = afterTokens - trimmed.droppedTokens;
-    if (tokens > budgetTokens) return result("irreducible_overflow", { overflow: overflow() });
+    if (tokens + reservedTokens > budgetTokens) return result("irreducible_overflow", { overflow: overflow() });
     return result(settled(), {
       afterTokens: tokens,
       ...(trimmed.droppedMessages > 0
@@ -856,11 +869,12 @@ export function planContextCompaction(input: Readonly<{
     });
   }
   // A fitting request above the target buys headroom for later rounds only
-  // when enough uncovered material could leave once covered; it never turns
-  // into overflow.
+  // when it crossed the trigger itself and enough uncovered material could
+  // leave once covered; it never turns into overflow. Reserved room alone
+  // releases covered material, never buys notes it does not need to fit.
   const olderTokens = history.older.reduce((total, message) => total + estimate(message.content), 0) +
     (uncoveredUnits.length > 0 ? estimate(uncoveredUnits.flatMap((unit) => original.slice(unit.start, unit.end))) : 0);
-  const headroom = afterTokens > targetTokens &&
+  const headroom = triggered && afterTokens > targetTokens &&
     olderTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.summaryMinimumReleaseRatio;
   return result(headroom ? "needs_summary" : settled());
 }

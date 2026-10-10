@@ -55,6 +55,8 @@ export function followupTokenCost(text: string): number {
   return estimateApproxTokens(text) + 32;
 }
 
+/** Room left beside the request as dispatched (session status never counts a
+ * follow-up reserve). */
 export function followupRequestHeadroom(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
   const context = measureSessionContext({ bridge, request });
   return context.contextWindow === null ? RUN_FOLLOWUP_MAX_TOTAL_CHARS : Math.max(0,
@@ -69,7 +71,8 @@ function followupBudgetTokens(headroom: number): number {
  * hybrid request that needs a summary is never dispatched uncompacted, so its
  * room is measured at the planner's target instead of on the admitted branch;
  * the budget is kept only while that reserve neither makes the request
- * irreducible nor pushes a fitting request over its budget. */
+ * irreducible nor pushes a fitting request over its budget. The planner
+ * measures without the reserve, so the reserve is added back here. */
 export function followupAdmissionBudgetTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
   const measured = followupBudgetTokens(followupRequestHeadroom(request, bridge));
   const plan = request.contextCompaction;
@@ -80,7 +83,8 @@ export function followupAdmissionBudgetTokens(request: ProviderRunRequest, bridg
   if (planned <= measured) return measured;
   const reserved = applyProviderRequestContextBudget({ bridge, request: { ...request, followupContextReserveTokens: planned } });
   const fitting = plan.afterTokens <= plan.budgetTokens;
-  return reserved.ok && (!fitting || (reserved.request.contextCompaction?.afterTokens ?? Number.POSITIVE_INFINITY) <= plan.budgetTokens)
+  return reserved.ok && (!fitting ||
+    (reserved.request.contextCompaction?.afterTokens ?? Number.POSITIVE_INFINITY) + planned <= plan.budgetTokens)
     ? planned : measured;
 }
 
