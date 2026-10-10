@@ -225,7 +225,21 @@ export function normalizedRequestPersonalContextTokenLimit(
     .filter((message) => message.purpose === undefined)
     .at(-1);
   const currentTokens = estimate(currentMessage?.content ?? request.content);
-  return Math.max(0, limits.budgetTokens - promptTokens - internalTokens - currentTokens - (request.followupContextReserveTokens ?? 0));
+  return Math.max(0, limits.budgetTokens - promptTokens - internalTokens - currentTokens - followupReserveTokens(request));
+}
+
+/**
+ * What one request estimate counts. The follow-up admission reserve is room a
+ * run keeps for clarifications it may still accept; it is never dispatched (a
+ * delivered clarification replaces it). Measurement (the compaction trigger
+ * and target, session status and estimate telemetry) reads the request as
+ * dispatched; admission and fit checks add the reserve, so admitted
+ * clarifications keep fitting.
+ */
+type RequestEstimate = "dispatched" | "with_followup_reserve";
+
+function followupReserveTokens(request: Pick<NormalizedRunRequest, "followupContextReserveTokens">): number {
+  return request.followupContextReserveTokens ?? 0;
 }
 
 function cumulativeTruncationSummary(
@@ -252,9 +266,11 @@ export function providerFacingSerializedTools(
   ];
 }
 
-function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+function providerRequestFixedExtraTokens(request: ProviderRunRequest, bridge: ProviderToolBridge | undefined,
+  counted: RequestEstimate): number {
   const estimate = contextTokenEstimator(request);
-  return (request.followupContextReserveTokens ?? 0) + estimate(providerFacingSerializedTools(request, bridge)) +
+  return (counted === "with_followup_reserve" ? followupReserveTokens(request) : 0) +
+    estimate(providerFacingSerializedTools(request, bridge)) +
     estimate(request.providerToolMessages ?? []) + workspaceImageTokenReserve(request.providerToolMessages) +
     estimate(request.personalContext?.text ?? "") +
     (request.personalContext
@@ -313,7 +329,9 @@ export function providerRequestContextRebuild(input: Readonly<{
     ...(maximumTokens !== undefined ? { reportedBudgetTokens: calculateContextBudgetLimits({
       contextWindow: maximumTokens, maxOutputTokens: limits.maxOutputTokens, provider: request.provider
     }).budgetTokens } : {}),
-    requestTokens: approximateProviderRequestTokens(request, input.bridge),
+    // The provider counted only what was dispatched; the follow-up reserve
+    // stays room the tighter budget's fit checks keep free.
+    requestTokens: approximateProviderRequestTokens(request, input.bridge, "dispatched"),
     round: input.round
   });
 }
@@ -373,11 +391,15 @@ export function observationBatchShare(input: Readonly<{
   const notesBytes = Math.min(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes,
     Math.max(CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes, Math.ceil(uncoveredBytes / 2)));
   const notesReserve = uncoveredBytes > 0 ? Math.ceil(notesBytes * uncoveredTokens / uncoveredBytes) : 0;
-  return { estimateTokens, measure,
-    tokens: Math.max(0, Math.min(share, limits.budgetTokens - minimumTokens - notesReserve)) };
+  // The follow-up reserve stays free beside the next request, as its fit check keeps it.
+  return { estimateTokens, measure, tokens: Math.max(0, Math.min(share,
+    limits.budgetTokens - followupReserveTokens(request) - minimumTokens - notesReserve)) };
 }
 
-function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
+/** The one estimate of a provider request; `counted` says whether the
+ * follow-up reserve is added (see `RequestEstimate`). */
+function approximateProviderRequestTokens(request: ProviderRunRequest, bridge: ProviderToolBridge | undefined,
+  counted: RequestEstimate): number {
   const estimate = contextTokenEstimator(request);
   const messages = request.context?.messages;
   const contextTokens = messages?.length
@@ -385,21 +407,22 @@ function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: 
     : estimate(request.content);
   const prompt = contextBudgetPrompt(request.prompt);
   return contextTokens + estimate(prompt.system ?? "") + estimate(prompt.developer ?? "") +
-    providerRequestFixedExtraTokens(request, bridge) +
+    providerRequestFixedExtraTokens(request, bridge, counted) +
     providerAttachmentBudgetTokens({ attachments: request.attachments, estimateTokens: estimate,
       estimateImageTokens: imageTokenEstimator(request), modelCapabilities: request.modelCapabilities });
 }
 
-/** The budget's estimate of an exact provider request, for observability. */
+/** The budget's estimate of an exact provider request as dispatched, for observability. */
 export function providerRequestTokenEstimate(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
-  return approximateProviderRequestTokens(request, bridge);
+  return approximateProviderRequestTokens(request, bridge, "dispatched");
 }
 
 /** Whether the exact request, as it would be dispatched (attachment text at
- * its fitted length, not its hybrid minimum share), fits its known budget. */
+ * its fitted length, not its hybrid minimum share), fits its known budget
+ * with its follow-up reserve still free. */
 export function providerRequestFitsContextBudget(request: ProviderRunRequest, bridge?: ProviderToolBridge): boolean {
   const limits = contextCompactionBudgetLimits(request);
-  return limits !== null && approximateProviderRequestTokens(request, bridge) <= limits.budgetTokens;
+  return limits !== null && approximateProviderRequestTokens(request, bridge, "with_followup_reserve") <= limits.budgetTokens;
 }
 
 type TextAttachmentCandidate = Readonly<{
@@ -451,11 +474,12 @@ function withoutAttachmentText(request: ProviderRunRequest): ProviderRunRequest 
 
 /** Hybrid measures extracted attachment text at its minimum share: the text is
  * elastic and receives only the room left after exact context and history.
- * It cannot by itself trigger masking, a summary purchase, or overflow. */
+ * It cannot by itself trigger masking, a summary purchase, or overflow. The
+ * request is measured as dispatched; callers keep the follow-up reserve free. */
 function hybridRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
   const text = textAttachmentCandidates(clampedProviderAttachments(request), request.modelCapabilities,
     contextTokenEstimator(request));
-  return approximateProviderRequestTokens(withoutAttachmentText(request), bridge) +
+  return approximateProviderRequestTokens(withoutAttachmentText(request), bridge, "dispatched") +
     text.reduce((total, candidate) => total + candidate.labelTokens + candidate.minimumTokens, 0);
 }
 
@@ -477,15 +501,19 @@ function planProviderRequestContext(input: Readonly<{
     limits,
     planned: planContextCompaction({
       ...input,
+      // The trigger and target read the request as dispatched; the planner's
+      // fit checks keep the follow-up reserve free beside it.
       assembledTokens: usesHybridBudget(input.request)
         ? hybridRequestTokens(input.request, input.bridge)
-        : approximateProviderRequestTokens(input.request, input.bridge),
-      budgetTokens: limits?.budgetTokens ?? null
+        : approximateProviderRequestTokens(input.request, input.bridge, "dispatched"),
+      budgetTokens: limits?.budgetTokens ?? null,
+      reservedTokens: followupReserveTokens(input.request)
     })
   };
 }
 
-/** Reads the same contributors as the budget guard, without changing a request. */
+/** Reads the same contributors as the budget guard, without changing a
+ * request: the planned request as dispatched, without the follow-up reserve. */
 export function measureSessionContext(input: Readonly<{
   answerText?: string;
   bridge?: ProviderToolBridge;
@@ -495,11 +523,6 @@ export function measureSessionContext(input: Readonly<{
   const { limits, planned } = planProviderRequestContext(input);
   const { request } = planned;
   const estimate = contextTokenEstimator(request);
-  const prompt = contextBudgetPrompt(request.prompt);
-  const messages = request.context?.messages;
-  const contextTokens = messages?.length
-    ? messages.reduce((total, message) => total + estimate(message.content), 0)
-    : estimate(request.content);
   const contextWindow = request.modelCapabilities.contextWindow;
   const measuredLimits = limits ?? calculateContextBudgetLimits({
     contextWindow: contextWindow ?? 0,
@@ -507,11 +530,7 @@ export function measureSessionContext(input: Readonly<{
     provider: request.provider
   });
   return {
-    approximateInputTokens: contextTokens +
-      estimate(prompt.system ?? "") + estimate(prompt.developer ?? "") +
-      providerRequestFixedExtraTokens(request, input.bridge) +
-      providerAttachmentBudgetTokens({ attachments: request.attachments, estimateTokens: estimate,
-        estimateImageTokens: imageTokenEstimator(request), modelCapabilities: request.modelCapabilities }) +
+    approximateInputTokens: approximateProviderRequestTokens(request, input.bridge, "dispatched") +
       estimate(input.answerText ?? ""),
     contextWindow: Number.isFinite(contextWindow) && Number(contextWindow) > 0 ? Math.floor(contextWindow!) : null,
     droppedMessages: request.context?.summary?.truncation?.droppedMessages ?? 0,
@@ -787,12 +806,13 @@ function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInp
     contextTokenEstimator(request));
   // A pending summary replaces prior history before any answer request, and
   // truncated text cannot grow back, so reserve the text's pre-summary share.
+  // The text leaves the follow-up reserve free.
   const releasedHistoryTokens = planned.measurement.outcome === "needs_summary" ? contextHistory(request).priorTokens : 0;
   const attachmentFit = fitProviderAttachmentText({
     availableTextTokens: budget.budgetTokens + releasedHistoryTokens -
-      approximateProviderRequestTokens(withoutAttachmentText(request), input.bridge) -
+      approximateProviderRequestTokens(withoutAttachmentText(request), input.bridge, "with_followup_reserve") -
       text.reduce((total, candidate) => total + candidate.labelTokens, 0),
-    fixedExtraTokens: providerRequestFixedExtraTokens(request, input.bridge),
+    fixedExtraTokens: providerRequestFixedExtraTokens(request, input.bridge, "with_followup_reserve"),
     request
   });
   if (!attachmentFit.ok) {
@@ -811,7 +831,7 @@ function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInp
     contextCompaction: planned.measurement
   };
   if (!planned.historyTrim || !fitted.context) return { contextTruncation: null, ok: true, request: fitted };
-  const finalTokens = approximateProviderRequestTokens(fitted, input.bridge);
+  const finalTokens = approximateProviderRequestTokens(fitted, input.bridge, "dispatched");
   const contextTruncation = cumulativeTruncationSummary(request.context?.summary?.truncation, {
     approxDroppedTokens: planned.historyTrim.droppedTokens,
     approxFinalTokens: finalTokens,
@@ -849,7 +869,8 @@ function applyProviderRequestContextBudgetCore(input: Readonly<{
         role: "user" as const
       }];
   const currentMessageId = budgetMessages.at(-1)?.id;
-  const fixedExtraTokens = providerRequestFixedExtraTokens(input.request, input.bridge) +
+  // The whole-turn guard keeps the follow-up reserve free beside the request.
+  const fixedExtraTokens = providerRequestFixedExtraTokens(input.request, input.bridge, "with_followup_reserve") +
     contextRebuildReserveTokens(input.request);
   const attachmentFit = fitProviderAttachmentText({ fixedExtraTokens, request: input.request });
   if (!attachmentFit.ok) {

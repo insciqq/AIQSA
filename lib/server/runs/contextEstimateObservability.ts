@@ -9,8 +9,9 @@ import { providerRequestTokenEstimate } from "./runContextBudget";
 /**
  * Drift evidence for the context estimate, without content: per estimate
  * family, the provider-reported input tokens of one dispatched round against
- * the budget's estimate of that exact request. Only numbers and enumerated
- * families leave; a failure here never affects the round.
+ * the budget's estimate of that exact request as dispatched (never the room
+ * kept for follow-ups). Only numbers and enumerated families leave; a failure
+ * here never affects the round.
  */
 export function observeContextEstimate(
   bridge: ProviderToolBridge | undefined,

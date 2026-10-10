@@ -952,3 +952,34 @@ describe("call_ref provenance and the current turn's tool history", () => {
     });
   });
 });
+
+describe("room reserved beside the request", () => {
+  it("keeps it free in the fit decisions while the trigger, target and headroom read the request alone", () => {
+    const bridge = openAIResponsesToolBridge;
+    const settled = ["older-1", "older-2", "newest"].map((id) => result(id, id));
+    const base = request(settled.flatMap((entry) => [call(entry.callId), bridge.appendToolResult(undefined, entry)]));
+    const history = Array.from({ length: 6 }, (_, index): ProviderConversationMessage => ({
+      content: { blocks: [{ text: "h".repeat(8_000), type: "text" }] }, id: `h${index}`, role: index % 2 ? "assistant" : "user"
+    }));
+    // Notes cover the older tool units only, so the older history could still be summarized.
+    const input = covered({ ...base, context: { ...base.context!, messages: [...history, ...base.context!.messages] } });
+    const budgetTokens = 20_000;
+    const planned = (assembledTokens: number, reservedTokens?: number) => planContextCompaction({ assembledTokens, bridge,
+      budgetTokens, observations: contextObservationsFromResults(settled), request: input,
+      ...(reservedTokens === undefined ? {} : { reservedTokens }) }).measurement;
+    // Room that fits changes nothing: below the trigger nothing happens, above it the same headroom summary is asked for.
+    expect(planned(15_000)).toMatchObject({ afterTokens: 15_000, outcome: "already_fits" });
+    expect(planned(15_000, 4_000)).toEqual(planned(15_000));
+    expect(planned(17_000)).toMatchObject({ beforeTokens: 17_000, outcome: "needs_summary" });
+    expect(planned(17_000, 2_000)).toEqual(planned(17_000));
+    // Room that does not fit beside a request below the trigger releases covered material and buys no headroom notes...
+    const released = planned(15_000, 6_000);
+    expect(released.beforeTokens).toBe(15_000);
+    expect(released.afterTokens).toBeLessThan(15_000);
+    expect(released.afterTokens + 6_000).toBeLessThanOrEqual(budgetTokens);
+    expect(released.afterTokens).toBeGreaterThan(budgetTokens * 0.5);
+    expect(released.outcome).not.toBe("needs_summary");
+    // ...and asks for notes only while the request still does not fit beside it.
+    expect(planned(15_000, 9_000)).toMatchObject({ beforeTokens: 15_000, outcome: "needs_summary" });
+  });
+});
