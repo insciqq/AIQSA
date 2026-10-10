@@ -3,6 +3,7 @@ import type { WorkspaceRunAdmissionPlan } from "./admission";
 import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "./browserGuidance";
 import { WORKSPACE_GUIDE_FILES, WORKSPACE_GUIDE_PATHS } from "./guides";
 import { WORKSPACE_NO_REPLAY_SAFETY, workspacePromptContract } from "./promptContract";
+import { WORKSPACE_BROWSER_SESSION_USER_PATH } from "./secrets/manifest";
 
 const workspace: WorkspaceRunAdmissionPlan = {
   assistantMessageId: "answer", chatId: "chat", expiresAt: "2026-01-01T00:00:00.000Z", policyRevision: 1,
@@ -95,5 +96,13 @@ describe("Workspace capability contract", () => {
     expect(text).not.toContain("It starts on first use");
     expect(text).not.toContain(workspace.normalized.outputDirectory);
     expect(text).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
+  });
+
+  it.each([false, true])("always names the real browser-session path and no invented login buttons (agent=%s)", agent => {
+    const contract = workspacePromptContract({ ...base, agent });
+    expect(contract.stable.split(WORKSPACE_BROWSER_SESSION_USER_PATH)).toHaveLength(2);
+    expect(contract.stable).toContain("Studio → Secrets");
+    expect(`${contract.stable}\n${contract.turn}`.replace(WORKSPACE_BROWSER_SESSION_USER_PATH, ""))
+      .not.toMatch(/reconnect|reauthori[sz]e|log ?in window/iu);
   });
 });

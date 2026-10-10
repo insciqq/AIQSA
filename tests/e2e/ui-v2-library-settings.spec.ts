@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext } from "@playwright/test";
-import { memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
+import { memoryConsumerItemFixture, memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 
@@ -249,6 +249,87 @@ for (const theme of ["dark", "light"] as const) {
       await expect.poll(() => resetRequests).toBe(1);
       await expect(settings.getByText("Personal Memory was reset.")).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
+  }
+}
+
+test("an open Memory list shows a fact learned in the background without reopening", async ({ page }) => {
+  let learned = false;
+  let listReads = 0;
+  await page.route("**/api/me/memory/settings", route => route.fulfill({
+    contentType: "application/json",
+    json: memoryConsumerSettingsFixture({
+      settings: { learnAutomatically: true, referenceChatHistory: true, useMemoryFacts: true },
+      status: "ON"
+    })
+  }));
+  await authenticateWithLocalToken(page.request);
+  await page.route("**/api/me/memories**", (route) => {
+    listReads += 1;
+    return route.fulfill({
+      json: memoryConsumerListFixture(learned ? [memoryConsumerItemFixture({
+        category: "PREFERENCES",
+        memoryRef: `opaque-learned-${listReads}`,
+        provenance: "LEARNED",
+        statement: "Prefers green tea in the afternoon."
+      })] : [])
+    });
+  });
+  await page.clock.install();
+  await page.goto("/?library=memory");
+  const panel = page.getByTestId("library-memory-panel");
+  await expect(panel.getByText("Nothing saved yet")).toBeVisible();
+  await expect(panel.getByText(/Say \u201cremember that\u2026\u201d in a chat/u)).toBeVisible();
+
+  learned = true;
+  const readsBefore = listReads;
+  await page.clock.fastForward(30_000);
+  await expect(panel.getByText("Prefers green tea in the afternoon.")).toBeVisible();
+  expect(listReads).toBeGreaterThan(readsBefore);
+  await expect(panel.getByText("Loading saved memories…")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Add memory" })).toBeEnabled();
+});
+
+for (const variant of [
+  {
+    description: /^Memory is paused, so chats add nothing here/u,
+    name: "paused",
+    settings: memoryConsumerSettingsFixture({ status: "PAUSED" })
+  },
+  {
+    description: /^Automatic learning is off.*remember that/u,
+    name: "learning-off",
+    settings: memoryConsumerSettingsFixture({
+      settings: { learnAutomatically: false, useMemoryFacts: true },
+      status: "ON"
+    })
+  },
+  {
+    description: /^Learning from chats needs administrator setup/u,
+    name: "needs-setup",
+    settings: memoryConsumerSettingsFixture({
+      settings: { learnAutomatically: true, useMemoryFacts: true },
+      status: "NEEDS_ADMIN_SETUP"
+    })
+  }
+] as const) {
+  for (const mode of modes) {
+    test(`empty Memory list offers only available actions · ${variant.name} · ${mode.name}`, async ({ page }, info) => {
+      await page.setViewportSize(mode);
+      await page.route("**/api/me/memory/settings", route => route.fulfill({
+        contentType: "application/json",
+        json: variant.settings
+      }));
+      await authenticateWithLocalToken(page.request);
+      await page.route("**/api/me/memories**", route => route.fulfill({ json: memoryConsumerListFixture([]) }));
+      await page.goto("/?library=memory");
+      const empty = page.getByTestId("library-memory-panel").locator(".v2-memory-empty");
+      await expect(empty.getByText("Nothing saved yet")).toBeVisible();
+      await expect(empty.locator("p")).toHaveText(variant.description);
+      if (variant.name !== "learning-off") await expect(empty).not.toContainText("remember that");
+      await expect(empty.getByRole("button", { name: "Add memory" })).toBeEnabled();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`memory-empty-${variant.name}-${mode.name}.png`) });
     });
   }
 }

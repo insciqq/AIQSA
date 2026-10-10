@@ -3,6 +3,7 @@ import {
   MEMORY_UI_COPY_KEYS,
   formatMemoryUiCopy,
   memoryCategoryLabel,
+  memoryEmptyListDescriptionKey,
   memoryUiCopy
 } from "./memoryUiCopy";
 import { describe, expect, it } from "vitest";
@@ -34,5 +35,24 @@ describe("Memory UI copy", () => {
     expect(memoryUiCopy("answer.preparationFailed")).not.toMatch(/memory/iu);
     expect(memoryUiCopy("manager.reload")).toBe("Reload");
     expect(memoryUiCopy("settings.reload")).toBe("Reload");
+  });
+
+  it("offers an empty list only actions that work in the current Memory state", () => {
+    const description = (status: string | null, automaticLearning = true) =>
+      memoryUiCopy(memoryEmptyListDescriptionKey({ automaticLearning, status }));
+    const askInChat = /remember that/u;
+    const writeYourself = /write (?:the first|a) fact yourself/iu;
+
+    expect(description("ON")).toMatch(askInChat);
+    expect(description("ON", false)).toMatch(askInChat);
+    expect(description("ON", false)).toMatch(/Automatic learning is off/u);
+    for (const status of ["PAUSED", "NEEDS_ADMIN_SETUP", "UNAVAILABLE", "PREPARING", null]) {
+      expect(description(status), String(status)).not.toMatch(askInChat);
+      expect(description(status), String(status)).toMatch(writeYourself);
+    }
+    expect(description("PAUSED")).toMatch(/Memory is paused/u);
+    expect(description("NEEDS_ADMIN_SETUP")).toMatch(/administrator setup/u);
+    // Unavailability is never diagnosed to the user.
+    expect(description("UNAVAILABLE")).not.toMatch(/unavailable|error|failed|administrator/iu);
   });
 });
