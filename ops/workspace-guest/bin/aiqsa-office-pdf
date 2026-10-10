@@ -2,8 +2,11 @@
 """aiqsa-office-pdf INPUT [OUTPUT.pdf]: a PDF of an Office document's visible content only.
 
 LibreOffice prints the document without comments, notes or hidden sheets and
-slides; pypdf then copies only the pages into a new file, without document
-properties, XMP, outlines, scripts, attachments or annotations other than links.
+slides; a text document's tracked changes are accepted first, since LibreOffice
+prints them as markup, deleted text included. pypdf then copies only the pages
+into a new file, without document properties, XMP, outlines, scripts,
+attachments or annotations other than links, and keeps only the picture data of
+JPEG images, without their camera, location, author or thumbnail metadata.
 """
 import json
 import os
@@ -12,24 +15,125 @@ import signal
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
+from xml.sax import SAXException, handler, make_parser
+from xml.sax.saxutils import XMLGenerator
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PyPdfError
-from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
+from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject, NumberObject, StreamObject
 
-FILTERS = {**dict.fromkeys(("docx", "doc", "odt", "rtf"), "writer_pdf_Export"),
+WRITER = ("docx", "doc", "odt", "rtf")
+FILTERS = {**dict.fromkeys(WRITER, "writer_pdf_Export"),
            **dict.fromkeys(("xlsx", "xls", "ods"), "calc_pdf_Export"),
            **dict.fromkeys(("pptx", "ppt", "odp"), "impress_pdf_Export")}
 OFF = ("ExportNotes", "ExportNotesInMargin", "ExportNotesPages", "ExportOnlyNotesPages", "ExportHiddenSlides",
        "ExportBookmarks", "ExportPlaceholders", "ExportFormFields")
 OPTIONS = json.dumps({name: {"type": "boolean", "value": "false"} for name in OFF}, separators=(",", ":"))
 PAGE_KEYS = ("/AA", "/Metadata", "/PieceInfo", "/Thumb", "/B", "/StructParents")
+TEXT = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+OFFICE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+# In LibreOffice's ODF copy the body holds the text with every change accepted;
+# the change log keeps deleted text, and markers only point into that log.
+CHANGES = {(TEXT, "tracked-changes"), (TEXT, "change"), (TEXT, "change-start"), (TEXT, "change-end"),
+           (OFFICE, "annotation"), (OFFICE, "annotation-end")}
+# Inside entropy-coded JPEG data a 0xFF byte followed by one of these is not a marker.
+SCAN_ESCAPES = frozenset((0x00, 0xFF, *range(0xD0, 0xD8)))
 
 
 def fail(message):
     print(f"aiqsa-office-pdf: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def soffice(work, source, target, outdir, name):
+    """One LibreOffice conversion of source into outdir; every run shares the job's private profile."""
+    command = ["soffice", f"-env:UserInstallation={(work / 'profile').as_uri()}", "--headless", "--norestore",
+               "--nolockcheck", "--convert-to", target, "--outdir", str(outdir), str(source)]
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    try:
+        log = process.communicate(timeout=120)[0].decode(errors="replace").strip()
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        fail("LibreOffice did not finish within 120 s")
+    result = outdir / f"{source.stem}.{target.split(':', 1)[0]}"
+    if not result.is_file():
+        fail(f"LibreOffice could not convert {name}: {log.splitlines()[-1] if log else 'no output'}")
+    return result
+
+
+class _AcceptedChanges(handler.ContentHandler):
+    """Copies ODF XML without tracked-change logs, change markers and comments, preserving everything else."""
+
+    def __init__(self, stream):
+        super().__init__()
+        self.out = XMLGenerator(stream, "utf-8", short_empty_elements=True)
+        self.scopes = [{}]
+        self.skipped = 0
+
+    def startDocument(self):
+        self.out.startDocument()
+
+    def startElement(self, name, attrs):
+        scope = dict(self.scopes[-1])
+        for key, value in attrs.items():
+            if key == "xmlns" or key.startswith("xmlns:"):
+                scope[key[6:]] = value
+        self.scopes.append(scope)
+        prefix, _, local = name.rpartition(":")
+        if self.skipped or (scope.get(prefix), local) in CHANGES:
+            self.skipped += 1
+        else:
+            self.out.startElement(name, attrs)
+
+    def endElement(self, name):
+        self.scopes.pop()
+        if self.skipped:
+            self.skipped -= 1
+        else:
+            self.out.endElement(name)
+
+    def characters(self, content):
+        if not self.skipped:
+            self.out.characters(content)
+
+    def ignorableWhitespace(self, whitespace):
+        self.characters(whitespace)
+
+    def processingInstruction(self, target, data):
+        if not self.skipped:
+            self.out.processingInstruction(target, data)
+
+
+def without_changes(source, target):
+    """Streams one ODF XML part from source to target with every tracked change accepted and no comments."""
+    parser = make_parser()
+    parser.setFeature(handler.feature_namespaces, False)
+    parser.setFeature(handler.feature_external_ges, False)
+    parser.setFeature(handler.feature_external_pes, False)
+    parser.setContentHandler(_AcceptedChanges(target))
+    parser.parse(source)
+
+
+def accept_changes(source, target):
+    """An ODF package like source whose text and style parts have their tracked changes accepted."""
+    with zipfile.ZipFile(source) as archive, zipfile.ZipFile(target, "w") as out:
+        # Entries keep their order and compression, so mimetype stays first and stored.
+        for info in archive.infolist():
+            entry = zipfile.ZipInfo(info.filename, info.date_time)
+            entry.compress_type = info.compress_type
+            entry.external_attr = info.external_attr
+            if info.is_dir():
+                out.writestr(entry, b"")
+                continue
+            with archive.open(info) as reader, out.open(entry, "w", force_zip64=info.file_size >= 1 << 31) as writer:
+                if info.filename in ("content.xml", "styles.xml"):
+                    without_changes(reader, writer)
+                else:
+                    shutil.copyfileobj(reader, writer)
+    return target
 
 
 def convert(source, work):
@@ -38,19 +142,83 @@ def convert(source, work):
         fail(f"unsupported file type .{ext or '?'} (use {', '.join(FILTERS)})")
     copy = work / f"input.{ext}"
     shutil.copyfile(source, copy)
-    command = ["soffice", f"-env:UserInstallation={(work / 'profile').as_uri()}", "--headless", "--norestore",
-               "--nolockcheck", "--convert-to", f"pdf:{FILTERS[ext]}:{OPTIONS}", "--outdir", str(work / "out"), str(copy)]
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               start_new_session=True)
-    try:
-        log = process.communicate(timeout=120)[0].decode(errors="replace").strip()
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        fail("LibreOffice did not finish within 120 s")
-    pdf = work / "out" / "input.pdf"
-    if not pdf.is_file():
-        fail(f"LibreOffice could not convert {source.name}: {log.splitlines()[-1] if log else 'no output'}")
-    return pdf
+    if ext in WRITER:
+        copy = accept_changes(soffice(work, copy, "odt", work / "odt", source.name), work / "accepted.odt")
+    return soffice(work, copy, f"pdf:{FILTERS[ext]}:{OPTIONS}", work / "out", source.name)
+
+
+def jpeg_without_metadata(data):
+    """The JPEG's decoding segments and scans only: no APPn segment except APP14 Adobe (color decoding), no
+    comment and nothing after its end. That drops Exif (camera, GPS, author, thumbnail), XMP, IPTC, ICC, MPF
+    images and JFIF thumbnails. Raises ValueError for a damaged structure."""
+    if data[:2] != b"\xff\xd8":
+        raise ValueError("an image is not a JPEG")
+    out = bytearray(data[:2])
+    index, size = 2, len(data)
+    while True:
+        while index + 1 < size and data[index] == 0xFF and data[index + 1] == 0xFF:
+            index += 1
+        if index + 1 >= size or data[index] != 0xFF:
+            raise ValueError("an image has a damaged JPEG structure")
+        marker = data[index + 1]
+        if marker == 0xD9:
+            return bytes(out + b"\xff\xd9")
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            out += data[index:index + 2]
+            index += 2
+            continue
+        length = int.from_bytes(data[index + 2:index + 4], "big")
+        end = index + 2 + length
+        if index + 4 > size or length < 2 or end > size:
+            raise ValueError("an image has a damaged JPEG structure")
+        application = 0xE0 <= marker <= 0xEF and not (marker == 0xEE and data[index + 4:index + 9] == b"Adobe")
+        if not (application or marker == 0xFE):
+            out += data[index:end]
+        index = end
+        if marker != 0xDA:
+            continue
+        # Entropy-coded data runs to the next marker; a truncated image simply ends with it.
+        start = index
+        while True:
+            index = data.find(b"\xff", index)
+            if index < 0 or index + 1 >= size:
+                return bytes(out + data[start:] + b"\xff\xd9")
+            if data[index + 1] not in SCAN_ESCAPES:
+                break
+            index += 1 if data[index + 1] == 0xFF else 2
+        out += data[start:index]
+
+
+def _resolved(value):
+    return value.get_object() if isinstance(value, IndirectObject) else value
+
+
+def scrub(root, seen):
+    """Drops XMP and private application data from every object root reaches (other pages excepted), and the
+    metadata segments of every JPEG image among them. seen holds objects already handled by another page."""
+    pending = [root]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, IndirectObject):
+            if (item.idnum, item.generation) in seen:
+                continue
+            seen.add((item.idnum, item.generation))
+            item = item.get_object()
+        if isinstance(item, ArrayObject):
+            pending.extend(item)
+            continue
+        if not isinstance(item, DictionaryObject):
+            continue
+        for key in ("/Metadata", "/PieceInfo"):
+            item.pop(key, None)
+        if isinstance(item, StreamObject) and _resolved(item.get("/Subtype")) == "/Image":
+            filters = _resolved(item.get("/Filter"))
+            names = [filters] if isinstance(filters, NameObject) else [_resolved(name) for name in filters or []]
+            if "/DCTDecode" in names:
+                if names != ["/DCTDecode"]:
+                    raise ValueError("an image combines JPEG with another encoding")
+                StreamObject.set_data(item, jpeg_without_metadata(StreamObject.get_data(item)))
+        pending.extend(value for key, value in item.items() if key != "/Parent")
 
 
 def link_only(annotation):
@@ -71,6 +239,7 @@ def rewrite(pdf, target):
     if not reader.pages:
         fail("the PDF has no pages")
     writer = PdfWriter()
+    seen = set()
     for page in reader.pages:
         for key in PAGE_KEYS:
             page.pop(key, None)
@@ -79,6 +248,7 @@ def rewrite(pdf, target):
         page.pop("/Annots", None)
         if links:
             page[NameObject("/Annots")] = ArrayObject(links)
+        scrub(page, seen)
         writer.add_page(page)
     writer.add_metadata({"/Producer": "aiqsa-office-pdf"})
     with open(target, "wb") as stream:
@@ -101,7 +271,7 @@ def main(argv):
         try:
             pages = rewrite(convert(source, work), work / "clean.pdf")
             shutil.move(work / "clean.pdf", output)
-        except (OSError, ValueError, KeyError, PyPdfError) as error:
+        except (OSError, ValueError, KeyError, PyPdfError, zipfile.BadZipFile, SAXException) as error:
             fail(f"could not write {output}: {error}")
     print(f"{output} {pages} pages {output.stat().st_size} bytes")
     return 0
