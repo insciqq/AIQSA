@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { ARTIFACT_FRAGMENT_PLACEHOLDER, ARTIFACT_STORAGE_PLACEHOLDER, parseArtifactNavigateMessage } from "../../contracts/artifactRuntime";
 import { ARTIFACT_RUNTIME_BRIDGE, ARTIFACT_SITE_PLACEHOLDER, artifactRuntimeBridge, type ArtifactRuntimeSite } from "./runtimeBridge";
 
+/** The bridge wraps URL.createObjectURL: each run gets its own URL class, so Node's stays untouched. */
+const isolatedUrl = () => class extends URL {} as typeof URL;
+
 function bridge(initial: Array<[string, string]> = []) {
   const postMessage = vi.fn();
   const listeners = new Map<string, (event: Record<string, unknown>) => void>();
@@ -15,7 +18,7 @@ function bridge(initial: Array<[string, string]> = []) {
   // synchronous quota behavior; there are no network or provider calls.
   new Function("window", "document", "parent", "DOMException", "URL", ARTIFACT_RUNTIME_BRIDGE.replace(
     ARTIFACT_STORAGE_PLACEHOLDER, JSON.stringify(initial).replaceAll("<", "\\u003c")
-  ))(window, document, { postMessage }, DOMException, URL);
+  ))(window, document, { postMessage }, DOMException, isolatedUrl());
   return { window, document, destination, postMessage, listeners };
 }
 
@@ -103,7 +106,7 @@ describe("artifact sandbox bridge", () => {
   function runBridge(window: Record<string, unknown>): void {
     const document = { addEventListener: vi.fn(), getElementById: vi.fn(() => null), getElementsByName: vi.fn(() => []) };
     new Function("window", "document", "parent", "DOMException", "URL",
-      ARTIFACT_RUNTIME_BRIDGE.replace(ARTIFACT_STORAGE_PLACEHOLDER, "[]"))(window, document, { postMessage: vi.fn() }, DOMException, URL);
+      ARTIFACT_RUNTIME_BRIDGE.replace(ARTIFACT_STORAGE_PLACEHOLDER, "[]"))(window, document, { postMessage: vi.fn() }, DOMException, isolatedUrl());
   }
 
   it("deletes every WebRTC entry point so no peer connection or STUN channel can open", () => {
@@ -195,6 +198,7 @@ function localBridge(site: Site = {}, blocks: Record<string, string | Uint8Array
   const nativeFetch = vi.fn(async (...args: unknown[]) => new Response(`native ${args.length}`));
   const window = { addEventListener: vi.fn(), scrollTo: vi.fn(), fetch: nativeFetch as (input?: unknown, init?: RequestInit) => Promise<Response>,
     XMLHttpRequest: NativeXHR, Worker: NativeWorker as unknown as typeof Worker, Element: FakeElement, HTMLImageElement: FakeImage, HTMLMediaElement: FakeMedia, HTMLSourceElement: FakeSource };
+  const URL = isolatedUrl();
   new Function("window", "document", "parent", "DOMException", "URL", artifactRuntimeBridge({ page: "index.html", media: false, files: [], ...site })
     .replace(ARTIFACT_STORAGE_PLACEHOLDER, "[]"))(window, document, { postMessage }, DOMException, URL);
   const click = (href: string, download: string | null = null) => {
@@ -203,7 +207,7 @@ function localBridge(site: Site = {}, blocks: Record<string, string | Uint8Array
     listeners.get("click")!(event);
     return event;
   };
-  return { window, document, postMessage, listeners, nativeFetch, downloads, click, NativeXHR, NativeWorker, FakeElement, FakeImage, FakeMedia, FakeSource };
+  return { window, document, postMessage, listeners, nativeFetch, downloads, click, URL, NativeXHR, NativeWorker, FakeElement, FakeImage, FakeMedia, FakeSource };
 }
 
 describe("artifact local files", () => {
@@ -333,7 +337,7 @@ describe("artifact local files", () => {
     expect(h.postMessage).not.toHaveBeenCalled();
   });
 
-  it("navigates to local pages, downloads other local files and reports unavailable targets", () => {
+  it("navigates to local pages, hands other local files to the viewer to save and reports unavailable targets", async () => {
     const files: ArtifactRuntimeSite["files"] = [["docs/index.html", "text/html", "page"], ["docs/b.html", "text/html", "page"], ["index.html", "text/html", "page"],
       ["files/report.csv", "text/csv", "block"], ["img/a.png", "image/png", "inline"]];
     const h = localBridge({ page: "docs/index.html", files }, { "files/report.csv": "a,b\n" });
@@ -351,12 +355,15 @@ describe("artifact local files", () => {
     expect(h.window.scrollTo).toHaveBeenCalledWith(0, 0);
     h.click("https://app.example/c/nothing.html");
     expect(h.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "aiqsa_artifact_open_link", href: "https://app.example/c/nothing.html" }, "*");
-    h.click("/files/report.csv");
-    h.click("../files/report.csv?x=1", "Report 2026.csv");
-    expect(h.downloads.map(({ href, download }) => [href.slice(0, 5), download])).toEqual([["blob:", "report.csv"], ["blob:", "Report 2026.csv"]]);
-    expect(h.downloads.every(anchor => anchor.click.mock.calls.length === 1 && anchor.remove.mock.calls.length === 1)).toBe(true);
-    expect(h.document.body.appendChild).toHaveBeenCalledTimes(2);
-    expect(h.postMessage).toHaveBeenCalledOnce();
+    expect(h.click("/files/report.csv").preventDefault).toHaveBeenCalledOnce();
+    h.click("../files/report.csv?x=1", " Report 2026.csv ");
+    const saved = h.postMessage.mock.calls.slice(1).map(([value, target]) => [value as { type: string; name: string; blob: Blob }, target] as const);
+    expect(saved.map(([value, target]) => [Object.keys(value).sort(), value.type, value.name, target])).toEqual([
+      [["blob", "name", "type"], "aiqsa_artifact_download", "report.csv", "*"], [["blob", "name", "type"], "aiqsa_artifact_download", "Report 2026.csv", "*"]]);
+    expect(await Promise.all(saved.map(async ([value]) => [value.blob.type, await value.blob.text()]))).toEqual([["text/csv", "a,b\n"], ["text/csv", "a,b\n"]]);
+    // Nothing downloads inside the frame, where Firefox and WebKit refuse it.
+    expect(h.downloads).toEqual([]);
+    expect(h.document.body.appendChild).not.toHaveBeenCalled();
     for (const [href, message] of [["missing.html", "Artifact link target not found: docs/missing.html"],
       ["../../outside.html", "Artifact link target not found: ../../outside.html"],
       ["../img/a.png", "Artifact file img/a.png is inlined into this page by a static reference or an exact path string, so a link cannot read it by path"]]) {
@@ -462,6 +469,27 @@ describe("artifact local files", () => {
     expect(ARTIFACT_RUNTIME_BRIDGE.split(ARTIFACT_SITE_PLACEHOLDER)).toHaveLength(2);
   });
 
+  it("hands the viewer blob: and data: downloads whose bytes the page holds and leaves other ones to the browser", async () => {
+    const h = localBridge();
+    const blob = new Blob(["chart"], { type: "image/png" });
+    const address = h.URL.createObjectURL(blob);
+    const sent = () => h.postMessage.mock.calls.map(([value]) => value as { type: string; name: string; blob: Blob });
+    expect(h.click(address, "chart.png").preventDefault).toHaveBeenCalledOnce();
+    expect(h.click(` ${address} `, "").preventDefault).toHaveBeenCalledOnce();
+    expect(h.click("data:text/csv;charset=utf-8,a%2Cb%0A", "table.csv").preventDefault).toHaveBeenCalledOnce();
+    expect(sent().slice(0, 2)).toEqual([{ type: "aiqsa_artifact_download", name: "chart.png", blob }, { type: "aiqsa_artifact_download", name: "", blob }]);
+    const data = sent()[2]!;
+    expect([data.name, data.blob.type, await data.blob.text()]).toEqual(["table.csv", "text/csv;charset=utf-8", "a,b\n"]);
+    // Bytes the page does not hold (a revoked or foreign address, an invalid data: URL) stay with the browser.
+    h.URL.revokeObjectURL(address);
+    for (const href of [address, "blob:https://app.example/unknown", "data:text/plain;base64,%%%"]) {
+      expect(h.click(href, "x.txt").preventDefault, href).not.toHaveBeenCalled();
+    }
+    // Without a download attribute a blob: address is neither a download nor a link the viewer opens.
+    expect(h.click(h.URL.createObjectURL(blob)).preventDefault).toHaveBeenCalledOnce();
+    expect(h.postMessage).toHaveBeenCalledTimes(3);
+  });
+
   it("scrolls to the anchor named by the link that opened the page once the page has loaded", () => {
     const run = (fragment: string | null) => {
       const load = vi.fn<() => void>();
@@ -472,7 +500,7 @@ describe("artifact local files", () => {
       }) };
       const source = ARTIFACT_RUNTIME_BRIDGE.replace(ARTIFACT_STORAGE_PLACEHOLDER, "[]")
         .replace(ARTIFACT_FRAGMENT_PLACEHOLDER, fragment === null ? ARTIFACT_FRAGMENT_PLACEHOLDER : JSON.stringify(fragment));
-      new Function("window", "document", "parent", "DOMException", "URL", source)(window, document, { postMessage: vi.fn() }, DOMException, URL);
+      new Function("window", "document", "parent", "DOMException", "URL", source)(window, document, { postMessage: vi.fn() }, DOMException, isolatedUrl());
       return { load, destination, window };
     };
     const arrived = run("part%20two");
@@ -852,5 +880,75 @@ describe("artifact resource hints and nested documents", () => {
     expect(page.written).toEqual(['<basefont data-aiqsa-link rel="preconnect" href="https://trap.example/w">']);
     expect(page.unsafe(document)).toEqual([]);
     expect(page.violations).toEqual([]);
+  });
+});
+
+type JsdomConsole = { on(event: "jsdomError", listener: (error: Error) => void): void };
+const jsdomModule = createRequire(import.meta.url)("jsdom") as {
+  JSDOM: new (html: string, options: { runScripts: "outside-only"; url: string; virtualConsole: JsdomConsole }) => { window: HintWindow };
+  VirtualConsole: new () => JsdomConsole;
+};
+
+/** The shipped bridge in a real DOM whose object URLs are recorded and whose own navigation errors are kept. */
+function downloadPage() {
+  const virtualConsole = new jsdomModule.VirtualConsole();
+  const errors: string[] = [];
+  virtualConsole.on("jsdomError", error => errors.push(error.message));
+  const { window } = new jsdomModule.JSDOM("<!doctype html><html><body></body></html>", { runScripts: "outside-only", url: "https://app.example/c/chat-1", virtualConsole });
+  let next = 0;
+  Object.assign(window.URL, { createObjectURL: () => `blob:https://app.example/${++next}`, revokeObjectURL: () => {} });
+  const posted: Array<{ type: string; name?: string; blob?: unknown; href?: string }> = [];
+  window.postMessage = ((value: (typeof posted)[number]) => { posted.push(value); }) as typeof window.postMessage;
+  window.eval(ARTIFACT_RUNTIME_BRIDGE);
+  return { window, document: window.document, posted, errors };
+}
+
+describe("artifact downloads from anchors outside the document", () => {
+  it("answers click() and untrusted clicks on detached anchors once, keeps their listeners and leaves no browser download beside it", () => {
+    const { window, document, posted, errors } = downloadPage();
+    const blob = new window.Blob(["x,y\n"], { type: "text/csv" });
+    const anchor = (name: string, connected = false) => {
+      const element = document.createElement("a");
+      element.href = window.URL.createObjectURL(blob);
+      element.download = name;
+      if (connected) document.body.append(element);
+      return element;
+    };
+    // click() on a detached anchor, as chart and canvas export helpers do; its own listener still runs.
+    const plain = anchor("plain.csv");
+    const listener = vi.fn();
+    plain.addEventListener("click", listener);
+    plain.click();
+    // FileSaver.js and jsPDF: an untrusted, non-cancelable click on a detached anchor.
+    const result = anchor("saver.csv").dispatchEvent(new window.MouseEvent("click"));
+    // The same event on a connected anchor reaches the document listener once, as a cancelable copy.
+    anchor("connected.csv", true).dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    // A click on content inside a detached anchor.
+    const outer = anchor("child.csv");
+    const child = document.createElement("span");
+    outer.append(child);
+    child.click();
+    expect(posted.map(value => [value.type, value.name])).toEqual([["aiqsa_artifact_download", "plain.csv"], ["aiqsa_artifact_download", "saver.csv"],
+      ["aiqsa_artifact_download", "connected.csv"], ["aiqsa_artifact_download", "child.csv"]]);
+    expect(posted.every(value => value.blob === blob)).toBe(true);
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0]![0] as Event).defaultPrevented).toBe(true);
+    expect(result).toBe(false);
+    expect(errors).toEqual([]);
+    // A detached link without bytes of this page is a link like any other: the viewer confirms it.
+    posted.length = 0;
+    const external = document.createElement("a");
+    external.href = "https://example.invalid/report";
+    external.click();
+    expect(posted).toEqual([{ type: "aiqsa_artifact_open_link", href: "https://example.invalid/report" }]);
+    // Other elements and events keep the browser's behavior.
+    const button = document.createElement("button");
+    const pressed = vi.fn();
+    button.addEventListener("click", pressed);
+    button.click();
+    expect(button.dispatchEvent(new window.Event("click"))).toBe(true);
+    expect(pressed).toHaveBeenCalledTimes(2);
+    expect(posted).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 });
