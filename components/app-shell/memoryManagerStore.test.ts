@@ -7,6 +7,7 @@ import {
   deactivateMemoryManager,
   forgetCurrentMemory,
   invalidateMemoryManagerData,
+  MEMORY_BACKGROUND_REFRESH_MAX_PAGES,
   openMemoryDetail,
   openMemoryManager,
   refreshMemoryList,
@@ -416,5 +417,122 @@ describe("Memory manager store", () => {
       "/api/me/memories?pageSize=20&category=WORK&provenance=LEARNED",
       expect.objectContaining({ method: "GET" })
     );
+  });
+
+  describe("background refresh", () => {
+    const known = memoryConsumerItemFixture({ memoryRef: "opaque-known", statement: "I work on ingestion." });
+    const deeper = memoryConsumerItemFixture({ memoryRef: "opaque-deeper", statement: "I live in Riga." });
+    const learned = memoryConsumerItemFixture({
+      memoryRef: "opaque-learned",
+      provenance: "LEARNED",
+      statement: "I prefer tea."
+    });
+
+    function readyList(overrides: Partial<ReturnType<typeof useMemoryManagerStore.getState>> = {}) {
+      useMemoryManagerStore.setState({
+        listLoadState: "ready",
+        loadedPages: 2,
+        memories: [known, deeper],
+        nextCursor: "opaque-cursor-3",
+        ...overrides
+      });
+    }
+
+    it("re-reads the loaded pages without leaving ready and shows a newly learned row", async () => {
+      readyList();
+      const states: string[] = [];
+      const unsubscribe = useMemoryManagerStore.subscribe((state) => states.push(state.listLoadState));
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(json(memoryConsumerListFixture([learned, known], "opaque-cursor-2")))
+        .mockResolvedValueOnce(json(memoryConsumerListFixture([deeper], "opaque-cursor-3b")));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await refreshMemoryList({ background: true });
+      unsubscribe();
+
+      expect(states.every((state) => state === "ready")).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/me/memories?pageSize=20");
+      expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me/memories?pageSize=20&cursor=opaque-cursor-2");
+      expect(useMemoryManagerStore.getState()).toMatchObject({
+        listError: null,
+        listLoadState: "ready",
+        loadedPages: 2,
+        memories: [learned, known, deeper],
+        nextCursor: "opaque-cursor-3b"
+      });
+    });
+
+    it("skips while a draft, a mutation, an unreconciled outcome, a search or a read is open", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      for (const overrides of [
+        { screen: "create" as const },
+        { screen: "edit" as const },
+        { screen: "forget" as const },
+        { mutationState: "saving" as const },
+        { mutationOutcomeUnknown: true },
+        { queryApplied: "tea" },
+        { listLoadState: "loading" as const },
+        { listLoadState: "error" as const },
+        { resetPending: true },
+        { loadedPages: 0 },
+        { loadedPages: MEMORY_BACKGROUND_REFRESH_MAX_PAGES + 1 }
+      ]) {
+        resetMemoryManagerStoreForTest();
+        readyList(overrides);
+        await refreshMemoryList({ background: true });
+        expect(useMemoryManagerStore.getState().memories, JSON.stringify(overrides)).toEqual([known, deeper]);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("drops its response once a draft opens or a newer read starts", async () => {
+      readyList({ loadedPages: 1, nextCursor: null });
+      let resolve: ((response: Response) => void) | undefined;
+      vi.stubGlobal("fetch", vi.fn().mockReturnValueOnce(new Promise<Response>((settle) => {
+        resolve = settle;
+      })));
+
+      const pending = refreshMemoryList({ background: true });
+      beginCreateMemory();
+      resolve?.(json(memoryConsumerListFixture([learned])));
+      await pending;
+
+      expect(useMemoryManagerStore.getState()).toMatchObject({
+        listLoadState: "ready",
+        memories: [known, deeper],
+        screen: "create"
+      });
+    });
+
+    it("keeps the last known rows silently when the read fails", async () => {
+      readyList();
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ error: "memory_action_failed" }, 503)));
+
+      await expect(refreshMemoryList({ background: true })).resolves.toBeUndefined();
+
+      expect(useMemoryManagerStore.getState()).toMatchObject({
+        listError: null,
+        listLoadState: "ready",
+        loadedPages: 2,
+        memories: [known, deeper],
+        nextCursor: "opaque-cursor-3"
+      });
+    });
+
+    it("counts loaded pages through foreground reads and appends", async () => {
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(json(memoryConsumerListFixture([known], "opaque-cursor-2")))
+        .mockResolvedValueOnce(json(memoryConsumerListFixture([deeper], null))));
+
+      await openMemoryManager("account-1");
+      expect(useMemoryManagerStore.getState().loadedPages).toBe(1);
+      await refreshMemoryList({ append: true });
+      expect(useMemoryManagerStore.getState()).toMatchObject({
+        loadedPages: 2,
+        memories: [known, deeper]
+      });
+    });
   });
 });
