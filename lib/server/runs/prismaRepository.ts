@@ -1638,6 +1638,7 @@ export function createPrismaRunRepository(
                     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
                     select: {
                       byteSize: true,
+                      checksum: true,
                       fileName: true,
                       id: true,
                       mimeType: true,
