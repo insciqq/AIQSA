@@ -565,6 +565,28 @@ describe("render notes in the tool result", () => {
   });
 });
 
+describe("owner route file references", () => {
+  it("names only files of the owner's non-temporary personal chats and unsent uploads, and answers any other id like a missing one", async () => {
+    const findMany = vi.fn(async (_query: unknown) => []);
+    const getObject = vi.fn();
+    const db = { artifactVersion: { findFirst: async () => null, findUnique: async () => null }, chat: { findFirst: vi.fn() },
+      attachment: { findMany }, $transaction: vi.fn() } as unknown as PrismaClient;
+    const service = createArtifactService(db, { getObject } as unknown as StorageAdapter);
+    const created = await createArtifactVersionHandler({ resolveAuth: async () => ({ userId: "owner" }) as never, service })(
+      new Request("https://app.example/api/artifacts", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ operation: { intent: "create", kind: "html", title: "Files", entrypoint: "index.html",
+          files: [inlinePage, { path: "photo.png", mimeType: "image/png", assetRef: "temporary-chat-file" }] } }) }));
+    expect(created.status).toBe(400);
+    await expect(created.json()).resolves.toEqual({ error: "artifact_asset_unavailable" });
+    expect(findMany).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ where: {
+      id: { in: ["temporary-chat-file"] }, userId: "owner", projectId: null,
+      OR: [{ chat: { userId: "owner", projectId: null, memoryMode: { not: "TEMPORARY" }, permanentDeletionAt: null } },
+        { chatId: null, messageId: null, savedAt: null }]
+    } }));
+    expect(getObject).not.toHaveBeenCalled();
+  });
+});
+
 describe("artifact creation admission", () => {
   it("refuses a creation past the process limit before any read: a typed tool error for the model, 429 for the owner", async () => {
     let release!: () => void;
