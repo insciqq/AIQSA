@@ -67,7 +67,8 @@ function valueTokens(value: string): number {
 export function parseArtifactCss(source: string, path: string): { root: Root; references: ArtifactCssReference[]; text: () => string } {
   if (Buffer.byteLength(source) > ARTIFACT_CSS_LIMITS.maxBytes || cssStatements(source) > ARTIFACT_CSS_LIMITS.maxStatements) tooLarge(path);
   let root: Root;
-  try { root = postcss.parse(source, { from: undefined }); } catch { return invalid(path); }
+  // map: false: an inline previous source map in untrusted CSS is never decoded.
+  try { root = postcss.parse(source, { from: undefined, map: false }); } catch { return invalid(path); }
   const references: ArtifactCssReference[] = [];
   const pending: Array<() => void> = [];
   let tokens = 0;
@@ -144,5 +145,5 @@ export function expandArtifactCssImport(reference: ArtifactCssReference, importe
   if (condition) wrappers.push({ name: "media", params: condition });
   let text = imported;
   for (const wrapper of wrappers.reverse()) text = `@${wrapper.name}${wrapper.params ? ` ${wrapper.params}` : ""}{${text}}`;
-  try { reference.atRule.replaceWith(postcss.parse(text, { from: undefined }).nodes); } catch { invalid(path); }
+  try { reference.atRule.replaceWith(postcss.parse(text, { from: undefined, map: false }).nodes); } catch { invalid(path); }
 }
