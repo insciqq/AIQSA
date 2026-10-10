@@ -315,6 +315,12 @@ describe("AdminUsersSection", () => {
     expect(within(page).getByTestId("admin-user-scim-pending")).toHaveTextContent(
       "SCIM deactivation pending: 1 Project needs a new Owner. The identity provider deactivated this account"
     );
+    // The header pill agrees with the banner: an account that cannot sign in never reads as Active.
+    const pill = within(page).getByText("Deactivation pending");
+    expect(pill).toHaveAttribute("data-user-status", "active");
+    expect(pill).toHaveAttribute("data-deactivation-pending", "true");
+    expect(pill).toHaveClass("text-caution");
+    expect(within(page).queryByText("Active")).not.toBeInTheDocument();
   });
 
   it("approves a pending user with the group chosen in the row and rejects with a confirmation", async () => {
