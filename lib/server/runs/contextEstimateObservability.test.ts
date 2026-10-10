@@ -48,6 +48,15 @@ describe("context estimate observability", () => {
     expect(JSON.stringify(record)).not.toContain(PRIVATE);
   });
 
+  it("compares the reported input with the request as dispatched, never the room kept for follow-ups", () => {
+    const input = request("openai_compatible", "gpt-5.4");
+    observeContextEstimate(openAIResponsesToolBridge, input, { inputTokens: 900 });
+    observeContextEstimate(openAIResponsesToolBridge, { ...input, followupContextReserveTokens: 8_192 }, { inputTokens: 900 });
+    const [[, plain], [, reserved]] = logEvent.mock.calls;
+    expect(reserved).toEqual(plain);
+    expect(plain.estimated_tokens).toBe(providerRequestTokenEstimate(input, openAIResponsesToolBridge));
+  });
+
   it("names the estimate family of an OpenAI-compatible route", () => {
     observeContextEstimate(openAIResponsesToolBridge, request("openai_compatible", "gpt-5.4"), { inputTokens: 500 });
     observeContextEstimate(openAIResponsesToolBridge, request("openai_compatible", "llama-3.3-70b"), { inputTokens: 500 });
