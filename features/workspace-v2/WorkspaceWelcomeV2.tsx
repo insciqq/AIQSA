@@ -478,6 +478,10 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
         active={compactKnowledgePolling}
         onRefresh={knowledgeView?.list.onRefresh}
       />
+      <MemoryListPollingV2
+        active={memoryListPollingActiveV2({ activeTab, memory: memoryData })}
+        onRefresh={refreshMemoryListInBackgroundV2}
+      />
       <LibraryV2
         activeTab={activeTab}
         busy={navigationBusy}
@@ -696,8 +700,99 @@ export function CompactKnowledgePollingV2({
   return null;
 }
 
+/** Calm cadence for picking up facts learned after a chat finished. */
+export const MEMORY_LIST_POLL_INTERVAL_MS = 30_000;
+
+export function memoryListPollingActiveV2(input: Readonly<{
+  activeTab: LibraryTabIdV2;
+  memory: Readonly<{
+    settings: Readonly<{ learnAutomatically: boolean }>;
+    status: string;
+  }> | null;
+}>): boolean {
+  return input.activeTab === "memory" &&
+    input.memory?.status === "ON" &&
+    input.memory.settings.learnAutomatically;
+}
+
+/**
+ * Background extraction finishes in a worker after the chat run, with no
+ * channel to the browser. While the Memory list is open, visible and learning,
+ * re-read it quietly on a calm interval and once when the page becomes visible
+ * again. A hidden page schedules nothing.
+ */
+export function MemoryListPollingV2({
+  active,
+  onRefresh
+}: Readonly<{
+  active: boolean;
+  onRefresh(): Promise<void>;
+}>) {
+  const refreshRef = useRef(onRefresh);
+
+  useEffect(() => {
+    refreshRef.current = onRefresh;
+  }, [onRefresh]);
+
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    let running = false;
+    let timer: number | null = null;
+
+    const clear = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+    };
+    const schedule = (delay: number) => {
+      clear();
+      if (cancelled || document.visibilityState !== "visible") return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        void run();
+      }, delay);
+    };
+    const run = async () => {
+      if (cancelled || running || document.visibilityState !== "visible") return;
+      running = true;
+      try {
+        await refreshRef.current();
+      } catch {
+        // A failed background read keeps the last known rows silently.
+      } finally {
+        running = false;
+        schedule(MEMORY_LIST_POLL_INTERVAL_MS);
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        clear();
+        return;
+      }
+      if (!running) {
+        clear();
+        void run();
+      }
+    };
+
+    schedule(MEMORY_LIST_POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      clear();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [active]);
+
+  return null;
+}
+
 export function formatLibraryDate(value: string): string {
   return formatStudioDate(value);
+}
+
+function refreshMemoryListInBackgroundV2(): Promise<void> {
+  return refreshMemoryList({ background: true });
 }
 
 /** Only input validation reaches the user; Memory failures stay silent. */
