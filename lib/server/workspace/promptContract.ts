@@ -1,6 +1,7 @@
 import type { WorkspaceRunAdmissionPlan } from "./admission";
 import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "./browserGuidance";
 import { WORKSPACE_GUIDE_PATHS } from "./guides";
+import { WORKSPACE_BROWSER_SESSION_USER_PATH } from "./secrets/manifest";
 
 export const WORKSPACE_GUIDANCE_VERSION = 1 as const;
 
@@ -51,6 +52,7 @@ export function workspacePromptContract(input: Readonly<{
     "Saved personal Workspace accesses are prepared automatically for personal chats; shared Projects do not receive personal secrets. SSH is configured for noninteractive use, and saved environment variables are available in each command and its child processes. Read /workspace/SECRETS.md for text secrets, environment names and exact original file/key paths. Use the accesses needed for the user's task. Values are not automatically included in this prompt. Do not copy managed secrets or the guide into project files or downloads unless the user requests it.",
     `Before creating or editing XLSX, DOCX or PPTX files, read ${WORKSPACE_GUIDE_PATHS.office}.`,
     `Before driving a website, read ${WORKSPACE_GUIDE_PATHS.browser}.`,
+    WORKSPACE_BROWSER_SESSION_USER_PATH,
     `Before working with PSD files, read ${WORKSPACE_GUIDE_PATHS.psd}.`,
     `Before building, changing or saving a reusable script Skill, read ${WORKSPACE_GUIDE_PATHS.skills}.`,
     WORKSPACE_WEBSITE_ACTION_SAFETY,
