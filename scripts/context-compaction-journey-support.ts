@@ -29,16 +29,26 @@ export const JOURNEY_LIMITS = Object.freeze({
   answerMaxOutputTokens: 2_048,
   /** Share of the estimated budget the opening brief occupies. */
   briefBudgetShare: 0.22,
-  /** Largest filler step, so one turn never jumps past the pass window. */
+  /** Largest filler step, so one turn never jumps far past the trigger. */
   fillerMaxBudgetShare: 0.12,
   /** Where a filler aims the next request once the trigger is near. */
   fillerTargetShare: 0.86,
   fillerMinTokens: 256,
+  /** The first summary belongs to the first turn whose dispatched estimate exceeds this share. */
   triggerShare: CONTEXT_COMPACTION_LIMITS.triggerRatio,
-  passMinShare: 0.6,
-  passMaxShare: 0.95,
   maxMessageBytes: 160 * 1024,
   maxRouteRequestBytes: 1024 * 1024
+});
+
+export type JourneyRatioBand = Readonly<{ max: number; min: number }>;
+
+/**
+ * The accepted provider-reported / estimated prompt ratio of every
+ * single-request turn, per route. A route without a band reports its ratios
+ * unchecked: the Anthropic estimate still omits the hidden tool-use prompt.
+ */
+export const JOURNEY_RATIO_BANDS: Readonly<Partial<Record<JourneyRoute, JourneyRatioBand>>> = Object.freeze({
+  "codex-lb": Object.freeze({ max: 1, min: 0.85 })
 });
 
 /** The bootstrap token of a test-mode stand, as tests/e2e/support/localAuth.ts uses it. */
@@ -773,11 +783,67 @@ export function messageText(message: Pick<ChatMessageWire, "content">): string {
   return record(message.content) ? textFromContentBlocks(message.content as { blocks?: unknown[] }) : "";
 }
 
+// Run stream --------------------------------------------------------------------------
+
+/** A compaction status line is a few hundred bytes; any longer line is skipped whole. */
+const STREAM_LINE_MAX_CHARS = 4_096;
+
+/**
+ * Reads a run's own event stream for the one fact the chat projection cannot
+ * give: whether the turn bought notes. A bought summary publishes a running
+ * compaction status before its first call, while notes carried from an
+ * earlier answer settle without one. Text arrives in arbitrary pieces and
+ * nothing beyond the current bounded line is kept.
+ */
+export function createRunStreamScanner(): Readonly<{ push(text: string): void; summaryCycles(): number }> {
+  let event = "";
+  let line = "";
+  let skipping = false;
+  let cycles = 0;
+  const complete = (value: string) => {
+    if (value === "") {
+      event = "";
+      return;
+    }
+    if (value.startsWith("event:")) {
+      event = value.slice("event:".length).trim();
+      return;
+    }
+    if (event !== "artifact" || !value.startsWith("data:")) return;
+    let data: unknown = null;
+    try {
+      data = JSON.parse(value.slice("data:".length));
+    } catch {
+      return;
+    }
+    if (record(data) && data.artifactType === "context_compaction" && record(data.payload) &&
+      data.payload.state === "running") cycles += 1;
+  };
+  return {
+    push(text) {
+      const pieces = text.split("\n");
+      pieces.forEach((piece, index) => {
+        if (!skipping && line.length + piece.length > STREAM_LINE_MAX_CHARS) {
+          skipping = true;
+          line = "";
+        }
+        if (!skipping) line += piece;
+        if (index === pieces.length - 1) return;
+        if (!skipping) complete(line.replace(/\r$/u, ""));
+        line = "";
+        skipping = false;
+      });
+    },
+    summaryCycles: () => cycles
+  };
+}
+
 // Evidence and verdict ---------------------------------------------------------------
 
 export type JourneyTurnKind = "brief" | "correction" | "filler" | "probe" | "rule";
 
 export type JourneyRound = Readonly<{
+  /** The turn's dispatched estimate as a share of the budget. */
   budgetShare: number | null;
   /** How the full prompt was derived from the ledger components. */
   reportedAccounting: "exclusive_detected" | "inclusive" | null;
@@ -790,7 +856,10 @@ export type JourneyRound = Readonly<{
   kind: JourneyTurnKind;
   ratio: number | null;
   reportedInputTokens: number | null;
+  /** The planner's dispatched estimate of the request that bought or applied notes, as a share of the budget. */
   summaryAtBudgetShare: number | null;
+  /** The run stream showed a summary cycle (true), none (false), or could not be read (null). */
+  summaryBought: boolean | null;
   turn: number;
 }>;
 
@@ -798,11 +867,14 @@ const rounded = (value: number) => Math.round(value * 1_000) / 1_000;
 
 /**
  * One turn's content-free evidence. The estimate is the stand's own session
- * measurement of the final request (its after-answer phase minus the answer's
- * estimate). `reportedInputTokens` is the turn's full provider prompt from the
- * usage ledger (`fullPromptTokens`), with its cache components alongside. The
- * ratio (full prompt / estimate) is given only for a single-round turn: summary
- * calls and tool rounds add input the final request estimate does not describe.
+ * measurement of the final request as dispatched (its after-answer phase minus
+ * the answer's estimate; room a run reserves for follow-ups is never part of
+ * it). `reportedInputTokens` is the turn's full provider prompt from the usage
+ * ledger (`fullPromptTokens`), with its cache components alongside. The ratio
+ * (full prompt / estimate) is given for every turn that sent one provider
+ * request: no tool rounds and no bought summary (notes carried from an earlier
+ * answer cost no call), since those add input the final request estimate does
+ * not describe.
  */
 export function journeyRound(input: Readonly<{
   answerTokens: number;
@@ -810,6 +882,7 @@ export function journeyRound(input: Readonly<{
   kind: JourneyTurnKind;
   reported: LedgerUsage | null;
   session: SessionContextStatus | null;
+  summaryBought: boolean | null;
   toolCalls: number;
   turn: number;
 }>): JourneyRound {
@@ -821,6 +894,7 @@ export function journeyRound(input: Readonly<{
   const share = (tokens: number | null) => tokens !== null && budget ? rounded(tokens / budget) : null;
   const full = input.reported ? fullPromptTokens(input.reported) : null;
   const reported = full?.tokens ?? null;
+  const singleRequest = input.toolCalls === 0 && (input.compaction === null || input.summaryBought === false);
   return {
     budgetShare: share(estimated),
     reportedAccounting: full?.accounting ?? null,
@@ -830,9 +904,10 @@ export function journeyRound(input: Readonly<{
     compactionOutcome: input.compaction?.outcome ?? null,
     estimatedInputTokens: estimated,
     kind: input.kind,
-    ratio: estimated && reported && input.compaction === null && input.toolCalls === 0 ? rounded(reported / estimated) : null,
+    ratio: estimated && reported && singleRequest ? rounded(reported / estimated) : null,
     reportedInputTokens: reported,
     summaryAtBudgetShare: input.compaction?.outcome === "summary_applied" ? share(input.compaction.beforeTokens) : null,
+    summaryBought: input.summaryBought,
     turn: input.turn
   };
 }
@@ -841,18 +916,51 @@ export type JourneyVerdict = Readonly<{
   code: string | null;
   compactionTriggered: boolean;
   firstSummaryAtBudgetShare: number | null;
+  /**
+   * The first summary's share of the budget in provider-reported tokens: the
+   * request that bought it never reached the provider, so its dispatched
+   * estimate is scaled by the ratio of the latest single-request turn before it.
+   */
+  firstSummaryAtReportedBudgetShare: number | null;
   passed: boolean;
 }>;
 
-export function journeyVerdict(rounds: readonly JourneyRound[], probeAnswerCarriesCorrections: boolean): JourneyVerdict {
+/**
+ * Passes when the first summary was bought at the first turn whose dispatched
+ * estimate exceeded the trigger (no earlier turn above it), every
+ * single-request ratio lies in the route's band (when it has one) and the
+ * probe answer carried both corrections.
+ */
+export function journeyVerdict(
+  rounds: readonly JourneyRound[],
+  probeAnswerCarriesCorrections: boolean,
+  ratioBand: JourneyRatioBand | null = null
+): JourneyVerdict {
   const compactionTriggered = rounds.some((round) => round.compactionOutcome !== null);
-  const firstSummaryAtBudgetShare = rounds.find((round) => round.summaryAtBudgetShare !== null)?.summaryAtBudgetShare ?? null;
-  const code = !compactionTriggered ? "compaction_not_triggered"
-    : firstSummaryAtBudgetShare === null ? "summary_not_bought"
-      : firstSummaryAtBudgetShare < JOURNEY_LIMITS.passMinShare || firstSummaryAtBudgetShare > JOURNEY_LIMITS.passMaxShare
-        ? "summary_share_out_of_range"
-        : !probeAnswerCarriesCorrections ? "probe_answer_missing_corrections" : null;
-  return { code, compactionTriggered, firstSummaryAtBudgetShare, passed: code === null };
+  const first = rounds.findIndex((round) => round.summaryAtBudgetShare !== null);
+  const firstSummaryAtBudgetShare = first >= 0 ? rounds[first]!.summaryAtBudgetShare : null;
+  const earlier = first >= 0 ? rounds.slice(0, first) : rounds;
+  const ratioBefore = [...earlier].reverse().find((round) => round.ratio !== null)?.ratio ?? null;
+  const ratios = rounds.flatMap((round) => round.ratio === null ? [] : [round.ratio]);
+  const code = (() => {
+    if (!compactionTriggered) return "compaction_not_triggered";
+    if (firstSummaryAtBudgetShare === null) return "summary_not_bought";
+    if (firstSummaryAtBudgetShare <= JOURNEY_LIMITS.triggerShare) return "summary_before_trigger";
+    if (earlier.some((round) => round.budgetShare !== null && round.budgetShare > JOURNEY_LIMITS.triggerShare)) {
+      return "trigger_crossed_without_summary";
+    }
+    if (ratioBand && ratios.length === 0) return "ratio_missing";
+    if (ratioBand && ratios.some((ratio) => ratio < ratioBand.min || ratio > ratioBand.max)) return "ratio_out_of_range";
+    return probeAnswerCarriesCorrections ? null : "probe_answer_missing_corrections";
+  })();
+  return {
+    code,
+    compactionTriggered,
+    firstSummaryAtBudgetShare,
+    firstSummaryAtReportedBudgetShare: firstSummaryAtBudgetShare !== null && ratioBefore !== null
+      ? rounded(firstSummaryAtBudgetShare * ratioBefore) : null,
+    passed: code === null
+  };
 }
 
 /** Exit 0 needs at least one executed route and every executed route passing;

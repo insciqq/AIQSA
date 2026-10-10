@@ -23,19 +23,24 @@
  *    journey: a long Cyrillic brief, two corrections, a standing three-item
  *    list rule, fillers until the session estimate nears the trigger or a
  *    summary is bought, then one probe that needs the corrections and rule;
- * 4. after every turn reads the chat projection (session context status and
- *    the run's context-compaction status) and the Admin usage ledger
- *    (provider-reported input tokens);
+ * 4. after every turn reads the chat projection (the session context status,
+ *    which estimates the request as dispatched, and the run's
+ *    context-compaction status), whether the run's own event stream began a
+ *    summary cycle, and the Admin usage ledger (provider-reported input tokens);
  * 5. prints ONE sanitized JSON document (numbers, booleans, stable codes and
- *    model ids only; prompts and answers are never printed or persisted);
+ *    model ids only; prompts and answers are never printed or persisted),
+ *    including the reported/estimated ratio of every single-request turn and
+ *    the first summary's share of the budget in reported tokens;
  * 6. deletes the journey chat; provider configuration stays unless
  *    AIQSA_JOURNEY_CLEANUP_PROVIDERS=1 (then a connection this run created is
  *    deleted, or disabled when run bindings still reference it).
  *
- * Exit 0 only when at least one route ran, every route that ran bought its
- * first summary between 0.6 and 0.95 of the estimated budget and its probe
- * answer carried both corrections as a three-item list, and no explicitly
- * requested route was skipped.
+ * Exit 0 only when at least one route ran and every route that ran bought its
+ * first summary at the first turn whose dispatched estimate exceeded 80 % of
+ * the budget (no earlier turn above it), kept every single-request
+ * reported/estimated ratio inside its route band (codex-lb 0.85-1.0; Anthropic
+ * is reported unchecked), and got a probe answer carrying both corrections as
+ * a three-item list, and no explicitly requested route was skipped.
  *
  * Environment (read from the process only; no .env loading):
  * - AIQSA_JOURNEY_BASE_URL (default http://127.0.0.1:3000; plain HTTP only on loopback)
@@ -74,6 +79,7 @@ import {
   JOURNEY_CORRECTIONS,
   JOURNEY_LIMITS,
   JOURNEY_PROBE,
+  JOURNEY_RATIO_BANDS,
   JOURNEY_RULE,
   JOURNEY_TEST_AUTH_TOKEN,
   JourneyFailure,
@@ -81,6 +87,7 @@ import {
   codexLbSetupBody,
   contextWindowUpdate,
   createDebugEmitter,
+  createRunStreamScanner,
   debugHttpLine,
   exceptionDiagnostics,
   journeyBrief,
@@ -250,17 +257,27 @@ async function json(
   }
 }
 
-/** Consumes a streamed answer without keeping any of it. */
-async function drain(response: Response, stage: JourneyStage): Promise<void> {
+/**
+ * Consumes a streamed answer without keeping any of it. A run's event stream
+ * also tells whether the turn began a summary cycle; any other response
+ * (a JSON admission of a preparing run) leaves that unknown.
+ */
+async function drain(response: Response, stage: JourneyStage): Promise<Readonly<{ summaryBought: boolean | null }>> {
+  const scanner = response.headers.get("content-type")?.startsWith("text/event-stream") ? createRunStreamScanner() : null;
+  const decoder = new TextDecoder();
   const reader = response.body?.getReader();
-  if (!reader) return;
+  if (!reader) return { summaryBought: null };
   let bytes = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done) {
+        scanner?.push(`${decoder.decode()}\n`);
+        return { summaryBought: scanner ? scanner.summaryCycles() > 0 : null };
+      }
       bytes += value.byteLength;
       if (bytes > STREAM_BYTES) fail(stage, "stream_bound_exceeded");
+      scanner?.push(decoder.decode(value, { stream: true }));
     }
   } catch (error) {
     if (error instanceof JourneyFailure) throw error;
@@ -468,7 +485,7 @@ async function sendMessage(
   text: string,
   model: CatalogModel,
   params: Record<string, unknown>
-): Promise<void> {
+): Promise<Readonly<{ summaryBought: boolean | null }>> {
   const response = await request(api, "turn", `/api/chats/${encodeURIComponent(chatId)}/messages`, {
     body: {
       content: { blocks: [{ text, type: "text" }] },
@@ -486,7 +503,7 @@ async function sendMessage(
   });
   // A 500 `internal_error` is the stand's send guard (`run_http_failed` in its log).
   if (!response.ok) throw new JourneyFailure("turn", await failureCode(response), response.status);
-  await drain(response, "turn");
+  return drain(response, "turn");
 }
 
 async function chatDetail(api: Api, chatId: string): Promise<ChatDetailWire> {
@@ -519,7 +536,7 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
       fail("turn", "request_bytes_bound");
     }
     state.currentTurn = { kind, turn: number };
-    await sendMessage(api, chatId, leafId, text, model, params);
+    const { summaryBought } = await sendMessage(api, chatId, leafId, text, model, params);
     const previousLeafId = leafId;
     const detail = await poll("turn", TURN_TIMEOUT_MS, () => step(api, "turn", "chat_detail_failed", async () => {
       const current = await chatDetail(api, chatId);
@@ -551,6 +568,7 @@ async function runJourney(api: Api, config: JourneyConfig, model: CatalogModel, 
         kind,
         reported,
         session,
+        summaryBought,
         toolCalls: assistant.toolActivity?.calls.length ?? 0,
         turn: number
       }) };
@@ -657,7 +675,8 @@ async function runRoute(api: Api, config: JourneyConfig, route: JourneyRouteConf
   const chatCleanup = state.chatId ? (await deleteChat(api, state.chatId) ? "deleted" : "failed") : "none";
   const providerCleanup = config.cleanupProviders && state.createdConnectionId
     ? await removeConnection(api, state.createdConnectionId) : "kept";
-  const verdict = journeyVerdict(state.rounds, state.probeAnswerCarriesCorrections);
+  const ratioBand = JOURNEY_RATIO_BANDS[route.route] ?? null;
+  const verdict = journeyVerdict(state.rounds, state.probeAnswerCarriesCorrections, ratioBand);
   const code = failure?.code ?? verdict.code;
   return {
     route: route.route,
@@ -666,6 +685,8 @@ async function runRoute(api: Api, config: JourneyConfig, route: JourneyRouteConf
     turns: state.rounds.length,
     rounds: state.rounds,
     firstSummaryAtBudgetShare: verdict.firstSummaryAtBudgetShare,
+    firstSummaryAtReportedBudgetShare: verdict.firstSummaryAtReportedBudgetShare,
+    ratioBand,
     compactionTriggered: verdict.compactionTriggered,
     probeAnswerCarriesCorrections: state.probeAnswerCarriesCorrections,
     providerReused: state.reused,
