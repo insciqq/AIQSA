@@ -50,6 +50,25 @@ describe("file preview image validation", () => {
     await expect(validatePreviewImage(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'), "image/svg+xml")).rejects.toThrow();
   });
 
+  it("decodes a GIF that also sniffs as SVG with the GIF decoder, never librsvg", async () => {
+    // libvips claims a buffer for SVG when "<svg" follows NUL-free UTF-8; these
+    // checked GIF bytes do, so only the raster loader's precedence keeps them
+    // off librsvg.
+    const markup = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>', "ascii");
+    const polyglot = Buffer.concat([
+      Buffer.from("GIF89a\x01\x01\x01\x01\x70\x01\x01", "binary"),
+      Buffer.from([0x21, 0x01, markup.length]), markup, Buffer.from([0x00]),
+      Buffer.from("2c000000000100010080000000ffffff0202440100", "hex"),
+      Buffer.from([0x3b])
+    ]);
+    const prefix = polyglot.subarray(0, polyglot.indexOf("<svg"));
+    expect(prefix.includes(0)).toBe(false);
+    expect(() => new TextDecoder("utf-8", { fatal: true }).decode(prefix)).not.toThrow();
+
+    await expect(validatePreviewImage(polyglot, "image/gif")).resolves.toBeUndefined();
+    expect(await sharp(polyglot).metadata()).toMatchObject({ format: "gif", width: 257, height: 257 });
+  });
+
   it("accepts encoder-produced GIF extensions and rejects truncated block envelopes", async () => {
     const encoded = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).gif().toBuffer();
     await expect(validatePreviewImage(encoded, "image/gif")).resolves.toBeUndefined();

@@ -157,7 +157,7 @@
     "hyparquet": "1.29.2",
     "jsdom": "29.1.1",
     "prisma": "^6.19.3",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "tailwindcss": "3.4.17",
     "tsx": "^4.22.4",
     "typescript": "5.7.2",
