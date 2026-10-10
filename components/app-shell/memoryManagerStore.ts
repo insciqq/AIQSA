@@ -38,6 +38,8 @@ type MemoryManagerStore = {
   draftStale: boolean;
   listError: string | null;
   listLoadState: MemoryManagerLoadState;
+  /** Pages of the current list or search that `memories` holds. */
+  loadedPages: number;
   memories: MemoryConsumerItem[];
   mutationError: string | null;
   mutationOutcomeUnknown: boolean;
@@ -69,6 +71,7 @@ const initialState: Omit<
   draftStale: false,
   listError: null,
   listLoadState: "idle",
+  loadedPages: 0,
   memories: [],
   mutationError: null,
   mutationOutcomeUnknown: false,
@@ -147,23 +150,76 @@ export function memoryDraftIsValid(draft: MemoryDraft): boolean {
 /** Codes the user can act on by changing the draft; everything else is silent. */
 const MEMORY_VALIDATION_CODES = new Set(["memory_changed", "memory_secret_rejected"]);
 
+/** Pages a background refresh re-reads at most. A deeper list keeps its rows
+ * until the next foreground read instead of being cut back to fewer pages. */
+export const MEMORY_BACKGROUND_REFRESH_MAX_PAGES = 5;
+
+function listFilters(
+  state: Pick<MemoryManagerStore, "categoryFilter" | "provenanceFilter">
+): Pick<MemoryConsumerListInput, "category" | "provenance"> {
+  return {
+    ...(state.categoryFilter === "ALL"
+      ? {}
+      : { category: state.categoryFilter }),
+    ...(state.provenanceFilter === "ALL"
+      ? {}
+      : { provenance: state.provenanceFilter })
+  };
+}
+
+/**
+ * Quietly re-reads the pages already shown so facts learned in the background
+ * appear without reopening Memory. The list stays `ready`; a failure keeps the
+ * last known rows and shows nothing. Drafts, unfinished or unreconciled
+ * mutations, a reset, an applied search and an unfinished read skip the
+ * refresh; any later read or mutation supersedes it through the generation.
+ */
+async function refreshMemoryListInBackground(): Promise<void> {
+  const current = useMemoryManagerStore.getState();
+  if (current.listLoadState !== "ready" || current.resetPending || current.mutationState ||
+    current.mutationOutcomeUnknown || holdsDraft(current.screen) || current.queryApplied ||
+    current.loadedPages < 1 || current.loadedPages > MEMORY_BACKGROUND_REFRESH_MAX_PAGES) return;
+  const generation = ++listRequestGeneration;
+  const filters = listFilters(current);
+  const items: MemoryConsumerItem[] = [];
+  let cursor: string | null = null;
+  let pages = 0;
+  try {
+    while (pages < current.loadedPages) {
+      const response = await listMemories(cursor, undefined, filters);
+      if (generation !== listRequestGeneration) return;
+      items.push(...response.items);
+      pages += 1;
+      cursor = response.nextCursor;
+      if (!cursor) break;
+    }
+  } catch {
+    return;
+  }
+  if (generation !== listRequestGeneration) return;
+  useMemoryManagerStore.setState({
+    loadedPages: pages,
+    memories: uniqueItems(items),
+    nextCursor: cursor
+  });
+}
+
 export async function refreshMemoryList(
-  options: Readonly<{ append?: boolean; appliedQuery?: string; keepDraft?: boolean }> = {}
+  options: Readonly<{
+    append?: boolean;
+    appliedQuery?: string;
+    background?: boolean;
+    keepDraft?: boolean;
+  }> = {}
 ): Promise<void> {
+  if (options.background) return refreshMemoryListInBackground();
   const current = useMemoryManagerStore.getState();
   if (current.resetPending || current.mutationState ||
     (holdsDraft(current.screen) && !options.keepDraft)) return;
   const generation = ++listRequestGeneration;
   const append = options.append === true;
   const queryApplied = options.appliedQuery ?? current.queryApplied;
-  const filters = {
-    ...(current.categoryFilter === "ALL"
-      ? {}
-      : { category: current.categoryFilter }),
-    ...(current.provenanceFilter === "ALL"
-      ? {}
-      : { provenance: current.provenanceFilter })
-  };
+  const filters = listFilters(current);
   const cursor = append ? current.nextCursor : null;
   useMemoryManagerStore.setState({
     listError: null,
@@ -180,6 +236,7 @@ export async function refreshMemoryList(
     useMemoryManagerStore.setState((state) => ({
       listError: null,
       listLoadState: "ready",
+      loadedPages: append ? state.loadedPages + 1 : 1,
       memories: uniqueItems(append ? [...state.memories, ...response.items] : response.items),
       ...(!append && state.mutationOutcomeUnknown
         ? { mutationError: null, mutationOutcomeUnknown: false }
