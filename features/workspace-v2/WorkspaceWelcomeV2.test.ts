@@ -179,14 +179,15 @@ describe("Memory list polling", () => {
     document.dispatchEvent(new Event("visibilitychange"));
   }
 
-  it("polls only the open Memory tab while Memory is on and learning", () => {
+  it("polls only the open Memory tab while Memory is on, with or without automatic learning", () => {
     const learning = { settings: { learnAutomatically: true }, status: "ON" };
     expect(memoryListPollingActiveV2({ activeTab: "memory", memory: learning })).toBe(true);
     expect(memoryListPollingActiveV2({ activeTab: "knowledge", memory: learning })).toBe(false);
+    // "remember that…" requests still commit in the background with learning off.
     expect(memoryListPollingActiveV2({
       activeTab: "memory",
       memory: { settings: { learnAutomatically: false }, status: "ON" }
-    })).toBe(false);
+    })).toBe(true);
     for (const status of ["PAUSED", "NEEDS_ADMIN_SETUP", "UNAVAILABLE", "PREPARING"]) {
       expect(memoryListPollingActiveV2({
         activeTab: "memory",
