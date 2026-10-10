@@ -11,11 +11,18 @@ import {
   type ArtifactNavigateMessage,
   type ArtifactRuntimeError
 } from "@/lib/contracts/artifactRuntime";
+import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
+import { UiV2Button } from "@/components/ui-v2";
 import { ArtifactExternalLinkDialog } from "./ArtifactExternalLinkDialog";
 import { artifactBrowserStorage, injectArtifactStorageSnapshot, privateArtifactStateKey, publicArtifactStateKey } from "./artifactBrowserStorage";
+import { ARTIFACT_DOWNLOAD_LIMITS, artifactDownloadDecision, parseArtifactDownloadMessage, saveArtifactDownload,
+  type ArtifactDownloadRequest } from "./artifactDownload";
 
-/** Messages that leave the frame (a confirmed link or another page) are acted on at most once per interval. */
+/** Messages that leave the frame (a confirmed link, another page or a download prompt) are acted on at most once per interval. */
 const FRAME_REQUEST_INTERVAL_MS = 500;
+
+/** A download the user confirms in the viewer, or one too large to save. */
+type DownloadPrompt = Readonly<{ kind: "ask"; request: ArtifactDownloadRequest }> | Readonly<{ kind: "too_large"; name: string }>;
 
 type Props = {
   body: string;
@@ -47,6 +54,15 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
   const [href, setHref] = useState<string | null>(null);
   const openLink = useRef<string | null>(null);
   const lastLinkAt = useRef(-Infinity);
+  // One download prompt at a time, at most once per interval: the frame cannot stack them.
+  const [downloadPrompt, setDownloadPrompt] = useState<DownloadPrompt | null>(null);
+  const shownDownloadPrompt = useRef<DownloadPrompt | null>(null);
+  const lastDownloadPromptAt = useRef(-Infinity);
+  const showDownloadPrompt = useCallback((prompt: DownloadPrompt | null) => {
+    shownDownloadPrompt.current = prompt;
+    if (prompt) lastDownloadPromptAt.current = performance.now();
+    setDownloadPrompt(prompt);
+  }, []);
   // Kept for the life of this host, across the pages it shows: authored code can post
   // navigation itself, so a page that keeps sending it still waits between requests.
   const lastNavigationAt = useRef(-Infinity);
@@ -90,6 +106,16 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
         }
         return;
       }
+      const download = parseArtifactDownloadMessage(event.data);
+      if (download) {
+        const now = performance.now();
+        const decision = artifactDownloadDecision(download, now, window.document.activeElement === iframeRef.current);
+        if (decision === "save") saveArtifactDownload(download);
+        else if (!shownDownloadPrompt.current && now - lastDownloadPromptAt.current >= FRAME_REQUEST_INTERVAL_MS) {
+          showDownloadPrompt(decision === "ask" ? { kind: "ask", request: download } : { kind: "too_large", name: download.name });
+        }
+        return;
+      }
       const navigation = parseArtifactNavigateMessage(event.data);
       if (navigation) {
         // Never under an open link confirmation: the dialog stays about the page it came from.
@@ -119,6 +145,7 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
         if (!active) return;
         storageEpoch += 1;
         openLink.current = null; setHref(null);
+        showDownloadPrompt(null);
         setStorageUnavailable(!session?.persistent);
         callbacks.current.onReset?.();
         setDocument(current => ({ body: injectArtifactStorageSnapshot(body, []), generation: (current?.generation ?? 0) + 1, source: body, revision, artifactId, publicToken, focus: false }));
@@ -126,6 +153,8 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
       if (!active) { session.close(); return; }
       setStorageUnavailable(!session.persistent);
       openLink.current = null; setHref(null);
+      // A prompt belongs to the document that asked; the next one starts without it.
+      showDownloadPrompt(null);
       // Every page of the artifact starts from the same saved state.
       const loaded = injectArtifactStorageSnapshot(body, session.snapshot());
       const focus = callbacks.current.focusOnLoad === true;
@@ -134,7 +163,7 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
     window.addEventListener("message", onMessage);
     void prepare();
     return () => { active = false; session?.close(); window.removeEventListener("message", onMessage); };
-  }, [artifactId, body, flushNavigation, publicToken, revision]);
+  }, [artifactId, body, flushNavigation, publicToken, revision, showDownloadPrompt]);
 
   useEffect(() => {
     if (document?.focus) iframeRef.current?.focus({ preventScroll: true });
@@ -147,6 +176,13 @@ export function ArtifactFrameV2({ body, title, artifactId, publicToken, revision
   }
   return <>
     {storageUnavailable ? <div className="v2-artifact-banner" role="status">Saved state is unavailable in this browser. Changes will last only while this preview stays open.</div> : null}
+    {downloadPrompt ? <div className="v2-artifact-banner" role="status" data-testid="artifact-download-prompt">
+      {downloadPrompt.kind === "ask" ? <>
+        <span>Save “{downloadPrompt.request.name}” ({formatAttachmentBytes(downloadPrompt.request.blob.size)}) from this artifact?</span>
+        <UiV2Button onClick={() => { saveArtifactDownload(downloadPrompt.request); showDownloadPrompt(null); }} type="button">Save file</UiV2Button>
+      </> : <span>“{downloadPrompt.name}” is too large to save from the preview. Files up to {formatAttachmentBytes(ARTIFACT_DOWNLOAD_LIMITS.maxBytes)} can be saved.</span>}
+      <UiV2Button onClick={() => showDownloadPrompt(null)} type="button">Dismiss</UiV2Button>
+    </div> : null}
     <iframe ref={iframeRef} aria-label={title} className="v2-artifact-frame" sandbox={ARTIFACT_VIEW_SANDBOX} allow={ARTIFACT_VIEW_ALLOW}
       key={document.generation} srcDoc={document.body} title={title} />
     {href ? <ArtifactExternalLinkDialog href={href} onClose={() => { openLink.current = null; setHref(null); }} /> : null}

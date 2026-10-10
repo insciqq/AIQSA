@@ -59,7 +59,8 @@ const MEDIA_ELEMENTS = new Set(["audio", "video", "source", "track"]);
 /** A quoted script literal, which becomes a data: URL when it is the path of an included image. */
 const scriptLiteral = () => /(["'])([^"'\n]+)\1/gu;
 const FILE_BLOCK_MARKUP_BYTES = '<script type="application/octet-stream" data-aiqsa-file=""></script>'.length;
-export const ARTIFACT_RENDERER_VERSION = 5;
+/** Cached renders embed the runtime bridge: version 6 hands downloads to the viewer. */
+export const ARTIFACT_RENDERER_VERSION = 6;
 export const ARTIFACT_MAX_RENDER_BYTES = 64 * 1024 * 1024;
 export const ARTIFACT_NOTE_LIMITS = Object.freeze({ maxEntries: 32, maxHrefCharacters: 200, maxRelCharacters: 64 });
 /**
