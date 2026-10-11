@@ -209,7 +209,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.34 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.35 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.
