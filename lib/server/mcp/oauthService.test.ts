@@ -22,7 +22,12 @@ import type {
   McpOAuthStoredClient,
   McpOAuthStoredConnection
 } from "./oauthRepository";
-import { MCP_OAUTH_REVOCATION_ABANDON_MS, McpOAuthError, McpOAuthService } from "./oauthService";
+import {
+  MCP_OAUTH_REVOCATION_ABANDON_MS,
+  McpOAuthError,
+  McpOAuthService,
+  sanitizedOAuthErrorResponse
+} from "./oauthService";
 import { McpClientSession } from "./clientSession";
 import { createMcpSafeFetch, McpSafeFetchError } from "./safeFetch";
 
@@ -2372,5 +2377,105 @@ describe("authorization servers named by a hostile MCP server", () => {
     for (const value of ["reviewed-client", "reviewed-secret", "reviewed-refresh-0"]) {
       expect(world.recipientsOf(value), value).toEqual([AUTH_ORIGIN]);
     }
+  });
+});
+
+// An authorization server's error answer is untrusted text that can echo the
+// credentials of the request; the SDK prints its description in warnings.
+describe("authorization server error text", () => {
+  function setup() {
+    const repository = new MemoryOAuthRepository();
+    const fixture = new StandardsOAuthFixture();
+    // The client secret travels in the token request body, where the fixture can echo it.
+    fixture.clientSecretPost = true;
+    const service = new McpOAuthService({ fetchForPolicy: () => fixture.fetch, now: () => repository.now, repository });
+    const start = async () => {
+      const started = await service.startAuthorization({
+        forceReconnect: false,
+        purpose: "user",
+        redirectUri: REDIRECT_URI,
+        serverId: "server-1",
+        state: "error-text-state",
+        userId: "user-1"
+      });
+      if (started.kind !== "redirect") throw new Error("expected redirect");
+      fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+      return started;
+    };
+    return { fixture, repository, service, start };
+  }
+
+  async function consoleDuring(run: () => Promise<unknown>): Promise<string> {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await run();
+      return [...warn.mock.calls, ...error.mock.calls].flat().map(String).join("\n");
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  }
+
+  it.each([["invalid_client", 401], ["invalid_grant", 400]] as const)(
+    "keeps a PKCE verifier echoed by a %s callback rejection out of the console",
+    async (code, status) => {
+      const { fixture, repository, service, start } = setup();
+      const started = await start();
+      fixture.tokenResponseOverride = (body) => Response.json({
+        error: code,
+        error_description: body.get("code_verifier"),
+        error_uri: `https://auth.fixture.test/errors/${body.get("code_verifier")}`
+      }, { status });
+      const output = await consoleDuring(() => expect(service.completeAuthorization({
+        authorizationCode: "fixture-code",
+        flow: started.flow
+      })).rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" }));
+      expect(output).not.toContain(started.flow.codeVerifier);
+      // The code still decides the outcome: only a rejected client is retired.
+      expect(repository.retiredClientIds).toEqual(code === "invalid_client" ? [started.flow.oauthClientId] : []);
+    }
+  );
+
+  it("keeps a client secret echoed by a rejected refresh out of the console", async () => {
+    const { fixture, repository, service, start } = setup();
+    const started = await start();
+    const connection = await service.completeAuthorization({ authorizationCode: "fixture-code", flow: started.flow });
+    fixture.tokenResponseOverride = (body) => Response.json({
+      error: "invalid_client",
+      error_description: `client ${body.get("client_secret")} refused`
+    }, { status: 401 });
+    repository.now = new Date(connection.expiresAt!.getTime() - 10_000);
+    const output = await consoleDuring(() => expect(service.tokensForConnection(connection.id))
+      .rejects.toMatchObject({ code: "mcp_oauth_reauthorization_required" }));
+    expect(output).not.toContain("fixture-client-secret");
+    expect(repository.connections.get(connection.id)?.state).toBe("reauthorization_required");
+    expect(repository.retiredClientIds).toEqual([connection.client.id]);
+  });
+
+  it("hands the SDK only an error's stable code", async () => {
+    const answer = (body: string, status = 401) => sanitizedOAuthErrorResponse(new Response(body, {
+      headers: { "content-type": "application/json", "x-request-id": "fixture-request" },
+      status,
+      statusText: "client fixture-client-secret refused"
+    }));
+    const echoed = await answer(JSON.stringify({
+      error: "invalid_client",
+      error_description: "fixture-client-secret",
+      error_uri: "https://auth.fixture.test/fixture-client-secret",
+      trace: "fixture-client-secret"
+    }));
+    expect(echoed.status).toBe(401);
+    expect(echoed.statusText).toBe("");
+    expect(echoed.headers.get("x-request-id")).toBe("fixture-request");
+    const text = await echoed.text();
+    expect(text).toBe('{"error":"invalid_client"}');
+    expect(echoed.headers.get("content-length")).toBe(String(text.length));
+    for (const body of [JSON.stringify({ error: "Invalid client fixture-client-secret" }), JSON.stringify({ error: 7 }),
+      `{"error":"${"a".repeat(65)}"}`, "upstream refused fixture-client-secret"]) {
+      expect(await (await answer(body, 400)).text()).toBe("{}");
+    }
+    const success = new Response(JSON.stringify({ access_token: "fixture-access" }), { status: 200 });
+    expect(await sanitizedOAuthErrorResponse(success)).toBe(success);
   });
 });
