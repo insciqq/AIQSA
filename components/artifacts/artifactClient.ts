@@ -13,6 +13,8 @@ export async function artifactRequest(path: string, init?: RequestInit): Promise
       : response.status === 409 ? "This link changed elsewhere. Review its current versions before trying again."
       : response.status === 401 ? "Sign in again to open this artifact."
       : response.status === 404 ? "This artifact is no longer available."
+      : code === "artifact_server_busy" ? "The server is busy creating other artifacts, so nothing was saved. Try again in a minute."
+      : response.status === 429 ? "The server is busy right now. Try again in a moment."
       : "The request could not finish. Try again.", response.status, typeof code === "string" ? code : null);
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("The response could not be read. Try again.");

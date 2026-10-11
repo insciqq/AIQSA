@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { memoryConsumerItemFixture } from "@/tests/support/memoryFixtures";
 import type { ComponentProps } from "react";
@@ -746,6 +746,54 @@ describe("Library resource panels", () => {
     expect(screen.queryByText(/could not be loaded/iu)).toBeNull();
     expect(screen.queryByTestId("memory-list-reload")).toBeNull();
     expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("offers in the empty list only the actions the current Memory state allows", () => {
+    const onCreate = vi.fn();
+    const variants = [
+      [memoryOverview({ automaticLearning: true }), /Say “remember that…” in a chat/u],
+      [memoryOverview({ automaticLearning: false }), /Automatic learning is off.*remember that/u],
+      [memoryOverview({ status: "PAUSED", useMemoryFacts: false }), /^Memory is paused, so chats add nothing here/u],
+      [memoryOverview({ administratorDisabled: true, status: "NEEDS_ADMIN_SETUP" }), /^Learning from chats needs administrator setup/u],
+      [memoryOverview({ status: "UNAVAILABLE" }), /^Write the first fact yourself/u],
+      [memoryOverview({ loadState: "error", status: null }), /^Write the first fact yourself/u]
+    ] as const;
+    const { container, rerender } = render(<MemoryPanelV2 {...memoryPanelProps({ onCreate })} />);
+    for (const [memory, description] of variants) {
+      rerender(<MemoryPanelV2 {...memoryPanelProps({ memory, onCreate })} />);
+      const empty = container.querySelector<HTMLElement>(".v2-memory-empty");
+      expect(empty, String(memory.status)).not.toBeNull();
+      expect(empty).toHaveTextContent("Nothing saved yet");
+      expect(empty?.querySelector("p")?.textContent ?? "").toMatch(description);
+      if (memory.status !== "ON") expect(empty).not.toHaveTextContent(/remember that/u);
+      const add = within(empty!).getByRole("button", { name: "Add memory" });
+      expect(add).toBeEnabled();
+    }
+    fireEvent.click(within(container.querySelector<HTMLElement>(".v2-memory-empty")!).getByRole("button", { name: "Add memory" }));
+    expect(onCreate).toHaveBeenCalledOnce();
+  });
+
+  it("keeps unchanged rows mounted with their focus when a refresh re-mints opaque refs", () => {
+    const first = memoryConsumerItemFixture({ memoryRef: "opaque-a1", statement: "I prefer tea." });
+    const second = memoryConsumerItemFixture({ memoryRef: "opaque-b1", statement: "I live in Riga." });
+    const { rerender } = render(<MemoryPanelV2 {...memoryPanelProps({ items: [first, second] })} />);
+    const focused = screen.getByRole("button", { name: "Memory actions: I live in Riga." });
+    focused.focus();
+    expect(focused).toHaveFocus();
+
+    const learned = memoryConsumerItemFixture({
+      createdAt: "2026-08-11T08:00:00.000Z",
+      memoryRef: "opaque-c2",
+      provenance: "LEARNED",
+      statement: "I am learning Latvian."
+    });
+    rerender(<MemoryPanelV2 {...memoryPanelProps({
+      items: [learned, { ...first, memoryRef: "opaque-a2" }, { ...second, memoryRef: "opaque-b2" }]
+    })} />);
+
+    expect(screen.getByText("I am learning Latvian.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Memory actions: I live in Riga." })).toBe(focused);
+    expect(focused).toHaveFocus();
   });
 
   it("keeps create and edit inline and confirms Forget in the named row", () => {

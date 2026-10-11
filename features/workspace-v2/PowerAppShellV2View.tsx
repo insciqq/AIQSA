@@ -1862,6 +1862,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     : null;
   const workspaceStarted = composer.workspace.sessionState !== null &&
     composer.workspace.sessionState !== "not_started";
+  // Files carried from a previous chat that were never restored can block the
+  // Workspace before it ever starts; a reset is the way to give them up.
+  const workspaceCarryoverPending = activeChatSummary?.workspace?.continuationFiles?.status === "pending";
   const workspaceLifecycleDisabled = thread.activeChatStreaming ||
     composer.workspace.busy || Boolean(projectMutationReason);
   const workspaceMenuActions: HeaderOverflowActionV2[] = session.activeChatId ? [
@@ -1887,7 +1890,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       }
     },
     {
-      disabled: workspaceLifecycleDisabled || !workspaceStarted,
+      disabled: workspaceLifecycleDisabled || !(workspaceStarted || workspaceCarryoverPending),
       icon: "tool",
       label: "Reset workspace…",
       onSelect: () => setWorkspaceResetOpen(true)
@@ -2605,7 +2608,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           title="Reset this workspace?"
           tone="warning"
         >
-          Unsaved changes and installed dependencies inside this workspace will be lost. Messages, original attachments, and already exported files stay available.
+          {`Unsaved changes and installed dependencies inside this workspace will be lost.${workspaceCarryoverPending
+            ? " Project files waiting to be restored from the previous chat will not be restored." : ""} Messages, original attachments, and already exported files stay available.`}
         </ConfirmationDialog>
       ) : null}
       <PermanentChatDeletionSurface />

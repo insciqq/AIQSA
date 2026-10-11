@@ -2,6 +2,7 @@
 
 import {
   memoryCategoryLabel,
+  memoryEmptyListDescriptionKey,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
@@ -764,6 +765,35 @@ function FileRowV2({
   );
 }
 
+function statementHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * Opaque refs are re-minted on every read, so rows are keyed by their visible
+ * content: a background refresh then keeps unchanged rows mounted with their
+ * focus, open menu and expansion. Identical rows get an occurrence suffix.
+ */
+export function memoryRowKeys(
+  items: readonly MemoryConsumerItem[]
+): ReadonlyMap<MemoryConsumerItem, string> {
+  const seen = new Map<string, number>();
+  const keys = new Map<MemoryConsumerItem, string>();
+  for (const item of items) {
+    const base = [item.category, item.provenance, item.createdAt,
+      statementHash(item.statement)].join("|");
+    const occurrence = seen.get(base) ?? 0;
+    seen.set(base, occurrence + 1);
+    keys.set(item, `${base}#${occurrence}`);
+  }
+  return keys;
+}
+
 /** The Memory page owns the saved-memory list and row-level CRUD. */
 export function MemoryPanelV2({
   activeRef,
@@ -843,6 +873,7 @@ export function MemoryPanelV2({
         : memory.status === "PAUSED"
           ? mt("library.pausedDescription")
           : loading ? mt("library.loadingDescription") : null;
+  const rowKeys = useMemo(() => memoryRowKeys(items), [items]);
   const groups = useMemo(() => MEMORY_CONSUMER_CATEGORIES.flatMap((category) => {
     const groupedItems = items.filter((item) => item.category === category);
     return groupedItems.length ? [{ category, items: groupedItems }] : [];
@@ -947,7 +978,7 @@ export function MemoryPanelV2({
           <div className="v2-memory-empty">
             <span aria-hidden="true"><UiV2Icon name="memory" /></span>
             <strong>{mt("manager.empty")}</strong>
-            <p>{mt("manager.emptyDescription")}</p>
+            <p>{mt(memoryEmptyListDescriptionKey(memory))}</p>
             <UiV2Button
               disabled={!memory.explicitCrudAvailable || mutationOutcomeUnknown}
               icon="plus"
@@ -973,7 +1004,7 @@ export function MemoryPanelV2({
                     busy={busy}
                     draft={draft}
                     item={item}
-                    key={item.memoryRef}
+                    key={rowKeys.get(item)}
                     saveDisabled={saveDisabled}
                     onCancel={onCancelRow}
                     onChange={onDraftChange}
@@ -987,7 +1018,7 @@ export function MemoryPanelV2({
                     busy={busy === "forgetting"}
                     disabled={mutationOutcomeUnknown}
                     item={item}
-                    key={item.memoryRef}
+                    key={rowKeys.get(item)}
                     onCancel={onCancelRow}
                     onConfirm={onConfirmForget}
                   />
@@ -997,7 +1028,7 @@ export function MemoryPanelV2({
                 <MemoryListRowV2
                   disabled={!memory.explicitCrudAvailable || mutationOutcomeUnknown || listControlsDisabled || listState === "loading"}
                   item={item}
-                  key={item.memoryRef}
+                  key={rowKeys.get(item)}
                   onEdit={onEdit}
                   onForget={onForget}
                 />

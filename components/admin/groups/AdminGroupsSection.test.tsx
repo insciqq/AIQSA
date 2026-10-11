@@ -422,7 +422,7 @@ describe("AdminGroupsSection", () => {
       expect.stringContaining("Ada Analyst"),
       expect.stringContaining("Camila Collaborator")
     ]);
-    fireEvent.click(members.getAllByRole("button", { name: "Remove" })[0]!);
+    fireEvent.click((await members.findAllByRole("button", { name: "Remove" }))[0]!);
     await waitFor(() => expect(posts).toContainEqual({ action: "set_user_groups", expectedGroupIds: ["group-research"], groupIds: [], userId: "ada" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Add a person" }));
@@ -434,6 +434,28 @@ describe("AdminGroupsSection", () => {
     fireEvent.change(search, { target: { value: "grace" } });
     fireEvent.click(screen.getByRole("option", { name: /Grace Reviewer/u }));
     await waitFor(() => expect(posts).toContainEqual({ action: "set_user_groups", expectedGroupIds: [], groupIds: ["group-research"], userId: "grace" }));
+  });
+
+  it("offers no Remove for a member until the managed projection says the membership is manual", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    const projection = new Promise<Response>((resolve) => { answer = resolve; });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "/api/admin/providers") return Response.json({ connections: providerConnections() });
+      if (url === "/api/admin/sign-in/groups/group-research") return projection;
+      return Response.json({ error: "unexpected_request" }, { status: 500 });
+    });
+    renderSection({ resource: "group-research" });
+
+    const members = within(await screen.findByRole("list", { name: "Members" }));
+    const row = (name: string) => members.getAllByTestId("admin-group-member").find((entry) => entry.textContent?.includes(name))!;
+    expect(members.getAllByTestId("admin-group-member")).toHaveLength(2);
+    expect(members.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+
+    answer(Response.json({ group: { externalNames: [], managedMembers: [{ managedBy: "scim", userId: "ada" }], scimManaged: true } }));
+    expect(await within(row("Camila Collaborator")).findByRole("button", { name: "Remove" })).toBeEnabled();
+    expect(within(row("Ada Analyst")).getByText("Managed by SCIM")).toBeInTheDocument();
+    expect(within(row("Ada Analyst")).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
   });
 
   it("switches a provider between all models and a checklist, shows the key line and capability chips", async () => {
@@ -668,7 +690,7 @@ describe("AdminGroupsSection", () => {
     expect(within(page).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(within(page).queryByRole("button", { name: "Rename" })).not.toBeInTheDocument();
     expect(within(page).getByRole("button", { name: "Add a person" })).toBeEnabled();
-    expect(within(page).getByRole("button", { name: "Remove" })).toBeEnabled();
+    expect(await within(page).findByRole("button", { name: "Remove" })).toBeEnabled();
     await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Full access"));
     expect(screen.queryByRole("button", { name: /More actions/u })).not.toBeInTheDocument();
   });

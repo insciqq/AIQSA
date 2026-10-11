@@ -176,13 +176,28 @@ describe("answer outputs v2", () => {
     expect(onOpenArtifact).toHaveBeenLastCalledWith(latest, cards[0]);
     fireEvent.click(cards[1]!);
     expect(onOpenArtifact).toHaveBeenLastCalledWith(separate, cards[1]);
-    const failed = { draftId: "failed-update", title: "Notebook", files: [], status: "failed" as const };
-    rerender(<ArtifactGenerationCardsV2 {...props} drafts={[...drafts, failed]} />);
-    expect(screen.getAllByRole("button", { name: "Open artifact: Notebook" })).toHaveLength(2);
-    expect(screen.getByRole("status")).toHaveTextContent("Artifact wasn’t created.");
-    rerender(<ArtifactGenerationCardsV2 {...props} drafts={[...drafts, failed]} savedArtifacts={[latest, separate]} />);
+    rerender(<ArtifactGenerationCardsV2 {...props} drafts={drafts} savedArtifacts={[latest, separate]} />);
     expect(screen.queryByRole("button", { name: "Open artifact: Notebook" })).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Artifact wasn’t created.");
+  });
+
+  it("hides failed attempts once the same answer created an artifact and keeps a lone failure visible", () => {
+    const props = { onOpen: vi.fn(), onOpenArtifact: vi.fn() };
+    const created = { artifactId: "A", versionId: "v1", versionNumber: 1, title: "Notebook", kind: "html" as const, entrypoint: "index.html" };
+    const failed = { draftId: "first", title: "Notebook", files: [], status: "failed" as const };
+    const retry = { draftId: "retry", title: "Notebook", files: [], status: "pending" as const };
+    const { rerender } = render(<ArtifactGenerationCardsV2 {...props} drafts={[failed]} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Artifact wasn’t created. See the run details for the reason.");
+    // While the retry runs, the earlier failure stays beside it.
+    rerender(<ArtifactGenerationCardsV2 {...props} drafts={[failed, retry]} />);
+    expect(screen.getAllByRole("status").map(status => status.textContent)).toEqual([
+      "Artifact wasn’t created. See the run details for the reason.", "Creating artifact…"]);
+    rerender(<ArtifactGenerationCardsV2 {...props} drafts={[failed, { ...retry, status: "ready", artifact: created }]} />);
+    expect(screen.getByRole("button", { name: "Open artifact: Notebook" })).toBeVisible();
+    expect(screen.queryByText(/wasn’t created/u)).not.toBeInTheDocument();
+    // After reload of the settled answer the saved card alone stands for the retries; a stopped attempt still shows.
+    const stopped = { draftId: "stopped", title: "Chart", files: [], status: "cancelled" as const };
+    rerender(<ArtifactGenerationCardsV2 {...props} drafts={[failed, stopped]} savedArtifacts={[created]} />);
+    expect(screen.getAllByRole("status").map(status => status.textContent)).toEqual(["Artifact wasn’t created. Creation was stopped."]);
   });
 
   it("shows safe Sources under the actions row, reauthorized Project evidence, and Thinking above", async () => {

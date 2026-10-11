@@ -56,6 +56,10 @@ const EN = {
   "manager.reloadHint": "Reload to see your saved memories.",
   "manager.empty": "Nothing saved yet",
   "manager.emptyDescription": "Say \u201cremember that\u2026\u201d in a chat, or write the first fact yourself. Everything saved shows up here with where it came from.",
+  "manager.emptyLearningOffDescription": "Automatic learning is off, so only what you ask to keep is saved. Say \u201cremember that\u2026\u201d in a chat, or write the first fact yourself.",
+  "manager.emptyPausedDescription": "Memory is paused, so chats add nothing here. You can still write a fact yourself; answers use it once Memory is back on.",
+  "manager.emptyNeedsSetupDescription": "Learning from chats needs administrator setup. Meanwhile, you can write the first fact yourself.",
+  "manager.emptyManualDescription": "Write the first fact yourself. Everything saved shows up here with where it came from.",
   "manager.noResults": "No saved memories match this search.",
   "manager.loadMore": "Load more",
   "manager.loadingMore": "Loading more…",
@@ -167,6 +171,23 @@ export function memoryUiCopy(key: MemoryUiCopyKey): string {
 }
 
 export const MEMORY_UI_LOCALE = "en-US";
+
+/**
+ * The empty saved-memories list offers only what works right now: asking in a
+ * chat needs Memory on and ready, and writing a fact is always available.
+ * An unknown or not-ready status offers writing only, without diagnosing it.
+ */
+export function memoryEmptyListDescriptionKey(memory: Readonly<{
+  automaticLearning: boolean;
+  status: string | null;
+}>): MemoryUiCopyKey {
+  if (memory.status === "PAUSED") return "manager.emptyPausedDescription";
+  if (memory.status === "NEEDS_ADMIN_SETUP") return "manager.emptyNeedsSetupDescription";
+  if (memory.status !== "ON") return "manager.emptyManualDescription";
+  return memory.automaticLearning
+    ? "manager.emptyDescription"
+    : "manager.emptyLearningOffDescription";
+}
 
 export function formatMemoryUiCopy(
   key: MemoryUiCopyKey,

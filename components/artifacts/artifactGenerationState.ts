@@ -48,6 +48,20 @@ export function endArtifactGeneration(drafts: readonly ArtifactGenerationDraft[]
     status: status === "cancelled" ? "cancelled" as const : status === "error" ? "failed" as const : "interrupted" as const });
 }
 
+/**
+ * Attempts that keep a card of their own beside an answer's artifacts. A failed attempt is
+ * hidden once the same answer created an artifact (the model usually retried; the run details
+ * keep the failure); without one, the failure stays visible. An interrupted live preview gives
+ * way to the saved artifacts.
+ */
+export function visibleArtifactGenerationAttempts(
+  drafts: readonly ArtifactGenerationDraft[], savedArtifacts: readonly ThreadGeneratedArtifact[]
+): readonly ArtifactGenerationDraft[] {
+  const created = savedArtifacts.length > 0 || drafts.some(draft => draft.status === "ready");
+  return drafts.filter(draft => draft.status !== "ready" && !(draft.status === "failed" && created) &&
+    !(draft.status === "interrupted" && savedArtifacts.length > 0));
+}
+
 export function artifactGenerationStatus(draft: ArtifactGenerationDraft): string {
   if (draft.status === "failed") return "Artifact wasn’t created. See the run details for the reason.";
   if (draft.status === "cancelled") return "Artifact wasn’t created. Creation was stopped.";

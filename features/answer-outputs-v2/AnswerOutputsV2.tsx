@@ -2,7 +2,7 @@
 
 import { ArtifactShareDialog } from "@/components/artifacts/ArtifactShareDialog";
 import { artifactKindLabel } from "@/components/artifacts/artifactPresentation";
-import { artifactGenerationStatus, type ArtifactGenerationDraft } from "@/components/artifacts/artifactGenerationState";
+import { artifactGenerationStatus, visibleArtifactGenerationAttempts, type ArtifactGenerationDraft } from "@/components/artifacts/artifactGenerationState";
 import { ArtifactThumbnailV2 } from "@/components/artifacts/ArtifactThumbnailV2";
 import { useArtifactPanelStore } from "@/components/artifacts/artifactPanelStore";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
@@ -627,7 +627,7 @@ export function ArtifactGenerationCardsV2({ drafts, savedArtifacts = [], onOpen,
 }>) {
   const ready = latestGeneratedArtifactsForAnswer(drafts.flatMap(draft => draft.artifact ? [draft.artifact] : []))
     .filter(artifact => !savedArtifacts.some(saved => saved.artifactId === artifact.artifactId));
-  const pending = drafts.filter(draft => draft.status !== "ready" && !(draft.status === "interrupted" && savedArtifacts.length > 0));
+  const pending = visibleArtifactGenerationAttempts(drafts, savedArtifacts);
   return <>
     {ready.length ? <GeneratedArtifactsV2 artifacts={ready} onOpenArtifact={onOpenArtifact} /> : null}
     {pending.length ? <section className="v2-generated-artifacts" aria-label="Artifact creation"><ul>

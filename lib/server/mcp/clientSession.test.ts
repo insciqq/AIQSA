@@ -86,6 +86,29 @@ describe("MCP bounded transport failure details", () => {
     try { await expect(session.initialize()).rejects.toMatchObject({ code, operation: "initialize" }); }
     finally { await session.close(); }
   });
+
+  it("leaves an endpoint's redirect to AIQSA's fetch instead of the SDK's same-origin rule", async () => {
+    const fixture = await startFixture();
+    const moved = new URL("http://moved.fixture.test/mcp");
+    const redirectModes: Array<RequestRedirect | undefined> = [];
+    const session = createSession(fixture, {
+      // Stands in for the safe fetch, which follows under its own per-hop policy.
+      async fetch(url, init) {
+        expect(new URL(url.toString()).origin).toBe(moved.origin);
+        redirectModes.push(init?.redirect);
+        return init?.redirect === "manual"
+          ? new Response(null, { headers: { location: fixture.url.href }, status: 307 })
+          : fetch(fixture.url, init);
+      },
+      url: moved
+    });
+    try {
+      await session.initialize();
+      expect(await session.listAllTools()).toHaveLength(1);
+      expect(redirectModes.length).toBeGreaterThan(0);
+      expect(redirectModes).not.toContain("manual");
+    } finally { await session.close(); }
+  });
 });
 
 function tool(
@@ -206,6 +229,7 @@ function createSession(
     onInventoryStale?: () => void;
     requestTimeoutMs?: number;
     responseLimits?: Partial<McpResponseWireLimits>;
+    url?: URL;
   }> = {}
 ): McpClientSession {
   const fetchImplementation: FetchLike = input.fetch ?? ((url, init) => fetch(url, init));
@@ -217,7 +241,7 @@ function createSession(
     onInventoryStale: input.onInventoryStale,
     requestTimeoutMs: input.requestTimeoutMs ?? 1_000,
     ...(input.responseLimits ? { responseLimits: input.responseLimits } : {}),
-    url: fixture.url
+    url: input.url ?? fixture.url
   });
 }
 

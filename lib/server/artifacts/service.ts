@@ -123,8 +123,10 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
   /**
    * Copy the exact bytes behind each asset_ref, of any type. A reference names
    * a file of the accepted base version, or an attachment of this owner outside
-   * Projects that a model run admitted from its chat or produced itself (the
-   * owner's own route may name its chat or any personal attachment). Checks
+   * Projects that a model run admitted from its chat or produced itself. The
+   * owner's own route may name its chat, or else a file of a personal chat that
+   * is neither temporary nor being deleted, or an upload not yet sent: a durable
+   * artifact never outlives a temporary chat's files. Checks
    * run for the whole set before any read: authority, declared type, checksum
    * presence and sizes. Each read then proves the stored size and checksum, so
    * a file whose text extraction is pending or failed is still usable.
@@ -168,7 +170,14 @@ export function createArtifactService(db: PrismaClient, storage: StorageAdapter,
                 ...(source.modelRunId ? [{ producerModelRunId: source.modelRunId }] : [])
               ]
             }
-          : {})
+          : {
+              // An unsent upload is what a send could still attach: no chat, no
+              // message and not a saved Files item. Invisible ids answer like missing ones.
+              OR: [
+                { chat: { userId, projectId: null, memoryMode: { not: "TEMPORARY" as const }, permanentDeletionAt: null } },
+                { chatId: null, messageId: null, savedAt: null }
+              ]
+            })
       },
       select: { id: true, mimeType: true, storageKey: true, byteSize: true, checksum: true, status: true }
     }) : [];
