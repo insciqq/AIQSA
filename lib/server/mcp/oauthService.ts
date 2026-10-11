@@ -78,6 +78,37 @@ function boundedOAuthResponse(response: Response): Response {
   });
 }
 
+/** The RFC 6749 error-code characters of every registered code. */
+const OAUTH_ERROR_CODE = /^[a-z_]{1,64}$/u;
+
+/**
+ * An authorization server's error answer reaches the SDK as its stable code
+ * only. The SDK copies error_description, or an unparsable raw body, into
+ * error messages and console warnings, and a hostile server can echo the
+ * request's code, verifier, secret or refresh token there. Success bodies pass
+ * unchanged; the bounded body is read before it is replaced.
+ */
+export async function sanitizedOAuthErrorResponse(response: Response): Promise<Response> {
+  if (response.ok || !response.body || NULL_BODY_STATUSES.has(response.status)) return response;
+  const text = await response.text();
+  let code: string | null = null;
+  try {
+    const value: unknown = JSON.parse(text);
+    const error = value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>).error
+      : undefined;
+    if (typeof error === "string" && OAUTH_ERROR_CODE.test(error)) code = error;
+  } catch {
+    // Not an OAuth error document; none of it is kept.
+  }
+  const body = JSON.stringify(code ? { error: code } : {});
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.set("content-length", String(Buffer.byteLength(body, "utf8")));
+  headers.set("content-type", "application/json");
+  return new Response(body, { headers, status: response.status });
+}
+
 // Settles on the deadline even when the underlying fetch or SDK call ignores
 // its signal, so a stalled authorization server cannot pin a singleflight.
 async function withinDeadline<T>(signal: AbortSignal, operation: Promise<T>): Promise<T> {
@@ -997,13 +1028,14 @@ export class McpOAuthService {
     return abort ? AbortSignal.any([timeout, abort]) : timeout;
   }
 
+  /** Authorization-server requests only; runtime MCP traffic keeps its error bodies. */
   #oauthFetch(policy: McpOAuthPolicy, deadline: AbortSignal, refusal?: NetworkPolicyRefusal): FetchLike {
     const policyBaseFetch = this.#fetchForPolicy(policy);
     const baseFetch = refusal ? refusalRecording(policyBaseFetch, refusal) : policyBaseFetch;
-    return policyFetch(async (input, init) => boundedOAuthResponse(await baseFetch(input, {
+    return policyFetch(async (input, init) => sanitizedOAuthErrorResponse(boundedOAuthResponse(await baseFetch(input, {
       ...init,
       signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline
-    })), policy, this.allowInsecureHttp);
+    }))), policy, this.allowInsecureHttp);
   }
 
   #validatePolicy(policy: McpOAuthPolicy): void {
