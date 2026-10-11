@@ -21,7 +21,12 @@ import type { ToolExecutionResult } from "../tools/types";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import type { ContextSummary } from "../../contracts/contextCompaction";
 import { contextSummaryMessageId, conversationContextPolicy, messageCoverageRef } from "./contextCompactionContract";
-import { contextObservationsFromResults, toolTranscriptUnits, unitCoverageRef } from "./contextCompactionPlanner";
+import {
+  contextObservationsFromResults,
+  planContextCompaction,
+  toolTranscriptUnits,
+  unitCoverageRef
+} from "./contextCompactionPlanner";
 import {
   applyContextSummaryToRequest,
   summaryNeedsProvider
@@ -34,8 +39,11 @@ import {
   observationWholeResultTokens,
   providerFacingSerializedTools,
   providerRequestContextRebuild,
+  providerRequestFitsContextBudget,
+  providerRequestTokenEstimate,
   UNKNOWN_CONTEXT_ATTACHMENT_TEXT_BUDGET_TOKENS
 } from "./runContextBudget";
+import { followupAdmissionBudgetTokens } from "./runFollowups";
 import { executeSessionStatus, sessionStatusTool } from "../tools/sessionStatus";
 import { decodeSessionContextStatus, sessionContextCapacity } from "../../contracts/sessionStatus";
 
@@ -1064,5 +1072,130 @@ describe("provider-aware context estimate in the run budget", () => {
     const anthropic = planned(chat("anthropic", "claude-sonnet-5"));
     expect(anthropic.beforeTokens).toBeGreaterThan(codexLb.beforeTokens);
     expect(anthropic.outcome).toBe("needs_summary");
+  });
+});
+
+describe("follow-up admission reserve", () => {
+  // The journey's budget: a 32 768-token window less 2 048 output tokens and the safety margin.
+  const BUDGET = 27_444;
+  const bridge = openAIResponsesToolBridge;
+  const capabilities = { ...request().modelCapabilities, contextWindow: 32_768, defaultMaxOutputTokens: 2_048, toolCalling: true };
+  const turn = (id: string, role: "assistant" | "user", chars: number): ProviderConversationMessage => ({
+    content: { blocks: [{ text: "h".repeat(chars), type: "text" }] }, id, role
+  });
+  const chat = (messages: ProviderConversationMessage[], overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest => request({
+    content: messages.at(-1)!.content,
+    context: { messages, mode: "branch_path" },
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: messages.at(-1)!.id, messages }),
+    modelCapabilities: capabilities,
+    toolObservationVersion: 1,
+    tools: [readToolResultTool],
+    ...overrides
+  });
+  const reserving = (input: ProviderRunRequest, tokens: number): ProviderRunRequest => ({ ...input, followupContextReserveTokens: tokens });
+  const budgetOf = (input: ProviderRunRequest) => {
+    const result = applyProviderRequestContextBudget({ bridge, request: input });
+    if (!result.ok) throw new Error(`unexpected ${result.error.code}`);
+    return result;
+  };
+  const dispatched = (input: ProviderRunRequest) => measureSessionContext({ bridge, request: input }).approximateInputTokens;
+  /** Twelve turns (far more history than the exact tail keeps) and a current message bringing the request to `share`;
+   * every text stays short enough to be counted exactly rather than sampled. */
+  const sized = (share: number): ProviderRunRequest => {
+    const history = Array.from({ length: 12 }, (_, index) => turn(`h${index}`, index % 2 ? "assistant" : "user", 6_000));
+    const at = (chars: number) => chat([...history, turn("current", "user", chars)]);
+    const target = Math.round(BUDGET * share);
+    let low = 1;
+    let high = 32_000;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (dispatched(at(middle)) < target) low = middle + 1;
+      else high = middle;
+    }
+    const input = at(low);
+    expect(dispatched(input) / BUDGET).toBeCloseTo(share, 2);
+    return input;
+  };
+
+  it("uses the journey budget", () => {
+    expect(calculateContextBudgetLimits({ contextWindow: 32_768, maxOutputTokens: 2_048, provider: "openai" }).budgetTokens)
+      .toBe(BUDGET);
+  });
+
+  it("measures the dispatched request: a reserve changes no compaction outcome, session estimate, indicator or telemetry", () => {
+    for (const share of [0.7, 0.85]) {
+      const input = sized(share);
+      const plain = budgetOf(input);
+      // The reserve admission keeps for this request.
+      const reserve = followupAdmissionBudgetTokens(plain.request, bridge);
+      expect(reserve).toBeGreaterThan(1_000);
+      const withReserve = reserving(input, reserve);
+      const planned = budgetOf(withReserve);
+      expect(planned.request.contextCompaction).toEqual(plain.request.contextCompaction);
+      expect(planned.request.contextCompaction).toMatchObject({ outcome: share > 0.8 ? "needs_summary" : "already_fits" });
+      expect(summaryNeedsProvider(planned.request)).toBe(summaryNeedsProvider(plain.request));
+      for (const answerText of [undefined, "Готово."]) {
+        const status = measureSessionContext({ answerText, bridge, request: withReserve });
+        expect(status).toEqual(measureSessionContext({ answerText, bridge, request: input }));
+        if (answerText === undefined) expect(sessionContextCapacity(status).percent).toBe(Math.round(share * 100));
+      }
+      expect(providerRequestTokenEstimate(withReserve, bridge)).toBe(providerRequestTokenEstimate(input, bridge));
+      // A provider context rejection scales the request it counted: the one dispatched.
+      const rejection = { maximumTokens: 24_000, promptTokens: 30_000 };
+      expect(providerRequestContextRebuild({ bridge, rejection, request: withReserve, round: 1 }))
+        .toEqual(providerRequestContextRebuild({ bridge, rejection, request: input, round: 1 }));
+    }
+  });
+
+  it("no longer buys a summary at 0.7 of a 27 444-token budget because of the reserve", () => {
+    const input = sized(0.7);
+    const estimate = dispatched(input);
+    const reserve = followupAdmissionBudgetTokens(budgetOf(input).request, bridge);
+    expect(reserve).toBe(Math.min(8_192, Math.floor((BUDGET - estimate) / 2)));
+    // Before, the reserve was part of the estimate the trigger read: 0.85 of the budget, with older history to summarize.
+    expect((estimate + reserve) / BUDGET).toBeGreaterThan(0.8);
+    expect(planContextCompaction({ assembledTokens: estimate + reserve, bridge, budgetTokens: BUDGET, request: input })
+      .measurement.outcome).toBe("needs_summary");
+    // Now the trigger reads the dispatched request, and the reserve still fits beside it.
+    const planned = budgetOf(reserving(input, reserve)).request;
+    expect(planned.contextCompaction).toMatchObject({ afterTokens: estimate, beforeTokens: estimate, outcome: "already_fits" });
+    expect(summaryNeedsProvider(planned)).toBe(false);
+    expect(providerRequestFitsContextBudget(planned, bridge)).toBe(true);
+  });
+
+  it("still keeps the reserve free in follow-up admission, the attachment text fit and the fit guards", () => {
+    // Admission: the planner-target reserve would not fit beside a request that needs only a headroom summary.
+    const headroom = budgetOf(sized(0.85)).request;
+    const estimate = dispatched(headroom);
+    const plannerTarget = Math.min(8_192, Math.floor((BUDGET - Math.ceil(BUDGET / 2)) / 2));
+    expect(estimate + plannerTarget).toBeGreaterThan(BUDGET);
+    expect(followupAdmissionBudgetTokens(headroom, bridge)).toBe(Math.min(8_192, Math.floor((BUDGET - estimate) / 2)));
+
+    // Attachment text: the same outcome, but the text leaves the reserve free.
+    const document = { byteSize: 200_000, extractedText: "d".repeat(200_000), fileName: "large.txt", id: "doc-1",
+      kind: "document" as const, metadata: {}, mimeType: "text/plain", status: "ready" as const };
+    const withDocument = chat([turn("u1", "user", 200), turn("a1", "assistant", 200), turn("current", "user", 200)],
+      { attachmentIds: [document.id], attachments: [document] });
+    const plain = budgetOf(withDocument);
+    const kept = budgetOf(reserving(withDocument, 4_096));
+    expect(kept.request.contextCompaction).toEqual(plain.request.contextCompaction);
+    expect(kept.request.attachments[0]!.extractedText!.length).toBeLessThan(plain.request.attachments[0]!.extractedText!.length);
+    expect(providerRequestTokenEstimate(plain.request, bridge)).toBeGreaterThan(BUDGET - 4_096);
+    expect(providerRequestTokenEstimate(kept.request, bridge) + 4_096).toBeLessThanOrEqual(BUDGET);
+
+    // The whole-turn guard of a request without the notes policy refuses one that fits only without the reserve.
+    const near = sized(0.9);
+    const legacy = { ...near, contextCompactionPolicy: { ...near.contextCompactionPolicy!, mode: "legacy_compatible" as const } };
+    expect(applyProviderRequestContextBudget({ bridge, request: legacy }).ok).toBe(true);
+    expect(applyProviderRequestContextBudget({ bridge, request: reserving(legacy, 4_096) }))
+      .toMatchObject({ ok: false, error: { code: "context_too_large" } });
+
+    // The planner's fit decisions: below the trigger, room that does not fit beside the request makes notes required.
+    const grown = sized(0.75);
+    expect(budgetOf(grown).request.contextCompaction).toMatchObject({ outcome: "already_fits" });
+    const required = budgetOf(reserving(grown, 8_192)).request;
+    expect(required.contextCompaction).toMatchObject({ beforeTokens: dispatched(grown), outcome: "needs_summary" });
+    expect(providerRequestFitsContextBudget(required, bridge)).toBe(false);
+    expect(providerRequestFitsContextBudget(budgetOf(grown).request, bridge)).toBe(true);
   });
 });

@@ -8,10 +8,13 @@
   background: var(--v2-color-canvas);
 }
 
+/* `--v2-jump-latest-offset`: height of the overlay docked at the bottom
+   (the composer), which the control clears. A phone on its side keeps the
+   control out of the notch. */
 .v2-conversation-jump-latest {
   position: absolute;
-  left: max(0.75rem, calc((100% - var(--v2-measure)) / 2 - 3rem));
-  bottom: 1rem;
+  left: max(calc(0.75rem + env(safe-area-inset-left)), calc((100% - var(--v2-measure)) / 2 - 3rem));
+  bottom: calc(var(--v2-jump-latest-offset, 0px) + 1rem);
   z-index: 12;
   border: 1px solid var(--v2-color-border2);
   color: var(--v2-color-text);

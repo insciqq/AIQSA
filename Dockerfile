@@ -184,8 +184,9 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund esbuild@0.28.1 \
 ENV PYTHONPATH=/opt/aiqsa-guest/python
 COPY ops/workspace-guest/python/aiqsa /opt/aiqsa-guest/python/aiqsa
 COPY ops/workspace-guest/bin/aiqsa-mcp /usr/local/bin/aiqsa-mcp
-# Shows an Office document in an artifact: a PDF of its visible pages without
-# comments, notes, hidden sheets/slides or document properties.
+# Shows an Office document in an artifact: a PDF of its visible pages with
+# tracked changes accepted, without comments, notes, hidden sheets/slides,
+# document properties or image metadata.
 COPY ops/workspace-guest/bin/aiqsa-office-pdf /usr/local/bin/aiqsa-office-pdf
 RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-office-pdf \
   && chmod -R u=rwX,go=rX /opt/aiqsa-guest \

@@ -7,6 +7,13 @@ import type { AcceptedWorkspaceSecret } from "./store";
 import { parseWorkspaceSecretMutation, WorkspaceSecretError } from "./validation";
 
 const ENTRY_COUNT = WORKSPACE_SECRET_MAX_COUNT + WORKSPACE_BROWSER_SESSION_MAX_COUNT;
+
+/**
+ * The only user path for a website sign-in, named with the Studio labels so a
+ * model never invents login windows or buttons. Paid on every Workspace run.
+ */
+export const WORKSPACE_BROWSER_SESSION_USER_PATH =
+  "To add or refresh a website sign-in, the user imports a Playwright storage_state JSON in Studio → Secrets (Add secret → Browser session, or Edit → Replace saved value) and saves it for their next Workspace request; AIQSA has no in-app website login, Reconnect or Reauthorize (MCP Reconnect is unrelated).";
 /** Ids, field names, name and a description whose JSON escaping is at most six bytes per character. */
 const ENTRY_METADATA_MAX_BYTES = 64 * 1024;
 /**
@@ -100,7 +107,7 @@ export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[
       case "file": lines.push(`Original file: ${heading(secret.value.originalName)}`, `Path: \`${workspaceSecretAssetPath(secret.id, "file")}\``, "Use the original bytes at this path; no reconstruction is needed.", ""); break;
     }
   }
-  lines.push("## Browser sessions", "", `Save Playwright storage_state JSON in /workspace/secrets/browser/<host>.json. AIQSA encrypts valid files after a personal run settles and restores them in later Workspaces. Verify that a restored session is still logged in; use saved credentials if it expired. Guest file deletion does not delete settings. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT} A larger state is not saved and its previous version stays.`, "");
+  lines.push("## Browser sessions", "", `Save Playwright storage_state JSON in /workspace/secrets/browser/<host>.json. AIQSA encrypts valid files after a personal run settles and restores them in later Workspaces. Verify that a restored session is still logged in; use saved credentials if it expired. Guest file deletion does not delete settings. ${WORKSPACE_BROWSER_SESSION_LIMIT_TEXT} A larger state is not saved and its previous version stays. ${WORKSPACE_BROWSER_SESSION_USER_PATH}`, "");
   for (const secret of secrets) if (secret.value.kind === "browser_session") {
     lines.push(`### ${heading(secret.name)}`, `Host/file: ${heading(secret.value.originalName)}`,
       `Path: \`${workspaceBrowserSessionPath(secret.value.originalName)}\``, "");

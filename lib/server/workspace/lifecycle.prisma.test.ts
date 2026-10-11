@@ -4,7 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/server/prisma";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
-import type { WorkspaceAvailabilityService } from "./availability";
+import { scheduledTaskScheduleColumns } from "@/lib/server/scheduledTasks/store";
+import { createWorkspaceAvailabilityService, type WorkspaceAvailabilityService } from "./availability";
 import { getWorkspaceConfig } from "./config";
 import { createPrismaWorkspaceCoordinatorRepository } from "./coordinator";
 import { createWorkspaceLifecycleService } from "./lifecycle";
@@ -174,6 +175,81 @@ describe("Prisma Workspace lifecycle", () => {
       });
     } finally {
       await prisma.attachment.deleteMany({ where: { chatId: chat.id } });
+      await prisma.workspaceSession.deleteMany({ where: { id: session.id } });
+      await prisma.chat.deleteMany({ where: { id: chat.id } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
+  it("lets a reset consume a carried project a failed start never restored", async () => {
+    const userId = `workspace-lifecycle-test-${randomUUID()}`;
+    const storageKey = `${userId}/workspace-seeds/${randomUUID()}`;
+    const runtime = {
+      claimSessionOperation: vi.fn(async () => undefined),
+      removeSession: vi.fn(async () => undefined),
+      retireSessionOperation: vi.fn(async () => undefined)
+    } as unknown as WorkspaceRuntime;
+    await prisma.user.create({ data: { displayName: "Workspace Lifecycle Test", id: userId } });
+    const chat = await prisma.chat.create({
+      data: { title: "Rotated scheduled chat", userId, workspaceEnabled: true }
+    });
+    const task = await prisma.scheduledTask.create({ data: {
+      ...scheduledTaskScheduleColumns({ kind: "daily", time: "09:00" }), chatId: chat.id, chatMode: "SAME", emailNotify: false,
+      modelId: "fake-qsa", nextRunAt: new Date(Date.now() + 86_400_000), prompt: "Synthetic scheduled prompt", provider: "fake",
+      searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", userId, workspaceEnabled: true
+    } });
+    // The failed start never recorded a runtime identity, so the old reset refused with `workspace_not_started`.
+    const session = await prisma.workspaceSession.create({
+      data: {
+        chatId: chat.id,
+        expiresAt: new Date(Date.now() + config.retentionSeconds * 1_000),
+        imageRef: config.imageRef,
+        internetEnabled: true,
+        lastErrorCode: "workspace_carryover_unavailable",
+        policyRevision: 1,
+        runtimeSandboxId: null,
+        sandboxName: `aiqsa-ws-${randomUUID()}`,
+        state: "FAILED"
+      }
+    });
+    const seed = await prisma.chatContinuationWorkspaceSeed.create({ data: {
+      byteSize: 1, checksum: "b".repeat(64), newChatId: chat.id, scheduledTaskId: task.id, status: "TRANSFERRED", storageKey
+    } });
+
+    try {
+      const lifecycle = createWorkspaceLifecycleService({
+        availability: createWorkspaceAvailabilityService({
+          health: { invalidate() {}, read: async () => ({ state: "ready" as const }) },
+          policy
+        }),
+        config,
+        policy,
+        prisma,
+        runtime,
+        storage: createMemoryStorageAdapter()
+      });
+      await expect(lifecycle.archive({ chatId: chat.id, userId })).rejects.toMatchObject({ code: "workspace_not_started" });
+      await expect(lifecycle.reset({ chatId: chat.id, userId: `${userId}-other` }))
+        .rejects.toMatchObject({ code: "workspace_reset_conflict", status: 404 });
+      await expect(lifecycle.reset({ chatId: chat.id, userId })).resolves.toMatchObject({
+        continuationFiles: { reason: "reset_consumed", status: "failed" },
+        sessionState: "not_started"
+      });
+      expect(runtime.removeSession).toHaveBeenCalledWith(expect.objectContaining({ runtimeSandboxId: null, sessionId: session.id }));
+      await expect(prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({
+        select: { failureCode: true, status: true }, where: { id: seed.id }
+      })).resolves.toEqual({ failureCode: "workspace_reset_consumed", status: "ABANDONED" });
+      await expect(prisma.workspaceSession.findUniqueOrThrow({
+        select: { operationOwner: true, runtimeSandboxId: true, state: true }, where: { id: session.id }
+      })).resolves.toEqual({ operationOwner: null, runtimeSandboxId: null, state: "PENDING" });
+      await expect(prisma.workspaceCleanupJob.count({ where: { workspaceSessionId: session.id } })).resolves.toBe(0);
+      await expect(prisma.attachmentDeletionJob.count({ where: { storageKey } })).resolves.toBe(1);
+      await expect(lifecycle.reset({ chatId: chat.id, userId })).rejects.toMatchObject({ code: "workspace_not_started" });
+    } finally {
+      await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey } });
+      await prisma.chatContinuationWorkspaceSeed.deleteMany({ where: { id: seed.id } });
+      await prisma.scheduledTask.deleteMany({ where: { id: task.id } });
+      await prisma.workspaceCleanupJob.deleteMany({ where: { workspaceSessionId: session.id } });
       await prisma.workspaceSession.deleteMany({ where: { id: session.id } });
       await prisma.chat.deleteMany({ where: { id: chat.id } });
       await prisma.user.deleteMany({ where: { id: userId } });

@@ -116,6 +116,40 @@ describe("artifact settlement and lifecycle in PostgreSQL", () => {
     } finally { await f.cleanup(); }
   });
 
+  it("lets the owner's own route name only files of non-temporary personal chats and unsent uploads", async () => {
+    const f = await fixture(true);
+    const other = await prisma.user.create({ data: { id: `artifact-test-${randomUUID()}`, displayName: "Other", status: "active" } });
+    try {
+      const kept = await prisma.chat.create({ data: { userId: f.owner.id, title: "Kept", memoryMode: "EXCLUDED" } });
+      const foreign = await prisma.chat.create({ data: { userId: other.id, title: "Other", memoryMode: "EXCLUDED" } });
+      const message = await prisma.message.create({ data: { chatId: kept.id, role: "user", content: textMessageContent("Files") } });
+      const bytes = Buffer.from("synthetic-image-bytes");
+      const attach = async (name: string, owner: string, placement: { chatId?: string; messageId?: string; savedAt?: Date }) => {
+        const row = await prisma.attachment.create({ data: { userId: owner, fileName: `${name}.png`, mimeType: "image/png", kind: "image",
+          status: "ready", byteSize: bytes.length, checksum: createHash("sha256").update(bytes).digest("hex"),
+          storageKey: `source/${f.owner.id}/${name}.png`, metadata: {}, ...placement } });
+        f.objects.set(row.storageKey, { body: bytes, contentType: row.mimeType, storageKey: row.storageKey });
+        return row.id;
+      };
+      const temporary = await attach("temporary", f.owner.id, { chatId: f.chat.id });
+      const foreignFile = await attach("foreign", other.id, { chatId: foreign.id });
+      const saved = await attach("saved", f.owner.id, { savedAt: new Date() });
+      const sent = await attach("sent", f.owner.id, { chatId: kept.id, messageId: message.id });
+      const unsent = await attach("unsent", f.owner.id, {});
+      const create = (assetRef: string) => f.service.createVersion({ ownerUserId: f.owner.id, operation: {
+        intent: "create", kind: "image", title: "Picture", files: [{ path: "image.png", mimeType: "image/png", assetRef }] } });
+      // A temporary chat's file, another user's file and a saved Files item answer exactly like a missing id.
+      for (const refused of [temporary, foreignFile, saved, randomUUID()]) {
+        await expect(create(refused)).rejects.toMatchObject({ code: "artifact_asset_unavailable", path: "image.png" });
+      }
+      expect(await prisma.artifact.count({ where: { ownerUserId: f.owner.id } })).toBe(0);
+      for (const allowed of [sent, unsent]) expect(await create(allowed)).toMatchObject({ status: "READY", kind: "image" });
+    } finally {
+      await f.cleanup();
+      await prisma.user.deleteMany({ where: { id: other.id } });
+    }
+  });
+
   it("rejects an oversized image set before reading objects or allocating a version", async () => {
     const f = await fixture();
     try {

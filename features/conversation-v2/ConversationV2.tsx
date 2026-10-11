@@ -22,6 +22,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -834,7 +835,7 @@ export function ConversationV2({
           icon="chevron-down"
           label="Jump to latest message"
           style={jumpToLatestBottomOffset > 0
-            ? { bottom: `calc(${jumpToLatestBottomOffset}px + 1rem)` }
+            ? { "--v2-jump-latest-offset": `${jumpToLatestBottomOffset}px` } as CSSProperties
             : undefined}
           onClick={onJumpToLatest}
         />

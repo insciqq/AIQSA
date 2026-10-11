@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogModel } from "../lib/contracts/catalog";
 import type { ChatDetailWire, ChatMessageWire } from "../lib/contracts/chats";
-import type { ContextCompactionStatus } from "../lib/contracts/contextCompaction";
+import { makeContextCompactionStatus, type ContextCompactionStatus } from "../lib/contracts/contextCompaction";
 import type { SessionContextStatus } from "../lib/contracts/sessionStatus";
+import { encodeSseEvent, RUN_STREAM_KEEPALIVE } from "../lib/domain/modelRunEvents";
+import { contextCompactionArtifact } from "../lib/server/runs/contextCompactionEvents";
 import {
   JOURNEY_CORRECTIONS,
   JOURNEY_LIMITS,
+  JOURNEY_RATIO_BANDS,
   JourneyFailure,
   codexLbSetupBody,
   catalogReadiness,
@@ -23,6 +26,7 @@ import {
   journeyRunParams,
   journeyVerdict,
   createDebugEmitter,
+  createRunStreamScanner,
   exceptionDiagnostics,
   fullPromptTokens,
   ledgerDelta,
@@ -417,41 +421,92 @@ const summary = (beforeTokens: number): ContextCompactionStatus => ({
 });
 
 describe("round evidence and verdict", () => {
-  it("measures the final request and compares single-round turns only", () => {
+  it("measures the dispatched request and compares every single-request turn", () => {
     // Budget: 32768 - 2048 - 3276 = 27444.
     const reported = (inputTokens: number, cachedInputTokens = 0, cacheWriteInputTokens = 0) =>
       ({ cacheWriteInputTokens, cachedInputTokens, inputTokens });
     expect(journeyRound({ answerTokens: 400, compaction: null, kind: "filler", reported: reported(11_000, 9_000, 500),
-      session: session(10_400), toolCalls: 0, turn: 5 })).toEqual({
+      session: session(10_400), summaryBought: false, toolCalls: 0, turn: 5 })).toEqual({
       budgetShare: 0.364, compactionOutcome: null, estimatedInputTokens: 10_000, kind: "filler", ratio: 1.1,
       reportedAccounting: "inclusive", reportedCacheWriteInputTokens: 500, reportedCachedInputTokens: 9_000,
-      reportedInputTokens: 11_000, reportedLedgerInputTokens: 11_000, summaryAtBudgetShare: null, turn: 5 });
+      reportedInputTokens: 11_000, reportedLedgerInputTokens: 11_000, summaryAtBudgetShare: null, summaryBought: false, turn: 5 });
     expect(journeyRound({ answerTokens: 400, compaction: null, kind: "correction", reported: reported(4_000, 6_000),
-      session: session(10_400), toolCalls: 0, turn: 2 })).toMatchObject({ ratio: 1, reportedAccounting: "exclusive_detected",
-      reportedInputTokens: 10_000, reportedLedgerInputTokens: 4_000 });
+      session: session(10_400), summaryBought: false, toolCalls: 0, turn: 2 })).toMatchObject({ ratio: 1,
+      reportedAccounting: "exclusive_detected", reportedInputTokens: 10_000, reportedLedgerInputTokens: 4_000 });
+    // A bought summary adds its calls to the turn's ledger: no ratio, only the share it was bought at.
     const summarized = journeyRound({ answerTokens: 400, compaction: summary(23_328), kind: "filler",
-      reported: reported(40_000), session: session(9_400), toolCalls: 0, turn: 8 });
-    expect(summarized).toMatchObject({ compactionOutcome: "summary_applied", ratio: null, summaryAtBudgetShare: 0.85 });
-    expect(journeyRound({ answerTokens: 0, compaction: null, kind: "rule", reported: null, session: null,
+      reported: reported(40_000), session: session(9_400), summaryBought: true, toolCalls: 0, turn: 8 });
+    expect(summarized).toMatchObject({ compactionOutcome: "summary_applied", ratio: null, summaryAtBudgetShare: 0.85, summaryBought: true });
+    // Notes carried from an earlier answer cost no call: the turn is still one request.
+    expect(journeyRound({ answerTokens: 400, compaction: summary(24_000), kind: "probe", reported: reported(8_820),
+      session: session(9_400), summaryBought: false, toolCalls: 0, turn: 9 })).toMatchObject({ ratio: 0.98, summaryAtBudgetShare: 0.875 });
+    // Without the run stream a compaction turn cannot be told apart, so it gets no ratio.
+    expect(journeyRound({ answerTokens: 400, compaction: summary(24_000), kind: "probe", reported: reported(8_820),
+      session: session(9_400), summaryBought: null, toolCalls: 0, turn: 9 })).toMatchObject({ ratio: null, summaryBought: null });
+    expect(journeyRound({ answerTokens: 400, compaction: null, kind: "filler", reported: reported(9_800),
+      session: session(10_400), summaryBought: null, toolCalls: 0, turn: 6 })).toMatchObject({ ratio: 0.98 });
+    expect(journeyRound({ answerTokens: 0, compaction: null, kind: "rule", reported: null, session: null, summaryBought: false,
       toolCalls: 0, turn: 4 })).toMatchObject({ budgetShare: null, estimatedInputTokens: null, ratio: null,
       reportedAccounting: null, reportedInputTokens: null });
     expect(journeyRound({ answerTokens: 500, compaction: null, kind: "probe", reported: reported(900),
-      session: session(1_000, "request"), toolCalls: 1, turn: 9 })).toMatchObject({ estimatedInputTokens: 1_000, ratio: null });
+      session: session(1_000, "request"), summaryBought: false, toolCalls: 1, turn: 9 }))
+      .toMatchObject({ estimatedInputTokens: 1_000, ratio: null });
+  });
+
+  it("tells a bought summary from carried notes in the run's own event stream", () => {
+    // Encoded exactly as the run stream sends them: a bought cycle opens with a running status.
+    const status = (state: "complete" | "running") => encodeSseEvent(contextCompactionArtifact(makeContextCompactionStatus(
+      state === "running" ? { beforeTokens: 23_000, outcome: "pending", state }
+        : { afterTokens: 9_000, beforeTokens: 23_000, outcome: "summary_applied", state })));
+    const token = (delta: string) => encodeSseEvent({ data: { delta }, type: "token" });
+    const scan = (text: string, size: number) => {
+      const scanner = createRunStreamScanner();
+      for (let index = 0; index < text.length; index += size) scanner.push(text.slice(index, index + size));
+      scanner.push("\n");
+      return scanner.summaryCycles();
+    };
+    const bought = [RUN_STREAM_KEEPALIVE, token("Готово"), status("running"), status("complete"),
+      encodeSseEvent({ data: { artifactType: "context_status", payload: { state: "running" } }, type: "artifact" })].join("");
+    // Any split of the stream, and CRLF line ends, read the same one cycle.
+    for (const size of [1, 7, 64, bought.length]) expect(scan(bought, size)).toBe(1);
+    expect(scan(bought.replaceAll("\n", "\r\n"), 13)).toBe(1);
+    // Carried notes settle without a running status; answer text naming one is not an event.
+    expect(scan(`${status("complete")}${token("\"state\":\"running\"")}`, 5)).toBe(0);
+    // An overlong line is skipped whole and the next event still counts.
+    expect(scan(`event: artifact\ndata: ${"x".repeat(10_000)}\n\n${status("running")}`, 512)).toBe(1);
   });
 
   const round = (overrides: Partial<JourneyRound>): JourneyRound => ({ budgetShare: 0.5, compactionOutcome: null,
     estimatedInputTokens: 1, kind: "filler", ratio: null, reportedAccounting: "inclusive", reportedCacheWriteInputTokens: 0,
-    reportedCachedInputTokens: 0, reportedInputTokens: 1, reportedLedgerInputTokens: 1, summaryAtBudgetShare: null, turn: 1,
-    ...overrides });
+    reportedCachedInputTokens: 0, reportedInputTokens: 1, reportedLedgerInputTokens: 1, summaryAtBudgetShare: null,
+    summaryBought: false, turn: 1, ...overrides });
 
-  it("passes only a summary bought inside the window with a correct probe", () => {
-    const bought = [round({}), round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.84, turn: 2 })];
-    expect(journeyVerdict(bought, true)).toEqual({ code: null, compactionTriggered: true, firstSummaryAtBudgetShare: 0.84, passed: true });
-    expect(journeyVerdict(bought, false).code).toBe("probe_answer_missing_corrections");
+  it("passes only the first summary at the first turn past the trigger, with ratios in the route's band", () => {
+    const band = JOURNEY_RATIO_BANDS["codex-lb"]!;
+    expect(band).toEqual({ max: 1, min: 0.85 });
+    expect(JOURNEY_RATIO_BANDS.anthropic).toBeUndefined();
+    const journey = (ratio = 0.97) => [round({ budgetShare: 0.62, ratio: 0.98 }), round({ budgetShare: 0.79, ratio, turn: 2 }),
+      round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.84, summaryBought: true, turn: 3 }),
+      round({ budgetShare: 0.41, compactionOutcome: "summary_applied", ratio: 0.99, summaryAtBudgetShare: 0.86, turn: 4 })];
+    // The request that bought the summary never reached the provider: its reported share uses the latest ratio before it.
+    expect(journeyVerdict(journey(), true, band)).toEqual({ code: null, compactionTriggered: true, firstSummaryAtBudgetShare: 0.84,
+      firstSummaryAtReportedBudgetShare: 0.815, passed: true });
+    expect(journeyVerdict(journey(), false, band).code).toBe("probe_answer_missing_corrections");
     expect(journeyVerdict([round({})], true).code).toBe("compaction_not_triggered");
-    expect(journeyVerdict([round({ compactionOutcome: "summary_failed" })], true).code).toBe("summary_not_bought");
-    expect(journeyVerdict([round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.97 })], true).code)
-      .toBe("summary_share_out_of_range");
+    expect(journeyVerdict([round({ compactionOutcome: "summary_failed", summaryBought: true })], true).code).toBe("summary_not_bought");
+    // Bought at or below the trigger, or after an earlier turn already crossed it.
+    expect(journeyVerdict([round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.8 })], true).code)
+      .toBe("summary_before_trigger");
+    expect(journeyVerdict([round({ budgetShare: 0.81 }), round({ compactionOutcome: "summary_applied", summaryAtBudgetShare: 0.9,
+      turn: 2 })], true).code).toBe("trigger_crossed_without_summary");
+    // A ratio outside the band fails a route that has one, and a route without a band only reports it.
+    for (const ratio of [0.6, 1.08]) {
+      expect(journeyVerdict(journey(ratio), true, band).code).toBe("ratio_out_of_range");
+      expect(journeyVerdict(journey(ratio), true).passed).toBe(true);
+    }
+    const unmeasured = journey().map((value) => ({ ...value, ratio: null }));
+    expect(journeyVerdict(unmeasured, true, band).code).toBe("ratio_missing");
+    expect(journeyVerdict(unmeasured, true)).toMatchObject({ code: null, firstSummaryAtReportedBudgetShare: null });
   });
 
   it("exits 0 only when every executed route passed and none requested was skipped", () => {

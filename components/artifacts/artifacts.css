@@ -143,6 +143,9 @@
 
 .v2-artifact-banner > span:first-child {
   flex: 1 1 auto;
+  min-width: 0;
+  /* A long unbroken file name in a download prompt wraps instead of running past a phone's edge. */
+  overflow-wrap: anywhere;
 }
 
 /* Away from a multi-page artifact's start page: the page shown, quietly, and the way back. */
