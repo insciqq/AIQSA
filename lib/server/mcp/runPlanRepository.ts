@@ -238,11 +238,12 @@ function personalCatalogTools(
 }
 
 /**
- * A personal OAuth connection whose owner holds no ready token lost its
- * authority. Dispatch and admission name that state instead of a queued
- * runtime that synchronization can never start.
+ * An OAuth server whose user holds no ready connection lost its authority. A
+ * personal server's dispatch and admission name that state instead of a
+ * queued runtime that synchronization can never start; an installation
+ * server keeps its catalog and only flags the sign-in.
  */
-function personalAuthorizationLoss(
+function userAuthorizationLoss(
   preference: RunPlanPreferenceRecord
 ): { errorCode: string; readiness: "needs_authorization" | "reauthorization_required" } | null {
   if (authMode(preference.server.activeRevision?.configuration) !== "oauth") return null;
@@ -284,12 +285,15 @@ function serializeRunPlanPreferenceState(preference: RunPlanPreferenceRecord): M
     preference.server.activeRevision?.validationEvidence
   );
   const personal = preference.server.ownerUserId === preference.userId;
-  const authorization = personal ? personalAuthorizationLoss(preference) : null;
+  const authorization = personal ? userAuthorizationLoss(preference) : null;
   if (authorization) return { ...inaccessibleRecord(preference, authorization.errorCode), readiness: authorization.readiness };
   const switchedOff = personal ? { userDisabledToolNames: preference.userDisabledToolNames } : {};
 
   const generation = preference.desiredRuntimeGeneration;
   if (!generation) {
+    // Synchronization leaves an installation OAuth server without a runtime
+    // while its user holds no ready connection; its catalog stays published.
+    const signInRequired = !personal && userAuthorizationLoss(preference) ? { signInRequired: true as const } : {};
     return {
       ...inaccessibleRecord(
         preference,
@@ -305,6 +309,7 @@ function serializeRunPlanPreferenceState(preference: RunPlanPreferenceRecord): M
           ),
       ...(serverInstructions ? { serverInstructions } : {}),
       ...switchedOff,
+      ...signInRequired,
       errorCode: preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : null,
       readiness: preference.desiredRuntimeGenerationId ? "unavailable" : "queued"
     };

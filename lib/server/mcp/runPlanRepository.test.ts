@@ -883,8 +883,27 @@ describe("Prisma MCP personal live catalog", () => {
     installation.server.activeRevision!.configuration = { auth: { mode: "oauth" } };
     installation.server.oauthConnections = [{ disconnectRequestedAt: null, id: "oauth-2", state: "reauthorization_required", userId: "user-1" }];
     const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([installation]).client);
-    expect(loaded).toMatchObject({ errorCode: null, readiness: "queued" });
+    // The published catalog and queued state stay; only the sign-in is flagged.
+    expect(loaded).toMatchObject({ catalogTools: [expect.objectContaining({ name: "echo" })], errorCode: null,
+      readiness: "queued", signInRequired: true });
     expect(loaded).not.toHaveProperty("userDisabledToolNames");
+    await expect(prepareMcpRunPlan({
+      allowedServerIds: ["server-1"],
+      isGenerationLive: () => true,
+      load: () => loadMcpRunPlanRecordsForServers("user-1", ["server-1"], clientWith([installation]).client),
+      now: () => NOW
+    })).resolves.toMatchObject({ code: "mcp_not_ready", issues: [{ readiness: "queued", signInRequired: true }], ok: false });
+
+    // A ready connection without a runtime yet is an ordinary queued start, and a non-OAuth server never asks to sign in.
+    installation.server.oauthConnections = [{ disconnectRequestedAt: null, id: "oauth-2", state: "ready", userId: "user-1" }];
+    await expect(loadMcpRunPlanRecords("user-1", clientWith([installation]).client)).resolves.toEqual([
+      expect.not.objectContaining({ signInRequired: true })
+    ]);
+    installation.server.activeRevision!.configuration = {};
+    installation.server.oauthConnections = [];
+    await expect(loadMcpRunPlanRecords("user-1", clientWith([installation]).client)).resolves.toEqual([
+      expect.not.objectContaining({ signInRequired: true })
+    ]);
   });
 
   /** A second owned connection with its own server, preference, generation and namespace. */
