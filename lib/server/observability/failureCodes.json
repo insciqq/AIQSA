@@ -431,6 +431,7 @@
   "mcp_not_ready",
   "mcp_oauth_revocation_abandoned",
   "mcp_oauth_revocation_failed",
+  "mcp_oauth_revocation_refused",
   "mcp_ping_failed",
   "mcp_ping_unsupported",
   "mcp_policy_unavailable",

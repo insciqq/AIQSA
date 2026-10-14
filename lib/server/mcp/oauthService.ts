@@ -47,8 +47,24 @@ const MAX_AUTHORIZATION_URL_BYTES = 8 * 1_024;
 const MAX_OAUTH_RESPONSE_BYTES = 512 * 1_024;
 const OAUTH_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_REVOCATION_PASSES = 3;
+const MAX_PARALLEL_REVOCATIONS = 4;
 /** Revocation retries end this long after the disconnect request; the token is then wiped locally. */
 export const MCP_OAUTH_REVOCATION_ABANDON_MS = 24 * 60 * 60_000;
+/**
+ * A connection whose revocation or refresh failed asks its authorization
+ * server again only after this delay, doubled per further failure up to the
+ * maximum and stretched by up to a fifth at random so connections spread out.
+ */
+export const MCP_OAUTH_RETRY_BASE_MS = 30_000;
+export const MCP_OAUTH_RETRY_MAX_MS = 60 * 60_000;
+const MCP_OAUTH_RETRY_JITTER = 0.2;
+/**
+ * Revocation answers that no retry can change (RFC 7009 answers 200 for an
+ * already-invalid token): a malformed request or unsupported token type, failed
+ * client authentication, a refusal, or no such endpoint or method. 408, 429 and
+ * 5xx stay retryable.
+ */
+const PERMANENT_REVOCATION_STATUSES: ReadonlySet<number> = new Set([400, 401, 403, 404, 405]);
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 // Every authorization-server response, including the ones the SDK parses with
@@ -126,10 +142,41 @@ async function withinDeadline<T>(signal: AbortSignal, operation: Promise<T>): Pr
   }
 }
 
+/**
+ * Per-connection retry times of one kind of outbound OAuth request, local to
+ * this process. Only the app process runs the MCP runtime coordinator, so its
+ * revocation sweep and runtime refreshes all pass through one instance.
+ */
+class ConnectionRetryBackoff {
+  readonly #entries = new Map<string, { failures: number; retryAt: number }>();
+  readonly #random: () => number;
+
+  constructor(random: () => number) {
+    this.#random = random;
+  }
+
+  /** True while the connection's last failure has not yet earned another request. */
+  waiting(connectionId: string, now: Date): boolean {
+    const entry = this.#entries.get(connectionId);
+    return entry !== undefined && now.getTime() < entry.retryAt;
+  }
+
+  failed(connectionId: string, now: Date): void {
+    const failures = (this.#entries.get(connectionId)?.failures ?? 0) + 1;
+    const delay = Math.min(MCP_OAUTH_RETRY_MAX_MS, MCP_OAUTH_RETRY_BASE_MS * 2 ** Math.min(failures - 1, 16));
+    const jitter = 1 + MCP_OAUTH_RETRY_JITTER * Math.min(1, Math.max(0, this.#random()));
+    this.#entries.set(connectionId, { failures, retryAt: now.getTime() + Math.round(delay * jitter) });
+  }
+
+  clear(connectionId: string): void {
+    this.#entries.delete(connectionId);
+  }
+}
+
 /** Content-free: a stable code and the server-owned connection scope only. */
 function reportRevocationFailure(connectionId: string, code: string, error?: unknown): void {
   reportSubsystemFailure({
-    action: code === "mcp_oauth_revocation_abandoned" ? "stop" : "retry",
+    action: code === "mcp_oauth_revocation_failed" ? "retry" : "stop",
     code,
     ...(error === undefined ? {} : { prisma_code: databaseFailureCode(error) }),
     scope_id: connectionId,
@@ -188,6 +235,8 @@ export type McpOAuthRuntimeProvider = OAuthClientProvider & Readonly<{
 type OAuthProviderMode = "callback" | "runtime" | "start";
 
 type OAuthCredentialScope = "all" | "client" | "discovery" | "tokens" | "verifier";
+
+type RevocationOutcome = "refused" | "revoked";
 
 type OAuthSubject = Pick<McpOAuthPolicy, "purpose" | "serverId" | "userId">;
 
@@ -537,7 +586,11 @@ class DurableOAuthProvider implements OAuthClientProvider {
     this.#discoveryState = state;
   }
 
-  discoveryState(): OAuthDiscoveryState {
+  discoveryState(): OAuthDiscoveryState | Promise<never> {
+    // The SDK reads this first in every authorization flow. A runtime request
+    // settles before any metadata discovery: AIQSA refreshes against the stored
+    // metadata, so discovery would only add requests to a failing server.
+    if (this.#mode === "runtime") return this.#settleRejectedRuntime();
     return this.#discoveryState;
   }
 
@@ -579,8 +632,13 @@ export class McpOAuthService {
     abort: AbortController;
     promise: Promise<OAuthTokens>;
   }>>();
+  readonly #refreshRetry: ConnectionRetryBackoff;
   readonly #repository: McpOAuthRepository;
   readonly #requestTimeoutMs: number;
+  readonly #revocationRetry: ConnectionRetryBackoff;
+  /** One revocation per connection at a time, whether a disconnect or the sweep asks. */
+  readonly #revocations = new Map<string, Promise<McpOAuthDisconnectResult>>();
+  #sweep: Promise<void> | null = null;
 
   constructor(input: Readonly<{
     repository: McpOAuthRepository;
@@ -589,6 +647,8 @@ export class McpOAuthService {
     now?: () => Date;
     /** Applied to personal policies by the default transport; absent, personal OAuth stays public-only. */
     personalAddressPolicy?: McpAddressPolicy;
+    /** Retry jitter source in [0, 1). */
+    random?: () => number;
     requestTimeoutMs?: number;
   }>) {
     this.#repository = input.repository;
@@ -603,6 +663,8 @@ export class McpOAuthService {
     }, input.personalAddressPolicy)));
     this.#now = input.now ?? (() => new Date());
     this.#requestTimeoutMs = input.requestTimeoutMs ?? OAUTH_REQUEST_TIMEOUT_MS;
+    this.#refreshRetry = new ConnectionRetryBackoff(input.random ?? Math.random);
+    this.#revocationRetry = new ConnectionRetryBackoff(input.random ?? Math.random);
   }
 
   async startAuthorization(input: Readonly<{
@@ -856,13 +918,10 @@ export class McpOAuthService {
       await existing.promise.catch(() => undefined);
       return;
     }
-    const abort = new AbortController();
-    const deadline = this.#deadline(abort.signal);
-    const promise = withinDeadline(deadline, this.#refresh(connection, deadline, { force: true })).finally(() => {
-      if (this.#refreshes.get(connectionId)?.promise === promise) this.#refreshes.delete(connectionId);
-    });
-    this.#refreshes.set(connectionId, { abort, promise });
-    await promise.catch(() => undefined);
+    // A connection whose last refresh failed does not ask again before its
+    // retry time; this request still fails and requires reauthorization.
+    if (this.#refreshRetry.waiting(connectionId, this.#now())) return;
+    await this.#startRefresh(connection, { force: true }).catch(() => undefined);
   }
 
   async tokensForConnection(connectionId: string): Promise<OAuthTokens> {
@@ -882,9 +941,35 @@ export class McpOAuthService {
     }
     const existing = this.#refreshes.get(connectionId);
     if (existing) return existing.promise;
+    const now = this.#now();
+    if (this.#refreshRetry.waiting(connectionId, now)) {
+      // Until the retry time a still-valid token keeps working and an expired
+      // one fails without another request to the authorization server.
+      if (connection.expiresAt.getTime() > now.getTime()) return connection.tokens;
+      throw new McpOAuthError("mcp_oauth_authorization_failed");
+    }
+    return this.#startRefresh(connection);
+  }
+
+  /** The connection's single-flight refresh; a failure the authorization server
+   * may still recover from delays the connection's next refresh. */
+  #startRefresh(
+    connection: McpOAuthStoredConnection,
+    options: Readonly<{ force?: boolean }> = {}
+  ): Promise<OAuthTokens> {
+    const connectionId = connection.id;
     const abort = new AbortController();
     const deadline = this.#deadline(abort.signal);
-    const promise = withinDeadline(deadline, this.#refresh(connection, deadline)).finally(() => {
+    const promise = withinDeadline(deadline, this.#refresh(connection, deadline, options)).then((tokens) => {
+      this.#refreshRetry.clear(connectionId);
+      return tokens;
+    }, (error: unknown) => {
+      // Reauthorization already settled the connection, and a network-policy
+      // refusal sent nothing; neither delays the next refresh.
+      const settled = error instanceof McpOAuthError && error.code === "mcp_oauth_reauthorization_required";
+      if (!settled && !mcpNetworkPolicyRefusal(error)) this.#refreshRetry.failed(connectionId, this.#now());
+      throw error;
+    }).finally(() => {
       if (this.#refreshes.get(connectionId)?.promise === promise) this.#refreshes.delete(connectionId);
     });
     this.#refreshes.set(connectionId, { abort, promise });
@@ -901,25 +986,47 @@ export class McpOAuthService {
     return this.revokeConnectionIfDrained(connection.id);
   }
 
-  async revokeConnectionIfDrained(connectionId: string): Promise<McpOAuthDisconnectResult> {
+  revokeConnectionIfDrained(connectionId: string): Promise<McpOAuthDisconnectResult> {
+    const active = this.#revocations.get(connectionId);
+    if (active) return active;
+    const revocation = this.#revokeConnectionIfDrained(connectionId).finally(() => {
+      if (this.#revocations.get(connectionId) === revocation) this.#revocations.delete(connectionId);
+    });
+    this.#revocations.set(connectionId, revocation);
+    return revocation;
+  }
+
+  async #revokeConnectionIfDrained(connectionId: string): Promise<McpOAuthDisconnectResult> {
     for (let pass = 0; pass < MAX_REVOCATION_PASSES; pass += 1) {
       const connection = await this.#repository.loadConnection(connectionId);
-      if (!connection) return pass ? "disconnecting" : "not_found";
+      if (!connection) {
+        this.#revocationRetry.clear(connectionId);
+        return pass ? "disconnecting" : "not_found";
+      }
+      // A failed revocation waits for its retry time; the 24 h bound still applies.
+      if (!pass && this.#revocationRetry.waiting(connectionId, this.#now())) return "disconnecting";
       if (await this.#repository.hasActiveRunBindings(connectionId)) return "disconnecting";
       // A drained disconnect stops any local refresh before revoking.
       this.#refreshes.get(connectionId)?.abort.abort();
+      let outcome: RevocationOutcome;
       try {
-        await this.#revoke(connection);
+        outcome = await this.#revoke(connection);
       } catch {
         // The token stays stored; reconcileDisconnecting retries within its bound.
+        this.#revocationRetry.failed(connectionId, this.#now());
         reportRevocationFailure(connectionId, "mcp_oauth_revocation_failed");
         return "disconnecting";
       }
+      // A permanent refusal wipes the token locally like the 24 h bound:
+      // retrying cannot change the authorization server's answer.
       if (await this.#repository.finalizeDisconnected({
         connectionId,
         tokenVersion: connection.tokenVersion
       })) {
-        reportSubsystemHealthy("mcp", "cleanup", connectionId);
+        this.#revocationRetry.clear(connectionId);
+        this.#refreshRetry.clear(connectionId);
+        if (outcome === "refused") reportRevocationFailure(connectionId, "mcp_oauth_revocation_refused");
+        else reportSubsystemHealthy("mcp", "cleanup", connectionId);
         return "disconnected";
       }
       const current = await this.#repository.loadConnection(connectionId);
@@ -939,28 +1046,42 @@ export class McpOAuthService {
    * 24 h after the disconnect request, wipes the token locally instead, so no
    * connection stays disconnecting forever and finalization can proceed.
    */
-  async reconcileDisconnecting(): Promise<void> {
+  reconcileDisconnecting(): Promise<void> {
+    // Overlapping callers share the running sweep.
+    this.#sweep ??= this.#reconcileDisconnecting().finally(() => {
+      this.#sweep = null;
+    });
+    return this.#sweep;
+  }
+
+  async #reconcileDisconnecting(): Promise<void> {
     await this.#repository.requestDisconnectForIneligibleConnections();
     const connectionIds = await this.#repository.listDisconnectingConnectionIds();
     const requestedBefore = new Date(this.#now().getTime() - MCP_OAUTH_REVOCATION_ABANDON_MS);
-    const settled = await Promise.allSettled(
-      connectionIds.map((connectionId) => this.#settleDisconnecting(connectionId, requestedBefore))
-    );
-    settled.forEach((result, index) => {
-      if (result.status === "rejected") {
-        reportRevocationFailure(connectionIds[index]!, "mcp_oauth_revocation_failed", result.reason);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL_REVOCATIONS, connectionIds.length) }, async () => {
+      while (next < connectionIds.length) {
+        const connectionId = connectionIds[next++]!;
+        try {
+          await this.#settleDisconnecting(connectionId, requestedBefore);
+        } catch (error) {
+          reportRevocationFailure(connectionId, "mcp_oauth_revocation_failed", error);
+        }
       }
-    });
+    }));
   }
 
   async #settleDisconnecting(connectionId: string, requestedBefore: Date): Promise<void> {
     try {
       if (await this.revokeConnectionIfDrained(connectionId) === "disconnected") return;
     } catch (error) {
+      this.#revocationRetry.failed(connectionId, this.#now());
       reportRevocationFailure(connectionId, "mcp_oauth_revocation_failed", error);
     }
     if (await this.#repository.abandonRevocation({ connectionId, requestedBefore })) {
       this.#refreshes.get(connectionId)?.abort.abort();
+      this.#revocationRetry.clear(connectionId);
+      this.#refreshRetry.clear(connectionId);
       reportRevocationFailure(connectionId, "mcp_oauth_revocation_abandoned");
     }
   }
@@ -1136,13 +1257,14 @@ export class McpOAuthService {
     }
   }
 
-  async #revoke(connection: McpOAuthStoredConnection): Promise<void> {
+  /** Revokes the stored tokens; "refused" when the server permanently refused a revocation. */
+  async #revoke(connection: McpOAuthStoredConnection): Promise<RevocationOutcome> {
     const metadata = connection.client.discoveryState.authorizationServerMetadata;
     const revocationEndpoint = metadata && "revocation_endpoint" in metadata &&
       typeof metadata.revocation_endpoint === "string"
       ? metadata.revocation_endpoint
       : null;
-    if (!metadata || !revocationEndpoint) return;
+    if (!metadata || !revocationEndpoint) return "revoked";
     const endpoint = requirePolicyUrl(
       revocationEndpoint,
       connection.policy,
@@ -1169,6 +1291,7 @@ export class McpOAuthService {
     ].filter((value): value is { hint: string; token: string } => Boolean(value));
     const deadline = this.#deadline();
     const fetchFn = this.#oauthFetch(connection.policy, deadline);
+    let outcome: RevocationOutcome = "revoked";
     for (const token of tokens) {
       const body = new URLSearchParams({ token: token.token, token_type_hint: token.hint });
       const headers = new Headers({
@@ -1186,12 +1309,17 @@ export class McpOAuthService {
         headers,
         method: "POST"
       }));
-      if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
+      await response.body?.cancel().catch(() => undefined);
+      if (response.ok) continue;
+      if (!PERMANENT_REVOCATION_STATUSES.has(response.status)) {
         throw new McpOAuthError("mcp_oauth_authorization_failed");
       }
-      await response.body?.cancel().catch(() => undefined);
+      outcome = "refused";
+      // A 400 can concern only this token type (unsupported_token_type), so
+      // the next token is still offered; other refusals hold for every token.
+      if (response.status !== 400) break;
     }
+    return outcome;
   }
 
   #tokenEndpoint(discoveryState: OAuthDiscoveryState, policy: McpOAuthPolicy): URL {
