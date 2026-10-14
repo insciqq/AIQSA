@@ -73,9 +73,18 @@ describe("bounded observability runtime", () => {
     expect(record("tool_execution", { tool_kind: "workspace", stage: "execution", outcome: "failed" })).toMatchObject({ level: "error" });
   });
 
+  it("projects each unavailable Auto server as its reason and runtime code only", () => {
+    expect(record("mcp_discovery_server_unavailable", { code: "mcp_server_unavailable", cause: "mcp_network_failed",
+      serverName: "PRIVATE_SERVER", serverId: "PRIVATE_ID" } as never)).toMatchObject({
+      cause: "mcp_network_failed", code: "mcp_server_unavailable", level: "warn" });
+    const signIn = record("mcp_discovery_server_unavailable", { code: "mcp_reauthorization_required", cause: "PRIVATE_DETAIL" });
+    expect(signIn).toMatchObject({ cause: "unknown", code: "mcp_reauthorization_required", level: "info" });
+    expect(JSON.stringify(signIn)).not.toContain("PRIVATE_");
+  });
+
   it("projects local tool search counts without the query or tool names", () => {
     const fields = { outcome: "completed", duration_ms: 3, mode: "keywords", candidate_count: 180,
-      result_count: 4, loaded_count: 3, already_loaded_count: 1, unknown_name_count: 0 } as const;
+      result_count: 4, loaded_count: 3, already_loaded_count: 1, unknown_name_count: 0, unavailable_server_count: 2 } as const;
     const event = record("mcp_discovery", { ...fields, query: "PRIVATE_QUERY", tool_names: ["PRIVATE_TOOL"],
       catalog: "PRIVATE_CATALOG" } as never);
     expect(event).toMatchObject(fields);

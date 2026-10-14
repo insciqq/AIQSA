@@ -107,7 +107,8 @@ function harness(activeCatalog: McpCapabilityCatalog = catalog) {
           goal: input.goal,
           modelRunToolCallId: input.modelRunToolCallId,
           roundIndex: input.roundIndex,
-          toolIds: [...input.toolIds]
+          toolIds: [...input.toolIds],
+          ...(input.unavailable?.length ? { unavailable: [...input.unavailable] } : {})
         }]
       };
     }
@@ -274,52 +275,100 @@ describe("durable MCP discovery", () => {
     expect(searchMcpCatalog).not.toHaveBeenCalled();
   });
 
-  it("treats a selected tool that is not ready as a fatal discovery failure", async () => {
+  it("checkpoints a selected server that is not ready as unavailable and still answers", async () => {
     const state = harness();
     const materialize = vi.fn(async () => ({
       code: "mcp_not_ready" as const,
-      issues: [{ errorCode: "private-runtime-detail", name: "Catalog", readiness: "unavailable" as const }],
+      issues: [{ errorCode: "PRIVATE_RUNTIME_DETAIL", name: "Catalog", readiness: "unavailable" as const }],
       ok: false as const
     }));
-    await expect(executeDurableMcpDiscovery({ ...base(state), call: call("provider-materialization-failure"), materialize,
-      modelRunToolCallId: "persisted-materialization-failure" })).rejects.toMatchObject({
-      code: "mcp_auto_discovery_materialization_failed",
-      internalReason: "mcp_materialization_mcp_not_ready",
-      message: expect.stringContaining("could not activate")
-    } satisfies Partial<McpAutoDiscoveryUnavailableError>);
+    const input = () => ({ ...base(state), call: call("provider-not-ready"), materialize,
+      modelRunToolCallId: "persisted-not-ready" });
+    const result = await executeDurableMcpDiscovery(input());
+    expect(result.toolResult.status).toBe("complete");
+    expect(state.discovery().epochs).toEqual([{ epoch: 1, goal: "select:action_0", modelRunToolCallId: "persisted-not-ready",
+      roundIndex: 0, toolIds: [], unavailable: [{ reason: "mcp_server_unavailable", serverId: "server-catalog" }] }]);
+    expect(state.appendEpoch).toHaveBeenCalledWith(expect.objectContaining({
+      bindings: [], snapshot: { servers: [], tools: [], version: 1 }, toolIds: []
+    }));
+    expect(text(result)).toBe("Unavailable now (their matching tools were not loaded):\n" +
+      "- Catalog: Unavailable right now. Try again later or check it in MCP settings.\n" +
+      "Do not guess what those tools would return. Tell the user briefly which service was unavailable and what to do.");
+    expect(text(result)).not.toContain("PRIVATE_RUNTIME_DETAIL");
+    // Recovery replays the checkpoint without searching or calling the server again.
+    const replay = await executeDurableMcpDiscovery(input());
+    expect(text(replay)).toBe(text(result));
     expect(materialize).toHaveBeenCalledOnce();
-    expect(state.appendEpoch).not.toHaveBeenCalled();
-    expect(state.discovery().epochs).toEqual([]);
+    expect(searchMcpCatalog).toHaveBeenCalledOnce();
   });
 
-  it("names a runtime that rejected the user's own credential instead of the generic failure", async () => {
-    const run = async (issues: Extract<McpRunPlanResult, { ok: false }>["issues"]) => {
-      const state = harness();
-      const failure = await executeDurableMcpDiscovery({ ...base(state), call: call("credential-rejected"),
-        materialize: async () => ({ code: "mcp_not_ready" as const, issues, ok: false as const }),
-        modelRunToolCallId: "persisted-credential-rejected" }).catch((error: unknown) => error);
-      expect(state.appendEpoch).not.toHaveBeenCalled();
-      return failure as McpAutoDiscoveryUnavailableError;
-    };
-
-    const personal = await run([{ errorCode: "mcp_authorization_required", name: "Kaiten", personalCredentialRejected: true,
-      readiness: "unavailable" }]);
-    expect(personal).toMatchObject({
-      code: "mcp_auto_discovery_personal_credential_rejected",
-      internalReason: "mcp_materialization_personal_credential_rejected",
-      message: "The MCP server “Kaiten” rejected your credential. Update your personal value or reconnect it in Settings → MCP servers, then try again."
+  it("loads an available server's tools beside an unavailable one, each reason named once", async () => {
+    const other = (name: string) => ({
+      description: `${name} integration`, namespace: name.toLowerCase(), revisionId: `revision-${name}`,
+      serverId: `server-${name}`, serverName: name,
+      tools: [{ arguments: [], description: `Perform action in ${name}`, namespacedName: `mcp_${name.toLowerCase()}_action`,
+        originalName: "action" }]
     });
-    await expect(run([{ errorCode: "oauth_reauthorization_required", name: "Mail", readiness: "reauthorization_required" }]))
-      .resolves.toMatchObject({ code: "mcp_auto_discovery_personal_credential_rejected", message: expect.stringContaining("“Mail”") });
-    await expect(run([
-      { errorCode: "mcp_authorization_required", name: "One", personalCredentialRejected: true, readiness: "unavailable" },
-      { errorCode: null, name: "Two", readiness: "needs_authorization" }
-    ])).resolves.toMatchObject({ message: expect.stringMatching(/^An MCP server rejected your credential/u) });
-    // An administrator's shared credential is not the user's to fix.
-    await expect(run([{ errorCode: "mcp_authorization_required", name: "Shared", readiness: "unavailable" }]))
-      .resolves.toMatchObject({ code: "mcp_auto_discovery_materialization_failed" });
-    await expect(run([{ errorCode: "mcp_connect_failed", name: "Kaiten", readiness: "unavailable" }]))
-      .resolves.toMatchObject({ code: "mcp_auto_discovery_materialization_failed" });
+    const multi: McpCapabilityCatalog = { servers: [...catalog.servers, other("Gitlab"), other("Kaiten"), other("Tracker")],
+      version: 1 };
+    const state = harness(multi);
+    const issues: Record<string, Extract<McpRunPlanResult, { ok: false }>["issues"][number]> = {
+      "server-Gitlab": { errorCode: null, name: "Gitlab", readiness: "queued", signInRequired: true },
+      "server-Kaiten": { errorCode: "mcp_authorization_required", name: "Kaiten", personalCredentialRejected: true,
+        readiness: "unavailable" },
+      "server-Tracker": { errorCode: "mcp_initialize_failed", name: "Tracker", readiness: "unavailable" }
+    };
+    const materialize = vi.fn(async (userId: string, tools: readonly Readonly<{
+      namespacedName: string; revisionId: string; serverId: string;
+    }>[]): Promise<McpRunPlanResult> => {
+      const issue = issues[tools[0]!.serverId];
+      return issue ? { code: "mcp_not_ready", issues: [issue], ok: false } : state.materialize(userId, tools);
+    });
+    const query = `select:mcp_gitlab_action, action_0, mcp_kaiten_action, action_1, mcp_tracker_action`;
+    const input = () => ({ ...base(state), call: call("provider-mixed", query), materialize,
+      modelRunToolCallId: "persisted-mixed" });
+    const result = await executeDurableMcpDiscovery(input());
+
+    // One materialization per server; the available one's two tools load together.
+    expect(materialize.mock.calls.map(([, tools]) => tools.map((tool) => tool.namespacedName))).toEqual([
+      ["mcp_gitlab_action"], [toolIds[0], toolIds[1]], ["mcp_kaiten_action"], ["mcp_tracker_action"]
+    ]);
+    expect(result.snapshot.tools.map((tool) => tool.namespacedName)).toEqual([toolIds[0], toolIds[1]]);
+    expect(state.appendEpoch).toHaveBeenCalledWith(expect.objectContaining({
+      bindings: [expect.objectContaining({ serverId: "server-catalog" })],
+      toolIds: [toolIds[0], toolIds[1]],
+      unavailable: [
+        { reason: "mcp_reauthorization_required", serverId: "server-Gitlab" },
+        { reason: "mcp_personal_credential_rejected", serverId: "server-Kaiten" },
+        { reason: "mcp_server_unavailable", serverId: "server-Tracker" }
+      ]
+    }));
+    expect(text(result)).toBe([
+      "Loaded 2 MCP tools for the next step:",
+      `- ${toolIds[0]} (Catalog): Perform action 0`,
+      `- ${toolIds[1]} (Catalog): Perform action 1`,
+      "Unavailable now (their matching tools were not loaded):",
+      "- Gitlab: Sign-in needed. Reconnect it in MCP settings.",
+      "- Kaiten: Credential rejected. Update the personal value or reconnect it in MCP settings.",
+      "- Tracker: Unavailable right now. Try again later or check it in MCP settings.",
+      "Do not guess what those tools would return. Tell the user briefly which service was unavailable and what to do."
+    ].join("\n"));
+    expect(text(result)).not.toContain("mcp_gitlab_action");
+
+    // A crash after the checkpoint replays both sets without calling any server again.
+    const replay = await executeDurableMcpDiscovery({ ...input(), activeDiscovery: state.discovery(), activeSnapshot: state.snapshot() });
+    expect(text(replay)).toBe(text(result));
+    expect(replay.snapshot).toEqual(result.snapshot);
+    expect(materialize).toHaveBeenCalledTimes(4);
+    expect(state.appendEpoch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a single available server's epoch and result exactly as before", async () => {
+    const state = harness();
+    const result = await executeDurableMcpDiscovery({ ...base(state), call: call("single"), modelRunToolCallId: "persisted-single" });
+    expect(state.appendEpoch.mock.calls[0]![0]).not.toHaveProperty("unavailable");
+    expect(state.discovery().epochs[0]).not.toHaveProperty("unavailable");
+    expect(text(result)).toBe(`Loaded 1 MCP tool for the next step:\n- ${toolIds[0]} (Catalog): Perform action 0`);
   });
 
   it("redacts unexpected materialization errors and does not checkpoint them", async () => {
