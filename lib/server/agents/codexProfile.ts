@@ -1,5 +1,6 @@
 import { WORKSPACE_PROJECT_DIRECTORY } from "@/lib/domain/workspace";
 import { providerResponseTimeoutSeconds } from "@/lib/contracts/providerResponseTimeout";
+import { AgentExecutionError } from "./failures";
 
 export const CODEX_VERSION = "0.160.0";
 /** Bump when managed profile semantics change; accepted thread compatibility includes it.
@@ -41,8 +42,9 @@ export type CodexManagedProfile = Readonly<{
   mcpTimeoutSeconds: number;
 }>;
 
+/** Its own code end to end: the runner answers it and the app reports it, never as Workspace unavailability. */
 function invalid(): never {
-  throw new Error("agent_profile_invalid");
+  throw new AgentExecutionError("agent_profile_invalid");
 }
 
 function checkedGatewayOrigin(value: string): string {

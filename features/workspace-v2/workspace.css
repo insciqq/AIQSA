@@ -1328,6 +1328,27 @@
   line-height: 1.4;
 }
 
+/* Agent's output-cap limit for the selected model, beside the field it bounds. */
+.v2-run-setup-limit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: -0.5rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.v2-run-setup-limit p {
+  flex: 1 1 14rem;
+  margin: 0;
+}
+
+.v2-run-setup-limit[data-kind="warn"] p {
+  color: var(--v2-color-warn);
+}
+
 .v2-run-setup-defaults {
   display: flex;
   flex-wrap: wrap;

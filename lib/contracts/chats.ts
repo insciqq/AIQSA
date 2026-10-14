@@ -55,7 +55,13 @@ import {
   type AssistantToolsValue
 } from "./assistants";
 import { isAssistantReferenceId } from "./chatDefaults";
-import { decodeMcpRunSelection, type McpRunSelection } from "./mcp";
+import {
+  decodeMcpRunSelection,
+  isMcpUnavailableServerReason,
+  MCP_RUN_PLAN_LIMITS,
+  type McpRunSelection,
+  type McpUnavailableServerReason
+} from "./mcp";
 import type { SearchPlanMode } from "./search";
 import { decodeSkillsSelection, type SkillsSelection } from "./skills";
 import {
@@ -329,6 +335,12 @@ export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolA
     value === "web_fetch" || value === "web_search" || value === "workspace";
 }
 
+/** A server whose matched tools an Auto `find_tools` call could not load: its display name and stable reason. */
+export type ThreadMcpUnavailableServer = {
+  name: string;
+  reason: McpUnavailableServerReason;
+};
+
 export type ThreadToolActivityCall = {
   /** An MCP call refused for the user's approval: never sent; the answer's card decides it. */
   approvalRequired?: true;
@@ -343,6 +355,8 @@ export type ThreadToolActivityCall = {
   fetchRefusalScope?: FetchUrlRefusalScope;
   /** `web_fetch` only: the page's "host/path", never its scheme, query or content. */
   fetchTarget?: string;
+  /** `discovery` only, for the run's initiator: servers the call reported unavailable, in rank order. */
+  mcpUnavailable?: ThreadMcpUnavailableServer[];
   memorySearchCall?: number;
   memorySearchOutcome?: MemorySearchActivityOutcome;
   skillId?: string;
@@ -1255,9 +1269,22 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
     }
     if (candidate.approvalRequired !== undefined && (candidate.approvalRequired !== true || candidate.origin !== "mcp" ||
       status !== "error")) return null;
+    let mcpUnavailable: ThreadMcpUnavailableServer[] | undefined;
+    if (candidate.mcpUnavailable !== undefined) {
+      if (candidate.origin !== "discovery" || !Array.isArray(candidate.mcpUnavailable) ||
+        candidate.mcpUnavailable.length === 0 || candidate.mcpUnavailable.length > MCP_RUN_PLAN_LIMITS.maxTools) return null;
+      mcpUnavailable = [];
+      for (const server of candidate.mcpUnavailable) {
+        if (!isRecord(server)) return null;
+        const name = boundedRequiredString(server.name, 160);
+        if (!name || !isMcpUnavailableServerReason(server.reason)) return null;
+        mcpUnavailable.push({ name, reason: server.reason });
+      }
+    }
     calls.push({
       ...(candidate.approvalRequired === true ? { approvalRequired: true as const } : {}),
       ...(details ? { details } : {}),
+      ...(mcpUnavailable ? { mcpUnavailable } : {}),
       ...(candidate.origin === "memory" && candidate.toolName === "memory_search" ? {
         ...(candidate.memorySearchCall !== undefined ? { memorySearchCall: Number(candidate.memorySearchCall) } : {}),
         ...(isMemorySearchActivityOutcome(candidate.memorySearchOutcome) ? { memorySearchOutcome: candidate.memorySearchOutcome } : {})

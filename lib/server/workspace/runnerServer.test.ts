@@ -175,6 +175,19 @@ describe("Workspace runner lifecycle diagnostics", () => {
       expect(startAgent).toHaveBeenCalledTimes(3);
     });
 
+    it("answers a profile it cannot render with its own code before dispatch", async () => {
+      const output = capture();
+      const startAgent = vi.fn(async () => undefined);
+      const request = fixture({ ensureSession, startAgent, stopSession: vi.fn(async () => undefined) });
+      await request("/v1/sessions/ensure", body);
+      const response = await request(`/v1/sessions/${sessionId}/agent/start`,
+        { ...start, prompt: "fixture", profile: { ...profile, maxOutputTokens: profile.contextWindowTokens } });
+      expect(response.writeHead).toHaveBeenCalledWith(400, expect.any(Object));
+      expect(response.end).toHaveBeenCalledWith(JSON.stringify({ error: "agent_profile_invalid" }));
+      expect(startAgent).not.toHaveBeenCalled();
+      expect(output.records()).toContainEqual(expect.objectContaining({ event: "runtime_lifecycle", code: "agent_profile_invalid" }));
+    });
+
     it("rejects a start body above its bound as oversized before dispatch", async () => {
       capture();
       const startAgent = vi.fn(async () => undefined);

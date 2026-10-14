@@ -23,6 +23,8 @@ import type {
   McpOAuthStoredConnection
 } from "./oauthRepository";
 import {
+  MCP_OAUTH_RETRY_BASE_MS,
+  MCP_OAUTH_RETRY_MAX_MS,
   MCP_OAUTH_REVOCATION_ABANDON_MS,
   McpOAuthError,
   McpOAuthService,
@@ -1599,6 +1601,10 @@ describe("bounded MCP OAuth refresh and revocation", () => {
       });
 
       tokenServer.state.mode = "ok";
+      // Until its retry time the failed connection does not ask again.
+      await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({ access_token: "access-1" });
+      expect(tokenServer.requests).toHaveLength(1);
+      repository.now = new Date(repository.now.getTime() + 2 * MCP_OAUTH_RETRY_BASE_MS);
       await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({
         access_token: "disposable-access-1",
         refresh_token: "disposable-refresh-1"
@@ -1632,7 +1638,7 @@ describe("bounded MCP OAuth refresh and revocation", () => {
   it("settles the refresh singleflight even when a transport ignores its abort signal", async () => {
     const fixture = new StandardsOAuthFixture();
     let stalls = 0;
-    const { connection, service } = await connectedHttpsService({
+    const { connection, repository, service } = await connectedHttpsService({
       fetchFn: async (input, init) => {
         if (isRefreshRequest(input, init) && stalls === 0) {
           stalls += 1;
@@ -1646,6 +1652,7 @@ describe("bounded MCP OAuth refresh and revocation", () => {
     await expect(service.tokensForConnection(connection.id)).rejects.toMatchObject({
       code: "mcp_oauth_authorization_failed"
     } satisfies Partial<McpOAuthError>);
+    repository.now = new Date(repository.now.getTime() + 2 * MCP_OAUTH_RETRY_BASE_MS);
     await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({
       access_token: "access-refresh-1"
     });
@@ -2477,5 +2484,234 @@ describe("authorization server error text", () => {
     }
     const success = new Response(JSON.stringify({ access_token: "fixture-access" }), { status: 200 });
     expect(await sanitizedOAuthErrorResponse(success)).toBe(success);
+  });
+});
+
+describe("outbound OAuth traffic bounded per connection", () => {
+  type IdpAnswer = (url: URL) => Promise<Response> | null;
+
+  /** A connected service whose authorization-server requests after the connection are recorded with their clock time. */
+  async function connectedService(sequence: number) {
+    const repository = new MemoryOAuthRepository();
+    repository.connectionSequence = sequence;
+    const fixture = new StandardsOAuthFixture();
+    const idp: { answer: IdpAnswer | null; requests: Array<{ at: number; path: string }>; recording: boolean } = {
+      answer: null,
+      recording: false,
+      requests: []
+    };
+    const fetchFn: FetchLike = async (input, init) => {
+      const url = new URL(fetchedUrl(input));
+      if (!idp.recording) return fixture.fetch(url.toString(), init);
+      idp.requests.push({ at: repository.now.getTime(), path: url.pathname });
+      return idp.answer?.(url) ?? fixture.fetch(url.toString(), init);
+    };
+    const service = new McpOAuthService({
+      fetchForPolicy: () => fetchFn,
+      now: () => repository.now,
+      random: () => 0,
+      repository
+    });
+    const started = await service.startAuthorization({
+      forceReconnect: true,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state: "bounded-state",
+      userId: "user-1"
+    });
+    if (started.kind !== "redirect") throw new Error("expected redirect");
+    fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+    const connection = await service.completeAuthorization({ authorizationCode: "fixture-code", flow: started.flow });
+    idp.recording = true;
+    return { connection, fixture, idp, repository, service };
+  }
+
+  const unreachable: IdpAnswer = () => Promise.reject(new TypeError("fetch failed"));
+
+  function revocations(idp: Readonly<{ requests: ReadonlyArray<{ at: number; path: string }> }>) {
+    return idp.requests.filter((request) => request.path === "/revoke");
+  }
+
+  async function captureEvents(operation: () => Promise<void>): Promise<Array<Record<string, unknown>>> {
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation((line) => {
+      lines.push(String(line));
+      return true;
+    });
+    try {
+      await operation();
+    } finally {
+      writer.mockRestore();
+    }
+    return lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  it.each([
+    ["stored", true],
+    ["missing", false]
+  ])("bounds the OAuth requests of MCP 401s while the authorization server is unreachable (%s metadata)", async (_label, storedMetadata) => {
+    const { connection, idp, repository, service } = await connectedService(storedMetadata ? 9_300 : 9_310);
+    if (!storedMetadata) {
+      repository.connections.set(connection.id, {
+        ...connection,
+        client: { ...connection.client, discoveryState: { authorizationServerUrl: AUTH_ORIGIN } }
+      });
+    }
+    idp.answer = unreachable;
+    let unauthorized = 0;
+    // The MCP server rejects every bearer; metadata requests the SDK sends
+    // through the transport reach the same unreachable authorization server.
+    const transportFetch: FetchLike = async (input) => {
+      const url = new URL(fetchedUrl(input));
+      if (url.toString() === SERVER_URL) {
+        unauthorized += 1;
+        return new Response(null, { headers: { "www-authenticate": "Bearer" }, status: 401 });
+      }
+      idp.requests.push({ at: repository.now.getTime(), path: url.pathname });
+      throw new TypeError("fetch failed");
+    };
+    const startRuntime = async () => {
+      const session = new McpClientSession({
+        authProvider: await service.createRuntimeProvider(connection.id),
+        fetch: transportFetch,
+        limits: {
+          maxListDurationMs: 10_000,
+          maxToolArgumentBytes: 1_024,
+          maxToolMetadataBytes: 8_192,
+          maxToolResultBytes: 8_192,
+          maxToolSchemaBytes: 4_096,
+          maxTools: 8
+        },
+        requestTimeoutMs: 2_000,
+        url: new URL(SERVER_URL)
+      });
+      try {
+        await expect(session.initialize({ timeoutMs: 2_000 })).rejects.toBeDefined();
+      } finally {
+        await session.close();
+      }
+    };
+
+    // One runtime start every 20 s for an hour; before the bound each start
+    // sent its own refresh (and, without stored metadata, a discovery).
+    const startedAt = repository.now.getTime();
+    for (let elapsed = 0; elapsed < 60 * 60_000; elapsed += 20_000) {
+      repository.now = new Date(startedAt + elapsed);
+      await startRuntime();
+    }
+    expect(unauthorized).toBeGreaterThan(100);
+    expect(idp.requests.every((request) => request.path === "/token")).toBe(true);
+    expect(idp.requests.length).toBeGreaterThanOrEqual(6);
+    expect(idp.requests.length).toBeLessThanOrEqual(8);
+    const gaps = idp.requests.slice(1).map((request, index) => request.at - idp.requests[index]!.at);
+    expect(gaps.every((gap, index) => gap >= MCP_OAUTH_RETRY_BASE_MS && gap >= (gaps[index - 1] ?? 0))).toBe(true);
+    expect(repository.connections.get(connection.id)?.state).toBe("ready");
+
+    // A recovered authorization server gets the usual forced refresh after the next 401.
+    idp.answer = null;
+    idp.requests.length = 0;
+    repository.now = new Date(repository.now.getTime() + MCP_OAUTH_RETRY_MAX_MS * 2);
+    await startRuntime();
+    expect(idp.requests.map((request) => request.path)).toContain("/token");
+    expect(repository.connections.get(connection.id)).toMatchObject({
+      state: "ready",
+      tokens: { access_token: expect.stringMatching(/^access-refresh-/u) }
+    });
+  });
+
+  it("retries an unreachable revocation endpoint with growing intervals, then abandons it after 24 h", async () => {
+    const { connection, idp, repository, service } = await connectedService(9_320);
+    idp.answer = (url) => url.pathname === "/revoke" ? unreachable(url) : null;
+    const requestedAt = repository.now.getTime();
+    repository.ineligibleConnectionIds.add(connection.id);
+    // The periodic sweep runs every 30 s.
+    for (let elapsed = 0; elapsed <= MCP_OAUTH_REVOCATION_ABANDON_MS + 60_000; elapsed += 30_000) {
+      repository.now = new Date(requestedAt + elapsed);
+      await service.reconcileDisconnecting();
+    }
+    const attempts = revocations(idp);
+    expect(attempts.length).toBeGreaterThanOrEqual(25);
+    expect(attempts.length).toBeLessThanOrEqual(32);
+    const gaps = attempts.slice(1).map((attempt, index) => attempt.at - attempts[index]!.at);
+    expect(gaps.every((gap, index) => gap >= MCP_OAUTH_RETRY_BASE_MS && gap >= (gaps[index - 1] ?? 0))).toBe(true);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(MCP_OAUTH_RETRY_MAX_MS + 30_000);
+    expect(repository.connections.get(connection.id)?.state).toBe("disconnected");
+
+    repository.now = new Date(repository.now.getTime() + MCP_OAUTH_RETRY_MAX_MS * 2);
+    await service.reconcileDisconnecting();
+    expect(revocations(idp)).toHaveLength(attempts.length);
+  });
+
+  it.each([400, 401, 403, 404, 405])("finalizes the connection locally after one revocation answered %i", async (status) => {
+    const { connection, idp, repository, service } = await connectedService(9_400 + status);
+    idp.answer = (url) => url.pathname === "/revoke"
+      ? Promise.resolve(Response.json({ error: "invalid_request" }, { status }))
+      : null;
+    repository.ineligibleConnectionIds.add(connection.id);
+    const events = await captureEvents(() => service.reconcileDisconnecting());
+    expect(repository.connections.get(connection.id)?.state).toBe("disconnected");
+    await expect(repository.loadConnection(connection.id)).resolves.toBeNull();
+    // A 400 may concern one token type only, so the refresh token is still offered.
+    expect(revocations(idp)).toHaveLength(status === 400 ? 2 : 1);
+    expect(events).toEqual([expect.objectContaining({
+      action: "stop",
+      code: "mcp_oauth_revocation_refused",
+      event: "runtime_lifecycle",
+      outcome: "failed",
+      stage: "cleanup",
+      subsystem: "mcp"
+    })]);
+    expect(JSON.stringify(events)).not.toContain(connection.id);
+
+    for (let sweep = 1; sweep <= 3; sweep += 1) {
+      repository.now = new Date(repository.now.getTime() + MCP_OAUTH_RETRY_MAX_MS * 2);
+      await service.reconcileDisconnecting();
+    }
+    expect(revocations(idp)).toHaveLength(status === 400 ? 2 : 1);
+    expect(idp.requests.every((request) => request.path === "/revoke")).toBe(true);
+  });
+
+  it.each([408, 429, 500, 503])("keeps retrying a revocation answered %i under the backoff", async (status) => {
+    const { connection, idp, repository, service } = await connectedService(9_900 + status);
+    idp.answer = (url) => url.pathname === "/revoke" ? Promise.resolve(new Response(null, { status })) : null;
+    repository.ineligibleConnectionIds.add(connection.id);
+    await service.reconcileDisconnecting();
+    expect(repository.connections.get(connection.id)?.state).toBe("disconnecting");
+    expect(revocations(idp)).toHaveLength(1);
+
+    repository.now = new Date(repository.now.getTime() + MCP_OAUTH_RETRY_BASE_MS - 1);
+    await service.reconcileDisconnecting();
+    expect(revocations(idp)).toHaveLength(1);
+
+    repository.now = new Date(repository.now.getTime() + 1);
+    await service.reconcileDisconnecting();
+    expect(revocations(idp)).toHaveLength(2);
+    expect(repository.connections.get(connection.id)?.state).toBe("disconnecting");
+  });
+
+  it("never revokes one connection twice at once across overlapping sweeps and a disconnect", async () => {
+    const { connection, idp, repository, service } = await connectedService(9_500);
+    const held: Array<() => void> = [];
+    idp.answer = (url) => url.pathname === "/revoke"
+      ? new Promise<Response>((resolve) => held.push(() => resolve(new Response(null, { status: 200 }))))
+      : null;
+    repository.ineligibleConnectionIds.add(connection.id);
+    const first = service.reconcileDisconnecting();
+    const second = service.reconcileDisconnecting();
+    expect(second).toBe(first);
+    await vi.waitFor(() => expect(revocations(idp)).toHaveLength(1));
+    const disconnect = service.revokeConnectionIfDrained(connection.id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(revocations(idp)).toHaveLength(1);
+
+    held.shift()!();
+    await vi.waitFor(() => expect(revocations(idp)).toHaveLength(2));
+    held.shift()!();
+    await expect(disconnect).resolves.toBe("disconnected");
+    await Promise.all([first, second]);
+    // One access-token and one refresh-token revocation in total.
+    expect(idp.requests.map((request) => request.path)).toEqual(["/revoke", "/revoke"]);
+    expect(repository.connections.get(connection.id)?.state).toBe("disconnected");
   });
 });

@@ -6603,72 +6603,82 @@ describe("run execution", () => {
     expect(repository.completeRuns).toEqual([]);
   });
 
-  it("fails Auto discovery without another model round when a selected MCP is not ready", async () => {
-    const namespacedName = "mcp_catalog_check_quota";
+  it.each(["one", "all"] as const)(
+    "continues Auto discovery when %s selected MCP server cannot run, naming it in the result", async (unavailableServers) => {
+    const quota = "mcp_catalog_check_quota";
+    const issue = "mcp_tracker_find_issue";
     const discovery: McpDiscoveryState = {
       catalog: {
         servers: [{
-          description: "Quota documentation",
-          namespace: "catalog",
-          revisionId: "revision-catalog",
-          serverId: "server-catalog",
-          serverName: "Catalog",
-          tools: [{
-            description: "Check a quota",
-            namespacedName,
-            originalName: "check_quota"
-          }]
+          description: "Quota documentation", namespace: "catalog", revisionId: "revision-catalog", serverId: "server-catalog",
+          serverName: "Catalog", tools: [{ description: "Check a quota", namespacedName: quota, originalName: "check_quota" }]
+        }, {
+          description: "Issue tracking", namespace: "tracker", revisionId: "revision-tracker", serverId: "server-tracker",
+          serverName: "Tracker", tools: [{ description: "Find an issue", namespacedName: issue, originalName: "find_issue" }]
         }],
         version: 1
       },
       epochs: [],
       version: 2
     };
+    const snapshot: McpRunPlanSnapshot = {
+      servers: [{ fingerprint: "fingerprint-catalog", revisionId: "revision-catalog", serverId: "server-catalog", serverName: "Catalog" }],
+      tools: [{ definitionHash: "c".repeat(64), description: "Check a quota", inputSchema: { type: "object" }, name: "check_quota",
+        namespacedName: quota, originalName: "check_quota", serverId: "server-catalog", serverName: "Catalog" }],
+      version: 1
+    };
     const rawFailure = "PRIVATE_RUNTIME_STARTUP_FAILURE";
-    const materialize = vi.fn(async () => ({
-      code: "mcp_not_ready" as const,
-      issues: [{ errorCode: rawFailure, name: "Catalog", readiness: "unavailable" as const }],
-      ok: false as const
-    }));
-    const appendMcpDiscoveryEpoch = vi.fn(async () => null);
+    const materialize = vi.fn(async (_userId: string, tools: readonly Readonly<{ serverId: string }>[]): Promise<McpRunPlanResult> =>
+      tools[0]!.serverId === "server-catalog" && unavailableServers === "one"
+        ? { bindings: [{ fingerprint: "fingerprint-catalog", runtimeGenerationId: "generation-catalog", serverId: "server-catalog" }],
+            ok: true, snapshot }
+        : { code: "mcp_not_ready", issues: [{ errorCode: rawFailure, name: "Tracker", readiness: "unavailable" }], ok: false });
+    const appendMcpDiscoveryEpoch = vi.fn<NonNullable<RunExecutionRepository["appendMcpDiscoveryEpoch"]>>(async (input) => {
+      discovery.epochs.push({
+        epoch: discovery.epochs.length + 1, goal: input.goal, modelRunToolCallId: input.modelRunToolCallId,
+        roundIndex: input.roundIndex, toolIds: [...input.toolIds], ...(input.unavailable ? { unavailable: [...input.unavailable] } : {})
+      });
+      return { discovery, snapshot: input.snapshot };
+    });
     const repository = createRepository();
-    let providerRounds = 0;
+    const providerRequests: ProviderRunRequest[] = [];
 
     await createRunExecutionResponse(executionInput({
-      adapter: createAdapter(async function* () {
-        providerRounds += 1;
-        if (providerRounds === 1) {
+      adapter: createAdapter(async function* (request) {
+        providerRequests.push(request);
+        if (providerRequests.length === 1) {
           return providerResult({
             finalText: "",
-            toolCalls: [{
-              arguments: { query: "check an AWS quota" },
-              id: "provider-find-tools-not-ready",
-              name: "find_tools"
-            }]
+            toolCalls: [{ arguments: { query: "select:find_issue, check_quota" }, id: "provider-find-tools-partial", name: "find_tools" }]
           });
         }
-        return providerResult({ finalText: "This round must not run" });
+        return providerResult({ finalText: "Answered without Tracker" });
       }),
-      mcp: {
-        filterTools: allowMcpTools, materialize,
-        prepare: materialize
-      },
-      prepared: preparedData({
-        mcpDiscovery: discovery,
-        modelId: "gpt-tool-model",
-        provider: "openai"
-      }),
+      mcp: { filterTools: allowMcpTools, materialize, prepare: vi.fn(async () => ({ bindings: [], ok: true as const,
+        snapshot: { servers: [], tools: [], version: 1 as const } })) },
+      prepared: preparedData({ mcpDiscovery: discovery, modelId: "gpt-tool-model", provider: "openai" }),
       repository: { ...repository.repository, appendMcpDiscoveryEpoch }
     })).text();
 
-    expect(providerRounds).toBe(1);
-    expect(materialize).toHaveBeenCalledOnce();
-    expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
-    expect(repository.failedRuns).toEqual([expect.objectContaining({
-      error: mcpAutoDiscoveryFailure("mcp_materialization_mcp_not_ready")
-    })]);
-    expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
-    expect(repository.completeRuns).toEqual([]);
+    // Each server materializes on its own; the unavailable one is checkpointed with its reason.
+    expect(materialize).toHaveBeenCalledTimes(2);
+    expect(appendMcpDiscoveryEpoch).toHaveBeenCalledWith(expect.objectContaining({
+      toolIds: unavailableServers === "one" ? [quota] : [],
+      unavailable: unavailableServers === "one"
+        ? [{ reason: "mcp_server_unavailable", serverId: "server-tracker" }]
+        : [{ reason: "mcp_server_unavailable", serverId: "server-tracker" }, { reason: "mcp_server_unavailable", serverId: "server-catalog" }]
+    }));
+    expect(providerRequests).toHaveLength(2);
+    const toolNames = providerRequests[1]?.tools?.map((tool) => tool.name) ?? [];
+    expect(toolNames.includes(quota)).toBe(unavailableServers === "one");
+    expect(toolNames).not.toContain(issue);
+    const continuation = JSON.stringify(providerRequests[1]?.providerToolMessages);
+    expect(continuation).toContain("Unavailable now (their matching tools were not loaded):");
+    expect(continuation).toContain("- Tracker: Unavailable right now. Try again later or check it in MCP settings.");
+    expect(continuation).not.toContain(rawFailure);
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete", toolName: "find_tools" })]);
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe("Answered without Tracker");
   });
 
   it("coexists with MCP in one ordinary context and records provider and tool destinations", async () => {

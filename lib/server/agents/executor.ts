@@ -2,6 +2,7 @@ import { agentMcpEnvelopeTimeoutSeconds } from "./mcpTimeout";
 import { AgentExecutionError, agentFailureCode } from "./failures";
 import { prisma } from "../prisma";
 import { sumTokenUsage } from "@/lib/domain/usage";
+import { AGENT_FALLBACK_CONTEXT_WINDOW_TOKENS } from "@/lib/domain/runParams";
 import type { ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import type { ModelRunSseEvent } from "@/lib/domain/modelRunEvents";
 import type { ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -80,7 +81,7 @@ export async function executeCodexTurn(input: Readonly<{
     const effort = input.request.reasoningEffort;
     const profile: CodexManagedProfile = {
       gatewayOrigin: configuration.gatewayOrigin, modelId: input.request.modelId,
-      contextWindowTokens: input.request.modelCapabilities.contextWindow ?? 128000,
+      contextWindowTokens: input.request.modelCapabilities.contextWindow ?? AGENT_FALLBACK_CONTEXT_WINDOW_TOKENS,
       maxOutputTokens: configuration.maxOutputTokens,
       responseTimeoutMs: effectiveProviderResponseTimeoutMs(input.transport.snapshot.connection,
         input.transport.snapshot.model.adapterKind === "fake" ? null : input.transport.snapshot.model),

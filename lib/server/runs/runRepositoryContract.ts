@@ -24,6 +24,7 @@ import type { ProviderModelCostBasis } from "../usage";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import type {
   McpDiscoveryState,
+  McpDiscoveryUnavailableServer,
   McpRunPlanBinding,
   McpRunPlanSnapshot
 } from "../mcp/runPlan";
@@ -805,6 +806,8 @@ export type RunRepository = {
     runId: string;
     snapshot: McpRunPlanSnapshot;
     toolIds: readonly string[];
+    /** Catalog servers whose matched tools the call could not load, in rank order; omitted when none. */
+    unavailable?: readonly McpDiscoveryUnavailableServer[];
     userId: string;
   }): Promise<Readonly<{
     discovery: McpDiscoveryState;

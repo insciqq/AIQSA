@@ -9,6 +9,7 @@ import {
 import { workspaceToolTransportMaxBytes, type WorkspaceConfig } from "./config";
 import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
 import { transportFailureFacts } from "../providers/providerObservability";
+import { AgentExecutionError } from "../agents/failures";
 import { parseWorkspaceOperation } from "./operationFence";
 import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelection, selectedCaptureRequest } from "./outputManifest";
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
@@ -38,10 +39,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function workspaceError(value: unknown): WorkspaceRuntimeError {
+function workspaceError(value: unknown): WorkspaceRuntimeError | AgentExecutionError {
   const code = isRecord(value) && typeof value.error === "string" ? value.error : "";
   if (isWorkspaceOperationFailureCode(code)) return new WorkspaceRuntimeError(code);
   switch (code) {
+    // The runner refused the Agent profile it was sent: the turn's settings
+    // do not fit the model, so the user is not told to check Workspace.
+    case "agent_profile_invalid":
+      return new AgentExecutionError(code);
     case "workspace_capture_source_busy":
     case "workspace_capture_source_invalid":
     case "workspace_capture_unsupported":

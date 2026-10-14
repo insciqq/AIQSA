@@ -64,6 +64,7 @@ function harness(input: {
   now?: () => Date;
   /** Defaults to the upstream inventory: the server still matches its last check. */
   published?: McpPublishedToolDefinitions;
+  reconcileOAuthConnections?: () => Promise<void>;
 } = {}) {
   const calls: string[] = [];
   let closed = false;
@@ -126,6 +127,7 @@ function harness(input: {
   });
   const coordinator = new McpRuntimeCoordinator({
     now: input.now ?? (() => now),
+    ...(input.reconcileOAuthConnections ? { reconcileOAuthConnections: input.reconcileOAuthConnections } : {}),
     repository,
     sessions: { create: createSession }
   });
@@ -1618,5 +1620,90 @@ describe("MCP runtime housekeeping drain", () => {
     expect(finalize).toHaveBeenCalledTimes(2);
     expect(test.repository.listDrainedGenerationIds).toHaveBeenCalledTimes(2);
     await test.coordinator.stop();
+  });
+});
+
+describe("MCP OAuth revocation sweep scheduling", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("prepares a user's servers without waiting for a hanging installation-wide sweep", async () => {
+    // Stands in for revocations against an authorization server that never answers.
+    const hanging = deferred<void>();
+    const sweep = vi.fn(() => hanging.promise);
+    const test = harness({ reconcileOAuthConnections: sweep });
+    test.coordinator.start();
+    await vi.waitFor(() => expect(sweep).toHaveBeenCalledOnce());
+
+    await test.coordinator.ensureUserServersReady("user-1", ["server-1"]);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    test.coordinator.kick("user-1");
+    await test.coordinator.reconcileNow("user-1");
+    await test.coordinator.reconcileNow();
+    expect(sweep).toHaveBeenCalledOnce();
+    await test.coordinator.stop();
+    hanging.resolve();
+  });
+
+  it("runs the sweep only from the periodic tick and never two at once", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    let running = 0;
+    let overlapped = false;
+    const pending: Array<() => void> = [];
+    const sweep = vi.fn(() => new Promise<void>((resolve) => {
+      running += 1;
+      overlapped ||= running > 1;
+      pending.push(() => { running -= 1; resolve(); });
+    }));
+    const test = harness({ now: () => new Date(), reconcileOAuthConnections: sweep });
+    test.coordinator.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sweep).toHaveBeenCalledOnce();
+    // Ticks while the sweep still runs start no other.
+    await vi.advanceTimersByTimeAsync(3 * 30_000);
+    expect(sweep).toHaveBeenCalledOnce();
+    test.coordinator.kick();
+    test.coordinator.kick("user-1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sweep).toHaveBeenCalledOnce();
+
+    pending.shift()!();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sweep).toHaveBeenCalledTimes(2);
+    pending.shift()!();
+    await vi.advanceTimersByTimeAsync(0);
+    await test.coordinator.stop();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sweep).toHaveBeenCalledTimes(2);
+    expect(overlapped).toBe(false);
+  });
+
+  it("observes a failed sweep without its content and recovers on the next tick", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
+    const sweep = vi.fn<() => Promise<void>>(async () => {
+      throw Object.assign(new Error("PRIVATE_OAUTH_DETAIL"), { code: "mcp_connect_failed" });
+    });
+    const test = harness({ now: () => new Date(), reconcileOAuthConnections: sweep });
+    test.setLaunches([]);
+    try {
+      test.coordinator.start();
+      await vi.advanceTimersByTimeAsync(0);
+      sweep.mockImplementation(async () => undefined);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(sweep).toHaveBeenCalledTimes(2);
+      const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((record) => record.scope_id !== undefined || record.code === "mcp_connect_failed" || record.event === "subsystem.recovered");
+      expect(records).toEqual(expect.arrayContaining([
+        expect.objectContaining({ event: "runtime_lifecycle", stage: "reconcile", code: "mcp_connect_failed" }),
+        expect.objectContaining({ event: "subsystem.recovered", stage: "reconcile" })
+      ]));
+      expect(lines.join("")).not.toContain("PRIVATE");
+    } finally {
+      await test.coordinator.stop();
+      writer.mockRestore();
+    }
   });
 });

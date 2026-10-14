@@ -592,6 +592,37 @@ describe("persisted monitoring checks", () => {
     expect((await occurrenceOf(recovered.occurrence.id)).unavailableSources).toBeNull();
   });
 
+  it("settles a check whose tool search could not load a source as could_not_check, unless a later search loaded it", async () => {
+    const userId = await owner();
+    await task(userId, null, { kind: "MONITORING", toolsEnabled: true });
+    const chat = await personalChat(userId);
+    const now = new Date();
+    expect(await finish(await check(userId, chat.id), "no_update", now)).toMatchObject({ reasonCode: "baseline" });
+    const withDiscovery = async (runId: string, loadedServerIds: readonly string[]) => {
+      const accepted = await prisma.modelRun.findUniqueOrThrow({ where: { id: runId } });
+      await prisma.modelRun.update({ where: { id: runId }, data: { normalizedRequest: { ...(accepted.normalizedRequest as object),
+        mcp: { servers: loadedServerIds.map((serverId) => ({ fingerprint: "fingerprint", revisionId: "revision", serverId,
+          serverName: "Synthetic GitLab" })), tools: [], version: 1 },
+        mcpDiscovery: { catalog: { servers: [{ description: "", namespace: "gitlab", revisionId: "revision", serverId: "server-gitlab",
+          serverName: "Synthetic GitLab", tools: [] }], version: 1 }, epochs: [{ epoch: 1, goal: "gitlab issues",
+          modelRunToolCallId: "synthetic-find-tools", roundIndex: 1, toolIds: [],
+          unavailable: [{ reason: "mcp_reauthorization_required", serverId: "server-gitlab" }] }], version: 2 } } } });
+    };
+    // The model searched for GitLab's tools and found it needing a new sign-in: the answer
+    // continued without them, so the check could not check rather than report a hidden no_update.
+    const blind = await check(userId, chat.id, "schedule");
+    await withDiscovery(blind.run.runId, []);
+    expect(await finish(blind, "no_update", now)).toMatchObject({ reasonCode: "could_not_check", sourcesIncomplete: true,
+      state: "COMPLETED" });
+    expect(await occurrenceOf(blind.occurrence.id)).toMatchObject({ unavailableSources: [
+      { name: "Synthetic GitLab", reason: "mcp_reauthorization_required", relied: true, serverId: "server-gitlab" }] });
+    // A later search of the same run loaded it: no missing source.
+    const recovered = await check(userId, chat.id);
+    await withDiscovery(recovered.run.runId, ["server-gitlab"]);
+    expect(await finish(recovered, "no_update", now)).toMatchObject({ reasonCode: "no_update", sourcesIncomplete: false });
+    expect((await occurrenceOf(recovered.occurrence.id)).unavailableSources).toBeNull();
+  });
+
   it("pauses after three scheduled checks in a row that never reported", async () => {
     const userId = await owner();
     const created = await task(userId, new Date(Date.now() + 3_600_000), { kind: "MONITORING", consecutiveMissingVerdicts: 2 });

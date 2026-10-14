@@ -1,3 +1,4 @@
+import { isMcpUnavailableServerReason } from "../../contracts/mcp";
 import {
   SCHEDULED_TASK_SOURCE_NAME_MAX_LENGTH,
   SCHEDULED_TASK_SOURCE_REASONS,
@@ -17,8 +18,9 @@ import type { ScheduledUnavailableSource } from "../runs/runRepositoryContract";
  * unrelated unavailable server degrades at most a task's first result. The
  * fact is frozen at admission on the run's occurrence; the run itself still
  * answers, told which source is missing. Settlement adds the sources the
- * run's Workspace code found unavailable; servers its code called count as
- * relied on, like servers its model called.
+ * run's Workspace code found unavailable and those its tool search reported
+ * unavailable without loading them later; servers its code called or its
+ * model searched count as relied on, like servers its model called.
  */
 
 const SOURCE_REASONS: readonly unknown[] = SCHEDULED_TASK_SOURCE_REASONS;
@@ -78,8 +80,37 @@ export function decodeStoredUnavailableSources(value: unknown): ScheduledUnavail
     : []);
 }
 
-/** One source the run's guest code found unavailable: refused before dispatch, with no successful call. */
+/**
+ * One source the run could not use: its guest code was refused before
+ * dispatch with no successful call, or its tool search reported it
+ * unavailable and never loaded it.
+ */
 export type ScheduledCodeCallSourceFailure = Readonly<{ authorization: boolean; serverId: string; serverName: string | null }>;
+
+const SIGN_IN_REASONS: ReadonlySet<string> = new Set(["mcp_reauthorization_required", "mcp_personal_credential_rejected"]);
+
+/**
+ * The servers the run's `find_tools` epochs recorded unavailable that no
+ * later epoch loaded (`loadedServers` is the run's final MCP snapshot): the
+ * model looked for their tools, so the run relied on them, as on servers its
+ * code called. A credential or sign-in reason asks the owner to sign in.
+ * Malformed state reads as none.
+ */
+export function discoveryUnavailableSources(epochs: unknown, loadedServers: unknown): Omit<ScheduledCodeCallSourceFailure, "serverName">[] {
+  const loaded = new Set(Array.isArray(loadedServers)
+    ? loadedServers.flatMap((server) => isRecord(server) && typeof server.serverId === "string" ? [server.serverId] : [])
+    : []);
+  const found = new Map<string, boolean>();
+  for (const epoch of Array.isArray(epochs) ? epochs : []) {
+    if (!isRecord(epoch) || !Array.isArray(epoch.unavailable)) continue;
+    for (const entry of epoch.unavailable) {
+      if (!isRecord(entry) || typeof entry.serverId !== "string" || !ID.test(entry.serverId) ||
+        !isMcpUnavailableServerReason(entry.reason) || loaded.has(entry.serverId)) continue;
+      found.set(entry.serverId, found.get(entry.serverId) === true || SIGN_IN_REASONS.has(entry.reason));
+    }
+  }
+  return [...found].map(([serverId, authorization]) => ({ authorization, serverId }));
+}
 
 /**
  * Settlement adds the sources the run's own code could not use to those its
