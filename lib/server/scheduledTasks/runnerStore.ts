@@ -29,6 +29,7 @@ import {
   occurrenceCheckSourcesMissing,
   occurrenceSourcesIncomplete,
   unavailableSourcesWire,
+  discoveryUnavailableSources,
   withCodeCallUnavailableSources,
   type ScheduledCodeCallSourceFailure
 } from "./sourceHealth";
@@ -322,15 +323,48 @@ async function applySettlement(
 }
 
 /**
+ * Servers the run's tool search reported unavailable and never loaded, unless
+ * its code reached them after all, with their frozen catalog names. The
+ * catalog is read only when there is such a server.
+ */
+async function discoverySourceFailures(tx: Prisma.TransactionClient, runId: string): Promise<ScheduledCodeCallSourceFailure[]> {
+  const [run] = await tx.$queryRaw<Array<{ epochs: Prisma.JsonValue | null; loadedServers: Prisma.JsonValue | null }>>(Prisma.sql`
+    SELECT run."normalizedRequest" #> '{mcpDiscovery,epochs}' AS "epochs",
+      run."normalizedRequest" #> '{mcp,servers}' AS "loadedServers"
+    FROM "ModelRun" AS run
+    WHERE run."id" = ${runId}
+  `);
+  const unavailable = discoveryUnavailableSources(run?.epochs, run?.loadedServers);
+  if (unavailable.length === 0) return [];
+  const reached = new Set((await tx.$queryRaw<Array<{ serverId: string }>>(Prisma.sql`
+    SELECT DISTINCT code_call."serverId"
+    FROM "WorkspaceCodeCall" AS code_call
+    WHERE code_call."modelRunId" = ${runId} AND code_call."state" = 'complete'
+  `)).map((row) => row.serverId));
+  const names = new Map((await tx.$queryRaw<Array<{ serverId: string | null; serverName: string | null }>>(Prisma.sql`
+    SELECT server ->> 'serverId' AS "serverId", server ->> 'serverName' AS "serverName"
+    FROM "ModelRun" AS run
+    CROSS JOIN LATERAL jsonb_array_elements(CASE
+      WHEN jsonb_typeof(run."normalizedRequest" #> '{mcpDiscovery,catalog,servers}') = 'array'
+        THEN run."normalizedRequest" #> '{mcpDiscovery,catalog,servers}'
+      ELSE '[]'::jsonb END) AS server
+    WHERE run."id" = ${runId}
+  `)).flatMap((row) => row.serverId ? [[row.serverId, row.serverName] as const] : []));
+  return unavailable.filter((server) => !reached.has(server.serverId))
+    .map((server) => ({ ...server, serverName: names.get(server.serverId) ?? null }));
+}
+
+/**
  * Sources the run's Workspace code could not use (refused before dispatch as
- * unauthorized or unavailable, with no successful call) join the sources its
+ * unauthorized or unavailable, with no successful call), and those its tool
+ * search reported unavailable and never loaded, join the sources its
  * admission recorded, on the occurrence itself, before settlement decides
  * health, the check outcome and the incomplete streak.
  */
 async function withCodeCallSourceHealth(tx: Prisma.TransactionClient, locked: Locked): Promise<Locked> {
   const runId = locked.occurrence.runId;
   if (!runId) return locked;
-  const failures = await tx.$queryRaw<ScheduledCodeCallSourceFailure[]>(Prisma.sql`
+  const codeFailures = await tx.$queryRaw<ScheduledCodeCallSourceFailure[]>(Prisma.sql`
     SELECT code_call."serverId",
       bool_or(code_call."errorCode" = 'authorization_required') AS "authorization",
       (SELECT server ->> 'serverName'
@@ -351,6 +385,7 @@ async function withCodeCallSourceHealth(tx: Prisma.TransactionClient, locked: Lo
       AND NOT bool_or(code_call."state" = 'complete')
     ORDER BY code_call."serverId"
   `);
+  const failures = [...codeFailures, ...await discoverySourceFailures(tx, runId)];
   if (failures.length === 0) return locked;
   const unavailableSources = withCodeCallUnavailableSources(locked.occurrence.unavailableSources, failures);
   await tx.$executeRaw(Prisma.sql`
