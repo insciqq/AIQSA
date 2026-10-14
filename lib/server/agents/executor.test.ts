@@ -7,7 +7,7 @@ import type { AgentResponsesTransport } from "../providers/agentResponses";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceActivityText } from "../workspace/activityText";
 import { agentLimits } from "./config";
-import { AgentExecutionError } from "./failures";
+import { AgentExecutionError, agentFailureMessage } from "./failures";
 import { executeCodexTurn } from "./executor";
 import type { RunFollowupOperations } from "../runs/runFollowups";
 import type { RunFollowup } from "@/lib/contracts/runFollowups";
@@ -157,6 +157,14 @@ describe("Agent executor terminal behavior", () => {
     expect(store.toolCall).not.toHaveBeenCalled();
     expect(executeAgent).not.toHaveBeenCalled();
     expect(f.events).toEqual([]);
+  });
+
+  it("fails a turn whose profile the runner refused with that code and its own message", async () => {
+    const f = fixture(async () => { throw new AgentExecutionError("agent_profile_invalid"); });
+    store.fail.mockImplementation(async () => { store.failure.mockResolvedValue("agent_profile_invalid"); });
+    await expect(executeCodexTurn(f.input)).rejects.toMatchObject({ code: "agent_profile_invalid" });
+    expect(store.fail).toHaveBeenCalledExactlyOnceWith("agent_profile_invalid");
+    expect(agentFailureMessage("agent_profile_invalid")).not.toMatch(/Workspace/u);
   });
 
   it("delivers received text before a later gateway failure and retains its original cause", async () => {

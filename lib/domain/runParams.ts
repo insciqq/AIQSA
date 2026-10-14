@@ -610,3 +610,60 @@ export function resolveAcceptedRunReasoningEffort(input: Readonly<{
     ? { ok: true, reasoningEffort: candidate }
     : invalid();
 }
+
+/** The window an Agent profile assumes for a model record without one. */
+export const AGENT_FALLBACK_CONTEXT_WINDOW_TOKENS = 128_000;
+
+export function agentContextWindowTokens(contextWindow: number | null | undefined): number {
+  return typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0
+    ? contextWindow
+    : AGENT_FALLBACK_CONTEXT_WINDOW_TOKENS;
+}
+
+/**
+ * The largest Agent output cap for a model: half of its context window, so
+ * Codex compaction (at most the window minus the cap) keeps at least half of
+ * the window for input.
+ */
+export function agentMaxOutputTokensLimit(contextWindow: number | null | undefined): number {
+  return Math.max(1, Math.floor(agentContextWindowTokens(contextWindow) / 2));
+}
+
+export type AgentMaxOutputTokensAdmission =
+  | Readonly<{ ok: true; maxOutputTokens: number }>
+  | Readonly<{ ok: false; contextWindow: number; limit: number; requested: number }>;
+
+/**
+ * Freezes an Agent turn's output cap. A chosen value (one that differs from
+ * the model's default; the composer always sends its current value) above the
+ * limit is refused, so the user changes it; a default or Agent policy cap is
+ * clamped to the limit, since the user chose nothing.
+ */
+export function admitAgentMaxOutputTokens(input: Readonly<{
+  chosen?: number;
+  contextWindow?: number | null;
+  defaultValue: number;
+  policyCap?: number;
+}>): AgentMaxOutputTokensAdmission {
+  const chosen = input.chosen !== undefined && input.chosen !== input.defaultValue ? input.chosen : undefined;
+  const capped = Math.min(input.policyCap ?? Number.POSITIVE_INFINITY, chosen ?? input.defaultValue);
+  const limit = agentMaxOutputTokensLimit(input.contextWindow);
+  if (capped <= limit) return { ok: true, maxOutputTokens: capped };
+  if (chosen !== undefined) {
+    return { ok: false, contextWindow: agentContextWindowTokens(input.contextWindow), limit, requested: chosen };
+  }
+  return { ok: true, maxOutputTokens: limit };
+}
+
+export const AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE = "agent_max_output_tokens_too_large";
+
+const tokenCount = new Intl.NumberFormat("en-US");
+
+/** Names the control, the allowed maximum and both recoveries. */
+export function agentMaxOutputTokensRefusalMessage(
+  refusal: Readonly<{ contextWindow: number; limit: number; requested: number }>
+): string {
+  return `Max output tokens is ${tokenCount.format(refusal.requested)}, but Agent allows at most ` +
+    `${tokenCount.format(refusal.limit)} with this model (half of its ${tokenCount.format(refusal.contextWindow)}-token ` +
+    "context window). Lower Max output tokens in Model parameters or reset output settings, then send again.";
+}
