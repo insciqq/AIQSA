@@ -4,7 +4,8 @@ import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { useDisclosurePreference } from "@/components/app-shell/disclosurePreferences";
 import { useState } from "react";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
-import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import type { ThreadMcpUnavailableServer, ThreadToolActivity } from "@/lib/contracts/chats";
+import { mcpUnavailableServerCopy } from "@/lib/contracts/mcp";
 import { runningSearchEngineCalls, unknownSearchEngineCalls,
   type ThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
@@ -74,6 +75,26 @@ function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
       {status === "complete" ? <UiV2Icon name="check" /> : null}
       {status === "error" ? <UiV2Icon name="alert" /> : null}
     </span>
+  );
+}
+
+/** Servers a tool search could not load: each with its reason and the user's way to recover. */
+function McpUnavailableServersV2({ servers }: Readonly<{ servers: readonly ThreadMcpUnavailableServer[] }>) {
+  return (
+    <div className="v2-answer-process-unavailable" data-testid="mcp-unavailable-servers">
+      <span className="v2-answer-process-step-meta">Unavailable now</span>
+      <ul>
+        {servers.map((server, index) => {
+          const copy = mcpUnavailableServerCopy(server.reason);
+          return (
+            <li data-reason={server.reason} key={`${index}:${server.name}`}>
+              <span className="v2-answer-process-step-name">{server.name} · {copy.label}</span>{" "}
+              <span className="v2-answer-process-step-meta">{copy.action}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -298,6 +319,8 @@ export function AnswerProcessV2({
                         <span className="v2-answer-process-step-meta">{toolMeta(call)}</span>
                         {onPinSkill && call.origin === "skill" && call.toolName === "load_skill" && call.status === "complete" && call.skillId
                           ? <SkillPinV2 skillId={call.skillId} pinned={pinnedSkillIds.includes(call.skillId)} onPin={onPinSkill} /> : null}
+                        {call.origin === "discovery" && call.mcpUnavailable?.length
+                          ? <McpUnavailableServersV2 servers={call.mcpUnavailable} /> : null}
                       </span>
                     )}
                   </li>

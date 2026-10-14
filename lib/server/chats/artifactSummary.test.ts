@@ -646,6 +646,30 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(activity?.calls[0]).not.toHaveProperty("details");
   });
 
+  it("shows the initiator the servers a tool search could not load, by name and reason only", () => {
+    const discoveryRequest = { mcpDiscovery: {
+      catalog: { servers: [{ serverId: "server-private-id", serverName: "Gitlab\u0007 Main", tools: [] }], version: 1 },
+      epochs: [{ epoch: 1, goal: "private query", modelRunToolCallId: "persisted-find-tools", roundIndex: 1, toolIds: [],
+        unavailable: [{ reason: "mcp_reauthorization_required", serverId: "server-private-id" }] }],
+      version: 2
+    } };
+    const findCall = { id: "persisted-find-tools", toolName: "find_tools", ordinal: 0, roundIndex: 1, state: "complete",
+      startedAt: null, completedAt: null, arguments: { query: "private query" }, result: { private: "result text" } };
+    const run = { userId: "initiator", errorPayload: null, status: "complete", normalizedRequest: discoveryRequest,
+      toolCalls: [findCall] };
+    const activity = summarizeMessageRunToolActivity(run, "initiator");
+    expect(activity?.calls[0]).toEqual({ mcpUnavailable: [{ name: "Gitlab Main", reason: "mcp_reauthorization_required" }],
+      origin: "discovery", round: 1, serverName: "Auto tools", status: "complete", toolName: "find_tools" });
+    expect(JSON.stringify(activity)).not.toMatch(/private|persisted-find-tools/u);
+    // Other viewers (Project members, administrators) and anonymous readers see nothing new.
+    for (const viewer of [undefined, "other-member", "administrator"]) {
+      expect(summarizeMessageRunToolActivity(run, viewer)?.calls[0]).not.toHaveProperty("mcpUnavailable");
+    }
+    // An epoch without the set, or another call's epoch, adds nothing.
+    expect(summarizeMessageRunToolActivity({ ...run, toolCalls: [{ ...findCall, id: "other-call" }] }, "initiator")?.calls[0])
+      .not.toHaveProperty("mcpUnavailable");
+  });
+
   it("projects a page read as its host/path and outcome, never the URL query, arguments or page text", () => {
     const pageCall = { toolName: "fetch_url", ordinal: 0, roundIndex: 1, state: "error", startedAt: null, completedAt: null,
       arguments: { url: "https://news.example/today?token=private-token" },
