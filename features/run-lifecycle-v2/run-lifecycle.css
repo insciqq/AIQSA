@@ -250,6 +250,19 @@ div.v2-answer-process[data-live],
   flex-wrap: wrap;
 }
 
+/* The step's own mark stays on its first line, not beside the unavailable list. */
+.v2-answer-process-steps li:has(> .v2-answer-process-step .v2-answer-process-unavailable) {
+  align-items: flex-start;
+}
+
+.v2-answer-process-steps li:has(> .v2-answer-process-step .v2-answer-process-unavailable) > .v2-answer-process-mark {
+  margin-top: 0.3125rem;
+}
+
+.v2-answer-process-unavailable > .v2-answer-process-step-meta {
+  color: var(--v2-color-warn);
+}
+
 /* A reached limit stays visible outside the fold, under the line. */
 .v2-tool-budget-warning {
   margin: 0 0 0.875rem;
