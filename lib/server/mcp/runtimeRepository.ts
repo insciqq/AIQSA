@@ -491,7 +491,6 @@ export function createPrismaMcpRuntimeRepository(input: {
   generationId?: () => string;
   oauthRedirectUri?: (serverId: string) => string;
   prisma?: PrismaClient;
-  reconcileOAuthConnections?: () => Promise<void>;
 } = {}): McpRuntimeCoordinatorRepository {
   const client = input.prisma ?? prisma;
   const encryptionKey = input.encryptionKey ?? getMcpEncryptionKey;
@@ -594,15 +593,6 @@ export function createPrismaMcpRuntimeRepository(input: {
     },
 
     synchronizeDesired: async ({ now, onDemand = false, serverIds, userId }) => {
-      if (input.reconcileOAuthConnections) {
-        try {
-          await input.reconcileOAuthConnections();
-          reportSubsystemHealthy("mcp", "reconcile", "oauth_reconcile");
-        } catch (error) {
-          reportSubsystemFailure({ error, subsystem: "mcp", stage: "reconcile", scope_id: "oauth_reconcile",
-            code: observedFailureCode(error), prisma_code: databaseFailureCode(error), action: "retry" });
-        }
-      }
       const recentActivityCutoff = new Date(now.getTime() - RECENT_ACTIVITY_MS);
       if (!userId) {
         // Eviction is observed runtime state, not a user preference mutation.

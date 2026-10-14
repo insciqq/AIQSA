@@ -340,6 +340,9 @@ export class McpRuntimeCoordinator {
   /** The housekeeping drain now running, and the single follow-up queued behind it. */
   #drainActive: Promise<void> | null = null;
   #drainQueued: Promise<void> | null = null;
+  /** The installation-wide OAuth revocation sweep now running, if any. */
+  #oauthSweep: Promise<void> | null = null;
+  readonly #reconcileOAuthConnections: (() => Promise<void>) | null;
   #stopped = false;
   #timer: ReturnType<typeof setInterval> | null = null;
   #healthTimer: ReturnType<typeof setTimeout> | null = null;
@@ -416,11 +419,18 @@ export class McpRuntimeCoordinator {
   constructor(input: {
     intervalMs?: number;
     now?: () => Date;
+    /**
+     * The installation-wide OAuth disconnect and revocation sweep. Only the
+     * periodic tick runs it, never more than one at a time, so no user's MCP
+     * preparation waits on other connections' authorization servers.
+     */
+    reconcileOAuthConnections?: () => Promise<void>;
     repository: McpRuntimeCoordinatorRepository;
     sessions: McpRuntimeSessionFactory;
   }) {
     this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.#now = input.now ?? (() => new Date());
+    this.#reconcileOAuthConnections = input.reconcileOAuthConnections ?? null;
     this.#repository = input.repository;
     this.#sessions = input.sessions;
   }
@@ -428,10 +438,29 @@ export class McpRuntimeCoordinator {
   start(): void {
     if (this.#timer) return;
     this.#stopped = false;
-    this.#timer = runInBackground(() => setInterval(() => this.kick(), this.#intervalMs));
+    this.#timer = runInBackground(() => setInterval(() => this.#tick(), this.#intervalMs));
     this.#timer.unref?.();
     this.#scheduleHealthCheck();
+    this.#tick();
+  }
+
+  #tick(): void {
     this.kick();
+    this.#sweepOAuthConnections();
+  }
+
+  /** Starts the OAuth sweep unless one is still running; nothing awaits it. */
+  #sweepOAuthConnections(): void {
+    const sweep = this.#reconcileOAuthConnections;
+    if (!sweep || this.#oauthSweep || this.#stopped) return;
+    const run: Promise<void> = runInBackground(() => Promise.resolve().then(sweep).then(
+      () => reportSubsystemHealthy("mcp", "reconcile", "oauth_reconcile"),
+      (error: unknown) => reportSubsystemFailure({ error, subsystem: "mcp", stage: "reconcile", scope_id: "oauth_reconcile",
+        code: observedFailure(error).code, prisma_code: databaseFailureCode(error), action: "retry" })
+    ).finally(() => {
+      if (this.#oauthSweep === run) this.#oauthSweep = null;
+    }));
+    this.#oauthSweep = run;
   }
 
   async stop(): Promise<void> {
@@ -442,6 +471,8 @@ export class McpRuntimeCoordinator {
     this.#timer = null;
     if (this.#healthTimer) clearTimeout(this.#healthTimer);
     this.#healthTimer = null;
+    // A running OAuth sweep touches no session and ends within its request
+    // deadlines; stop does not wait for it, and no further one starts.
     await this.#runPromise?.catch(() => undefined);
     await (this.#drainQueued ?? this.#drainActive);
     await Promise.allSettled([...this.#starts.values()].map((runtime) => runtime.promise));

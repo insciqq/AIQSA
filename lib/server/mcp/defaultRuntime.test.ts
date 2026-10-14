@@ -27,7 +27,17 @@ const sessions = vi.hoisted(() => ({ create: vi.fn() }));
 const projectLoader = vi.hoisted(() => vi.fn(async (_userId: string, _serverIds: readonly string[]): Promise<unknown[]> => []));
 const personalLoader = vi.hoisted(() => vi.fn(async (_userId: string, _serverIds: readonly string[]): Promise<unknown[]> => []));
 
+const oauthService = vi.hoisted(() => ({
+  createRuntimeFetch: vi.fn(),
+  reconcileDisconnecting: vi.fn(async () => undefined)
+}));
+
 vi.mock("./runtimeRepository", () => ({ createPrismaMcpRuntimeRepository: () => repository }));
+// The installation-wide OAuth sweep must never reach a real database here.
+vi.mock("./defaultOAuth", () => ({
+  createDefaultMcpOAuthRuntimeProvider: vi.fn(),
+  mcpOAuthService: oauthService
+}));
 vi.mock("./clientSessionFactory", () => ({ createMcpClientSessionFactory: () => sessions }));
 vi.mock("./runPlanRepository", () => ({
   createPrismaMcpCapabilityCatalogLoader: () => vi.fn(),
@@ -81,6 +91,8 @@ describe("default MCP runtime startup", () => {
       });
       await coordinator.reconcileNow();
 
+      // Only the periodic tick, here the startup one, sweeps OAuth revocations.
+      await vi.waitFor(() => expect(oauthService.reconcileDisconnecting).toHaveBeenCalledOnce());
       expect(contexts).toHaveLength(2);
       expect(contexts[0]?.trace_id).not.toBe(contexts[1]?.trace_id);
       for (const context of contexts) {
