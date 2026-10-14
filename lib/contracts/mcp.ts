@@ -277,6 +277,33 @@ export function isMcpUnavailableToolReason(value: unknown): value is McpUnavaila
   return value === "restricted" || isMcpToolExclusionReason(value);
 }
 
+/**
+ * Why a selected MCP server could not load its tools for one Auto
+ * `find_tools` call, stable and content-free: its user OAuth connection is
+ * missing or needs a new sign-in, the upstream rejected the user's own
+ * credential, the server cannot run now (runtime down, network or startup
+ * failure, upstream error), or its tools do not fit the answer's tool bounds.
+ */
+const MCP_UNAVAILABLE_SERVER_COPY = {
+  mcp_reauthorization_required: { label: "Sign-in needed", action: "Reconnect it in MCP settings." },
+  mcp_personal_credential_rejected: {
+    label: "Credential rejected", action: "Update the personal value or reconnect it in MCP settings."
+  },
+  mcp_server_unavailable: { label: "Unavailable right now", action: "Try again later or check it in MCP settings." },
+  mcp_plan_too_large: { label: "Too many tools for this answer", action: "Ask again in a new message." }
+} as const;
+
+export type McpUnavailableServerReason = keyof typeof MCP_UNAVAILABLE_SERVER_COPY;
+
+export function isMcpUnavailableServerReason(value: unknown): value is McpUnavailableServerReason {
+  return typeof value === "string" && Object.hasOwn(MCP_UNAVAILABLE_SERVER_COPY, value);
+}
+
+/** The short reason and recovery action shown for one unavailable server. */
+export function mcpUnavailableServerCopy(reason: McpUnavailableServerReason): Readonly<{ label: string; action: string }> {
+  return MCP_UNAVAILABLE_SERVER_COPY[reason];
+}
+
 export type McpInventoryDifferenceReason = Exclude<McpToolExclusionReason, "disabled_by_policy">;
 
 /**

@@ -4,7 +4,7 @@ import {
   mcpFindToolsArguments,
   mergeMcpRunPlanSnapshots
 } from "../mcp/discovery";
-import { decodeMcpDiscoveryState } from "../mcp/discoveryState";
+import { decodeMcpDiscoveryState, decodeMcpDiscoveryUnavailable } from "../mcp/discoveryState";
 import type {
   McpDiscoveryState,
   McpRunPlanBinding,
@@ -96,6 +96,11 @@ export function createPrismaMcpDiscoveryOperations(
       if (input.toolIds.length > maxResults ||
         new Set(input.toolIds).size !== input.toolIds.length ||
         input.toolIds.some((toolId) => !catalogToolIds.has(toolId))) return null;
+      // A server the call could not load is never also loaded by it.
+      const unavailable = decodeMcpDiscoveryUnavailable(input.unavailable ?? [],
+        new Set(currentDiscovery.catalog.servers.map((server) => server.serverId)), maxResults);
+      if (!unavailable || unavailable.some((server) =>
+        input.snapshot.servers.some((loaded) => loaded.serverId === server.serverId))) return null;
       const persistedCall = await tx.modelRunToolCall.findFirst({
         select: { arguments: true, roundIndex: true, toolName: true },
         where: { id: input.modelRunToolCallId, modelRunId: input.runId }
@@ -161,7 +166,8 @@ export function createPrismaMcpDiscoveryOperations(
             goal: input.goal,
             modelRunToolCallId: input.modelRunToolCallId,
             roundIndex: input.roundIndex,
-            toolIds: [...input.toolIds]
+            toolIds: [...input.toolIds],
+            ...(unavailable.length ? { unavailable } : {})
           }
         ]
       };

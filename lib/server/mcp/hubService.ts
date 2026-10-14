@@ -300,7 +300,7 @@ export function createMcpToolService<Authority extends McpToolAuthority>(
           catalog: await dependencies.catalog(input.authority.userId),
           filterTools: dependencies.filterTools,
           materialize: dependencies.materialize,
-          partial: true,
+          partial: "tool",
           search: {
             activeToolNames: new Set(),
             limit: maxResults,

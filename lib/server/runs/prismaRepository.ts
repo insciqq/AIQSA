@@ -1624,6 +1624,7 @@ export function createPrismaRunRepository(
                     select: {
                       mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
                       completedAt: true,
+                      id: true,
                       ordinal: true,
                       providerCallId: true,
                       result: true,

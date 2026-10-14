@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, withCodeCallUnavailableSources } from "./sourceHealth";
+import {
+  discoveryUnavailableSources, occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, withCodeCallUnavailableSources
+} from "./sourceHealth";
 
 describe("code-call source health", () => {
   it("turns a source the run's code could not use into a relied-on missing source", () => {
@@ -19,6 +21,34 @@ describe("code-call source health", () => {
     // A check that reached its source only through code could not check.
     expect(occurrenceCheckSourcesMissing(merged)).toBe(true);
     expect(occurrenceCheckSourcesMissing(withCodeCallUnavailableSources(null, []))).toBe(false);
+  });
+});
+
+describe("tool-search source health", () => {
+  const epoch = (unavailable: unknown) => ({ epoch: 1, goal: "query", modelRunToolCallId: "call", roundIndex: 1, toolIds: [],
+    unavailable });
+
+  it("counts a server the run's tool search could not load, unless a later search loaded it", () => {
+    const epochs = [
+      epoch([{ reason: "mcp_server_unavailable", serverId: "server-tracker" },
+        { reason: "mcp_reauthorization_required", serverId: "server-gitlab" }]),
+      // Loaded by a later call of the same run: no missing source.
+      epoch([{ reason: "mcp_server_unavailable", serverId: "server-wiki" }]),
+      epoch([{ reason: "mcp_personal_credential_rejected", serverId: "server-tracker" },
+        { reason: "PRIVATE_UPSTREAM_TEXT", serverId: "server-broken" }, { reason: "mcp_plan_too_large", serverId: "not an id" }]),
+      { epoch: 4, toolIds: [] }
+    ];
+    expect(discoveryUnavailableSources(epochs, [{ serverId: "server-wiki" }])).toEqual([
+      // A rejected credential on any call asks the owner to sign in.
+      { authorization: true, serverId: "server-tracker" },
+      { authorization: true, serverId: "server-gitlab" }
+    ]);
+    const merged = withCodeCallUnavailableSources(null,
+      discoveryUnavailableSources(epochs, [{ serverId: "server-wiki" }]).map((source) => ({ ...source, serverName: null })));
+    expect(occurrenceCheckSourcesMissing(merged)).toBe(true);
+    for (const [value, loaded] of [[null, null], [[], []], ["x", {}], [[epoch("x")], []]] as const) {
+      expect(discoveryUnavailableSources(value, loaded)).toEqual([]);
+    }
   });
 });
 

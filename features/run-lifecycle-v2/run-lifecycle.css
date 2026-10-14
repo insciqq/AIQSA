@@ -228,6 +228,28 @@ div.v2-answer-process[data-live],
   font-variant-numeric: tabular-nums;
 }
 
+/* Servers a tool search could not load wrap under its step line. */
+.v2-answer-process-unavailable {
+  display: grid;
+  min-width: 0;
+  flex-basis: 100%;
+  gap: 0.125rem;
+}
+
+.v2-answer-process-unavailable ul {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-answer-process-steps .v2-answer-process-unavailable li {
+  min-height: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
 /* A reached limit stays visible outside the fold, under the line. */
 .v2-tool-budget-warning {
   margin: 0 0 0.875rem;
