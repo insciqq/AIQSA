@@ -306,6 +306,26 @@ export function RunLifecycleV2Gallery() {
                 />
               </StateSpec>
 
+              <StateSpec label="Complete · Auto MCP servers unavailable">
+                <RunAnswerV2
+                  content="Задачи в Tracker проверить не удалось: сервер сейчас недоступен. GitLab нужно переподключить."
+                  presentation={presentRunLifecycleV2(runState({
+                    content: "Готовый ответ",
+                    events: [{ data: { status: "complete" }, type: "done" }]
+                  }))}
+                  toolActivity={{
+                    calls: [
+                      { durationMs: 900, mcpUnavailable: [
+                        { name: "GitLab", reason: "mcp_reauthorization_required" },
+                        { name: "Yandex Tracker", reason: "mcp_server_unavailable" }
+                      ], origin: "discovery", round: 1, serverName: "Auto tools", status: "complete", toolName: "find_tools" },
+                      { durationMs: 700, origin: "mcp", round: 2, serverName: "Confluence", status: "complete", toolName: "search_pages" }
+                    ]
+                  }}
+                  workDurationMs={4_200}
+                />
+              </StateSpec>
+
               <StateSpec label="Complete · context compacted">
                 <RunAnswerV2
                   content="Ответ продолжен после подтверждённого сокращения рабочего контекста."

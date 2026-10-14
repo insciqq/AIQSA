@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeMcpDiscoveryState } from "./discoveryState";
+import { decodeMcpDiscoveryState, mcpDiscoveryUnavailableServers } from "./discoveryState";
 
 const toolId = "mcp_jira_create_issue_1234567890";
 const valid = {
@@ -58,5 +58,40 @@ describe("MCP discovery state decoder", () => {
     }]
   ])("rejects malformed, ambiguous, or schema-bearing persisted state", (candidate) => {
     expect(decodeMcpDiscoveryState(candidate)).toBeNull();
+  });
+
+  it("keeps an epoch's unavailable servers and reads an absent set as none", () => {
+    const unavailable = [{ reason: "mcp_reauthorization_required", serverId: "server-jira" }];
+    const withSet = { ...valid, epochs: [{ ...valid.epochs[0], unavailable }] };
+    expect(decodeMcpDiscoveryState(withSet)).toEqual(withSet);
+    // An empty set is canonical absence.
+    expect(decodeMcpDiscoveryState({ ...valid, epochs: [{ ...valid.epochs[0], unavailable: [] }] })).toEqual(valid);
+    expect(decodeMcpDiscoveryState(valid)?.epochs[0]).not.toHaveProperty("unavailable");
+  });
+
+  it.each([
+    [[{ reason: "mcp_server_unavailable", serverId: "server-unknown" }]],
+    [[{ reason: "PRIVATE_UPSTREAM_TEXT", serverId: "server-jira" }]],
+    [[{ reason: "mcp_server_unavailable", serverId: "server-jira" }, { reason: "mcp_plan_too_large", serverId: "server-jira" }]],
+    [[{ reason: "mcp_server_unavailable", serverId: "server-jira", serverName: "Jira" }]],
+    [Array.from({ length: 6 }, () => ({ reason: "mcp_server_unavailable", serverId: "server-jira" }))],
+    [{ reason: "mcp_server_unavailable", serverId: "server-jira" }]
+  ])("rejects a malformed unavailable set", (unavailable) => {
+    expect(decodeMcpDiscoveryState({ ...valid, epochs: [{ ...valid.epochs[0], unavailable }] })).toBeNull();
+  });
+
+  it("projects a call's unavailable servers by catalog name and never fails the reader", () => {
+    const discovery = { ...valid, epochs: [{ ...valid.epochs[0], unavailable: [
+      { reason: "mcp_personal_credential_rejected", serverId: "server-jira" },
+      { reason: "mcp_server_unavailable", serverId: "server-gone" },
+      { reason: "PRIVATE", serverId: "server-jira" }
+    ] }] };
+    expect(mcpDiscoveryUnavailableServers(discovery, "persisted-find-tools-call")).toEqual([
+      { reason: "mcp_personal_credential_rejected", serverName: "Jira" }
+    ]);
+    expect(mcpDiscoveryUnavailableServers(discovery, "another-call")).toEqual([]);
+    expect(mcpDiscoveryUnavailableServers(valid, "persisted-find-tools-call")).toEqual([]);
+    expect(mcpDiscoveryUnavailableServers({ epochs: "x" }, "persisted-find-tools-call")).toEqual([]);
+    expect(mcpDiscoveryUnavailableServers(null, "persisted-find-tools-call")).toEqual([]);
   });
 });

@@ -1,7 +1,9 @@
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "../../contracts/memorySearchActivity";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "@/lib/domain/workspace";
-import type { ThreadToolActivityOrigin } from "@/lib/contracts/chats";
+import type { ThreadMcpUnavailableServer, ThreadToolActivityOrigin } from "@/lib/contracts/chats";
+import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
+import { mcpDiscoveryUnavailableServers } from "../mcp/discoveryState";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { plainWorkspaceActivityText } from "../workspace/activityText";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
@@ -140,6 +142,23 @@ export function skillToolActivityFacts(normalizedRequest: unknown, toolName: str
   const path = toolName === READ_SKILL_FILE_TOOL_NAME && typeof argumentsValue.path === "string" &&
     argumentsValue.path.length <= 256 && skillTarPath(argumentsValue.path) ? argumentsValue.path : null;
   return { skillId: skill.skillId, skillName: activityName(skill.name, "Skill"), ...(path ? { skillPath: path } : {}) };
+}
+
+/**
+ * The servers a settled `find_tools` call recorded unavailable, from its
+ * checkpointed epoch: sanitized display names of the run's frozen catalog and
+ * stable reasons only. Callers attach them for the run's initiator alone.
+ */
+export function mcpDiscoveryActivityFacts(
+  normalizedRequest: unknown,
+  toolName: string,
+  callId: string | undefined,
+  sanitize: (value: string) => string = plainWorkspaceActivityText
+): { mcpUnavailable?: ThreadMcpUnavailableServer[] } {
+  if (toolName !== MCP_FIND_TOOLS_NAME || !callId || !isRecord(normalizedRequest)) return {};
+  const servers = mcpDiscoveryUnavailableServers(normalizedRequest.mcpDiscovery, callId)
+    .map(({ reason, serverName }) => ({ name: activityName(sanitize(serverName), "MCP server"), reason }));
+  return servers.length ? { mcpUnavailable: servers } : {};
 }
 
 /** Only the allowlisted outcome crosses the private native Memory result boundary. */

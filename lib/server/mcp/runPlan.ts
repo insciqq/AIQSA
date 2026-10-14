@@ -12,7 +12,8 @@ import {
   type McpCredentialSource,
   type McpReadiness,
   type McpToolArgumentInventoryEntry,
-  type McpToolInventoryEntry
+  type McpToolInventoryEntry,
+  type McpUnavailableServerReason
 } from "@/lib/contracts/mcp";
 import type { McpRuntimeInventoryExclusion, McpRuntimeInventoryTool } from "./runtimeCoordinator";
 
@@ -38,6 +39,12 @@ export type McpRunPlanRecord = {
   serverDescription?: string;
   serverInstructions?: string;
   serverName: string;
+  /**
+   * An installation OAuth server for which the runner holds no ready user
+   * connection: no runtime can start until they sign in again. Its published
+   * catalog and queued readiness stay as they are.
+   */
+  signInRequired?: true;
   /**
    * A personal owner's switched-off tools. The loader already filters them
    * from the projection; the set only names why a requested tool is missing.
@@ -103,6 +110,12 @@ export type McpCapabilityCatalog = {
   version: 1;
 };
 
+/** A catalog server whose matched tools one find_tools call could not load. */
+export type McpDiscoveryUnavailableServer = {
+  reason: McpUnavailableServerReason;
+  serverId: string;
+};
+
 export type McpDiscoveryEpoch = {
   epoch: number;
   /** The call's find_tools query; the field keeps its historical name. */
@@ -110,6 +123,8 @@ export type McpDiscoveryEpoch = {
   modelRunToolCallId: string;
   roundIndex: number;
   toolIds: string[];
+  /** In rank order; absent (every epoch persisted before it existed) means none. */
+  unavailable?: McpDiscoveryUnavailableServer[];
 };
 
 export type McpDiscoveryState = {
@@ -138,6 +153,8 @@ export type McpRunPlanIssue = {
   /** The upstream rejected the user's own personal value or OAuth token, not an administrator's. */
   personalCredentialRejected?: true;
   readiness: McpReadiness;
+  /** See `McpRunPlanRecord.signInRequired`. */
+  signInRequired?: true;
 };
 
 export type McpRunPlanResult =
@@ -433,7 +450,8 @@ export function buildMcpRunPlan(
           errorCode: record.errorCode,
           name: record.serverName,
           ...personalCredentialRejected(record),
-          readiness: record.readiness
+          readiness: record.readiness,
+          ...(record.signInRequired ? { signInRequired: true as const } : {})
         };
       }),
       ok: false

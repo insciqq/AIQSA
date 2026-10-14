@@ -152,7 +152,7 @@ import type {
   WorkspaceAvailabilitySnapshot
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
-import { activityName, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
+import { activityName, mcpDiscoveryActivityFacts, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
 import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
@@ -239,6 +239,7 @@ const assistantRunDetailSelect = {
       arguments: true,
       mcpRunBinding: { select: { runtimeGenerationFingerprint: true } },
       completedAt: true,
+      id: true,
       ordinal: true,
       providerCallId: true,
       result: true,
@@ -474,6 +475,8 @@ type ToolActivityRun = {
     arguments?: unknown;
     result?: unknown;
     completedAt: Date | null;
+    /** The persisted call identity that keys its discovery epoch; never projected. */
+    id?: string;
     ordinal: number;
     /** Selected by every current reader; absent only in older fixtures. */
     providerCallId?: string;
@@ -1247,9 +1250,14 @@ export function summarizeMessageRunToolActivity(
       result: (call.result ?? null) as Parameters<typeof mcpApprovalGated>[0]["result"],
       startedAt: call.startedAt?.toISOString() ?? null, state: call.state as Parameters<typeof mcpApprovalGated>[0]["state"],
       toolName: call.toolName });
+    // Only the initiator sees which of their servers a discovery call could not load.
+    const discoveryFacts = viewerUserId && viewerUserId === run.userId && descriptor.origin === "discovery"
+      ? mcpDiscoveryActivityFacts(run.normalizedRequest, call.toolName, call.id)
+      : {};
     return {
       ...(approvalRequired ? { approvalRequired: true as const } : {}),
       ...(details ? { details } : {}),
+      ...discoveryFacts,
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
       ...memorySearch,

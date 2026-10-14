@@ -1,5 +1,9 @@
-import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
-import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import {
+  isMcpRuntimeTimeouts,
+  isMcpUnavailableServerReason,
+  MCP_RUN_PLAN_LIMITS,
+  type McpUnavailableServerReason
+} from "../../contracts/mcp";
 import { getMcpRequestMaxBytes } from "./responseLimits";
 import { LEGACY_MCP_DISCOVERY_MAX_RESULTS } from "./discovery";
 import type {
@@ -7,7 +11,8 @@ import type {
   McpCapabilityCatalogServer,
   McpCapabilityCatalogTool,
   McpDiscoveryEpoch,
-  McpDiscoveryState
+  McpDiscoveryState,
+  McpDiscoveryUnavailableServer
 } from "./runPlan";
 
 const JSON_SCHEMA_TYPES = new Set([
@@ -123,10 +128,30 @@ function catalog(value: unknown): McpCapabilityCatalog | null {
   return { servers, version: 1 };
 }
 
+/**
+ * The servers one call recorded unavailable: distinct catalog servers with a
+ * stable reason, at most one per selectable result. Null when malformed.
+ */
+export function decodeMcpDiscoveryUnavailable(
+  value: unknown,
+  catalogServerIds: ReadonlySet<string>,
+  maxResults: number
+): McpDiscoveryUnavailableServer[] | null {
+  if (!Array.isArray(value) || value.length > maxResults) return null;
+  const servers = value.flatMap((entry) => isRecord(entry) && hasOnlyKeys(entry, ["reason", "serverId"]) &&
+    isMcpUnavailableServerReason(entry.reason) && typeof entry.serverId === "string" && catalogServerIds.has(entry.serverId)
+    ? [{ reason: entry.reason, serverId: entry.serverId }]
+    : []);
+  return servers.length === value.length && new Set(servers.map((server) => server.serverId)).size === servers.length
+    ? servers
+    : null;
+}
+
 function epoch(
   value: unknown,
   expectedOrdinal: number,
   catalogToolIds: ReadonlySet<string>,
+  catalogServerIds: ReadonlySet<string>,
   maxResults: number
 ): McpDiscoveryEpoch | null {
   if (!isRecord(value) || !hasOnlyKeys(value, [
@@ -134,7 +159,8 @@ function epoch(
     "goal",
     "modelRunToolCallId",
     "roundIndex",
-    "toolIds"
+    "toolIds",
+    "unavailable"
   ]) || value.epoch !== expectedOrdinal || !nonBlank(value.goal) || Buffer.byteLength(value.goal, "utf8") > getMcpRequestMaxBytes() ||
     !nonBlank(value.modelRunToolCallId) || !Number.isSafeInteger(value.roundIndex) ||
     Number(value.roundIndex) < 0 || !Array.isArray(value.toolIds) ||
@@ -143,13 +169,45 @@ function epoch(
     new Set(value.toolIds).size !== value.toolIds.length) {
     return null;
   }
+  // Epochs persisted before per-server availability carry no set: none.
+  const unavailable = value.unavailable === undefined
+    ? []
+    : decodeMcpDiscoveryUnavailable(value.unavailable, catalogServerIds, maxResults);
+  if (!unavailable) return null;
   return {
     epoch: expectedOrdinal,
     goal: value.goal,
     modelRunToolCallId: value.modelRunToolCallId,
     roundIndex: Number(value.roundIndex),
-    toolIds: value.toolIds as string[]
+    toolIds: value.toolIds as string[],
+    ...(unavailable.length ? { unavailable } : {})
   };
+}
+
+/**
+ * The servers a call's settled epoch recorded unavailable, by frozen catalog
+ * display name, in rank order. A read projection: anything malformed reads
+ * as none and never fails the reader.
+ */
+export function mcpDiscoveryUnavailableServers(
+  discovery: unknown,
+  modelRunToolCallId: string
+): Readonly<{ reason: McpUnavailableServerReason; serverName: string }>[] {
+  if (!isRecord(discovery) || !Array.isArray(discovery.epochs) || !isRecord(discovery.catalog) ||
+    !Array.isArray(discovery.catalog.servers)) return [];
+  const settled = discovery.epochs.find((candidate) => isRecord(candidate) &&
+    candidate.modelRunToolCallId === modelRunToolCallId);
+  if (!isRecord(settled) || !Array.isArray(settled.unavailable)) return [];
+  const names = new Map(discovery.catalog.servers.flatMap((server) => isRecord(server) &&
+    typeof server.serverId === "string" && typeof server.serverName === "string"
+    ? [[server.serverId, server.serverName] as const]
+    : []));
+  return settled.unavailable.slice(0, MCP_RUN_PLAN_LIMITS.maxTools).flatMap((entry) => {
+    const serverName = isRecord(entry) && typeof entry.serverId === "string" ? names.get(entry.serverId) : undefined;
+    return serverName !== undefined && isRecord(entry) && isMcpUnavailableServerReason(entry.reason)
+      ? [{ reason: entry.reason, serverName }]
+      : [];
+  });
 }
 
 export function decodeMcpDiscoveryState(
@@ -165,8 +223,9 @@ export function decodeMcpDiscoveryState(
   const catalogToolIds = new Set(decodedCatalog.servers.flatMap((server) =>
     server.tools.map((tool) => tool.namespacedName)
   ));
+  const catalogServerIds = new Set(decodedCatalog.servers.map((server) => server.serverId));
   const epochs = value.epochs.flatMap((candidate, index) => {
-    const decoded = epoch(candidate, index + 1, catalogToolIds, maxResults);
+    const decoded = epoch(candidate, index + 1, catalogToolIds, catalogServerIds, maxResults);
     return decoded ? [decoded] : [];
   });
   if (epochs.length !== value.epochs.length ||
