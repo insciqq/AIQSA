@@ -10,6 +10,7 @@ import {
   isUsageLimitRefusalCode,
   type UsageLimitRefusalResponse
 } from "@/lib/contracts/usageLimits";
+import { AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE } from "@/lib/domain/runParams";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { CatalogModel } from "@/components/app-shell/types";
 
@@ -175,6 +176,10 @@ export function humanizeErrorCode(code: string): string {
     agent_unavailable: "Agent is unavailable. Ask an administrator to check the Workspace runner and model gateway",
     agent_internet_required: "Agent requires Workspace Internet access enabled by the administrator",
     agent_context_too_large: "This conversation is too large to start Agent. Continue in a new chat",
+    [AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE]:
+      "Max output tokens is too large for Agent with this model. Lower it in Model parameters or reset output settings, then send again",
+    agent_profile_invalid:
+      "Agent could not start because its settings do not fit the selected model. Lower Max output tokens or choose another model, then try again",
     agent_execution_interrupted: "Agent was interrupted. Start a new turn to continue with the available Workspace files",
     upload_malformed: "Upload response was malformed",
     workspace_archive_in_progress: "A Workspace archive is already being prepared. Try again shortly",
@@ -332,6 +337,13 @@ export async function responseErrorMessageDetails(
         const refusal = decodeUsageLimitRefusal(body);
         return { code: body.error, preserveForComposer: true,
           message: refusal ? usageLimitRefusalMessage(refusal) : humanizeErrorCode(body.error) };
+      }
+      // The server names the requested value and the allowed maximum; the
+      // draft stays so the user lowers the value and sends again.
+      if (body.error === AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE) {
+        return { code: body.error, preserveForComposer: true,
+          message: typeof body.message === "string" && body.message.length > 0 && body.message.length <= 320 &&
+            !/[\u0000-\u001f\u007f]/u.test(body.message) ? body.message : humanizeErrorCode(body.error) };
       }
       const attachmentLimitErrors = new Set([
         "attachment_count_limit_exceeded",
