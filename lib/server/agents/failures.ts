@@ -12,7 +12,8 @@ const messages = {
   agent_provider_interrupted: "The model request was interrupted.",
   agent_authority_expired: "Agent execution was interrupted because its workspace authorization expired.",
   agent_execution_interrupted: "Agent execution was interrupted. Its unfinished actions were not replayed.",
-  agent_context_too_large: "This conversation is too large to start Agent. Continue in a new chat."
+  agent_context_too_large: "This conversation is too large to start Agent. Continue in a new chat.",
+  agent_profile_invalid: "Agent could not start because its settings do not fit the selected model, for example Max output tokens too large for the model's context window. Lower Max output tokens or choose another model, then try again."
 } as const;
 
 export type AgentFailureCode = keyof typeof messages;
