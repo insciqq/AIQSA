@@ -144,3 +144,50 @@ describe("Run setup v2 with an Assistant", () => {
     expect(screen.getByRole("combobox", { name: "Reasoning effort" })).toBeEnabled();
   });
 });
+
+describe("Run setup v2 Max output tokens with Agent", () => {
+  const agent = (enabled: boolean) => ({ enabled, setEnabled: vi.fn() });
+  // The fixture model: 200,000-token context window, default 8,192, maximum 128,000.
+  const field = () => screen.getByRole("spinbutton", { name: "Max output tokens" });
+
+  it("bounds typed values by half the context window only while Agent is on", () => {
+    const changeMaxOutputTokens = vi.fn();
+    const { rerender } = render(<RunSetupV2 composer={runSetupComposer({ agent: agent(true), changeMaxOutputTokens })}
+      onClose={vi.fn()} />);
+    expect(field()).toHaveAttribute("max", "100000");
+    fireEvent.change(field(), { target: { value: "120000" } });
+    expect(changeMaxOutputTokens).toHaveBeenLastCalledWith("100000");
+    fireEvent.change(field(), { target: { value: "90000" } });
+    expect(changeMaxOutputTokens).toHaveBeenLastCalledWith("90000");
+    expect(screen.queryByTestId("run-setup-agent-output-limit")).toBeNull();
+
+    rerender(<RunSetupV2 composer={runSetupComposer({ agent: agent(false), changeMaxOutputTokens })} onClose={vi.fn()} />);
+    expect(field()).toHaveAttribute("max", "128000");
+    fireEvent.change(field(), { target: { value: "120000" } });
+    expect(changeMaxOutputTokens).toHaveBeenLastCalledWith("120000");
+  });
+
+  it("keeps a saved value above the limit, says why it is refused and offers the limit or a reset", () => {
+    const changeMaxOutputTokens = vi.fn();
+    render(<RunSetupV2 composer={runSetupComposer({ agent: agent(true), changeMaxOutputTokens, maxOutputTokens: "120000" })}
+      onClose={vi.fn()} />);
+    expect(field()).toHaveValue(120000);
+    expect(field()).toHaveAttribute("aria-invalid", "true");
+    expect(changeMaxOutputTokens).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Agent allows at most 100,000 output tokens with this model (half of its context window). Lower the value or reset output settings to send.");
+    fireEvent.click(screen.getByRole("button", { name: "Use 100,000" }));
+    expect(changeMaxOutputTokens).toHaveBeenLastCalledWith("100000");
+    fireEvent.click(screen.getByRole("button", { name: "Reset output settings" }));
+    expect(changeMaxOutputTokens).toHaveBeenLastCalledWith("8192");
+  });
+
+  it("notes, without refusing, a model default above the limit", () => {
+    const model = { ...galleryModels[0]!, contextWindow: 8_000 };
+    render(<RunSetupV2 composer={runSetupComposer({ agent: agent(true), currentModel: model })} onClose={vi.fn()} />);
+    expect(field()).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("run-setup-agent-output-limit"))
+      .toHaveTextContent("Agent answers with this model use at most 4,000 output tokens.");
+  });
+});
