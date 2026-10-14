@@ -50,6 +50,9 @@ import {
 } from "./contextCompactionContract";
 import { applyReusedContextSummary } from "./contextCompactionSummarizer";
 import {
+  AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE,
+  admitAgentMaxOutputTokens,
+  agentMaxOutputTokensRefusalMessage,
   invalidRunParamsError,
   resolveAcceptedRunReasoningEffort,
   validateRunParams
@@ -2349,9 +2352,18 @@ async function prepareRunWith(
     if (!workspaceAdmissionPlan?.normalized.internetEnabled) return failure("agent_internet_required", 400);
     const mcpMode = ordinaryMcpSelection?.mode === "auto" ? "auto" as const
       : ordinaryMcpSelection?.mode === "load_all" ? "all" as const : "off" as const;
-    agent = { ...limits, mcpMode, imageInput: false,
-      maxOutputTokens: Math.min(limits.limitsEnabled ? limits.maxOutputTokens : Infinity,
-        typeof runParams.maxOutputTokens === "number" ? runParams.maxOutputTokens : parameterControls.maxOutputTokens.defaultValue),
+    // The output cap must leave the Codex profile room for input: a value the
+    // user chose above it is refused here, before any run or Workspace start.
+    const outputCap = admitAgentMaxOutputTokens({
+      chosen: typeof paramValidation.params.maxOutputTokens === "number" ? paramValidation.params.maxOutputTokens : undefined,
+      contextWindow: modelCapabilities.contextWindow,
+      defaultValue: parameterControls.maxOutputTokens.defaultValue,
+      ...(limits.limitsEnabled ? { policyCap: limits.maxOutputTokens } : {})
+    });
+    if (!outputCap.ok) {
+      return failure(AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE, 400, agentMaxOutputTokensRefusalMessage(outputCap));
+    }
+    agent = { ...limits, mcpMode, imageInput: false, maxOutputTokens: outputCap.maxOutputTokens,
       compatibilityHash: hashCanonicalMcpValue({
         version: limits.codexVersion, managedProfileVersion: CODEX_MANAGED_PROFILE_VERSION,
         provider: admissionPlan.answer.snapshot, imageInput: false,
