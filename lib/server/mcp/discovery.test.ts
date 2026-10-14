@@ -198,6 +198,27 @@ describe("MCP Auto discovery", () => {
     expect(text(mcpFindToolsExecutionResult(call, { loaded: [] }))).toMatch(/^No enabled MCP tool matched this query\. Try other short English keywords/u);
   });
 
+  it("names unavailable servers with their reason and action and never lists their tools as loaded", () => {
+    const call = { arguments: { query: "create an issue" }, id: "call", name: "find_tools" };
+    const text = (result: ReturnType<typeof mcpFindToolsExecutionResult>) =>
+      (result.content[0] as { text: string }).text;
+    const [created] = mcpCatalogToolsByNames(catalog, ["mcp_jira_create_issue_1"]);
+    const partial = text(mcpFindToolsExecutionResult(call, { loaded: [created!], unavailable: [
+      { reason: "mcp_reauthorization_required", serverName: "GitHub" },
+      { reason: "mcp_plan_too_large", serverName: `Wiki\n${"w".repeat(200)}` }
+    ] }));
+    expect(partial).toContain("Loaded 1 MCP tool for the next step:\n- mcp_jira_create_issue_1 (Jira)");
+    expect(partial).toContain("Unavailable now (their matching tools were not loaded):\n" +
+      "- GitHub: Sign-in needed. Reconnect it in MCP settings.\n- Wiki w");
+    expect(partial).toContain("…: Too many tools for this answer. Ask again in a new message.");
+    expect(partial).not.toContain("No enabled MCP tool matched");
+    // Nothing loaded is still an ordinary result that tells the model why.
+    const none = mcpFindToolsExecutionResult(call, { loaded: [], unavailable: [{ reason: "mcp_server_unavailable", serverName: "Jira" }] });
+    expect(none.status).toBe("complete");
+    expect(text(none)).toMatch(/^Unavailable now[^\n]*\n- Jira: Unavailable right now\. Try again later or check it in MCP settings\.\nDo not guess/u);
+    expect(text(none)).not.toContain("No enabled MCP tool matched");
+  });
+
   it("reconstructs an already checkpointed result without schemas or reranking", () => {
     expect(mcpCatalogToolsByNames(catalog, [
       "mcp_github_create_pull_request_1",

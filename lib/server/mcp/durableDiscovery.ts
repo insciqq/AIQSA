@@ -9,10 +9,12 @@ import {
   LEGACY_MCP_DISCOVERY_MAX_RESULTS,
   mcpCatalogToolsByNames,
   mcpFindToolsArguments,
-  mcpFindToolsExecutionResult
+  mcpFindToolsExecutionResult,
+  type McpFindToolsUnavailableServer
 } from "./discovery";
 import type {
   McpDiscoveryState,
+  McpDiscoveryUnavailableServer,
   McpRunPlanBinding,
   McpRunPlanResult,
   McpRunPlanSnapshot
@@ -37,6 +39,8 @@ type AppendMcpDiscoveryEpoch = (input: Readonly<{
   runId: string;
   snapshot: McpRunPlanSnapshot;
   toolIds: readonly string[];
+  /** Servers whose matched tools the call could not load, in rank order; omitted when none. */
+  unavailable?: readonly McpDiscoveryUnavailableServer[];
   userId: string;
 }>) => Promise<Readonly<{
   discovery: McpDiscoveryState;
@@ -47,15 +51,19 @@ const emptySnapshot = (): McpRunPlanSnapshot => ({ servers: [], tools: [], versi
 
 type CatalogSelection = ReturnType<typeof mcpCatalogToolsByNames>;
 
-/** An epoch lists loaded and already-active matches in rank order. Without
- * the pre-call snapshot (replay), a tool an earlier epoch listed counts as
- * already available. */
+/** An epoch lists loaded and already-active matches in rank order, and the
+ * servers it could not load. Without the pre-call snapshot (replay), a tool an
+ * earlier epoch listed counts as already available. */
 function checkpointResult(input: Readonly<{
   discovery: McpDiscoveryState;
   modelRunToolCallId: string;
   previouslyActive?: ReadonlySet<string>;
   snapshot: McpRunPlanSnapshot;
-}>): Readonly<{ loaded: CatalogSelection; alreadyAvailable: CatalogSelection }> {
+}>): Readonly<{
+  loaded: CatalogSelection;
+  alreadyAvailable: CatalogSelection;
+  unavailable: McpFindToolsUnavailableServer[];
+}> {
   const index = input.discovery.epochs.findIndex((candidate) =>
     candidate.modelRunToolCallId === input.modelRunToolCallId
   );
@@ -69,9 +77,16 @@ function checkpointResult(input: Readonly<{
   }
   const earlier = input.previouslyActive ??
     new Set(input.discovery.epochs.slice(0, index).flatMap((candidate) => candidate.toolIds));
+  const serverNames = new Map(input.discovery.catalog.servers.map((server) => [server.serverId, server.serverName]));
+  const unavailable = (epoch.unavailable ?? []).map((server) => {
+    const serverName = serverNames.get(server.serverId);
+    if (serverName === undefined) throw new Error("mcp_discovery_checkpoint_conflict");
+    return { reason: server.reason, serverName };
+  });
   return {
     loaded: tools.filter((tool) => !earlier.has(tool.namespacedName)),
-    alreadyAvailable: tools.filter((tool) => earlier.has(tool.namespacedName))
+    alreadyAvailable: tools.filter((tool) => earlier.has(tool.namespacedName)),
+    unavailable
   };
 }
 
@@ -103,8 +118,11 @@ type DurableMcpDiscoveryResult = Readonly<{
   toolResult: ToolExecutionResult;
 }>;
 
-/** A settled epoch replays without searching; a pending call repeats the
- * deterministic search against the run's frozen catalog. */
+/** A settled epoch replays without searching or materializing, unavailable
+ * servers included; a pending call repeats the deterministic search against
+ * the run's frozen catalog. Each selected server loads on its own: one that
+ * cannot run is checkpointed unavailable with its reason while the others'
+ * tools load, so the call still returns an ordinary result. */
 export async function executeDurableMcpDiscovery(
   input: ExecuteDurableMcpDiscoveryInput
 ): Promise<DurableMcpDiscoveryResult> {
@@ -126,7 +144,8 @@ export async function executeDurableMcpDiscovery(
     return mcpFindToolsExecutionResult(input.call, {
       loaded: await input.filterTools(input.userId, checkpoint.loaded),
       alreadyAvailable: await input.filterTools(input.userId, checkpoint.alreadyAvailable),
-      unknownNames: fresh?.unknownNames ?? []
+      unknownNames: fresh?.unknownNames ?? [],
+      unavailable: checkpoint.unavailable
     });
   };
   if (replay) {
@@ -147,12 +166,14 @@ export async function executeDurableMcpDiscovery(
       catalog: input.activeDiscovery.catalog,
       filterTools: input.filterTools,
       materialize: input.materialize,
+      partial: "server",
       search: {
         activeToolNames: activeNames,
         limit: maxResults,
         query: parsed.query,
         signal: input.signal
       },
+      snapshot: currentSnapshot,
       userId: input.userId
     });
   } catch (error) {
@@ -161,10 +182,15 @@ export async function executeDurableMcpDiscovery(
       ? new McpAutoDiscoveryUnavailableError(error.code, error.serverName)
       : new McpAutoDiscoveryUnavailableError("mcp_materialization_failed");
   }
-  const { selected, alreadyActive, plans, search } = discovered;
-  const addedSnapshot = plans[0]?.snapshot ?? emptySnapshot();
-  const bindings = plans[0]?.bindings ?? [];
-  const accepted = new Set([...selected, ...alreadyActive].map((tool) => tool.namespacedName));
+  const { alreadyActive, plans, search, unavailable } = discovered;
+  // One plan per loaded server, already fitted onto the run's snapshot in rank order.
+  const addedSnapshot: McpRunPlanSnapshot = {
+    servers: plans.flatMap((plan) => plan.snapshot.servers),
+    tools: plans.flatMap((plan) => plan.snapshot.tools),
+    version: 1
+  };
+  const bindings = plans.flatMap((plan) => plan.bindings);
+  const accepted = new Set([...addedSnapshot.tools, ...alreadyActive].map((tool) => tool.namespacedName));
 
   const appended = await input.appendEpoch({
     bindings,
@@ -175,6 +201,7 @@ export async function executeDurableMcpDiscovery(
     runId: input.runId,
     snapshot: addedSnapshot,
     toolIds: search.matches.map((match) => match.namespacedName).filter((name) => accepted.has(name)),
+    ...(unavailable.length ? { unavailable } : {}),
     userId: input.userId
   });
   if (!appended) throw new Error("mcp_discovery_checkpoint_conflict");

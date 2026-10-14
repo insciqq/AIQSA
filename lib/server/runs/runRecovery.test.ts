@@ -9675,6 +9675,77 @@ describe("run recovery", () => {
     expect(harness.state.recoveredErrors).toEqual([]);
   });
 
+  it("replays a checkpointed unavailable server without calling it again and answers", async () => {
+    const snapshot = normalizedToolRequest().mcp!;
+    const catalog = {
+      servers: [{
+        description: "Store durable memories", namespace: "memory", revisionId: "revision-1", serverId: "server-1",
+        serverName: "Memory", tools: [{ arguments: [], description: "Remember a value", namespacedName: recoveryToolName,
+          originalName: "remember" }]
+      }, {
+        description: "Issue tracking", namespace: "tracker", revisionId: "revision-tracker", serverId: "server-tracker",
+        serverName: "Tracker", tools: [{ arguments: [], description: "Find an issue", namespacedName: "mcp_tracker_find_issue",
+          originalName: "find_issue" }]
+      }],
+      version: 1 as const
+    };
+    const materialize = vi.fn(async () => ({ bindings: [], ok: true as const, snapshot }));
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({
+      mcp: { filterTools: allowMcpTools, materialize, prepare: async () => ({ bindings: [], ok: true, snapshot }) },
+      providers: {
+        openai: {
+          buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            return {
+              finalProviderResponsePreview: {},
+              finalText: "Recovered without Tracker",
+              usage: { inputTokens: 2, outputTokens: 2, reasoningTokens: 0 }
+            };
+          }
+        }
+      }
+    });
+    const appendEpoch = vi.fn(async () => null);
+    harness.repository.appendMcpDiscoveryEpoch = appendEpoch;
+    const findToolsCall: PersistedToolLoopCall = {
+      arguments: { query: "select:remember, find_issue" }, completedAt: null, id: "stored-unavailable-find-tools-call",
+      mcpBinding: null, ordinal: 0, providerCallId: "provider-unavailable-find-tools-call", result: null, roundIndex: 1,
+      startedAt: "2026-07-12T09:00:30.000Z", state: "running", toolName: MCP_FIND_TOOLS_NAME
+    };
+    const durable = checkpointedRun({
+      calls: [findToolsCall],
+      phase: "tools_running",
+      providerToolMessages: [{ arguments: JSON.stringify(findToolsCall.arguments), call_id: findToolsCall.providerCallId,
+        name: MCP_FIND_TOOLS_NAME, type: "function_call" }]
+    });
+    installCheckpointState(harness, {
+      ...durable,
+      normalizedRequest: {
+        ...durable.normalizedRequest,
+        mcp: snapshot,
+        mcpDiscovery: {
+          catalog,
+          epochs: [{ epoch: 1, goal: "select:remember, find_issue", modelRunToolCallId: findToolsCall.id, roundIndex: 1,
+            toolIds: [recoveryToolName], unavailable: [{ reason: "mcp_reauthorization_required", serverId: "server-tracker" }] }],
+          version: 2
+        }
+      }
+    });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(materialize).not.toHaveBeenCalled();
+    expect(appendEpoch).not.toHaveBeenCalled();
+    const continuation = JSON.stringify(requests[0]?.providerToolMessages);
+    expect(continuation).toContain(`Loaded 1 MCP tool for the next step:\\n- ${recoveryToolName} (Memory)`);
+    expect(continuation).toContain("- Tracker: Sign-in needed. Reconnect it in MCP settings.");
+    expect(continuation).not.toContain("mcp_tracker_find_issue");
+    expect(harness.state.completed).toMatchObject({ finalText: "Recovered without Tracker" });
+    expect(harness.state.recoveredErrors).toEqual([]);
+  });
+
   it.each(["unexpected", "cancelled"] as const)(
     "settles a recovered discovery activation %s with a safe error and preserved historical usage", async (outcome) => {
     const rawFailure = "PRIVATE_RECOVERY_RUNTIME_FAILURE";

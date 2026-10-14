@@ -35,6 +35,7 @@ import type { ProjectRunAdmission, RunAttachmentRecord } from "./runRepositoryCo
 import type { RunAttachmentLimits } from "./attachmentLimits";
 import { materializePreparedRunData, preparePdfRetry, prepareRun, type PreparedRun, type RegenerateRunPreparationSource, type RunPreparationDeps, type RunPreparationInput, type RunPreparationResult, type SendRunPreparationSource } from "./runPreparation";
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
+import { AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE } from "@/lib/domain/runParams";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
@@ -1165,6 +1166,48 @@ describe("run preparation", () => {
         await expect(prepareRun({ ...harness.deps, workspace, providerAdmission: { load } }, input))
           .resolves.toMatchObject({ ok: false, code: "agent_unavailable", status: 503 });
       }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("bounds the Agent output cap by half the context window: a chosen value is refused, a default clamped", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const admit = async (contextWindow: number, params: Record<string, unknown>, options: Readonly<{
+        agentEnabled?: boolean; limitsEnabled?: boolean; regenerate?: boolean
+      }> = {}) => {
+        const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true, contextWindow,
+          defaultMaxOutputTokens: undefined } });
+        const body = successBody({ agentEnabled: options.agentEnabled ?? true, workspace: { enabled: true },
+          provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" }, params });
+        const workspace = contractWorkspace();
+        const result = await prepareRun({ ...harness.deps, workspace, agentPolicy: { read: async () => ({
+          ...DEFAULT_AGENT_POLICY, limitsEnabled: options.limitsEnabled ?? false, maxOutputTokens: 65_536 }) } },
+        options.regenerate ? regenerateInput(body) : sendInput(body));
+        return { result, workspace };
+      };
+      // The production case: 500,000 on a 272,000-token model with Agent limits Off.
+      for (const regenerate of [false, true]) {
+        const { result } = await admit(272_000, { maxOutputTokens: 500_000 }, { regenerate });
+        expect(result).toMatchObject({ ok: false, code: AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE, status: 400 });
+        expect(!result.ok && result.message).toBe("Max output tokens is 500,000, but Agent allows at most 136,000 " +
+          "with this model (half of its 272,000-token context window). Lower Max output tokens in Model parameters " +
+          "or reset output settings, then send again.");
+      }
+      await expect(admit(272_000, { maxOutputTokens: 136_001 }).then(({ result }) => result))
+        .resolves.toMatchObject({ ok: false, code: AGENT_MAX_OUTPUT_TOKENS_TOO_LARGE });
+      const frozen = async (...args: Parameters<typeof admit>) =>
+        preparedFrom((await admit(...args)).result).normalizedRequest.agent?.maxOutputTokens;
+      // At the limit the chosen value is admitted unchanged.
+      expect(await frozen(272_000, { maxOutputTokens: 136_000 })).toBe(136_000);
+      // The Agent policy cap brings a larger chosen value within the limit, as before.
+      expect(await frozen(272_000, { maxOutputTokens: 500_000 }, { limitsEnabled: true })).toBe(65_536);
+      // The chat default (65,536) on a 128,000-token model is clamped, sent or not.
+      expect(await frozen(128_000, {})).toBe(64_000);
+      expect(await frozen(128_000, { maxOutputTokens: 65_536 })).toBe(64_000);
+      expect(await frozen(128_000, { maxOutputTokens: 65_536 }, { limitsEnabled: true })).toBe(64_000);
+      // An ordinary turn never meets the Agent limit.
+      const ordinary = (await admit(272_000, { maxOutputTokens: 200_000 }, { agentEnabled: false })).result;
+      expect(ordinary).toMatchObject({ ok: true });
     } finally { vi.unstubAllEnvs(); }
   });
 

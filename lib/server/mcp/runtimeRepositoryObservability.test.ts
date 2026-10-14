@@ -72,26 +72,6 @@ describe("MCP runtime failure persistence diagnostics", () => {
     } finally { writer.mockRestore(); }
   });
 
-  it("observes suppressed OAuth reconciliation errors without failing the desired-runtime scan", async () => {
-    const reconcile = vi.fn<() => Promise<void>>(async () => { throw Object.assign(new Error("PRIVATE_OAUTH_DETAIL"), { code: "mcp_connect_failed" }); });
-    const repository = createPrismaMcpRuntimeRepository({ encryptionKey: () => Buffer.alloc(32, 7),
-      reconcileOAuthConnections: reconcile, prisma: {
-        $executeRaw: vi.fn(async () => 0), mcpUserServer: { findMany: vi.fn(async () => []) }
-      } as unknown as PrismaClient });
-    const lines: string[] = [];
-    const writer = vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
-    try {
-      for (let index = 0; index < 3; index += 1) await expect(repository.synchronizeDesired({ now: failure.now })).resolves.toEqual([]);
-      reconcile.mockImplementation(async () => undefined);
-      await repository.synchronizeDesired({ now: failure.now });
-      expect(lines.map((line) => JSON.parse(line))).toEqual([
-        expect.objectContaining({ event: "runtime_lifecycle", stage: "reconcile", code: "mcp_connect_failed" }),
-        expect.objectContaining({ event: "subsystem.recovered", stage: "reconcile", repeat_count: 2 })
-      ]);
-      expect(lines.join("")).not.toContain("PRIVATE");
-    } finally { writer.mockRestore(); }
-  });
-
   it.each([true, false])("reports only the retry date returned by an applied write: %s", async (applied) => {
     const retryAt = new Date("2026-09-13T10:00:37.000Z");
     const query = vi.fn(async () => applied ? [{ retryAt }] : []);

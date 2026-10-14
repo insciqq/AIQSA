@@ -146,6 +146,24 @@ describe("chat wire contracts", () => {
       origin: "mcp", round: 1, status: "complete", toolName: "delete_record" }] } }], usageStats }) })).toBeNull();
   });
 
+  it("carries the servers a tool search could not load only on a discovery step, with known reasons", () => {
+    const step = { origin: "discovery", round: 1, serverName: "Auto tools", status: "complete", toolName: "find_tools" };
+    const decode = (call: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({
+      messages: [{ ...message, toolActivity: { calls: [call] } }], usageStats }) })?.messages[0]?.toolActivity?.calls[0];
+    const mcpUnavailable = [{ name: "Gitlab", reason: "mcp_reauthorization_required" },
+      { name: "Tracker", reason: "mcp_server_unavailable" }];
+    expect(decode({ ...step, mcpUnavailable })).toEqual({ ...step, mcpUnavailable });
+    expect(decode(step)).not.toHaveProperty("mcpUnavailable");
+    for (const invalid of [
+      { ...step, origin: "mcp", mcpUnavailable },
+      { ...step, mcpUnavailable: [] },
+      { ...step, mcpUnavailable: [{ name: "Gitlab", reason: "PRIVATE_UPSTREAM_TEXT" }] },
+      { ...step, mcpUnavailable: [{ name: "", reason: "mcp_plan_too_large" }] },
+      { ...step, mcpUnavailable: [{ name: "x".repeat(161), reason: "mcp_plan_too_large" }] },
+      { ...step, mcpUnavailable: "Gitlab" }
+    ]) expect(decode(invalid)).toBeUndefined();
+  });
+
   it("decodes the source message for a context snapshot and rejects malformed or orphan identities", () => {
     const session = { approximateInputTokens: 6000, contextWindow: 10000, droppedMessages: 4, loadedTools: 2,
       maxOutputTokens: 1024, modelId: "gpt-5.5", phase: "after_answer", provider: "openai",

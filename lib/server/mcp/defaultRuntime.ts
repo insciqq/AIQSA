@@ -67,12 +67,12 @@ function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
     limits: DEFAULT_RUNTIME_LIMITS
   });
   return new McpRuntimeCoordinator({
+    reconcileOAuthConnections: () => mcpOAuthService.reconcileDisconnecting(),
     repository: createPrismaMcpRuntimeRepository({
       oauthRedirectUri: (serverId) => new URL(
         `/api/me/mcp/${encodeURIComponent(serverId)}/oauth/callback`,
         process.env.AIQSA_APP_BASE_URL?.trim() || "http://localhost:3000"
-      ).toString(),
-      reconcileOAuthConnections: () => mcpOAuthService.reconcileDisconnecting()
+      ).toString()
     }),
     sessions: directSessions
   });

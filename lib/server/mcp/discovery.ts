@@ -1,6 +1,6 @@
 import { getMcpRequestMaxBytes, getMcpResponseWireLimits } from "./responseLimits";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
-import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { MCP_RUN_PLAN_LIMITS, mcpUnavailableServerCopy, type McpUnavailableServerReason } from "../../contracts/mcp";
 import type {
   McpCapabilityCatalog,
   McpRunPlanSnapshot
@@ -186,6 +186,19 @@ export const mcpFindToolsInputSchema = {
   }
 };
 
+export type McpSnapshotMergeFailureCode = "mcp_discovery_binding_changed" | "mcp_discovery_tool_changed" | "mcp_plan_too_large";
+
+function snapshotMergeFailure(code: McpSnapshotMergeFailureCode): Error & { code: McpSnapshotMergeFailureCode } {
+  return Object.assign(new Error(code), { code });
+}
+
+/** The stable code of a snapshot merge refusal; null for any other error. */
+export function mcpSnapshotMergeFailureCode(error: unknown): McpSnapshotMergeFailureCode | null {
+  const code = error instanceof Error && Object.hasOwn(error, "code") ? (error as Error & { code?: unknown }).code : null;
+  return code === "mcp_discovery_binding_changed" || code === "mcp_discovery_tool_changed" || code === "mcp_plan_too_large"
+    ? code : null;
+}
+
 export function mergeMcpRunPlanSnapshots(
   current: McpRunPlanSnapshot | undefined,
   added: McpRunPlanSnapshot
@@ -198,7 +211,7 @@ export function mergeMcpRunPlanSnapshots(
     if (existing && (
       existing.fingerprint !== server.fingerprint || existing.revisionId !== server.revisionId
     )) {
-      throw new Error("mcp_discovery_binding_changed");
+      throw snapshotMergeFailure("mcp_discovery_binding_changed");
     }
     servers.set(server.serverId, server);
   }
@@ -208,7 +221,7 @@ export function mergeMcpRunPlanSnapshots(
   for (const tool of added.tools) {
     const existing = tools.get(tool.namespacedName);
     if (existing && existing.definitionHash !== tool.definitionHash) {
-      throw new Error("mcp_discovery_tool_changed");
+      throw snapshotMergeFailure("mcp_discovery_tool_changed");
     }
     tools.set(tool.namespacedName, tool);
   }
@@ -219,7 +232,7 @@ export function mergeMcpRunPlanSnapshots(
   ), 0);
   if (mergedTools.length > MCP_RUN_PLAN_LIMITS.maxTools ||
     schemaBytes > getMcpResponseWireLimits().listToolsResponseMaxBytes) {
-    throw new Error("mcp_plan_too_large");
+    throw snapshotMergeFailure("mcp_plan_too_large");
   }
   return {
     servers: [...servers.values()].sort((left, right) =>
@@ -236,16 +249,26 @@ function resultLine(tool: McpCatalogToolSelection): string {
     (description ? `: ${description}` : "");
 }
 
+/** A server whose matched tools one call could not load, by its frozen catalog display name. */
+export type McpFindToolsUnavailableServer = Readonly<{ reason: McpUnavailableServerReason; serverName: string }>;
+
+function unavailableLine(server: McpFindToolsUnavailableServer): string {
+  const { action, label } = mcpUnavailableServerCopy(server.reason);
+  return `- ${boundedText(server.serverName, MCP_INDEX_SERVER_NAME_MAX_CHARS)}: ${label}. ${action}`;
+}
+
 export function mcpFindToolsExecutionResult(
   call: ModelToolCall,
   result: Readonly<{
     loaded: readonly McpCatalogToolSelection[];
     alreadyAvailable?: readonly McpCatalogToolSelection[];
     unknownNames?: readonly string[];
+    unavailable?: readonly McpFindToolsUnavailableServer[];
   }>
 ): ToolExecutionResult {
   const alreadyAvailable = result.alreadyAvailable ?? [];
   const unknownNames = result.unknownNames ?? [];
+  const unavailable = result.unavailable ?? [];
   const lines = [
     ...(result.loaded.length ? [
       `Loaded ${result.loaded.length} MCP ${result.loaded.length === 1 ? "tool" : "tools"} for the next step:`,
@@ -256,7 +279,12 @@ export function mcpFindToolsExecutionResult(
       ...alreadyAvailable.map(resultLine)
     ] : []),
     ...(unknownNames.length ? [`Unknown names in select (not in the tool index): ${JSON.stringify(unknownNames)}`] : []),
-    ...(result.loaded.length + alreadyAvailable.length === 0 ? [
+    ...(unavailable.length ? [
+      "Unavailable now (their matching tools were not loaded):",
+      ...unavailable.map(unavailableLine),
+      "Do not guess what those tools would return. Tell the user briefly which service was unavailable and what to do."
+    ] : []),
+    ...(result.loaded.length + alreadyAvailable.length + unavailable.length === 0 ? [
       "No enabled MCP tool matched this query. Try other short English keywords (service + action + object), " +
       "or exact names from the tool index with select:name1,name2."
     ] : [])

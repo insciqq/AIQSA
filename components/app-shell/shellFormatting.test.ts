@@ -39,6 +39,17 @@ describe("shell error formatting", () => {
       pinnedTokens: "private data", catalogTokens: 0, budgetTokens: 8192
     }), "send_failed_400")).not.toContain("private data");
   });
+  it("keeps the Agent output-cap refusal with its allowed maximum in the composer", async () => {
+    const message = "Max output tokens is 500,000, but Agent allows at most 136,000 with this model (half of its 272,000-token " +
+      "context window). Lower Max output tokens in Model parameters or reset output settings, then send again.";
+    expect(await responseErrorMessageDetails(Response.json({ error: "agent_max_output_tokens_too_large", message },
+      { status: 400 }), "send_failed_400")).toEqual({ code: "agent_max_output_tokens_too_large", message, preserveForComposer: true });
+    const fallback = await responseErrorMessageDetails(Response.json({ error: "agent_max_output_tokens_too_large",
+      message: "x".repeat(321) }, { status: 400 }), "send_failed_400");
+    expect(fallback.message).toMatch(/^Max output tokens is too large for Agent with this model\./u);
+    expect(humanizeErrorCode("agent_profile_invalid")).not.toMatch(/Workspace/u);
+  });
+
   it("explains a message deletion conflict with a recovery action", async () => {
     expect(await responseErrorMessage(Response.json({ error: "message_delete_conflict" }, { status: 409 }), "message_delete_failed_409"))
       .toBe("This message is still in use by another operation. Wait for it to finish, then try deleting again (message_delete_conflict)");

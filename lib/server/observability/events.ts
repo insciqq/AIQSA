@@ -148,8 +148,10 @@ export type EventFields = {
   mcp_discovery: Readonly<{
     outcome: "completed" | "failed" | "cancelled"; duration_ms: number; mode?: "select" | "keywords";
     candidate_count?: number; result_count?: number; loaded_count: number; already_loaded_count: number;
-    unknown_name_count?: number;
+    unknown_name_count?: number; unavailable_server_count?: number;
   }>;
+  /** One selected server an Auto `find_tools` call reported unavailable: its reason and runtime or plan code only. */
+  mcp_discovery_server_unavailable: Readonly<{ code: string; cause?: string }>;
   tool_deadline: ToolOperationFields & Readonly<{
     tool_kind: ToolKind; outer_timeout_ms?: number; configured_timeout_ms?: number;
     provider_timeout_ms?: number; effective_timeout_ms?: number; request_timeout_ms?: number;

@@ -71,6 +71,28 @@ describe("answer outputs v2", () => {
     expect(disclosure).not.toHaveTextContent("memory_search");
   });
 
+  it("lists the servers a tool search could not load under its step, with reason and recovery", () => {
+    const call = { origin: "discovery" as const, round: 1, serverName: "Auto tools", status: "complete" as const,
+      toolName: "find_tools" };
+    const { rerender } = render(<AnswerProcessV2 toolActivity={{ calls: [{ ...call, mcpUnavailable: [
+      { name: "Gitlab", reason: "mcp_reauthorization_required" },
+      { name: "Kaiten", reason: "mcp_personal_credential_rejected" },
+      { name: "Tracker", reason: "mcp_server_unavailable" }
+    ] }] }} />);
+    openProcess();
+    expect(screen.getByText("Found relevant tools")).toBeVisible();
+    const list = screen.getByTestId("mcp-unavailable-servers");
+    expect(within(list).getByText("Unavailable now")).toBeVisible();
+    expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+      "Gitlab · Sign-in needed Reconnect it in MCP settings.",
+      "Kaiten · Credential rejected Update the personal value or reconnect it in MCP settings.",
+      "Tracker · Unavailable right now Try again later or check it in MCP settings."
+    ]);
+    // A search that loaded everything shows no list.
+    rerender(<AnswerProcessV2 toolActivity={{ calls: [call] }} />);
+    expect(screen.queryByTestId("mcp-unavailable-servers")).not.toBeInTheDocument();
+  });
+
   it("marks a live expandable process line with a trailing chevron until it settles", () => {
     const workspace = { entries: [{ id: "run", kind: "command", phase: "running", command: { preview: "pwd" } }] } as const;
     const { rerender } = render(<AnswerProcessV2 liveLabel="Working in Workspace…" workspaceActivity={workspace} />);

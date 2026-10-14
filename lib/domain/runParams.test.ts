@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultProviderModels } from "./catalog";
 import {
+  AGENT_FALLBACK_CONTEXT_WINDOW_TOKENS,
+  admitAgentMaxOutputTokens,
+  agentMaxOutputTokensLimit,
+  agentMaxOutputTokensRefusalMessage,
   invalidRunParamsError,
   resolveAcceptedRunReasoningEffort,
   validateRunParams
@@ -227,5 +231,40 @@ describe("run parameter validation", () => {
       },
       provider: "anthropic"
     })).toEqual({ code: invalidRunParamsError, ok: false });
+  });
+});
+
+describe("Agent output cap", () => {
+  it("allows at most half of the context window, assuming the Agent fallback window when unknown", () => {
+    expect(agentMaxOutputTokensLimit(272_000)).toBe(136_000);
+    expect(agentMaxOutputTokensLimit(131_071)).toBe(65_535);
+    for (const unknown of [undefined, null, 0, -1, Number.NaN, 1.5]) {
+      expect(agentMaxOutputTokensLimit(unknown)).toBe(AGENT_FALLBACK_CONTEXT_WINDOW_TOKENS / 2);
+    }
+  });
+
+  it("refuses a chosen value above the limit and clamps a default or policy cap", () => {
+    const defaults = { contextWindow: 272_000, defaultValue: 65_536 };
+    expect(admitAgentMaxOutputTokens({ ...defaults, chosen: 500_000 }))
+      .toEqual({ ok: false, contextWindow: 272_000, limit: 136_000, requested: 500_000 });
+    expect(admitAgentMaxOutputTokens({ ...defaults, chosen: 136_001 })).toMatchObject({ ok: false });
+    expect(admitAgentMaxOutputTokens({ ...defaults, chosen: 136_000 })).toEqual({ ok: true, maxOutputTokens: 136_000 });
+    // A policy cap that brings the chosen value within the limit admits it.
+    expect(admitAgentMaxOutputTokens({ ...defaults, chosen: 500_000, policyCap: 100_000 }))
+      .toEqual({ ok: true, maxOutputTokens: 100_000 });
+    expect(admitAgentMaxOutputTokens({ ...defaults, chosen: 500_000, policyCap: 200_000 })).toMatchObject({ ok: false });
+    // The model default, sent or not, and a policy cap above the limit are clamped.
+    const small = { contextWindow: 128_000, defaultValue: 65_536 };
+    expect(admitAgentMaxOutputTokens(small)).toEqual({ ok: true, maxOutputTokens: 64_000 });
+    expect(admitAgentMaxOutputTokens({ ...small, chosen: 65_536 })).toEqual({ ok: true, maxOutputTokens: 64_000 });
+    expect(admitAgentMaxOutputTokens({ ...small, defaultValue: 200_000, policyCap: 100_000 }))
+      .toEqual({ ok: true, maxOutputTokens: 64_000 });
+    expect(admitAgentMaxOutputTokens({ ...small, chosen: 4_096 })).toEqual({ ok: true, maxOutputTokens: 4_096 });
+  });
+
+  it("names the control, the requested value and the allowed maximum", () => {
+    expect(agentMaxOutputTokensRefusalMessage({ contextWindow: 272_000, limit: 136_000, requested: 500_000 }))
+      .toBe("Max output tokens is 500,000, but Agent allows at most 136,000 with this model (half of its 272,000-token " +
+        "context window). Lower Max output tokens in Model parameters or reset output settings, then send again.");
   });
 });

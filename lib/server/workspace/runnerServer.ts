@@ -24,6 +24,7 @@ import { logEvent, reportSubsystemFailure, runInBackground, runWithContext, type
 import { AGENT_PROMPT_MAX_BYTES } from "../agents/guest";
 import { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES, renderCodexManagedProfile, type CodexManagedProfile } from "../agents/codexProfile";
 import { CODEX_OUTPUT_LIMITS } from "../agents/codexProtocol";
+import { AgentExecutionError } from "../agents/failures";
 import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
 import { parseSkillBundleRef, parseSkillInitial, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity } from "./skillBundles";
@@ -79,7 +80,10 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 function errorCode(error: unknown): string {
   return error instanceof WorkspaceRuntimeError
     ? error.code
-    : "workspace_runtime_unavailable";
+    // A rejected Agent profile is the turn's settings, not this runner.
+    : error instanceof AgentExecutionError && error.code === "agent_profile_invalid"
+      ? error.code
+      : "workspace_runtime_unavailable";
 }
 
 function header(request: IncomingMessage, name: string): string | null {

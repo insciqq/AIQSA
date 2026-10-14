@@ -13,6 +13,7 @@ import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
 import { WorkspaceRuntimeError } from "./runtime";
+import { AgentExecutionError, agentFailureCode } from "../agents/failures";
 import { tarGzipStream } from "../chats/tarArchive";
 import { SKILL_RUNTIME_ARCHIVE_MAX_BYTES } from "./skillBundles";
 
@@ -298,6 +299,21 @@ describe("remote Workspace runner protocol", () => {
     const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token,
       runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
     await expect(remote.listSessions({})).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+  });
+
+  it("reports a refused Agent profile as its own Agent code, other start refusals as before", async () => {
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token,
+      runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
+    const start = () => remote.startAgent({ modelRunId: "fixture", operation, runtimeExecSessionId: "agent-fixture",
+      runtimeSandboxId: "fixture", sessionId: "fixture", signal: new AbortController().signal, prompt: "fixture",
+      profile: {} as Parameters<RemoteWorkspaceRuntime["startAgent"]>[0]["profile"], skillManifestHash: "b".repeat(64),
+      runToken: "run_token_fixture", timeoutSeconds: null });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "agent_profile_invalid" }, { status: 400 })));
+    const refused = await start().catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(AgentExecutionError);
+    expect(agentFailureCode(refused)).toBe("agent_profile_invalid");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "field_invalid" }, { status: 400 })));
+    await expect(start()).rejects.toMatchObject({ code: "workspace_runtime_unavailable" });
   });
 
   it("rejects a receiver that did not confirm the requested durable capture", async () => {
