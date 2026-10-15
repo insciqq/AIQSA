@@ -4,6 +4,7 @@
 // a published date (embeddings, rerankers, Jev, image-only OpenAI models, fake)
 // stay absent and sort by when the row was added.
 const openai: Record<string, string> = {
+  "gpt-6.1-sol": "2026-09-29",
   "gpt-6-sol": "2026-09-22",
   "gpt-6-luna": "2026-09-22",
   "gpt-6-astra": "2026-09-04",
@@ -13,6 +14,8 @@ const openai: Record<string, string> = {
   "gpt-5.5": "2026-04-24"
 };
 const anthropic: Record<string, string> = {
+  "claude-haiku-5-5": "2026-10-07",
+  "claude-sonnet-5-5": "2026-09-28",
   "claude-opus-5-5": "2026-09-22",
   "claude-fable-5-1": "2026-09-01",
   "claude-opus-5": "2026-07-24",
@@ -20,6 +23,7 @@ const anthropic: Record<string, string> = {
   "claude-opus-4-8": "2026-05-27"
 };
 const gemini: Record<string, string> = {
+  "gemini-4-argon": "2026-10-13",
   "gemini-3.8-flash": "2026-09-02",
   "gemini-3.6-flash": "2026-07-21",
   "gemini-3.5-flash-lite": "2026-07-21",
@@ -37,6 +41,11 @@ const deepseek: Record<string, string> = {
   "deepseek-v4-flash-vision-exp": "2026-08-21"
 };
 const openrouter: Record<string, string> = {
+  "google/gemini-4-argon": "2026-10-13",
+  "anthropic/claude-haiku-5.5": "2026-10-07",
+  "openai/gpt-6.1-sol": "2026-09-29",
+  "openai/gpt-6.1-sol-pro": "2026-09-29",
+  "anthropic/claude-sonnet-5.5": "2026-09-28",
   "openai/gpt-6-sol": "2026-09-22",
   "openai/gpt-6-luna": "2026-09-22",
   "openai/gpt-6-sol-pro": "2026-09-22",
