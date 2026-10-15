@@ -1,6 +1,7 @@
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import { mcpToolExecutionResult } from "../mcp/toolExecutor";
+import type { McpResultTruncation } from "../mcp/resultTruncation";
 import type { ObservationProducer } from "./repository";
 import { mcpObservationMaximumBytes, TOOL_OBSERVATION_LIMITS, type ToolObservationSourceBinding } from "./contract";
 import type { createToolObservationService, ToolObservationProjection } from "./service";
@@ -163,8 +164,10 @@ export async function captureMcpObservation(context: CaptureContext,
       await receipt.recordUnretained(outcome);
       return mcpToolExecutionResult(call, original);
     }
+    // A result the client cut to its byte limit is stored as delivered; the
+    // descriptor of every delivered form records that it was cut.
     const projection = await receipt.store({ original, outcome,
-      sourceTruncated: false, maskable: original.unsupportedContentTypes.length === 0 });
+      sourceTruncated: original.truncation !== undefined, maskable: original.unsupportedContentTypes.length === 0 });
     // Normalize only after the exact accepted original is durable.
     return mcpObservationProjection(context, call, original, projection);
   });
@@ -306,6 +309,12 @@ export async function captureOwnedObservation(context: CaptureContext, source: "
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
+const byteCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+function decodeTruncation(value: unknown): McpResultTruncation | undefined {
+  if (!record(value) || !byteCount(value.originalBytes) || !byteCount(value.deliveredBytes)) return undefined;
+  return { deliveredBytes: value.deliveredBytes, originalBytes: value.originalBytes };
+}
 
 /** The fields of the validated MCP result `captureMcpObservation` retained;
  * JSON drops an absent structured value. */
@@ -314,7 +323,8 @@ function decodeMcpOriginal(value: unknown): AiqsaMcpToolCallResult | null {
   const { isError, structuredContent = null, text, unsupportedContentTypes } = value;
   if (typeof isError !== "boolean" || !strings(text) || !strings(unsupportedContentTypes) ||
     structuredContent !== null && !record(structuredContent)) return null;
-  return { isError, structuredContent, text, unsupportedContentTypes };
+  const truncation = decodeTruncation(value.truncation);
+  return { isError, structuredContent, text, unsupportedContentTypes, ...(truncation ? { truncation } : {}) };
 }
 
 /** The Workspace original is the result's status, content and runtime metadata. */

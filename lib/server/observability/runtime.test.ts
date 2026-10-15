@@ -73,6 +73,15 @@ describe("bounded observability runtime", () => {
     expect(record("tool_execution", { tool_kind: "workspace", stage: "execution", outcome: "failed" })).toMatchObject({ level: "error" });
   });
 
+  it("keeps only the sizes of a truncated MCP result on tool records", () => {
+    const sizes = { truncated: true, original_bytes: 9_437_184, delivered_bytes: 8_388_600 };
+    expect(record("tool_execution", { tool_kind: "mcp", stage: "result", outcome: "completed", ...sizes }))
+      .toMatchObject({ level: "info", ...sizes });
+    expect(record("tool_call", { tool_kind: "mcp", outcome: "completed", ...sizes })).toMatchObject({ level: "info", ...sizes });
+    expect(record("tool_call", { tool_kind: "mcp", outcome: "completed", truncated: "PRIVATE", original_bytes: -1 } as never))
+      .not.toHaveProperty("truncated");
+  });
+
   it("projects each unavailable Auto server as its reason and runtime code only", () => {
     expect(record("mcp_discovery_server_unavailable", { code: "mcp_server_unavailable", cause: "mcp_network_failed",
       serverName: "PRIVATE_SERVER", serverId: "PRIVATE_ID" } as never)).toMatchObject({
