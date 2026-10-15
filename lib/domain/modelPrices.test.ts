@@ -23,7 +23,7 @@ describe("catalog token tariffs", () => {
     };
     for (const [keys, expected] of [
       [["openai:gpt-6.1-sol", "openrouter:openai/gpt-6.1-sol", "openrouter:openai/gpt-6.1-sol-pro"], [2, 0.1, 2.5, 10]],
-      [["gemini:gemini-4-argon", "openrouter:google/gemini-4-argon"], [2, 0.1, null, 10]],
+      [["gemini:gemini-4-argon", "openrouter:google/gemini-4-argon"], [4, 0.2, null, 20]],
       [["anthropic:claude-sonnet-5-5", "openrouter:anthropic/claude-sonnet-5.5"], [2, 0.2, 2.5, 10]],
       [["anthropic:claude-haiku-5-5", "openrouter:anthropic/claude-haiku-5.5"], [0.1, 0.01, 0.125, 0.5]]
     ] as const) for (const key of keys) expect(tariff(key), key).toEqual(expected);

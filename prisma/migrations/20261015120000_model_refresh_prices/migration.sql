@@ -1,7 +1,8 @@
 -- Catalog tariffs of GPT-6.1 Sol, Gemini 4 Argon and Claude Sonnet/Haiku 5.5, checked 2026-10-15
--- (USD per 1M tokens; web search fees as in 20261008170000_web_search_prices). Gemini 4 Argon
--- carries its introductory price, which expires 2026-11-30; Claude Haiku 5.5 the base card for
--- prompts up to 100K tokens.
+-- (USD per 1M tokens; web search fees as in 20261008170000_web_search_prices), and the Gemini
+-- list prices that follow the introductory windows (Argon from 2026-12-01, 3.6/3.8 Flash from
+-- 2027-01-01). Claude Haiku 5.5 carries the base card for prompts up to 100K tokens. A row
+-- without a new web search fee keeps the one it has.
 -- Catalog identity mirrors providerModelCatalogKey (lib/server/admin/providers/providerModelPricing.ts):
 -- the template key; else, for an answer row, `openai:<modelId>` on a codex-lb endpoint
 -- (openai_compatible whose active, else draft, configuration has a boolean
@@ -14,12 +15,15 @@ WITH prices(template, input, cached, write, output) AS (VALUES
   ('openai:gpt-6.1-sol', 2, 0.1, 2.5, 10),
   ('anthropic:claude-sonnet-5-5', 2, 0.2, 2.5, 10),
   ('anthropic:claude-haiku-5-5', 0.1, 0.01, 0.125, 0.5),
-  ('gemini:gemini-4-argon', 2, 0.1, NULL, 10),
+  ('gemini:gemini-4-argon', 4, 0.2, NULL, 20),
+  ('gemini:gemini-3.8-flash', 1.5, 0.15, NULL, 7.5),
+  ('gemini:gemini-3.6-flash', 1.5, 0.15, NULL, 7.5),
   ('openrouter:openai/gpt-6.1-sol', 2, 0.1, 2.5, 10),
   ('openrouter:openai/gpt-6.1-sol-pro', 2, 0.1, 2.5, 10),
   ('openrouter:anthropic/claude-sonnet-5.5', 2, 0.2, 2.5, 10),
   ('openrouter:anthropic/claude-haiku-5.5', 0.1, 0.01, 0.125, 0.5),
-  ('openrouter:google/gemini-4-argon', 2, 0.1, NULL, 10)
+  ('openrouter:google/gemini-4-argon', 4, 0.2, NULL, 20),
+  ('openrouter:google/gemini-3.8-flash', 1.5, 0.15, NULL, 7.5)
 ), web_search_prices(template, price) AS (VALUES
   ('openai:gpt-6.1-sol', 10),
   ('anthropic:claude-sonnet-5-5', 10),
@@ -44,7 +48,7 @@ UPDATE "ProviderModel" AS model SET
   "cachedInputTokenPriceUsdPerMillion" = prices.cached,
   "cacheWriteInputTokenPriceUsdPerMillion" = prices.write,
   "outputTokenPriceUsdPerMillion" = prices.output,
-  "webSearchPriceUsdPerThousand" = web_search_prices.price
+  "webSearchPriceUsdPerThousand" = COALESCE(web_search_prices.price, model."webSearchPriceUsdPerThousand")
 FROM identities JOIN prices ON prices.template = identities.template
   LEFT JOIN web_search_prices ON web_search_prices.template = identities.template
 WHERE model.id = identities.id AND model."priceSource" = 'catalog';
