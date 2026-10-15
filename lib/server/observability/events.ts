@@ -138,11 +138,14 @@ export type EventFields = {
     /** Vision phase timings: before the dispatch claim, the provider wait after it, and its deadline. */
     preparation_duration_ms?: number; provider_duration_ms?: number; timeout_ms?: number;
     action?: LifecycleAction; count?: number;
+    /** An MCP result over its byte limit, delivered cut to it: JSON snapshot sizes only. */
+    truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;
   /** One terminal record per settled model tool call; never its name, arguments or result. */
   tool_call: CaughtError & Readonly<{
     tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled";
     code?: string; duration_ms?: number; error_category?: "unexpected";
+    truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;
   /** Local tool search statistics; never the query or tool names. */
   mcp_discovery: Readonly<{
