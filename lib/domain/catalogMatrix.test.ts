@@ -231,6 +231,8 @@ describe("catalog capability matrix", () => {
     expect(claudeModels.map(({ modelId }) => modelId)).toEqual([
       "claude-fable-5-1",
       "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-5-5",
       "claude-opus-5",
       "claude-sonnet-5"
     ]);
@@ -252,6 +254,7 @@ describe("catalog capability matrix", () => {
 
     const geminiModels = defaultProviderModels.filter(({ provider }) => provider === "gemini");
     expect(geminiModels.map(({ modelId }) => modelId)).toEqual([
+      "gemini-4-argon",
       "gemini-3.8-flash",
       "gemini-3.6-flash",
       "gemini-3.5-flash",
@@ -277,7 +280,8 @@ describe("catalog capability matrix", () => {
     }
   });
 
-  it.each(["openai/gpt-6-sol", "openai/gpt-6-sol-pro", "openai/gpt-6-luna", "openai/gpt-6-luna-pro"])(
+  it.each(["openai/gpt-6-sol", "openai/gpt-6-sol-pro", "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
+    "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro"])(
     "keeps %s on the OpenRouter contract without unsupported temperature or native modes", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
       const catalog = buildCatalogModel(model, defaultSearchStrategies);
@@ -293,6 +297,26 @@ describe("catalog capability matrix", () => {
       expect(catalog.capabilities.toolCalling).toBe(true);
     }
   );
+
+  it.each(["gpt-6.1-sol", "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro"])(
+    "offers GPT-6.1 Sol only the reasoning efforts the API accepts for %s", (modelId) => {
+      const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
+      expect(model.parameterControls.reasoningEffort).toEqual({
+        defaultValue: "medium", options: ["low", "medium", "high", "xhigh", "max"], supported: true
+      });
+      expect(model.parameterControls.maxOutputTokens.maxValue).toBe(128_000);
+    }
+  );
+
+  it.each([
+    ["claude-sonnet-5-5", false], ["claude-haiku-5-5", undefined],
+    ["anthropic/claude-sonnet-5.5", false], ["anthropic/claude-haiku-5.5", undefined]
+  ] as const)("declares forced tool choice for %s as the API documents it", (modelId, forced) => {
+    const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
+    expect(model.capabilities.nativeForcedToolChoice).toBe(forced);
+    expect(model.parameterControls.temperature.supported).toBe(false);
+    expect(model.parameterControls.reasoningEffort.options).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
 
   it("distinguishes native PDF input from extracted PDF text in the catalog", () => {
     const openAI = defaultProviderModels.find((entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5");
@@ -510,7 +534,7 @@ describe("catalog capability matrix", () => {
     expect(buildCatalogModel(flash!, defaultSearchStrategies).capabilities.background).toBe(false);
   });
 
-  it.each(["gemini-3.8-flash", "google/gemini-3.8-flash"])(
+  it.each(["gemini-3.8-flash", "google/gemini-3.8-flash", "gemini-4-argon", "google/gemini-4-argon"])(
     "offers only the supported thinking levels for %s while retaining medium by default", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
       expect(model.parameterControls.reasoningEffort).toEqual({

@@ -68,9 +68,10 @@ describe("admin provider credential tester", () => {
     const candidates = adminProviderQuickSetupPolicy("openrouter").candidates;
     const models = [
       "anthropic/claude-opus-5.5", "google/gemini-3.8-flash", "deepseek/deepseek-v4.1-flash",
-      "deepseek/deepseek-v4-pro-0813", "openai/gpt-6-sol", "openai/gpt-6-luna"
+      "deepseek/deepseek-v4-pro-0813", "openai/gpt-6-sol", "openai/gpt-6-luna",
+      "openai/gpt-6.1-sol", "google/gemini-4-argon", "anthropic/claude-haiku-5.5"
     ].map(id => candidates.find(({ configuration }) => configuration.upstreamModelId === id)!.configuration);
-    const slugs = ["anthropic", "google-ai-studio", "deepseek", "deepseek", "openai", "openai"];
+    const slugs = ["anthropic", "google-ai-studio", "deepseek", "deepseek", "openai", "openai", "openai", "google-ai-studio", "anthropic"];
     const requests: string[] = [];
     const tester = createAdminProviderCredentialTester({ network: { lookupHostname: publicLookup, dispatch: async (request) => {
       requests.push(request.url.pathname);

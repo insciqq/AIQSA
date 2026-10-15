@@ -282,8 +282,9 @@ function buildReasoning(params: OpenAIResponsesParams): OpenAIResponsesRequestBo
   };
 }
 
+/** GPT-6 models and their point releases: `gpt-6-<name>` and `gpt-6.<n>-<name>`. */
 function isGpt6Model(modelId: string): boolean {
-  return ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(modelId);
+  return /^gpt-6(?:\.\d+)?-/u.test(modelId);
 }
 
 function usesPromptCacheOptions(modelId: string): boolean {

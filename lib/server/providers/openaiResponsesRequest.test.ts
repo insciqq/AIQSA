@@ -279,7 +279,7 @@ describe("OpenAI Responses request builder", () => {
     });
   });
 
-  it.each(["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("serializes %s Pro mode, max effort, and the current prompt-cache contract", (modelId) => {
+  it.each(["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])("serializes %s Pro mode, max effort, and the current prompt-cache contract", (modelId) => {
     const runRequest = request({
       modelId,
       params: {
@@ -317,6 +317,24 @@ describe("OpenAI Responses request builder", () => {
         reasoning: { effort: "none", mode: "standard" }, temperature: 0.3
       } })).temperature).toBe(0.3);
     }
+  });
+
+  it.each(["gpt-6.1-sol", "gpt-6.2-terra"])("treats the GPT-6 point release %s like GPT-6: 30-minute cache options and no temperature", (modelId) => {
+    for (const effort of ["low", "medium", "max"] as const) {
+      const body = buildOpenAIResponsesRequest(request({ modelId, params: {
+        reasoning: { effort, mode: "standard" }, temperature: 0.3
+      } }));
+      expect(body).toMatchObject({ model: modelId, prompt_cache_options: { ttl: "30m" }, reasoning: { effort } });
+      expect(body).not.toHaveProperty("prompt_cache_retention");
+      expect(body).not.toHaveProperty("temperature");
+    }
+  });
+
+  it.each(["gpt-60-sol", "gpt-6", "gpt-6.x-sol", "gpt-5.5"])("keeps the retention contract and temperature for non-GPT-6 id %s", (modelId) => {
+    const body = buildOpenAIResponsesRequest(request({ modelId, params: {
+      reasoning: { effort: "medium", mode: "standard" }, temperature: 0.3
+    } }));
+    expect(body).toMatchObject({ prompt_cache_retention: "24h", temperature: 0.3 });
   });
 
   it("forces only explicitly downgraded requests and preserves background streaming for tools", () => {

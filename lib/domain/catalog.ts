@@ -176,7 +176,7 @@ function openAIReasoningModel(modelId: string, displayName: string): ProviderMod
       },
       reasoningEffort: {
         defaultValue: "medium",
-        options: modelId === "gpt-6-astra"
+        options: modelId === "gpt-6-astra" || modelId === "gpt-6.1-sol"
           ? ["low", "medium", "high", "xhigh", "max"]
           : ["none", "low", "medium", "high", "xhigh", "max"],
         supported: true
@@ -288,7 +288,7 @@ function geminiModel(input: Readonly<{
       },
       reasoningEffort: {
         defaultValue: input.effort,
-        options: input.pro || input.modelId === "gemini-3.8-flash"
+        options: input.pro || input.modelId === "gemini-3.8-flash" || input.modelId === "gemini-4-argon"
           ? ["low", "medium", "high"]
           : ["minimal", "low", "medium", "high"],
         supported: true
@@ -480,6 +480,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     })
   },
   openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"),
+  openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol"),
   openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"),
   openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"),
   openAIReasoningModel("gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -487,6 +488,8 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   openAIReasoningModel("gpt-5.6-luna", "GPT-5.6 Luna"),
   anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"),
   anthropicClaude5Model("claude-opus-5-5", "Claude Opus 5.5"),
+  anthropicClaude5Model("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+  anthropicClaude5Model("claude-haiku-5-5", "Claude Haiku 5.5"),
   anthropicClaude5Model("claude-opus-5", "Claude Opus 5"),
   anthropicClaude5Model("claude-sonnet-5", "Claude Sonnet 5"),
   {
@@ -529,6 +532,11 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
       }
     })
   },
+  geminiModel({
+    displayName: "Gemini 4 Argon",
+    effort: "medium",
+    modelId: "gemini-4-argon"
+  }),
   geminiModel({
     displayName: "Gemini 3.8 Flash",
     effort: "medium",
@@ -583,13 +591,21 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     "deepseek/deepseek-v4-pro-0813"
   ),
   openRouterModel(anthropicClaude5Model("claude-opus-5-5", "Claude Opus 5.5"), "anthropic/claude-opus-5.5"),
+  openRouterModel(anthropicClaude5Model("claude-sonnet-5-5", "Claude Sonnet 5.5"), "anthropic/claude-sonnet-5.5"),
+  openRouterModel(anthropicClaude5Model("claude-haiku-5-5", "Claude Haiku 5.5"), "anthropic/claude-haiku-5.5"),
   openRouterModel(anthropicClaude5Model("claude-opus-5", "Claude Opus 5"), "anthropic/claude-opus-5"),
   openRouterModel(anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"), "anthropic/claude-fable-5.1"),
   openRouterModel(
     geminiModel({ displayName: "Gemini 3.8 Flash", effort: "medium", modelId: "gemini-3.8-flash" }),
     "google/gemini-3.8-flash"
   ),
+  openRouterModel(
+    geminiModel({ displayName: "Gemini 4 Argon", effort: "medium", modelId: "gemini-4-argon" }),
+    "google/gemini-4-argon"
+  ),
   openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra"),
+  openRouterModel(openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol"), "openai/gpt-6.1-sol", { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol Pro"), "openai/gpt-6.1-sol-pro", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"), "openai/gpt-6-sol", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol Pro"), "openai/gpt-6-sol-pro", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"), "openai/gpt-6-luna", { temperature: false }),

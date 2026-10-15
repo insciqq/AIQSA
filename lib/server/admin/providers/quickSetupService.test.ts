@@ -167,10 +167,14 @@ async function expectedState(
 
 describe("provider Quick setup service", () => {
   it("commits the discovered native default and its exact route evidence", async () => {
-    const upstream = "anthropic/claude-opus-5";
+    const upstream = "anthropic/claude-opus-5.5";
     const value = fixture({ modelIds: [upstream], nativeRoutes: { [upstream]: { available: true, provider: "anthropic" } } });
     await value.service.setup({ actor, request: { expectedState: await expectedState(value.service, "openrouter"),
       provider: "openrouter", secret: "synthetic-native-route" } });
+    const routed = (value.test.mock.calls[0] as unknown as [{ nativeRoutingModels: { upstreamModelId: string }[] }])[0]
+      .nativeRoutingModels.map(({ upstreamModelId }) => upstreamModelId);
+    expect(routed).toContain(upstream);
+    expect(routed).not.toContain("anthropic/claude-opus-5");
     expect(value.commit).toHaveBeenCalledWith(expect.objectContaining({
       candidate: expect.objectContaining({ configuration: expect.objectContaining({
         openRouterRouting: { mode: "only_selected", providers: ["anthropic"] },
@@ -195,7 +199,7 @@ describe("provider Quick setup service", () => {
   });
 
   it("accepts a snapshot fence signed with the derived state-token key", async () => {
-    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    const value = fixture({ modelIds: ["gpt-6.1-sol"] });
     const state = await expectedState(value.service, "openai");
 
     await expect(value.service.setup({
@@ -209,10 +213,10 @@ describe("provider Quick setup service", () => {
   });
 
   it.each([
-    ["openai", "gpt-5.6-terra", "p2-o1"],
-    ["anthropic", "claude-opus-5", "p2-a1"],
+    ["openai", "gpt-6.1-sol", "p10-o8"],
+    ["anthropic", "claude-opus-5-5", "p9-a5"],
     ["gemini", "gemini-3.8-flash", "p2-g1"],
-    ["openrouter", "anthropic/claude-opus-5", "p1-r1"]
+    ["openrouter", "anthropic/claude-opus-5.5", "p9-r7"]
   ] as const)("tests and commits one %s recommendation", async (provider, upstream, candidateId) => {
     const value = fixture({ modelIds: ["remote-first", upstream] });
     const result = await value.service.setup({
@@ -239,7 +243,7 @@ describe("provider Quick setup service", () => {
 
   it("probes and commits the complete approved OpenRouter reranker route", async () => {
     const value = fixture({
-      modelIds: ["anthropic/claude-opus-5"],
+      modelIds: ["anthropic/claude-opus-5.5"],
       rerankerOutcomes: {
         "cohere/rerank-4-pro": "available",
         "qwen/qwen3-reranker-8b": "unavailable",
@@ -269,13 +273,15 @@ describe("provider Quick setup service", () => {
     expect(JSON.stringify(plan.rerankerChecks)).not.toContain("sk-reranker-bootstrap");
   });
 
-  it("passes every catalog-visible known candidate to the commit and Ready result", async () => {
+  it("passes every catalog-visible current candidate, and no legacy one, to the commit and Ready result", async () => {
     const value = fixture({
       modelIds: [
         "remote-unknown",
-        "gpt-5.6-sol",
+        "gpt-6-sol",
         "gpt-5.6-terra",
-        "gpt-5.6-luna"
+        "gpt-6.1-sol",
+        "gpt-5.5",
+        "gpt-6-luna"
       ]
     });
     const result = await value.service.setup({
@@ -293,9 +299,9 @@ describe("provider Quick setup service", () => {
       modelId,
       upstreamModelId: configuration.upstreamModelId
     }))).toEqual([
-      { candidateId: "p2-o1", modelId: expect.any(String), upstreamModelId: "gpt-5.6-terra" },
-      { candidateId: "p2-o2", modelId: expect.any(String), upstreamModelId: "gpt-5.6-luna" },
-      { candidateId: "p2-o3", modelId: expect.any(String), upstreamModelId: "gpt-5.6-sol" }
+      { candidateId: "p10-o8", modelId: expect.any(String), upstreamModelId: "gpt-6.1-sol" },
+      { candidateId: "p9-o6", modelId: expect.any(String), upstreamModelId: "gpt-6-sol" },
+      { candidateId: "p9-o7", modelId: expect.any(String), upstreamModelId: "gpt-6-luna" }
     ]);
     expect(plan.grants.map(({ modelId }) => modelId)).toEqual(
       plan.candidates.map(({ modelId }) => modelId)
@@ -305,11 +311,11 @@ describe("provider Quick setup service", () => {
     expect(plan.modelChecks).toHaveLength(3);
     expect(plan.modelChecks.every(({ evidence }) => Boolean(evidence.pdfInput))).toBe(true);
     expect(result).toMatchObject({
-      model: { displayName: "GPT-5.6 Terra" },
+      model: { displayName: "GPT-6.1 Sol" },
       models: [
-        { displayName: "GPT-5.6 Terra" },
-        { displayName: "GPT-5.6 Luna" },
-        { displayName: "GPT-5.6 Sol" }
+        { displayName: "GPT-6.1 Sol" },
+        { displayName: "GPT-6 Sol" },
+        { displayName: "GPT-6 Luna" }
       ],
       outcome: "ready"
     });
@@ -324,13 +330,15 @@ describe("provider Quick setup service", () => {
     expect(JSON.stringify(value.onCompleted.mock.calls[0])).not.toContain("sk-current-catalog");
   });
 
-  it("includes Gemini 3.1 Pro Preview in a fresh Gemini setup when the catalog exposes it", async () => {
+  it("turns on Gemini 4 Argon but no legacy Gemini model in a fresh Gemini setup", async () => {
     const value = fixture({
       modelIds: [
         "gemini-3.1-pro-preview",
         "remote-unknown",
         "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
+        "gemini-4-argon",
+        "gemini-3.6-flash",
         "gemini-3.5-flash"
       ]
     });
@@ -349,23 +357,21 @@ describe("provider Quick setup service", () => {
       upstreamModelId: configuration.upstreamModelId
     }))).toEqual([
       { candidateId: "p2-g1", upstreamModelId: "gemini-3.8-flash" },
-      { candidateId: "p2-g2", upstreamModelId: "gemini-3.5-flash" },
-      { candidateId: "p2-g3", upstreamModelId: "gemini-3.5-flash-lite" },
-      { candidateId: "p2-g4", upstreamModelId: "gemini-3.1-pro-preview" }
+      { candidateId: "p10-g6", upstreamModelId: "gemini-4-argon" },
+      { candidateId: "p2-g3", upstreamModelId: "gemini-3.5-flash-lite" }
     ]);
     expect(plan.grants.map(({ modelId }) => modelId)).toEqual(
       plan.candidates.map(({ modelId }) => modelId)
     );
     expect(plan.candidates.every(({ configuration }) =>
       configuration.capabilities.nativePdfInput)).toBe(true);
-    expect(value.pdfInputProbe).toHaveBeenCalledTimes(4);
+    expect(value.pdfInputProbe).toHaveBeenCalledTimes(3);
     expect(result).toMatchObject({
       model: { displayName: "Gemini 3.8 Flash" },
       models: [
         { displayName: "Gemini 3.8 Flash" },
-        { displayName: "Gemini 3.5 Flash" },
-        { displayName: "Gemini 3.5 Flash-Lite" },
-        { displayName: "Gemini 3.1 Pro Preview" }
+        { displayName: "Gemini 4 Argon" },
+        { displayName: "Gemini 3.5 Flash-Lite" }
       ],
       outcome: "ready",
       provider: "gemini"
@@ -419,7 +425,7 @@ describe("provider Quick setup service", () => {
   });
 
   it.each(["openai", "anthropic", "gemini", "deepseek"] as const)("defers %s Search to the shared verified bootstrap", async (provider) => {
-    const models = { openai: "gpt-5.6-terra", anthropic: "claude-opus-5", gemini: "gemini-3.8-flash", deepseek: "deepseek-v4-pro" };
+    const models = { openai: "gpt-6.1-sol", anthropic: "claude-opus-5-5", gemini: "gemini-3.8-flash", deepseek: "deepseek-v4-pro" };
     const value = fixture({ modelIds: [models[provider]] });
     const result = await value.service.setup({ actor, request: {
       provider, secret: "bootstrap-fixture", expectedState: await expectedState(value.service, provider)
@@ -432,7 +438,7 @@ describe("provider Quick setup service", () => {
   });
 
   it("tests and encrypts the same canonical secret", async () => {
-    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    const value = fixture({ modelIds: ["gpt-6.1-sol"] });
     await value.service.setup({
       actor,
       request: {
@@ -452,7 +458,7 @@ describe("provider Quick setup service", () => {
   });
 
   it("enables supported models and chooses a default without another selection step", async () => {
-    const value = fixture({ modelIds: ["gpt-5.6-sol", "gpt-5.6-luna"] });
+    const value = fixture({ modelIds: ["gpt-6-luna", "gpt-6-sol"] });
     const result = await value.service.setup({
       actor,
       request: {
@@ -461,7 +467,7 @@ describe("provider Quick setup service", () => {
         secret: "sk-picker"
       }
     });
-    expect(result).toMatchObject({ outcome: "ready", model: { displayName: "GPT-5.6 Luna" } });
+    expect(result).toMatchObject({ outcome: "ready", model: { displayName: "GPT-6 Sol" } });
     expect(value.test).toHaveBeenCalledTimes(1);
     expect(value.commit).toHaveBeenCalledOnce();
     expect(value.commit.mock.calls[0][0].candidates).toHaveLength(2);
@@ -469,7 +475,7 @@ describe("provider Quick setup service", () => {
   });
 
   it("retests an explicit selected candidate before committing", async () => {
-    const value = fixture({ modelIds: ["gpt-5.6-luna"] });
+    const value = fixture({ modelIds: ["gpt-6-luna"] });
     const state = await expectedState(value.service, "openai");
     const result = await value.service.setup({
       actor,
@@ -477,18 +483,45 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 9 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 10 }
       }
     });
     expect(result.outcome).toBe("ready");
     expect(value.test).toHaveBeenCalledTimes(1);
-    expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe("p2-o2");
+    expect(value.commit.mock.calls[0][0].candidate.candidateId).toBe("p9-o7");
+  });
+
+  it("rejects a legacy selected model before any network call", async () => {
+    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    await expect(value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-legacy-choice",
+        selectedModel: { candidateId: "p2-o1", policyVersion: 10 }
+      }
+    })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
+    expect(value.order).toEqual([]);
+  });
+
+  it("does not set up a key that lists only legacy models", async () => {
+    const value = fixture({ modelIds: ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5"] });
+    await expect(value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openai"),
+        provider: "openai",
+        secret: "sk-legacy-only"
+      }
+    })).rejects.toMatchObject({ code: "provider_quick_setup_unsupported_catalog" });
+    expect(value.commit).not.toHaveBeenCalled();
   });
 
   it("keeps Quick setup ready but omits direct PDF evidence after a failed probe", async () => {
     const value = fixture({
-      modelIds: ["gpt-5.6-terra"],
-      pdfProbeResults: { "gpt-5.6-terra": "throw" }
+      modelIds: ["gpt-6.1-sol"],
+      pdfProbeResults: { "gpt-6.1-sol": "throw" }
     });
 
     await expect(value.service.setup({
@@ -540,7 +573,7 @@ describe("provider Quick setup service", () => {
     expect(value.commit).not.toHaveBeenCalled();
   });
 
-  it("preserves the existing Quick model during key replacement", async () => {
+  it("replaces the key of a legacy Quick model without turning on other legacy models", async () => {
     const replacement = inspection("openai", {
       actingUserDefault: true,
       configured: true,
@@ -560,7 +593,7 @@ describe("provider Quick setup service", () => {
     });
     const value = fixture({
       inspections: { openai: replacement },
-      modelIds: ["gpt-5.6-terra", "gpt-5.6-luna"]
+      modelIds: ["gpt-5.6-terra", "gpt-6.1-sol", "gpt-5.6-luna"]
     });
     await value.service.setup({
       actor,
@@ -570,11 +603,15 @@ describe("provider Quick setup service", () => {
         secret: "sk-replacement"
       }
     });
-    expect(value.commit.mock.calls[0][0]).toMatchObject({
+    const plan = value.commit.mock.calls[0][0];
+    expect(plan).toMatchObject({
       candidate: { candidateId: "p2-o2" },
       credential: { draftVersion: 5, id: "credential-primary", isNew: false },
-      mode: "replacement"
+      mode: "replacement",
+      preservedModels: replacement.preservedModels
     });
+    expect(plan.candidates.map(({ candidateId }) => candidateId)).toEqual(["p10-o8", "p2-o2"]);
+    expect(plan.grants.map(({ modelId }) => modelId)).toEqual(plan.candidates.map(({ modelId }) => modelId));
   });
 
   it("preserves every currently available model on replacement", async () => {
@@ -677,7 +714,7 @@ describe("provider Quick setup service", () => {
     expect(value.commit).not.toHaveBeenCalled();
   });
 
-  it("preserves the selected model while repairing a canonical personal graph", async () => {
+  it("preserves a legacy selected model while repairing a canonical personal graph", async () => {
     const recovery = inspection("openai", {
       configured: true,
       mode: "recovery",
@@ -692,7 +729,7 @@ describe("provider Quick setup service", () => {
     });
     const value = fixture({
       inspections: { openai: recovery },
-      modelIds: ["gpt-5.6-terra", "gpt-5.6-luna"]
+      modelIds: ["gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-luna"]
     });
     await value.service.setup({
       actor,
@@ -706,11 +743,12 @@ describe("provider Quick setup service", () => {
       candidate: { candidateId: "p2-o2" },
       mode: "recovery"
     });
+    expect(value.commit.mock.calls[0][0].candidates.map(({ candidateId }) => candidateId)).toEqual(["p9-o6", "p2-o2"]);
   });
 
   it("maps a failed fenced commit to stale after only one network check", async () => {
     const value = fixture({
-      modelIds: ["gpt-5.6-terra"],
+      modelIds: ["gpt-6.1-sol"],
       repositoryCommit: async () => "stale"
     });
     const promise = value.service.setup({
@@ -727,7 +765,7 @@ describe("provider Quick setup service", () => {
   });
 
   it("names a fresh canonical connection and reports the template connection id", async () => {
-    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    const value = fixture({ modelIds: ["gpt-6.1-sol"] });
     const result = await value.service.setup({
       actor,
       request: {
@@ -765,8 +803,8 @@ describe("provider Quick setup service", () => {
       quickSetupCredential: { draftVersion: 1, id: "credential-primary" },
       state: "ready"
     });
-    // Only non-recommended models: the canonical path would ask for a choice.
-    const value = fixture({ inspections: { openai: ready }, modelIds: ["gpt-5.6-luna", "gpt-5.6-sol"] });
+    // Only non-recommended models, one of them legacy, which a new connection never turns on.
+    const value = fixture({ inspections: { openai: ready }, modelIds: ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-sol"] });
     const result = await value.service.setup({
       actor,
       request: {
@@ -790,8 +828,8 @@ describe("provider Quick setup service", () => {
       candidateId: candidate.candidateId,
       upstreamModelId: evidence.upstreamModelId
     }))).toEqual([
-      { candidateId: "p2-o2", upstreamModelId: "gpt-5.6-luna" },
-      { candidateId: "p2-o3", upstreamModelId: "gpt-5.6-sol" }
+      { candidateId: "p9-o6", upstreamModelId: "gpt-6-sol" },
+      { candidateId: "p9-o7", upstreamModelId: "gpt-6-luna" }
     ]);
     expect(plan.models.every(({ candidate, id }) => id !== candidate.modelId)).toBe(true);
     expect(new Set([plan.connection.id, plan.credential.id, plan.credential.versionId,
@@ -809,8 +847,8 @@ describe("provider Quick setup service", () => {
       connectionId: plan.connection.id,
       defaultCredentialChanged: true,
       defaultChanged: false,
-      model: { displayName: "GPT-5.6 Luna" },
-      models: [{ displayName: "GPT-5.6 Luna" }, { displayName: "GPT-5.6 Sol" }],
+      model: { displayName: "GPT-6 Sol" },
+      models: [{ displayName: "GPT-6 Sol" }, { displayName: "GPT-6 Luna" }],
       outcome: "ready",
       provider: "openai",
       providerDisplayName: "OpenAI",
@@ -847,7 +885,7 @@ describe("provider Quick setup service", () => {
   });
 
   it("creates a separate connection for an endpoint override even for a fresh family", async () => {
-    const value = fixture({ modelIds: ["gpt-5.6-terra"] });
+    const value = fixture({ modelIds: ["gpt-6.1-sol"] });
     const result = await value.service.setup({
       actor,
       request: {
@@ -906,7 +944,7 @@ describe("provider Quick setup service", () => {
       mode: "replacement",
       state: "ready"
     });
-    const value = fixture({ inspections: { openai: ready }, modelIds: ["gpt-5.6-luna"] });
+    const value = fixture({ inspections: { openai: ready }, modelIds: ["gpt-6-luna"] });
     await expect(value.service.setup({
       actor,
       request: {
@@ -914,26 +952,27 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p2-o2", policyVersion: 9 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 10 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
   });
 
-  it("lists the code-owned candidate models per provider in the snapshot", async () => {
+  it("lists the current code-owned candidate models per provider in the snapshot, without legacy ones", async () => {
     const value = fixture();
     const snapshot = await value.service.getSnapshot(actor);
-    expect(snapshot.providers.find(({ provider }) => provider === "openai")).toMatchObject({
-      candidateModels: [
-        { displayName: "GPT-6 Sol" },
-        { displayName: "GPT-6 Luna" },
-        { displayName: "GPT-6 Astra" },
-        { displayName: "GPT-5.6 Terra" },
-        { displayName: "GPT-5.6 Luna" },
-        { displayName: "GPT-5.6 Sol" },
-        { displayName: "GPT-5.5" }
-      ]
-    });
+    expect(snapshot.providers.find(({ provider }) => provider === "openai")?.candidateModels).toEqual([
+      { displayName: "GPT-6.1 Sol" },
+      { displayName: "GPT-6 Sol" },
+      { displayName: "GPT-6 Luna" },
+      { displayName: "GPT-6 Astra" }
+    ]);
+    expect(snapshot.providers.find(({ provider }) => provider === "anthropic")?.candidateModels).toEqual([
+      { displayName: "Claude Opus 5.5" },
+      { displayName: "Claude Sonnet 5.5" },
+      { displayName: "Claude Haiku 5.5" },
+      { displayName: "Claude Fable 5.1" }
+    ]);
     expect(JSON.stringify(snapshot)).not.toContain("quickSetupAssigned");
   });
 });
