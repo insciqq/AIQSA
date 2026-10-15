@@ -1,4 +1,5 @@
 import { admittedOutputAllowance } from "./modelOutputAllowance";
+import { configuredModelParameterControls } from "./providerModelCapabilities";
 import { resolveProviderToolChoice } from "./providerToolChoice";
 import { anthropicToolSchemas } from "./anthropicStrictSchema";
 import { withResponseReminder } from "./responseReminder";
@@ -454,7 +455,14 @@ function buildOpenRouterChatBody(
   request: ProviderRunRequest,
   options: PrivateBuildOptions
 ): OpenRouterChatRequestBody {
-  const params = normalizeOpenRouterParams(request.params);
+  const normalized = normalizeOpenRouterParams(request.params);
+  // A saved default the model's controls do not support is never sent: with
+  // strict tools `require_parameters` would otherwise exclude endpoints that
+  // reject sampling (Claude 5.x serves no `temperature`) and fail routing.
+  const params = normalized.temperature !== undefined && !configuredModelParameterControls({
+    adapterKind: "openrouter_chat_completions", capabilities: request.modelCapabilities,
+    defaultParams: request.params, upstreamModelId: request.modelId
+  }, "openrouter").temperature.supported ? { ...normalized, temperature: undefined } : normalized;
   const canonicalTools = request.tools ?? [];
   const tools = request.modelId.startsWith("anthropic/") ? anthropicToolSchemas(canonicalTools) : canonicalTools;
   const serializedTools = tools.map((tool) => openRouterChatToolBridge.serializeTool(tool).tool);

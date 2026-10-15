@@ -403,6 +403,18 @@ export function journeyRunParams(model: CatalogModel, maxOutputTokens: number): 
     else delete params.stream;
     return params;
   }
+  if (family === "gemini") {
+    const params: Record<string, unknown> = {
+      ...base,
+      maxOutputTokens: tokens,
+      reasoning: { ...(record(base.reasoning) ? base.reasoning : {}), effort }
+    };
+    delete params.maxTokens;
+    delete params.temperature;
+    if (controls.stream.supported) params.stream = controls.stream.defaultValue;
+    else delete params.stream;
+    return params;
+  }
   if (family === "openrouter") {
     const usesVerbosityEffort = typeof base.verbosity === "string";
     const params: Record<string, unknown> = {

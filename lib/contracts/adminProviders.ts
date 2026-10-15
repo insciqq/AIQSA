@@ -328,6 +328,8 @@ export type AdminProviderModel = {
   id: string;
   /** Older cached provider payloads omit this and are answer deployments. */
   modelClass?: AdminProviderModelClass;
+  /** `YYYY-MM-DD` of a code-owned template, for list ordering only; null for other rows. */
+  releasedOn?: string | null;
   updatedAt: string;
 };
 

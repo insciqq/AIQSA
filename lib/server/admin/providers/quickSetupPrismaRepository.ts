@@ -1540,6 +1540,10 @@ async function applyQuickSetupPlan(
       !existingModel) {
       return "stale";
     }
+    // A legacy model is committed only as the existing Quick Setup model's row.
+    if (candidate.legacy && (candidate.modelId !== selectedCandidate.modelId || !existingModel)) {
+      return "stale";
+    }
     if (existingModel && (
       existingModel.connectionId !== policy.connection.id ||
       existingModel.provider !== policy.provider ||
@@ -1823,7 +1827,7 @@ async function applyQuickSetupAdditionalPlan(
     generatedIds.some((id) => !id || reservedIds.has(id)) ||
     plan.models.some(({ candidate }) => !sameModelIdentity(
       candidate,
-      policy.candidates.find(({ candidateId }) => candidateId === candidate.candidateId)
+      policy.candidates.find(({ candidateId, legacy }) => !legacy && candidateId === candidate.candidateId)
     )) ||
     !plan.connection.displayName.trim() ||
     current.inspection.connectionNames.some((name) =>

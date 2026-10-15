@@ -18,7 +18,7 @@ import { encryptProviderCredentialSecret } from "../../lib/server/providers/cred
 import { parseSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import { LOCAL_RESTRICTED_MEMBER } from "../../prisma/local-seed-fixtures";
 import { imageModelConfiguration, initialImageModels } from "../../lib/domain/imageModels";
-import { chooseSearchStrategy, selectModel } from "./shell/composer";
+import { selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
 import { activeChatId } from "./support/workspace";
 
@@ -87,6 +87,8 @@ type QuickChatDetailBody = {
 
 type QuickRunBody = {
   run: {
+    answerComplete: boolean;
+    followups: { available: boolean; entries: unknown[] };
     id: string;
     status: string;
   };
@@ -440,6 +442,8 @@ async function cleanupQuickChatFixture(
       await tx.memoryRecallChunk.deleteMany({
         where: { chatId: { in: chatIds }, userId: fixture.userId }
       });
+      // Workspace sessions restrict their chat's deletion, so they go first.
+      await tx.workspaceSession.deleteMany({ where: { chat: { id: { in: chatIds }, userId: fixture.userId } } });
       await tx.chat.deleteMany({ where: { id: { in: chatIds }, userId: fixture.userId } });
     }
     await tx.accessGrant.deleteMany({
@@ -1000,7 +1004,8 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
       name: "OpenAI"
     }]);
   await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
-  await chooseSearchStrategy(page, "^Off");
+  // The fixture offers no concrete search source, so the composer hides the Search chip.
+  await expect(page.getByRole("button", { name: /^Choose web search/u })).toHaveCount(0);
   await expect(page.getByTestId("header-model-trigger")).toContainText("GPT-5.6 Sol");
   const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeEnabled();
@@ -1070,6 +1075,8 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   const runBody = await runResponse.json() as QuickRunBody;
   expect(runBody).toEqual({
     run: {
+      answerComplete: true,
+      followups: { available: false, entries: [] },
       id: runId,
       status: "complete"
     },
@@ -1921,6 +1928,12 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await expect(editSheet.getByRole("button", { name: "Edit JSON" })).toBeVisible();
   await editSheet.getByRole("button", { name: "Cancel", exact: true }).click();
   await sol.getByRole("switch", { name: "GPT-5.6 Sol on" }).click();
+  // The turned-off model folds away and focus stays on its fold; Turn on remains inside it.
+  const turnedOff = models.getByRole("button", { name: "Turned off (1)" });
+  await expect(turnedOff).toBeFocused();
+  await expect(sol).toHaveCount(0);
+  await expect(models).toContainText("Chat models · 3");
+  await turnedOff.click();
   await expect(sol.getByRole("switch", { name: "GPT-5.6 Sol on" })).not.toBeChecked();
   expect(requests.filter(({ path }) => path.endsWith("/models/model-sol")).map(({ body }) => body)).toEqual([{ action: "disable" }]);
   await expect(page.getByTestId("admin-confirm-turn-off-provider-model")).toHaveCount(0);

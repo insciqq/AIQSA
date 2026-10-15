@@ -338,7 +338,7 @@ describe("admin provider service", () => {
       displayName: "Gemini 3.6 Flash"
     })).resolves.toEqual({ id: "gemini-model-1", displayName: "Gemini 3.6 Flash", draftVersion: 1,
       // A Quick Setup family row without explicit prices takes its catalog tariff.
-      pricing: expect.objectContaining({ source: "catalog", prices: expect.objectContaining({ inputTokenPriceUsdPerMillion: "0.75" }) }) });
+      pricing: expect.objectContaining({ source: "catalog", prices: expect.objectContaining({ inputTokenPriceUsdPerMillion: "1.5" }) }) });
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         connectionId: "gemini-connection-1",
@@ -465,7 +465,7 @@ describe("admin provider service", () => {
     const test = vi.fn<AdminProviderCredentialTester["test"]>(async () => ({
       method: "models_catalog", modelIds: [...policy.candidates.map((c) => c.configuration.upstreamModelId), reranker.upstreamModelId],
       nativeRoutes: Object.fromEntries(([
-        ["anthropic/claude-opus-5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
+        ["anthropic/claude-opus-5.5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
         ["deepseek/deepseek-v4.1-flash", "deepseek"], ["openai/gpt-6-astra", "openai"], [reranker.upstreamModelId, "voyageai"]
       ] as const).map(([id, provider]) => [id, { available: true as const, provider }])),
       modelIdsByClass: { answer: policy.candidates.map((c) => c.configuration.upstreamModelId), embedding: ["qwen/qwen3-embedding-8b"], reranker: [reranker.upstreamModelId] }
@@ -476,13 +476,15 @@ describe("admin provider service", () => {
     expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: version === 0 ? ["reranker", "answer", "embedding", "decision", "image"] : ["reranker"] }));
     const added = activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId) ?? [];
     if (version === 0) expect(added).toEqual(expect.arrayContaining([
-        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "anthropic/claude-opus-5", "anthropic/claude-fable-5.1",
+        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "anthropic/claude-opus-5.5", "anthropic/claude-fable-5.1",
         "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search", "qwen/qwen3-embedding-8b"
       ]));
     else expect(added).toEqual([]);
     expect(added).not.toContain("deepseek/deepseek-v4-flash");
+    // Legacy Quick Setup models are never imported, even when the key lists them.
+    expect(added).not.toContain("anthropic/claude-opus-5");
     if (version === 0) {
-      for (const [upstream, provider] of [["anthropic/claude-opus-5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
+      for (const [upstream, provider] of [["anthropic/claude-opus-5.5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
         ["deepseek/deepseek-v4.1-flash", "deepseek"], ["openai/gpt-6-astra", "openai"]]) {
         expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.find(({ configuration }) => configuration.upstreamModelId === upstream)?.configuration)
           .toMatchObject({ openRouterRouting: { mode: "only_selected", providers: [provider] },

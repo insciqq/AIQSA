@@ -153,7 +153,7 @@ describe("OpenRouter request builders", () => {
         reasoning: { enabled: true, effort: "high" },
         provider: { dataCollection: "deny", allowFallbacks: true, requireParameters: false, sort: "throughput", order: [], only: [] } }
     }));
-    expect(body).toMatchObject({ model: modelId, max_tokens: 65_536, temperature: 1, stream: true,
+    expect(body).toMatchObject({ model: modelId, max_tokens: 65_536, stream: true,
       reasoning: { enabled: true, effort: "high" },
       provider: { data_collection: "deny", allow_fallbacks: true, require_parameters: true, sort: "throughput" },
       tools: [
@@ -162,9 +162,24 @@ describe("OpenRouter request builders", () => {
         { function: { name: "find_tools", strict: false } }
       ] });
     expect(body).not.toHaveProperty("parallel_tool_calls");
+    expect(body.temperature).toBe(modelId.startsWith("anthropic/") ? undefined : 1);
     expect(body.provider).not.toHaveProperty("only");
     expect(body.provider).not.toHaveProperty("order");
     expect(body.cache_control).toEqual(modelId.startsWith("anthropic/") ? { type: "ephemeral" } : undefined);
+  });
+
+  it("never sends a temperature the model's controls do not support, so strict routing still finds the native endpoint", () => {
+    // OpenRouter's Anthropic endpoint lists no `temperature`; with `require_parameters` a saved default returned HTTP 404.
+    const params = { maxTokens: 512, temperature: 1, reasoning: { enabled: true, effort: "low" },
+      provider: { dataCollection: "deny", allowFallbacks: false, requireParameters: false, sort: "throughput", order: [], only: ["anthropic"] } };
+    for (const modelId of ["anthropic/claude-sonnet-5.5", "anthropic/claude-haiku-5.5", "anthropic/claude-opus-5.5"]) {
+      const body = buildOpenRouterChatRequest(request({ modelId, params, tools: openRouterMixedTools() }));
+      expect(body).toMatchObject({ provider: { only: ["anthropic"], require_parameters: true } });
+      expect(body).not.toHaveProperty("temperature");
+    }
+    for (const modelId of ["vendor/custom-model", "deepseek/deepseek-v4-pro-0813"]) {
+      expect(buildOpenRouterChatRequest(request({ modelId, params, tools: openRouterMixedTools() })).temperature).toBe(1);
+    }
   });
 
   it("sends explicit reasoning Off without carrying a prior token budget", () => {
@@ -254,9 +269,10 @@ describe("OpenRouter request builders", () => {
         effort: "high",
         max_tokens: 32
       },
-      stream: true,
-      temperature: 0
+      stream: true
     });
+    // Claude serves no sampling parameters; an unsupported saved default is never sent.
+    expect(body).not.toHaveProperty("temperature");
     expect(body.session_id).toMatch(/^aiqsa-chat-[a-f0-9]{32}$/);
     expect(body.session_id).not.toContain("chat-1");
   });
