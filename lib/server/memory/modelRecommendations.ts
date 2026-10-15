@@ -45,6 +45,19 @@ export const MEMORY_MODEL_RECOMMENDATIONS = [{
   evidence: { revision: "memory-working-cases-20260917-openrouter-gemini38-compatible-v2", passedCases: 18, totalCases: 18,
     latencyP50Ms: 1530, latencyP95Ms: 3516 }
 }, {
+  id: "sol-low-memory-v1",
+  modelName: "GPT-6.1 Sol",
+  upstreamModelId: "gpt-6.1-sol",
+  adapterKind: "openai_responses_compatible",
+  reasoningEffort: "low",
+  minimumOutputTokens: 8192,
+  minimumContextWindow: 16384,
+  // Two codex-lb runs of the extraction qualification (68 scenarios each, no false
+  // saves; one missed explicit remember request). Terra scored 130/136 in the same
+  // qualification and GPT-6 Luna failed at medium and high. Latency is the per-case job time.
+  evidence: { revision: "memory-extraction-qualification-v3-20261015-codex-lb-sol61", passedCases: 135, totalCases: 136,
+    latencyP50Ms: 6770, latencyP95Ms: 14210 }
+}, {
   id: "terra-low-memory-v1",
   modelName: "GPT-5.6 Terra",
   upstreamModelId: "gpt-5.6-terra",

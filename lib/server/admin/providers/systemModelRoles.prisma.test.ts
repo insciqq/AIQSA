@@ -242,14 +242,14 @@ describe("persisted independent System Model roles", () => {
     });
   });
 
-  it("upgrades the previous adoption once, preferring native Flash then both Gemini routes before Terra", async () => {
+  it("upgrades the previous adoption once, preferring native Flash, both Gemini routes and GPT-6.1 Sol before Terra", async () => {
     await fixture(async ({ db, memory, addMemoryModel }) => {
       const targets = new Map<string, string>([["terra-low-memory-v1", memory]]);
       for (const recommendation of MEMORY_MODEL_RECOMMENDATIONS) {
         if (!targets.has(recommendation.id)) targets.set(recommendation.id, await addMemoryModel(recommendation));
       }
       const expectedOrder = ["deepseek-flash-none-memory-v1", "gemini-flash-native-low-memory-v2",
-        "gemini-flash-openrouter-low-memory-v2", "terra-low-memory-v1"];
+        "gemini-flash-openrouter-low-memory-v2", "sol-low-memory-v1", "terra-low-memory-v1"];
       for (const id of expectedOrder) {
         expect((await createAdminSystemModelPolicyService(db).list()).memoryPolicy.recommendations
           ?.find((entry) => entry.id === id && entry.providerModelId === targets.get(id)), id)
