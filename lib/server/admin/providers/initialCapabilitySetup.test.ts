@@ -391,6 +391,7 @@ describe("recheck capability activation", () => {
     await run();
     const activations = store.mock.calls.map(([write]) => write).filter((write) => write.activatedConfiguration);
     expect(activations.length).toBeGreaterThan(0);
+    expect(activations.every((write) => write.activateOnlyWithSingleCredential === true)).toBe(true);
     // Each activation advances the live revision the next guarded write expects.
     expect(activations.map((write) => write.candidate.model.version)).toEqual(activations.map((_, index) => index + 1));
     expect(store.mock.calls.at(-1)![0].evidence.capabilitySetup?.activation).toBe("preserve");
@@ -422,6 +423,13 @@ describe("recheck capability activation", () => {
     await drafted.run();
     expect(drafted.store).toHaveBeenCalled();
     expect(drafted.store.mock.calls.every(([write]) => write.activatedConfiguration === undefined)).toBe(true);
+  });
+
+  it("keeps the revision when the repository stores evidence only for a shared connection", async () => {
+    const { run, store } = recheckService(fixture(), { store: async (write) => write.activatedConfiguration ? "evidence_only" : "stored" });
+    expect((await run()).results?.[0]).toMatchObject({ providerModelId: "model", state: "saved" });
+    expect(store.mock.calls.some(([write]) => write.activatedConfiguration)).toBe(true);
+    expect(store.mock.calls.every(([write]) => write.candidate.model.version === 1)).toBe(true);
   });
 
   it("refuses a stale activation and stops the check", async () => {

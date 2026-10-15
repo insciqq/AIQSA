@@ -128,7 +128,7 @@ describe("durable independent capability checkpoints", () => {
       .toMatchObject({ verifiedVisionInput: true, verifiedStructuredOutput: true, verifiedForcedToolCall: true });
   }));
 
-  it("saves a partial result, retries only PDF and preserves a later administrator disable", async () => fixture(async (f) => {
+  it("saves a partial result, retries only PDF, keeps a saved disable after Test & Save and re-enables it on a recheck", async () => fixture(async (f) => {
     f.failPdf(true);
     const service = f.service();
     const run = await service.startCheckRun({ ...f.request, initialModelIds: [f.providerModelId] });
@@ -147,11 +147,61 @@ describe("durable independent capability checkpoints", () => {
     const disabled = { ...configuration, capabilities: { ...configuration.capabilities, vision: false } };
     await prisma.providerModel.update({ where: { id: f.providerModelId }, data: { activeVersion: { increment: 1 }, draftVersion: { increment: 1 },
       activeConfig: JSON.parse(JSON.stringify(disabled)), draftConfig: JSON.parse(JSON.stringify(disabled)), capabilities: JSON.parse(JSON.stringify(disabled.capabilities)) } });
-    const ordinary = f.service();
-    const refresh = await ordinary.startCheckRun({ ...f.request, retryUnresolved: true });
-    expect(await finished(ordinary, f.connectionId, refresh.id)).toMatchObject({ failed: [],
+    // The check that follows an administrator's own model save keeps the saved flags.
+    const saved = f.service();
+    const afterSave = await saved.startCheckRun({ ...f.request, reason: "model" });
+    expect(await finished(saved, f.connectionId, afterSave.id)).toMatchObject({ failed: [],
       results: [{ state: "saved", checks: { vision: "verified", streaming: "verified" } }] });
     expect(normalizeProviderModelConfiguration((await f.current()).model.configuration).capabilities.vision).toBe(false);
+    // A later recheck on the connection's single enabled key turns on what it verified.
+    // (A retryUnresolved run would reuse the complete receipt above and probe nothing.)
+    const ordinary = f.service();
+    const refresh = await ordinary.startCheckRun(f.request);
+    expect(await finished(ordinary, f.connectionId, refresh.id)).toMatchObject({ failed: [],
+      results: [{ state: "saved", checks: { vision: "verified", streaming: "verified" } }] });
+    expect(normalizeProviderModelConfiguration((await f.current()).model.configuration).capabilities.vision).toBe(true);
+  }));
+
+  it("keeps a recheck evidence-only while a second enabled key shares the connection", async () => fixture(async (f) => {
+    const initial = f.service();
+    const run = await initial.startCheckRun({ ...f.request, initialModelIds: [f.providerModelId] });
+    expect(await finished(initial, f.connectionId, run.id)).toMatchObject({ failed: [] });
+    const enabled = await f.current();
+    const configuration = normalizeProviderModelConfiguration(enabled.model.configuration);
+    const disabled = { ...configuration, capabilities: { ...configuration.capabilities, vision: false } };
+    await prisma.providerModel.update({ where: { id: f.providerModelId }, data: { activeVersion: { increment: 1 }, draftVersion: { increment: 1 },
+      activeConfig: JSON.parse(JSON.stringify(disabled)), draftConfig: JSON.parse(JSON.stringify(disabled)), capabilities: JSON.parse(JSON.stringify(disabled.capabilities)) } });
+    const modelVersion = enabled.model.version + 1;
+    const otherId = randomUUID(), otherVersionId = randomUUID();
+    await prisma.$transaction(async (tx) => {
+      await tx.providerCredential.create({ data: { id: otherId, connectionId: f.connectionId, label: "Second keyless fixture", enabled: true } });
+      await tx.providerCredentialVersion.create({ data: { id: otherVersionId, credentialId: otherId, version: 1,
+        secretEnvelope: null, testEvidence: { authenticationMode: "none" }, testedAt: new Date(), activatedAt: new Date() } });
+      await tx.providerCredential.update({ where: { id: otherId }, data: { activeVersionId: otherVersionId, activatedAt: new Date() } });
+      await tx.providerModelCredentialCheck.create({ data: { connectionId: f.connectionId, providerModelId: f.providerModelId,
+        credentialId: otherId, credentialVersionId: otherVersionId, connectionVersion: 1, modelVersion, status: "available",
+        checkedAt: new Date(), evidence: JSON.parse(JSON.stringify(enabled.priorEvidence)) } });
+    });
+    try {
+      const service = f.service();
+      const refresh = await service.startCheckRun(f.request);
+      expect(await finished(service, f.connectionId, refresh.id)).toMatchObject({ failed: [],
+        results: [{ state: "saved", checks: { vision: "verified" } }] });
+      const current = await f.current();
+      expect(current.model.version).toBe(modelVersion);
+      expect(normalizeProviderModelConfiguration(current.model.configuration).capabilities.vision).toBe(false);
+      expect(current.priorEvidence?.capabilitySetup?.checks.vision).toBe("verified");
+      const other = await prisma.providerModelCredentialCheck.findMany({ where: { credentialId: otherId } });
+      expect(other).toMatchObject([{ modelVersion, status: "available" }]);
+      expect((await prisma.providerModel.findUniqueOrThrow({ where: { id: f.providerModelId } })).activeVersion).toBe(modelVersion);
+    } finally {
+      await prisma.$transaction(async (tx) => {
+        await tx.providerModelCredentialCheck.deleteMany({ where: { credentialId: otherId } });
+        await tx.providerCredential.update({ where: { id: otherId }, data: { activeVersionId: null } });
+        await tx.providerCredentialVersion.deleteMany({ where: { credentialId: otherId } });
+        await tx.providerCredential.delete({ where: { id: otherId } });
+      });
+    }
   }));
 
   it("reports only durable capabilities if the next checkpoint cannot be saved", async () => fixture(async (f) => {

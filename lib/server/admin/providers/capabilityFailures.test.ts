@@ -55,6 +55,7 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
   const active = { connection: 3, model: 4, credential: "version", revokedAt: null as Date | null };
   // The model revision a later check last activated; external edits move only `active.model`.
   const live = { configuration: candidate.model.configuration, version: 4 };
+  const credentials = [{ id: request.credentialId, enabled: true }];
   const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
     if (row) Object.assign(row, data);
     return { count: row ? 1 : 0 };
@@ -64,6 +65,7 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
     return row;
   });
   const db = {
+    $queryRaw: async () => credentials,
     providerConnection: { findUnique: async () => ({ activeVersion: active.connection }) },
     providerModel: { findFirst: async () => ({ activeVersion: active.model }),
       updateMany: async ({ data, where }: { data: { activeConfig: typeof live.configuration; activeVersion: number };
@@ -162,7 +164,7 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
   const service = createAdminProviderService({ repository, now: () => NOW, encryptionKey: () => KEY,
     credentialTester: { async test() { throw new Error("unexpected_credential_test"); } },
     tester });
-  return { active, candidate, fetchFn, live, previousEvidence, repository, service, tester, updateMany, upsert,
+  return { active, candidate, credentials, fetchFn, live, previousEvidence, repository, service, tester, updateMany, upsert,
     row: () => row, succeed: () => { fail = false; } };
 }
 
@@ -306,6 +308,23 @@ describe("failed capability response publication", () => {
         if (prior && capabilityRole) expect((f.row()?.evidence as AdminProviderTestEvidence).visionInput).toEqual(previous.visionInput);
       }
     }
+  });
+
+  it("stores only evidence when another enabled key shares the connection", async () => {
+    const f = fixture(true, "direct_pdf", "failed");
+    f.credentials.push({ id: "second-credential", enabled: true }, { id: "disabled-credential", enabled: false });
+    f.succeed();
+    const result = await f.service.refreshActive(request);
+    expect(result).toMatchObject({ status: "available", modelVersion: 4,
+      evidence: { capabilitySetup: { checks: { vision: "verified", streaming: "verified", directPdf: "verified" } } } });
+    expect(f.upsert).toHaveBeenCalled();
+    // The model revision did not move, so the other key's checks of revision 4 stay current.
+    expect(f.live).toMatchObject({ version: 4, configuration: { capabilities: { vision: false } } });
+    expect(f.active.model).toBe(4);
+    f.credentials.splice(1, 1);
+    await f.service.refreshActive(request);
+    expect(f.live.version).toBeGreaterThan(4);
+    expect(f.live.configuration.capabilities).toMatchObject({ vision: true, streaming: true, nativePdfInput: true });
   });
 
   it.each(["connection", "model", "credential", "revokedAt"] as const)("does not mark a different %s authority tuple", async (changed) => {
