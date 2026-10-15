@@ -217,6 +217,58 @@ describe("accepted provider request executor", () => {
       return { fetchFn, run, sleeps, usage };
     }
 
+    /** The production configuration: a bearer-auth codex-lb root, whose
+     * non-streaming create the transport assembles from SSE. */
+    async function bearer(replies: readonly (() => Response)[]) {
+      const actual = await vi.importActual<typeof import("../providers/runtimeFactory")>("../providers/runtimeFactory");
+      bindingMock.mockImplementation(actual.createProviderRuntimeBinding);
+      const envelope = encryptProviderCredentialSecret({ credentialId: "credential-1", key, secret: "synthetic", valueId: "credential-version-1" });
+      const transaction = vi.fn(async (operation) => operation({ $queryRaw: async () => [{
+        credentialId: "credential-1", id: "credential-version-1", revokedAt: null,
+        secretEnvelope: envelope, testEvidence: { authenticationMode: "bearer" }
+      }] }));
+      let index = 0;
+      const fetchFn = vi.fn<typeof fetch>(async () => replies[index++]!());
+      const sleeps: number[] = [];
+      const execute = createAcceptedProviderRequestExecutor({ $transaction: transaction } as unknown as Pick<PrismaClient, "$transaction">, {
+        createFetch: () => fetchFn, disableRequestRetries: true, encryptionKey: () => key,
+        droppedRequestRetry: { random: () => 0, sleep: async (delayMs) => { sleeps.push(delayMs); } }
+      });
+      const accepted = compatible("https://lb.example.test/backend-api/codex");
+      const run = () => execute({ ...accepted, connection: { ...accepted.connection, allowPrivateNetwork: false, authenticationMode: "bearer" } },
+        compatibleRequest());
+      return { fetchFn, run, sleeps };
+    }
+    const sse = (...events: readonly Record<string, unknown>[]) => () => new Response(
+      events.map((event) => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+      { headers: { "content-type": "text/event-stream" } });
+    const message = { type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "PRIVATE_ANALYSIS" }] };
+    const created = { type: "response.created", response: { id: "response-1", status: "in_progress" } };
+
+    it.each([
+      ["a completed output item", sse(created, { type: "response.output_item.done", output_index: 0, item: message })],
+      ["a text delta", sse(created, { type: "response.output_item.added", output_index: 0, item: { ...message, content: [] } },
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "PRIVATE_PART" })],
+      ["a failed terminal carrying output", sse(created, { type: "response.failed",
+        response: { id: "response-1", status: "failed", output: [message], error: { code: "server_error" } } })]
+    ])("never sends again after the assembled stream delivered %s", async (_label, first) => {
+      const call = await bearer([first, completed]);
+      await call.run().catch(() => undefined);
+      expect(call.fetchFn).toHaveBeenCalledOnce();
+      expect(call.sleeps).toEqual([]);
+    });
+
+    it.each([
+      ["a 502", gateway502],
+      ["a stream that dropped before any output", sse(created, { type: "response.output_item.done", output_index: 0,
+        item: { type: "reasoning", summary: [] } })]
+    ])("still sends again on the bearer-auth root after %s", async (_label, first) => {
+      const call = await bearer([first, completed]);
+      await expect(call.run()).resolves.toMatchObject({ finalText: "settled" });
+      expect(call.fetchFn).toHaveBeenCalledTimes(2);
+      expect(call.sleeps).toHaveLength(1);
+    });
+
     it("sends a request that failed with 502 again inside the same call, accounting both", async () => {
       const call = await real([gateway502, completed]);
       const result = await call.run();
