@@ -53,6 +53,9 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
   };
   let row: Record<string, unknown> | null = prior ? { status: "available", evidence: previousEvidence } : null;
   const active = { connection: 3, model: 4, credential: "version", revokedAt: null as Date | null };
+  // The model revision a later check last activated; external edits move only `active.model`.
+  const live = { configuration: candidate.model.configuration, version: 4 };
+  const credentials = [{ id: request.credentialId, enabled: true }];
   const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
     if (row) Object.assign(row, data);
     return { count: row ? 1 : 0 };
@@ -62,8 +65,16 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
     return row;
   });
   const db = {
+    $queryRaw: async () => credentials,
     providerConnection: { findUnique: async () => ({ activeVersion: active.connection }) },
-    providerModel: { findFirst: async () => ({ activeVersion: active.model }) },
+    providerModel: { findFirst: async () => ({ activeVersion: active.model }),
+      updateMany: async ({ data, where }: { data: { activeConfig: typeof live.configuration; activeVersion: number };
+        where: { activeVersion: number } }) => {
+        if (where.activeVersion !== active.model) return { count: 0 };
+        active.model = live.version = data.activeVersion;
+        live.configuration = data.activeConfig;
+        return { count: 1 };
+      } },
     providerCredential: { findFirst: async () => ({ activeVersionId: active.credential,
       activeVersion: { revokedAt: active.revokedAt, secretEnvelope: envelope } }) },
     providerModelCredentialCheck: { updateMany, upsert, findUnique: async () => row,
@@ -74,6 +85,7 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
     $transaction: async (operation: (tx: typeof db) => Promise<unknown>) => operation(db)
   } as unknown as PrismaClient);
   vi.spyOn(repository, "loadActiveRefreshCandidate").mockImplementation(async () => ({ ...candidate,
+    model: { ...candidate.model, configuration: live.configuration, version: live.version },
     checkEvidence: row ? { status: row.status as "available", evidence: row.evidence } : null,
     ...(row?.evidence ? { priorEvidence: row.evidence as AdminProviderTestEvidence } : {})
   }));
@@ -152,7 +164,7 @@ function fixture(prior: boolean, target: "memory" | "direct_pdf", terminal: "fai
   const service = createAdminProviderService({ repository, now: () => NOW, encryptionKey: () => KEY,
     credentialTester: { async test() { throw new Error("unexpected_credential_test"); } },
     tester });
-  return { active, candidate, fetchFn, previousEvidence, repository, service, tester, updateMany, upsert,
+  return { active, candidate, credentials, fetchFn, live, previousEvidence, repository, service, tester, updateMany, upsert,
     row: () => row, succeed: () => { fail = false; } };
 }
 
@@ -277,7 +289,10 @@ describe("failed capability response publication", () => {
             attempts: { [check]: { status: "incomplete" } }
           } });
           expect(f.upsert).toHaveBeenCalledTimes(8);
-          expect(f.candidate.model.configuration.capabilities.vision).toBe(false);
+          // Ordinary checks turn on what they verified and keep failed capabilities as they were.
+          expect(f.live.version).toBeGreaterThan(4);
+          expect(f.live.configuration.capabilities).toMatchObject({ vision: true, streaming: true, toolCalling: true,
+            nativePdfInput: target !== "direct_pdf" || prior });
           expect(result.evidence?.visionInput?.verified).toBe(true);
           if (prior) expect(result.evidence?.[target === "memory" ? "structuredOutput" : "pdfInput"])
             .toEqual(previous[target === "memory" ? "structuredOutput" : "pdfInput"]);
@@ -286,12 +301,30 @@ describe("failed capability response publication", () => {
         f.succeed();
         const result = await f.service.refreshActive({ ...request, capabilityRole });
         expect(result).toMatchObject({ status: "available", latestRefreshError: null, refreshFailedAt: null,
-          connectionVersion: 3, modelVersion: 4, credentialVersionId: "version" });
+          connectionVersion: 3, modelVersion: f.live.version, credentialVersionId: "version" });
+        if (!capabilityRole) expect(f.live.configuration.capabilities.nativePdfInput).toBe(true);
         expect(result.evidence?.compatibility?.[target === "memory" ? "structuredOutput" : "directPdf"]).toBe("verified");
         if (prior) expect(f.row()?.refreshFailedAt).toBeNull();
         if (prior && capabilityRole) expect((f.row()?.evidence as AdminProviderTestEvidence).visionInput).toEqual(previous.visionInput);
       }
     }
+  });
+
+  it("stores only evidence when another enabled key shares the connection", async () => {
+    const f = fixture(true, "direct_pdf", "failed");
+    f.credentials.push({ id: "second-credential", enabled: true }, { id: "disabled-credential", enabled: false });
+    f.succeed();
+    const result = await f.service.refreshActive(request);
+    expect(result).toMatchObject({ status: "available", modelVersion: 4,
+      evidence: { capabilitySetup: { checks: { vision: "verified", streaming: "verified", directPdf: "verified" } } } });
+    expect(f.upsert).toHaveBeenCalled();
+    // The model revision did not move, so the other key's checks of revision 4 stay current.
+    expect(f.live).toMatchObject({ version: 4, configuration: { capabilities: { vision: false } } });
+    expect(f.active.model).toBe(4);
+    f.credentials.splice(1, 1);
+    await f.service.refreshActive(request);
+    expect(f.live.version).toBeGreaterThan(4);
+    expect(f.live.configuration.capabilities).toMatchObject({ vision: true, streaming: true, nativePdfInput: true });
   });
 
   it.each(["connection", "model", "credential", "revokedAt"] as const)("does not mark a different %s authority tuple", async (changed) => {

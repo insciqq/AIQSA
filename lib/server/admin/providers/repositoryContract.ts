@@ -407,13 +407,15 @@ export type AdminProviderRepository = Readonly<{
   }): Promise<"credential_not_found" | "not_found" | "updated">;
   storeActiveRefreshCas(input: {
     activatedConfiguration?: ProviderModelConfiguration;
+    /** Activate only when the checked key is the connection's one enabled key; otherwise store evidence only. */
+    activateOnlyWithSingleCredential?: boolean;
     signal?: AbortSignal;
     capabilityRole?: SystemModelVerificationRole;
     candidate: ProviderActiveRefreshCandidate;
     checkedAt: Date;
     evidence: AdminProviderTestEvidence;
     status: AdminProviderCheckStatus;
-  }): Promise<"stale" | "stored">;
+  }): Promise<"evidence_only" | "stale" | "stored">;
   updateModelDraft(input: Omit<AdminProviderModelEditGuard, "expectedUpdatedAt"> & {
     configuration: ProviderModelConfiguration;
     displayName: string;

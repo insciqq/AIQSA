@@ -1606,7 +1606,15 @@ export function createPrismaAdminProviderRepository(
             !noAuthConnection(input.candidate.connection.configuration, input.candidate.connection.family))
         ) return "stale" as const;
         let modelVersion = input.candidate.model.version;
-        if (input.activatedConfiguration) {
+        // Other keys keep checks of the current revision only while no activation moves it.
+        // The share lock fences a concurrent credential enable until this write commits.
+        const activate = Boolean(input.activatedConfiguration) && (!input.activateOnlyWithSingleCredential ||
+          (await tx.$queryRaw<Array<{ enabled: boolean; id: string }>>(Prisma.sql`
+            SELECT "id", "enabled" FROM "ProviderCredential"
+            WHERE "connectionId" = ${input.candidate.connection.id}
+            FOR SHARE
+          `)).filter((row) => row.enabled).map(({ id }) => id).join() === input.candidate.credential.id);
+        if (input.activatedConfiguration && activate) {
           const expectedDraftVersion = input.candidate.model.draftVersion ?? modelVersion;
           if (expectedDraftVersion !== modelVersion) return "stale" as const;
           const changed = await tx.providerModel.updateMany({
@@ -1659,7 +1667,7 @@ export function createPrismaAdminProviderRepository(
           }
         });
         input.signal?.throwIfAborted();
-        return "stored" as const;
+        return input.activatedConfiguration && !activate ? "evidence_only" as const : "stored" as const;
       });
     },
 

@@ -3,7 +3,8 @@ import * as runtime from "../../providers/runtimeFactory";
 import * as vision from "../../providers/visionInputProbe";
 import { fakeProviderToolBridge } from "../../tools/bridges";
 import { createAdminProviderDraftTester, type AdminProviderDraftTesterInput } from "./tester";
-import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVerifiedModelConfiguration, reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
+import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVerifiedModelConfiguration, recheckVerifiedModelConfiguration,
+  reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 import { supportsStructuredOutputAdapter } from "../../providers/structuredOutput";
 import { pdfInputVerificationEvidence, supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 import { createGeminiInteractionsAdapter } from "../../providers/geminiInteractions";
@@ -285,11 +286,13 @@ describe("universal initial capability setup", () => {
     expect(reusableCapabilitySetupEvidence(result.evidence, model)?.capabilitySetup?.checks.forcedToolCall).toBe("not_checked");
   });
 
-  it("never treats refresh evidence as permission to enable administrator-disabled capabilities", async () => {
+  it("keeps refresh evidence out of initial activation; a recheck applies it", async () => {
     const f = fixture();
     const result = await f.tester.test(f.input);
     result.evidence.capabilitySetup!.activation = "preserve";
     expect(initiallyVerifiedModelConfiguration(f.input.model, result.evidence)).toEqual(f.input.model);
+    expect(recheckVerifiedModelConfiguration(f.input.model, result.evidence).capabilities).toMatchObject({
+      toolCalling: true, parallelToolCalls: true, vision: true, nativePdfInput: true, streaming: true });
   });
 
   it("accepts bounded attempt receipts and rejects raw diagnostics or unbounded counts", () => {
@@ -322,7 +325,7 @@ describe("universal initial capability setup", () => {
     expect(outcome.evidence.structuredOutput).toBeUndefined();
   });
 
-  it("keeps an exact-current positive proof alongside its inconclusive refresh without re-enabling a disabled feature", async () => {
+  it("keeps an exact-current positive proof alongside its inconclusive refresh outside initial activation", async () => {
     const f = fixture();
     const prior = await f.tester.test(f.input);
     f.failJson();
@@ -343,5 +346,112 @@ describe("universal initial capability setup", () => {
     f.calls.length = 0;
     await f.tester.test({ ...f.input, initialSetup: false, reuseSetupEvidence: prior.evidence });
     expect(f.calls).toEqual([]);
+  });
+});
+
+describe("recheck capability activation", () => {
+  const answerCapabilities = ["toolCalling", "parallelToolCalls", "vision", "nativePdfInput", "streaming"] as const;
+
+  function recheckService(f: ReturnType<typeof fixture>, options: {
+    capabilities?: Partial<AdminProviderDraftTesterInput["model"]["capabilities"]>;
+    draftVersion?: number;
+    store?: AdminProviderRepository["storeActiveRefreshCas"];
+  } = {}) {
+    const configuration = { ...f.input.model, capabilities: { ...f.input.model.capabilities, ...options.capabilities } };
+    const publicConfiguration = adminProviderModelConfiguration(configuration);
+    const credential = fixtureCredential({ id: "credential", label: "Synthetic" });
+    const connection = fixtureConnection({ id: "connection", displayName: "Synthetic", family: "openai_compatible",
+      credentials: [credential], defaultCredentialId: credential.id,
+      models: [fixtureModel({ id: "model", connectionId: "connection", displayName: "Synthetic",
+        activeConfig: publicConfiguration, draftConfig: publicConfiguration, draftVersion: options.draftVersion ?? 1 })] });
+    const store = vi.fn<AdminProviderRepository["storeActiveRefreshCas"]>(options.store ?? (async () => "stored"));
+    const repository = {
+      listConnections: async () => [connection],
+      loadActiveRefreshCandidate: async () => ({
+        connection: { id: connection.id, family: "openai_compatible", displayName: "Synthetic", version: 1, configuration: f.input.connection },
+        credential: { id: credential.id, versionId: credential.activeVersion!.id, envelope: "unused-synthetic-envelope" },
+        model: { id: "model", displayName: "Synthetic", version: 1, draftVersion: options.draftVersion ?? 1, configuration }
+      }),
+      storeActiveRefreshCas: store,
+      recordActiveRefreshFailureCas: vi.fn(async () => "stored")
+    } as unknown as AdminProviderRepository;
+    const service = createAdminProviderService({ repository, tester: f.tester,
+      credentialTester: { test: async () => { throw new Error("unexpected_credential_test"); } }, encryptionKey: () => Buffer.alloc(32, 7) });
+    const run = async (reason: "credential" | "model" | "requested" = "requested") => {
+      const started = await service.startCheckRun({ connectionId: connection.id, credentialId: credential.id, modelIds: ["model"], reason });
+      await vi.waitFor(() => expect(service.checkRun({ connectionId: connection.id, runId: started.id }).state).toBe("completed"));
+      return service.checkRun({ connectionId: connection.id, runId: started.id });
+    };
+    return { run, service, store };
+  }
+
+  it("turns on every verified answer capability through new active versions", async () => {
+    const f = fixture();
+    const { run, store } = recheckService(f);
+    await run();
+    const activations = store.mock.calls.map(([write]) => write).filter((write) => write.activatedConfiguration);
+    expect(activations.length).toBeGreaterThan(0);
+    expect(activations.every((write) => write.activateOnlyWithSingleCredential === true)).toBe(true);
+    // Each activation advances the live revision the next guarded write expects.
+    expect(activations.map((write) => write.candidate.model.version)).toEqual(activations.map((_, index) => index + 1));
+    expect(store.mock.calls.at(-1)![0].evidence.capabilitySetup?.activation).toBe("preserve");
+    expect(activations.at(-1)!.activatedConfiguration!.capabilities).toMatchObject(
+      Object.fromEntries(answerCapabilities.map((key) => [key, true])));
+  });
+
+  it("never turns off an enabled capability whose probe failed", async () => {
+    const f = fixture();
+    vi.spyOn(vision, "createProviderVisionInputProbe").mockReturnValue({ async probe() { return false; } });
+    f.singleParallel();
+    const { run, store } = recheckService(f, { capabilities: { vision: true } });
+    await run();
+    const last = store.mock.calls.at(-1)![0];
+    expect(last.evidence.capabilitySetup?.checks).toMatchObject({ vision: "incomplete", parallelToolCalls: "incomplete", streaming: "verified" });
+    for (const [write] of store.mock.calls) {
+      if (write.activatedConfiguration) expect(write.activatedConfiguration.capabilities.vision).toBe(true);
+    }
+    const final = store.mock.calls.map(([write]) => write.activatedConfiguration).filter(Boolean).at(-1)!;
+    expect(final.capabilities).toMatchObject({ vision: true, parallelToolCalls: false, toolCalling: true, nativePdfInput: true, streaming: true });
+  });
+
+  it("keeps the flags an administrator just saved and leaves a pending draft alone", async () => {
+    const saved = recheckService(fixture());
+    expect((await saved.run("model")).failed).toEqual([]);
+    expect(saved.store).toHaveBeenCalled();
+    expect(saved.store.mock.calls.every(([write]) => write.activatedConfiguration === undefined)).toBe(true);
+    const drafted = recheckService(fixture(), { draftVersion: 2 });
+    await drafted.run();
+    expect(drafted.store).toHaveBeenCalled();
+    expect(drafted.store.mock.calls.every(([write]) => write.activatedConfiguration === undefined)).toBe(true);
+  });
+
+  it("keeps the revision when the repository stores evidence only for a shared connection", async () => {
+    const { run, store } = recheckService(fixture(), { store: async (write) => write.activatedConfiguration ? "evidence_only" : "stored" });
+    expect((await run()).results?.[0]).toMatchObject({ providerModelId: "model", state: "saved" });
+    expect(store.mock.calls.some(([write]) => write.activatedConfiguration)).toBe(true);
+    expect(store.mock.calls.every(([write]) => write.candidate.model.version === 1)).toBe(true);
+  });
+
+  it("refuses a stale activation and stops the check", async () => {
+    const f = fixture();
+    const { run, store } = recheckService(f, { store: async (write) => write.activatedConfiguration ? "stale" : "stored" });
+    const result = await run();
+    const stale = store.mock.calls.findIndex(([write]) => write.activatedConfiguration);
+    expect(stale).toBeGreaterThanOrEqual(0);
+    expect(store).toHaveBeenCalledTimes(stale + 1);
+    expect(result.results?.[0]).toMatchObject({ providerModelId: "model", state: "stale" });
+  });
+
+  it("enables only verified image proofs and leaves other model classes unchanged", () => {
+    const image = { adapterKind: "openrouter_images" as const, upstreamModelId: "synthetic-image", modelClass: "image" as const,
+      answerSelectable: false, defaultParams: {}, capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false,
+        vision: false, imageGeneration: false, imageEditing: true } };
+    const proof = { adapterKind: "openrouter_images" as const, upstreamModelId: "synthetic-image", probeVersion: 1 as const, verified: true as const };
+    const evidence = { detail: "ok" as const, method: "tiny_generation" as const, selectedProviders: [], upstreamModelId: "synthetic-image",
+      imageGeneration: proof, capabilitySetup: { policyVersion: 2 as const, activation: "preserve" as const,
+        checks: { modelAccess: "verified" as const, imageGeneration: "verified" as const, imageEditing: "incomplete" as const } } };
+    expect(recheckVerifiedModelConfiguration(image, evidence).capabilities).toMatchObject({ imageGeneration: true, imageEditing: true });
+    const embedding = { ...fixture().input.model, modelClass: "embedding" as const };
+    expect(recheckVerifiedModelConfiguration(embedding, { ...evidence, upstreamModelId: "synthetic" })).toBe(embedding);
   });
 });

@@ -7,7 +7,7 @@ import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence
 import type { AdminProviderSetupProgress } from "../../../contracts/adminProviderSetupProgress";
 import { withTimeoutSignal } from "../../providers/network";
 import { decodeParallelToolCallVerificationEvidence } from "../../providers/parallelToolCallEvidence";
-import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVerifiedModelConfiguration,
+import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVerifiedModelConfiguration, recheckVerifiedModelConfiguration,
   initialModelConfiguration,
   INITIAL_CAPABILITY_BATCH_TIMEOUT_MS, reusableCapabilitySetupEvidence, settledUnsupportedImageCapabilities } from "./initialCapabilitySetup";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
@@ -727,6 +727,8 @@ export function createAdminProviderService(input: Readonly<{
     mode: AdminProviderDraftTestMode;
     signal?: AbortSignal;
     initialSetup?: InitialCapabilityCheck;
+    /** Off only for the check that follows an administrator's own model save. */
+    applyVerifiedCapabilities?: boolean;
     onCapabilityProgress?: CapabilityCheckRequest["onCapabilityProgress"];
     onSavedCheckpoint?(check: AdminProviderActiveCheck): void;
     /** The administrator charged with the check's `model_check` usage. */
@@ -752,7 +754,12 @@ export function createAdminProviderService(input: Readonly<{
     let lastSaved: AdminProviderActiveCheck | undefined;
     async function persist(outcome: AdminProviderDraftTestOutcome, complete: boolean): Promise<AdminProviderActiveCheck> {
       value.signal?.throwIfAborted();
-      const activatedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence) : model;
+      // A later check of the live revision turns on what it verified, never off;
+      // a pending administrator draft is left alone because activation replaces it.
+      const recheck = !initialSetup && !value.capabilityRole && value.applyVerifiedCapabilities !== false &&
+        outcome.status === "available" && (candidate.model.draftVersion ?? candidate.model.version) === candidate.model.version;
+      const activatedModel = initialSetup ? initiallyVerifiedModelConfiguration(model, outcome.evidence)
+        : recheck ? recheckVerifiedModelConfiguration(model, outcome.evidence) : model;
       const activatedConfiguration = canonicalJson(activatedModel) !== canonicalJson(model) ? activatedModel : undefined;
       const evidence = validateEvidence(outcome, value.mode, activatedModel);
       if (lastSaved?.status === outcome.status && canonicalJson(lastSaved.evidence) === canonicalJson(evidence)) return lastSaved;
@@ -763,17 +770,18 @@ export function createAdminProviderService(input: Readonly<{
           outcome: { evidence, status: outcome.status } });
       }
       const checkedAt = now();
-      let stored: "stored" | "stale";
+      let stored: "evidence_only" | "stored" | "stale";
       try { stored = await input.repository.storeActiveRefreshCas({ candidate, capabilityRole: value.capabilityRole, checkedAt, evidence,
-        status: outcome.status, signal: value.signal, ...(activatedConfiguration ? { activatedConfiguration } : {}) }); }
+        status: outcome.status, signal: value.signal, ...(activatedConfiguration ? { activatedConfiguration,
+          ...(initialSetup ? {} : { activateOnlyWithSingleCredential: true }) } : {}) }); }
       catch (error) {
         logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
         value.signal?.throwIfAborted(); throw new ActiveCheckpointError("save_failed");
       }
-      logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: stored === "stored" ? "confirmed" : "not_applied" });
+      logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: stored === "stale" ? "not_applied" : "confirmed" });
       if (stored === "stale") { pendingSetupChecks.delete(key); throw new ActiveCheckpointError("stale"); }
       pendingSetupChecks.delete(key);
-      if (activatedConfiguration) {
+      if (activatedConfiguration && stored === "stored") {
         model = activatedConfiguration;
         candidate = { ...candidate, model: { ...candidate.model, configuration: model,
           version: candidate.model.version + 1, draftVersion: candidate.model.version + 1 } };
@@ -850,6 +858,7 @@ export function createAdminProviderService(input: Readonly<{
       const result = await executeActiveCheck({
         candidate,
         initialSetup: value.initialSetup,
+        applyVerifiedCapabilities: value.reason !== "model",
         onCapabilityProgress: value.onCapabilityProgress,
         onSavedCheckpoint: (check) => value.onResult?.({ providerModelId: value.providerModelId,
           state: "partial", checks: check.evidence?.capabilitySetup?.checks, attempts: check.evidence?.capabilitySetup?.attempts }),
