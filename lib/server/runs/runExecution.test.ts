@@ -1496,6 +1496,8 @@ function compactionLoopFixture(input: Readonly<{
   callsPerRound?: number;
   /** Answer dispatches (1-based) whose stream drops after partial text; the binding admits sending them again. */
   dropAnswers?: readonly number[];
+  /** Summary calls (1-based) whose stream drops after partial notes; the binding admits sending them again. */
+  dropSummaries?: readonly number[];
   mutate?(request: NormalizedRunRequest): NormalizedRunRequest;
   onToolCall?(count: number): void;
   /** Answer dispatches (1-based) the provider rejects for context length. */
@@ -1533,6 +1535,10 @@ function compactionLoopFixture(input: Readonly<{
     if (request.forceNonStreaming) {
       summaries.push(request);
       if (input.summaryFails) throw new Error("summary provider unavailable");
+      if (input.dropSummaries?.includes(summaries.length)) {
+        yield { type: "token", data: { delta: "{\"notes\": \"PRIVATE_PARTIAL" } };
+        throw markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
+      }
       // A part cites only the references it carries.
       const output = JSON.stringify({ notes: "PRIVATE_NOTES old history condensed.",
         sourceRefs: JSON.stringify(request.content).includes("old-history") ? ["old-history"] : [] });
@@ -1557,7 +1563,7 @@ function compactionLoopFixture(input: Readonly<{
     yield { type: "token", data: { delta: "Done." } };
     return providerResult({ finalText: "Done." });
   });
-  const adapter: ProviderAdapter = input.dropAnswers
+  const adapter: ProviderAdapter = input.dropAnswers || input.dropSummaries
     ? { ...streamed, droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe: () => undefined } }
     : streamed;
   if (input.dropAnswers) repository.repository.reopenToolLoopProviderRound ??= async () => true;
@@ -1818,6 +1824,23 @@ describe("run execution", () => {
     expect(statuses[1]?.afterTokens).toBe(crossing?.contextCompaction?.afterTokens);
     expect(JSON.stringify(events)).not.toContain("PRIVATE_NOTES");
     expect(events.filter(isContextEvent)).toHaveLength(4);
+  });
+
+  it("sends a dropped summary request again as a new accounted call of the live run", async () => {
+    const loop = compactionLoopFixture({ historyTokens: 4_900, resultChars: 6_000, callsPerRound: 2, dropSummaries: [1] });
+    await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
+    // The re-send carries exactly the dropped request.
+    expect(loop.summaries[1]).toEqual(loop.summaries[0]);
+    const checkpoint = loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction;
+    expect(checkpoint?.summary?.notes).toContain("condensed");
+    expect(checkpoint?.summaryAttempts?.[0]).toMatchObject({ attempt: 1, errorCode: "context_compaction_provider_failed", state: "failed" });
+    expect(checkpoint?.summaryAttempts?.at(-1)).toMatchObject({ attempt: loop.summaries.length, state: "committed" });
+    // Each request, the dropped one included, is one operation of the run.
+    const accounted = loop.repository.recordedRunUsageEvents.at(-1)!.usageAttributions
+      .find(entry => entry.modelId === "gpt-tool-model");
+    expect(accounted?.operationCount).toBe(loop.summaries.length + loop.answers.length);
   });
 
   it.each([
