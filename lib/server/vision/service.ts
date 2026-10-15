@@ -147,7 +147,10 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
   knowledgeObservationStore?: KnowledgeImageObservationStore;
 } = {}) {
   const store = options.store ?? createVisionAnalysisStore(prisma);
-  const provider = options.execute ?? createAcceptedProviderRequestExecutor(prisma, { disableRequestRetries: true });
+  // The attempt owns its one dispatch: no transport replay, and only a
+  // dropped Codex LB request before any output is sent again inside the same
+  // live attempt, its usage merged (PROVIDERS.md). Recovery never re-sends.
+  const provider = options.execute ?? createAcceptedProviderRequestExecutor(prisma, { disableRequestRetries: true, droppedRequestRetry: {} });
   const prepare = options.prepareImages ?? prepareWorkspaceImages;
   const authorize = async (plan: AcceptedVisionAnalysisPlan): Promise<boolean> => plan.available &&
     await (options.authorize ? options.authorize(plan) : authorizeVisionPlan(prisma, plan)).catch(() => false);

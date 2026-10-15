@@ -14,6 +14,9 @@ import { createConversationImageSource, type ConversationImageDescriptor } from 
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { captureRunObservation } from "@/tests/support/runObservation";
 
+const executorFactory = vi.hoisted(() => vi.fn((..._args: unknown[]) => vi.fn()));
+vi.mock("../providerRuntime/acceptedRequestExecutor", () => ({ createAcceptedProviderRequestExecutor: executorFactory }));
+
 const plan: AvailableVisionAnalysisPlan = { version: 1, available: true, policyVersion: 3, reasoningEffort: null, verifiedVisionInput: true,
   authority: { connectionId: "connection", connectionVersion: 2, providerModelId: "vision", modelVersion: 1, credentialId: "key", credentialVersionId: "key-v1" },
   snapshot: { version: 1, connectionId: "connection", connectionDisplayName: "Vision connection", providerModelId: "vision", modelDisplayName: "Vision",
@@ -84,6 +87,24 @@ describe("shared System Vision boundary", () => {
     const f = fixture(); f.context.request.visionAnalysis = { version: 1, available: false, code };
     expect(JSON.stringify(await f.service.execute(f.call, f.context))).toContain(code);
     expect(f.captures.create).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled(); expect(f.store.restore).not.toHaveBeenCalled();
+  });
+  it("sends Vision through an executor without transport replay that re-sends only a dropped Codex LB request live", () => {
+    const f = fixture();
+    executorFactory.mockClear();
+    createVisionAnalysisService({} as PrismaClient, f.captures as unknown as ReturnType<typeof createWorkspaceSelectedCaptures>, { store: f.store as never });
+    expect(executorFactory).toHaveBeenCalledExactlyOnceWith({}, { disableRequestRetries: true, droppedRequestRetry: {} });
+  });
+  it("settles the usage the executor accounted for every request of the attempt", async () => {
+    const f = fixture();
+    const both = { inputTokens: 21, outputTokens: 4, totalTokens: 25, completeness: "partial" as const };
+    f.execute.mockImplementation(async (_snapshot, _request, options) => {
+      options?.onUsage?.({ inputTokens: 12, completeness: "partial" });
+      return { finalText: "Analysis.", finalProviderResponsePreview: {}, usage: both };
+    });
+    expect((await f.service.execute(f.call, f.context)).status).toBe("complete");
+    expect(f.store.settle).toHaveBeenCalledOnce();
+    expect(f.store.settle.mock.calls[0]![2]).toMatchObject(both);
+    expect(f.store.settle.mock.calls[0]![3]).toBe(false);
   });
   it("restores the durable result without recapturing or paying, including unknown dispatch outcome", async () => {
     const f = fixture(); const prior: ToolExecutionResult = { callId: f.call.id, name: f.call.name, status: "error", content: [{ type: "json", value: { error: "vision_analysis_outcome_unknown" } }] };
