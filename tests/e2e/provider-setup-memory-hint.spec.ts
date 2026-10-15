@@ -45,7 +45,7 @@ test("setup without a qualified Memory model finishes with a Memory hint instead
         response.end(JSON.stringify(value));
       };
       if (request.method === "GET" && request.url === "/models") {
-        send({ data: [{ id: "gpt-5.6-terra" }, { id: "gpt-6-astra" }] });
+        send({ data: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }] });
         return;
       }
       if (request.method !== "POST" || request.url !== "/responses") {

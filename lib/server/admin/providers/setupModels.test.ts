@@ -61,6 +61,22 @@ describe("codex-lb catalog candidates", () => {
   });
 });
 
+describe("legacy Quick Setup candidates", () => {
+  it.each([
+    ["openai", undefined, "gpt-6.1-sol", ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]],
+    ["openai_compatible", { apiRoot: "https://fixture.example.test/backend-api/codex" }, "gpt-6.1-sol",
+      ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]],
+    ["anthropic", undefined, "claude-sonnet-5-5", ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8"]],
+    ["gemini", undefined, "gemini-4-argon", ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview"]],
+    ["openrouter", undefined, "openai/gpt-6.1-sol-pro", ["anthropic/claude-opus-5"]]
+  ] as const)("never offers a legacy %s answer model for setup", (family, endpoint, current, legacy) => {
+    const answers = providerSetupModels(family, endpoint).filter((model) => model.configuration.modelClass === "answer")
+      .map(({ configuration }) => configuration.upstreamModelId);
+    expect(answers).toContain(current);
+    for (const model of legacy) expect(answers).not.toContain(model);
+  });
+});
+
 describe("setup model tariffs", () => {
   it("copies the matching OpenAI tariff to Codex models and leaves helpers unknown", () => {
     for (const model of providerSetupModels("openai_compatible", { apiRoot: "https://example.test/backend-api/codex" })) {
