@@ -23,7 +23,7 @@ import { providerRequestNotSent } from "./providerSafeFetch";
 import { parseRetryAfterMs } from "../retryAfter";
 import { randomUUID } from "node:crypto";
 import { parseProviderSseStream } from "./sse";
-import { markProviderStreamDrop, providerStreamDrop } from "./streamDrop";
+import { markProviderOutputObserved, markProviderStreamDrop, providerStreamDrop, responsesOutputItem } from "./streamDrop";
 
 export type OpenAIResponseObject = Record<string, unknown>;
 
@@ -82,9 +82,30 @@ async function parseOpenAIJsonResponse(
   return parsed as OpenAIResponseObject;
 }
 
+/** Text, refusal and call deltas and announced or completed non-reasoning
+ * items: output the request delivered, whatever its terminal. */
+function streamedOutputEvent(payload: Record<string, unknown>): boolean {
+  const type = String(payload.type);
+  if (type === "response.output_item.added" || type === "response.output_item.done") return responsesOutputItem(payload.item);
+  return type.endsWith(".delta") && !type.startsWith("response.reasoning");
+}
+
 /** Some compatible roots always stream, even for stream:false. Assemble only
- * provider-issued completed items, under explicit terminal proof, without a retry. */
+ * provider-issued completed items, under explicit terminal proof, without a
+ * retry. A failure after any output carries that fact (`outputObserved`). */
 async function collectStreamedResponse(response: Response, signal: AbortSignal, timeoutMs?: number): Promise<OpenAIResponseObject> {
+  let observed = false;
+  try {
+    return await collectStreamedEvents(response, signal, timeoutMs, (payload) => {
+      if (!observed && streamedOutputEvent(payload)) observed = true;
+    });
+  } catch (error) {
+    throw observed ? markProviderOutputObserved(error) : error;
+  }
+}
+
+async function collectStreamedEvents(response: Response, signal: AbortSignal, timeoutMs: number | undefined,
+  observe: (payload: Record<string, unknown>) => void): Promise<OpenAIResponseObject> {
   if (!response.body) throw new Error("openai_stream_body_missing");
   const items = new Map<number, OpenAIResponseObject>();
   for await (const event of parseProviderSseStream(response.body, { signal, maxBytes: 16 * 1024 * 1024,
@@ -94,6 +115,7 @@ async function collectStreamedResponse(response: Response, signal: AbortSignal, 
     try { value = JSON.parse(event.data); } catch { throw markProviderStreamDrop(new Error("openai_response_invalid_json"), "truncated"); }
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("openai_response_invalid_json");
     const payload = value as Record<string, unknown>;
+    observe(payload);
     if (payload.type === "response.output_item.done") {
       if (!Number.isSafeInteger(payload.output_index) || Number(payload.output_index) < 0 || Number(payload.output_index) >= 1024 ||
         !payload.item || typeof payload.item !== "object" || Array.isArray(payload.item) || items.has(Number(payload.output_index))) {
