@@ -770,17 +770,18 @@ export function createAdminProviderService(input: Readonly<{
           outcome: { evidence, status: outcome.status } });
       }
       const checkedAt = now();
-      let stored: "stored" | "stale";
+      let stored: "evidence_only" | "stored" | "stale";
       try { stored = await input.repository.storeActiveRefreshCas({ candidate, capabilityRole: value.capabilityRole, checkedAt, evidence,
-        status: outcome.status, signal: value.signal, ...(activatedConfiguration ? { activatedConfiguration } : {}) }); }
+        status: outcome.status, signal: value.signal, ...(activatedConfiguration ? { activatedConfiguration,
+          ...(initialSetup ? {} : { activateOnlyWithSingleCredential: true }) } : {}) }); }
       catch (error) {
         logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: "unconfirmed", prisma_code: databaseFailureCode(error) });
         value.signal?.throwIfAborted(); throw new ActiveCheckpointError("save_failed");
       }
-      logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: stored === "stored" ? "confirmed" : "not_applied" });
+      logEvent("job_persistence", { subsystem: "admin", stage: "progress", outcome: stored === "stale" ? "not_applied" : "confirmed" });
       if (stored === "stale") { pendingSetupChecks.delete(key); throw new ActiveCheckpointError("stale"); }
       pendingSetupChecks.delete(key);
-      if (activatedConfiguration) {
+      if (activatedConfiguration && stored === "stored") {
         model = activatedConfiguration;
         candidate = { ...candidate, model: { ...candidate.model, configuration: model,
           version: candidate.model.version + 1, draftVersion: candidate.model.version + 1 } };
