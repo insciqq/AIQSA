@@ -4,6 +4,7 @@ import { decodeAdminProviderCatalogUpdates } from "../../../contracts/adminProvi
 import { adminProviderModelConfiguration } from "./adminConfiguration";
 import { providerSetupModels } from "./setupModels";
 import { providerCatalogUpdates } from "./catalogModels";
+import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 
 describe("installed provider catalog suggestions", () => {
   it("counts manual, draft and disabled models by class and either active or draft identity", () => {
@@ -45,6 +46,21 @@ describe("installed provider catalog suggestions", () => {
     const manualCodex = fixtureModel({ id: "manual-codex", connectionId: compatible.id, displayName: "My Sol", enabled: false });
     manualCodex.draftConfig.upstreamModelId = "gpt-6-sol";
     expect(providerCatalogUpdates({ ...compatible, models: [manualCodex] }, []).available.map(({ id }) => id)).not.toContain("codex-lb:gpt-6-sol");
+  });
+
+  it("suggests the new models, never a legacy one, beside an installed legacy model", () => {
+    const [terra] = adminProviderQuickSetupPolicy("openai").candidates.filter(({ templateKey }) => templateKey === "openai:gpt-5.6-terra");
+    const installed = fixtureModel({ id: terra!.modelId, connectionId: "openai", displayName: terra!.displayName,
+      activeConfig: adminProviderModelConfiguration(terra!.configuration), draftConfig: adminProviderModelConfiguration(terra!.configuration) });
+    const connection = fixtureConnection({ displayName: "OpenAI", family: "openai", id: "openai", models: [installed] });
+    const suggested = providerCatalogUpdates(connection, []).available.map(({ upstreamModelId }) => upstreamModelId);
+    expect(suggested).toEqual(expect.arrayContaining(["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"]));
+    for (const legacy of ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) expect(suggested).not.toContain(legacy);
+    const codex = fixtureConnection({ displayName: "codex-lb", family: "openai_compatible", id: "codex", models: [] });
+    codex.activeConfig = { ...codex.draftConfig, apiRoot: "https://fixture.example.test/backend-api/codex" };
+    const codexSuggested = providerCatalogUpdates(codex, []).available.map(({ id }) => id);
+    expect(codexSuggested).toContain("codex-lb:gpt-6.1-sol");
+    expect(codexSuggested).not.toContain("codex-lb:gpt-5.6-terra");
   });
 
   it("keeps skip specific to IDs and this connection; later candidates remain visible", () => {

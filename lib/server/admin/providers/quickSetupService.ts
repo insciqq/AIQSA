@@ -87,7 +87,7 @@ function providerSnapshot(
 ): AdminProviderQuickSetupSnapshot["providers"][number] {
   const policy = adminProviderQuickSetupPolicy(inspection.provider);
   return {
-    candidateModels: policy.candidates.map(({ displayName }) => ({ displayName })),
+    candidateModels: policy.candidates.flatMap(({ displayName, legacy }) => legacy ? [] : [{ displayName }]),
     provider: inspection.provider,
     providerDisplayName: policy.connection.displayName,
     stateToken: stateToken(key, inspection)
@@ -157,7 +157,9 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       const outcome = await input.credentialTester.test({
         connection: value.connection,
         family: value.provider,
-        nativeRoutingModels: adminProviderQuickSetupPolicy(value.provider).candidates.map(({ configuration }) => configuration),
+        // Native routes apply only to models a setup creates, never to legacy ones.
+        nativeRoutingModels: adminProviderQuickSetupPolicy(value.provider).candidates
+          .flatMap(({ configuration, legacy }) => legacy ? [] : [configuration]),
         secret: value.secret,
         signal: value.signal
       });
@@ -272,7 +274,7 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
     });
     const checkedAt = now();
     const remotelyAvailable = new Set(catalog.modelIds);
-    const candidates = policy.candidates.filter((candidate) =>
+    const candidates = policy.candidates.filter((candidate) => !candidate.legacy &&
       remotelyAvailable.has(candidate.configuration.upstreamModelId)
     ).map((candidate) => ({ ...candidate, configuration: applyNativeRoute(candidate.configuration,
       catalog.nativeRoutes?.[candidate.configuration.upstreamModelId]) }));
@@ -434,8 +436,8 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       }
       if (inputValue.request.selectedModel && (
         inputValue.request.selectedModel.policyVersion !== policy.version ||
-        !policy.candidates.some(
-          ({ candidateId }) => candidateId === inputValue.request.selectedModel?.candidateId
+        !policy.candidates.some(({ candidateId, legacy }) =>
+          !legacy && candidateId === inputValue.request.selectedModel?.candidateId
         )
       )) {
         throw new AdminProviderQuickSetupServiceError(
@@ -459,7 +461,10 @@ export function createAdminProviderQuickSetupService(input: Readonly<{
       const modelIds = catalog.modelIds;
       const checkedAt = now();
       const remotelyAvailableModelIds = new Set(modelIds);
+      // A legacy model stays only as the connection's existing Quick Setup
+      // model, whose row already exists; setup never creates or turns on others.
       const availableCandidates = policy.candidates.filter((candidate) =>
+        (!candidate.legacy || candidate.candidateId === existingCandidate?.candidateId) &&
         remotelyAvailableModelIds.has(candidate.configuration.upstreamModelId)
       ).map((candidate) => mode === "initial" ? { ...candidate, configuration: applyNativeRoute(candidate.configuration,
         catalog.nativeRoutes?.[candidate.configuration.upstreamModelId]) } : candidate);
