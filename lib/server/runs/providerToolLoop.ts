@@ -5,8 +5,8 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import type { ToolCallKind } from "../observability";
 import { providerContextRejection } from "../providers/providerObservability";
-import { providerRetryDelayMs, sleepWithSignal } from "../providers/providerRetry";
-import type { ProviderAdapter, ProviderDroppedRoundRetry, ProviderRunRequest, ProviderRunResult } from "../providers/types";
+import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
+import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type {
   ModelToolCall,
   ProviderToolBridge,
@@ -170,8 +170,7 @@ export function withProviderNote(result: ToolExecutionResult, note: string | und
  * output other than text; the round's tool calls never exist before its
  * result, so none of them ran.
  */
-export type ProviderToolLoopRoundRetry = Readonly<{
-  policy: ProviderDroppedRoundRetry;
+export type ProviderToolLoopRoundRetry = ProviderDroppedRequestRetry & Readonly<{
   /**
    * Re-opens the round immediately before its next request: the dropped
    * request's recorded usage leaves the round's usage (it stays one
@@ -179,28 +178,7 @@ export type ProviderToolLoopRoundRetry = Readonly<{
    * keeps the drop as the round's failure.
    */
   reopen(input: Readonly<{ attempt: number; publishedText: boolean; round: number }>): Promise<boolean>;
-  /** Seams of the shared provider backoff. */
-  random?: () => number;
-  sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 }>;
-
-/** The wait before the next request of a dropped round, or null to keep the
- * failure; every decision on a recognized drop is recorded. */
-function droppedRoundRetryDelay(retry: ProviderToolLoopRoundRetry, input: Readonly<{
-  acceptedOutput: boolean;
-  attempt: number;
-  error: unknown;
-  signal: AbortSignal;
-}>): number | null {
-  const decision = retry.policy.decision(input.error);
-  if (!decision) return null;
-  const delayMs = !input.acceptedOutput && !input.signal.aborted && input.attempt < retry.policy.maxAttempts
-    ? providerRetryDelayMs(input.attempt, decision.retryAfterMs, retry.random) : null;
-  retry.policy.observe(delayMs === null
-    ? { action: "stop", attempt: input.attempt, error: input.error }
-    : { action: "retry", attempt: input.attempt, delayMs, error: input.error });
-  return delayMs;
-}
 
 export type ProviderToolLoopResume = Readonly<{
   continuation: ProviderToolLoopContinuation;
@@ -670,7 +648,7 @@ export async function runProviderToolLoop(
             // A dropped request whose usage the round recorded may be sent
             // again; none of the round's tool calls exists before its result.
             const delayMs = input.roundRetry && usageRecorded
-              ? droppedRoundRetryDelay(input.roundRetry, { acceptedOutput, attempt, error, signal }) : null;
+              ? droppedRequestRetryDelay(input.roundRetry, { acceptedOutput, attempt, error, signal }) : null;
             if (delayMs === null) throw error;
             dropped = { delayMs, error };
           }

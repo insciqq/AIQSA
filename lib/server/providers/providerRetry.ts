@@ -74,6 +74,34 @@ export function providerRetryDelayMs(
   return Math.max(jittered, retryAfterMs ?? 0);
 }
 
+/** A binding's Codex LB dropped-request admission (PROVIDERS.md) with the
+ * seams of the shared provider backoff, as its live callers use it. */
+export type ProviderDroppedRequestRetry = Readonly<{
+  policy: import("./types").ProviderDroppedRoundRetry;
+  random?: () => number;
+  sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+}>;
+
+/** The wait before the next request after a dropped one, or null to keep the
+ * failure: only a drop the binding recognizes, before any accepted output,
+ * before Stop and within the request bound. Every decision on a recognized
+ * drop is recorded. */
+export function droppedRequestRetryDelay(retry: ProviderDroppedRequestRetry, input: Readonly<{
+  acceptedOutput: boolean;
+  attempt: number;
+  error: unknown;
+  signal: AbortSignal | undefined;
+}>): number | null {
+  const decision = retry.policy.decision(input.error);
+  if (!decision) return null;
+  const delayMs = !input.acceptedOutput && input.signal?.aborted !== true && input.attempt < retry.policy.maxAttempts
+    ? providerRetryDelayMs(input.attempt, decision.retryAfterMs, retry.random) : null;
+  retry.policy.observe(delayMs === null
+    ? { action: "stop", attempt: input.attempt, error: input.error }
+    : { action: "retry", attempt: input.attempt, delayMs, error: input.error });
+  return delayMs;
+}
+
 export function isRetryableProviderHttpStatus(status: number | null): boolean {
   return status === 408 || status === 425 || status === 429 ||
     status === 500 || status === 502 || status === 503 || status === 504;

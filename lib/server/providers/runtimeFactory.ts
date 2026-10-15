@@ -104,6 +104,9 @@ export type ProviderRuntimeFactoryOptions = Readonly<{
   allowFake: boolean;
   /** Capability probes own their bounded retries at the whole-probe boundary. */
   disableRequestRetries?: boolean;
+  /** A live caller that disables request retries but re-sends dropped
+   * requests itself (Vision) keeps the Codex LB admission. */
+  droppedRequestRetry?: boolean;
   fetchFn?: typeof fetch;
 }>;
 
@@ -116,8 +119,9 @@ type ProviderRuntimeComponents = Readonly<{
   toolBridge?: ProviderToolBridge;
 }>;
 
-/** Operator decision 2026-10-08 (PROVIDERS.md): a dropped Codex LB answer
- * round is sent at most twice more. */
+/** Operator decisions 2026-10-08 and 2026-10-15 (PROVIDERS.md): a dropped
+ * Codex LB answer round, compaction summary or Vision request is sent at most
+ * twice more. */
 const CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS = 3;
 
 /** Only an accepted codex-lb connection admits the dropped-round retry;
@@ -126,7 +130,7 @@ function droppedRoundRetry(
   snapshot: ProviderExecutionSnapshot,
   options: ProviderRuntimeFactoryOptions
 ): Pick<ProviderRuntimeComponents, "droppedRoundRetry"> {
-  return !options.disableRequestRetries && codexLbConnection(snapshot.connection)
+  return (!options.disableRequestRetries || options.droppedRequestRetry === true) && codexLbConnection(snapshot.connection)
     ? { droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS } }
     : {};
 }

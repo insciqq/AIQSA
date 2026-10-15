@@ -1,5 +1,5 @@
 import { providerResponseFailure } from "./responseFailure";
-import { markProviderStreamDrop } from "./streamDrop";
+import { markProviderOutputObserved, markProviderStreamDrop, providerOutputObserved, responsesOutputItem } from "./streamDrop";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
   buildOpenAIResponsesRequest,
@@ -146,24 +146,34 @@ export function createCompatibleResponsesAdapter(
         typeof response.usage === "object" && response.usage !== null
           ? { data: extractOpenAIUsage(response), type: "usage" }
           : undefined;
+      // Output the transport saw while assembling the response, or output a
+      // terminal carries, rides on any failure this response becomes.
+      const outputObserved = providerOutputObserved(response) ||
+        Array.isArray(response.output) && response.output.some(responsesOutputItem);
+      const failed = (error: unknown) => outputObserved ? markProviderOutputObserved(error) : error;
       if (isFailedOpenAIResponse(response)) {
         if (usageEvent) yield usageEvent;
         const status = openAIResponseStatus(response);
         const failure = providerResponseFailure(`compatible_response_${status}`, response);
-        throw status === "failed" ? markProviderStreamDrop(failure, "response_failed") : failure;
+        throw failed(status === "failed" ? markProviderStreamDrop(failure, "response_failed") : failure);
       }
       if (openAIResponseStatus(response) !== "completed") {
         if (usageEvent) yield usageEvent;
-        throw new Error("compatible_response_not_completed");
+        throw failed(new Error("compatible_response_not_completed"));
       }
 
       // Usage first: a completed response the adapter refuses was still billed.
       if (usageEvent) yield usageEvent;
-      const completed = normalizeCompletedOpenAIResponse(
-        response,
-        typeof response.id === "string" ? response.id : undefined,
-        "openai-compatible"
-      );
+      let completed: ReturnType<typeof normalizeCompletedOpenAIResponse>;
+      try {
+        completed = normalizeCompletedOpenAIResponse(
+          response,
+          typeof response.id === "string" ? response.id : undefined,
+          "openai-compatible"
+        );
+      } catch (error) {
+        throw failed(error);
+      }
       for (const event of completed.events) {
         yield event;
       }

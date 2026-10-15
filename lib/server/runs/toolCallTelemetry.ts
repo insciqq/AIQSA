@@ -83,6 +83,17 @@ export function toolCallOutcome(result: unknown): Readonly<{ outcome: Outcome; c
   return { outcome: outcomeOf(code), code };
 }
 
+const byteCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/** The sizes of an MCP result the client cut to its byte limit, from its rawPreview. */
+function truncationFields(result: unknown) {
+  const preview = own(own(result, "value"), "rawPreview");
+  const originalBytes = own(preview, "originalBytes"), deliveredBytes = own(preview, "deliveredBytes");
+  return own(preview, "truncated") === true && byteCount(originalBytes) && byteCount(deliveredBytes)
+    ? { truncated: true, original_bytes: originalBytes, delivered_bytes: deliveredBytes } : {};
+}
+
 /**
  * One content-free terminal record per settled call. An exception the tool
  * threw (not a structured error result) is unexpected and becomes an incident
@@ -100,7 +111,7 @@ export function recordToolCall(input: Readonly<{
       tool_kind: input.kind, duration_ms: input.durationMs,
       ...(input.thrown
         ? { outcome: "failed" as const, code: code ?? TOOL_CALL_FAILED_CODE, error_category: "unexpected" as const, error: input.thrown.error }
-        : { outcome, ...(code ? { code } : {}) })
+        : { outcome, ...(code ? { code } : {}), ...(input.kind === "mcp" ? truncationFields(input.result) : {}) })
     });
   } catch { /* Telemetry never changes a tool call's settlement. */ }
 }
