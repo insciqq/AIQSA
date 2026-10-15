@@ -1,7 +1,7 @@
 import type { AdminProviderModelClass } from "../contracts/adminProviders";
 import type { ModelTokenPricing } from "./usage";
 
-// Base token tariffs checked 2026-09-30. Runtime never refreshes saved prices.
+// Base token tariffs checked 2026-10-15. Runtime never refreshes saved prices.
 // https://developers.openai.com/api/docs/pricing
 // https://platform.claude.com/docs/en/about-claude/pricing
 // https://ai.google.dev/gemini-api/docs/pricing
@@ -10,6 +10,7 @@ import type { ModelTokenPricing } from "./usage";
 type Tariff = readonly [input: number, read: number | null, write: number | null, output: number | null];
 const openai: Record<string, Tariff> = {
   "gpt-6-astra": [10, 1, 12.5, 50],
+  "gpt-6.1-sol": [2, 0.1, 2.5, 10],
   "gpt-6-sol": [2, 0.2, 2.5, 10],
   "gpt-6-luna": [0.1, 0.01, 0.125, 0.5],
   "gpt-5.6-sol": [4, 0.4, 5, 20],
@@ -21,11 +22,16 @@ const anthropic: Record<string, Tariff> = {
   // The adapter never requests a one-hour lifetime; ephemeral defaults to five minutes.
   "claude-fable-5-1": [10, 0.25, 12.5, 50],
   "claude-opus-5-5": [4, 0.2, 5, 20],
+  "claude-sonnet-5-5": [2, 0.2, 2.5, 10],
+  // Base card for prompts up to 100K tokens; the long-prompt card is not modeled.
+  "claude-haiku-5-5": [0.1, 0.01, 0.125, 0.5],
   "claude-opus-5": [5, 0.5, 6.25, 25],
   "claude-opus-4-8": [5, 0.5, 6.25, 25],
   "claude-sonnet-5": [2, 0.2, 2.5, 10]
 };
 const gemini: Record<string, Tariff> = {
+  // Introductory prices expire 2026-11-30 (then 4 / 0.2 / 20); update via a forward migration.
+  "gemini-4-argon": [2, 0.1, null, 10],
   // Current introductory prices expire 2026-12-31; update via a forward migration.
   "gemini-3.8-flash": [0.75, 0.075, null, 3.75],
   "gemini-3.6-flash": [0.75, 0.075, null, 3.75],
@@ -41,14 +47,19 @@ const deepseek: Record<string, Tariff> = {
 };
 const openrouter: Record<string, Tariff> = {
   "openai/gpt-6-astra": openai["gpt-6-astra"],
+  "openai/gpt-6.1-sol": openai["gpt-6.1-sol"],
+  "openai/gpt-6.1-sol-pro": openai["gpt-6.1-sol"],
   "openai/gpt-6-sol": openai["gpt-6-sol"],
   "openai/gpt-6-sol-pro": openai["gpt-6-sol"],
   "openai/gpt-6-luna": openai["gpt-6-luna"],
   "openai/gpt-6-luna-pro": openai["gpt-6-luna"],
   "anthropic/claude-fable-5.1": anthropic["claude-fable-5-1"],
   "anthropic/claude-opus-5.5": anthropic["claude-opus-5-5"],
+  "anthropic/claude-sonnet-5.5": anthropic["claude-sonnet-5-5"],
+  "anthropic/claude-haiku-5.5": anthropic["claude-haiku-5-5"],
   "anthropic/claude-opus-5": anthropic["claude-opus-5"],
   "anthropic/claude-opus-4.8": anthropic["claude-opus-4-8"],
+  "google/gemini-4-argon": gemini["gemini-4-argon"],
   "google/gemini-3.8-flash": gemini["gemini-3.8-flash"],
   "google/gemini-3.5-flash": gemini["gemini-3.5-flash"],
   "~google/gemini-pro-latest": gemini["gemini-3.1-pro-preview"],
