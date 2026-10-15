@@ -19,9 +19,11 @@ import {
   modelAssignedRoles,
   modelCheckSummaries,
   modelEditorCheck,
+  modelFolded,
   modelRouteLabel,
   modelSuccessor,
   modelTitle,
+  providerModelSections,
   providerNeedsKeyForModels,
   turnOffConsequence
 } from "./modelListView";
@@ -101,7 +103,7 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
 }
 
 describe("groupProviderModels", () => {
-  it("orders Chat models, Rerankers, Embeddings, hides empty groups and sorts by name", () => {
+  it("orders Chat models, Rerankers, Embeddings, hides empty groups and sorts ties by name", () => {
     const models = [
       fixtureModel({ connectionId: "c", displayName: "Qwen3 Embedding 8B", draftConfig: { ...fixtureModel({ connectionId: "c", displayName: "x", id: "x" }).draftConfig, modelClass: "embedding" }, id: "emb", modelClass: "embedding" }),
       fixtureModel({ connectionId: "c", displayName: "Gemini Pro Latest", id: "gemini" }),
@@ -112,6 +114,53 @@ describe("groupProviderModels", () => {
       ["Embeddings", ["emb"]]
     ]);
     expect(groupProviderModels([])).toEqual([]);
+  });
+
+  it("puts newer models first by release date, else by the day they were added", () => {
+    const model = (id: string, displayName: string, createdAt: string, releasedOn?: string | null) =>
+      fixtureModel({ connectionId: "c", createdAt, displayName, id, releasedOn });
+    const models = [
+      model("opus-4-8", "Claude Opus 4.8", "2026-10-01T09:00:00.000Z", "2026-05-27"),
+      model("custom", "A custom model", "2026-08-01T23:59:00.000Z"),
+      model("sol", "GPT-6 Sol", "2026-10-01T09:00:00.000Z", "2026-09-22"),
+      model("luna", "GPT-6 Luna", "2026-10-02T09:00:00.000Z", "2026-09-22"),
+      model("legacy", "Older payload", "2026-06-01T00:00:00.000Z", null)
+    ];
+    expect(groupProviderModels(models)[0]!.models.map(({ id }) => id)).toEqual(["luna", "sol", "custom", "legacy", "opus-4-8"]);
+  });
+});
+
+describe("turned-off fold and search", () => {
+  const usage = new Map([["used", ["Default chat"]]]);
+  const idle = { checkRun: null };
+
+  it("folds only published models an administrator turned off that nothing still needs", () => {
+    const on = fixtureModel({ connectionId: "c", displayName: "On", id: "on" });
+    const off = { ...on, enabled: false, id: "off" };
+    const draft = { ...off, activeConfig: null, activeVersion: 0, id: "draft" };
+    const used = { ...off, id: "used" };
+    expect(modelFolded(on, idle, usage)).toBe(false);
+    expect(modelFolded(off, idle, usage)).toBe(true);
+    expect(modelFolded(draft, idle, usage)).toBe(false);
+    expect(modelFolded(used, idle, usage)).toBe(false);
+    const checking = { checkRun: fixtureCheckRun({ credentialId: "k", id: "run", inFlight: ["off"] }) };
+    expect(modelFolded(off, checking, usage)).toBe(false);
+    expect(modelFolded(off, { checkRun: { ...checking.checkRun, state: "completed" as const } }, usage)).toBe(true);
+  });
+
+  it("splits each group into shown and folded rows and narrows every group to rows matching all words", () => {
+    const answer = fixtureModel({ connectionId: "c", displayName: "Claude Opus 4.8", id: "opus" });
+    const routed = { ...answer, activeConfig: { ...answer.draftConfig, openRouterRouting: { mode: "only_selected" as const, providers: ["Anthropic"] }, upstreamModelId: "anthropic/claude-opus-4.8" } };
+    const sonar = { ...fixtureModel({ connectionId: "c", displayName: "Sonar Pro Search", id: "sonar" }), enabled: false };
+    const reranker = fixtureModel({ connectionId: "c", displayName: "Voyage Rerank 2.5", id: "voyage", modelClass: "reranker" });
+    const groups = groupProviderModels([routed, sonar, reranker]);
+    const sections = (query: string) => providerModelSections({ connection: { checkRun: null, family: "openrouter" }, groups, query, usage })
+      .map((section) => [section.modelClass, section.models.length, section.shown.map(({ id }) => id), section.folded.map(({ id }) => id)]);
+    expect(sections("")).toEqual([["answer", 2, ["opus"], ["sonar"]], ["reranker", 1, ["voyage"], []]]);
+    expect(sections("  SONAR  ")).toEqual([["answer", 2, [], ["sonar"]]]);
+    expect(sections("anthropic only")).toEqual([["answer", 2, ["opus"], []]]);
+    expect(sections("claude-opus rerank")).toEqual([]);
+    expect(sections("2.5")).toEqual([["reranker", 1, ["voyage"], []]]);
   });
 });
 

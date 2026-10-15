@@ -4,6 +4,7 @@ import { useComposerPickerSession } from "@/components/app-shell/composerPicker"
 import { Check, ChevronDown, Search, X } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { focusRing, quietButton, touchTarget } from "./adminPrimitives";
+import { searchTokens, textMatchesTokens } from "./searchTokens";
 
 export type AdminSearchablePickerItem = Readonly<{
   id: string;
@@ -44,9 +45,7 @@ function itemCountLabel(
 }
 
 function searchableText(item: AdminSearchablePickerItem): string {
-  return [item.label, item.secondaryText, ...(item.keywords ?? [])]
-    .join(" ")
-    .toLocaleLowerCase();
+  return [item.label, item.secondaryText, ...(item.keywords ?? [])].join(" ");
 }
 
 export function AdminSearchablePicker({
@@ -83,13 +82,10 @@ export function AdminSearchablePicker({
   );
   const filteredItems = useMemo(
     () => {
-      const queryTokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      const queryTokens = searchTokens(query);
       return queryTokens.length === 0
         ? sortedItems
-        : sortedItems.filter((item) => {
-            const haystack = searchableText(item);
-            return queryTokens.every((token) => haystack.includes(token));
-          });
+        : sortedItems.filter((item) => textMatchesTokens(searchableText(item), queryTokens));
     },
     [query, sortedItems]
   );
