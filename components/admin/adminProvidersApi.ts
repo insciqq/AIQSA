@@ -96,7 +96,9 @@ function isModel(value: unknown): boolean {
       value.draftConfig.modelClass === "embedding" ||
       value.draftConfig.modelClass === "reranker" || value.draftConfig.modelClass === "decision" || value.draftConfig.modelClass === "image") &&
     optionalResponseTimeoutSeconds(value.draftConfig.responseTimeoutSeconds) &&
-    typeof value.draftConfig.upstreamModelId === "string";
+    typeof value.draftConfig.upstreamModelId === "string" &&
+    (value.releasedOn === undefined || value.releasedOn === null ||
+      typeof value.releasedOn === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value.releasedOn));
 }
 
 const checkRunStates = new Set(["cancelled", "completed", "interrupted", "running"]);

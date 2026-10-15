@@ -148,6 +148,24 @@ describe("admin provider browser API", () => {
     });
   });
 
+  it("accepts a template release day, null or none, and rejects any other value", async () => {
+    const model = {
+      pricing: { prices: EMPTY_ADMIN_MODEL_PRICES, source: "catalog", catalogPrices: null },
+      displayName: "Dated model",
+      draftConfig: { adapterKind: "openai_responses_compatible", answerSelectable: true, modelClass: "answer", upstreamModelId: "fixture/dated" },
+      draftVersion: 1,
+      enabled: true,
+      id: "model-dated"
+    };
+    const load = (releasedOn: unknown) => getAdminProviderConnections(async () =>
+      Response.json({ connections: [{ ...safeConnection, models: [{ ...model, releasedOn }] }] }));
+    await expect(load("2026-09-22")).resolves.toMatchObject({ data: [{ models: [{ releasedOn: "2026-09-22" }] }], ok: true });
+    await expect(load(null)).resolves.toMatchObject({ ok: true });
+    for (const releasedOn of ["2026-09-22T00:00:00.000Z", 20260922, ""]) {
+      await expect(load(releasedOn)).resolves.toMatchObject({ ok: false, error: { code: "provider_admin_response_invalid" } });
+    }
+  });
+
   it("names an Assistant deletion blocker in readable administrator feedback", () => {
     expect(adminProviderErrorMessage({
       blockers: [{ count: 1, kind: "assistants" }],
