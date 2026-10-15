@@ -23,6 +23,17 @@ describe("provider model capability resolution", () => {
   });
 
   it.each([
+    ["gpt-6.1-sol", undefined, "low"], ["gpt-6-sol", undefined, "none"], ["private/model", undefined, "none"],
+    ["gpt-6.1-sol", ["medium", "high"], "medium"]
+  ] as const)("probes a compatible %s row with the levels its gateway accepts", (upstreamModelId, reasoningEfforts, expected) => {
+    expect(lowestConfiguredReasoningEffort({
+      adapterKind: "openai_responses_compatible",
+      capabilities: { ...capabilities, ...(reasoningEfforts ? { reasoningEfforts: [...reasoningEfforts] } : {}) },
+      defaultParams: { reasoning: { effort: "medium" } }, upstreamModelId
+    }, "openai_compatible")).toBe(expected);
+  });
+
+  it.each([
     { levels: ["low", "medium", "high"], lowest: "low", upstreamModelId: "gemini-3.8-flash" },
     { levels: ["minimal", "low", "medium", "high"], lowest: "minimal", upstreamModelId: "gemini-3.6-flash" }
   ])("derives $upstreamModelId thinking levels from the catalog controls", ({ levels, lowest, upstreamModelId }) => {
