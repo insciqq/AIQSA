@@ -15,6 +15,20 @@ describe("catalog token tariffs", () => {
     });
   });
 
+  it("prices GPT-6.1 Sol, Gemini 4 Argon and Claude Sonnet/Haiku 5.5 directly and through OpenRouter", () => {
+    const tariff = (key: string) => {
+      const { inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion,
+        cacheWriteInputTokenPriceUsdPerMillion, outputTokenPriceUsdPerMillion } = catalogModelTokenPricing(key);
+      return [inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion, cacheWriteInputTokenPriceUsdPerMillion, outputTokenPriceUsdPerMillion];
+    };
+    for (const [keys, expected] of [
+      [["openai:gpt-6.1-sol", "openrouter:openai/gpt-6.1-sol", "openrouter:openai/gpt-6.1-sol-pro"], [2, 0.1, 2.5, 10]],
+      [["gemini:gemini-4-argon", "openrouter:google/gemini-4-argon"], [2, 0.1, null, 10]],
+      [["anthropic:claude-sonnet-5-5", "openrouter:anthropic/claude-sonnet-5.5"], [2, 0.2, 2.5, 10]],
+      [["anthropic:claude-haiku-5-5", "openrouter:anthropic/claude-haiku-5.5"], [0.1, 0.01, 0.125, 0.5]]
+    ] as const) for (const key of keys) expect(tariff(key), key).toEqual(expected);
+  });
+
   it("carries OpenRouter's published default DeepSeek tariffs and keeps codex-lb out of the key space", () => {
     expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4-pro-0813")).toEqual({ inputTokenPriceUsdPerMillion: 0.66,
       cachedInputTokenPriceUsdPerMillion: 0.022, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 1.98,
