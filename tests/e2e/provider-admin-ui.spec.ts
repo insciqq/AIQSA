@@ -1921,6 +1921,12 @@ test("administrator adds a model with one Test & Save, follows the background ch
   await expect(editSheet.getByRole("button", { name: "Edit JSON" })).toBeVisible();
   await editSheet.getByRole("button", { name: "Cancel", exact: true }).click();
   await sol.getByRole("switch", { name: "GPT-5.6 Sol on" }).click();
+  // The turned-off model folds away and focus stays on its fold; Turn on remains inside it.
+  const turnedOff = models.getByRole("button", { name: "Turned off (1)" });
+  await expect(turnedOff).toBeFocused();
+  await expect(sol).toHaveCount(0);
+  await expect(models).toContainText("Chat models · 3");
+  await turnedOff.click();
   await expect(sol.getByRole("switch", { name: "GPT-5.6 Sol on" })).not.toBeChecked();
   expect(requests.filter(({ path }) => path.endsWith("/models/model-sol")).map(({ body }) => body)).toEqual([{ action: "disable" }]);
   await expect(page.getByTestId("admin-confirm-turn-off-provider-model")).toHaveCount(0);

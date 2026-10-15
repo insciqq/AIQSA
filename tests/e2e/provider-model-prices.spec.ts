@@ -44,7 +44,8 @@ for (const theme of ["light", "dark"] as const) {
         draftVersion: current.draftVersion, saved: "metadata", publication: "not_requested", checks: "not_requested", pricing } } });
     });
     await signInWithLocalToken(page);
-    await page.goto(`/admin?section=providers&resource=${connectionId}`);
+    // The turned-off fixture sits in the closed Turned off fold; the model link opens it, also on reload.
+    await page.goto(`/admin?section=providers&resource=${connectionId}#provider-model-price-model`);
     const row = page.getByTestId("provider-model-price-model");
     const sheet = page.getByRole("dialog", { name: "Edit model", exact: true });
     const open = async () => {
@@ -174,7 +175,8 @@ test("an embedding model shows, saves and restores only its input price", async 
       draftVersion: current.draftVersion, saved: "metadata", publication: "not_requested", checks: "not_requested", pricing } } });
   });
   await signInWithLocalToken(page);
-  await page.goto(`/admin?section=providers&resource=${connectionId}`);
+  // The turned-off fixture sits in the closed Turned off fold; the model link opens it.
+  await page.goto(`/admin?section=providers&resource=${connectionId}#provider-model-${model.id}`);
   const sheet = page.getByRole("dialog", { name: "Edit model", exact: true });
   const open = async () => {
     await page.getByTestId(`provider-model-${model.id}`).getByRole("button", { name: "More actions for Embedding fixture" }).click();

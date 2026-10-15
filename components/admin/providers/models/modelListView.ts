@@ -14,6 +14,7 @@ import type {
   AdminProviderModelClass
 } from "@/lib/contracts/adminProviders";
 import type { AdminProviderAssignedRole } from "@/lib/contracts/adminProviderRoleRouting";
+import { searchTokens, textMatchesTokens } from "@/components/admin/searchTokens";
 
 /**
  * Presentation rules for the Models table (PRD 5.4): grouping, the route
@@ -48,13 +49,70 @@ export function liveConfiguration(model: Pick<AdminProviderModel, "activeConfig"
   return model.activeConfig ?? model.draftConfig;
 }
 
-/** Chat models, Rerankers, Embeddings in that order; empty groups are hidden. */
+/** A template's release day, otherwise the day the row was added. */
+function modelListDate(model: Pick<AdminProviderModel, "createdAt" | "releasedOn">): string {
+  return model.releasedOn ?? model.createdAt.slice(0, 10);
+}
+
+/** Chat models, Rerankers, Embeddings in that order, newest first; empty groups are hidden. */
 export function groupProviderModels(models: readonly AdminProviderModel[]): readonly ProviderModelGroup[] {
   return MODEL_GROUP_ORDER.flatMap((modelClass) => {
     const members = models
       .filter((model) => modelClassOf(model) === modelClass)
-      .sort((left, right) => collator.compare(left.displayName, right.displayName) || collator.compare(left.id, right.id));
+      .sort((left, right) => modelListDate(right).localeCompare(modelListDate(left)) ||
+        collator.compare(left.displayName, right.displayName) || collator.compare(left.id, right.id));
     return members.length ? [{ modelClass, models: members, title: groupTitles[modelClass] }] : [];
+  });
+}
+
+/** Above this many models the list offers a search field. */
+export const MODEL_SEARCH_THRESHOLD = 10;
+
+export type ProviderModelSection = ProviderModelGroup & Readonly<{
+  /** Turned-off rows behind the group's fold, in list order. */
+  folded: readonly AdminProviderModel[];
+  /** Rows shown directly, in list order. */
+  shown: readonly AdminProviderModel[];
+}>;
+
+/**
+ * A model an administrator turned off folds away: published and off, with no
+ * check running on it and no role, default or Search source still pointing at
+ * it. Never-published drafts stay in the main rows.
+ */
+export function modelFolded(
+  model: Pick<AdminProviderModel, "activeConfig" | "enabled" | "id">,
+  connection: Pick<AdminProviderConnection, "checkRun">,
+  usage: ModelUsageIndex
+): boolean {
+  const checking = connection.checkRun?.state === "running" && connection.checkRun.inFlight.includes(model.id);
+  return !model.enabled && model.activeConfig !== null && !checking && !(usage.get(model.id)?.length);
+}
+
+/** Display name, upstream model id and route line, as the row shows them. */
+function modelSearchText(connection: Pick<AdminProviderConnection, "family">, model: AdminProviderModel): string {
+  return [modelTitle(model), liveConfiguration(model).upstreamModelId, modelRouteLabel(connection, model) ?? ""].join(" ");
+}
+
+/**
+ * Groups narrowed to the query's matches, each split into shown and folded
+ * rows. Groups without a match are dropped; the group itself keeps every row
+ * so its count stays the total.
+ */
+export function providerModelSections(input: Readonly<{
+  connection: Pick<AdminProviderConnection, "checkRun" | "family">;
+  groups: readonly ProviderModelGroup[];
+  query: string;
+  usage: ModelUsageIndex;
+}>): readonly ProviderModelSection[] {
+  const tokens = searchTokens(input.query);
+  return input.groups.flatMap((group) => {
+    const matches = tokens.length
+      ? group.models.filter((model) => textMatchesTokens(modelSearchText(input.connection, model), tokens))
+      : group.models;
+    if (!matches.length) return [];
+    const folded = matches.filter((model) => modelFolded(model, input.connection, input.usage));
+    return [{ ...group, folded, shown: matches.filter((model) => !folded.includes(model)) }];
   });
 }
 
