@@ -44,7 +44,8 @@ for (const family of ["openai", "openai_compatible"] as const) {
 
     await signInWithLocalToken(page);
     await page.setViewportSize(family === "openai" ? { width: 1440, height: 900 } : { width: 390, height: 844 });
-    await page.goto(`/admin?section=providers&resource=${connectionId}`);
+    // The turned-off OpenAI fixture sits in the closed Turned off fold; the model link opens it.
+    await page.goto(`/admin?section=providers&resource=${connectionId}#provider-model-metadata-model`);
     await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, family === "openai" ? "light" : "dark");
     const models = page.getByTestId("provider-models");
     const row = models.getByTestId("provider-model-metadata-model");

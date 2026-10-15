@@ -399,9 +399,17 @@ describe("AdminProviderModels", () => {
     const table = screen.getByRole("table", { name: "Models" });
     const groups = [...table.querySelectorAll("tbody")].map((body) => body.querySelector("th")?.textContent);
     expect(groups).toEqual(["Chat models · 3", "Rerankers · 2", "Embeddings · 1"]);
-    const names = [...table.querySelectorAll("tr[data-testid^='provider-model-']")]
+    const names = () => [...table.querySelectorAll("tr[data-testid^='provider-model-']")]
       .map((row) => row.querySelector("[data-testid=provider-model-name]")?.textContent);
-    expect(names).toEqual([
+    expect(names()).toEqual([
+      "Claude Opus 4.8", "Gemini Pro Latest",
+      "Cohere Rerank 4 Pro", "Voyage Rerank 2.5", "Qwen3 Embedding 8B · 1536d"
+    ]);
+    const fold = screen.getByRole("button", { name: "Turned off (1)" });
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(fold);
+    expect(fold).toHaveAttribute("aria-expanded", "true");
+    expect(names()).toEqual([
       "Claude Opus 4.8", "Gemini Pro Latest", "Perplexity Sonar Pro Search",
       "Cohere Rerank 4 Pro", "Voyage Rerank 2.5", "Qwen3 Embedding 8B · 1536d"
     ]);
@@ -504,6 +512,7 @@ describe("AdminProviderModels", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Gemini Pro Latest on" }));
     expect(confirmations).toHaveLength(1);
     expect(actions.updateModel).toHaveBeenLastCalledWith("conn-or", "model-gemini", { action: "disable" }, "Model turned off.");
+    fireEvent.click(screen.getByRole("button", { name: "Turned off (1)" }));
     fireEvent.click(screen.getByRole("switch", { name: "Perplexity Sonar Pro Search on" }));
     expect(actions.updateModel).toHaveBeenLastCalledWith("conn-or", "model-sonar", { action: "enable" }, "Model turned on.");
   });
@@ -573,5 +582,92 @@ describe("AdminProviderModels", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Models appear after a working key is saved.");
     expect(screen.getByTestId("provider-add-model")).not.toHaveAttribute("aria-haspopup");
     expect(screen.queryByRole("button", { name: "Check models" })).not.toBeInTheDocument();
+  });
+});
+
+describe("AdminProviderModels with many models", () => {
+  afterEach(() => {
+    window.history.replaceState(null, "", window.location.pathname);
+  });
+
+  function longOpenRouter(): AdminProviderConnection {
+    const connection = openRouter();
+    const extra = Array.from({ length: 6 }, (_, index) =>
+      fixtureModel({ connectionId: "conn-or", displayName: `Extra Chat ${index + 1}`, id: `model-extra-${index + 1}` }));
+    return { ...connection, models: [...connection.models, ...extra] };
+  }
+
+  it("keeps turned-off models behind a closed fold, turns them on from it and keeps focus when a model folds away", () => {
+    const connection = openRouter();
+    const { actions, rerender } = harness(connection);
+    const answer = screen.getByTestId("provider-models-answer");
+    expect(answer.querySelector("th")).toHaveTextContent("Chat models · 3");
+    expect(within(answer).queryByTestId("provider-model-model-sonar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Search models" })).not.toBeInTheDocument();
+    const fold = within(answer).getByRole("button", { name: "Turned off (1)" });
+    fireEvent.click(fold);
+    fireEvent.click(within(answer).getByRole("button", { name: "More actions for Perplexity Sonar Pro Search" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Turn on" }));
+    expect(actions.updateModel).toHaveBeenLastCalledWith("conn-or", "model-sonar", { action: "enable" }, "Model turned on.");
+    fireEvent.click(fold);
+    expect(within(answer).queryByTestId("provider-model-model-sonar")).not.toBeInTheDocument();
+
+    const gemini = screen.getByRole("switch", { name: "Gemini Pro Latest on" });
+    gemini.focus();
+    fireEvent.click(gemini);
+    expect(actions.updateModel).toHaveBeenLastCalledWith("conn-or", "model-gemini", { action: "disable" }, "Model turned off.");
+    rerender({ ...connection, models: connection.models.map((model) => model.id === "model-gemini" ? { ...model, enabled: false } : model) });
+    expect(screen.queryByTestId("provider-model-model-gemini")).not.toBeInTheDocument();
+    expect(answer.querySelector("th")).toHaveTextContent("Chat models · 3");
+    expect(within(answer).getByRole("button", { name: "Turned off (2)" })).toHaveFocus();
+  });
+
+  it("opens the fold for a linked model and focuses its row, also after a later hash change", async () => {
+    window.history.replaceState(null, "", "#provider-model-model-sonar");
+    const first = harness(longOpenRouter());
+    expect(screen.getByRole("button", { name: "Turned off (1)" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("switch", { name: "Perplexity Sonar Pro Search on" })).toHaveFocus();
+    first.view.unmount();
+
+    window.history.replaceState(null, "", window.location.pathname);
+    harness(longOpenRouter());
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "voyage" } });
+    expect(screen.queryByTestId("provider-models-answer")).not.toBeInTheDocument();
+    act(() => {
+      window.history.replaceState(null, "", "#provider-model-model-sonar");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Perplexity Sonar Pro Search on" })).toHaveFocus());
+    expect(screen.getByRole("searchbox", { name: "Search models" })).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Turned off (1)" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("searches every group by name, model id and route, reveals folded matches and offers a way out of an empty result", () => {
+    harness(longOpenRouter());
+    const search = screen.getByRole("searchbox", { name: "Search models" });
+    fireEvent.change(search, { target: { value: "sonar" } });
+    expect(screen.getByText("1 of 12 models")).toBeVisible();
+    expect(screen.getByTestId("provider-model-model-sonar")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Turned off/u })).not.toBeInTheDocument();
+    expect(screen.getByText("Turned off (1)")).toBeVisible();
+    expect(screen.queryByTestId("provider-models-reranker")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("provider-models-embedding")).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "Anthropic ONLY" } });
+    expect(screen.getByText("1 of 12 models")).toBeVisible();
+    expect(screen.getByTestId("provider-model-model-opus")).toBeVisible();
+    fireEvent.change(search, { target: { value: "qwen/qwen3" } });
+    expect(screen.getByTestId("provider-model-model-qwen")).toBeVisible();
+    expect(screen.queryByTestId("provider-models-answer")).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "nothing like this" } });
+    expect(screen.queryByRole("table", { name: "Models" })).not.toBeInTheDocument();
+    expect(screen.getByText("No models match “nothing like this”.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(search).toHaveValue("");
+    expect(search).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Turned off (1)" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("provider-models-answer").querySelector("th")).toHaveTextContent("Chat models · 9");
+    expect(screen.getByRole("table", { name: "Models" }).querySelectorAll("tr[data-testid^='provider-model-']")).toHaveLength(11);
   });
 });

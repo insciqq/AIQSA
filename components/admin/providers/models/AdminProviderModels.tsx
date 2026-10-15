@@ -11,11 +11,15 @@ import {
   embeddingModelLabel,
   groupProviderModels,
   liveConfiguration,
+  MODEL_SEARCH_THRESHOLD,
+  modelClassOf,
+  modelFolded,
   modelRouteLabel,
   modelAssignedRoles,
   modelSuccessor,
   modelTitle,
   providerKeyFirstHelp,
+  providerModelSections,
   providerNeedsKeyForModels,
   turnOffConsequence
 } from "@/components/admin/providers/models/modelListView";
@@ -24,6 +28,7 @@ import { useAdminOpenRouterDiscovery } from "@/components/admin/providers/models
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
 import { visibleProviderModels, type ProviderUsageSources } from "@/components/admin/providers/providerListView";
 import { ProviderRowMenu, ProviderTag } from "@/components/admin/providers/providerPrimitives";
+import { searchTokens } from "@/components/admin/searchTokens";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminProvidersController } from "@/components/admin/useAdminProvidersController";
 import {
@@ -35,10 +40,10 @@ import {
 } from "@/components/ui-v2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import type { AdminProviderConnection, AdminProviderModel } from "@/lib/contracts/adminProviders";
+import type { AdminProviderConnection, AdminProviderModel, AdminProviderModelClass } from "@/lib/contracts/adminProviders";
 import { embeddingModelConfiguration, embeddingPresetsForFamily } from "@/lib/domain/embeddingModels";
 import { adminRerankerModelConfiguration, rerankerPresetsForFamily } from "@/lib/domain/rerankerModels";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AdminProviderSetupProgress } from "@/components/admin/providers/add/AdminProviderSetupProgress";
 import type { AdminProviderSetupProgress as SetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 
@@ -88,6 +93,22 @@ export type AdminProviderModelsProps = Readonly<{
   requestConfirmation: AdminConfirmationController["requestConfirmation"];
   usageSources: ProviderUsageSources;
 }>;
+
+function subscribeToHash(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+
+/** The model a `#provider-model-<id>` link points at, e.g. from Defaults & roles. */
+function hashModelId(hash: string): string | null {
+  const match = /^#provider-model-(.+)$/u.exec(hash);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return null;
+  }
+}
 
 function AddModelMenu({
   actions,
@@ -142,7 +163,8 @@ function AddModelMenu({
 
 /**
  * Models block of a provider page (PRD 5.4): one table grouped by class,
- * `Works with` chips from the last check with the selected key, `Used as`
+ * newest first, turned-off models behind a fold per group, a search once the
+ * list is long, `Works with` chips from the last check with the selected key, `Used as`
  * tags, the On switch with its consequence dialog, the `⋯` actions, one
  * model editor, `Re-check all` and `Add model ▾`.
  */
@@ -169,6 +191,58 @@ export function AdminProviderModels({
   const keyHelpId = useId();
   const usage = useMemo(() => deriveModelUsage(usageSources), [usageSources]);
   const groups = useMemo(() => groupProviderModels(visibleProviderModels(connection)), [connection]);
+  const [query, setQuery] = useState("");
+  const searchId = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
+  const searching = searchTokens(query).length > 0;
+  const sections = useMemo(() => providerModelSections({ connection, groups, query, usage }), [connection, groups, query, usage]);
+  const modelCount = groups.reduce((total, group) => total + group.models.length, 0);
+  const matchCount = sections.reduce((total, section) => total + section.shown.length + section.folded.length, 0);
+  const [openFolds, setOpenFolds] = useState<ReadonlySet<AdminProviderModelClass>>(() => new Set());
+  const foldToggles = useRef(new Map<AdminProviderModelClass, HTMLButtonElement>());
+
+  // A link to a model reveals it once: its fold opens and a query hiding it clears.
+  const hashTarget = hashModelId(useSyncExternalStore(subscribeToHash, () => window.location.hash, () => ""));
+  const hashModel = hashTarget ? groups.flatMap((group) => group.models).find(({ id }) => id === hashTarget) ?? null : null;
+  const [revealedHash, setRevealedHash] = useState<string | null>(null);
+  if (hashTarget !== revealedHash && (!hashTarget || hashModel)) {
+    setRevealedHash(hashTarget);
+    if (hashModel) {
+      const section = sections.find(({ modelClass }) => modelClass === modelClassOf(hashModel));
+      if (!section || ![...section.shown, ...section.folded].includes(hashModel)) setQuery("");
+      if (modelFolded(hashModel, connection, usage)) setOpenFolds((open) => new Set(open).add(modelClassOf(hashModel)));
+    }
+  }
+  const scrolledHash = useRef<string | null>(null);
+  useEffect(() => {
+    if (scrolledHash.current === revealedHash) return;
+    const row = revealedHash ? document.getElementById(`provider-model-${revealedHash}`) : null;
+    if (revealedHash && !row) return;
+    scrolledHash.current = revealedHash;
+    row?.scrollIntoView?.({ block: "center" });
+    row?.querySelector<HTMLElement>("[role=switch]")?.focus({ preventScroll: true });
+  }, [revealedHash, sections, openFolds]);
+
+  // Turning a model off or on moves its row between the main rows and the fold;
+  // focus lost with the old row goes to the fold or to the row in its new place,
+  // before the Control Center's own post-mutation focus fallback runs.
+  const movedModel = useRef<Readonly<{ folded: boolean; id: string }> | null>(null);
+  useLayoutEffect(() => {
+    const moved = movedModel.current;
+    const model = moved && connection.models.find(({ id }) => id === moved.id);
+    if (!moved || (model && modelFolded(model, connection, usage) === moved.folded)) return;
+    movedModel.current = null;
+    const active = document.activeElement;
+    if (!model || (active && active !== document.body && active.isConnected)) return;
+    const modelClass = modelClassOf(model);
+    const toggle = !searching && !openFolds.has(modelClass) ? foldToggles.current.get(modelClass) : undefined;
+    (toggle ?? document.getElementById(`provider-model-${model.id}`)?.querySelector<HTMLElement>("[role=switch]"))?.focus();
+  }, [connection, openFolds, searching, sections, usage]);
+
+  const clearSearch = () => {
+    setQuery("");
+    searchRef.current?.focus();
+  };
   const checkable = checkableCredentials(connection);
   const selectedKey = connection.credentials.find(({ id }) => id === diagnosticCredentialId) ?? null;
   const checkKey = checkable.find(({ id }) => id === diagnosticCredentialId) ?? null;
@@ -212,6 +286,7 @@ export function AdminProviderModels({
   };
 
   const setEnabled = (model: AdminProviderModel, enabled: boolean) => {
+    movedModel.current = { folded: modelFolded(model, connection, usage), id: model.id };
     const successMessage = enabled ? "Model turned on." : "Model turned off.";
     const apply = () => void controller.actions.updateModel(
       connection.id,
@@ -314,6 +389,104 @@ export function AdminProviderModels({
       : [])
   ];
 
+  const renderModelRow = (model: AdminProviderModel) => {
+    const configuration = liveConfiguration(model);
+    const check = activeModelCheck(connection, model, checkKey);
+    const worksWith = modelWorksWith({
+      check,
+      checkRun: run && (!model.activatedAt || Date.parse(model.activatedAt) <= Date.parse(run.startedAt)) ? run : null,
+      configuration,
+      defaultCredentialId: diagnosticCredentialId,
+      modelId: model.id
+    });
+    const tags = usage.get(model.id) ?? [];
+    const route = modelRouteLabel(connection, model);
+    const canCheck = !busy && Boolean(checkKey) && (initialSetup ||
+      model.enabled && (model.activeConfig !== null || model.activeVersion === 0)) && !running;
+    const modelCheckHelp = !checkKey
+      ? checkHelp
+      : !initialSetup && !model.enabled
+        ? "Turn this model on to publish and check it."
+        : !initialSetup && model.activeConfig === null
+          ? "Publishes this model and checks it with the selected key."
+          : checkHelp;
+    const menu: UiV2MenuAction[] = [
+      { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", model }) },
+      {
+        disabled: busy || running || !checkable.length || !model.enabled,
+        icon: "regenerate",
+        label: "Re-check with key…",
+        submenu: checkable.map((credential) => ({
+          label: credential.label,
+          onSelect: () => startChecks(credential.id, [model.id])
+        }))
+      },
+      {
+        icon: "stop",
+        label: model.enabled ? "Turn off" : "Turn on",
+        onSelect: () => setEnabled(model, !model.enabled),
+        separatorBefore: true
+      },
+      { icon: "trash", label: "Remove from AIQSA", onSelect: () => requestRemove(model), tone: "destructive" }
+    ];
+    return (
+      <tr
+        className={`grid grid-cols-[minmax(0,1fr)_auto_auto] border-b border-trace-subtle align-top xl:table-row ${model.enabled ? "" : "opacity-70"}`}
+        data-model-enabled={model.enabled}
+        data-testid={`provider-model-${model.id}`}
+        id={`provider-model-${model.id}`}
+        key={model.id}
+      >
+        <td className="col-start-1 row-start-1 min-w-0 px-4 py-3 sm:max-w-[18rem] sm:px-5">
+          <span className="block truncate text-sm font-medium text-ink" data-testid="provider-model-name">{modelTitle(model)}</span>
+          <p className="mt-0.5 truncate text-xs text-ink-muted">
+            <span className="font-mono">{configuration.upstreamModelId}</span>
+            {route ? ` · ${route}` : ""}
+            {worksWith.kind === "not_checked" ? " · not checked yet" : ""}
+          </p>
+        </td>
+        <td className="col-span-3 row-start-2 min-w-0 px-4 pb-3 sm:px-3 sm:py-3" data-testid={`provider-model-${model.id}-works-with`} data-works-with={worksWith.kind}>
+          {worksWith.kind === "checking" ? (
+            <span className="inline-flex items-center gap-2 text-xs text-ink-secondary" role="status">
+              <span aria-hidden="true" className="v2-spinner" />
+              {worksWith.label}
+            </span>
+          ) : worksWith.kind === "not_checked" ? (
+            <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+              not checked yet
+              <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} title={modelCheckHelp} tone="ghost" type="button">
+                Check model
+              </UiV2Button>
+              {!model.enabled && !initialSetup ? <span>Turn this model on to publish and check it.</span> : null}
+            </span>
+          ) : (
+            <div className="flex flex-wrap items-start gap-1.5">
+              {worksWith.chips.map((chip) => <Chip chip={chip} key={chip.key} />)}
+              {worksWith.kind === "failed" ? <span className="text-xs text-ink-muted">No completed check. Use Re-check with key… in the model menu.</span> : null}
+            </div>
+          )}
+        </td>
+        <td className={`col-span-3 row-start-3 min-w-0 px-4 pb-3 sm:px-3 sm:py-3 ${tags.length ? "" : "hidden xl:table-cell"}`}>
+          <span className="flex flex-wrap items-center gap-1">
+            {tags.slice(0, USED_AS_LIMIT).map((tag) => <ProviderTag key={tag}>{tag}</ProviderTag>)}
+            {tags.length > USED_AS_LIMIT ? <ProviderTag>+{tags.length - USED_AS_LIMIT}</ProviderTag> : null}
+          </span>
+        </td>
+        <td className="col-start-2 row-start-1 px-2 py-2.5 sm:px-3">
+          <UiV2Switch
+            checked={model.enabled}
+            disabled={busy}
+            label={`${model.displayName} on`}
+            onChange={(next) => setEnabled(model, next)}
+          />
+        </td>
+        <td className="col-start-3 row-start-1 px-3 py-2.5 text-right">
+          <ProviderRowMenu actions={menu} label={`More actions for ${model.displayName}`} tooltipSide="top" />
+        </td>
+      </tr>
+    );
+  };
+
   return (
     <section aria-labelledby="provider-models-heading" className="flex min-w-0 flex-col gap-2.5" data-testid="provider-models">
       {setupProgress ? <div>
@@ -339,6 +512,25 @@ export function AdminProviderModels({
           <AddModelMenu actions={presetActions} descriptionId={needsKey ? keyHelpId : undefined} disabled={busy || needsKey} onChatModel={() => { if (!busy && !needsKey) setSheet({ kind: "add" }); }} />
         </div>
       </div>
+      {modelCount > MODEL_SEARCH_THRESHOLD || query ? (
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          <div className="relative w-full sm:w-72">
+            <label className="sr-only" htmlFor={searchId}>Search models</label>
+            <UiV2Icon aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" name="search" />
+            <input
+              autoComplete="off"
+              className={`${inputClass} h-8 min-h-0 py-0 pl-9 text-[13px]`}
+              id={searchId}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Name or model id"
+              ref={searchRef}
+              type="search"
+              value={query}
+            />
+          </div>
+          <p aria-live="polite" className="text-xs text-ink-muted">{searching ? `${matchCount} of ${modelCount} models` : ""}</p>
+        </div>
+      ) : null}
 
       {needsKey ? <p className="text-sm text-ink-secondary" id={keyHelpId}>{providerKeyFirstHelp}</p> : null}
 
@@ -367,6 +559,11 @@ export function AdminProviderModels({
           <p className="px-5 py-8 text-center text-sm text-ink-muted" role="status">
             {needsKey ? "Models appear after a working key is saved." : "No models yet. Add one to make this provider usable in chat."}
           </p>
+        ) : sections.length === 0 ? (
+          <div className="px-5 py-8 text-center">
+            <p className="break-words text-sm text-ink-secondary">No models match “{query.trim()}”.</p>
+            <UiV2Button className="mt-2" onClick={clearSearch} tone="ghost" type="button">Clear search</UiV2Button>
+          </div>
         ) : (
           <div className="xl:overflow-x-auto">
             <table aria-label="Models" className="block w-full border-collapse text-sm xl:table xl:min-w-[42rem]">
@@ -379,116 +576,52 @@ export function AdminProviderModels({
                   <th className="relative px-3 py-2.5" scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
-              {groups.map((group) => (
-                <tbody className="block xl:table-row-group" data-testid={`provider-models-${group.modelClass}`} key={group.modelClass}>
-                  <tr className="block border-b border-trace-subtle bg-control-surface/40 xl:table-row">
-                    <th
-                      className="block px-4 py-1.5 text-left text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted xl:table-cell sm:px-5"
-                      colSpan={5}
-                      scope="rowgroup"
-                    >
-                      {group.title} · {group.models.length}
-                    </th>
-                  </tr>
-                  {group.models.map((model) => {
-                    const configuration = liveConfiguration(model);
-                    const check = activeModelCheck(connection, model, checkKey);
-                    const worksWith = modelWorksWith({
-                      check,
-                      checkRun: run && (!model.activatedAt || Date.parse(model.activatedAt) <= Date.parse(run.startedAt)) ? run : null,
-                      configuration,
-                      defaultCredentialId: diagnosticCredentialId,
-                      modelId: model.id
-                    });
-                    const tags = usage.get(model.id) ?? [];
-                    const route = modelRouteLabel(connection, model);
-                    const canCheck = !busy && Boolean(checkKey) && (initialSetup ||
-                      model.enabled && (model.activeConfig !== null || model.activeVersion === 0)) && !running;
-                    const modelCheckHelp = !checkKey
-                      ? checkHelp
-                      : !initialSetup && !model.enabled
-                        ? "Turn this model on to publish and check it."
-                        : !initialSetup && model.activeConfig === null
-                          ? "Publishes this model and checks it with the selected key."
-                          : checkHelp;
-                    const menu: UiV2MenuAction[] = [
-                      { icon: "edit", label: "Edit", onSelect: () => setSheet({ kind: "edit", model }) },
-                      {
-                        disabled: busy || running || !checkable.length || !model.enabled,
-                        icon: "regenerate",
-                        label: "Re-check with key…",
-                        submenu: checkable.map((credential) => ({
-                          label: credential.label,
-                          onSelect: () => startChecks(credential.id, [model.id])
-                        }))
-                      },
-                      {
-                        icon: "stop",
-                        label: model.enabled ? "Turn off" : "Turn on",
-                        onSelect: () => setEnabled(model, !model.enabled),
-                        separatorBefore: true
-                      },
-                      { icon: "trash", label: "Remove from AIQSA", onSelect: () => requestRemove(model), tone: "destructive" }
-                    ];
-                    return (
-                      <tr
-                        className={`grid grid-cols-[minmax(0,1fr)_auto_auto] border-b border-trace-subtle align-top xl:table-row ${model.enabled ? "" : "opacity-70"}`}
-                        data-model-enabled={model.enabled}
-                        data-testid={`provider-model-${model.id}`}
-                        id={`provider-model-${model.id}`}
-                        key={model.id}
+              {sections.map((section) => {
+                const foldOpen = searching || openFolds.has(section.modelClass);
+                return (
+                  <tbody className="block xl:table-row-group" data-testid={`provider-models-${section.modelClass}`} key={section.modelClass}>
+                    <tr className="block border-b border-trace-subtle bg-control-surface/40 xl:table-row">
+                      <th
+                        className="block px-4 py-1.5 text-left text-metadata font-semibold uppercase tracking-[0.06em] text-ink-muted xl:table-cell sm:px-5"
+                        colSpan={5}
+                        scope="rowgroup"
                       >
-                        <td className="col-start-1 row-start-1 min-w-0 px-4 py-3 sm:max-w-[18rem] sm:px-5">
-                          <span className="block truncate text-sm font-medium text-ink" data-testid="provider-model-name">{modelTitle(model)}</span>
-                          <p className="mt-0.5 truncate text-xs text-ink-muted">
-                            <span className="font-mono">{configuration.upstreamModelId}</span>
-                            {route ? ` · ${route}` : ""}
-                            {worksWith.kind === "not_checked" ? " · not checked yet" : ""}
-                          </p>
-                        </td>
-                        <td className="col-span-3 row-start-2 min-w-0 px-4 pb-3 sm:px-3 sm:py-3" data-testid={`provider-model-${model.id}-works-with`} data-works-with={worksWith.kind}>
-                          {worksWith.kind === "checking" ? (
-                            <span className="inline-flex items-center gap-2 text-xs text-ink-secondary" role="status">
-                              <span aria-hidden="true" className="v2-spinner" />
-                              {worksWith.label}
-                            </span>
-                          ) : worksWith.kind === "not_checked" ? (
-                            <span className="inline-flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-                              not checked yet
-                              <UiV2Button aria-describedby={checkHelpId} disabled={!canCheck} onClick={() => checkKey && startChecks(checkKey.id, [model.id])} title={modelCheckHelp} tone="ghost" type="button">
-                                Check model
-                              </UiV2Button>
-                              {!model.enabled && !initialSetup ? <span>Turn this model on to publish and check it.</span> : null}
-                            </span>
+                        {section.title} · {section.models.length}
+                      </th>
+                    </tr>
+                    {section.shown.map(renderModelRow)}
+                    {section.folded.length ? (
+                      <tr className="block border-b border-trace-subtle xl:table-row">
+                        <td className="block px-4 sm:px-5 xl:table-cell" colSpan={5}>
+                          {searching ? (
+                            <span className="inline-flex min-h-touch items-center py-2 text-sm text-ink-secondary">Turned off ({section.folded.length})</span>
                           ) : (
-                            <div className="flex flex-wrap items-start gap-1.5">
-                              {worksWith.chips.map((chip) => <Chip chip={chip} key={chip.key} />)}
-                              {worksWith.kind === "failed" ? <span className="text-xs text-ink-muted">No completed check. Use Re-check with key… in the model menu.</span> : null}
-                            </div>
+                            <button
+                              aria-expanded={foldOpen}
+                              className={`inline-flex min-h-touch cursor-pointer items-center gap-1.5 py-2 text-sm text-ink-secondary hover:text-ink ${focusRing}`}
+                              data-testid={`provider-models-${section.modelClass}-turned-off`}
+                              onClick={() => setOpenFolds((open) => {
+                                const next = new Set(open);
+                                if (!next.delete(section.modelClass)) next.add(section.modelClass);
+                                return next;
+                              })}
+                              ref={(element) => {
+                                if (element) foldToggles.current.set(section.modelClass, element);
+                                else foldToggles.current.delete(section.modelClass);
+                              }}
+                              type="button"
+                            >
+                              <UiV2Icon aria-hidden="true" className="size-3.5" name={foldOpen ? "chevron-down" : "chevron-right"} />
+                              Turned off ({section.folded.length})
+                            </button>
                           )}
                         </td>
-                        <td className={`col-span-3 row-start-3 min-w-0 px-4 pb-3 sm:px-3 sm:py-3 ${tags.length ? "" : "hidden xl:table-cell"}`}>
-                          <span className="flex flex-wrap items-center gap-1">
-                            {tags.slice(0, USED_AS_LIMIT).map((tag) => <ProviderTag key={tag}>{tag}</ProviderTag>)}
-                            {tags.length > USED_AS_LIMIT ? <ProviderTag>+{tags.length - USED_AS_LIMIT}</ProviderTag> : null}
-                          </span>
-                        </td>
-                        <td className="col-start-2 row-start-1 px-2 py-2.5 sm:px-3">
-                          <UiV2Switch
-                            checked={model.enabled}
-                            disabled={busy}
-                            label={`${model.displayName} on`}
-                            onChange={(next) => setEnabled(model, next)}
-                          />
-                        </td>
-                        <td className="col-start-3 row-start-1 px-3 py-2.5 text-right">
-                          <ProviderRowMenu actions={menu} label={`More actions for ${model.displayName}`} tooltipSide="top" />
-                        </td>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              ))}
+                    ) : null}
+                    {foldOpen ? section.folded.map(renderModelRow) : null}
+                  </tbody>
+                );
+              })}
             </table>
           </div>
         )}

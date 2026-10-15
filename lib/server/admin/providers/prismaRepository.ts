@@ -1,6 +1,7 @@
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { adminModelPricingColumns, initialAdminModelPricing, projectAdminModelPricing, resolveAdminModelPricingChange } from "./providerModelPricing";
 import { nativeRouteAdoptionStatus } from "../../../contracts/nativeRoutingAdoption";
+import { modelReleaseDate } from "../../../domain/modelReleaseDates";
 import { mergeSystemRoleEvidence } from "./systemRoleEvidence";
 import { decodeDecisionEvidence } from "../../providers/decisionEvidence";
 import { decodeCapabilitySetupEvidence, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
@@ -962,6 +963,7 @@ export function createPrismaAdminProviderRepository(
           enabled: model.enabled,
           id: model.id,
           modelClass: model.modelClass,
+          releasedOn: modelReleaseDate(model.templateKey),
           updatedAt: model.updatedAt.toISOString()
         })),
         unassignedPolicy: connection.unassignedPolicy,
