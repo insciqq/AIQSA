@@ -6413,7 +6413,8 @@ describe("run execution", () => {
       if (provider === "openrouter") {
         const body = buildOpenRouterChatRequest(request);
         expect(body).not.toHaveProperty("parallel_tool_calls");
-        expect(body).toMatchObject({ max_tokens: 65_536, temperature: 1,
+        expect(body.temperature).toBe(modelId.startsWith("anthropic/") ? undefined : 1);
+        expect(body).toMatchObject({ max_tokens: 65_536,
           provider: { data_collection: "deny", require_parameters: true, allow_fallbacks: true } });
         expect(body.tools).toEqual(expect.arrayContaining([
           expect.objectContaining({ function: expect.objectContaining({ name: "generate_image", strict: false }) }),

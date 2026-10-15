@@ -45,7 +45,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
         response.end(JSON.stringify(value));
       };
       if (request.method === "GET" && request.url === "/models") {
-        send({ data: [{ id: "gpt-5.6-terra" }, { id: "gpt-6-astra" }] });
+        send({ data: [{ id: "gpt-6.1-sol" }, { id: "gpt-6-astra" }] });
         return;
       }
       if (request.method !== "POST" || request.url !== "/responses") {
@@ -74,7 +74,7 @@ test("one key save activates models, fills empty defaults and retries failed Sea
       const check = wire.includes('"type":"input_file"') ? "pdf" : wire.includes('"type":"input_image"') ? "vision"
         : wire.includes('"type":"json_schema"') ? "json" : tools?.[0]?.name ?? (body.stream ? "stream" : "access");
       if (!search) capabilityCalls.push({ model: body.model, check });
-      if (check === "json" && body.model === "gpt-5.6-terra" && failJsonOnce) {
+      if (check === "json" && body.model === "gpt-6.1-sol" && failJsonOnce) {
         failJsonOnce = false;
         response.writeHead(503, { "content-type": "application/json" }); response.end("{}"); return;
       }

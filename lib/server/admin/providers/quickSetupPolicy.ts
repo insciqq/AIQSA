@@ -19,10 +19,16 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 9;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 10;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
+  /**
+   * Superseded model: kept only so a connection whose Quick Setup model it is
+   * still completes key replacement and recovery. Setup never creates, turns
+   * on, offers or suggests it.
+   */
+  legacy?: true;
   recommended: boolean;
   templateKey: ProviderModelTemplateKey;
 }>;
@@ -54,8 +60,18 @@ const candidateDefinitions: Readonly<Record<
   anthropic: Object.freeze([
     Object.freeze({
       candidateId: "p9-a5",
-      recommended: false,
+      recommended: true,
       templateKey: "anthropic:claude-opus-5-5"
+    }),
+    Object.freeze({
+      candidateId: "p10-a6",
+      recommended: false,
+      templateKey: "anthropic:claude-sonnet-5-5"
+    }),
+    Object.freeze({
+      candidateId: "p10-a7",
+      recommended: false,
+      templateKey: "anthropic:claude-haiku-5-5"
     }),
     Object.freeze({
       candidateId: "p7-a3",
@@ -64,16 +80,19 @@ const candidateDefinitions: Readonly<Record<
     }),
     Object.freeze({
       candidateId: "p2-a1",
-      recommended: true,
+      legacy: true,
+      recommended: false,
       templateKey: "anthropic:claude-opus-5"
     }),
     Object.freeze({
       candidateId: "p2-a2",
+      legacy: true,
       recommended: false,
       templateKey: "anthropic:claude-sonnet-5"
     }),
     Object.freeze({
       candidateId: "p7-a4",
+      legacy: true,
       recommended: false,
       templateKey: "anthropic:claude-opus-4-8"
     })
@@ -97,9 +116,9 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "gemini:gemini-3.8-flash"
     }),
     Object.freeze({
-      candidateId: "p2-g2",
+      candidateId: "p10-g6",
       recommended: false,
-      templateKey: "gemini:gemini-3.5-flash"
+      templateKey: "gemini:gemini-4-argon"
     }),
     Object.freeze({
       candidateId: "p2-g3",
@@ -107,17 +126,30 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "gemini:gemini-3.5-flash-lite"
     }),
     Object.freeze({
-      candidateId: "p2-g4",
-      recommended: false,
-      templateKey: "gemini:gemini-3.1-pro-preview"
-    }),
-    Object.freeze({
       candidateId: "p7-g5",
+      legacy: true,
       recommended: false,
       templateKey: "gemini:gemini-3.6-flash"
+    }),
+    Object.freeze({
+      candidateId: "p2-g2",
+      legacy: true,
+      recommended: false,
+      templateKey: "gemini:gemini-3.5-flash"
+    }),
+    Object.freeze({
+      candidateId: "p2-g4",
+      legacy: true,
+      recommended: false,
+      templateKey: "gemini:gemini-3.1-pro-preview"
     })
   ]),
   openai: Object.freeze([
+    Object.freeze({
+      candidateId: "p10-o8",
+      recommended: true,
+      templateKey: "openai:gpt-6.1-sol"
+    }),
     Object.freeze({
       candidateId: "p9-o6",
       recommended: false,
@@ -134,22 +166,26 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "openai:gpt-6-astra"
     }),
     Object.freeze({
-      candidateId: "p2-o1",
-      recommended: true,
-      templateKey: "openai:gpt-5.6-terra"
-    }),
-    Object.freeze({
-      candidateId: "p2-o2",
-      recommended: false,
-      templateKey: "openai:gpt-5.6-luna"
-    }),
-    Object.freeze({
       candidateId: "p2-o3",
+      legacy: true,
       recommended: false,
       templateKey: "openai:gpt-5.6-sol"
     }),
     Object.freeze({
+      candidateId: "p2-o1",
+      legacy: true,
+      recommended: false,
+      templateKey: "openai:gpt-5.6-terra"
+    }),
+    Object.freeze({
+      candidateId: "p2-o2",
+      legacy: true,
+      recommended: false,
+      templateKey: "openai:gpt-5.6-luna"
+    }),
+    Object.freeze({
       candidateId: "p7-o5",
+      legacy: true,
       recommended: false,
       templateKey: "openai:gpt-5.5"
     })
@@ -157,8 +193,33 @@ const candidateDefinitions: Readonly<Record<
   openrouter: Object.freeze([
     Object.freeze({
       candidateId: "p9-r7",
-      recommended: false,
+      recommended: true,
       templateKey: "openrouter:anthropic/claude-opus-5.5"
+    }),
+    Object.freeze({
+      candidateId: "p10-r12",
+      recommended: false,
+      templateKey: "openrouter:anthropic/claude-sonnet-5.5"
+    }),
+    Object.freeze({
+      candidateId: "p10-r13",
+      recommended: false,
+      templateKey: "openrouter:anthropic/claude-haiku-5.5"
+    }),
+    Object.freeze({
+      candidateId: "p10-r14",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6.1-sol"
+    }),
+    Object.freeze({
+      candidateId: "p10-r15",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6.1-sol-pro"
+    }),
+    Object.freeze({
+      candidateId: "p10-r16",
+      recommended: false,
+      templateKey: "openrouter:google/gemini-4-argon"
     }),
     Object.freeze({
       candidateId: "p9-r8",
@@ -179,11 +240,6 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p9-r11",
       recommended: false,
       templateKey: "openrouter:openai/gpt-6-luna-pro"
-    }),
-    Object.freeze({
-      candidateId: "p1-r1",
-      recommended: true,
-      templateKey: "openrouter:anthropic/claude-opus-5"
     }),
     Object.freeze({
       candidateId: "p1-r2",
@@ -214,6 +270,12 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p7-r-search",
       recommended: false,
       templateKey: "openrouter:perplexity/sonar-pro-search"
+    }),
+    Object.freeze({
+      candidateId: "p1-r1",
+      legacy: true,
+      recommended: false,
+      templateKey: "openrouter:anthropic/claude-opus-5"
     })
   ])
 });
@@ -335,18 +397,21 @@ export function decideAdminProviderQuickSetupModel(input: Readonly<{
           (entry) => entry.candidateId === input.selectedModel?.candidateId
         )
       : null;
-    if (!candidate || !candidate.configuration.answerSelectable || !observed.has(candidate.configuration.upstreamModelId)) {
+    if (!candidate || candidate.legacy || !candidate.configuration.answerSelectable ||
+      !observed.has(candidate.configuration.upstreamModelId)) {
       return { kind: "selection_invalid" };
     }
     return { candidate, kind: "selected" };
   }
 
   const recommendation = input.policy.candidates.find(
-    (candidate) => candidate.recommended && observed.has(candidate.configuration.upstreamModelId)
+    (candidate) => !candidate.legacy && candidate.recommended &&
+      observed.has(candidate.configuration.upstreamModelId)
   );
   if (recommendation) return { candidate: recommendation, kind: "selected" };
 
-  const candidate = input.policy.candidates.find((entry) => entry.configuration.answerSelectable && observed.has(entry.configuration.upstreamModelId));
+  const candidate = input.policy.candidates.find((entry) => !entry.legacy &&
+    entry.configuration.answerSelectable && observed.has(entry.configuration.upstreamModelId));
   return candidate
     ? { candidate, kind: "selected" }
     : { kind: "unsupported_catalog" };

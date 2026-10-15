@@ -21,10 +21,13 @@ export type SetupModel = Readonly<{
   webSearchPriceUsdPerThousand?: number | null;
 }>;
 
-/** Code-owned candidates only; availability and capabilities still need exact-key checks. */
+/**
+ * Code-owned candidates only; availability and capabilities still need exact-key checks.
+ * Legacy Quick Setup candidates are never set up or suggested; stored rows keep their tariffs.
+ */
 export function providerSetupModels(family: string, connection?: Pick<ProviderConnectionConfiguration, "apiRoot" | "responsesRequestIsolationDetected">): readonly SetupModel[] {
   if (family === "openai_compatible" && codexLbConnection(connection)) {
-    const answers: SetupModel[] = adminProviderQuickSetupPolicy("openai").candidates.map(candidate => {
+    const answers: SetupModel[] = adminProviderQuickSetupPolicy("openai").candidates.filter(candidate => !candidate.legacy).map(candidate => {
       const upstreamModelId = candidate.configuration.upstreamModelId;
       return {
         configuration: {
@@ -43,7 +46,8 @@ export function providerSetupModels(family: string, connection?: Pick<ProviderCo
     }];
   }
   if (!ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.includes(family as AdminProviderQuickSetupProviderId)) return [];
-  const answers = adminProviderQuickSetupPolicy(family as AdminProviderQuickSetupProviderId).candidates.map((candidate) => ({
+  const answers = adminProviderQuickSetupPolicy(family as AdminProviderQuickSetupProviderId).candidates
+    .filter((candidate) => !candidate.legacy).map((candidate) => ({
     configuration: candidate.configuration,
     displayName: candidate.displayName,
     modelId: candidate.modelId,

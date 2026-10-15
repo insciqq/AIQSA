@@ -192,8 +192,15 @@ describe("run parameters", () => {
     }), 2_048);
     expect(params).toEqual({ background: false, maxOutputTokens: 1_000, reasoning: { effort: "low", summary: "auto" },
       stream: true, temperature: 1 });
-    expect(failureCode(() => journeyRunParams(catalogModel({ providerFamily: "gemini" }), 2_048)))
+    expect(failureCode(() => journeyRunParams(catalogModel({ providerFamily: "deepseek" }), 2_048)))
       .toBe("model_family_unsupported");
+  });
+
+  it("builds Gemini parameters like the composer", () => {
+    expect(journeyRunParams(catalogModel({
+      defaultParams: { maxTokens: 65_536, reasoning: { effort: "medium" }, stream: true },
+      providerFamily: "gemini"
+    }), 2_048)).toEqual({ maxOutputTokens: 2_048, reasoning: { effort: "low" }, stream: true });
   });
 
   it("builds OpenRouter parameters like the composer", () => {

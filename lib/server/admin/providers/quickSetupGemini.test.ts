@@ -12,7 +12,7 @@ describe("Gemini setup API version", () => {
   it.each([false, true])("keeps discovery, probes and saved native execution on the working root (additional: %s)", async (additional) => {
     const policy = adminProviderQuickSetupPolicy("gemini");
     const betaRoot = "https://generativelanguage.googleapis.com/v1beta";
-    const pro = "gemini-3.1-pro-preview";
+    const argon = "gemini-4-argon";
     const flash = "gemini-3.8-flash";
     const calls: string[] = [];
     const fetchFn: typeof fetch = async (request, init) => {
@@ -20,15 +20,15 @@ describe("Gemini setup API version", () => {
       calls.push(url.href);
       expect(new Headers(init?.headers).get("x-goog-api-key")).toBe("synthetic-key");
       if (init?.method === "GET") {
-        // The reported upstream discrepancy: /v1 lists Flash but omits Pro.
-        return Response.json({ models: (url.pathname.startsWith("/v1beta/") ? [flash, pro] : [flash])
+        // The reported upstream discrepancy: /v1 lists Flash but omits the newer model.
+        return Response.json({ models: (url.pathname.startsWith("/v1beta/") ? [flash, argon] : [flash])
           .map((name) => ({ name: `models/${name}` })) });
       }
       const body = JSON.parse(String(init?.body));
-      expect(body).toMatchObject({ model: pro, store: false, stream: false });
+      expect(body).toMatchObject({ model: argon, store: false, stream: false });
       if (!url.pathname.startsWith("/v1beta/")) return new Response(null, { status: 404 });
       return Response.json({
-        id: "synthetic-interaction", model: pro, status: "completed",
+        id: "synthetic-interaction", model: argon, status: "completed",
         steps: [{ type: "model_output", content: [{ type: "text", text: "ok" }] }]
       });
     };
@@ -80,11 +80,11 @@ describe("Gemini setup API version", () => {
       ...(additional ? { connectionDisplayName: "Gemini second account" } : {})
     } });
     expect(result.outcome).toBe("ready");
-    expect(savedModels).toEqual([flash, pro]);
+    expect(savedModels).toEqual([flash, argon]);
     expect(savedConnection?.apiRoot).toBe(betaRoot);
     expect(probe).toHaveBeenCalledTimes(2);
 
-    const model = policy.candidates.find(({ configuration }) => configuration.upstreamModelId === pro)!.configuration;
+    const model = policy.candidates.find(({ configuration }) => configuration.upstreamModelId === argon)!.configuration;
     const adapter = createGeminiInteractionsAdapter({ client: createFetchGeminiInteractionsClient({
       apiKey: "synthetic-key", apiRoot: savedConnection!.apiRoot, fetchFn
     }) });
@@ -92,7 +92,7 @@ describe("Gemini setup API version", () => {
       attachmentIds: [], attachments: [], chatId: "synthetic-chat",
       content: { blocks: [{ type: "text", text: "hello" }] },
       knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      modelCapabilities: model.capabilities, modelId: pro,
+      modelCapabilities: model.capabilities, modelId: argon,
       params: { maxTokens: 256, stream: false }, prompt: { developer: null, system: null },
       provider: "gemini", searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
     });

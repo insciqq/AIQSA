@@ -75,7 +75,7 @@ function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
 }
 
 describe("compatible Responses adapter", () => {
-  it.each(["gpt-6-sol", "gpt-6-luna"])("keeps %s reasoning portable without native lifecycle or cache fields", (modelId) => {
+  it.each(["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])("keeps %s reasoning portable without native lifecycle or cache fields", (modelId) => {
     const body = buildCompatibleResponsesRequest(request({ modelId, params: {
       background: true, store: true, stream: true,
       reasoning: { effort: "medium", mode: "pro" }, temperature: 0.3

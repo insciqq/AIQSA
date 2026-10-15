@@ -736,7 +736,8 @@ describe("Prisma provider Quick setup additional connections", () => {
       providerCredentialVersion: { create: create("providerCredentialVersion") },
       providerModel: {
         create: create("providerModel"),
-        findMany: vi.fn(async () => eligibilityModels())
+        findMany: vi.fn(async () => eligibilityModels()),
+        findUnique: vi.fn(async () => null)
       },
       providerModelCredentialCheck: { create: create("providerModelCredentialCheck") },
       providerUserCredentialAssignment: { create: create("providerUserCredentialAssignment") },
@@ -888,6 +889,31 @@ describe("Prisma provider Quick setup additional connections", () => {
     expect(await other.repository.commitAdditional({ ...plan, expectedFingerprint: guard.fingerprint,
       models: [{ ...plan.models[0]!, candidate: invalid }] })).toBe("stale");
     expect(other.created.providerModel).toBeUndefined();
+  });
+
+  it("never creates a legacy model row, on a separate connection or in a fresh canonical setup", async () => {
+    const legacy = policy.candidates.find(({ legacy }) => legacy)!;
+    const evidence = { detail: "ok" as const, method: "models_catalog" as const, selectedProviders: [],
+      upstreamModelId: legacy.configuration.upstreamModelId };
+    const separate = transactionalRepository([]);
+    const fence = await separate.repository.inspect({ now, provider: "openai", ...actor });
+    expect(await separate.repository.commitAdditional(additionalPlan(fence.fingerprint, {
+      models: [{ candidate: legacy, evidence, grantId: "grant-second-legacy", id: "model-second-legacy" }]
+    }))).toBe("stale");
+    expect(separate.created).toEqual({});
+
+    const canonical = transactionalRepository([]);
+    const initial = await canonical.repository.inspect({ now, provider: "openai", ...actor });
+    expect(initial.mode).toBe("initial");
+    expect(await canonical.repository.commit({
+      actor, candidate: legacy, candidates: [legacy], checkedAt: now,
+      credential: { draftVersion: 1, id: "credential-new", isNew: true, versionEnvelope: "envelope-new", versionId: "version-new" },
+      expectedFingerprint: initial.fingerprint, grants: [{ id: "grant-legacy", modelId: legacy.modelId }], mode: "initial",
+      modelChecks: [{ evidence, modelId: legacy.modelId }], now, preservedModels: [], provider: "openai", rerankerChecks: []
+    })).toBe("stale");
+    // The plan passed every earlier fence and stopped at the missing legacy row.
+    expect(canonical.tx.providerModel.findUnique).toHaveBeenCalledWith({ where: { id: legacy.modelId } });
+    expect(canonical.created).toEqual({});
   });
 
   it("writes nothing behind a stale fence or a name the family already uses", async () => {

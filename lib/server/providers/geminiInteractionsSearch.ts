@@ -63,14 +63,18 @@ function geminiSearchPolicy(request: ProviderSearchRequest) {
 
 /** Saved capability levels narrowed to the deployment's configured reasoning
  * control: a reviewed catalog model never receives a level its template
- * excludes, even when stale saved capabilities still list it. */
+ * excludes, even when stale saved capabilities still list it. Catalog
+ * deployments save no levels, so the control's lowest level applies; without
+ * one the provider's default thinking may skip the search entirely. */
 function lowestSupportedThinkingLevel(
   modelId: string,
   capabilities: ProviderModelCapabilities
 ): string | undefined {
   if (!capabilities.reasoning) return undefined;
-  const saved = new Set(capabilities.reasoningEfforts ?? []);
-  return geminiConfiguredThinkingLevels(modelId, capabilities).find((level) => saved.has(level));
+  const configured = geminiConfiguredThinkingLevels(modelId, capabilities);
+  if (!capabilities.reasoningEfforts?.length) return configured[0];
+  const saved = new Set(capabilities.reasoningEfforts);
+  return configured.find((level) => saved.has(level));
 }
 
 export function buildGeminiInteractionsSearchRequest(
