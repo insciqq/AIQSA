@@ -70,8 +70,29 @@ export function initiallyVerifiedModelConfiguration(
   model: ProviderModelConfiguration,
   evidence: AdminProviderTestEvidence
 ): ProviderModelConfiguration {
+  return decodeCapabilitySetupEvidence(evidence.capabilitySetup)?.activation === "preserve" ? model : verifiedModelConfiguration(model, evidence);
+}
+
+const RECHECK_ENABLED_CAPABILITIES = ["toolCalling", "parallelToolCalls", "nativePdfInput", "vision",
+  "codexStandaloneWebSearch", "nativeSearch", "streaming", "imageGeneration", "imageEditing"] as const;
+
+/** A later check turns on what its evidence verified and never turns a capability off:
+ * a failed or skipped probe may be transient. */
+export function recheckVerifiedModelConfiguration(
+  model: ProviderModelConfiguration,
+  evidence: AdminProviderTestEvidence
+): ProviderModelConfiguration {
+  const verified = verifiedModelConfiguration(model, evidence).capabilities;
+  const enabled = RECHECK_ENABLED_CAPABILITIES.filter((key) => verified[key] === true && model.capabilities[key] !== true);
+  return enabled.length ? { ...model, capabilities: { ...model.capabilities,
+    ...Object.fromEntries(enabled.map((key) => [key, true])) } } : model;
+}
+
+function verifiedModelConfiguration(
+  model: ProviderModelConfiguration,
+  evidence: AdminProviderTestEvidence
+): ProviderModelConfiguration {
   const setup = decodeCapabilitySetupEvidence(evidence.capabilitySetup);
-  if (setup?.activation === "preserve") return model;
   if (setup && model.modelClass === "image") {
     const verified = (capability: "imageGeneration" | "imageEditing") => {
       const proof = decodeImageVerificationEvidence(evidence[capability]);
