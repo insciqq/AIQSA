@@ -84,7 +84,7 @@ async function failedRunState(chatId: string) {
   const run = await prisma.modelRun.findFirst({ where: { chatId }, orderBy: { createdAt: "desc" }, select: { errorPayload: true, status: true } });
   const payload = run?.errorPayload as Record<string, unknown> | null | undefined;
   return { status: run?.status ?? null, code: typeof payload?.code === "string" ? payload.code : null,
-    reason: typeof payload?.reason === "string" ? payload.reason : null };
+    httpStatus: typeof payload?.httpStatus === "number" ? payload.httpStatus : null, payloadKeys: Object.keys(payload ?? {}).sort() };
 }
 
 /** Setup diagnostics: failed model checks by upstream id, the bootstrap Search result and the connection's Search sources. */
@@ -212,8 +212,13 @@ test("OpenRouter Quick Setup chooses Claude Opus 5.5, checks the new models, dro
     expect(result.model?.displayName).toBe("Claude Opus 5.5");
     expect(models).not.toContain("anthropic/claude-opus-5");
     expect(checks).toEqual(Object.fromEntries(OPENROUTER_NEW.map((id) => [id, "available"])));
-    await answerTurn(request, await answerModel(request, connection, "anthropic/claude-sonnet-5.5"), summary, "sonnet55Turn");
-    await answerTurn(request, await answerModel(request, connection, "anthropic/claude-haiku-5.5"), summary, "haiku55Turn");
+    // Each Claude turn is independent; Opus 5.5 predates this change and separates a new-template defect from a route one.
+    const failures: unknown[] = [];
+    for (const [upstream, key] of [["anthropic/claude-sonnet-5.5", "sonnet55Turn"], ["anthropic/claude-haiku-5.5", "haiku55Turn"],
+      ["anthropic/claude-opus-5.5", "opus55Turn"]] as const) {
+      await answerTurn(request, await answerModel(request, connection, upstream), summary, key).catch((error: unknown) => { failures.push(error); });
+    }
+    if (failures.length) throw failures[0];
   } finally {
     await report(testInfo, "model_refresh_openrouter_paid_summary", summary);
   }
