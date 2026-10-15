@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
 import type { NormalizedTokenUsage } from "../../domain/usage";
 import { buildAnthropicMessagesRequest } from "../providers/anthropicMessages";
 import { ProviderRequestTimeoutError } from "../providers/network";
+import { compatibleDroppedRoundDecision, createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
+import { markProviderStreamDrop } from "../providers/streamDrop";
 import type { NormalizedSearchPlanOption, ProviderAdapter, ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
   anthropicMessagesToolBridge,
@@ -461,6 +463,105 @@ describe("context compaction summarizer", () => {
       attempt: expect.objectContaining({ errorCode: "context_compaction_provider_failed", state: "failed" }),
       usage: expect.objectContaining({ completeness: "partial", inputTokens: 14, outputTokens: 1, totalTokens: 15 })
     })]);
+  });
+
+  describe("Codex LB dropped summary requests", () => {
+    /** A real compatible-transport 502, as codex-lb relays a backend failure. */
+    const gateway502 = (retryAfter?: string) => createFetchOpenAIResponsesClient({ apiKey: "synthetic",
+      baseUrl: "https://lb.example.test/backend-api/codex",
+      fetchFn: async () => new Response("PRIVATE_GATEWAY_BODY", { status: 502, ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}) })
+    }).create({ model: "answer-model" }).then(() => { throw new Error("expected_502"); }, (error: unknown) => error);
+    const truncated = () => markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
+
+    /** Fails the first requests with the given errors after partial output, then answers. */
+    function dropping(failures: readonly unknown[], calls: ProviderRunRequest[]): ContextSummaryAdapter {
+      let index = 0;
+      return { async *stream(next) {
+        calls.push(next);
+        const failure = failures[index++];
+        if (failure !== undefined) {
+          yield { data: { delta: "{\"notes\": \"par" }, type: "token" };
+          yield { data: { inputTokens: 12 }, type: "usage" };
+          throw failure;
+        }
+        const output = json("bounded notes", ["message-old"]);
+        yield { data: { delta: output }, type: "token" };
+        yield { data: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, type: "usage" };
+        return { finalProviderResponsePreview: {}, finalText: output, usage: {} };
+      } };
+    }
+
+    function admitted(adapter: ContextSummaryAdapter, sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>) {
+      const observe = vi.fn();
+      const sleeps: number[] = [];
+      return { observe, sleeps, adapter: { ...adapter, droppedRequestRetry: {
+        policy: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe }, random: () => 0,
+        sleep: sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); })
+      } } satisfies ContextSummaryAdapter };
+    }
+
+    it.each([
+      ["a 502", () => gateway502("1"), 1_000],
+      ["a dropped stream", async () => truncated(), 125]
+    ])("sends the request again as a new accounted call after %s", async (_label, failure, delayMs) => {
+      const calls: ProviderRunRequest[] = [];
+      const log: string[] = [];
+      const recorded = receipts(log);
+      const retry = admitted(dropping([await failure()], calls));
+      const summarized = await executeContextSummary({ adapter: retry.adapter, receipts: recorded.hooks, request: request() });
+      expect(summarized.summary.notes).toBe("bounded notes");
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toEqual(calls[0]);
+      // The dropped call settles with its usage before the re-send is claimed.
+      expect(log).toEqual(["claim:1", "dispatched:1", "settle:failed:1", "claim:2", "dispatched:2", "settle:committed:2"]);
+      expect(recorded.settled[0]).toEqual(expect.objectContaining({
+        attempt: expect.objectContaining({ errorCode: "context_compaction_provider_failed", state: "failed" }),
+        usage: expect.objectContaining({ completeness: "partial", inputTokens: 12 }) }));
+      expect(recorded.settled[1]).toEqual(expect.objectContaining({ usage: expect.objectContaining({ inputTokens: 10, totalTokens: 15 }) }));
+      expect(retry.sleeps).toEqual([delayMs]);
+      expect(retry.observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: "retry", attempt: 1, delayMs }));
+    });
+
+    it("gives up after the third dropped request with provider_failed", async () => {
+      const calls: ProviderRunRequest[] = [];
+      const recorded = receipts();
+      const retry = admitted(dropping([await gateway502(), truncated(), await gateway502()], calls));
+      await expect(executeContextSummary({ adapter: retry.adapter, receipts: recorded.hooks, request: request() }))
+        .rejects.toMatchObject({ code: "context_compaction_provider_failed" });
+      expect(calls).toHaveLength(3);
+      expect(recorded.settled.map(({ attempt }) => [attempt.attempt, attempt.state])).toEqual([[1, "failed"], [2, "failed"], [3, "failed"]]);
+      expect(retry.sleeps).toEqual([125, 250]);
+      expect(retry.observe).toHaveBeenLastCalledWith(expect.objectContaining({ action: "stop", attempt: 3 }));
+    });
+
+    it("ends without a re-send when Stop lands during the backoff", async () => {
+      const controller = new AbortController();
+      const calls: ProviderRunRequest[] = [];
+      const recorded = receipts();
+      const stop = new DOMException("stopped", "AbortError");
+      const retry = admitted(dropping([await gateway502()], calls), async () => {
+        controller.abort(stop);
+        throw stop;
+      });
+      await expect(executeContextSummary({ adapter: retry.adapter, receipts: recorded.hooks, request: request(), signal: controller.signal }))
+        .rejects.toBe(stop);
+      expect(calls).toHaveLength(1);
+      expect(recorded.claims).toHaveLength(1);
+      expect(recorded.settled).toEqual([expect.objectContaining({ attempt: expect.objectContaining({ state: "failed" }) })]);
+    });
+
+    it("keeps failures the binding does not recognize, and bindings without the admission send once", async () => {
+      const unrecognized: ProviderRunRequest[] = [];
+      const retry = admitted(dropping([Object.assign(new Error("upstream"), { status: 503 })], unrecognized));
+      await expect(executeContextSummary({ adapter: retry.adapter, request: request() }))
+        .rejects.toMatchObject({ code: "context_compaction_provider_failed" });
+      expect(unrecognized).toHaveLength(1);
+      expect(retry.observe).not.toHaveBeenCalled();
+      const other: ProviderRunRequest[] = [];
+      await expect(executeContextSummary({ adapter: dropping([await gateway502()], other), request: request() }))
+        .rejects.toMatchObject({ code: "context_compaction_provider_failed" });
+      expect(other).toHaveLength(1);
+    });
   });
 
   it("keeps an owner-classified authority failure's own code", async () => {
