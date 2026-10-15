@@ -1,4 +1,4 @@
-import { mergeTokenUsage } from "../../domain/usage";
+import { mergeTokenUsage, sumTokenUsage } from "../../domain/usage";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
@@ -6,6 +6,7 @@ import {
   providerAuthenticationMode,
   type ProviderConnectionConfiguration
 } from "../providers/providerConfiguration";
+import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
 import { createProviderSafeFetch } from "../providers/providerSafeFetch";
 import {
   createProviderRuntimeBinding,
@@ -32,6 +33,12 @@ type RuntimeClient = Pick<PrismaClient, "$transaction">;
 type AcceptedRequestExecutorOptions = Readonly<{
   createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
   disableRequestRetries?: boolean;
+  /**
+   * Vision (PROVIDERS.md: Codex LB): within one call, a request the binding
+   * recognizes as dropped before any of its output arrived is sent again
+   * after the shared backoff. Present: admitted; the fields are backoff seams.
+   */
+  droppedRequestRetry?: Omit<ProviderDroppedRequestRetry, "policy">;
   encryptionKey?: () => Buffer;
 }>;
 
@@ -109,7 +116,8 @@ export function createAcceptedProviderRequestExecutor(
         }
       : baseFetch;
     const runtime = createProviderRuntimeBinding({
-      options: { allowFake: false, fetchFn, disableRequestRetries: options.disableRequestRetries },
+      options: { allowFake: false, fetchFn, disableRequestRetries: options.disableRequestRetries,
+        ...(options.droppedRequestRetry ? { droppedRequestRetry: true } : {}) },
       secret: authenticationMode === "none"
         ? null
         : async () => {
@@ -119,18 +127,40 @@ export function createAcceptedProviderRequestExecutor(
           },
       snapshot
     });
-    const stream = runtime.adapter.stream(request, executionOptions);
-    let usage: ModelRunUsage = {};
-    let next = await stream.next();
-    while (!next.done) {
-      if (next.value.type === "usage") {
-        usage = mergeTokenUsage(usage, next.value.data);
-        executionOptions.onUsage?.(usage);
+    const retry = options.droppedRequestRetry && runtime.adapter.droppedRoundRetry
+      ? { ...options.droppedRequestRetry, policy: runtime.adapter.droppedRoundRetry } : null;
+    // Each dropped request is its own operation: the call reports the sum.
+    const dropped: ModelRunUsage[] = [];
+    for (let attempt = 1; ; attempt += 1) {
+      let usage: ModelRunUsage = {};
+      const total = () => dropped.length ? sumTokenUsage([...dropped, usage]) : usage;
+      // Any event but usage and the provider's lifecycle summary is output.
+      let receivedOutput = false;
+      const stream = runtime.adapter.stream(request, executionOptions);
+      let delayMs: number | null;
+      try {
+        let next = await stream.next();
+        while (!next.done) {
+          if (next.value.type === "usage") {
+            usage = mergeTokenUsage(usage, next.value.data);
+            executionOptions.onUsage?.(total());
+          } else if (next.value.type !== "artifact" || next.value.data.artifactType !== "summary") receivedOutput = true;
+          next = await stream.next();
+        }
+        usage = mergeTokenUsage(usage, next.value.usage);
+        executionOptions.onUsage?.(total());
+        return { ...next.value, usage: total() };
+      } catch (error) {
+        delayMs = retry ? droppedRequestRetryDelay(retry, { acceptedOutput: receivedOutput, attempt, error,
+          signal: executionOptions.signal }) : null;
+        if (delayMs === null) throw error;
+      } finally {
+        await stream.return(undefined as never).catch(() => undefined);
       }
-      next = await stream.next();
+      dropped.push({ ...usage, completeness: "partial" });
+      executionOptions.onUsage?.(sumTokenUsage(dropped));
+      // Stop and the caller's deadline end the wait with their own reason.
+      await (retry!.sleep ?? sleepWithSignal)(delayMs, executionOptions.signal ?? new AbortController().signal);
     }
-    usage = mergeTokenUsage(usage, next.value.usage);
-    executionOptions.onUsage?.(usage);
-    return { ...next.value, usage };
   };
 }

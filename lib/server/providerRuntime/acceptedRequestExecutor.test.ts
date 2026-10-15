@@ -184,4 +184,106 @@ describe("accepted provider request executor", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(transaction).toHaveBeenCalledOnce();
   });
+
+  describe("Codex LB dropped requests (Vision)", () => {
+    const noAuth = vi.fn(async (operation) => operation({ $queryRaw: async () => [{
+      credentialId: "credential-1", id: "credential-version-1", revokedAt: null,
+      secretEnvelope: null, testEvidence: { authenticationMode: "none" }
+    }] }));
+    function compatible(apiRoot: string): ProviderExecutionSnapshot {
+      const accepted = snapshot();
+      return { ...accepted, providerFamily: "openai_compatible",
+        connection: { ...accepted.connection, allowPrivateNetwork: true, apiRoot, authenticationMode: "none" },
+        model: { ...accepted.model, adapterKind: "openai_responses_compatible", answerSelectable: true, modelClass: "answer" } };
+    }
+    const codexLb = compatible("http://127.0.0.1:11434/backend-api/codex");
+    const compatibleRequest = (): ProviderRunRequest => ({ ...request(), provider: "openai_compatible" });
+    const gateway502 = () => new Response("PRIVATE_GATEWAY_BODY", { status: 502, headers: { "retry-after": "1" } });
+    const completed = () => new Response(JSON.stringify({ id: "response-1", model: "gpt-test", output_text: "settled", status: "completed",
+      usage: { input_tokens: 40, output_tokens: 6, total_tokens: 46 } }));
+    async function real(replies: readonly (() => Response)[], apiRoot?: string) {
+      const actual = await vi.importActual<typeof import("../providers/runtimeFactory")>("../providers/runtimeFactory");
+      bindingMock.mockImplementation(actual.createProviderRuntimeBinding);
+      let index = 0;
+      const fetchFn = vi.fn<typeof fetch>(async () => replies[index++]!());
+      const sleeps: number[] = [];
+      const usage: unknown[] = [];
+      const execute = createAcceptedProviderRequestExecutor({ $transaction: noAuth } as unknown as Pick<PrismaClient, "$transaction">, {
+        createFetch: () => fetchFn, disableRequestRetries: true,
+        droppedRequestRetry: { random: () => 0, sleep: async (delayMs) => { sleeps.push(delayMs); } }
+      });
+      const run = () => execute(apiRoot ? compatible(apiRoot) : codexLb, compatibleRequest(),
+        { onUsage: (value) => usage.push(value) });
+      return { fetchFn, run, sleeps, usage };
+    }
+
+    it("sends a request that failed with 502 again inside the same call, accounting both", async () => {
+      const call = await real([gateway502, completed]);
+      const result = await call.run();
+      expect(result.finalText).toBe("settled");
+      expect(call.fetchFn).toHaveBeenCalledTimes(2);
+      expect(call.sleeps).toEqual([1_000]);
+      // The dropped request's usage is unknown, so the call's sum stays partial.
+      expect(result.usage).toMatchObject({ completeness: "partial", inputTokens: 40, outputTokens: 6 });
+      expect(call.usage.at(-1)).toEqual(result.usage);
+    });
+
+    it("gives up after the third dropped request and keeps other bindings to one request", async () => {
+      const bounded = await real([gateway502, gateway502, gateway502, completed]);
+      await expect(bounded.run()).rejects.toMatchObject({ status: 502 });
+      expect(bounded.fetchFn).toHaveBeenCalledTimes(3);
+      expect(bounded.sleeps).toHaveLength(2);
+      const other = await real([gateway502, completed], "http://127.0.0.1:11434/v1");
+      await expect(other.run()).rejects.toMatchObject({ status: 502 });
+      expect(other.fetchFn).toHaveBeenCalledOnce();
+    });
+
+    function dropping(events: readonly ("output" | "usage")[], drops: number) {
+      const sends: number[] = [];
+      const decision = vi.fn(() => ({ retryAfterMs: null }));
+      bindingMock.mockImplementation(() => ({ adapter: {
+        droppedRoundRetry: { decision, maxAttempts: 3, observe: vi.fn() },
+        async *stream() {
+          sends.push(sends.length + 1);
+          for (const event of events) yield event === "usage"
+            ? { data: { inputTokens: 9 }, type: "usage" as const }
+            : { data: { delta: "PRIVATE_PARTIAL" }, type: "token" as const };
+          if (sends.length <= drops) throw new Error("dropped");
+          return result();
+        }
+      } }));
+      return { decision, sends };
+    }
+    const executor = (sleep: (delayMs: number, signal: AbortSignal) => Promise<void> = async () => undefined) =>
+      createAcceptedProviderRequestExecutor({ $transaction: noAuth } as unknown as Pick<PrismaClient, "$transaction">, {
+        createFetch: () => vi.fn<typeof fetch>(), droppedRequestRetry: { random: () => 0, sleep } });
+
+    it("never sends again once output of the request arrived", async () => {
+      const drop = dropping(["output"], 1);
+      await expect(executor()(codexLb, compatibleRequest())).rejects.toThrow("dropped");
+      expect(drop.sends).toEqual([1]);
+    });
+
+    it("sums the reported usage of a dropped request with the request that answered", async () => {
+      dropping(["usage"], 1);
+      const reported: unknown[] = [];
+      const answered = await executor()(codexLb, compatibleRequest(), { onUsage: (value) => reported.push(value) });
+      expect(answered.usage).toMatchObject({ completeness: "partial", inputTokens: 11, outputTokens: 1, totalTokens: 3 });
+    });
+
+    it("ends without a re-send after Stop, during the request or the backoff", async () => {
+      const stopped = new AbortController();
+      stopped.abort();
+      const before = dropping([], 1);
+      await expect(executor()(codexLb, compatibleRequest(), { signal: stopped.signal })).rejects.toThrow("dropped");
+      expect(before.sends).toEqual([1]);
+      const controller = new AbortController();
+      const during = dropping([], 1);
+      await expect(executor(async () => {
+        controller.abort(new Error("stopped"));
+        throw controller.signal.reason;
+      })(codexLb, compatibleRequest(), { signal: controller.signal })).rejects.toThrow("stopped");
+      expect(during.sends).toEqual([1]);
+    });
+  });
 });

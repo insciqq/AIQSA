@@ -464,6 +464,13 @@ describe("provider runtime factory", () => {
     expect(bind({ ...legacyRoot, connection: { ...legacyRoot.connection, responsesRequestIsolationDetected: false } })).toBeUndefined();
     expect(bind(base)).toBeUndefined();
     expect(bind(detected, true)).toBeUndefined();
+    // A caller that disables request retries but re-sends drops itself (Vision)
+    // keeps the admission on Codex LB only.
+    const resending = (value: ProviderExecutionSnapshot) => createProviderRuntimeBinding({
+      options: { allowFake: false, fetchFn, disableRequestRetries: true, droppedRequestRetry: true }, secret: "secret", snapshot: value
+    }).adapter.droppedRoundRetry;
+    expect(resending(detected)).toMatchObject({ maxAttempts: 3 });
+    expect(resending(base)).toBeUndefined();
     for (const adapterKind of runtimeAdapterKinds.filter((kind) => kind !== "openai_responses_compatible")) {
       const other = snapshot(adapterKind);
       expect(bind({ ...other, connection: { ...other.connection, responsesRequestIsolationDetected: true } })).toBeUndefined();
