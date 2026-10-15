@@ -873,10 +873,22 @@ export function resolveProviderModelParameterControls(input: {
     reasoningModes: input.reasoningModes,
     supportsReasoningMode: input.supportsReasoningMode,
     supportsReasoning: input.supportsReasoning,
-    supportsStreaming: input.supportsStreaming
+    supportsStreaming: input.supportsStreaming,
+    upstreamModelId: input.upstreamModelId
   });
   return template ? { ...template.parameterControls, maxOutputTokens: fallback.maxOutputTokens,
     temperature: { ...template.parameterControls.temperature, defaultValue: fallback.temperature.defaultValue } } : fallback;
+}
+
+/**
+ * A compatible gateway such as codex-lb forwards an exact OpenAI model id, so that model's
+ * reasoning levels apply when the saved row lists none: GPT-6.1 Sol rejects `none` with HTTP 400.
+ */
+function openAIModelReasoningEfforts(upstreamModelId: string | undefined): readonly string[] | undefined {
+  if (!upstreamModelId) return undefined;
+  const control = defaultProviderModels.find((model) =>
+    model.providerFamily === "openai" && model.upstreamModelId === upstreamModelId)?.parameterControls.reasoningEffort;
+  return control?.supported ? control.options : undefined;
 }
 
 export function fallbackParameterControls(input: {
@@ -892,6 +904,7 @@ export function fallbackParameterControls(input: {
   supportsReasoningMode?: boolean;
   supportsReasoning: boolean;
   supportsStreaming?: boolean;
+  upstreamModelId?: string;
 }): ModelParameterControls {
   const defaultParams = input.defaultParams ?? {};
   const reasoning = isRecord(defaultParams.reasoning) ? defaultParams.reasoning : {};
@@ -910,7 +923,7 @@ export function fallbackParameterControls(input: {
   const reasoningEfforts = input.reasoningEfforts?.length
     ? [...input.reasoningEfforts]
     : compatibleOpenAI
-      ? ["none", "low", "medium", "high", "xhigh", "max"]
+      ? [...openAIModelReasoningEfforts(input.upstreamModelId) ?? ["none", "low", "medium", "high", "xhigh", "max"]]
       : ["none", "low", "medium", "high"];
   const defaultReasoningEffort = input.defaultReasoningEffort &&
     reasoningEfforts.includes(input.defaultReasoningEffort)
