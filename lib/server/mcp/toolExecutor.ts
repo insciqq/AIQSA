@@ -4,6 +4,7 @@ import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types
 import { logEvent } from "../observability";
 import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
 import { normalizeMcpResultForModel } from "./resultNormalization";
+import { mcpTruncationPreview, mcpTruncationTelemetry } from "./resultTruncation";
 
 export type McpRunToolRoute = Readonly<{
   fingerprint: string;
@@ -65,7 +66,8 @@ export async function dispatchMcpTool(input: Readonly<{
       signal: input.signal
     });
     execution?.({ outcome: result.isError ? "failed" : "completed" });
-    logEvent("tool_execution", { tool_kind: "mcp", stage: "result", outcome: result.isError ? "failed" : "completed" });
+    logEvent("tool_execution", { tool_kind: "mcp", stage: "result", outcome: result.isError ? "failed" : "completed",
+      ...mcpTruncationTelemetry(result.truncation) });
     return result;
   } catch (error) {
     const failure = mcpToolFailure(error);
@@ -123,7 +125,8 @@ export function mcpToolExecutionResult(
     name: call.name,
     rawPreview: {
       isError: result.isError,
-      unsupportedContentTypes: [...result.unsupportedContentTypes]
+      unsupportedContentTypes: [...result.unsupportedContentTypes],
+      ...(result.truncation ? mcpTruncationPreview(result.truncation) : {})
     },
     status: result.isError ? "error" : "complete"
   };

@@ -2016,7 +2016,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             input.repository.toolCallsAvailable ? (actor, refs) => input.repository.toolCallsAvailable!(actor, refs) : undefined),
           // Reuse the authorized egress, without treating this internal request
           // as a steerable answer, the session context or a follow-up gate.
-          summaryAdapter: { reportsDispatch: true, stream: (summaryRequest, options) => streamAnswerProviderDispatch(
+          // A dropped summary request of a binding that admits it is sent again
+          // as a new accounted call (PROVIDERS.md: Codex LB); recovery never is.
+          summaryAdapter: { ...(input.adapter.droppedRoundRetry ? { droppedRequestRetry: { policy: input.adapter.droppedRoundRetry } } : {}),
+            reportsDispatch: true, stream: (summaryRequest, options) => streamAnswerProviderDispatch(
             summaryRequest, options?.signal ?? dispatchSignal, undefined,
             effectiveProviderResponseTimeoutMs(
               answerSnapshot.connection,

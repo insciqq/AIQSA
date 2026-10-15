@@ -53,3 +53,32 @@ export function markProviderStreamReset<T>(error: T, signal?: AbortSignal): T {
     ? markProviderStreamDrop(error, "reset")
     : error;
 }
+
+/**
+ * A failed request whose response had already delivered output before its
+ * adapter could yield any (a non-streaming create the transport assembles
+ * from SSE, or a failed terminal carrying output). A content-free,
+ * non-enumerable fact for callers that may re-send only before any output.
+ * The failure keeps its identity; a value that cannot carry the fact (a
+ * primitive or frozen value) cannot carry a drop mark either, so no
+ * dropped-request decision ever recognizes it.
+ */
+export function markProviderOutputObserved<T>(error: T): T {
+  if (typeof error === "object" && error !== null && !providerOutputObserved(error)) {
+    try {
+      Object.defineProperty(error, "outputObserved", { configurable: true, value: true });
+    } catch {
+      // A frozen foreign value keeps its identity unmarked.
+    }
+  }
+  return error;
+}
+
+export function providerOutputObserved(error: unknown): boolean {
+  return ownValue(error, "outputObserved") === true;
+}
+
+/** A Responses output item other than hidden reasoning is output. */
+export function responsesOutputItem(item: unknown): boolean {
+  return typeof item === "object" && item !== null && !Array.isArray(item) && ownValue(item, "type") !== "reasoning";
+}

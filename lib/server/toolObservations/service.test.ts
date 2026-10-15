@@ -459,6 +459,33 @@ describe("accepted observation source adapters", () => {
     expect(projectObservationForProvider(result).content).toHaveLength(result.content.length + 1);
   });
 
+  it("stores and delivers a client-truncated MCP result as an ordinary complete call with its size metadata", async () => {
+    const truncation = { originalBytes: 9 * 1024 * 1024, deliveredBytes: 300_150 };
+    const original = { isError: false, structuredContent: null, unsupportedContentTypes: [], truncation,
+      text: [`${"t".repeat(300_000)} rare-cut-tail`, "[Result truncated: synthetic marker]"] };
+    const preview = { truncated: true, ...truncation };
+    const f = fixture();
+    const execute = vi.fn(async () => original);
+    const bounded = await captureMcpObservation({ service: f.service(), producer }, call, binding, execute);
+    expect(bounded.status).toBe("complete");
+    expect(bounded.observation?.sourceTruncated).toBe(true);
+    const read = await f.service().read(producer, { handle: bounded.observation!.handle, query: "rare-cut-tail" });
+    expect(read.fragment).toContain("rare-cut-tail");
+    expect(await restoreObservedResult({ service: f.service(), producer }, call)).toEqual(bounded);
+    expect(execute).toHaveBeenCalledOnce();
+
+    const whole = fixture();
+    const small = { ...original, text: ["cut prefix", "[Result truncated: synthetic marker]"] };
+    const delivered = await captureMcpObservation({ service: whole.service(), producer,
+      wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, call, binding, async () => small);
+    expect(delivered.observation?.sourceTruncated).toBe(true);
+    expect(delivered.status).toBe("complete");
+    expect(delivered.content.at(-1)).toEqual({ type: "text", text: "[Result truncated: synthetic marker]" });
+    expect(delivered.rawPreview).toEqual({ isError: false, unsupportedContentTypes: [], ...preview });
+    expect(await restoreObservedResult({ service: whole.service(), producer,
+      wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) }, call)).toEqual(delivered);
+  });
+
   it("keeps Workspace's accepted truncation and exit metadata after the mutable guest source changes", async () => {
     const f = fixture();
     let guest = `old ${"x".repeat(300_000)} rare-workspace-tail`;

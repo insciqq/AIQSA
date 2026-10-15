@@ -23,9 +23,11 @@ import { McpResponseGuard } from "./responseGuard";
 import { McpSafeFetchError, mcpNetworkPolicyRefusal } from "./safeFetch";
 import { logEvent } from "../observability";
 import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
+import { mcpTruncationTelemetry, truncateMcpCallResult, type McpResultTruncation } from "./resultTruncation";
 import {
   McpResponseTooLargeError,
   DEFAULT_MCP_RESPONSE_WIRE_LIMITS,
+  MCP_RESPONSE_WIRE_LIMIT_CEILINGS,
   resolveMcpResponseWireLimits,
   type McpResponseOperation,
   type McpResponseWireLimits
@@ -194,6 +196,9 @@ export type AiqsaMcpToolCallResult = Readonly<{
   isError: boolean;
   structuredContent: Readonly<Record<string, unknown>> | null;
   text: readonly string[];
+  /** Present only when the received result exceeded the result limit and was
+   * cut to it: the last text part is then the truncation marker. */
+  truncation?: McpResultTruncation;
   unsupportedContentTypes: readonly string[];
 }>;
 
@@ -206,7 +211,8 @@ export type McpClientSessionLimits = Readonly<{
   maxListDurationMs: number;
   maxToolArgumentBytes: number;
   maxToolMetadataBytes: number;
-  /** Defaults to the configured tools/call wire limit. */
+  /** A larger fully received result is truncated to this bound. Defaults to
+   * the configured tools/call response limit. */
   maxToolResultBytes?: number;
   /** Optional stricter bound; otherwise the complete inventory budget applies. */
   maxToolSchemaBytes?: number;
@@ -675,7 +681,12 @@ export class McpClientSession {
       maxToolResultBytes: options.limits.maxToolResultBytes ?? responseLimits.callToolResponseMaxBytes
     };
     this.onInventoryStale = options.onInventoryStale;
-    this.responseGuard = new McpResponseGuard({ limits: responseLimits });
+    // The transport accepts twice the configured tools/call limit (within its
+    // ceiling), so a result over the limit arrives whole and is truncated to
+    // it instead of failing the call and closing the session.
+    this.responseGuard = new McpResponseGuard({ limits: { ...responseLimits,
+      callToolResponseMaxBytes: Math.min(2 * responseLimits.callToolResponseMaxBytes,
+        MCP_RESPONSE_WIRE_LIMIT_CEILINGS.callToolResponseMaxBytes) } });
     const staticHeaders = new Headers(options.headers);
     const guardedFetch = this.responseGuard.wrapFetch(options.fetch);
     const transport = new StreamableHTTPClientTransport(new URL(options.url.toString()), {
@@ -1024,15 +1035,21 @@ export class McpClientSession {
           )
         ));
       const resultSnapshot = jsonSnapshot(result, "mcp_call_result_invalid", "call_tool");
-      if (resultSnapshot.bytes > this.limits.maxToolResultBytes) {
-        throw sessionError("mcp_call_result_too_large", "call_tool");
-      }
       if (!isCallResultValue(resultSnapshot.value)) {
         throw sessionError("mcp_call_result_invalid", "call_tool");
       }
-      const normalized = normalizeCallResult(resultSnapshot.value);
-      finish({ outcome: normalized.isError ? "failed" : "completed" });
-      return normalized;
+      // The tool already ran and its whole result is here: deliver its prefix
+      // with a marker rather than failing the call. Nothing is re-sent.
+      let value: Parameters<typeof normalizeCallResult>[0] = resultSnapshot.value;
+      let truncation: McpResultTruncation | undefined;
+      if (resultSnapshot.bytes > this.limits.maxToolResultBytes) {
+        const truncated = truncateMcpCallResult(resultSnapshot.value, resultSnapshot.bytes, this.limits.maxToolResultBytes);
+        if (!truncated) throw sessionError("mcp_call_result_too_large", "call_tool");
+        ({ truncation, value } = truncated);
+      }
+      const normalized = normalizeCallResult(value);
+      finish({ outcome: normalized.isError ? "failed" : "completed", ...mcpTruncationTelemetry(truncation) });
+      return truncation ? { ...normalized, truncation } : normalized;
     } catch (error) {
       const timedOut = SdkError.isInstance(error) && error.code === SdkErrorCode.RequestTimeout;
       if (timedOut) observeAbort({ stage: "delivery", abort_source: "mcp_deadline", deadline_kind: "sdk_request", timeout_ms: sdkOptions.timeout });

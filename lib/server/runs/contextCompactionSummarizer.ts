@@ -9,6 +9,7 @@ import { normalizeTokenUsage, type NormalizedTokenUsage } from "../../domain/usa
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import { MIN_UTILITY_OUTPUT_TOKENS, UNKNOWN_MODEL_OUTPUT_ALLOWANCE } from "../providers/modelOutputAllowance";
 import { observedFailure } from "../providers/providerObservability";
+import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
 import type { ProviderConversationMessage, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import {
   canonicalJsonText,
@@ -100,6 +101,11 @@ export type ContextSummaryCallOptions = Readonly<{
  * point is known never to have been sent. Otherwise the call is marked
  * dispatched before the adapter starts. */
 export type ContextSummaryAdapter = Readonly<{
+  /** The live binding's Codex LB dropped-request admission (PROVIDERS.md): a
+   * dispatched call it recognizes as dropped settles `failed` with its usage,
+   * then the same request is sent again as a new claimed call after the
+   * shared backoff. Recovery never passes it. */
+  droppedRequestRetry?: ProviderDroppedRequestRetry;
   reportsDispatch?: boolean;
   stream(request: ProviderRunRequest, options?: ContextSummaryCallOptions): AsyncGenerator<ModelRunSseEvent, ProviderRunResult>;
 }>;
@@ -850,10 +856,12 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
     }
   }
 
-  /** One bounded step with at most one repair; every try is one paid call. */
+  /** One bounded step with at most one repair; every try is one paid call,
+   * and so is every re-send of a dropped request. */
   async function step(kind: SummaryStep, text: string, notesBytes: number): Promise<StepOutcome> {
     let repair: RepairReason | undefined;
-    for (let tries = 0; tries < 2; tries += 1) {
+    // `sends`: requests of the current try, for the dropped-request bound.
+    for (let tries = 0, sends = 1; tries < 2;) {
       used += 1;
       if (used > CONTEXT_COMPACTION_LIMITS.summaryCalls) {
         throw new ContextSummaryError("context_compaction_summary_failed", "The bounded summary call budget for this source is exhausted.");
@@ -917,6 +925,8 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
         if (error instanceof ContextSummaryError) {
           await settle("invalid", "partial", undefined, error.code);
           repair = "size";
+          tries += 1;
+          sends = 1;
           continue;
         }
         if (input.signal?.aborted) {
@@ -926,6 +936,17 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
         }
         const provider = providerFailure(error);
         await settle("failed", "partial", undefined, provider ? "context_compaction_provider_failed" : observedFailure(error).code);
+        // A dropped request is sent again only after its call settled, and
+        // only while the source's call cap leaves a number for the re-send.
+        const retry = input.adapter.droppedRequestRetry;
+        const delayMs = retry && used < CONTEXT_COMPACTION_LIMITS.summaryCalls
+          ? droppedRequestRetryDelay(retry, { acceptedOutput: false, attempt: sends, error, signal: input.signal }) : null;
+        if (delayMs !== null) {
+          // Stop and the run's deadlines end the wait with their own reason.
+          await (retry!.sleep ?? sleepWithSignal)(delayMs, input.signal ?? new AbortController().signal);
+          sends += 1;
+          continue;
+        }
         if (provider) {
           throw new ContextSummaryError("context_compaction_provider_failed",
             "The summary request to the answer model failed before a valid result.", { cause: error });
@@ -942,6 +963,8 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
       if (typeof decoded === "string") {
         await settle("invalid", undefined, undefined, "context_compaction_summary_invalid");
         repair = decoded;
+        tries += 1;
+        sends = 1;
         continue;
       }
       return { notes: decoded.notes, settle: (state, summary, errorCode) => settle(state, undefined, summary, errorCode) };

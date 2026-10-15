@@ -29,7 +29,7 @@ A browser-reachable S3 endpoint is an explicit optional boundary for the same pr
 
 Each checkout owns ignored `.env` and private Compose overrides. Preserve project identity, ports, keys and resource bindings during synchronization.
 
-`AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES` defaults to 8388608; explicit overrides win. Update the configuration source and recreate consumers: restarting retains old environment. This transport cap leaves separate persistence/context limits; bounded end-to-end retrieval belongs to observation storage.
+`AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES` defaults to 8388608; explicit overrides win. Update the configuration source and recreate consumers: restarting retains old environment. It bounds one delivered tool result: the transport accepts up to twice the value (within the 16 MiB ceiling), so a larger complete result reaches the model cut to the value with a marker instead of failing; only a response beyond the transport bound fails the call and closes its session. Persistence/context limits stay separate; bounded end-to-end retrieval belongs to observation storage.
 
 `AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT` (default 1) caps scheduled runs with Workspace on, installation-wide; over it occurrences wait visibly for a slot. Interactive Workspace runs never count and keep the runner's remaining capacity, so size the cap below what the runner's memory/CPU limits hold.
 
