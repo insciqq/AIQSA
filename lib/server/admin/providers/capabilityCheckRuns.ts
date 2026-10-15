@@ -30,6 +30,7 @@ export type CapabilityCheckRequest = Readonly<{
   credentialId: string;
   providerModelId: string;
   initialSetup?: InitialCapabilityCheck;
+  reason?: AdminProviderCheckRunReason;
   /** The administrator charged for the check's provider calls. */
   userId?: string;
   onCapabilityProgress?(value: Omit<NonNullable<AdminProviderCheckRun["capabilityProgress"]>, "providerModelId">): void;
@@ -189,6 +190,7 @@ export function createCapabilityCheckRunner(input: Readonly<{
         credentialId: run.credentialId,
         providerModelId: modelId,
         initialSetup: run.initialSetup?.[modelId],
+        reason: run.reason,
         ...(run.userId ? { userId: run.userId } : {}),
         onCapabilityProgress: (progress) => {
           if (run.state !== "running") return;
