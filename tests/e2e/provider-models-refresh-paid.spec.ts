@@ -19,7 +19,7 @@ import type { AdminSearchCatalog } from "../../lib/contracts/adminSearch";
 import { journeyRunParams, readConnections, type JourneyConnection } from "../../scripts/context-compaction-journey-support";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import {
-  completedPaidTurn, deletePaidChat, newExcludedChat, paidEnv, pollUntil, PAID_SETUP_TIMEOUT_MS,
+  completedPaidTurn, connectionSearchSource, deletePaidChat, newExcludedChat, paidEnv, pollUntil, PAID_SETUP_TIMEOUT_MS,
   setupCodexLbAnswerModel, waitForCatalogModel, type PaidAnswerModel
 } from "./support/paidProviders";
 
@@ -161,7 +161,7 @@ test("codex-lb serves GPT-6.1 Sol through custom setup", async ({ request }, tes
   }
 });
 
-test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, and Argon answers with Google Search", async ({ request }, testInfo) => {
+test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, and Argon answers", async ({ request }, testInfo) => {
   const secret = paidEnv("GEMINI_API_KEY");
   test.skip(!secret, "paid: GEMINI_API_KEY is not set");
   test.setTimeout(1_800_000);
@@ -175,17 +175,27 @@ test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, 
     expect(models).toContain("gemini-4-argon");
     expect(models.filter((id) => GEMINI_LEGACY.includes(id))).toEqual([]);
     expect(checkStatus(connection, "gemini-4-argon")).toBe("available");
+    await answerTurn(request, await answerModel(request, connection, "gemini-4-argon"), summary, "argonTurn");
+  } finally {
+    await report(testInfo, "model_refresh_gemini_paid_summary", summary);
+  }
+});
+
+test("Gemini 4 Argon answers with the connection's Google Search source", async ({ request }, testInfo) => {
+  const secret = paidEnv("GEMINI_API_KEY");
+  test.skip(!secret, "paid: GEMINI_API_KEY is not set");
+  test.setTimeout(1_800_000);
+  const summary: Record<string, unknown> = {};
+  try {
+    const existing = readConnections(await (await request.get("/api/admin/providers")).json())
+      ?.find((candidate) => candidate.family === "gemini" && candidate.enabled && !candidate.checkRunning);
+    const connection = existing ?? (await quickSetup(request, "gemini", secret!)).connection;
     const argon = await answerModel(request, connection, "gemini-4-argon");
-    await answerTurn(request, argon, summary, "argonTurn");
-    // The Search option the composer offers for Argon: Quick Setup's Google Search source.
-    const catalogArgon = await waitForCatalogModel(request, connection.id, (candidate) => candidate.modelId === argon.modelId);
-    summary.argonSearchOptions = catalogArgon.searchStrategyIds;
-    const searchOptionId = catalogArgon.searchStrategyIds.find((id) => id !== "search-disabled");
-    expect(searchOptionId, "the composer offers Google Search for Gemini 4 Argon").toBeTruthy();
+    const source = await connectionSearchSource(request, connection.id, "gemini_google_search");
     const chatId = await newExcludedChat(request, "Model refresh Argon search");
     try {
       const run = await completedPaidTurn(request, prisma, {
-        chatId, model: argon, searchMode: "model_choice", searchOptionIds: [searchOptionId!], text: ONE_SEARCH_PROMPT
+        chatId, model: argon, searchMode: "model_choice", searchOptionIds: [source.strategyId], text: ONE_SEARCH_PROMPT
       });
       const rows = await prisma.usageEvent.findMany({ where: { modelRunId: run.id, purpose: "chat_answer" } });
       summary.argonSearch = { status: run.status, webSearchCount: rows.reduce((sum, row) => sum + (row.webSearchCount ?? 0), 0) };
@@ -194,7 +204,7 @@ test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, 
       await deletePaidChat(request, chatId);
     }
   } finally {
-    await report(testInfo, "model_refresh_gemini_paid_summary", summary);
+    await report(testInfo, "model_refresh_gemini_search_paid_summary", summary);
   }
 });
 
