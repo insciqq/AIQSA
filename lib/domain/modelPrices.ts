@@ -30,11 +30,11 @@ const anthropic: Record<string, Tariff> = {
   "claude-sonnet-5": [2, 0.2, 2.5, 10]
 };
 const gemini: Record<string, Tariff> = {
-  // Introductory prices expire 2026-11-30 (then 4 / 0.2 / 20); update via a forward migration.
-  "gemini-4-argon": [2, 0.1, null, 10],
-  // Current introductory prices expire 2026-12-31; update via a forward migration.
-  "gemini-3.8-flash": [0.75, 0.075, null, 3.75],
-  "gemini-3.6-flash": [0.75, 0.075, null, 3.75],
+  // List prices after the introductory windows (Argon from 2026-12-01, 3.6/3.8 Flash from
+  // 2027-01-01); estimates overstate the cost until then instead of needing a later migration.
+  "gemini-4-argon": [4, 0.2, null, 20],
+  "gemini-3.8-flash": [1.5, 0.15, null, 7.5],
+  "gemini-3.6-flash": [1.5, 0.15, null, 7.5],
   "gemini-3.5-flash": [1.5, 0.15, null, 9],
   "gemini-3.5-flash-lite": [0.3, 0.03, null, 2.5],
   "gemini-3.1-pro-preview": [2, 0.2, null, 12]

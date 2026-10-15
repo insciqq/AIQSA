@@ -338,7 +338,7 @@ describe("admin provider service", () => {
       displayName: "Gemini 3.6 Flash"
     })).resolves.toEqual({ id: "gemini-model-1", displayName: "Gemini 3.6 Flash", draftVersion: 1,
       // A Quick Setup family row without explicit prices takes its catalog tariff.
-      pricing: expect.objectContaining({ source: "catalog", prices: expect.objectContaining({ inputTokenPriceUsdPerMillion: "0.75" }) }) });
+      pricing: expect.objectContaining({ source: "catalog", prices: expect.objectContaining({ inputTokenPriceUsdPerMillion: "1.5" }) }) });
     expect(create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         connectionId: "gemini-connection-1",
