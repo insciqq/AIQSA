@@ -244,13 +244,26 @@ describe("accepted provider request executor", () => {
       { headers: { "content-type": "text/event-stream" } });
     const message = { type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "PRIVATE_ANALYSIS" }] };
     const created = { type: "response.created", response: { id: "response-1", status: "in_progress" } };
+    const added = { type: "response.output_item.added", output_index: 0, item: { ...message, status: "in_progress", content: [] } };
+    const delta = { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "PRIVATE_PART" };
 
     it.each([
       ["a completed output item", sse(created, { type: "response.output_item.done", output_index: 0, item: message })],
       ["a text delta", sse(created, { type: "response.output_item.added", output_index: 0, item: { ...message, content: [] } },
         { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "PRIVATE_PART" })],
       ["a failed terminal carrying output", sse(created, { type: "response.failed",
-        response: { id: "response-1", status: "failed", output: [message], error: { code: "server_error" } } })]
+        response: { id: "response-1", status: "failed", output: [message], error: { code: "server_error" } } })],
+      ["a text delta, then a failed terminal without output", sse(created, added, delta, { type: "response.failed",
+        response: { id: "response-1", status: "failed", output: [], error: { code: "server_error" } } })],
+      ["a completed message, then a failed terminal carrying only reasoning", sse(created,
+        { type: "response.output_item.done", output_index: 0, item: message }, { type: "response.failed",
+          response: { id: "response-1", status: "failed", output: [{ type: "reasoning", summary: [] }], error: { code: "server_error" } } })],
+      ["a text delta, then an incomplete terminal", sse(created, added, delta, { type: "response.incomplete",
+        response: { id: "response-1", status: "incomplete", output: [], incomplete_details: { reason: "max_output_tokens" } } })],
+      ["a text delta, then an error event", sse(created, added, delta, { type: "error", error: { code: "server_error" } })],
+      ["a text delta, then [DONE] without a terminal", () => new Response(
+        `event: response.created\ndata: ${JSON.stringify(created)}\n\n` +
+          `data: ${JSON.stringify(delta)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } })]
     ])("never sends again after the assembled stream delivered %s", async (_label, first) => {
       const call = await bearer([first, completed]);
       await call.run().catch(() => undefined);

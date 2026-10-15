@@ -92,16 +92,20 @@ function streamedOutputEvent(payload: Record<string, unknown>): boolean {
 
 /** Some compatible roots always stream, even for stream:false. Assemble only
  * provider-issued completed items, under explicit terminal proof, without a
- * retry. A failure after any output carries that fact (`outputObserved`). */
+ * retry. After any output the fact (`outputObserved`) rides on the failure,
+ * or on the terminal response (non-enumerable, never serialized), whose
+ * adapter carries it onto the failure a failed or incomplete status becomes. */
 async function collectStreamedResponse(response: Response, signal: AbortSignal, timeoutMs?: number): Promise<OpenAIResponseObject> {
   let observed = false;
+  let terminal: OpenAIResponseObject;
   try {
-    return await collectStreamedEvents(response, signal, timeoutMs, (payload) => {
+    terminal = await collectStreamedEvents(response, signal, timeoutMs, (payload) => {
       if (!observed && streamedOutputEvent(payload)) observed = true;
     });
   } catch (error) {
     throw observed ? markProviderOutputObserved(error) : error;
   }
+  return observed ? markProviderOutputObserved(terminal) : terminal;
 }
 
 async function collectStreamedEvents(response: Response, signal: AbortSignal, timeoutMs: number | undefined,
