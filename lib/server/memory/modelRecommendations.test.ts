@@ -89,6 +89,26 @@ describe("qualified Memory recommendations", () => {
       unavailableReason: null, evidence: { passedCases: 22, totalCases: 23 } });
   });
 
+  it("qualifies codex-lb GPT-6.1 Sol only at low effort and prefers it over Terra", async () => {
+    const available = role();
+    const sol: ProviderAdmissionRole = { ...available, snapshot: { ...available.snapshot,
+      model: { ...available.snapshot.model, upstreamModelId: "gpt-6.1-sol" } } };
+    const id = "sol-low-memory-v1";
+    expect(memoryRecommendationMatches(sol, id, "low")).toBe(true);
+    for (const effort of ["none", "medium", "high", null]) expect(memoryRecommendationMatches(sol, id, effort)).toBe(false);
+    for (const upstreamModelId of ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol-pro", "openai/gpt-6.1-sol"]) {
+      const other = { ...sol, snapshot: { ...sol.snapshot, model: { ...sol.snapshot.model, upstreamModelId } } };
+      expect(memoryRecommendationMatches(other, id, "low")).toBe(false);
+    }
+    expect(memoryRecommendationMatches(role(), id, "low")).toBe(false);
+    const solRow = { ...row, id: "sol", activeConfig: sol.snapshot.model };
+    const load = vi.fn().mockImplementation(async (_db, input) => input.providerModelId === "sol" ? sol : role());
+    const recommendations = await listMemoryModelRecommendations({} as AdmissionPrisma, [row, solRow], load);
+    expect(recommendations.filter((entry) => entry.unavailableReason === null).map((entry) => entry.id))
+      .toEqual([id, "terra-low-memory-v1"]);
+    expect(recommendations.find((entry) => entry.id === id)).toMatchObject({ providerModelId: "sol", reasoningEffort: "low" });
+  });
+
   it.each([true, false])("qualifies Gemini only at the tested identity and low effort (native=%s)", async (native) => {
     const available = geminiRole(native);
     const id = native ? "gemini-flash-native-low-memory-v2" : "gemini-flash-openrouter-low-memory-v2";
