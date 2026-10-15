@@ -161,7 +161,7 @@ test("codex-lb serves GPT-6.1 Sol through custom setup", async ({ request }, tes
   }
 });
 
-test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, and Argon answers", async ({ request }, testInfo) => {
+test("Gemini Quick Setup keeps 3.8 Flash as the default, turns on Google Search, checks Gemini 4 Argon, and Argon answers", async ({ request }, testInfo) => {
   const secret = paidEnv("GEMINI_API_KEY");
   test.skip(!secret, "paid: GEMINI_API_KEY is not set");
   test.setTimeout(1_800_000);
@@ -175,6 +175,7 @@ test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, 
     expect(models).toContain("gemini-4-argon");
     expect(models.filter((id) => GEMINI_LEGACY.includes(id))).toEqual([]);
     expect(checkStatus(connection, "gemini-4-argon")).toBe("available");
+    expect(summary.bootstrapSearch, "Quick Setup turns on the connection's Google Search").toBe("ready");
     await answerTurn(request, await answerModel(request, connection, "gemini-4-argon"), summary, "argonTurn");
   } finally {
     await report(testInfo, "model_refresh_gemini_paid_summary", summary);
@@ -197,8 +198,10 @@ test("Gemini 4 Argon answers with the connection's Google Search source", async 
       const run = await completedPaidTurn(request, prisma, {
         chatId, model: argon, searchMode: "model_choice", searchOptionIds: [source.strategyId], text: ONE_SEARCH_PROMPT
       });
-      const rows = await prisma.usageEvent.findMany({ where: { modelRunId: run.id, purpose: "chat_answer" } });
-      summary.argonSearch = { status: run.status, webSearchCount: rows.reduce((sum, row) => sum + (row.webSearchCount ?? 0), 0) };
+      const rows = await prisma.usageEvent.findMany({ where: { modelRunId: run.id } });
+      summary.argonSearch = { status: run.status, sourceStrategy: source.strategyId, rows: rows.map((row) => ({
+        operationCount: row.operationCount, purpose: row.purpose, webSearchCount: row.webSearchCount })) };
+      // The hosted route counts searches on the answer row, the source's client route on its web_search row.
       expect(rows.some((row) => (row.webSearchCount ?? 0) > 0), "Argon's answer used Google Search").toBe(true);
     } finally {
       await deletePaidChat(request, chatId);
