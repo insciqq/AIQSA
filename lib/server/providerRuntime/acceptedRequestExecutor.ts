@@ -8,6 +8,7 @@ import {
 } from "../providers/providerConfiguration";
 import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
 import { createProviderSafeFetch } from "../providers/providerSafeFetch";
+import { providerOutputObserved } from "../providers/streamDrop";
 import {
   createProviderRuntimeBinding,
   normalizeProviderExecutionSnapshot,
@@ -151,7 +152,9 @@ export function createAcceptedProviderRequestExecutor(
         executionOptions.onUsage?.(total());
         return { ...next.value, usage: total() };
       } catch (error) {
-        delayMs = retry ? droppedRequestRetryDelay(retry, { acceptedOutput: receivedOutput, attempt, error,
+        // Output the transport received before the adapter yielded any
+        // (an assembled non-streaming create) counts as received too.
+        delayMs = retry ? droppedRequestRetryDelay(retry, { acceptedOutput: receivedOutput || providerOutputObserved(error), attempt, error,
           signal: executionOptions.signal }) : null;
         if (delayMs === null) throw error;
       } finally {
