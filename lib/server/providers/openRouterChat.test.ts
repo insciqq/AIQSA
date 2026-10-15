@@ -367,7 +367,9 @@ describe("OpenRouter Chat facade", () => {
   it.each(["deepseek/deepseek-v4-pro-0813", "anthropic/claude-opus-5"])("decodes a complete mixed-tool discovery stream for %s", async (modelId) => {
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       const body = JSON.parse(String(init?.body));
-      expect(body).toMatchObject({ model: modelId, max_tokens: 65_536, temperature: 1, stream: true,
+      // Claude serves no sampling parameters, so the unsupported saved temperature is dropped.
+      expect(body.temperature).toBe(modelId.startsWith("anthropic/") ? undefined : 1);
+      expect(body).toMatchObject({ model: modelId, max_tokens: 65_536, stream: true,
         provider: { require_parameters: true, data_collection: "deny", allow_fallbacks: true },
         tools: [
           { function: { name: "generate_image", strict: false } },
