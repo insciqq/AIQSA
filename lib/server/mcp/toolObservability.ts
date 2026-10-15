@@ -16,7 +16,8 @@ export function beginMcpToolStage(stage: ToolFields["stage"]) {
   const startedAt = performance.now();
   const emit = bindContext((fields: Omit<ToolFields, "tool_kind" | "stage">) => logEvent("tool_execution", {
     tool_kind: "mcp", stage, outcome: fields.outcome, code: fields.code,
-    reason: fields.reason, httpStatus: fields.httpStatus, duration_ms: Math.max(0, performance.now() - startedAt)
+    reason: fields.reason, httpStatus: fields.httpStatus, duration_ms: Math.max(0, performance.now() - startedAt),
+    ...(fields.truncated ? { truncated: true, original_bytes: fields.original_bytes, delivered_bytes: fields.delivered_bytes } : {})
   }));
   emit({ outcome: "started" });
   let finished = false;

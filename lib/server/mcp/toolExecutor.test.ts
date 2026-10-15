@@ -140,6 +140,28 @@ describe("MCP run tool executor helpers", () => {
     });
   });
 
+  it("delivers a truncated result as an ordinary complete call with content-free size metadata", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const truncation = { originalBytes: 9_437_184, deliveredBytes: 8_388_600 };
+    const source = { isError: false, structuredContent: null, text: ["PRIVATE_PREFIX_CANARY", "[Result truncated: marker]"],
+      unsupportedContentTypes: [], truncation };
+    const callTool = vi.fn<McpToolRuntimeCall>(async input => { await input.beforeDispatch(); return source; });
+    const raw = await dispatchMcpTool({ arguments: {}, assertCurrent: async () => {}, callTool, generationId: "generation",
+      route: resolveMcpRunTool(snapshot, snapshot.tools[0]!.namespacedName)! });
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(mcpToolExecutionResult({ id: "call", name: "mcp_tasks_create_task_123", arguments: {} }, raw)).toEqual({
+      callId: "call",
+      content: [{ type: "text", text: "PRIVATE_PREFIX_CANARY" }, { type: "text", text: "[Result truncated: marker]" }],
+      name: "mcp_tasks_create_task_123",
+      rawPreview: { isError: false, unsupportedContentTypes: [], truncated: true, ...truncation },
+      status: "complete"
+    });
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records.find((entry) => entry.stage === "result")).toMatchObject({ tool_kind: "mcp", outcome: "completed",
+      truncated: true, original_bytes: truncation.originalBytes, delivered_bytes: truncation.deliveredBytes });
+    expect(JSON.stringify(records)).not.toContain("PRIVATE_");
+  });
+
   it.each([false, true])("projects one JSON copy with unique adjacent text, isError=%s, leaving raw dispatch untouched", async isError => {
     const structuredContent = { records: [7, 7], marker: "synthetic" };
     const source = { isError, structuredContent, text: ["before", JSON.stringify(structuredContent, null, 2), "after"], unsupportedContentTypes: [] };

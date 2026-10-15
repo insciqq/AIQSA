@@ -844,6 +844,7 @@ describe("McpClientSession", () => {
         return { content: [{ text: privateValue.repeat(20), type: "text" }] };
       }
     });
+    // A result limit too small to hold even the truncation marker fails the call.
     const session = createSession(fixture, {
       limits: { maxToolArgumentBytes: 48, maxToolResultBytes: 128 }
     });
@@ -886,6 +887,57 @@ describe("McpClientSession", () => {
       expect(session.isClosed()).toBe(false);
     } finally { await session.close(); }
   });
+
+  it.each([true, false])("truncates a received result over the result limit without closing the session (JSON: %s)", async (enableJsonResponse) => {
+    const text = "Письмо из длинной цепочки 📬\n".repeat(2_000);
+    const calls: string[] = [];
+    const fixture = await startFixture({
+      callTool: ({ name }) => {
+        calls.push(name);
+        return name === "large"
+          ? { content: [{ type: "text", text }], isError: false }
+          : { content: [{ type: "text", text: "sibling" }] };
+      },
+      enableJsonResponse
+    });
+    // The result limit follows the configured tools/call limit; the transport
+    // accepts twice that, so this result arrives whole and is cut.
+    const limit = 64 * 1_024;
+    const session = createSession(fixture, { limits: { maxToolResultBytes: undefined }, responseLimits: { callToolResponseMaxBytes: limit } });
+    try {
+      await session.initialize();
+      const [result, sibling] = await Promise.all([session.callTool("large", {}), session.callTool("small", {})]);
+      expect(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text }], isError: false }))).toBeGreaterThan(limit);
+      expect(result.isError).toBe(false);
+      expect(result.truncation).toMatchObject({ originalBytes: expect.any(Number), deliveredBytes: expect.any(Number) });
+      expect(result.truncation!.originalBytes).toBeGreaterThan(limit);
+      expect(result.truncation!.deliveredBytes).toBeLessThanOrEqual(limit);
+      expect(result.text).toHaveLength(2);
+      expect(text.startsWith(result.text[0]!)).toBe(true);
+      expect(result.text[1]).toContain("Result truncated");
+      expect(sibling).toMatchObject({ text: ["sibling"] });
+      expect(sibling).not.toHaveProperty("truncation");
+      // Nothing was re-sent and the session keeps serving calls.
+      expect(calls.filter((name) => name === "large")).toHaveLength(1);
+      expect(session.isClosed()).toBe(false);
+      await expect(session.callTool("small", {})).resolves.toMatchObject({ text: ["sibling"] });
+    } finally { await session.close(); }
+  });
+
+  it("delivers a 9 MiB text result truncated to the default 8 MiB limit", async () => {
+    const text = "Строка длинного письма\n".repeat(Math.ceil(9 * 1_024 * 1_024 / 43));
+    const fixture = await startFixture({ callTool: () => ({ content: [{ type: "text", text }] }), enableJsonResponse: true });
+    const session = createSession(fixture, { limits: { maxToolResultBytes: undefined }, requestTimeoutMs: 30_000,
+      responseLimits: { callToolResponseMaxBytes: 8 * 1_024 * 1_024 } });
+    try {
+      await session.initialize();
+      const result = await session.callTool("read", {});
+      expect(result.truncation!.originalBytes).toBeGreaterThan(9 * 1_024 * 1_024);
+      expect(result.truncation!.deliveredBytes).toBeLessThanOrEqual(8 * 1_024 * 1_024);
+      expect(text.startsWith(result.text[0]!)).toBe(true);
+      expect(session.isClosed()).toBe(false);
+    } finally { await session.close(); }
+  }, 30_000);
 
   it("maps initialize and inventory wire overflows to stable non-retryable errors", async () => {
     const privateMarker = "private-wire-inventory-marker";
