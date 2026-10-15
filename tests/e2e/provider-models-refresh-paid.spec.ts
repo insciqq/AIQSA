@@ -7,7 +7,7 @@
  * key (OPENAI_API_KEY, CODEX_LB_API_KEY + CODEX_LB_BASE_URL, GEMINI_API_KEY,
  * OPENROUTER_API_KEY) and is skipped without it.
  *
- * Oracles are the saved connection (models, published checks), Quick Setup's
+ * Oracles are the saved connection (enabled models, published checks), Quick Setup's
  * chosen model, persisted runs and usage rows, never the model's wording.
  * Prompts, answers and payloads are never printed; summaries hold model ids,
  * counts, codes and booleans only. Chats are removed afterwards; connections
@@ -56,8 +56,9 @@ async function quickSetup(request: APIRequestContext, provider: "gemini" | "open
   return { candidateNames: entry!.candidateModels.map(({ displayName }) => displayName), connection, result };
 }
 
+/** Models the setup turned on; a local seed also holds disabled template rows that setup must leave off. */
 function upstreamIds(connection: JourneyConnection): string[] {
-  return connection.models.map((model) => (model.activeConfig ?? model.draftConfig).upstreamModelId);
+  return connection.models.filter((model) => model.enabled).map((model) => (model.activeConfig ?? model.draftConfig).upstreamModelId);
 }
 
 /** The published check of `upstreamModelId` on the connection's default key. */
