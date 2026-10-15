@@ -31,12 +31,16 @@
  * product defect tracked separately, which these sizes avoid. Expected
  * attempts: two `settled` partial calls and one `committed` reduction.
  *
- * Vision needs a model without image input as the answer model (the spec's
- * answer model declares none) and an installation Vision Model with verified
- * image input: the spec adds a second codex-lb deployment of the same model
- * declaring vision, verifies it for the Vision role and assigns it, then
- * restores the previous Vision assignment afterwards. The image is a small
- * PNG generated here.
+ * Vision needs a model without image input as the answer model and an
+ * installation Vision Model with verified image input. The codex-lb catalog
+ * marks its models image-capable, so setup declares vision on the answer
+ * deployment whatever the setup body asks: the Vision case turns image
+ * input off on that deployment through the Admin model update (an image
+ * then reaches it only through `analyze_image`), adds a second codex-lb
+ * deployment of the same model with vision, verifies it for the Vision role
+ * and assigns it. Afterwards it restores the previous Vision assignment and
+ * the answer deployment's image input. The image is a small PNG generated
+ * here.
  *
  * Oracles are persisted state: run status, the run checkpoint's summary
  * attempts with provider-reported usage, the Vision attempt and its usage
@@ -107,6 +111,29 @@ async function codexAnswerModel(request: APIRequestContext): Promise<Readonly<{ 
     (candidate) => candidate.modelId === model.modelId && candidate.contextWindow === COMPACTION_WINDOW);
   answerModel = { family: saved.family, model: { ...model, params: journeyRunParams(catalog, ANSWER_MAX_OUTPUT_TOKENS) } };
   return answerModel;
+}
+
+/** Publishes `vision` as the answer deployment's image input and returns it
+ * with the catalog's matching run parameters. */
+async function answerImageInput(request: APIRequestContext, model: PaidAnswerModel, vision: boolean): Promise<PaidAnswerModel> {
+  const row = (await connection(request, model.connectionId)).models.find((candidate) => candidate.id === model.modelId);
+  expect(row, "the codex-lb answer model is on its connection").toBeTruthy();
+  if (row!.activeConfig?.capabilities.vision !== vision || row!.draftConfig.capabilities.vision !== vision) {
+    const response = await request.patch(`/api/admin/providers/${encodeURIComponent(model.connectionId)}/models/${encodeURIComponent(model.modelId)}`,
+      { timeout: PAID_SETUP_TIMEOUT_MS, data: {
+        action: "update", activate: true,
+        configuration: { ...row!.draftConfig, capabilities: { ...row!.draftConfig.capabilities, vision } },
+        displayName: row!.displayName, expectedActiveVersion: row!.activeVersion, expectedDisplayName: row!.displayName,
+        expectedDraftVersion: row!.draftVersion, expectedUpdatedAt: row!.updatedAt
+      } });
+    expect(response.ok(), `the answer model's image input is saved (${response.status()})`).toBe(true);
+    const receipt = decodeAdminProviderModelSaveReceipt((await response.json() as { receipt?: unknown }).receipt);
+    expect(receipt?.publication, "the answer model's image input is published").toBe("active");
+    await connection(request, model.connectionId);
+  }
+  const catalog = await waitForCatalogModel(request, model.connectionId,
+    (candidate) => candidate.modelId === model.modelId && candidate.capabilities.imageInput === vision);
+  return { ...model, params: journeyRunParams(catalog, ANSWER_MAX_OUTPUT_TOKENS) };
 }
 
 /** One API turn without MCP, Skills, Search or Workspace; waits for the run to settle. */
@@ -224,9 +251,16 @@ test("a model without image input answers from a System Vision analysis through 
   const summary: Record<string, unknown> = {};
   let chatId: string | null = null;
   let previous: VisionAssignment | null = null;
+  let restoreImageInput: (() => Promise<unknown>) | null = null;
   try {
-    const { model } = await codexAnswerModel(request);
-    summary.model = model.upstreamModelId;
+    const answer = (await codexAnswerModel(request)).model;
+    summary.model = answer.upstreamModelId;
+    const row = (await connection(request, answer.connectionId)).models.find((candidate) => candidate.id === answer.modelId);
+    const declared = (row?.activeConfig ?? row?.draftConfig)?.capabilities.vision === true;
+    summary.answerDeclaredVision = declared;
+    if (declared) restoreImageInput = () => answerImageInput(request, answer, true);
+    // The answer model must not see pixels, so the image goes to the Vision Model.
+    const model = await answerImageInput(request, answer, false);
     const visionModelId = await codexVisionModel(request, model.upstreamModelId);
     const verified = await request.post("/api/admin/providers/system-model-policy", { timeout: PAID_SETUP_TIMEOUT_MS,
       data: { role: "vision", providerModelId: visionModelId } });
@@ -266,6 +300,7 @@ test("a model without image input answers from a System Vision analysis through 
   } finally {
     if (chatId) await deletePaidChat(request, chatId);
     if (previous) await assignVision(request, previous).catch(() => { summary.visionRestore = "failed"; });
+    if (restoreImageInput) await restoreImageInput().catch(() => { summary.imageInputRestore = "failed"; });
     await report(testInfo, "codex_lb_vision_paid_summary", summary);
   }
 });
