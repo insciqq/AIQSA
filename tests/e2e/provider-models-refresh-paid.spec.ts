@@ -18,13 +18,12 @@ import { expect, test, type APIRequestContext, type TestInfo } from "@playwright
 import { journeyRunParams, readConnections, type JourneyConnection } from "../../scripts/context-compaction-journey-support";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import {
-  completedPaidTurn, connectionSearchSource, deletePaidChat, newExcludedChat, paidEnv, pollUntil, PAID_SETUP_TIMEOUT_MS,
+  completedPaidTurn, deletePaidChat, newExcludedChat, paidEnv, pollUntil, PAID_SETUP_TIMEOUT_MS,
   setupCodexLbAnswerModel, waitForCatalogModel, type PaidAnswerModel
 } from "./support/paidProviders";
 
 const prisma = new PrismaClient();
 test.skip(process.env.AIQSA_FEATURES_PAID_E2E !== "DISPOSABLE", "paid: requires AIQSA_FEATURES_PAID_E2E=DISPOSABLE on a disposable stand");
-test.describe.configure({ mode: "serial" });
 test.afterAll(() => prisma.$disconnect());
 
 const SHORT_PROMPT = "Reply with one short sentence that names a colour.";
@@ -32,7 +31,8 @@ const ONE_SEARCH_PROMPT = "Use web search exactly once, with a single query, to 
   "Do not search again. Then answer in one short sentence.";
 
 type QuickSetupResult = Readonly<{
-  connectionId?: string; model?: { displayName: string }; models?: Array<{ displayName: string }>; outcome: string;
+  checkRun?: { failed?: unknown[]; skipped?: unknown[] }; connectionId?: string; model?: { displayName: string };
+  models?: Array<{ displayName: string }>; outcome: string; search?: { status: string } | null;
 }>;
 
 /** Fresh Quick Setup of the family's canonical connection; the stand must not have one yet. */
@@ -145,18 +145,23 @@ test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, 
     const { candidateNames, connection, result } = await quickSetup(request, "gemini", secret!);
     const models = upstreamIds(connection);
     Object.assign(summary, { outcome: result.outcome, chosen: result.model?.displayName, candidateNames, models,
-      argonCheck: checkStatus(connection, "gemini-4-argon") });
+      argonCheck: checkStatus(connection, "gemini-4-argon"), search: result.search?.status ?? null,
+      failedChecks: result.checkRun?.failed?.length ?? 0, skippedChecks: result.checkRun?.skipped?.length ?? 0 });
     expect(result.model?.displayName).toBe("Gemini 3.8 Flash");
     expect(models).toContain("gemini-4-argon");
     expect(models.filter((id) => GEMINI_LEGACY.includes(id))).toEqual([]);
     expect(checkStatus(connection, "gemini-4-argon")).toBe("available");
     const argon = await answerModel(request, connection, "gemini-4-argon");
     await answerTurn(request, argon, summary, "argonTurn");
-    const source = await connectionSearchSource(request, connection.id, "gemini_google_search");
+    // The Search option the composer offers for Argon: Quick Setup's Google Search source.
+    const catalogArgon = await waitForCatalogModel(request, connection.id, (candidate) => candidate.modelId === argon.modelId);
+    summary.argonSearchOptions = catalogArgon.searchStrategyIds;
+    const searchOptionId = catalogArgon.searchStrategyIds.find((id) => id !== "search-disabled");
+    expect(searchOptionId, "the composer offers Google Search for Gemini 4 Argon").toBeTruthy();
     const chatId = await newExcludedChat(request, "Model refresh Argon search");
     try {
       const run = await completedPaidTurn(request, prisma, {
-        chatId, model: argon, searchMode: "model_choice", searchOptionIds: [source.strategyId], text: ONE_SEARCH_PROMPT
+        chatId, model: argon, searchMode: "model_choice", searchOptionIds: [searchOptionId!], text: ONE_SEARCH_PROMPT
       });
       const rows = await prisma.usageEvent.findMany({ where: { modelRunId: run.id, purpose: "chat_answer" } });
       summary.argonSearch = { status: run.status, webSearchCount: rows.reduce((sum, row) => sum + (row.webSearchCount ?? 0), 0) };
