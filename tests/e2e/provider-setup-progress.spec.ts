@@ -279,7 +279,7 @@ test("failed persistence keeps saved models and retries unfinished work on the e
       phase: "checking", completed: 1, total: 2, connectionId: connection.id,
       credentialId, runId: run.id, capability: "forcedToolCall"
     } });
-    await expect(sheet.getByTestId("provider-setup-progress")).toContainText("Checking Forced tool calls…");
+    await expect(sheet.getByTestId("provider-setup-progress")).toContainText("Checking Required tool results…");
     persisted = true;
     fixture.send(0, { type: "result", status: 200, data: {
       checkedAt: FIXTURE_NOW, checkRun: run, connectionId: connection.id,
@@ -301,7 +301,7 @@ test("failed persistence keeps saved models and retries unfinished work on the e
     await expect(sheet.getByRole("heading", { name: "Checking unfinished work…" })).toBeVisible();
     await expect(retry).toHaveCount(0);
     await expect(sheet.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
-    await expect(sheet.getByTestId("provider-setup-progress")).toContainText("Checking Forced tool calls…");
+    await expect(sheet.getByTestId("provider-setup-progress")).toContainText("Checking Required tool results…");
     await expect(results).toHaveCount(0);
     expect(actions).toEqual([{ action: "check_models", credentialId, retryUnresolved: true }]);
 
