@@ -140,6 +140,16 @@ describe("Gemini Interactions query-only Search adapter", () => {
       .generation_config.thinking_level).toBe(expected);
   });
 
+  it.each([
+    ["gemini-3.8-flash", "low"],
+    ["gemini-4-argon", "low"],
+    ["gemini-3.5-flash", "minimal"]
+  ])("sends the lowest catalog level when the saved %s capabilities list none (%s)", (modelId, expected) => {
+    const { reasoningEfforts: _saved, ...capabilities } = (request().searchPolicy as GeminiSearchPolicy).modelCapabilities;
+    expect(buildGeminiInteractionsSearchRequest(request({ modelCapabilities: capabilities, modelId }))
+      .generation_config.thinking_level).toBe(expected);
+  });
+
   it("returns explicit findings, sources, operations, usage, and a raw-free preview", async () => {
     const controller = new AbortController();
     const createInteraction = vi.fn<GeminiInteractionsClient["createInteraction"]>(
