@@ -15,6 +15,7 @@
  */
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext, type TestInfo } from "@playwright/test";
+import type { AdminSearchCatalog } from "../../lib/contracts/adminSearch";
 import { journeyRunParams, readConnections, type JourneyConnection } from "../../scripts/context-compaction-journey-support";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import {
@@ -31,7 +32,8 @@ const ONE_SEARCH_PROMPT = "Use web search exactly once, with a single query, to 
   "Do not search again. Then answer in one short sentence.";
 
 type QuickSetupResult = Readonly<{
-  checkRun?: { failed?: unknown[]; skipped?: unknown[] }; connectionId?: string; model?: { displayName: string };
+  checkRun?: { failed?: string[]; setup?: { search?: string; state?: string }; skipped?: unknown[] };
+  connectionId?: string; model?: { displayName: string };
   models?: Array<{ displayName: string }>; outcome: string; search?: { status: string } | null;
 }>;
 
@@ -77,10 +79,33 @@ async function answerModel(request: APIRequestContext, connection: JourneyConnec
     params: journeyRunParams(model, 512), upstreamModelId };
 }
 
+/** Content-free state of a failed turn's newest run: its status and stable error code. */
+async function failedRunState(chatId: string) {
+  const run = await prisma.modelRun.findFirst({ where: { chatId }, orderBy: { createdAt: "desc" }, select: { errorPayload: true, status: true } });
+  const payload = run?.errorPayload as Record<string, unknown> | null | undefined;
+  return { status: run?.status ?? null, code: typeof payload?.code === "string" ? payload.code : null,
+    reason: typeof payload?.reason === "string" ? payload.reason : null };
+}
+
+/** Setup diagnostics: failed model checks by upstream id, the bootstrap Search result and the connection's Search sources. */
+async function setupDiagnostics(request: APIRequestContext, connection: JourneyConnection, result: QuickSetupResult) {
+  const upstream = new Map(connection.models.map((model) => [model.id, (model.activeConfig ?? model.draftConfig).upstreamModelId]));
+  const search = await (await request.get("/api/admin/search")).json() as { search: AdminSearchCatalog };
+  return {
+    failedChecks: (result.checkRun?.failed ?? []).map((id) => upstream.get(id) ?? "unknown"),
+    bootstrapSearch: result.checkRun?.setup?.search ?? null,
+    bootstrapState: result.checkRun?.setup?.state ?? null,
+    searchSources: search.search.integrations.filter((source) => source.sourceConnectionId === connection.id).map((source) => ({
+      kind: source.kind, configurationActive: source.configurationActive, enabled: source.enabled, readiness: source.readiness,
+      evidence: source.draftTestEvidence ? `${source.draftTestEvidence.method}:${source.draftTestEvidence.status}` : null }))
+  };
+}
+
 async function answerTurn(request: APIRequestContext, model: PaidAnswerModel, summary: Record<string, unknown>, key: string) {
   const chatId = await newExcludedChat(request, `Model refresh ${model.upstreamModelId}`);
   try {
-    const run = await completedPaidTurn(request, prisma, { chatId, model, searchOptionIds: [], text: SHORT_PROMPT });
+    const run = await completedPaidTurn(request, prisma, { chatId, model, searchOptionIds: [], text: SHORT_PROMPT })
+      .catch(async (error: unknown) => { summary[key] = await failedRunState(chatId); throw error; });
     const usage = await prisma.usageEvent.findMany({ where: { modelRunId: run.id, purpose: "chat_answer" } });
     summary[key] = { status: run.status, answerRows: usage.length, outputTokens: usage.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0) };
     expect(usage.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0), `${model.upstreamModelId} produced output`).toBeGreaterThan(0);
@@ -145,8 +170,7 @@ test("Gemini Quick Setup keeps 3.8 Flash as the default, checks Gemini 4 Argon, 
     const { candidateNames, connection, result } = await quickSetup(request, "gemini", secret!);
     const models = upstreamIds(connection);
     Object.assign(summary, { outcome: result.outcome, chosen: result.model?.displayName, candidateNames, models,
-      argonCheck: checkStatus(connection, "gemini-4-argon"), search: result.search?.status ?? null,
-      failedChecks: result.checkRun?.failed?.length ?? 0, skippedChecks: result.checkRun?.skipped?.length ?? 0 });
+      argonCheck: checkStatus(connection, "gemini-4-argon"), ...await setupDiagnostics(request, connection, result) });
     expect(result.model?.displayName).toBe("Gemini 3.8 Flash");
     expect(models).toContain("gemini-4-argon");
     expect(models.filter((id) => GEMINI_LEGACY.includes(id))).toEqual([]);
@@ -183,7 +207,8 @@ test("OpenRouter Quick Setup chooses Claude Opus 5.5, checks the new models, dro
     const { candidateNames, connection, result } = await quickSetup(request, "openrouter", secret!);
     const models = upstreamIds(connection);
     const checks = Object.fromEntries(OPENROUTER_NEW.map((id) => [id, checkStatus(connection, id)]));
-    Object.assign(summary, { outcome: result.outcome, chosen: result.model?.displayName, candidateNames, models, checks });
+    Object.assign(summary, { outcome: result.outcome, chosen: result.model?.displayName, candidateNames, models, checks,
+      ...await setupDiagnostics(request, connection, result) });
     expect(result.model?.displayName).toBe("Claude Opus 5.5");
     expect(models).not.toContain("anthropic/claude-opus-5");
     expect(checks).toEqual(Object.fromEntries(OPENROUTER_NEW.map((id) => [id, "available"])));
