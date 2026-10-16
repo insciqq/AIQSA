@@ -48,20 +48,33 @@ export type UploadValidationResult =
 export const DEFAULT_UPLOAD_MAX_BYTES = 25_000_000;
 export const MAX_UPLOAD_MAX_BYTES = 67_108_864;
 
-export const UPLOAD_CONTENT_INSPECTION_NEEDLES = Object.freeze([
-  "[Content_Types].xml",
-  "META-INF/container.xml",
-  "META-INF/manifest.xml",
-  "application/epub+zip",
-  "application/vnd.oasis.opendocument.presentation",
-  "application/vnd.oasis.opendocument.spreadsheet",
-  "application/vnd.oasis.opendocument.text",
-  "content.xml",
-  "mimetype",
-  "ppt/",
-  "word/",
-  "xl/"
-] as const);
+/**
+ * Markers a ZIP container must hold to count as the declared format. Another
+ * format's markers never refute it: Office files embed other Office documents
+ * (a chart's workbook inside a deck), and names as short as `xl/` also occur
+ * by chance in compressed bytes.
+ */
+const ZIP_EVIDENCE_MARKERS = {
+  epub: ["mimetype", "application/epub+zip", "META-INF/container.xml"],
+  open_document_presentation: ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.presentation"],
+  open_document_spreadsheet: ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.spreadsheet"],
+  open_document_text: ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.text"],
+  presentation_ooxml: ["[Content_Types].xml", "ppt/"],
+  spreadsheet_ooxml: ["[Content_Types].xml", "xl/"],
+  word_ooxml: ["[Content_Types].xml", "word/"]
+} as const satisfies Partial<Record<UploadContentEvidence, readonly string[]>>;
+
+type ZipContentEvidence = keyof typeof ZIP_EVIDENCE_MARKERS;
+
+const ZIP_SIGNATURE = [0x50, 0x4b, 0x03, 0x04] as const;
+
+export const UPLOAD_CONTENT_INSPECTION_NEEDLES: readonly string[] = Object.freeze([
+  ...new Set(Object.values(ZIP_EVIDENCE_MARKERS).flat())
+]);
+
+function isZipContentEvidence(evidence: UploadContentEvidence): evidence is ZipContentEvidence {
+  return Object.hasOwn(ZIP_EVIDENCE_MARKERS, evidence);
+}
 
 function bytesStartWith(bytes: Buffer | Uint8Array, signature: readonly number[]): boolean {
   return bytes.byteLength >= signature.length &&
@@ -83,29 +96,10 @@ function textSample(bytes: Buffer | Uint8Array, partial = false): string | null 
   }
 }
 
-function zipContains(bytes: Buffer | Uint8Array, marker: string): boolean {
-  return Buffer.from(bytes).includes(Buffer.from(marker, "utf8"));
-}
-
-function zipEvidence(
-  bytes: Buffer | Uint8Array,
-  required: readonly string[],
-  forbidden: readonly string[] = []
-): boolean {
-  return bytesStartWith(bytes, [0x50, 0x4b, 0x03, 0x04]) &&
-    required.every((marker) => zipContains(bytes, marker)) &&
-    forbidden.every((marker) => !zipContains(bytes, marker));
-}
-
-function inspectedZipEvidence(
-  sample: Buffer | Uint8Array,
-  found: ReadonlySet<string>,
-  required: readonly string[],
-  forbidden: readonly string[] = []
-): boolean {
-  return bytesStartWith(sample, [0x50, 0x4b, 0x03, 0x04]) &&
-    required.every((marker) => found.has(marker)) &&
-    forbidden.every((marker) => !found.has(marker));
+function zipEvidence(bytes: Buffer | Uint8Array, evidence: ZipContentEvidence): boolean {
+  const content = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return bytesStartWith(bytes, ZIP_SIGNATURE) &&
+    ZIP_EVIDENCE_MARKERS[evidence].every((marker) => content.includes(marker));
 }
 
 function matchesEvidence(
@@ -123,7 +117,13 @@ function matchesEvidence(
     case "eml":
       return sample !== null && /^(?:from|to|subject|date|message-id|mime-version):[^\r\n]*$/imu.test(sample);
     case "epub":
-      return zipEvidence(bytes, ["mimetype", "application/epub+zip", "META-INF/container.xml"]);
+    case "open_document_presentation":
+    case "open_document_spreadsheet":
+    case "open_document_text":
+    case "presentation_ooxml":
+    case "spreadsheet_ooxml":
+    case "word_ooxml":
+      return zipEvidence(bytes, evidence);
     case "gif":
       return ascii(bytes, 0, 6) === "GIF87a" || ascii(bytes, 0, 6) === "GIF89a";
     case "html":
@@ -137,34 +137,12 @@ function matchesEvidence(
     }
     case "ole":
       return bytesStartWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-    case "open_document_presentation":
-      return zipEvidence(
-        bytes,
-        ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.presentation"],
-        ["application/vnd.oasis.opendocument.spreadsheet", "application/vnd.oasis.opendocument.text"]
-      );
-    case "open_document_spreadsheet":
-      return zipEvidence(
-        bytes,
-        ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.spreadsheet"],
-        ["application/vnd.oasis.opendocument.presentation", "application/vnd.oasis.opendocument.text"]
-      );
-    case "open_document_text":
-      return zipEvidence(
-        bytes,
-        ["content.xml", "META-INF/manifest.xml", "application/vnd.oasis.opendocument.text"],
-        ["application/vnd.oasis.opendocument.presentation", "application/vnd.oasis.opendocument.spreadsheet"]
-      );
     case "pdf":
       return ascii(bytes, 0, 5) === "%PDF-";
     case "png":
       return bytesStartWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    case "presentation_ooxml":
-      return zipEvidence(bytes, ["[Content_Types].xml", "ppt/"], ["word/", "xl/"]);
     case "rtf":
       return ascii(bytes, 0, 5) === "{\\rtf";
-    case "spreadsheet_ooxml":
-      return zipEvidence(bytes, ["[Content_Types].xml", "xl/"], ["word/", "ppt/"]);
     case "text":
       return sample !== null;
     case "tiff":
@@ -172,8 +150,6 @@ function matchesEvidence(
         bytesStartWith(bytes, [0x4d, 0x4d, 0x00, 0x2a]);
     case "webp":
       return bytes.byteLength >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 12) === "WEBP";
-    case "word_ooxml":
-      return zipEvidence(bytes, ["[Content_Types].xml", "word/"], ["ppt/", "xl/"]);
   }
 }
 
@@ -192,51 +168,11 @@ export function uploadInspectionMatchesFormat(
     partial?: boolean;
   }>
 ): boolean {
+  const evidence = format.contentEvidence;
+  if (!isZipContentEvidence(evidence)) return matchesEvidence(evidence, inspection.sample, inspection.partial);
   const found = new Set(inspection.foundNeedles);
-  const sample = inspection.sample;
-  switch (format.contentEvidence) {
-    case "epub":
-      return inspectedZipEvidence(sample, found, [
-        "mimetype",
-        "application/epub+zip",
-        "META-INF/container.xml"
-      ]);
-    case "open_document_presentation":
-      return inspectedZipEvidence(sample, found, [
-        "content.xml",
-        "META-INF/manifest.xml",
-        "application/vnd.oasis.opendocument.presentation"
-      ], [
-        "application/vnd.oasis.opendocument.spreadsheet",
-        "application/vnd.oasis.opendocument.text"
-      ]);
-    case "open_document_spreadsheet":
-      return inspectedZipEvidence(sample, found, [
-        "content.xml",
-        "META-INF/manifest.xml",
-        "application/vnd.oasis.opendocument.spreadsheet"
-      ], [
-        "application/vnd.oasis.opendocument.presentation",
-        "application/vnd.oasis.opendocument.text"
-      ]);
-    case "open_document_text":
-      return inspectedZipEvidence(sample, found, [
-        "content.xml",
-        "META-INF/manifest.xml",
-        "application/vnd.oasis.opendocument.text"
-      ], [
-        "application/vnd.oasis.opendocument.presentation",
-        "application/vnd.oasis.opendocument.spreadsheet"
-      ]);
-    case "presentation_ooxml":
-      return inspectedZipEvidence(sample, found, ["[Content_Types].xml", "ppt/"], ["word/", "xl/"]);
-    case "spreadsheet_ooxml":
-      return inspectedZipEvidence(sample, found, ["[Content_Types].xml", "xl/"], ["word/", "ppt/"]);
-    case "word_ooxml":
-      return inspectedZipEvidence(sample, found, ["[Content_Types].xml", "word/"], ["ppt/", "xl/"]);
-    default:
-      return matchesEvidence(format.contentEvidence, sample, inspection.partial);
-  }
+  return bytesStartWith(inspection.sample, ZIP_SIGNATURE) &&
+    ZIP_EVIDENCE_MARKERS[evidence].every((marker) => found.has(marker));
 }
 
 export function defaultUploadMaxBytes(env: Record<string, string | undefined> = process.env): number {
