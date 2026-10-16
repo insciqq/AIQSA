@@ -405,14 +405,43 @@ describe("upload validation", () => {
     });
   });
 
-  it("rejects conflicting archive evidence during streaming settlement", () => {
+  it.each([
+    { id: "pptx", main: "ppt/presentation.xml", embedded: "ppt/embeddings/Microsoft_Excel_Worksheet.xlsx", inner: "xl/workbook.xml" },
+    { id: "docx", main: "word/document.xml", embedded: "word/embeddings/Microsoft_Excel_Worksheet.xlsx", inner: "xl/workbook.xml" },
+    { id: "xlsx", main: "xl/workbook.xml", embedded: "xl/embeddings/Microsoft_PowerPoint_Presentation.pptx", inner: "ppt/presentation.xml" }
+  ])("admits a $id that stores another Office document uncompressed", ({ embedded, id, inner, main }) => {
+    const format = UPLOAD_FORMAT_REGISTRY.find((candidate) => candidate.id === id)!;
+    const zip = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+    const bytes = Buffer.concat([
+      zip, Buffer.from(`[Content_Types].xml ${main} ${embedded} `),
+      zip, Buffer.from(`[Content_Types].xml ${inner}`)
+    ]);
+    const input = { byteSize: bytes.byteLength, fileName: `fixture.${id}`, maxBytes: 1024, mimeType: format.canonicalMimeType };
+    const admitted = { kind: "document", mimeType: format.canonicalMimeType, ok: true };
+
+    expect(validateUpload({ ...input, bytes })).toEqual(admitted);
     expect(validateUploadInspection({
-      byteSize: 8_000_000,
-      fileName: "spoof.docx",
-      foundNeedles: ["[Content_Types].xml", "word/", "ppt/"],
-      maxBytes: 50_000_000,
-      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      sample: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      ...input,
+      foundNeedles: ["[Content_Types].xml", main.slice(0, main.indexOf("/") + 1), inner.slice(0, inner.indexOf("/") + 1)],
+      sample: zip,
+      scope: "knowledge"
+    })).toEqual(admitted);
+  });
+
+  it("rejects an Office document named as another Office format", () => {
+    const bytes = contentFixture("presentation_ooxml");
+    const input = {
+      byteSize: bytes.byteLength,
+      fileName: "deck.docx",
+      maxBytes: 1024,
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    };
+
+    expect(validateUpload({ ...input, bytes })).toEqual({ code: "unsupported_type", ok: false });
+    expect(validateUploadInspection({
+      ...input,
+      foundNeedles: ["[Content_Types].xml", "ppt/"],
+      sample: bytes.subarray(0, 4),
       scope: "knowledge"
     })).toEqual({ code: "unsupported_type", ok: false });
   });
