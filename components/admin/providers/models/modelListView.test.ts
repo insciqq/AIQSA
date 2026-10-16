@@ -191,6 +191,15 @@ describe("deriveModelUsage and successors", () => {
     expect(turnOffConsequence({ model: { displayName: "Image reader" }, successor: null, tags })?.body)
       .toContain("the Vision Model");
   });
+  it("tags only the PDF reader the PDF mode routes to", () => {
+    const state = sources();
+    const policy = state.systemModelPolicy!.policy;
+    policy.chatPdfNativeModel = { ...policy.chatPdfModel!, displayName: "GPT-5.6-Sol", id: "model-sol" };
+    policy.chatPdfFallbackMethod = "pdf_reader";
+    const usage = deriveModelUsage(state);
+    expect(usage.get("model-sol")).toEqual(["Chat PDF"]);
+    expect(usage.get("model-terra")).toEqual(["System model"]);
+  });
   it("tags each model with its roles and names the next available reranker", () => {
     const usage = deriveModelUsage(sources());
     expect(usage.get("model-terra")).toEqual(["System model", "Chat PDF"]);

@@ -482,6 +482,19 @@ describe("deriveAdminAttentionItems", () => {
     ]);
   });
 
+  it("checks only the PDF reader the PDF mode routes to", () => {
+    const pageImages = { ...roleCandidate, available: false, id: "model-terra" };
+    const pdfReader = { ...roleCandidate, available: true, id: "model-sol" };
+    const pdfRoles = (overrides: Partial<AdminSystemModelPolicyCatalog["policy"]>) => items({
+      systemRoles: roles({ chatPdfFallbackMethod: "pdf_reader", chatPdfModel: pageImages, chatPdfNativeModel: pdfReader, ...overrides })
+    });
+    expect(pdfRoles({})).toEqual([]);
+    expect(pdfRoles({ chatPdfNativeModel: { ...pdfReader, available: false } }))
+      .toEqual([expect.objectContaining({ id: "system_role_unavailable:chat_pdf" })]);
+    expect(pdfRoles({ chatPdfProcessingMode: "read_page_images" }))
+      .toEqual([expect.objectContaining({ id: "system_role_unavailable:chat_pdf" })]);
+  });
+
   it("reports an unavailable assigned chat-title model while leaving an unassigned role quiet", () => {
     expect(items({ systemRoles: roles({ chatTitleModel: { ...roleCandidate, available: false } }) }))
       .toEqual([expect.objectContaining({

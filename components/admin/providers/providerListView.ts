@@ -6,7 +6,7 @@ import type {
   AdminProviderModel
 } from "@/lib/contracts/adminProviders";
 import type { AdminSearchCatalog } from "@/lib/contracts/adminSearch";
-import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import { activeChatPdfReader, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 
 /**
  * Presentation rules for the Providers list and provider page (PRD 5.2, 5.4).
@@ -341,7 +341,7 @@ export function deriveProviderUsage(
   add(roles?.systemModel?.connectionId, "System model");
   add(sources.systemModelPolicy?.memoryPolicy.model?.connectionId, "Memory");
   add(roles?.chatTitleModel?.connectionId, "Chat titles");
-  add(roles?.chatPdfModel?.connectionId, "Chat PDF");
+  add(roles && activeChatPdfReader(roles)?.connectionId, "Chat PDF");
   add(roles?.visionModel?.connectionId, "Vision Model");
   add(roles?.rerankerModel?.connectionId, "Reranker");
   for (const model of roles?.imageModels ?? []) add(model.connectionId, imageGenerationTag(sources));
