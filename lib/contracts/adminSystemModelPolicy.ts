@@ -397,6 +397,20 @@ export function decodeAdminSystemModelPolicyResponse(
   };
 }
 
+type ChatPdfReaderPolicy = Pick<AdminSystemModelPolicyCatalog["policy"],
+  "chatPdfFallbackMethod" | "chatPdfModel" | "chatPdfNativeModel" | "chatPdfProcessingMode">;
+
+/** Whether the PDF mode routes to the PDF reader rather than the page-image reader. */
+export function chatPdfUsesNativeReader(policy: Omit<ChatPdfReaderPolicy, "chatPdfModel" | "chatPdfNativeModel">): boolean {
+  const mode = policy.chatPdfProcessingMode ?? "prefer_chat_model";
+  return mode === "use_pdf_reader" || mode === "prefer_chat_model" && (policy.chatPdfFallbackMethod ?? "page_images") === "pdf_reader";
+}
+
+/** The reader the PDF mode routes to; the other method keeps its assignment unused. */
+export function activeChatPdfReader(policy: ChatPdfReaderPolicy): AdminSystemModelPolicyCatalog["policy"]["chatPdfModel"] {
+  return chatPdfUsesNativeReader(policy) ? policy.chatPdfNativeModel ?? null : policy.chatPdfModel;
+}
+
 /** Select only an advertised way to disable optional reasoning for new title assignments. */
 export function initialChatTitleReasoningEffort(model: Pick<AdminSystemModelCandidate, "reasoningEfforts"> | undefined): string | null {
   return model?.reasoningEfforts.includes("none") ? "none" : null;

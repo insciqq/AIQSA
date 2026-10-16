@@ -18,7 +18,7 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import { UiV2Button } from "@/components/ui-v2";
 import { useState } from "react";
 import { ImageParameterFields } from "@/components/admin/providers/models/ImageParameterFields";
-import { initialChatTitleReasoningEffort, type AdminPublishedImageModel, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import { activeChatPdfReader, chatPdfUsesNativeReader, initialChatTitleReasoningEffort, type AdminPublishedImageModel, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ImageGenerationParameters, ImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import type { ImageModelUnavailableReason } from "@/lib/contracts/imageModels";
 
@@ -153,8 +153,8 @@ export function AdminSystemRolesTable({
   const visionUndo = { visionProviderModelId: policy.visionModel?.id ?? null, visionReasoningEffort: policy.visionReasoningEffort ?? null };
   const pdfMode = policy.chatPdfProcessingMode ?? "prefer_chat_model";
   const pdfFallback = policy.chatPdfFallbackMethod ?? "page_images";
-  const pdfUsesNativeReader = pdfMode === "use_pdf_reader" || pdfMode === "prefer_chat_model" && pdfFallback === "pdf_reader";
-  const pdfReader = (pdfUsesNativeReader ? policy.chatPdfNativeModel : policy.chatPdfModel) ?? null;
+  const pdfUsesNativeReader = chatPdfUsesNativeReader(policy);
+  const pdfReader = activeChatPdfReader(policy);
   const pdfReaderName = pdfUsesNativeReader ? "PDF reader" : "Page-image reader";
   const pdfReaderReasoning = (pdfUsesNativeReader ? policy.chatPdfNativeReasoningEffort : policy.chatPdfReasoningEffort) ?? null;
   const pdfReaderSelection = (providerModelId: string | null, reasoningEffort: string | null) => pdfUsesNativeReader

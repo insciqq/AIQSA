@@ -14,6 +14,7 @@ import type {
   AdminProviderModelClass
 } from "@/lib/contracts/adminProviders";
 import type { AdminProviderAssignedRole } from "@/lib/contracts/adminProviderRoleRouting";
+import { activeChatPdfReader } from "@/lib/contracts/adminSystemModelPolicy";
 import { searchTokens, textMatchesTokens } from "@/components/admin/searchTokens";
 
 /**
@@ -160,7 +161,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(roles?.systemModel?.id, "System model");
   add(sources.systemModelPolicy?.memoryPolicy.model?.id, "Memory");
   add(roles?.chatTitleModel?.id, "Chat titles");
-  add(roles?.chatPdfModel?.id, "Chat PDF");
+  add(roles && activeChatPdfReader(roles)?.id, "Chat PDF");
   add(roles?.visionModel?.id, "Vision Model");
   for (const model of roles?.imageModels ?? []) add(model.id, imageGenerationTag(sources));
   add(roles?.decisionModel?.id, "Relevance checks");
