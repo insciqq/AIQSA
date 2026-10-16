@@ -11,7 +11,7 @@ import type { AdminKnowledgeSettings } from "../../../contracts/adminKnowledge";
 import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import type { AdminSearchCatalog } from "../../../contracts/adminSearch";
-import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
+import { activeChatPdfReader, type AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import type { AdminEmailState } from "../../../contracts/email";
 import { adminMcpAttention, type AdminMcpServer } from "../../../contracts/mcp";
 import { USAGE_LIMIT_WARNING_RATIO, type AdminUsageLimits } from "../../../contracts/usageLimits";
@@ -296,6 +296,7 @@ function roleItem(
 
 function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttentionItem[] {
   const policy = catalog.policy;
+  const pdfReader = activeChatPdfReader(policy);
   return [
     roleItem(
       "system",
@@ -311,11 +312,11 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
       "Memory learning and generated history context need a checked model",
       "warn"
     ),
-    policy.chatPdfModel
+    pdfReader
       ? roleItem(
           "chat_pdf",
           "PDF reading in chats",
-          policy.chatPdfModel,
+          pdfReader,
           "the assigned model cannot read PDF pages",
           "warn"
         )

@@ -358,6 +358,28 @@ describe("list copy", () => {
     expect(providerSubtitle(openrouter, usage)).toBe("Qwen3 Embedding 8B, Voyage Rerank");
   });
 
+  it("tags Chat PDF on the connection of the reader the PDF mode routes to", () => {
+    const reader = (connectionId: string, id: string) => ({ available: true, connectionDisplayName: connectionId, connectionId,
+      defaultReasoningEffort: null, displayName: id, forcedToolCall: "verified" as const, id, reasoningEfforts: [],
+      structuredOutput: "verified" as const });
+    const systemModelPolicy = {
+      memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
+      policy: {
+        chatPdfFallbackMethod: "pdf_reader",
+        chatPdfModel: reader("conn-openai", "model-terra"),
+        chatPdfNativeModel: reader("conn-codex", "model-sol"),
+        chatPdfProcessingMode: "prefer_chat_model"
+      }
+    } as unknown as AdminSystemModelPolicyCatalog;
+    const usage = () => deriveProviderUsage([], { knowledge: null, modelPolicy: null, search: null, systemModelPolicy });
+    expect([...usage()]).toEqual([["conn-codex", ["Chat PDF"]]]);
+    systemModelPolicy.policy.chatPdfProcessingMode = "read_page_images";
+    expect([...usage()]).toEqual([["conn-openai", ["Chat PDF"]]]);
+    systemModelPolicy.policy.chatPdfProcessingMode = "use_pdf_reader";
+    systemModelPolicy.policy.chatPdfNativeModel = null;
+    expect(usage().size).toBe(0);
+  });
+
   it("shows custom providers as Custom · host · models and never the full endpoint", () => {
     const custom = fixtureConnection({
       displayName: "codex-lb",
