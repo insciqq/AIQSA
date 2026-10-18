@@ -323,7 +323,8 @@ describe("stored catalog identity", () => {
       .toMatchObject({ inputTokenPriceUsdPerMillion: "1.5", webSearchPriceUsdPerThousand: "14" });
   });
   it.each([["20260930130000_model_token_prices", "answer"], ["20261008140000_embedding_model_prices", "embedding"],
-    ["20261008170000_web_search_prices", "answer"], ["20261015120000_model_refresh_prices", "answer"]])(
+    ["20261008170000_web_search_prices", "answer"], ["20261015120000_model_refresh_prices", "answer"],
+    ["20261018213000_deepseek_flash_1017", "answer"]])(
     "matches the Quick Setup families and the model class that %s adopts", (migration, modelClass) => {
       const sql = readFileSync(`${MIGRATIONS}/${migration}/migration.sql`, "utf8");
       const families = /WHEN connection\.family IN \(([^)]*)\)/u.exec(sql)?.[1]?.split(",").map(family => family.trim().replaceAll("'", ""));
