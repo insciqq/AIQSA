@@ -4,17 +4,26 @@
  * lane: it runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE, and each case
  * skips with a reason when its own keys or stand facilities are absent:
  *
+ * Paid requests per case are bounded as noted ("probe" = one capability
+ * probe request; each probe retries at most a few times on transient
+ * failures). The shared codex-lb connection's one-time setup (custom setup
+ * with its own model check) is paid once per file, on codex-lb only.
+ *
  * 1. codex-lb answer (CODEX_LB_API_KEY, CODEX_LB_BASE_URL — the Codex root
  *    ending in `/backend-api/codex`; AIQSA_FEATURES_CODEX_MODEL picks the
  *    model): one short ordinary answer completes with provider usage.
+ *    Bound: 1 answer request.
  * 2. codex-lb Agent run in Workspace (+ AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE):
  *    a trivial task writes one file to the run's output and completes.
+ *    Bound: one Agent run (Codex, a few rounds), codex-lb only.
  * 3. Agent/Workspace Vision (same keys): the model links the attached PNG
  *    with a symlink, `analyze_image` on the link fails with
  *    `workspace_capture_source_invalid` and its copy hint, and the analysis of
  *    the `cp` copy succeeds through the installation Vision Model (a second
  *    codex-lb deployment with image input; the previous assignment is
- *    restored).
+ *    restored). Bound: that deployment's setup check and image-input check,
+ *    one Agent run and at most 2 Vision requests (the refusal buys none),
+ *    codex-lb only.
  * 4. MCP oversized call isolation (codex keys + the stand's app running with
  *    AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES lowered to 4096..65536, as
  *    mcp-oversized-result-paid.spec.ts needs): in one run, the over-bound
@@ -22,16 +31,27 @@
  *    the following call on the same server succeeds over the same session.
  *    AIQSA_FEATURES_FIXTURE_HOST / AIQSA_FEATURES_FIXTURE_PUBLIC_HOST place
  *    the synthetic peer. The deterministic two-turn version is
- *    mcp-oversized-call-isolation.spec.ts.
- * 5. OpenRouter DeepSeek V4.1 Flash 1017 (OPENROUTER_API_KEY): an enabled
- *    OpenRouter connection is reused, else Quick Setup runs with candidate
- *    `p11-r17`; the admin model Check of the 1017 deployment verifies tools
- *    and structured output, and one short answer completes on it.
- * 6. DeepSeek Search API (DEEPSEEK_API_KEY + codex keys): a native DeepSeek
- *    connection (reused, else Quick Setup), the source added through Admin
- *    Search "Add source" with at most one request per answer (Save runs one
- *    probe search) and enabled; one codex-lb answer with only that source
- *    shows cited sources and leaves exactly one billed `web_search` row.
+ *    mcp-oversized-call-isolation.spec.ts. Bound: one answer of about three
+ *    model rounds, codex-lb only.
+ * 5. OpenRouter DeepSeek V4.1 Flash 1017 (OPENROUTER_API_KEY): never Quick
+ *    Setup (which adds and probes every OpenRouter candidate). A new
+ *    connection is made through the ordinary admin connection API with only
+ *    the 1017 model (`oneModelConnection`); the model's first capability
+ *    check, started by its catalog addition and awaited by its run id, is the
+ *    admin model Check and must verify tools and structured output; then one
+ *    short answer. Bound on OpenRouter: free model-list reads, at most 8
+ *    probes of the 1017 model (model access, structured output, tool calling,
+ *    forced tool call, parallel tool calls, vision, PDF, streaming) and 1
+ *    answer request.
+ * 6. DeepSeek Search API (DEEPSEEK_API_KEY + codex keys): a keyed native
+ *    DeepSeek connection with an enabled model is reused (no probe), else
+ *    one is made the same way with only DeepSeek V4.1 Flash (at most 8
+ *    probes of that model, no Quick Setup); the source is added through
+ *    Admin Search "Add source" with at most one request per answer and
+ *    enabled; one codex-lb answer with only that source shows cited sources
+ *    and leaves exactly one billed `web_search` row. Bound on DeepSeek: at
+ *    most 8 model probes (new connection only), 1 probe search on Save and 1
+ *    search in the answer; on codex-lb about 2 answer rounds.
  *
  * Oracles are persisted state (runs, tool calls, Vision attempts, usage
  * rows, Workspace outputs, admin check evidence) and the synthetic MCP
@@ -44,7 +64,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { PrismaClient, type ModelRun, type ModelRunToolCall } from "@prisma/client";
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse, type Page, type TestInfo } from "@playwright/test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import sharp from "sharp";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
@@ -55,9 +75,8 @@ import type { CatalogModel } from "../../lib/contracts/catalog";
 import type { ContentBlock } from "../../lib/domain/content";
 import { providerModelTemplateId } from "../../lib/domain/providerTemplates";
 import { agentMaxOutputTokensLimit } from "../../lib/domain/runParams";
-import { ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION } from "../../lib/server/admin/providers/quickSetupPolicy";
 import {
-  codexLbSetupBody, journeyRunParams, modelInConnection, readConnections, type JourneyConnection
+  codexLbSetupBody, journeyRunParams, modelInConnection, readConnections, type JourneyConnection, type JourneyProviderModel
 } from "../../scripts/context-compaction-journey-support";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { authenticateWithLocalToken } from "./support/localAuth";
@@ -88,7 +107,6 @@ const WARMUP_TIMEOUT_MS = 300_000;
 const AGENT_TURN_TIMEOUT_MS = 20 * 60_000;
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"];
 const FLASH_1017 = "deepseek/deepseek-v4.1-flash-1017";
-const FLASH_1017_CANDIDATE = "p11-r17";
 const DEEPSEEK_SEARCH_API_MODEL = "deepseek-search-api";
 const DEEPSEEK_SEARCH_API_COST_MICROS = 750;
 
@@ -499,37 +517,102 @@ test("MCP: an over-bound tools/call fails alone with its hint while the next cal
   }
 });
 
-// ------------------------------------------ 5. OpenRouter Flash 1017 ---
+// ------------------------------- Manual one-model provider connection ---
 
+type RawCheckRun = Readonly<{
+  id?: unknown; results?: Array<{ checks?: Record<string, unknown>; providerModelId?: unknown; state?: unknown }>; state?: unknown;
+}>;
 type RawCheck = Readonly<{
   credentialVersionId?: unknown; evidence?: { capabilitySetup?: { checks?: Record<string, unknown> } }; modelVersion?: unknown;
   providerModelId?: unknown; status?: unknown;
 }>;
+type RawConnection = Readonly<{ activeChecks?: RawCheck[]; checkRun?: RawCheckRun | null; displayName?: unknown; id?: unknown }>;
 
-async function rawConnection(request: APIRequestContext, connectionId: string): Promise<{ activeChecks?: RawCheck[] } | null> {
-  const body = await (await request.get("/api/admin/providers")).json() as { connections?: Array<{ activeChecks?: RawCheck[]; id?: unknown }> };
-  return body.connections?.find((entry) => entry.id === connectionId) ?? null;
+function rawConnections(body: unknown): RawConnection[] {
+  const connections = (body as { connections?: unknown } | null)?.connections;
+  return Array.isArray(connections) ? connections as RawConnection[] : [];
 }
 
-/** An enabled, keyed, idle connection of `family`, or null. */
-async function existingConnection(request: APIRequestContext, family: string): Promise<JourneyConnection | null> {
-  return readConnections(await (await request.get("/api/admin/providers")).json())
-    ?.find((candidate) => candidate.family === family && candidate.enabled && candidate.active &&
-      candidate.defaultCredentialVersionId !== null && !candidate.checkRunning) ?? null;
+async function rawConnection(request: APIRequestContext, connectionId: string): Promise<RawConnection | null> {
+  return rawConnections(await (await request.get("/api/admin/providers")).json()).find((entry) => entry.id === connectionId) ?? null;
 }
 
-async function quickSetup(request: APIRequestContext, provider: "deepseek" | "openrouter", secret: string,
-  selectedModel?: Readonly<{ candidateId: string; policyVersion: number }>) {
-  const snapshot = await (await request.get("/api/admin/providers/quick-setup")).json() as { providers: Array<{ provider: string; stateToken: string }> };
-  const state = snapshot.providers.find((entry) => entry.provider === provider)?.stateToken;
-  expect(state, `the stand offers ${provider} Quick Setup`).toBeTruthy();
-  const response = await request.post("/api/admin/providers/quick-setup", { timeout: PAID_SETUP_TIMEOUT_MS,
-    data: { expectedState: state, provider, secret, ...(selectedModel ? { selectedModel } : {}) } });
-  const result = await response.json().catch(() => ({})) as { connectionId?: unknown; error?: unknown; model?: { displayName?: unknown }; outcome?: unknown };
-  expect(response.ok(), `${provider} Quick Setup is accepted (${response.status()} ${typeof result.error === "string" ? result.error : ""})`).toBe(true);
-  expect(["ready", "partial"], `${provider} Quick Setup outcome`).toContain(result.outcome);
-  return { connection: await connection(request, String(result.connectionId)), model: result.model?.displayName ?? null, outcome: result.outcome };
+async function adminOk(response: APIResponse, step: string): Promise<unknown> {
+  const body = await response.json().catch(() => null) as { error?: unknown } | null;
+  expect(response.ok(), `${step} (${response.status()} ${typeof body?.error === "string" ? body.error : ""})`).toBe(true);
+  return body;
 }
+
+/** Waits for exactly the check run `runId` of the connection to leave `running`; returns it. */
+async function settledCheckRun(request: APIRequestContext, connectionId: string, runId: string): Promise<RawCheckRun> {
+  return pollUntil(PAID_SETUP_TIMEOUT_MS, async () => {
+    const response = await request.get(`/api/admin/providers/${connectionId}/actions?run=${encodeURIComponent(runId)}`);
+    const run = response.ok() ? (await response.json() as { run?: RawCheckRun }).run ?? null : null;
+    return run && run.state !== "running" ? run : null;
+  }, "prod_1018_check_run_timeout");
+}
+
+const PROVIDER_ROOTS = { deepseek: "https://api.deepseek.com", openrouter: "https://openrouter.ai/api/v1" } as const;
+
+/**
+ * A new connection of `family` with the key and exactly one catalog answer model, through the
+ * ordinary admin connection API, never Quick Setup (which would add and probe every candidate):
+ * the connection is published with a keyless placeholder model (no provider call), the
+ * placeholder is removed, the key is added (its test is a free model-list read; with no models
+ * nothing is probed), the connection is enabled, and `add_catalog_models` adds the one model and
+ * starts its first capability check, the only paid probe set. Returns the connection, the
+ * model and that exact check run once it settled.
+ */
+async function oneModelConnection(request: APIRequestContext, input: Readonly<{
+  family: keyof typeof PROVIDER_ROOTS; label: string; secret: string; templateKey: string; upstreamModelId: string;
+}>): Promise<{ connection: JourneyConnection; model: JourneyProviderModel; run: RawCheckRun }> {
+  const displayName = `${input.label} ${randomUUID().slice(0, 8)}`;
+  const before = new Set(rawConnections(await (await request.get("/api/admin/providers")).json()).map((entry) => entry.id));
+  const created = rawConnections(await adminOk(await request.post("/api/admin/providers", { data: {
+    configuration: { allowPrivateNetwork: false, apiRoot: PROVIDER_ROOTS[input.family], authenticationMode: "bearer", responseTimeoutSeconds: 300 },
+    displayName, family: input.family, unassignedPolicy: "use_default"
+  } }), "the connection draft is created")).find((entry) => !before.has(entry.id) && entry.displayName === displayName);
+  expect(created, "the new connection is listed").toBeTruthy();
+  const connectionId = String(created!.id);
+
+  const placeholder = await adminOk(await request.post(`/api/admin/providers/${connectionId}/models`, { timeout: PAID_SETUP_TIMEOUT_MS, data: {
+    activate: true, displayName: "Placeholder",
+    configuration: { adapterKind: input.family === "openrouter" ? "openrouter_chat_completions" : "deepseek_responses_native",
+      answerSelectable: true, modelClass: "answer", upstreamModelId: "aiqsa/placeholder", defaultParams: {},
+      capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
+      ...(input.family === "openrouter" ? { openRouterRouting: { mode: "automatic", providers: [] } } : {}) }
+  } }), "the keyless placeholder publishes the connection") as { receipt?: { checks?: unknown; modelId?: unknown } };
+  // No key yet, so publishing checked nothing.
+  expect(placeholder.receipt?.checks, "the placeholder was not probed").toBe("skipped");
+  const placeholderId = String(placeholder.receipt?.modelId);
+  await adminOk(await request.patch(`/api/admin/providers/${connectionId}/models/${placeholderId}`, { data: { action: "disable" } }),
+    "the placeholder is disabled");
+  await adminOk(await request.delete(`/api/admin/providers/${connectionId}/models/${placeholderId}`, { data: { confirmed: true } }),
+    "the placeholder is deleted");
+
+  await adminOk(await request.post(`/api/admin/providers/${connectionId}/credentials`, { timeout: PAID_SETUP_TIMEOUT_MS,
+    data: { activate: true, label: "Paid check key", secret: input.secret } }), "the key is tested and added");
+  await adminOk(await request.post(`/api/admin/providers/${connectionId}/actions`, { data: { action: "enable" } }), "the connection is enabled");
+  const keyed = await connection(request, connectionId);
+  expect(keyed.models, "the connection has no model before the catalog addition").toHaveLength(0);
+  expect(keyed.defaultCredentialVersionId, "the key is the connection's default").not.toBeNull();
+
+  const added = await adminOk(await request.post(`/api/admin/providers/${connectionId}/actions`, { timeout: PAID_SETUP_TIMEOUT_MS, data: {
+    action: "add_catalog_models", credentialId: keyed.defaultCredentialId, expectedConnectionVersion: keyed.activeVersion,
+    expectedCredentialVersionId: keyed.defaultCredentialVersionId, modelIds: [providerModelTemplateId(input.templateKey)]
+  } }), "the catalog model is added") as { connections?: unknown; unavailableModelIds?: unknown };
+  expect(added.unavailableModelIds, "the key's catalog lists the model").toEqual([]);
+  const runId = rawConnections(added).find((entry) => entry.id === connectionId)?.checkRun?.id;
+  expect(typeof runId, "the addition started the model's check run").toBe("string");
+  const run = await settledCheckRun(request, connectionId, String(runId));
+  const settled = await connection(request, connectionId);
+  const model = modelInConnection(settled, input.upstreamModelId);
+  expect(model, "the model is on the connection").toBeTruthy();
+  expect(settled.models, "the connection holds exactly that one model").toHaveLength(1);
+  return { connection: settled, model: model!, run };
+}
+
+// ------------------------------------------ 5. OpenRouter Flash 1017 ---
 
 test("OpenRouter DeepSeek V4.1 Flash 1017: the model Check verifies tools and structured output, and it answers", async ({ request }, testInfo) => {
   const secret = paidEnv("OPENROUTER_API_KEY");
@@ -538,54 +621,34 @@ test("OpenRouter DeepSeek V4.1 Flash 1017: the model Check verifies tools and st
   const summary: Record<string, unknown> = {};
   let chatId: string | null = null;
   try {
-    let openRouter = await existingConnection(request, "openrouter");
-    summary.reused = Boolean(openRouter);
-    if (!openRouter) {
-      const setup = await quickSetup(request, "openrouter", secret!,
-        { candidateId: FLASH_1017_CANDIDATE, policyVersion: ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION });
-      Object.assign(summary, { outcome: setup.outcome, chosen: setup.model });
-      expect(setup.model, "Quick Setup chose the 1017 candidate").toBe("DeepSeek V4.1 Flash");
-      openRouter = setup.connection;
-    }
-    let row = modelInConnection(openRouter, FLASH_1017);
-    if (!row) {
-      // A connection set up before the 1017 template: add it from the catalog (its check starts by itself).
-      const added = await request.post(`/api/admin/providers/${openRouter.id}/actions`, { timeout: PAID_SETUP_TIMEOUT_MS, data: {
-        action: "add_catalog_models", credentialId: openRouter.defaultCredentialId, expectedConnectionVersion: openRouter.activeVersion,
-        expectedCredentialVersionId: openRouter.defaultCredentialVersionId,
-        modelIds: [providerModelTemplateId(`openrouter:${FLASH_1017}`)]
-      } });
-      expect(added.ok(), `the 1017 model is added (${added.status()})`).toBe(true);
-      summary.added = true;
-      openRouter = await connection(request, openRouter.id);
-      row = modelInConnection(openRouter, FLASH_1017);
-    }
-    expect(row, "the 1017 deployment is on the OpenRouter connection").toBeTruthy();
-    // The admin model Check: the bounded capability probe of this one deployment.
-    const checked = await request.post(`/api/admin/providers/${openRouter.id}/actions`, { timeout: PAID_SETUP_TIMEOUT_MS,
-      data: { action: "check_models", credentialId: openRouter.defaultCredentialId, modelIds: [row!.id] } });
-    expect(checked.ok(), `the model Check starts (${checked.status()})`).toBe(true);
-    openRouter = await connection(request, openRouter.id);
-    row = modelInConnection(openRouter, FLASH_1017)!;
+    // The one model's first check is the admin model Check here: a separate check_models would probe it twice.
+    const { connection: openRouter, model: row, run } = await oneModelConnection(request, { family: "openrouter",
+      label: "Prod 1018 OpenRouter", secret: secret!, templateKey: `openrouter:${FLASH_1017}`, upstreamModelId: FLASH_1017 });
+    const result = run.results?.find((entry) => entry.providerModelId === row.id);
     const raw = await rawConnection(request, openRouter.id);
-    const check = raw?.activeChecks?.find((entry) => entry.providerModelId === row!.id &&
-      entry.credentialVersionId === openRouter!.defaultCredentialVersionId && entry.modelVersion === row!.activeVersion);
+    const check = raw?.activeChecks?.find((entry) => entry.providerModelId === row.id &&
+      entry.credentialVersionId === openRouter.defaultCredentialVersionId && entry.modelVersion === row.activeVersion);
     const checks = check?.evidence?.capabilitySetup?.checks ?? {};
-    Object.assign(summary, { checkStatus: check?.status ?? null, toolCalling: checks.toolCalling ?? null,
-      structuredOutput: checks.structuredOutput ?? null, modelEnabled: row.enabled });
+    Object.assign(summary, { runState: run.state, runResults: run.results?.length ?? 0, resultState: result?.state ?? null,
+      runToolCalling: result?.checks?.toolCalling ?? null, runStructuredOutput: result?.checks?.structuredOutput ?? null,
+      checkStatus: check?.status ?? null, toolCalling: checks.toolCalling ?? null, structuredOutput: checks.structuredOutput ?? null,
+      modelEnabled: row.enabled });
+    expect(run.state, "the model's check run completed").toBe("completed");
+    expect(run.results ?? [], "the run checked only that model").toHaveLength(1);
+    expect(result?.state, "the check saved the model").toBe("saved");
     expect(check?.status, "the 1017 deployment's check is available").toBe("available");
     expect(checks.toolCalling, "tool calling verified").toBe("verified");
     expect(checks.structuredOutput, "structured output verified").toBe("verified");
 
-    const catalog = await waitForCatalogModel(request, openRouter.id, (candidate) => candidate.modelId === row!.id);
+    const catalog = await waitForCatalogModel(request, openRouter.id, (candidate) => candidate.modelId === row.id);
     expect(catalog.capabilities.toolCalling, "the catalog offers tool calling").toBe(true);
     const model: PaidAnswerModel = { connectionId: openRouter.id, displayName: catalog.displayName, modelId: catalog.modelId,
       params: journeyRunParams(catalog, 256), upstreamModelId: FLASH_1017 };
     chatId = await newExcludedChat(request, `Prod 1018 Flash 1017 ${randomUUID().slice(0, 8)}`);
-    const run = await apiTurn(request, chatId, model, { blocks: [{ text: "Reply with one short sentence that names a colour.", type: "text" }] });
-    const usage = await answerUsage(run.id);
-    Object.assign(summary, { turn: { status: run.status, code: runErrorCode(run), usage } });
-    expect(run.status, `the 1017 answer completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
+    const turn = await apiTurn(request, chatId, model, { blocks: [{ text: "Reply with one short sentence that names a colour.", type: "text" }] });
+    const usage = await answerUsage(turn.id);
+    Object.assign(summary, { turn: { status: turn.status, code: runErrorCode(turn), usage } });
+    expect(turn.status, `the 1017 answer completes (${runErrorCode(turn) ?? turn.status})`).toBe("complete");
     expect(usage.outputTokens, "the 1017 answer produced output").toBeGreaterThan(0);
   } finally {
     if (chatId) await deleteOwnedChatPermanently(request, chatId, { timeout: 60_000 }).catch(() => undefined);
@@ -638,6 +701,25 @@ async function deepSeekSearchApiSource(page: Page, connectionId: string, summary
   return source;
 }
 
+/**
+ * A keyed, enabled native DeepSeek connection with an enabled answer model: an existing one
+ * (such as this spec's own from an earlier run) is reused without any probe; otherwise a new
+ * one gets only DeepSeek V4.1 Flash, whose first check is the only paid probe set.
+ */
+async function deepSeekConnection(request: APIRequestContext, secret: string, summary: Record<string, unknown>): Promise<JourneyConnection> {
+  const existing = readConnections(await (await request.get("/api/admin/providers")).json())
+    ?.find((candidate) => candidate.family === "deepseek" && candidate.enabled && candidate.active &&
+      candidate.defaultCredentialVersionId !== null && !candidate.checkRunning &&
+      candidate.models.some((model) => model.enabled && model.activeConfig !== null)) ?? null;
+  summary.deepSeekReused = Boolean(existing);
+  if (existing) return existing;
+  const { connection: created, run } = await oneModelConnection(request, { family: "deepseek", label: "Prod 1018 DeepSeek", secret,
+    templateKey: "deepseek:deepseek-flash", upstreamModelId: "deepseek-flash" });
+  Object.assign(summary, { deepSeekCheckRun: run.state, deepSeekCheckResults: run.results?.map((entry) => entry.state) ?? [] });
+  expect(run.results ?? [], "the run checked only DeepSeek V4.1 Flash").toHaveLength(1);
+  return created;
+}
+
 const ONE_SEARCH_PROMPT = "Call the search tool exactly once with the query 'DeepSeek V4 release date', then answer in one " +
   "sentence citing the source. Do not search again.";
 
@@ -652,7 +734,7 @@ test("DeepSeek Search API: one search through the new source, cited sources, one
     await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
     await authenticateWithLocalToken(page.request);
     const request = page.request;
-    const deepSeek = await existingConnection(request, "deepseek") ?? (await quickSetup(request, "deepseek", secret!)).connection;
+    const deepSeek = await deepSeekConnection(request, secret!, summary);
     summary.deepSeekModels = deepSeek.models.filter((model) => model.enabled).length;
     expect(summary.deepSeekModels, "the DeepSeek connection has an enabled model").not.toBe(0);
     const source = await deepSeekSearchApiSource(page, deepSeek.id, summary);
