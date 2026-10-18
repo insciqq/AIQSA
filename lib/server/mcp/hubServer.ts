@@ -1,7 +1,7 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { mcpFindToolsInputSchema, mcpHubInstructions } from "./discovery";
-import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
+import { mcpOversizedResponseMessage, mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import type { McpHubDiscoveryResult, McpHubToolIndexEntry } from "@/lib/contracts/mcpHub";
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority } from "./hubService";
 const callToolInput = z.strictObject({
@@ -21,6 +21,9 @@ function result(value: Readonly<Record<string, unknown>>, isError = false): Call
 function errorResult(error: unknown): CallToolResult {
   const code = error instanceof McpHubServiceError ? error.code : "upstream_unavailable";
   const toolFailure = error instanceof McpHubServiceError ? error.toolFailure : null;
+  if (toolFailure === "mcp_call_result_too_large") {
+    return result({ code, toolFailure, message: mcpOversizedResponseMessage((error as McpHubServiceError).toolFailureMaxBytes) }, true);
+  }
   if (toolFailure) return result({ code, toolFailure, message: `${mcpToolFailureMessage(toolFailure)} Request fewer records or fields for a read-only query. Do not repeat a write solely because its response could not be read.` }, true);
   const message = code === "authorization_required"
     ? "Reconnect this app to AIQSA MCP Hub and approve access."
