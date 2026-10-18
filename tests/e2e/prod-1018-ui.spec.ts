@@ -272,7 +272,7 @@ test("Admin Search Add source offers the DeepSeek Search API on a DeepSeek conne
     const sheet = page.getByRole("dialog", { name: "Add source" });
     await expect(sheet).toBeVisible();
     const optionLabel = `${connectionName} Search API · key via ${modelName}`;
-    const searchModel = sheet.getByLabel("Search model");
+    const searchModel = sheet.getByRole("combobox", { exact: true, name: "Search model" });
     await expect(searchModel.locator("option", { hasText: optionLabel })).toHaveCount(1);
     await searchModel.selectOption({ label: optionLabel });
     await expect(sheet).toContainText("Searches with the DeepSeek Search API using this connection's key; the model itself is never called.");
