@@ -87,6 +87,7 @@ function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSour
     ]),
     failedRuns: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false }),
     slowTransactions: vi.fn().mockResolvedValue([]),
+    failureStreaks: vi.fn().mockResolvedValue({ streaks: 0, users: 0, longest: 0, rows: [], truncated: false }),
     ...overrides
   };
 }
@@ -101,7 +102,9 @@ describe("health report collection", () => {
     expect(Object.keys(report)).toEqual(["kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry", "attention",
       "failedRuns", "summary", "errorsByCategory", "errorGroups", "errorGroupsTruncated", "providerFailures", "providersTruncated", "restarts",
       "queues", "queuesCheckedAt", "slowTransactions",
-      "incidents", "incidentsTruncated"]);
+      "incidents", "incidentsTruncated", "failureStreaks"]);
+    expect(input.failureStreaks).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to), limit: 20,
+      runsPerStreak: 3 });
     expect(input.slowTransactions).toHaveBeenCalledWith({ from: new Date(health.from), to: new Date(health.to) });
     // A disabled connection has nothing left to fix; only the stalled queue that raises its own item joins.
     expect(report.attention.map((item) => item.id)).toEqual([
@@ -322,6 +325,33 @@ describe("health report text", () => {
       "No problems recorded in the last 14 days.", "No telemetry at all was recorded in this range.", ""
     ]);
     expect(formatHealthReport({ ...report, hasTelemetry: true } satisfies HealthReport)).not.toContain("No telemetry");
+  });
+});
+
+describe("failure streaks in the default report", () => {
+  it("counts users who lost answers in a row and lists references, never who", async () => {
+    const RUN_B = "5e6f7a8b-2222-4222-8222-222222222222";
+    const report = await collectHealthReport(sources({
+      failureStreaks: vi.fn().mockResolvedValue({ streaks: 7, users: 2, longest: 6, truncated: false, rows: [
+        { userId: "user_private_a", runs: 6, failed: 5, cancelled: 1, firstAt: new Date("2026-10-07T08:00:00.000Z"),
+          lastAt: new Date("2026-10-07T08:30:00.000Z"), ongoing: true,
+          codes: [{ code: "agent_provider_failed", runs: 4 }, { code: null, runs: 1 }], newestRunIds: [RUN, RUN_B, "not-a-run"] },
+        ...Array.from({ length: 6 }, (_, index) => ({ userId: "user_private_b", runs: 3, failed: 3, cancelled: 0,
+          firstAt: new Date("2026-10-07T07:00:00.000Z"), lastAt: new Date(`2026-10-07T07:0${index}:00.000Z`), ongoing: false,
+          codes: [{ code: "provider_server_error", runs: 3 }], newestRunIds: [RUN_B] }))
+      ] })
+    }), "24h");
+    expect(report.failureStreaks).toMatchObject({ streaks: 7, users: 2, longest: 6, minRuns: 3, truncated: false });
+    expect(report.failureStreaks.rows[0]).toEqual({ runs: 6, failed: 5, cancelled: 1, lastAt: "2026-10-07T08:30:00.000Z", ongoing: true,
+      codes: [{ code: "agent_provider_failed", runs: 4 }, { code: null, runs: 1 }], references: ["1a2b3c4d", "5e6f7a8b"] });
+    const text = formatHealthReport(report);
+    expect(text).toContain("Failure streaks: 2 users lost 3+ answers in a row in one chat (7 streaks, longest 6)\n" +
+      "  6 runs in a row · failed 5 · cancelled 1 · last 2026-10-07 08:30 · STILL FAILING\n" +
+      "      codes agent_provider_failed ×4, no code ×1\n" +
+      "      ref 1a2b3c4d, 5e6f7a8b\n");
+    expect(text).toContain("  and 2 more streaks (--full lists them with their users)\n");
+    expect(text.trimEnd().split("\n").every((line) => line.length <= 100)).toBe(true);
+    expect(JSON.stringify(report) + text).not.toContain("user_private");
   });
 });
 
