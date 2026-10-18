@@ -17,4 +17,17 @@ describe("tool_call telemetry", () => {
     expect(workspace).not.toHaveProperty("truncated");
     expect(JSON.stringify(writer.mock.calls)).not.toContain("PRIVATE_");
   });
+
+  it("records a call held for write approval as awaiting approval at info, not as a failure", () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const value = { callId: "call", name: "PRIVATE_NAME", status: "error",
+      content: [{ type: "json", value: { error: "mcp_approval_required", message: "PRIVATE_MESSAGE" } }] };
+    recordToolCall({ durationMs: 1, kind: "mcp", result: { status: "complete", value } });
+    recordToolCall({ durationMs: 1, kind: "mcp", result: { status: "complete",
+      value: { ...value, content: [{ type: "json", value: { error: "mcp_call_failed" } }] } } });
+    const [held, failed] = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(held).toMatchObject({ event: "tool_call", level: "info", outcome: "awaiting_approval", code: "mcp_approval_required" });
+    expect(failed).toMatchObject({ event: "tool_call", level: "warn", outcome: "failed", code: "mcp_call_failed" });
+    expect(JSON.stringify(writer.mock.calls)).not.toContain("PRIVATE_");
+  });
 });

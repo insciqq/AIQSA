@@ -6,6 +6,8 @@ import { prisma } from "../../prisma";
 import type { HealthAgentReportSources } from "./agentReport";
 import { adminHealthProviderNames, adminHealthService, adminHealthTelemetryStore } from "./defaultService";
 import { readFailedRunLoad } from "./failedRuns";
+import { readFailureStreakLoad } from "./failureStreaks";
+import { readModelRunLoad } from "./modelRuns";
 import { adminHealthQueuesService } from "./queuesDefault";
 import type { HealthReportSources, HealthRunReportSources } from "./report";
 import { adminHealthRunLookup } from "./runLookupDefault";
@@ -15,6 +17,9 @@ import { readAdminHealthUserFailedRuns } from "./runLookupRepository";
 /** Failed runs of a report's whole range, read once; it gets more time than a page read. */
 const readReportFailedRuns: HealthReportSources["failedRuns"] = (query) =>
   readFailedRunLoad(prisma, { ...query, statementTimeoutMs: 15_000 });
+/** Failure streaks of a report's range, as long as the failed runs may take. */
+const readReportFailureStreaks: HealthReportSources["failureStreaks"] = (query) =>
+  readFailureStreakLoad(prisma, { ...query, statementTimeoutMs: 15_000 });
 
 /** The health report over this installation's database, through the Health page's own services. */
 export const healthReportSources: HealthReportSources & HealthRunReportSources = {
@@ -24,7 +29,8 @@ export const healthReportSources: HealthReportSources & HealthRunReportSources =
   findings: readDefaultHealthFindings,
   connections: () => prisma.providerConnection.findMany({ select: { id: true, displayName: true, enabled: true } }),
   failedRuns: readReportFailedRuns,
-  slowTransactions: (span) => adminHealthTelemetryStore.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY })
+  slowTransactions: (span) => adminHealthTelemetryStore.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY }),
+  failureStreaks: readReportFailureStreaks
 };
 
 /** The agent reports (`--full`, `--user`) over the same database; they only read. */
@@ -35,6 +41,9 @@ export const healthAgentReportSources: HealthAgentReportSources = {
   problemReports: (query) => listAnswerProblemReports(prisma, query),
   failedRuns: (query) => readAdminHealthUserFailedRuns(prisma, query),
   failedRunGroups: readReportFailedRuns,
+  // Every run of the range per model is one scan over the range's runs; it gets the same time.
+  modelRuns: (query) => readModelRunLoad(prisma, { ...query, statementTimeoutMs: 15_000 }),
+  failureStreaks: readReportFailureStreaks,
   userExists: async (userId) => (await prisma.user.findUnique({ where: { id: userId }, select: { id: true } })) !== null
 };
 

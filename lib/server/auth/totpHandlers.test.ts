@@ -15,6 +15,7 @@ import {
   type SecondFactorChallengeSubject
 } from "./secondFactorChallenge";
 import { SESSION_COOKIE_NAME } from "./session";
+import type { SignInRefusalRecorder } from "./signInRefusals";
 import { SecretEnvelopeError } from "../secrets/envelope";
 import {
   createSecondFactorSignInHandler,
@@ -72,12 +73,14 @@ function secondFactorHandler(input: {
   getKeys?: () => typeof keys;
   maxAttempts?: number;
   proxy?: boolean;
+  refusals?: SignInRefusalRecorder;
 } = {}) {
   const repository = signInRepository(input.complete);
   const POST = createSecondFactorSignInHandler({
     getConfig: () => input.proxy ? proxyConfig : config,
     getKeys: input.getKeys ?? (() => keys),
     rateLimiter: createFixedWindowLoginRateLimiter({ clock: () => 0, maxAttempts: input.maxAttempts ?? 10 }),
+    refusals: input.refusals,
     repository
   });
 
@@ -482,5 +485,34 @@ describe("second-factor sign-in telemetry", () => {
     expect(signIns).toEqual([
       { code: "two_factor_unavailable", level: "error", outcome: "failed", sign_in_method: "password", step: "second_factor" }
     ]);
+  });
+});
+
+describe("second-factor refusals in the journal", () => {
+  it("names a wrong code's account and method from the challenge, never the code", async () => {
+    const refusals = vi.fn<SignInRefusalRecorder>(async () => undefined);
+    const { POST } = secondFactorHandler({ complete: async () => ({ kind: "invalid_code" }), refusals });
+
+    const wrong = await POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, {
+      cookie: await challengeCookie({ signInMethod: "ldap", userId: "user-ldap" })
+    }));
+
+    expect(wrong.status).toBe(401);
+    expect(refusals).toHaveBeenCalledExactlyOnceWith({
+      code: "invalid_code", method: "ldap", now: expect.any(Date), subject: { userId: "user-ldap" }
+    });
+    expect(JSON.stringify(refusals.mock.calls)).not.toContain("123456");
+  });
+
+  it("journals nothing for an accepted code or a challenge that cannot be read", async () => {
+    const refusals = vi.fn<SignInRefusalRecorder>(async () => undefined);
+    const { POST } = secondFactorHandler({ refusals });
+
+    expect((await POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, { cookie: await challengeCookie() }))).status)
+      .toBe(200);
+    expect((await POST(jsonRequest("/api/auth/second-factor", { code: "123456" }, {
+      cookie: `${SECOND_FACTOR_COOKIE_NAME}=forged`
+    }))).status).toBe(401);
+    expect(refusals).not.toHaveBeenCalled();
   });
 });

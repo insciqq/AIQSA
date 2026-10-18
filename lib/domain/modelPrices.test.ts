@@ -33,8 +33,11 @@ describe("catalog token tariffs", () => {
     expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4-pro-0813")).toEqual({ inputTokenPriceUsdPerMillion: 0.66,
       cachedInputTokenPriceUsdPerMillion: 0.022, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 1.98,
       webSearchPriceUsdPerThousand: null });
-    expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4.1-flash")).toEqual({ inputTokenPriceUsdPerMillion: 0.0198,
-      cachedInputTokenPriceUsdPerMillion: 0.00291, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 0.396,
+    expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4.1-flash-1017")).toEqual({ inputTokenPriceUsdPerMillion: 0.15,
+      cachedInputTokenPriceUsdPerMillion: 0.003, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 0.6,
+      webSearchPriceUsdPerThousand: null });
+    expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4.1-flash")).toEqual({ inputTokenPriceUsdPerMillion: 0.04,
+      cachedInputTokenPriceUsdPerMillion: 0.0016, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 0.144,
       webSearchPriceUsdPerThousand: null });
     expect(Object.keys(catalogModelPrices).filter(key => !/^(openai|anthropic|gemini|deepseek|openrouter):/u.test(key))).toEqual([]);
   });

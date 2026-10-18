@@ -11,6 +11,7 @@ import { getWorkspaceConfig } from "./config";
 import { createPrismaWorkspaceCoordinatorRepository } from "./coordinator";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
+import { WorkspaceRuntimeError } from "./runtime";
 import { createWorkspaceSelectedCaptures, type WorkspaceCaptureReference } from "./selectedCapture";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
@@ -181,6 +182,13 @@ describe("selected capture durable ownership", () => {
     vi.spyOn(f.runtime, "collectOutputs").mockRejectedValueOnce(new Error("synthetic_before_receiver"));
     await expect(create(f)).rejects.toThrow("synthetic_before_receiver");
     await expect(create(f)).rejects.toThrow();
+    expect(await prisma.workspaceCapturedFile.count({ where: { capture: { workspaceSessionId: f.session.id } } })).toBe(0);
+  });
+
+  it("reports the runner's source refusal in the capture vocabulary", async () => {
+    const f = await fixture();
+    vi.spyOn(f.runtime, "collectOutputs").mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_capture_source_invalid"));
+    await expect(create(f)).rejects.toMatchObject({ name: "WorkspaceCaptureError", code: "workspace_capture_source_invalid" });
     expect(await prisma.workspaceCapturedFile.count({ where: { capture: { workspaceSessionId: f.session.id } } })).toBe(0);
   });
 

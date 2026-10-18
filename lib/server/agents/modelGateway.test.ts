@@ -1,5 +1,5 @@
 import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { agentLimits } from "./config";
 import { admittedAgentRequest, createAgentModelGateway } from "./modelGateway";
@@ -16,7 +16,7 @@ const request = () => new Request("http://agent.invalid/v1/responses", { method:
 const sse = (...events: unknown[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
   { headers: { "content-type": "text/event-stream" } });
 
-function fixture(response: Response, nativeSearch = false) {
+function fixture(response: Response, nativeSearch = false, signal = new AbortController().signal) {
   let nextAttempt = 0;
   const store = { assertActive: vi.fn(async () => {}), reserveProvider: vi.fn(async () => `00000000-0000-4000-8000-${String(++nextAttempt).padStart(12, "0")}` as const),
     settleProvider: vi.fn(async () => {}), closeProvider: vi.fn(async (_id: string) => {}), canRetryProvider: vi.fn(async () => false),
@@ -25,7 +25,7 @@ function fixture(response: Response, nativeSearch = false) {
     request: vi.fn(async () => response) } as unknown as AgentResponsesTransport;
   const onFailure = vi.fn(async () => {});
   return { store, transport, onFailure, handle: createAgentModelGateway({ configuration, store, transport,
-    signal: new AbortController().signal, onFailure, onUsage: async () => {} }) };
+    signal, onFailure, onUsage: async () => {} }) };
 }
 
 describe("Agent model gateway", () => {
@@ -159,7 +159,7 @@ describe("Agent model gateway", () => {
     expect(f.onFailure).not.toHaveBeenCalled();
   });
 
-  it.each([408, 429, 500, 502, 503, 504])("permits a native retry for HTTP %s after settling the failed attempt", async (status) => {
+  it.each([408, 429, 500, 502, 503, 504, 529])("permits a native retry for HTTP %s after settling the failed attempt", async (status) => {
     const f = fixture(new Response("PRIVATE_PROVIDER_ERROR", { status }));
     f.store.canRetryProvider.mockResolvedValue(true);
     const response = await f.handle(request());
@@ -185,6 +185,28 @@ describe("Agent model gateway", () => {
     await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
     expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "ERROR", expect.objectContaining({ totalTokens: 5 }));
     expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["response.failed server_is_overloaded", { type: "response.failed", response: { error: { code: "server_is_overloaded", message: "PRIVATE_ERROR" } } }],
+    ["error event server_is_overloaded", { type: "error", error: { code: "server_is_overloaded", message: "PRIVATE_ERROR" } }],
+    ["top-level error event server_is_overloaded", { type: "error", code: "server_is_overloaded", message: "PRIVATE_ERROR" }],
+    ["error event service_unavailable", { type: "error", error: { code: "service_unavailable", message: "PRIVATE_ERROR" } }],
+    ["error event overloaded_error type", { type: "error", error: { type: "overloaded_error", message: "PRIVATE_ERROR" } }]
+  ])("lets Codex reconnect after an overloaded upstream (%s)", async (_name, event) => {
+    const f = fixture(sse({ type: "response.created", response: { id: "synthetic" } }, event));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
+    expect(f.store.canRetryProvider).toHaveBeenCalledOnce();
+    expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unclassified Responses failure code fatal", async () => {
+    const f = fixture(sse({ type: "response.failed", response: { error: { code: "invalid_prompt", message: "PRIVATE_ERROR" } } }));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
+    expect(f.store.canRetryProvider).not.toHaveBeenCalled();
+    expect(f.onFailure).toHaveBeenCalledExactlyOnceWith("agent_provider_failed");
   });
 
   it("does not reconnect after cancellation, lost authority, or an unsettled receipt", async () => {
@@ -521,5 +543,75 @@ describe("Agent model gateway", () => {
     f.store.assertActive.mockRejectedValue(new Error("expired"));
     await f.handle(request());
     expect(f.transport.request).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Agent model gateway telemetry", () => {
+  /** The validated `provider_operation` lines the gateway wrote. */
+  function operations() {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    return () => writer.mock.calls.flatMap(([chunk]) => {
+      try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+    }).filter((line) => line.event === "provider_operation");
+  }
+  /** A stream that never ends by itself. */
+  const pending = () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.created", response: { id: "r" } })}\n\n`));
+  } }), { headers: { "content-type": "text/event-stream" } });
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("names the upstream status and the provider's error identity of a failed request, never its message", async () => {
+    const records = operations();
+    const f = fixture(Response.json({ error: { type: "server_error", code: "server_is_overloaded", message: "PRIVATE_ERROR" } },
+      { status: 502 }));
+    expect((await f.handle(request())).status).toBe(502);
+    expect(records()).toEqual([expect.objectContaining({ level: "error", stage: "answer", outcome: "failed", action: "stop",
+      code: "agent_provider_failed", reason: "upstream", httpStatus: 502, provider_error_code: "server_is_overloaded",
+      adapterKind: "openai_responses_compatible" })]);
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("records a request handed back for Codex to reconnect as a retried failure with its event identity", async () => {
+    const records = operations();
+    const f = fixture(sse({ type: "response.created", response: { id: "r" } },
+      { type: "error", error: { type: "overloaded_error", message: "PRIVATE_ERROR" } }));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
+    expect(records()).toEqual([expect.objectContaining({ level: "warn", outcome: "failed", action: "retry", reason: "upstream",
+      code: "agent_provider_failed", provider_error_code: "overloaded_error" })]);
+    // An unreviewed identity is `other`.
+    const unknown = fixture(sse({ type: "response.failed", response: { error: { code: "brand_new_code", message: "PRIVATE_ERROR" } } }));
+    await expect((await unknown.handle(request())).text()).rejects.toThrow("agent_provider_failed");
+    expect(records().at(-1)).toMatchObject({ outcome: "failed", action: "stop", reason: "upstream", provider_error_code: "other" });
+  });
+
+  it.each([
+    [new Error("agent_run_cancelled"), "cancelled", "agent_run_cancelled", "agent_provider_failed"],
+    [new Error("agent_authority_expired"), "authority_expired", "agent_authority_expired", "agent_authority_expired"]
+  ])("records a request the run's lease ended (%s) as cancelled with its reason", async (reason, expected, code, persisted) => {
+    const records = operations();
+    const lease = new AbortController();
+    const f = fixture(pending(), false, lease.signal);
+    const reader = (await f.handle(request())).body!.getReader();
+    await reader.read();
+    lease.abort(reason);
+    await expect(reader.read()).rejects.toThrow();
+    expect(f.onFailure).toHaveBeenCalledExactlyOnceWith(persisted);
+    expect(records()).toEqual([expect.objectContaining({ level: "info", outcome: "cancelled", action: "stop", reason: expected, code })]);
+  });
+
+  it("records a completed request and one Codex closed before its terminal", async () => {
+    const records = operations();
+    const done = fixture(sse({ type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }));
+    await (await done.handle(request())).text();
+    expect(records()).toEqual([expect.objectContaining({ level: "info", outcome: "completed", action: "none",
+      duration_ms: expect.any(Number) })]);
+    const closed = fixture(pending());
+    const reader = (await closed.handle(request())).body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    expect(records().at(-1)).toMatchObject({ outcome: "cancelled", reason: "interrupted", code: "agent_provider_interrupted" });
+    expect(records()).toHaveLength(2);
   });
 });

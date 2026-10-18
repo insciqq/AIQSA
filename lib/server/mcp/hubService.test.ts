@@ -411,9 +411,9 @@ describe("MCP Hub shared discovery and dispatch", () => {
   });
 
   it.each([false, true])("retains rejected-response classification across runtime bundles (%s)", async (foreignBundle) => {
-    const original = new McpClientSessionError({ code: "mcp_call_result_too_large", operation: "call_tool" });
+    const original = new McpClientSessionError({ code: "mcp_call_result_too_large", maxBytes: 16_777_216, operation: "call_tool" });
     const failure = foreignBundle ? Object.assign(new Error("PRIVATE_CANARY"), {
-      name: original.name, code: original.code, operation: original.operation, retryable: original.retryable
+      name: original.name, code: original.code, maxBytes: original.maxBytes, operation: original.operation, retryable: original.retryable
     }) : original;
     expect(failure instanceof McpClientSessionError).toBe(!foreignBundle);
     const settle = vi.fn(async () => undefined);
@@ -423,8 +423,9 @@ describe("MCP Hub shared discovery and dispatch", () => {
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
-    await expect(test.service.dispatchPreparedToolCall({ prepared, authority }))
-      .rejects.toMatchObject({ code: "result_unsupported", toolFailure: "mcp_call_result_too_large" });
+    await expect(test.service.dispatchPreparedToolCall({ prepared, authority })).rejects.toMatchObject({
+      code: "result_unsupported", toolFailure: "mcp_call_result_too_large", toolFailureMaxBytes: 16_777_216
+    });
     expect(settle).toHaveBeenCalledExactlyOnceWith("ERROR", "result_unsupported");
     expect(callRuntimeTool).toHaveBeenCalledOnce();
     expect(McpClientSessionError.isInstance({ name: original.name, code: "PRIVATE_CANARY" })).toBe(false);

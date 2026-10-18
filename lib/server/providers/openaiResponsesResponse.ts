@@ -15,6 +15,7 @@ import {
 } from "./network";
 import { parseProviderSseStream } from "./sse";
 import { markProviderStreamDrop } from "./streamDrop";
+import { inheritProviderErrorCode } from "./providerErrorCode";
 import {
   providerStreamSafetySnapshot,
   type ProviderStreamSafetySnapshot
@@ -512,6 +513,7 @@ function reissuedFailureDrop(
 ): Error {
   if (failureStatus !== "failed" && !errorCode) return mismatch;
   const failure = providerResponseFailure(errorCode ?? "openai_response_failed", payload);
+  inheritProviderErrorCode(mismatch, failure);
   return "code" in failure || "capabilityFailureReason" in failure
     ? mismatch
     : markProviderStreamDrop(mismatch, failureStatus === "failed" ? "response_failed" : "error_event");

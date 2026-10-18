@@ -11,7 +11,9 @@ export type VisionAttemptPhases = Readonly<{ preparationMs?: number; providerMs?
  * server-owned identity. Never the question, images, analysis or error text.
  * `execution` is the analyze_image tool; `grounding` the Knowledge image description.
  * `provider_duration_ms` is present exactly when the provider was dispatched,
- * for successful, failed and timed-out attempts alike.
+ * for successful, failed and timed-out attempts alike. `error`, given for a
+ * failure no stable code names, adds only its content-free class, code site
+ * and fingerprint (observability/errorSite.cjs).
  */
 export function observeVisionAttempt(input: Readonly<{
   stage: "execution" | "grounding";
@@ -19,8 +21,9 @@ export function observeVisionAttempt(input: Readonly<{
   code: string | undefined;
   snapshot?: Pick<ProviderExecutionSnapshot, "connectionId" | "providerFamily" | "providerModelId" | "model">;
   phases?: VisionAttemptPhases;
+  error?: unknown;
 }>): void {
-  const { code, snapshot, phases } = input;
+  const { code, snapshot, phases, error } = input;
   logEvent("tool_execution", {
     tool_kind: "vision", stage: input.stage, duration_ms: Math.max(0, performance.now() - input.startedAt),
     outcome: code === undefined ? "completed" : code === "vision_analysis_cancelled" ? "cancelled" : "failed",
@@ -29,6 +32,7 @@ export function observeVisionAttempt(input: Readonly<{
     ...(phases?.providerMs === undefined ? {} : { provider_duration_ms: Math.max(0, phases.providerMs) }),
     ...(phases?.timeoutMs === undefined ? {} : { timeout_ms: phases.timeoutMs }),
     adapterKind: snapshot?.model.adapterKind, connectionId: snapshot?.connectionId,
-    providerFamily: snapshot?.providerFamily, providerModelId: snapshot?.providerModelId
+    providerFamily: snapshot?.providerFamily, providerModelId: snapshot?.providerModelId,
+    ...(error === undefined ? {} : { error })
   });
 }

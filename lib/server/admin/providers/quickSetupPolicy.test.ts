@@ -7,7 +7,7 @@ import {
 
 describe("provider Quick setup policy", () => {
   it("keeps the current-model candidates, defaults, and recommendations explicit", () => {
-    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(10);
+    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(11);
     expect(adminProviderQuickSetupPolicy("openai").connection.configuration.responseTimeoutMs)
       .toBe(300_000);
     const definitions = (provider: Parameters<typeof adminProviderQuickSetupPolicy>[0]) =>
@@ -57,12 +57,16 @@ describe("provider Quick setup policy", () => {
       { id: "p9-r11", recommended: false, templateKey: "openrouter:openai/gpt-6-luna-pro" },
       { id: "p1-r2", recommended: false, templateKey: "openrouter:google/gemini-3.8-flash" },
       { id: "p1-r3", recommended: false, templateKey: "openrouter:deepseek/deepseek-v4-pro-0813" },
-      { id: "p8-r6", recommended: false, templateKey: "openrouter:deepseek/deepseek-v4.1-flash" },
+      { id: "p11-r17", recommended: false, templateKey: "openrouter:deepseek/deepseek-v4.1-flash-1017" },
       { id: "p7-r4", recommended: false, templateKey: "openrouter:anthropic/claude-fable-5.1" },
       { id: "p7-r5", recommended: false, templateKey: "openrouter:openai/gpt-6-astra" },
       { id: "p7-r-search", recommended: false, templateKey: "openrouter:perplexity/sonar-pro-search" },
-      { id: "p1-r1", legacy: true, recommended: false, templateKey: "openrouter:anthropic/claude-opus-5" }
+      { id: "p1-r1", legacy: true, recommended: false, templateKey: "openrouter:anthropic/claude-opus-5" },
+      { id: "p8-r6", legacy: true, recommended: false, templateKey: "openrouter:deepseek/deepseek-v4.1-flash" }
     ]);
+    expect(adminProviderQuickSetupPolicy("openrouter").candidates.filter(({ templateKey }) =>
+      templateKey.startsWith("openrouter:deepseek/deepseek-v4.1-flash")).map(({ displayName }) => displayName))
+      .toEqual(["DeepSeek V4.1 Flash", "DeepSeek V4.1 Flash 0910"]);
     expect(definitions("deepseek")).toEqual([
       { id: "p8-d4", recommended: true, templateKey: "deepseek:deepseek-flash" },
       { id: "p6-d1", recommended: false, templateKey: "deepseek:deepseek-v4-pro" }
@@ -104,11 +108,21 @@ describe("provider Quick setup policy", () => {
       modelIds: ["gpt-5.6-terra", "gpt-6-sol"], policy: openai
     })).toMatchObject({ candidate: { candidateId: "p9-o6" }, kind: "selected" });
     expect(decideAdminProviderQuickSetupModel({
-      modelIds: ["gpt-5.6-terra"], policy: openai, selectedModel: { candidateId: "p2-o1", policyVersion: 10 }
+      modelIds: ["gpt-5.6-terra"], policy: openai, selectedModel: { candidateId: "p2-o1", policyVersion: 11 }
     })).toEqual({ kind: "selection_invalid" });
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["anthropic/claude-opus-5", "google/gemini-3.8-flash"], policy: adminProviderQuickSetupPolicy("openrouter")
     })).toMatchObject({ candidate: { candidateId: "p1-r2" }, kind: "selected" });
+    const openrouter = adminProviderQuickSetupPolicy("openrouter");
+    const bothFlashes = ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017"];
+    expect(decideAdminProviderQuickSetupModel({ modelIds: ["deepseek/deepseek-v4.1-flash"], policy: openrouter }))
+      .toEqual({ kind: "unsupported_catalog" });
+    expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter }))
+      .toMatchObject({ candidate: { candidateId: "p11-r17", configuration: { upstreamModelId: "deepseek/deepseek-v4.1-flash-1017" } }, kind: "selected" });
+    expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter,
+      selectedModel: { candidateId: "p11-r17", policyVersion: 11 } })).toMatchObject({ candidate: { candidateId: "p11-r17" }, kind: "selected" });
+    expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter,
+      selectedModel: { candidateId: "p8-r6", policyVersion: 11 } })).toEqual({ kind: "selection_invalid" });
   });
 
   it("requires an exact policy-owned selected candidate observed by the repeated check", () => {
@@ -116,17 +130,17 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["google/gemini-3.8-flash"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 10 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 11 }
     }).kind).toBe("selected");
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["other"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 10 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 11 }
     })).toEqual({ kind: "selection_invalid" });
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["openai/gpt-6-sol"],
       policy,
-      selectedModel: { candidateId: "p9-r8", policyVersion: 9 }
+      selectedModel: { candidateId: "p9-r8", policyVersion: 10 }
     })).toEqual({ kind: "selection_invalid" });
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["perplexity/sonar-pro-search"], policy

@@ -6,6 +6,7 @@ import {
   MAX_SEARCH_FINDINGS_CHARACTERS,
   normalizeSearchFindings,
   normalizeSearchSources,
+  SEARCH_NO_RESULTS_FINDINGS,
   type SearchSource
 } from "./evidence";
 
@@ -188,10 +189,16 @@ export function searchExecutionsFromToolResult(
       sourceAttribution === "provider_unavailable" &&
       value.provider === "deepseek" &&
       value.protocol === "deepseek_responses_web_search";
+    // A raw results API's empty answer carries only the server's own words.
+    const explicitNoResults = sources.length === 0 &&
+      sourceAttribution !== "provider_unavailable" &&
+      value.provider === "deepseek" &&
+      value.protocol === "deepseek_search_api" &&
+      findings === SEARCH_NO_RESULTS_FINDINGS;
     if (
       sourceAttribution === "provider_unavailable" && !providerSourcesUnavailable ||
       value.status === "complete" &&
-        (!findings || (sources.length === 0 && !providerSourcesUnavailable) || failure)
+        (!findings || (sources.length === 0 && !providerSourcesUnavailable && !explicitNoResults) || failure)
     ) {
       return [];
     }

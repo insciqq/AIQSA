@@ -15,6 +15,8 @@ import {
 } from "./agentReport";
 import { formatHealthFullReport, formatHealthUserReport } from "./agentReportText";
 import type { FailedRunLoad } from "./failedRuns";
+import type { FailureStreak, FailureStreakLoad } from "./failureStreaks";
+import type { ModelRunLoad } from "./modelRuns";
 import { collectHealthReport, formatHealthReport, parseHealthReportArgs } from "./report";
 import type { AdminHealthRunRow } from "./runLookup";
 import { createAdminHealthService } from "./service";
@@ -176,6 +178,26 @@ const failedRunLoad: FailedRunLoad = {
   ]
 };
 
+const modelRunLoad: ModelRunLoad = { truncated: false, rows: [
+  { connectionId: "conn-openai", providerModelId: "model-gpt", accepted: 198, completed: 170, failed: 25, refusedInput: 1, cancelled: 2,
+    open: 0, users: 9, lastFailedAt: IN_RANGE, codes: [{ code: "provider_server_error", runs: 20 }, { code: null, runs: 5 }] },
+  { connectionId: "conn-gone", providerModelId: "model-gone", accepted: 13, completed: 13, failed: 0, refusedInput: 0, cancelled: 0,
+    open: 0, users: 2, lastFailedAt: null, codes: [] }
+] };
+
+const streakRows: FailureStreak[] = [
+  { userId: USER_A, runs: 6, failed: 5, cancelled: 1, firstAt: IN_RANGE, lastAt: new Date(IN_RANGE.getTime() + 600_000), ongoing: true,
+    codes: [{ code: "agent_provider_failed", runs: 5 }], newestRunIds: [RUN_A, RUN_B] },
+  { userId: USER_B, runs: 3, failed: 3, cancelled: 0, firstAt: IN_RANGE, lastAt: IN_RANGE, ongoing: false,
+    codes: [{ code: "provider_server_error", runs: 3 }], newestRunIds: [RUN_B] }
+];
+
+function streakLoad(query: Readonly<{ userId?: string }>): FailureStreakLoad {
+  const rows = streakRows.filter((row) => query.userId === undefined || row.userId === query.userId);
+  return { streaks: rows.length, users: new Set(rows.map((row) => row.userId)).size,
+    longest: Math.max(0, ...rows.map((row) => row.runs)), rows, truncated: false };
+}
+
 function sources(counters: readonly Counter[], incidents: readonly TelemetryIncident[], overrides: Partial<HealthAgentReportSources> = {}) {
   return {
     store: memoryStore(counters, incidents),
@@ -188,6 +210,8 @@ function sources(counters: readonly Counter[], incidents: readonly TelemetryInci
     }),
     failedRuns: vi.fn().mockResolvedValue([runRow]),
     failedRunGroups: vi.fn().mockResolvedValue(failedRunLoad),
+    modelRuns: vi.fn().mockResolvedValue(modelRunLoad),
+    failureStreaks: vi.fn(async (query: { userId?: string }) => streakLoad(query)),
     userExists: vi.fn().mockResolvedValue(true),
     now: () => NOW,
     ...overrides
@@ -225,6 +249,7 @@ const fixtureCounters: Counter[] = [
   counter("tool_call", "warn", { tool_kind: "fetch_url", outcome: "timeout", code: "fetch_url_timeout" }, 1, { durations: [15_000] }),
   counter("tool_call", "info", { tool_kind: "fetch_url", outcome: "completed" }, 3, { durations: [300, 600, 900] }),
   counter("tool_call", "warn", { tool_kind: "mcp", outcome: "failed", code: "mcp_tool_failed" }, 2, { durations: [100, 120] }),
+  counter("tool_call", "info", { tool_kind: "mcp", outcome: "awaiting_approval", code: "mcp_approval_required" }, 1, { durations: [5] }),
   counter("run_execution", "error", { stage: "execution", outcome: "failed", reason: "deadline", abort_source: "workspace_deadline",
     code: "workspace_tool_timeout" }, 1),
   counter("http.request_completed", "warn", { routePath: "/api/chats/[chatId]", method: "GET", status: 404, outcome: "completed" }, 6),
@@ -232,14 +257,23 @@ const fixtureCounters: Counter[] = [
   counter("http.request_completed", "info", { routePath: "/api/runs", method: "POST", status: 200, outcome: "completed" }, 50),
   counter("client.error", "warn", { kind: "render", routePath: "/chat/[chatId]", route_source: "manifest" }, 2),
   counter("provider_operation", "error", { ...identity, stage: "answer", outcome: "failed", code: "provider_rate_limited",
-    httpStatus: 429, error_fingerprint: "0123456789ab", error_class: "ProviderError", error_site: "lib/server/providers/openai.ts:42" },
-  4, { appVersion: "1.3.9" }),
+    httpStatus: 429, provider_error_code: "rate_limit_exceeded", error_fingerprint: "0123456789ab", error_class: "ProviderError",
+    error_site: "lib/server/providers/openai.ts:42" }, 4, { appVersion: "1.3.9" }),
   counter("provider_operation", "error", { ...identity, stage: "answer", outcome: "failed", code: "provider_rate_limited",
-    httpStatus: 429, error_fingerprint: "0123456789ab", error_class: "ProviderError", error_site: "lib/server/providers/openai.ts:42" }, 2),
+    httpStatus: 429, provider_error_code: "rate_limit_exceeded", error_fingerprint: "0123456789ab", error_class: "ProviderError",
+    error_site: "lib/server/providers/openai.ts:42" }, 2),
   counter("provider_operation", "error", { overflow: true }, 5),
-  // Sign-ins.
+  // A Workspace operation the runner named the cause of.
+  counter("tool_execution", "error", { tool_kind: "workspace", stage: "request", outcome: "failed", code: "workspace_operation_failed",
+    reason: "guest_operation_failed", operation: "sandbox_fs_read" }, 6),
+  // Sign-ins: nine password failures within one minute are a burst; two OIDC failures are not.
   counter("sign_in", "info", { sign_in_method: "oidc", step: "callback", outcome: "succeeded", code: "signed_in" }, 10),
   counter("sign_in", "warn", { sign_in_method: "oidc", step: "callback", outcome: "failed", code: "oidc_state_invalid" }, 2),
+  counter("sign_in", "warn", { sign_in_method: "password", step: "credentials", outcome: "failed", code: "invalid_credentials" }, 9),
+  // Browser push deliveries by service.
+  counter("job_attempt", "info", { subsystem: "push", stage: "dispatch", outcome: "completed", push_service: "fcm", httpStatus: 201 }, 12),
+  counter("job_attempt", "error", { subsystem: "push", stage: "dispatch", outcome: "failed", action: "skip", push_service: "mozilla",
+    code: "push_delivery_failed", category: "network_unreachable" }, 5),
   // Operations.
   counter("process.started", "info", {}, 2),
   counter("process.started", "info", {}, 1, { role: "memory_coordinator" }),
@@ -264,7 +298,7 @@ describe("full agent report", () => {
     const full = await collectHealthFullReport(input, "7d");
     expect(Object.keys(full)).toEqual(["privacy", "kind", "version", "range", "from", "to", "generatedAt", "hasTelemetry",
       "previousPeriod", "runs", "failedRuns", "latency", "failures", "timeouts", "errorGroups", "signIns", "toolCalls", "http",
-      "problemReports", "slowTransactions", "incidents", "operations"]);
+      "problemReports", "slowTransactions", "incidents", "operations", "models", "failureStreaks", "pushDelivery", "signInBursts"]);
     expect(full).toMatchObject({ privacy: "contains_user_ids_and_comments", kind: "full", version: 1, range: "7d",
       from: "2026-10-01T00:00:00.000Z", to: "2026-10-08T00:00:00.000Z", hasTelemetry: true,
       previousPeriod: { from: "2026-09-24T00:00:00.000Z", to: "2026-10-01T00:00:00.000Z" } });
@@ -297,10 +331,12 @@ describe("full agent report", () => {
     const failure = (event: string) => full.failures.rows.filter((row) => row.event === event);
     expect(failure("provider_operation")).toEqual([
       expect.objectContaining({ level: "error", code: "provider_rate_limited", httpStatus: 429, providerFamily: "openai", stage: "answer",
-        count: 6, appVersions: ["1.3.9", "1.4.0"], overflow: false }),
+        count: 6, appVersions: ["1.3.9", "1.4.0"], overflow: false, providerErrorCode: "rate_limit_exceeded" }),
       expect.objectContaining({ code: null, count: 5, overflow: true })
     ]);
     expect(failure("nested_abort")).toEqual([expect.objectContaining({ level: "warn", count: 3 })]);
+    expect(failure("tool_execution")).toEqual([expect.objectContaining({ level: "error", code: "workspace_operation_failed",
+      reason: "guest_operation_failed", operation: "sandbox_fs_read", toolKind: "workspace", count: 6 })]);
     expect(failure("http.request_completed").map((row) => [row.level, row.status, row.routePath])).toEqual([
       ["warn", 404, "/api/chats/[chatId]"], ["error", 502, "/api/runs"]]);
     expect(failure("run_persistence")).toEqual([expect.objectContaining({ level: "error", stage: "complete", count: 1 })]);
@@ -317,10 +353,34 @@ describe("full agent report", () => {
     expect(full.errorGroups).toEqual({ truncated: false, rows: [expect.objectContaining({
       fingerprint: "0123456789ab", errorClass: "ProviderError", count: 6, usersAtLeast: 2, runsAtLeast: 2, newInRange: true })] });
     expect(full.signIns.rows.map((row) => [row.method, row.step, row.outcome, row.code, row.count])).toEqual([
-      ["oidc", "callback", "succeeded", "signed_in", 10], ["oidc", "callback", "failed", "oidc_state_invalid", 2]]);
+      ["oidc", "callback", "succeeded", "signed_in", 10], ["password", "credentials", "failed", "invalid_credentials", 9],
+      ["oidc", "callback", "failed", "oidc_state_invalid", 2]]);
+    expect(full.signInBursts).toEqual({ bursts: 1, minFailures: 5, windowMs: 600_000, truncated: false, rows: [{
+      method: "password", hourStart: "2026-10-06T10:00:00.000Z", failures: 9, firstAt: "2026-10-06T10:00:00.000Z",
+      lastAt: "2026-10-06T10:01:00.000Z", spanMs: 60_000, codes: [{ code: "invalid_credentials", count: 9 }] }] });
+    expect(full.pushDelivery).toEqual({ truncated: false, rows: [
+      expect.objectContaining({ service: "fcm", outcome: "completed", code: null, httpStatus: 201, count: 12 }),
+      expect.objectContaining({ service: "mozilla", outcome: "failed", code: "push_delivery_failed", category: "network_unreachable",
+        httpStatus: null, count: 5 })
+    ] });
+    expect(input.modelRuns).toHaveBeenCalledWith({ from: new Date("2026-10-01T00:00:00.000Z"), to: new Date("2026-10-08T00:00:00.000Z"),
+      limit: 200, codesPerModel: 5 });
+    expect(full.models).toEqual({ truncated: false, rows: [
+      { connectionId: "conn-openai", connectionName: "OpenAI", providerModelId: "model-gpt", modelName: "gpt-5", accepted: 198,
+        completed: 170, failed: 25, refusedInput: 1, cancelled: 2, open: 0, users: 9, failureRate: 25 / 197,
+        lastFailedAt: "2026-10-06T10:00:00.000Z", codes: [{ code: "provider_server_error", runs: 20 }, { code: null, runs: 5 }] },
+      expect.objectContaining({ connectionName: "Deleted connection", modelName: "Deleted model", failed: 0, failureRate: 0,
+        lastFailedAt: null, codes: [] })
+    ] });
+    expect(full.failureStreaks).toEqual({ streaks: 2, users: 2, longest: 6, minRuns: 3, truncated: false, rows: [
+      { userId: USER_A, runs: 6, failed: 5, cancelled: 1, firstAt: "2026-10-06T10:00:00.000Z", lastAt: "2026-10-06T10:10:00.000Z",
+        ongoing: true, codes: [{ code: "agent_provider_failed", runs: 5 }],
+        newest: [{ runId: RUN_A, runReference: "1a2b3c4d" }, { runId: RUN_B, runReference: "5e6f7a8b" }] },
+      expect.objectContaining({ userId: USER_B, runs: 3, ongoing: false, newest: [{ runId: RUN_B, runReference: "5e6f7a8b" }] })
+    ] });
     expect(full.toolCalls.families).toEqual([
       expect.objectContaining({ toolKind: "fetch_url", calls: 4, failed: 0, timedOut: 1, measured: 4, p95Ms: 15_000 }),
-      expect.objectContaining({ toolKind: "mcp", calls: 2, failed: 2, timedOut: 0 })
+      expect.objectContaining({ toolKind: "mcp", calls: 3, failed: 2, timedOut: 0, awaitingApproval: 1 })
     ]);
     expect(full.http.rows.map((row) => row.status)).toEqual([404, 502]);
     expect(full.http.clientErrors).toEqual([expect.objectContaining({ kind: "render", routePath: "/chat/[chatId]", count: 2 })]);
@@ -362,7 +422,8 @@ describe("full agent report", () => {
     const defaultReport = await collectHealthReport({
       health, queues: input.queues, findings: vi.fn().mockResolvedValue([]), connections: vi.fn().mockResolvedValue([]),
       failedRuns: input.failedRunGroups,
-      slowTransactions: (span) => input.store.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY })
+      slowTransactions: (span) => input.store.readCounters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY }),
+      failureStreaks: input.failureStreaks
     }, "7d");
     const defaultOutput = JSON.stringify(defaultReport) + formatHealthReport(defaultReport);
     const full = await collectHealthFullReport(input, "7d");
@@ -405,9 +466,30 @@ describe("full agent report", () => {
         error_class: "Error", error_site: `lib/server/memory/x${index}.ts:1` }, 1 + (index % 7)));
     const incidents = Array.from({ length: 3_000 }, (_, index) => incident(index, { code: `memory_code_${index % 1_500}` }));
     const many = Array.from({ length: 600 }, (_, index) => report(index, `user_${index}`, { comment: "x".repeat(1_000) }));
-    const full = await collectHealthFullReport(sources(counters, incidents, {
-      problemReports: vi.fn(async (query: { limit: number }) => ({ rows: many.slice(0, query.limit), total: many.length }))
+    // Every new section at its bound: models and streaks as long as the readers return, push and sign-in keys beyond it.
+    const pushes = Array.from({ length: 1_500 }, (_, index) => counter("job_attempt", "error", { subsystem: "push", stage: "dispatch",
+      outcome: "failed", push_service: "other", code: `push_code_${index}`, httpStatus: 500 }, 1));
+    const signIns = Array.from({ length: 1_500 }, (_, index) => counter("sign_in", "warn", { sign_in_method: "password",
+      step: "credentials", outcome: "failed", code: `sign_in_code_${index}` }, 5,
+    { bucketStart: new Date(IN_RANGE.getTime() - (index % 120) * 3_600_000) }));
+    const full = await collectHealthFullReport(sources([...counters, ...pushes, ...signIns], incidents, {
+      problemReports: vi.fn(async (query: { limit: number }) => ({ rows: many.slice(0, query.limit), total: many.length })),
+      modelRuns: vi.fn(async (query: { limit: number; codesPerModel: number }) => ({ truncated: true, rows: Array.from({ length: query.limit },
+        (_, index) => ({ ...modelRunLoad.rows[0]!, connectionId: `conn-${index}`, providerModelId: `model-${index}`,
+          codes: Array.from({ length: query.codesPerModel }, (__, code) => ({ code: `model_code_${code}`, runs: 1 })) })) })),
+      failureStreaks: vi.fn(async (query: { limit: number; runsPerStreak: number }) => ({ streaks: 5_000, users: 900, longest: 40,
+        truncated: true, rows: Array.from({ length: query.limit }, (_, index) => ({ ...streakRows[0]!, userId: `user_${index}`,
+          newestRunIds: Array.from({ length: query.runsPerStreak }, () => RUN_A) })) }))
     }), "7d");
+    expect(full.models).toMatchObject({ truncated: true });
+    expect(full.models.rows).toHaveLength(200);
+    expect(full.failureStreaks).toMatchObject({ streaks: 5_000, truncated: true });
+    expect(full.failureStreaks.rows).toHaveLength(200);
+    expect(full.pushDelivery).toMatchObject({ truncated: true });
+    expect(full.pushDelivery.rows).toHaveLength(200);
+    // One burst per hour of the method, its codes bounded.
+    expect(full.signInBursts).toMatchObject({ bursts: 120, truncated: false });
+    expect(full.signInBursts.rows.every((row) => row.codes.length === 5 && row.failures >= 60)).toBe(true);
     expect(full.failures.rows).toHaveLength(HEALTH_FULL_FAILURE_LIMIT);
     expect(full.failures.truncated).toBe(true);
     expect(full.errorGroups.rows).toHaveLength(500);
@@ -433,7 +515,9 @@ describe("user agent report", () => {
     const input = sources(fixtureCounters, fixtureIncidents);
     const user = await collectHealthUserReport(input, USER_A, "7d");
     expect(Object.keys(user)).toEqual(["privacy", "kind", "version", "userId", "userExists", "range", "from", "to", "generatedAt",
-      "incidents", "failedRuns", "problemReports"]);
+      "incidents", "failedRuns", "problemReports", "failureStreaks"]);
+    expect(input.failureStreaks).toHaveBeenCalledWith(expect.objectContaining({ userId: USER_A, limit: 200, runsPerStreak: 5 }));
+    expect(user.failureStreaks).toMatchObject({ streaks: 1, users: 1, longest: 6, rows: [{ userId: USER_A, runs: 6, ongoing: true }] });
     expect(user).toMatchObject({ privacy: "contains_user_ids_and_comments", kind: "user", userId: USER_A, userExists: true });
     expect(user.incidents.rows.map((row) => row.userId)).toEqual([USER_A]);
     expect(input.failedRuns).toHaveBeenCalledWith({ from: new Date("2026-10-01T00:00:00.000Z"), to: new Date("2026-10-08T00:00:00.000Z"),
@@ -474,14 +558,18 @@ describe("full agent report text", () => {
     // Sections by user impact: failed runs and user reports first, then failures, then performance and operations.
     expect(lines.filter((line) => /^[A-Z]/u.test(line)).slice(3)).toEqual([
       "Failed runs by code (3 runs, 2 users; no stops or refused input)",
+      "Failure streaks (3+ failed or cancelled runs in a row in one chat: 2 streaks, 2 users, longest 6)",
       "Answer problem reports (2, newest first)",
       "Runs (accepted runs; outcomes counted once per run from its terminal write)",
+      "Runs by model (runs created in the range, most failures first) (2)",
       "Error groups (class · where in AIQSA; NEW = first seen in this range) (1)",
-      "Failures: warn, error and fatal records by key (17)",
+      "Failures: warn, error and fatal records by key (20)",
       "Timeouts: deadline aborts, transport timeouts, tool and run deadlines (4)",
-      "Tool calls by family, then calls that did not complete by code (2)",
+      "Tool calls by family, then calls that did not complete by code (3)",
       "HTTP: 4xx and 5xx responses and failed requests by route (3)",
-      "Sign-in outcomes by method, step and code (2)",
+      "Sign-in outcomes by method, step and code (3)",
+      "Sign-in refusal bursts (5+ failures of one method within 10 min in one hour; no identities) (1)",
+      "Browser push deliveries by push service, outcome and code (2)",
       "Slow database transactions (held rows over 2.0 s; ERROR: over the 5.0 s budget) (0)",
       "Incidents (UTC, newest first; 3 listed)",
       "Incident keys (event · code · subsystem · connection · fingerprint), most incidents first (2)",
@@ -496,17 +584,65 @@ describe("full agent report text", () => {
       "  code workspace_output_export_failed · 1 run · 1 user\n" +
       "      first 2026-10-06 10:00 · last 2026-10-06 10:00\n" +
       "      ref 1a2b3c4d user user_a 2026-10-06 10:00\n");
+    // A call held for write approval is counted apart from failures.
+    expect(lines.find((line) => line.startsWith("  mcp "))).toContain("3 calls · failed 2 · timed out 0 · cancelled 0 · awaiting approval 1");
     const empty = formatHealthFullReport(await collectHealthFullReport(sources(fixtureCounters, fixtureIncidents, {
       failedRunGroups: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false })
     }), "7d"));
     expect(empty).toContain("Failed runs by code (0 runs, 0 users; no stops or refused input)\n  none\n");
+    expect(text).toContain("Failure streaks (3+ failed or cancelled runs in a row in one chat: 2 streaks, 2 users, longest 6)\n" +
+      "  user user_a · 6 runs in a row · failed 5 · cancelled 1 · STILL FAILING\n" +
+      "      first 2026-10-06 10:00 · last 2026-10-06 10:10\n" +
+      "      codes agent_provider_failed ×5\n" +
+      "      newest 2: ref 1a2b3c4d · ref 5e6f7a8b\n");
+    expect(text).toContain("  OpenAI · gpt-5\n" +
+      "      accepted 198 · completed 170 · failed 25 (12.7%) · cancelled 2 · refused input 1 · 9 users\n" +
+      "      last failure 2026-10-06 10:00\n" +
+      "      codes provider_server_error ×20, no code ×5\n");
+    expect(text).toContain("  password · 9 failures · within 1 min 0 s · hour 2026-10-06 10:00\n" +
+      "      first 2026-10-06 10:00:00 · last 2026-10-06 10:01:00 · invalid_credentials ×9\n");
+    expect(text).toContain("  mozilla · failed · code push_delivery_failed · transport network_unreachable\n");
     expect(text).toContain("  accepted 8: send 5 · regenerate 2 · project 1\n" +
       "  completed 4 · failed 3 (37.5%) · cancelled 1 (12.5%) · stop requests 2\n");
     expect(text).toContain("  run duration      4 measured · p50 ≤ 2.5 s · p95 ≤ 25.0 s · max 25.0 s\n");
-    expect(text).toContain("  WARN   nested_abort · stage delivery · openai\n");
+    expect(text).toContain("  WARN   nested_abort · stage delivery · openai · operation answer\n");
+    expect(text).toContain("  ERROR  tool_execution · code workspace_operation_failed · stage request\n" +
+      "         reason guest_operation_failed · tool workspace · operation sandbox_fs_read\n");
+    expect(text).toContain("  ERROR  provider_operation · code provider_rate_limited · stage answer · HTTP 429\n" +
+      "         provider error rate_limit_exceeded · openai\n");
     expect(text).toContain('      comment: "It stopped [31m halfway through"\n');
     expect(text).not.toContain("\u001b");
     expect(text).toContain("      user user_a · version 1.4.0 · fingerprint 0123456789ab · first of its key\n");
+  });
+
+  it("counts signed-out and unknown-route traffic apart from users' failures", async () => {
+    const counters = [...fixtureCounters,
+      counter("http.request_completed", "warn", { routePath: "/login", method: "POST", status: 404, outcome: "completed" }, 159),
+      counter("http.request_completed", "warn", { method: "GET", status: 404, outcome: "completed" }, 125),
+      counter("http.request_completed", "warn", { routePath: "/api/me/catalog", method: "GET", status: 401, outcome: "completed" }, 4)];
+    const report = await collectHealthFullReport(sources(counters, fixtureIncidents), "7d");
+    expect(report.http.rows.map((row) => [row.method, row.routePath, row.status, row.unauthenticatedOrUnknownRoute])).toEqual([
+      ["POST", "/login", 404, true], ["GET", null, 404, true], ["GET", "/api/chats/[chatId]", 404, false],
+      ["GET", "/api/me/catalog", 401, true], ["POST", "/api/runs", 502, false]]);
+    expect(report.failures.rows.filter((row) => row.event === "http.request_completed")
+      .map((row) => [row.method, row.routePath, row.status, row.unauthenticatedOrUnknownRoute])).toEqual([
+      ["POST", "/login", 404, true], ["GET", null, 404, true], ["GET", "/api/chats/[chatId]", 404, false],
+      ["GET", "/api/me/catalog", 401, true], ["POST", "/api/runs", 502, false]]);
+    const lines = formatHealthFullReport(report).split("\n");
+    const http = lines.slice(lines.findIndex((line) => line.startsWith("HTTP: ")));
+    const label = http.indexOf("  Unauthenticated / unknown route (signed-out clients, bots, scanners):");
+    expect(label).toBeGreaterThan(0);
+    // Users' failures and browser crashes come first; the outside traffic follows its label.
+    expect(http.slice(1, label).filter((line) => line.startsWith("  WARN") || line.startsWith("  ERROR"))).toEqual([
+      "  WARN   http.request_completed · GET · /api/chats/[chatId] · status 404 · completed",
+      "  ERROR  http.request_completed · POST · /api/runs · status 502 · completed",
+      "  WARN   client.error · render · /chat/[chatId]"
+    ]);
+    expect(http.slice(label + 1).filter((line) => line.startsWith("  WARN")).slice(0, 3)).toEqual([
+      "  WARN   http.request_completed · POST · /login · status 404 · completed",
+      "  WARN   http.request_completed · GET · route unknown · status 404 · completed",
+      "  WARN   http.request_completed · GET · /api/me/catalog · status 401 · completed"
+    ]);
   });
 });
 

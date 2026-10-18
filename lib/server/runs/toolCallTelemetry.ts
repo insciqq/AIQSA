@@ -1,5 +1,6 @@
 import observedFailureCodes from "../observability/failureCodes.json";
 import { logEvent, type EventFields, type ToolCallKind } from "../observability";
+import { MCP_APPROVAL_REQUIRED } from "../mcp/writeApproval";
 
 const registeredCodes = new Set<string>(observedFailureCodes);
 /** A failed call whose result names no registered code. */
@@ -64,8 +65,10 @@ export function toolResultFailureCode(result: unknown): string {
   return TOOL_CALL_FAILED_CODE;
 }
 
+// A call the write-approval gate held is paused for its initiator, not failed.
 const outcomeOf = (code: string): Outcome =>
-  code === "tool_call_cancelled" ? "cancelled" : code === "tool_call_timeout" ? "timeout" : "failed";
+  code === "tool_call_cancelled" ? "cancelled" : code === "tool_call_timeout" ? "timeout"
+    : code === MCP_APPROVAL_REQUIRED ? "awaiting_approval" : "failed";
 
 /**
  * The terminal outcome and code of one settled loop result: the loop's own

@@ -3919,7 +3919,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           duration_ms: Math.max(0, Date.now() - executionStartedAt),
           connectionId: failedAnswer?.connectionId, providerModelId: failedAnswer?.providerModelId,
           providerFamily: failedAnswer?.providerFamily, adapterKind: failedAnswer?.model?.adapterKind,
-          httpStatus: originalFailure.httpStatus,
+          httpStatus: originalFailure.httpStatus, provider_error_code: originalFailure.provider_error_code,
           code: originalFailure.code, reason: cancelled ? "cancelled" : originalFailure.reason,
           provider_code: error instanceof KnowledgeAnswerProviderError ? error.providerCode : undefined,
           abort_source: abortController.signal.aborted ? "stop" : workspaceTurnTimedOut ? "workspace_deadline"

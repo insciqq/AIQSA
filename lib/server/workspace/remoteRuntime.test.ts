@@ -12,7 +12,7 @@ import { getWorkspaceConfig, workspaceToolTransportMaxBytes, type WorkspaceConfi
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
 import { createWorkspaceRunnerServer } from "./runnerServer";
-import { WorkspaceRuntimeError } from "./runtime";
+import { WorkspaceRuntimeError, workspaceOutputCollection } from "./runtime";
 import { AgentExecutionError, agentFailureCode } from "../agents/failures";
 import { tarGzipStream } from "../chats/tarArchive";
 import { SKILL_RUNTIME_ARCHIVE_MAX_BYTES } from "./skillBundles";
@@ -241,6 +241,47 @@ describe("remote Workspace runner protocol", () => {
     const fetch = vi.fn(async () => Response.json(response)); vi.stubGlobal("fetch", fetch);
     const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token, runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
     await expect(remote.collectBrowserSessions({ operation, runtimeSandboxId: "synthetic", sessionId: "synthetic", modelRunId: "synthetic" }))
+      .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([[undefined], [{ link: 2, special: 1 }]] as const)("carries an export's skipped counts from the runner to the app (%o)", async (skipped) => {
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const bytes = new TextEncoder().encode("kept");
+    // The deterministic fixture holds no links: stand in for the real walk's listing.
+    vi.spyOn(local, "collectOutputs").mockImplementation(async () => workspaceOutputCollection([{ body: stream(bytes),
+      byteSize: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex"), mimeType: "text/plain",
+      opaqueFileId: "d".repeat(64), relativePath: "report.txt" }], skipped));
+    const server = createWorkspaceRunnerServer({ runtime: local, token }); servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "ws_" + "d".repeat(40);
+    const session = await remote.ensureSession({ cpus: 1, diskMiB: deterministicConfig.diskMiB, memoryMiB: 512, imageRef: deterministicConfig.imageRef,
+      internetEnabled: false, runtimeSandboxId: null, sandboxName: workspaceSandboxName(sessionId), sessionId, operation });
+    const outputs = await remote.collectOutputs({ modelRunId: "run_skips", outputDirectory: workspaceRunOutputDirectory("run_skips"),
+      operation, runtimeSandboxId: session.runtimeSandboxId, sessionId });
+    expect(outputs.map((output) => output.relativePath)).toEqual(["report.txt"]);
+    if (skipped) expect(outputs.skipped).toEqual(skipped);
+    else expect(outputs).not.toHaveProperty("skipped");
+    expect(new TextDecoder().decode(await collect(outputs[0]!.body))).toBe("kept");
+    await remote.removeSession({ operation, runtimeSandboxId: session.runtimeSandboxId, sessionId });
+  });
+
+  it("rejects malformed export skips, and any on a selected capture, before opening a byte stream", async () => {
+    const remote = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token, runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
+    const identity = { operation, runtimeSandboxId: "synthetic", sessionId: "synthetic", modelRunId: "run_skips",
+      outputDirectory: workspaceRunOutputDirectory("run_skips") };
+    for (const skipped of [{ link: 0 }, { link: 1, path: "report-link.txt" }, ["link"], {}]) {
+      const fetch = vi.fn(async () => Response.json({ batchId: "a".repeat(32), outputs: [], skipped })); vi.stubGlobal("fetch", fetch);
+      await expect(remote.collectOutputs(identity)).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+      expect(fetch).toHaveBeenCalledOnce();
+    }
+    const selection = { files: [{ root: "project" as const, relativePath: "report.txt" }], producerOperation: operation };
+    const fetch = vi.fn(async () => Response.json({ batchId: "a".repeat(32), captureId: "e".repeat(32), selection, outputs: [],
+      skipped: { link: 1 } }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(remote.collectOutputs({ ...identity, capture: { create: true, id: "e".repeat(32) }, selection }))
       .rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
     expect(fetch).toHaveBeenCalledOnce();
   });

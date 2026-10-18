@@ -5,7 +5,7 @@ import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvent
 import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import type { ToolCallKind } from "../observability";
 import { providerContextRejection } from "../providers/providerObservability";
-import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
+import { droppedRequestRetryDelay, droppedRequestRetryNow, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type {
   ModelToolCall,
@@ -538,6 +538,7 @@ export async function runProviderToolLoop(
       let next: IteratorResult<ModelRunSseEvent, ProviderRunResult>;
       // The round's physical requests; a dropped one may be sent again as is.
       let attempt = 1;
+      let firstRequestAt = 0;
       let redispatch = false;
       for (;;) {
         if (!redispatch) {
@@ -590,6 +591,7 @@ export async function runProviderToolLoop(
         // Text, tool arguments and any event other than the provider's own
         // lifecycle summary are accepted output of this round.
         let acceptedOutput = false;
+        if (attempt === 1 && input.roundRetry) firstRequestAt = droppedRequestRetryNow(input.roundRetry);
         const stream = input.adapter.stream(roundRequest, { signal,
           ...(input.onToolArguments && toolChoice !== "none" && advertisedToolNames.has("create_artifact")
             ? { onToolArguments: (event: import("../providers/types").ProviderToolArgumentEvent) => {
@@ -648,7 +650,8 @@ export async function runProviderToolLoop(
             // A dropped request whose usage the round recorded may be sent
             // again; none of the round's tool calls exists before its result.
             const delayMs = input.roundRetry && usageRecorded
-              ? droppedRequestRetryDelay(input.roundRetry, { acceptedOutput, attempt, error, signal }) : null;
+              ? droppedRequestRetryDelay(input.roundRetry, { acceptedOutput, attempt, error, firstRequestAt, signal,
+                textOutput: emittedText !== "" }) : null;
             if (delayMs === null) throw error;
             dropped = { delayMs, error };
           }

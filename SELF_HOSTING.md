@@ -7,6 +7,7 @@ This guide covers requirements, installation, updates, backups, health checks, l
 For local use by one person with external model providers:
 
 - 64-bit Linux on amd64 or arm64, Docker Engine 25.0 or newer with Compose 2.29.7 or newer, bash 4 or newer, git, and OpenSSL.
+- systemd-journald, standard on systemd distributions, keeps container logs across updates (see [Health and logs](#health-and-logs)). Hosts without it work with a fallback that loses the logs whenever a container is recreated.
 - **KVM (`/dev/kvm`) is required.** Workspace runs commands in KVM virtual machines and much of AIQSA depends on it; installations without it are not supported. On cloud and other virtual machines enable nested virtualization, or use a bare-metal host.
 - **Minimum: 2 CPU cores, 8 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups. Each workspace defaults to 4 GB RAM and 10 GB disk.
 - **Recommended: 16 GB RAM** for several concurrent workspaces, active Knowledge ingestion and OCR.
@@ -21,7 +22,7 @@ cd AIQSA
 ./aiqsa.sh install --base-url http://localhost:3000 --admin-email admin@example.com
 ```
 
-`install` checks the host (Docker, Compose, `vm.max_map_count`, memory, disk, port, clock and KVM), creates `.env` with unique secrets unless it already exists, starts the stack and waits until it is ready. Without flags it asks for the URL users will open and the administrator email. It never changes host settings: a failed check prints the exact command to fix it. It refuses a host without usable `/dev/kvm` before changing anything and enables Workspace with the matching KVM group. `./aiqsa.sh doctor` rechecks the host, `.env` and the running stack at any time, and `./aiqsa.sh help` lists every command and flag.
+`install` checks the host (Docker, Compose, `vm.max_map_count`, memory, disk, port, clock, KVM and the host journal), creates `.env` with unique secrets unless it already exists, starts the stack and waits until it is ready. Without flags it asks for the URL users will open and the administrator email. It never changes host settings: a failed check prints the exact command to fix it. It refuses a host without usable `/dev/kvm` before changing anything and enables Workspace with the matching KVM group. `./aiqsa.sh doctor` rechecks the host, `.env` and the running stack at any time, and `./aiqsa.sh help` lists every command and flag.
 
 Open the configured URL ([localhost:3000](http://localhost:3000) by default) and sign in with the email and generated `AIQSA_INITIAL_ADMIN_PASSWORD` from `.env`. Configure model providers in the Control Center. For internet access, put an HTTPS reverse proxy in front of port 3000 and set the public URL in `.env`. Its upstream read timeout must exceed the Memory admission timeout (30 seconds by default, up to 120), because sending a message waits for Memory preparation. The proxy may also refuse paths under `/api/internal/` as optional hardening; AIQSA never relies on that.
 
@@ -34,6 +35,8 @@ The stack uses prebuilt images and persistent Docker volumes. Keep `.env` with y
 **Installations on v0.2.0–v0.2.30 (bundled MinIO):** back up PostgreSQL first, then update to v0.2.34, not further, and complete its [MinIO → SeaweedFS upgrade runbook](https://github.com/insciqq/AIQSA/blob/v0.2.34/UPGRADING_FROM_MINIO.md). Later releases no longer contain this one-time storage migration. Before updating past v0.2.34, remove any `minio-legacy` service and `/legacy` mount from your Compose overrides and drop `storage-migration` from `COMPOSE_PROFILES`.
 
 **Local MCP servers are removed after v0.2.34.** Local (npm, PyPI, OCI) MCP servers and the bundled ToolHive runtime are removed; remote MCP servers are unaffected. Before the first start of the new release, set `AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1` in `.env`: startup then deletes leftover local servers and local configurations. Without it, startup stops with `local_mcp_removal_acknowledgement_required` and changes nothing; the flag is ignored once nothing local is left. Upstream OAuth grants of removed servers are not revoked; revoke them at the provider if needed. Optionally, before updating, run `docker compose --profile maintenance run --rm mcp-maintenance --execute` in the current release to remove its ToolHive workloads. `--remove-orphans` removes the `toolhive-runtime` container; afterwards remove the `<project>_toolhive_data` volume, any leftover `aiqsa-<hex>-<token>` containers and `toolhivelocal/*` images by hand.
+
+**Container logs move to the host journal.** Releases after v0.3.18 log every service through Docker's journald driver instead of per-container files, so the logs survive the container recreation of every later update. A host with systemd-journald switches by itself. Before that update, add the [journal budget](#journal-budget) and save the current logs you still need (`./aiqsa.sh logs --since 336h > logs.txt`): the update recreates every container, and their old log files go with them. On a host without systemd-journald, add `COMPOSE_FILE=compose.yaml:compose.json-file-logging.yaml` to `.env` before updating; otherwise `up` and `upgrade` stop at their preflight, before any container is replaced. `COMPOSE_FILE` turns off the automatic `compose.override.yaml`, so append yours to that list. Logging settings in your own overrides still win; `./aiqsa.sh doctor` shows the resulting log mode.
 
 **First update to this release.** Released checkouts up to v0.2.34 do not contain `aiqsa.sh`, so this update is manual. If `.env` pins `AIQSA_IMAGE` (the v0.2.34 runbook did), set it to the new release first, for example `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z`. Then update the checkout and start the stack:
 
@@ -82,14 +85,14 @@ Control Center → Health shows recent provider failures, server errors and back
 To diagnose a problem, read the telemetry first, then the logs around its incidents, then any error reference a user reports:
 
 ```bash
-./aiqsa.sh health                          # needs attention, errors, providers, restarts, queues, incidents (24h)
+./aiqsa.sh health                          # needs attention, failed runs, errors, providers, restarts, queues, incidents (24h)
 ./aiqsa.sh logs --errors --since 2h        # container logs of that window
 ./aiqsa.sh health --run 1a2b3c4d           # one failed answer's run and incidents by its reference
 ```
 
-`health` works while the app container is down, takes `--since 7d`, `14d` or `30d`, and `--json` for scripts and agents. Its output contains no message content, secrets or `.env` values, only codes, counts and provider connection and model names, so it is safe to paste into an issue or give to an agent.
+`health` works while the app container is down, takes `--since 7d`, `14d` or `30d`, and `--json` for scripts and agents. Its output contains no message content, secrets or `.env` values, only codes, counts and provider connection and model names, so it is safe to paste into an issue or give to an agent. It also counts users who lost several answers in a row in one chat, with their error references.
 
-An agent working on the host can read everything at once: `./aiqsa.sh health --full --since 14d --json` lists every failure, timeout, run outcome, latency, incident and problem report of the range, and `--user <id>` one user's incidents, failed runs and problem reports. These two outputs carry internal user ids and users' problem-report comments, so they stay on the host: never paste them.
+An agent working on the host can read everything at once: `./aiqsa.sh health --full --since 14d --json` lists every failure, timeout, run outcome per model, latency, incident and problem report of the range, which users' answers keep failing, push deliveries per push service and bursts of failed sign-ins, and `--user <id>` one user's incidents, failed runs, failure streaks and problem reports. Failures name their cause where AIQSA knows it: the provider's own error code, why an Agent request ended, which Workspace operation failed and how. These two outputs carry internal user ids and users' problem-report comments, so they stay on the host: never paste them.
 
 ```bash
 ./aiqsa.sh logs                            # last 200 lines of every service
@@ -97,7 +100,32 @@ An agent working on the host can read everything at once: `./aiqsa.sh health --f
 ./aiqsa.sh logs --warnings --follow        # stream warnings and errors
 ```
 
-`logs` masks the `.env` secrets. `--errors` and `--warnings` keep only AIQSA's JSON lines at that level and hide the plain-text logs of PostgreSQL, OpenSearch, Tika, Docling and SeaweedFS; omit them to read those services. Container logs rotate by size (`AIQSA_LOG_MAX_FILES` × `AIQSA_LOG_MAX_SIZE` per container) and are lost when a container is recreated, for example by `up` or `upgrade`; copy anything you need to keep first.
+`logs` masks the `.env` secrets. `--errors` and `--warnings` keep only AIQSA's JSON lines at that level and hide the plain-text logs of PostgreSQL, OpenSearch, Tika, Docling and SeaweedFS; omit them to read those services.
+
+Container logs go to the host journal (Docker's journald driver), so they survive the container recreation of `up` and `upgrade`. Without a time window `logs` prints the current containers; with `--since` or `--until` it reads the journal, which also holds the lines of containers recreated since, with the time of each line:
+
+```bash
+./aiqsa.sh logs --since 2026-10-15T20:00:00Z --until 2026-10-15T22:00:00Z app
+./aiqsa.sh logs --errors --since 72h       # every service, across updates
+```
+
+Reading the journal needs root or membership in the `systemd-journal` group (`sudo usermod -aG systemd-journal "$USER"`, then sign in again); without it `logs` says so and shows the current containers only. `journalctl` reads the same lines directly, without masking: `journalctl COM_DOCKER_COMPOSE_PROJECT=aiqsa COM_DOCKER_COMPOSE_SERVICE=app --since "2 hours ago"` (the project is `COMPOSE_PROJECT_NAME`, `aiqsa` by default), or one container with `journalctl CONTAINER_NAME=aiqsa-app-1`. A full buffer drops lines instead of stalling a service.
+
+### Journal budget
+
+The journal is shared by the whole host, and its limits are host-wide. By default journald keeps it on disk only when `/var/log/journal` exists and caps it at 10% of the file system, up to 4 GB. `./aiqsa.sh doctor` warns when the journal is in memory only (history ends at reboot), stores nothing, or is capped below 1 GB. Size the journal rather than giving it an age limit, which would also cut the history of every other service; 4 GB holds two weeks or more of a typical installation's logs:
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=persistent\nSystemMaxUse=4G\nSystemMaxFileSize=128M\nMaxFileSec=1day\n' | sudo tee /etc/systemd/journald.conf.d/50-aiqsa.conf
+sudo systemctl restart systemd-journald
+```
+
+Daily journal files let the oldest lines rotate out in small steps. On distributions that also forward the journal to rsyslog, container lines are written to `/var/log/syslog` as well; to keep them only in the journal, add `if $syslogtag startswith "aiqsa-" then stop` (your project name followed by `-`) to `/etc/rsyslog.d/10-aiqsa-containers.conf` and restart rsyslog.
+
+### Hosts without systemd-journald
+
+The journald driver cannot start containers on a host without systemd-journald. There `./aiqsa.sh configure` and `install` write `COMPOSE_FILE=compose.yaml:compose.json-file-logging.yaml` to `.env`, which switches every service to rotating log files (`AIQSA_LOG_MAX_FILES` × `AIQSA_LOG_MAX_SIZE` per container). Those logs are lost when a container is recreated, for example by `up` or `upgrade`, and `doctor` warns that history is not kept: copy anything you need to keep first. `COMPOSE_FILE` turns off the automatic `compose.override.yaml`; list your own overrides after the fallback.
 
 ## Sign-in methods
 

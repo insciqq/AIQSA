@@ -9,9 +9,11 @@ import {
   searchExecutionValidation,
   searchFormFrom,
   searchHeaderStatus,
+  searchModelOptionLabel,
   searchModelsReach,
   searchSourceStatus,
-  selectablePlanSources
+  selectablePlanSources,
+  sourceIdentityFor
 } from "./searchSourceView";
 
 const NOW = new Date("2026-09-07T12:51:00.000Z");
@@ -211,5 +213,59 @@ describe("plan and form helpers", () => {
     expect(draftForModel(catalog.providerModels[0]!, saved.draft)).toMatchObject({
       maxOutputTokens: 4_096, maxSearchCallsPerAnswer: 2, queryMaxCharacters: 500, timeoutMs: 300_000
     });
+  });
+});
+
+describe("DeepSeek Search API choices", () => {
+  const hosted = {
+    connectionDisplayName: "DeepSeek", connectionId: "conn-deepseek", displayName: "DeepSeek V4 Flash", enabled: true,
+    id: "model-flash", searchKind: "deepseek_web_search", searchReasoningSupported: true
+  } as const;
+  const carrier = { ...hosted, searchKind: "deepseek_search_api", searchReasoningSupported: false } as const;
+  const apiSource = source({
+    broaderModelSetup: "not_applicable",
+    configuration: { ...source().configuration!, maxOutputTokens: null, protocol: "deepseek_search_api",
+      providerModelId: "model-flash", queryMaxCharacters: 128 },
+    description: "Web results with source links from the DeepSeek Search API.",
+    displayName: "DeepSeek Search API",
+    id: "source-deepseek-api",
+    kind: "deepseek_search_api",
+    providerModel: { connectionDisplayName: "DeepSeek", connectionId: "conn-deepseek", displayName: "DeepSeek V4 Flash", id: "model-flash" },
+    sourceConnectionId: "conn-deepseek",
+    strategyId: "deepseek-search-api"
+  });
+  const catalog = (integrations: AdminSearchIntegration[]): AdminSearchCatalog => ({
+    integrations,
+    policy: { defaultPlan: { mode: "all_selected", optionIds: [] }, updatedAt: NOW.toISOString(), version: 1 },
+    providerModels: [hosted, carrier]
+  });
+
+  it("offers the API on a DeepSeek connection until it has a live API source", () => {
+    expect(manuallyAddableModels(catalog([])).map(({ id, searchKind }) => `${searchKind}:${id}`))
+      .toEqual(["deepseek_search_api:model-flash"]);
+    expect(manuallyAddableModels(catalog([apiSource]))).toEqual([]);
+    expect(searchModelOptionLabel(carrier)).toBe("DeepSeek Search API · key via DeepSeek V4 Flash");
+    expect(sourceIdentityFor(carrier)).toEqual({
+      description: "Web results with source links from the DeepSeek Search API.",
+      displayName: "DeepSeek Search API"
+    });
+  });
+
+  it("drafts the raw results protocol within the API's query bound and keeps each source to its own choice", () => {
+    expect(draftForModel(carrier, { ...emptySearchForm().draft, maxOutputTokens: 4_096 })).toMatchObject({
+      maxOutputTokens: null, protocol: "deepseek_search_api", providerModelId: "model-flash", queryMaxCharacters: 128
+    });
+    // The same model is listed for its hosted Search and as an API key carrier.
+    expect(configurableModels(apiSource, [hosted, carrier])).toEqual([carrier]);
+    expect(configurableModels({ kind: "web_search", sourceConnectionId: "conn-deepseek" }, [hosted, carrier]))
+      .toEqual([hosted]);
+  });
+
+  it("reaches every chat model and hides the model-reply limit", () => {
+    expect(searchModelsReach(apiSource)).toBe("All chat models");
+    expect(searchHeaderStatus(apiSource, NOW)).toBe("Working · DeepSeek Search API, key via DeepSeek V4 Flash · not checked yet");
+    const form = searchFormFrom(apiSource);
+    expect(searchExecutionValidation({ ...form, executionInputs: { ...form.executionInputs, maxOutputTokens: "12" } }))
+      .toEqual({ maxOutputTokens: null, maxSearchCallsPerAnswer: null, valid: true });
   });
 });

@@ -7,7 +7,10 @@ import {
   workspaceAttachmentPath
 } from "@/lib/domain/workspace";
 import { workspaceToolTransportMaxBytes, type WorkspaceConfig } from "./config";
-import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
+import {
+  beginWorkspaceToolStage, observeWorkspaceAbort, retainWorkspaceFailureCause, workspaceFailureCause, workspaceFailureCauseOfWire,
+  workspaceToolFailure
+} from "./toolObservability";
 import { transportFailureFacts } from "../providers/providerObservability";
 import { AgentExecutionError } from "../agents/failures";
 import { parseWorkspaceOperation } from "./operationFence";
@@ -15,14 +18,17 @@ import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelectio
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
+import { decodeWorkspaceOutputSkips } from "@/lib/contracts/workspace";
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
   WORKSPACE_RUNTIME_INVENTORY_STATES,
+  workspaceOutputCollection,
   type WorkspaceRuntimeInventoryInput,
   type WorkspaceRuntimeInventoryPage,
   type WorkspaceBoundTool,
   type WorkspaceExecutionTermination,
+  type WorkspaceOutputCollection,
   type WorkspaceOutputReleaseInput,
   type WorkspaceOutputStream,
   type WorkspaceOperationInput,
@@ -519,7 +525,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       method: "POST",
       signal: input.signal
     };
-    const finish = beginWorkspaceToolStage("request");
+    const finish = beginWorkspaceToolStage("request", input.originalName);
     const observeAbort = observeWorkspaceAbort();
     const onAbort = () => observeAbort({ stage: "delivery", abort_source: "parent_signal", deadline_kind: "request" });
     if (input.signal?.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "request" });
@@ -534,7 +540,11 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         maxBytes: workspaceToolTransportMaxBytes(this.config.toolOutputMaxBytes),
         oversize: "workspace_tool_output_limit_exceeded"
       });
-      if (!response.ok) throw workspaceError(value);
+      // The cause the runner observed stays with this process's records; the
+      // result itself never carries it further.
+      if (!response.ok) {
+        throw retainWorkspaceFailureCause(workspaceError(value), isRecord(value) ? workspaceFailureCauseOfWire(value.cause) : undefined);
+      }
       if (
         !isRecord(value) ||
         !Array.isArray(value.content) ||
@@ -544,9 +554,12 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       ) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
-      finish({ outcome: value.status === "error" ? "failed" : "completed", httpStatus,
-        code: isWorkspaceOperationFailureCode(value.errorCode) ? value.errorCode : undefined });
-      return value as WorkspaceToolResult;
+      const { failureCause, ...answered } = value;
+      const result = retainWorkspaceFailureCause(answered as WorkspaceToolResult,
+        answered.status === "error" ? workspaceFailureCauseOfWire(failureCause) : undefined);
+      finish({ outcome: result.status === "error" ? "failed" : "completed", httpStatus,
+        code: isWorkspaceOperationFailureCode(result.errorCode) ? result.errorCode : undefined, reason: workspaceFailureCause(result) });
+      return result;
     } catch (error) {
       const facts = workspaceToolFailure(error);
       const transport = transportFailureFacts(error, input.signal);
@@ -618,7 +631,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     };
   }
 
-  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<WorkspaceOutputCollection> {
     const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/list`, {
       body: JSON.stringify({
@@ -637,6 +650,10 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     if (selection && JSON.stringify(parseWorkspaceFileSelection(value.selection)) !== JSON.stringify(selection)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
+    // Absent from a runner that predates it, or when nothing was skipped.
+    // Selected captures name exact files and never skip.
+    const skipped = value.skipped === undefined ? undefined : decodeWorkspaceOutputSkips(value.skipped);
+    if (skipped === null || (skipped && selection)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     const metadata = value.outputs.map((entry) => outputMetadata(entry, selection !== undefined));
     if (metadata.some((entry) => entry === null)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
@@ -645,8 +662,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       JSON.stringify(selection.files.map((file) => `${file.root}/${file.relativePath}`))) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
-    return (metadata as Omit<WorkspaceOutputStream, "body">[])
-      .map((entry) => this.output(input.sessionId, entry, input.signal));
+    return workspaceOutputCollection((metadata as Omit<WorkspaceOutputStream, "body">[])
+      .map((entry) => this.output(input.sessionId, entry, input.signal)), skipped);
   }
 
   async releaseOutputs(input: WorkspaceOutputReleaseInput): Promise<void> {

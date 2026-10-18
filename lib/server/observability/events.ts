@@ -57,7 +57,9 @@ export type EmergencyFailure = CaughtError & Readonly<{
 type OperationOutcome = "started" | "completed" | "failed" | "cancelled";
 /** Only preparation reports a run that continued without optional Memory. */
 type PreparationOutcome = OperationOutcome | "degraded";
-type Reason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
+/** `upstream`, `authority_expired` and `interrupted` name why an Agent model request or run ended. */
+type Reason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response" |
+  "upstream" | "authority_expired" | "interrupted";
 type ProviderIdentity = Readonly<{ providerFamily?: string; adapterKind?: string; connectionId?: string; providerModelId?: string }>;
 type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   stage?: "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
@@ -68,6 +70,8 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   provider_status?: "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
   /** Why an answer stream ended before its completion event. */
   stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
+  /** The provider's own error identity from providerErrorCodes.json; any other is `other`. */
+  provider_error_code?: string;
 }>;
 /** Subsystems whose hot-path interactive transactions are timed (`db_transaction`). */
 export type DbTransactionSubsystem = "memory" | "workspace" | "runs";
@@ -81,6 +85,18 @@ export type DbTransactionJobKind = "MEMORY_COMMAND" | "INDEX_HISTORY" | "EXTRACT
   "VERIFY_CANDIDATE" | "EMBED_ITEMS" | "RECONCILE_BRANCH" | "RECONCILE_SOURCE" | "REBUILD_INDEX" | "RECLASSIFY_FACTS" |
   "RESOLVE_FACT_RELATIONS" | "SYNTHESIZE_MEMORIES";
 export type PushTransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "unknown";
+/** The browser push service a subscription's endpoint belongs to, by its host alone. */
+export type PushServiceClass = "fcm" | "mozilla" | "apple" | "other";
+/**
+ * Why a Workspace tool call failed where its code alone cannot say, as the
+ * runner observed it: the pinned MCP reported the guest operation failed
+ * (`guest_*`, by its envelope code), the runner's channel to that MCP broke
+ * (`transport_*`), or the sandbox or MCP was not available (`state_*`).
+ */
+export type WorkspaceFailureCause =
+  | "guest_operation_failed" | "guest_exec_failed" | "guest_path_denied" | "guest_operation_refused" | "guest_other" | "guest_unparsed"
+  | "transport_timeout" | "transport_closed" | "transport_output_limit" | "transport_invalid_request" | "transport_other"
+  | "state_sandbox_unavailable" | "state_mcp_unavailable";
 export type EventFields = {
   image_execution: CaughtError & Readonly<{
     stage: "input" | "binding" | "run" | "references" | "reference_read" | "reference_validation" | "authorization" |
@@ -110,7 +126,7 @@ export type EventFields = {
   "logging.dropped_records": Readonly<{ count: number }>;
   run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf" }>;
   run_preparation: CaughtError & Readonly<{ run_id: string; stage: "preparing"; outcome: PreparationOutcome; duration_ms?: number; code?: string }>;
-  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion" | "first_output"; outcome: OperationOutcome; duration_ms?: number; after?: "dispatch" | "tools"; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number }>;
+  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion" | "first_output"; outcome: OperationOutcome; duration_ms?: number; after?: "dispatch" | "tools"; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number; provider_error_code?: string }>;
   run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string; db_failure?: DatabaseFailureKind; duration_ms?: number; lock_wait_ms?: number }>;
   /** A timed transaction that held its rows past the slow bound: warn, error past the foreground budget. */
   db_transaction: Readonly<{
@@ -126,7 +142,7 @@ export type EventFields = {
     reason: "wrong_or_made_up" | "did_not_follow_request" | "error_or_broken" | "too_slow" | "other"; outcome: "created" | "updated";
   }>;
   job_enqueued: Readonly<{ job_id: string; subsystem: "attachments" | "knowledge" | "memory" | "pdf" | "chat_title" }>;
-  job_attempt: LifecycleFields & Readonly<{ category?: PushTransportFailureCategory }>;
+  job_attempt: LifecycleFields & Readonly<{ category?: PushTransportFailureCategory; push_service?: PushServiceClass }>;
   job_persistence: Omit<LifecycleFields, "outcome"> & Readonly<{ outcome: "confirmed" | "not_applied" | "unconfirmed" }>;
   run_recovery: LifecycleFields;
   runtime_lifecycle: LifecycleFields;
@@ -134,16 +150,21 @@ export type EventFields = {
   tool_execution: ToolOperationFields & ProviderIdentity & CaughtError & Readonly<{
     tool_kind: ToolKind; stage: "admission" | "execution" | "request" | "result" | "grounding";
     outcome: "started" | "completed" | "failed" | "cancelled" | "degraded";
-    duration_ms?: number; attempt?: number; code?: string; reason?: Reason; httpStatus?: number;
+    duration_ms?: number; attempt?: number; code?: string; reason?: Reason | WorkspaceFailureCause; httpStatus?: number;
+    /** The official Workspace tool a Workspace record ran (`sandbox_shell`, `sandbox_fs_read`, ...). */
+    operation?: string;
     /** Vision phase timings: before the dispatch claim, the provider wait after it, and its deadline. */
     preparation_duration_ms?: number; provider_duration_ms?: number; timeout_ms?: number;
     action?: LifecycleAction; count?: number;
+    /** The byte bound an MCP response exceeded, so its call failed unread. */
+    max_bytes?: number;
     /** An MCP result over its byte limit, delivered cut to it: JSON snapshot sizes only. */
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;
   /** One terminal record per settled model tool call; never its name, arguments or result. */
   tool_call: CaughtError & Readonly<{
-    tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled";
+    /** `awaiting_approval`: an MCP call paused for its initiator's approval. */
+    tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled" | "awaiting_approval";
     code?: string; duration_ms?: number; error_category?: "unexpected";
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;

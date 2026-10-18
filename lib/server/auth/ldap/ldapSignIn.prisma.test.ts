@@ -106,6 +106,7 @@ async function withLdapData<T>(run: (fixture: Fixture) => Promise<T>): Promise<T
       value
     });
   } finally {
+    await prisma.signInRefusal.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
     await prisma.user.deleteMany({
       where: { authIdentities: { some: { normalizedEmail: { endsWith: `@${domain}` } } } }
     });

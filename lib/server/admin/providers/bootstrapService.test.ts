@@ -246,6 +246,26 @@ describe("provider automatic setup", () => {
     expect(value.searchSave).not.toHaveBeenCalled();
   });
 
+  it("sets up the connection's own Search and leaves the DeepSeek Search API to the administrator", async () => {
+    const value = fixture();
+    // A disabled API source and its key-carrier entries never stand in for the connection's own Search.
+    value.search.integrations.push({ archivedAt: null, broaderModelSetup: "not_applicable", configurable: true, configuration: null,
+      configurationActive: true, description: "API", displayName: "DeepSeek Search API", draftDirty: false, draftVersion: 1,
+      draftTestEvidence: null, enabled: false, executionModes: ["all_selected", "model_choice"], id: "search-api",
+      kind: "deepseek_search_api", providerModel: null, ready: true, readiness: "ready",
+      sourceConnectionId: value.connection.id, strategyId: "deepseek-search-api", system: false });
+    value.search.providerModels = [
+      ...value.search.providerModels.map((model) => ({ ...model, searchKind: "deepseek_search_api" as const })),
+      ...value.search.providerModels
+    ];
+    expect(await value.run()).toMatchObject({ search: "ready" });
+    expect(value.searchCreate).toHaveBeenCalledOnce();
+    expect(value.searchCreate).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({ protocol: "openai_responses_web_search" })
+    }));
+    expect(value.searchSave).not.toHaveBeenCalled();
+  });
+
   it("does not derive role readiness from a catalog, a stale key version or a disabled connection", async () => {
     const value = fixture();
     value.connection.activeChecks[0]!.credentialVersionId = "previous-key";

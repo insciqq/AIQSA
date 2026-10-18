@@ -28,8 +28,10 @@ import { WORKSPACE_UV_CACHE_DIRECTORY, WORKSPACE_UV_CACHE_PRUNE_THRESHOLD_BYTES 
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
+  workspaceOutputCollection,
   type WorkspaceRuntimeInventoryInput,
   type WorkspaceRuntimeInventoryPage,
+  type WorkspaceOutputCollection,
   type WorkspaceOutputStream,
   type WorkspaceRuntime,
   type WorkspaceRuntimeSession,
@@ -910,7 +912,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     }
   }
 
-  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<WorkspaceOutputCollection> {
     const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
     if (selection) return this.outputCaptures().collect(input, async () => {
       const session = this.session(input.sessionId, input.runtimeSandboxId);
@@ -942,7 +944,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
       if (streamFault && outputs.length > 0) {
         await outputs.at(-1)!.body.cancel();
         let consumed = false;
-        return outputs.map((output, index) => index === outputs.length - 1 ? { ...output,
+        return workspaceOutputCollection(outputs.map((output, index) => index === outputs.length - 1 ? { ...output,
           body: new ReadableStream<Uint8Array>({
             pull(controller) {
               consumed = true;
@@ -953,7 +955,7 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
               // one-shot fault belongs to the first actual file transfer.
               if (!consumed) session.faults.add("export_stream_once");
             }
-          }, { highWaterMark: 0 }) } : output);
+          }, { highWaterMark: 0 }) } : output), outputs.skipped);
       }
       return outputs;
     }
@@ -964,7 +966,8 @@ export class DeterministicWorkspaceRuntime implements WorkspaceRuntime {
     await this.captures.store?.release(input);
   }
 
-  private async collectCurrentOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+  /** The fixture file map holds no links or special files, so it never reports skips. */
+  private async collectCurrentOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<WorkspaceOutputCollection> {
     const session = this.session(input.sessionId, input.runtimeSandboxId);
     const observed = new Set(session.execs.values());
     if ([...session.allExecs].some((exec) => exec.modelRunId === input.modelRunId && exec.alive &&
