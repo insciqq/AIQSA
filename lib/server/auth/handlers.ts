@@ -28,6 +28,7 @@ import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
 import { resolveLoginRateLimitIdentity } from "./clientIdentity";
 import { refuseWhenPasswordSignInOff, type SignInPolicyReader } from "./signInPolicy";
+import { noteSignInRefusal, type SignInRefusalRecorder } from "./signInRefusals";
 import { observeSignInStep, type SignInAttempt } from "./signInTelemetry";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import {
@@ -110,6 +111,8 @@ export type PasswordLoginHandlerDeps = {
   directorySignIn?: DirectoryPasswordSignIn;
   getConfig(): AuthConfig;
   loginRateLimiter?: LoginRateLimiter;
+  /** The refused sign-in journal; absent records nothing. */
+  refusals?: SignInRefusalRecorder;
   repository: PasswordAuthRepository;
   /** The password sign-in switch; absent means on. */
   signInPolicy?: SignInPolicyReader;
@@ -310,6 +313,17 @@ function isActiveVerifiedPasswordIdentity(
   identity: PasswordIdentityRecord | null
 ): identity is PasswordIdentityRecord {
   return Boolean(identity?.emailVerifiedAt && identity.user.status === "active");
+}
+
+/**
+ * Why the form refused an existing account's password identity, for the journal. A password is
+ * checked only against an active, verified identity, so the other codes say nothing about it.
+ */
+function passwordRefusalCode(identity: PasswordIdentityRecord) {
+  if (identity.user.status === "disabled" || identity.user.status === "denied") return "account_inactive" as const;
+  if (!identity.emailVerifiedAt) return "email_unverified" as const;
+  if (identity.user.status === "pending") return "account_pending" as const;
+  return "invalid_credentials" as const;
 }
 
 function passwordResetExpiresAt(now: Date): Date {
@@ -544,6 +558,13 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     const passwordOk = await verifyPassword(credentials.password, usablePasswordHash);
 
     if (!identity?.passwordHash || !passwordOk || !isActiveVerifiedPasswordIdentity(identity)) {
+      // Only an existing account is journaled, by its id, never the typed email or password; the
+      // response does not wait for the write, so it stays the same for unknown addresses.
+      if (identity) {
+        noteSignInRefusal(deps.refusals, {
+          code: passwordRefusalCode(identity), method: "password", now: new Date(), subject: { userId: identity.userId }
+        });
+      }
       return localUnauthorized();
     }
 
@@ -558,6 +579,11 @@ export function createPasswordLoginHandler(deps: PasswordLoginHandlerDeps) {
     });
 
     if (!currentCredential) {
+      // The password matched, but the account cannot sign in now (a pending SCIM deactivation,
+      // or a change since it was read).
+      noteSignInRefusal(deps.refusals, {
+        code: "not_allowed", method: "password", now: new Date(), subject: { userId: identity.userId }
+      });
       return localUnauthorized();
     }
 

@@ -153,6 +153,7 @@ async function withSettlementData<T>(run: (fixture: SettlementFixture) => Promis
       value: (name) => `${name}-${id}`
     });
   } finally {
+    await prisma.signInRefusal.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
     // Accounts created from an untrusted email have no email; their identity still names it.
     await prisma.user.deleteMany({
       where: { authIdentities: { some: { normalizedEmail: { endsWith: `@${domain}` } } } }

@@ -928,6 +928,7 @@ model User {
   scheduledTasks ScheduledTask[]
   answerReviewSessions AnswerReviewSession[] @relation("AnswerReviewInitiator")
   answerProblemReports AnswerProblemReport[]
+  signInRefusals SignInRefusal[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -1489,6 +1490,33 @@ model AuthScimToken {
   createdBy       User?     @relation("AuthScimTokenCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([createdByUserId])
+}
+
+/// Refused sign-ins for administrators (the Users page; Sign-in owns the rule): one row per
+/// UTC day, method, refusal code and subject, counting the attempts between its first and last
+/// time. The subject is an email the method verified or trusts, the existing account a password
+/// or second-factor refusal resolved to, or nobody. Never a typed email, password, code, token,
+/// IdP payload or IP address. The application prunes rows 30 days after their last attempt.
+model SignInRefusal {
+  id          String               @id @default(uuid())
+  day         DateTime             @db.Date
+  method      AuthIdentityProvider
+  /// A closed refusal code (`SIGN_IN_REFUSAL_CODES`).
+  code        String               @db.VarChar(64)
+  /// The dedupe key the writer derives: `email:<email>`, `user:<userId>`, `no_verified_email`,
+  /// or `overflow` for attempts past the day's row limit (a check ties it to the columns).
+  subjectKey  String               @db.VarChar(400)
+  /// Normalized, and only an email the source verified or the method is configured to trust.
+  email       String?              @db.VarChar(320)
+  userId      String?
+  attempts    Int                  @default(1)
+  firstSeenAt DateTime
+  lastSeenAt  DateTime
+  user        User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([day, method, code, subjectKey])
+  @@index([lastSeenAt])
+  @@index([userId])
 }
 
 model Group {
