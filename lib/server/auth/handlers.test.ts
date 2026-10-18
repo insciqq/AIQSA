@@ -10,6 +10,7 @@ import type { PasswordIdentityRecord } from "./passwordRepository";
 import { createFixedWindowLoginRateLimiter } from "./rateLimit";
 import { createAuthSession } from "./requestAuth";
 import { readCookie, SESSION_COOKIE_NAME } from "./session";
+import type { SignInRefusalRecorder } from "./signInRefusals";
 import { hashToken } from "./token";
 import {
   createMemoryAuthSessionStore,
@@ -1346,5 +1347,109 @@ describe("sign-in telemetry of the token and password forms", () => {
     expect(signIns).toEqual([
       { code: "sign_in_failed", level: "error", outcome: "failed", sign_in_method: "password", step: "credentials" }
     ]);
+  });
+});
+
+describe("refused sign-in journal of the password form", () => {
+  function passwordForm(input: {
+    identity: PasswordIdentityRecord | null;
+    refusals: SignInRefusalRecorder;
+    sessionRefused?: boolean;
+  }) {
+    const checkedHashes: (string | null | undefined)[] = [];
+    const repository = createMemoryPasswordAuthRepository({ identity: input.identity });
+    if (input.sessionRefused) repository.createSessionForCurrentPassword = async () => null;
+    const POST = createPasswordLoginHandler({
+      getConfig: () => config,
+      loginRateLimiter: createFixedWindowLoginRateLimiter(),
+      refusals: input.refusals,
+      repository,
+      verifyPassword: async (password, hash) => {
+        checkedHashes.push(hash);
+        return hash === "stored-hash" && password === "correct-password";
+      }
+    });
+    return {
+      checkedHashes,
+      login: (email: string, password: string) => POST(jsonRequest("/api/auth/login", { email, password }))
+    };
+  }
+
+  const dana = (input: Parameters<typeof createTestPasswordIdentity>[0] = {}) =>
+    createTestPasswordIdentity({ passwordHash: "stored-hash", ...input, user: { id: "user-dana", ...input.user } });
+
+  it("names an existing account's wrong password by the account id, never the typed email or password", async () => {
+    const refusals = vi.fn<SignInRefusalRecorder>(async () => undefined);
+    const { login } = passwordForm({ identity: dana(), refusals });
+
+    const response = await login(" Operator@AIQSA.local ", "wrong-password");
+
+    expect(response.status).toBe(401);
+    expect(refusals).toHaveBeenCalledExactlyOnceWith({
+      code: "invalid_credentials", method: "password", now: expect.any(Date), subject: { userId: "user-dana" }
+    });
+    expect(JSON.stringify(refusals.mock.calls)).not.toMatch(/operator|aiqsa|wrong-password|stored-hash/iu);
+  });
+
+  it("leaves no row for an address without an account and answers it like a wrong password", async () => {
+    const refusals = vi.fn<SignInRefusalRecorder>(async () => undefined);
+    const { login } = passwordForm({ identity: dana(), refusals });
+
+    const unknown = await login("stranger@example.test", "any-password");
+    expect(refusals).not.toHaveBeenCalled();
+    const known = await login("operator@aiqsa.local", "wrong-password");
+
+    expect([unknown.status, await unknown.json()]).toEqual([known.status, await known.json()]);
+    expect(refusals).toHaveBeenCalledOnce();
+  });
+
+  it("says why an account that cannot sign in with a password was refused, without checking its password", async () => {
+    const cases = [
+      [dana({ user: { status: "disabled" } }), "account_inactive"],
+      [dana({ user: { status: "denied" } }), "account_inactive"],
+      [dana({ user: { status: "pending" } }), "account_pending"],
+      [dana({ emailVerifiedAt: null }), "email_unverified"],
+      [dana({ emailVerifiedAt: null, user: { status: "pending" } }), "email_unverified"]
+    ] as const;
+
+    for (const [identity, code] of cases) {
+      const refusals = vi.fn<SignInRefusalRecorder>(async () => undefined);
+      const { checkedHashes, login } = passwordForm({ identity, refusals });
+
+      expect((await login("operator@aiqsa.local", "correct-password")).status).toBe(401);
+      expect(refusals).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code, subject: { userId: "user-dana" } }));
+      expect(checkedHashes).not.toContain("stored-hash");
+    }
+  });
+
+  it("journals a matching password whose account can no longer sign in as not allowed", async () => {
+    const refusals = vi.fn<SignInRefusalRecorder>(async () => undefined);
+    const { login } = passwordForm({ identity: dana(), refusals, sessionRefused: true });
+
+    expect((await login("operator@aiqsa.local", "correct-password")).status).toBe(401);
+    expect(refusals).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: "not_allowed", subject: { userId: "user-dana" } }));
+  });
+
+  it("journals nothing for a successful sign-in", async () => {
+    const refusals = vi.fn<SignInRefusalRecorder>(async () => undefined);
+    const { login } = passwordForm({ identity: dana(), refusals });
+
+    expect((await login("operator@aiqsa.local", "correct-password")).status).toBe(200);
+    expect(refusals).not.toHaveBeenCalled();
+  });
+
+  it("answers without waiting for the journal, whatever the recorder does", async () => {
+    const recorders: SignInRefusalRecorder[] = [
+      () => new Promise<void>(() => undefined),
+      async () => { throw new Error("journal unavailable"); },
+      () => { throw new Error("journal unavailable"); }
+    ];
+
+    for (const refusals of recorders) {
+      const { login } = passwordForm({ identity: dana(), refusals });
+      const response = await login("operator@aiqsa.local", "wrong-password");
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+    }
   });
 });
