@@ -14,22 +14,23 @@
  * model (as the paid compaction journey smoke does), then sends two turns
  * of synthetic filler prose sized from that window's answer budget (about
  * 14,234 tokens with the 512-token answer ceiling; trigger 80 %, about
- * 11,387). The first turn (40 %, about 5,700 tokens) stays below the
- * trigger; the second (45 %, about 6,400) makes the request cross it, so its
+ * 11,387). The first turn (50 %, about 7,100 tokens) stays below the
+ * trigger; the second (40 %, about 5,700) makes the request cross it, so its
  * run buys the summary on the answer binding before its answer.
  *
  * Sizing: a summary call reads at most about 6,900 estimated source tokens
  * here (half the window's usable capacity is reserved for output when the
  * model declares a large output limit, as codex-lb catalog models do), and
  * the source is the whole conversation including the current message, so
- * one call can never hold it and the plan is inherently two parts and a
- * final reduction. Each message stays a whole unit under that bound, so the
- * parts are [first message + first answer] and [second message], both large.
- * A message above the bound is split at the bound and can leave a tiny tail
- * part whose notes bound (half its bytes, at least 256) a model overshoots
- * twice, failing the run with `context_compaction_summary_invalid`: a
- * product defect tracked separately, which these sizes avoid. Expected
- * attempts: two `settled` partial calls and one `committed` reduction.
+ * one call can never hold it and the plan is inherently several parts and a
+ * final reduction. The first message is above that bound on purpose: it is
+ * split at the bound and leaves a small trailing piece (a few hundred
+ * tokens). A part no larger than the minimum notes size (4 KB) joins the
+ * reduction verbatim without a paid call, so no model gets a notes bound it
+ * would overshoot (the `context_compaction_summary_invalid` failure this
+ * sizing found before). Expected attempts: `settled` partial calls for the
+ * large parts and one `committed` reduction, every one with provider usage;
+ * a verbatim part has no attempt.
  *
  * Vision needs a model without image input as the answer model and an
  * installation Vision Model with verified image input. The codex-lb catalog
@@ -175,10 +176,10 @@ test("a turn that crosses the compaction trigger buys a settled summary through 
     summary.model = model.upstreamModelId;
     const estimate = contextTokenEstimator({ modelId: model.upstreamModelId, provider: family });
     const { budgetTokens } = calculateContextBudgetLimits({ contextWindow: COMPACTION_WINDOW, maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS });
-    // 40 % stays below the trigger; with 45 % more the second request crosses
-    // it, and neither message exceeds one summary call's source bound (header).
-    const first = journeyFiller(1, Math.floor(budgetTokens * 0.4), estimate);
-    const second = journeyFiller(2, Math.floor(budgetTokens * 0.45), estimate);
+    // Half the budget alone stays below the trigger; with 40 % more the second
+    // request crosses it. The first message splits by design (header).
+    const first = journeyFiller(1, Math.floor(budgetTokens * 0.5), estimate);
+    const second = journeyFiller(2, Math.floor(budgetTokens * 0.4), estimate);
     summary.budgetTokens = budgetTokens;
     summary.triggerTokens = Math.floor(budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio);
     chatId = await newExcludedChat(request, `Compaction codex-lb ${randomUUID().slice(0, 8)}`);
@@ -191,7 +192,8 @@ test("a turn that crosses the compaction trigger buys a settled summary through 
     summary.summaryAttempts = attempts.map((attempt) => ({ attempt: attempt.attempt, state: attempt.state, errorCode: attempt.errorCode ?? null,
       inputTokens: attempt.usage?.inputTokens ?? null, outputTokens: attempt.usage?.outputTokens ?? null }));
     expect(crossing.status, "the crossing turn completes").toBe("complete");
-    // A multi-part plan is inherent here (header): every call settled, the last committed the notes.
+    // A multi-part plan is inherent here (header): every paid call settled, the last committed the notes;
+    // the verbatim trailing piece made no call, so it has no attempt.
     expect(attempts.filter((attempt) => attempt.state === "committed"), "the crossing turn committed one summary").toHaveLength(1);
     expect(attempts.at(-1)?.state, "the final call committed the notes").toBe("committed");
     // Without an injected drop, nothing failed, was refused or is left unsettled or ambiguous.
