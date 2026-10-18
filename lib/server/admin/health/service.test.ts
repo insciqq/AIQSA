@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   TelemetryCounterGroup, TelemetryCounterQuery, TelemetryIncident, TelemetryIncidentQuery, TelemetryStore
 } from "../../telemetry/store";
+import { TELEMETRY_DURATION_BUCKETS } from "../../telemetry/aggregator";
 import { createAdminHealthService, type AdminHealthDependencies } from "./service";
 
 const NOW = new Date("2026-10-07T12:30:00.000Z");
@@ -11,14 +12,14 @@ const MODEL = "model-gpt";
 function group(fields: Partial<TelemetryCounterGroup> & Pick<TelemetryCounterGroup, "group" | "count">): TelemetryCounterGroup {
   return {
     valueSum: 0, durationCount: 0, durationSumMs: 0, durationMaxMs: null,
-    durationBuckets: new Array<number>(12).fill(0),
+    durationBuckets: new Array<number>(TELEMETRY_DURATION_BUCKETS).fill(0),
     firstSeenAt: new Date("2026-10-07T10:00:00.000Z"), lastSeenAt: new Date("2026-10-07T10:30:00.000Z"),
     ...fields
   };
 }
 
 function buckets(entries: Readonly<Record<number, number>>): number[] {
-  return Array.from({ length: 12 }, (_, index) => entries[index] ?? 0);
+  return Array.from({ length: TELEMETRY_DURATION_BUCKETS }, (_, index) => entries[index] ?? 0);
 }
 
 const totals = [
@@ -49,7 +50,7 @@ const providers = [
   group({ group: operation({ outcome: "failed", action: "none", code: "provider_auth_rejected", reason: "http", httpStatus: 401 }), count: 4,
     lastSeenAt: new Date("2026-10-07T11:15:00.000Z") }),
   group({ group: operation({ outcome: "failed", action: "none", code: "provider_request_timed_out", reason: "deadline" }), count: 2,
-    durationBuckets: buckets({ 8: 2 }), durationMaxMs: 60_000 }),
+    durationBuckets: buckets({ 9: 2 }), durationMaxMs: 60_000 }),
   group({ group: operation({ outcome: "failed", action: "retry", code: "provider_response_failed" }), count: 7 }),
   group({ group: operation({ outcome: "cancelled", action: "none" }), count: 5 }),
   group({ group: operation({ connectionId: "conn-gone", providerModelId: "model-gone", stage: "embedding", outcome: "completed", action: "none" }), count: 10 }),

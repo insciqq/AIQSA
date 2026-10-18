@@ -60,6 +60,9 @@ import { RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION, retireDreamSynthesisStagingFi
 import { USAGE_EVENT_PURPOSE_MIGRATION, usageEventPurposeFixtureSql, usageEventPurposeProofSql } from "./usage-event-purpose-adoption";
 import { WEB_SEARCH_PRICES_MIGRATION, webSearchPricesFixtureSql, webSearchPricesProofSql } from "./web-search-prices-adoption";
 import { MODEL_REFRESH_PRICES_MIGRATION, modelRefreshPricesFixtureSql, modelRefreshPricesProofSql } from "./model-refresh-prices-adoption";
+import {
+  TELEMETRY_DURATION_BUCKETS_MIGRATION, telemetryDurationBucketsFixtureSql, telemetryDurationBucketsProofSql
+} from "./telemetry-duration-buckets-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7754,6 +7757,8 @@ function main(
     webSearchPricesFixtureSql, webSearchPricesProofSql, webSearchPricesProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_REFRESH_PRICES_MIGRATION,
     modelRefreshPricesFixtureSql, modelRefreshPricesProofSql, modelRefreshPricesProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, TELEMETRY_DURATION_BUCKETS_MIGRATION,
+    telemetryDurationBucketsFixtureSql, telemetryDurationBucketsProofSql, telemetryDurationBucketsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
