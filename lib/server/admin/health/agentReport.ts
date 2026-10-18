@@ -158,6 +158,8 @@ export type HealthSignInRow = Seen & { method: string | null; step: string | nul
 export type HealthToolCallRow = Seen & { toolKind: string | null; outcome: string | null; code: string | null };
 export type HealthToolFamilyRow = HealthDurationStats & {
   toolKind: string | null; calls: number; failed: number; timedOut: number; cancelled: number;
+  /** MCP calls paused for their initiator's approval; not failures. */
+  awaitingApproval: number;
 };
 export type HealthHttpRow = Seen & {
   event: string; level: string; routePath: string | null; method: string | null; status: number | null;
@@ -580,6 +582,7 @@ function toolFamilies(rows: readonly TelemetryCounterGroup[]): HealthToolFamilyR
       failed: outcome("failed"),
       timedOut: outcome("timeout"),
       cancelled: outcome("cancelled"),
+      awaitingApproval: outcome("awaiting_approval"),
       ...stats(group)
     };
   }).sort((left, right) => right.calls - left.calls || (left.toolKind ?? "").localeCompare(right.toolKind ?? ""));
