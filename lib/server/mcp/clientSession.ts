@@ -689,7 +689,7 @@ export class McpClientSession {
     this.onInventoryStale = options.onInventoryStale;
     // The transport accepts twice the configured tools/call limit (within its
     // ceiling), so a result over the limit arrives whole and is truncated to
-    // it instead of failing the call and closing the session.
+    // it. Only a response beyond that bound fails the call, and only the call.
     this.responseGuard = new McpResponseGuard({ limits: { ...responseLimits,
       callToolResponseMaxBytes: Math.min(2 * responseLimits.callToolResponseMaxBytes,
         MCP_RESPONSE_WIRE_LIMIT_CEILINGS.callToolResponseMaxBytes) } });
@@ -791,7 +791,9 @@ export class McpClientSession {
     } catch (error) {
       const scopedFailure = guarded.failure();
       if (scopedFailure) {
-        this.fatalCauseExposed = true;
+        // A call's own over-bound response leaves the session ready. A fatal
+        // one is exposed here: later callers see the closed session.
+        if (this.responseGuard.fatalFailure()) this.fatalCauseExposed = true;
         throw scopedFailure;
       }
       const fatalFailure = this.consumeUnscopedFatalFailure();
@@ -1063,7 +1065,8 @@ export class McpClientSession {
       if (timedOut) observeAbort({ stage: "delivery", abort_source: "mcp_deadline", deadline_kind: "sdk_request", timeout_ms: sdkOptions.timeout });
       const failure = requestFailure(error, "call_tool", options?.signal, "mcp_call_failed");
       const facts = timedOut ? { code: "mcp_request_timeout", reason: "deadline" as const } : mcpToolFailure(failure);
-      finish({ outcome: facts.reason === "cancelled" ? "cancelled" : "failed", ...facts });
+      finish({ outcome: facts.reason === "cancelled" ? "cancelled" : "failed", ...facts,
+        ...(failure.maxBytes ? { max_bytes: failure.maxBytes } : {}) });
       throw failure;
     } finally {
       options?.signal?.removeEventListener("abort", onAbort);
