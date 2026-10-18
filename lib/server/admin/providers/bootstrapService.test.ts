@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fixtureCheck, workingConnection } from "@/components/admin/providers/providerFixtures";
 import type { AdminModelPolicyCatalog } from "../../../contracts/adminModelPolicy";
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
-import type { AdminSearchCatalog } from "../../../contracts/adminSearch";
+import { adminSearchExecutionDefaults, type AdminSearchCatalog, type AdminSearchDraft } from "../../../contracts/adminSearch";
 import { createAdminProviderBootstrap } from "./bootstrapService";
 import { adminKnowledgeProfileFixture } from "@/tests/support/knowledgeProfile";
 import { providerSetupModels } from "./setupModels";
@@ -246,24 +246,81 @@ describe("provider automatic setup", () => {
     expect(value.searchSave).not.toHaveBeenCalled();
   });
 
-  it("sets up the connection's own Search and leaves the DeepSeek Search API to the administrator", async () => {
+  describe("on a DeepSeek connection", () => {
+    function deepSeekFixture() {
+      const value = fixture();
+      value.connection.family = "deepseek";
+      value.connection.displayName = "DeepSeek";
+      const models = value.search.providerModels.map((model) => ({ ...model, connectionDisplayName: "DeepSeek" }));
+      // Every DeepSeek model also carries its connection key for the API.
+      value.search.providerModels = [
+        ...models.map((model) => ({ ...model, searchKind: "deepseek_web_search" as const })),
+        ...models.map((model) => ({ ...model, searchKind: "deepseek_search_api" as const }))
+      ];
+      const builtIn = (kind: "deepseek_search_api" | "web_search") => ({ archivedAt: null, broaderModelSetup: "not_applicable" as const,
+        configurable: false, configuration: null, configurationActive: false, draftDirty: false, draftVersion: 0, draftTestEvidence: null,
+        enabled: true, executionModes: [], providerModel: null, ready: false, readiness: "setup_required" as const,
+        sourceConnectionId: value.connection.id, system: true, kind, ...kind === "web_search"
+          ? { description: "Hosted", displayName: "DeepSeek Search", id: "hosted", strategyId: "deepseek-native-web-search" }
+          : { description: "API", displayName: "DeepSeek Search API", id: "api", strategyId: "deepseek-search-api" } });
+      value.search.integrations.push(builtIn("web_search"), builtIn("deepseek_search_api"));
+      return { ...value, api: value.search.integrations[1]! };
+    }
+
+    it("checks and publishes the hosted Search and the built-in Search API, each once", async () => {
+      const value = deepSeekFixture();
+      expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
+      expect(value.searchCreate.mock.calls.map(([args]) => (args as { draft: AdminSearchDraft }).draft.protocol))
+        .toEqual(["deepseek_responses_web_search", "deepseek_search_api"]);
+      expect(value.searchCreate).toHaveBeenLastCalledWith(expect.objectContaining({ bootstrap: true, check: true,
+        displayName: "DeepSeek Search API", userId: "operator", draft: expect.objectContaining({ adapterKind: "provider_model_client",
+          maxSearchCallsPerAnswer: 8, protocol: "deepseek_search_api", providerModelId: "model-terra", queryMaxCharacters: 128 }) }));
+      expect(value.searchSave).not.toHaveBeenCalled();
+    });
+
+    it("rechecks a configured, enabled API source with the new key and keeps its settings", async () => {
+      const value = deepSeekFixture();
+      const configuration: AdminSearchDraft = { ...adminSearchExecutionDefaults, adapterKind: "provider_model_client",
+        credentialMode: "provider_model", maxSearchCallsPerAnswer: 1, protocol: "deepseek_search_api",
+        providerModelId: "model-luna", queryMaxCharacters: 100 };
+      Object.assign(value.api, { configurable: true, configuration, configurationActive: true, draftVersion: 3 });
+      expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
+      expect(value.searchSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        draft: configuration, expectedDraftVersion: 3, id: "api" }));
+      expect(value.searchCreate).toHaveBeenCalledOnce();
+    });
+
+    it.each(["disabled before setup", "disabled", "archived", "edited"])("leaves an operator's %s API source alone", async (state) => {
+      const value = deepSeekFixture();
+      Object.assign(value.api, state === "disabled before setup" ? { enabled: false } : {
+        configurable: true, configurationActive: true, configuration: null,
+        ...state === "disabled" ? { enabled: false } : state === "archived" ? { archivedAt: "2026-10-18T12:00:00.000Z" } : { draftDirty: true } });
+      expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
+      expect(value.searchCreate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        draft: expect.objectContaining({ protocol: "deepseek_responses_web_search" }) }));
+      expect(value.searchSave).not.toHaveBeenCalled();
+    });
+
+    it("keeps the hosted Search when the API check fails and lets a retry finish it", async () => {
+      const value = deepSeekFixture();
+      value.searchCreate.mockResolvedValueOnce({ created: false, id: "hosted" })
+        .mockRejectedValueOnce(new Error("synthetic_search_failure"));
+      expect(await value.run()).toMatchObject({ search: "failed", state: "partial" });
+      expect(value.searchCreate).toHaveBeenCalledTimes(2);
+      expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
+    });
+  });
+
+  it("sets up only its own Search on a connection of another family", async () => {
     const value = fixture();
-    // A disabled API source and its key-carrier entries never stand in for the connection's own Search.
-    value.search.integrations.push({ archivedAt: null, broaderModelSetup: "not_applicable", configurable: true, configuration: null,
-      configurationActive: true, description: "API", displayName: "DeepSeek Search API", draftDirty: false, draftVersion: 1,
-      draftTestEvidence: null, enabled: false, executionModes: ["all_selected", "model_choice"], id: "search-api",
-      kind: "deepseek_search_api", providerModel: null, ready: true, readiness: "ready",
-      sourceConnectionId: value.connection.id, strategyId: "deepseek-search-api", system: false });
     value.search.providerModels = [
       ...value.search.providerModels.map((model) => ({ ...model, searchKind: "deepseek_search_api" as const })),
       ...value.search.providerModels
     ];
     expect(await value.run()).toMatchObject({ search: "ready" });
-    expect(value.searchCreate).toHaveBeenCalledOnce();
-    expect(value.searchCreate).toHaveBeenCalledWith(expect.objectContaining({
+    expect(value.searchCreate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       draft: expect.objectContaining({ protocol: "openai_responses_web_search" })
     }));
-    expect(value.searchSave).not.toHaveBeenCalled();
   });
 
   it("does not derive role readiness from a catalog, a stale key version or a disabled connection", async () => {
