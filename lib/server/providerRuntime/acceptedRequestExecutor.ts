@@ -6,7 +6,7 @@ import {
   providerAuthenticationMode,
   type ProviderConnectionConfiguration
 } from "../providers/providerConfiguration";
-import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
+import { droppedRequestRetryDelay, droppedRequestRetryNow, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
 import { createProviderSafeFetch } from "../providers/providerSafeFetch";
 import { providerOutputObserved } from "../providers/streamDrop";
 import {
@@ -132,6 +132,7 @@ export function createAcceptedProviderRequestExecutor(
       ? { ...options.droppedRequestRetry, policy: runtime.adapter.droppedRoundRetry } : null;
     // Each dropped request is its own operation: the call reports the sum.
     const dropped: ModelRunUsage[] = [];
+    const firstRequestAt = retry ? droppedRequestRetryNow(retry) : 0;
     for (let attempt = 1; ; attempt += 1) {
       let usage: ModelRunUsage = {};
       const total = () => dropped.length ? sumTokenUsage([...dropped, usage]) : usage;
@@ -155,7 +156,7 @@ export function createAcceptedProviderRequestExecutor(
         // Output the transport received before the adapter yielded any
         // (an assembled non-streaming create) counts as received too.
         delayMs = retry ? droppedRequestRetryDelay(retry, { acceptedOutput: receivedOutput || providerOutputObserved(error), attempt, error,
-          signal: executionOptions.signal }) : null;
+          firstRequestAt, signal: executionOptions.signal }) : null;
         if (delayMs === null) throw error;
       } finally {
         await stream.return(undefined as never).catch(() => undefined);

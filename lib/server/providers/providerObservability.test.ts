@@ -161,7 +161,8 @@ describe("provider diagnostics", () => {
   const authMessage = (status: number) => `The model provider rejected the configured credentials (HTTP ${status}). Ask an administrator to check the provider key.`;
   const quotaMessage = (status: number) => `The model provider reports that the account has no remaining quota or balance (HTTP ${status}). Ask an administrator to check the provider account.`;
   const rateMessage = "The model provider is limiting requests (HTTP 429) and the retries did not succeed. Wait a minute before trying again.";
-  const unavailableMessage = (status: number) => `The model provider returned a server error (HTTP ${status}) and the retries did not succeed. Try again later.`;
+  const unavailableMessage = (status: number) => `The model provider returned a server error (HTTP ${status}) and kept failing when retried. ` +
+    "Try again in a moment, or choose another model.";
   const openai = (fetchFn: typeof fetch) => () => createFetchOpenAIResponsesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn }).create({});
   const openrouter = (fetchFn: typeof fetch) => () => createFetchOpenAIChatCompletionClient({ bodyMissingError: "missing",
     endpoint: "https://openrouter.test/api/v1/chat/completions", fetchFn, headers: { authorization: "Bearer PRIVATE_KEY_CANARY" },
@@ -305,6 +306,20 @@ describe("provider diagnostics", () => {
     // A value outside the closed vocabulary never reaches a record.
     expect(observedFailure(Object.assign(new Error("x"), { streamDrop: "PRIVATE_DROP_CANARY" }))).toEqual({ code: "unknown", reason: "unknown" });
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("tells the user to retry or choose another model when the provider kept dropping the response", () => {
+    for (const drop of ["truncated", "error_event", "response_failed", "reset"]) {
+      const error = Object.defineProperty(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), "streamDrop", { value: drop });
+      expect(providerHttpFailureMessage(error)).toBe(
+        "The model provider kept failing before the response was complete. Try again in a moment, or choose another model.");
+    }
+    expect(providerHttpFailureMessage(new Error("openai_response_not_completed"))).toBeNull();
+    expect(providerHttpFailureMessage(Object.assign(new Error("x"), { streamDrop: "PRIVATE_DROP_CANARY" }))).toBeNull();
+    // A classified failure keeps its own wording even when its stream dropped.
+    const contextLength = Object.defineProperty(Object.assign(new Error("x"), { code: "provider_context_length_exceeded" }), "streamDrop",
+      { value: "error_event" });
+    expect(providerHttpFailureMessage(contextLength)).toContain("context window");
   });
 
   it("does not treat the Gemini diagnostic prefix or exception text as an allowlist", () => {
