@@ -85,6 +85,8 @@ export type DbTransactionJobKind = "MEMORY_COMMAND" | "INDEX_HISTORY" | "EXTRACT
   "VERIFY_CANDIDATE" | "EMBED_ITEMS" | "RECONCILE_BRANCH" | "RECONCILE_SOURCE" | "REBUILD_INDEX" | "RECLASSIFY_FACTS" |
   "RESOLVE_FACT_RELATIONS" | "SYNTHESIZE_MEMORIES";
 export type PushTransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "unknown";
+/** The browser push service a subscription's endpoint belongs to, by its host alone. */
+export type PushServiceClass = "fcm" | "mozilla" | "apple" | "other";
 /**
  * Why a Workspace tool call failed where its code alone cannot say, as the
  * runner observed it: the pinned MCP reported the guest operation failed
@@ -140,7 +142,7 @@ export type EventFields = {
     reason: "wrong_or_made_up" | "did_not_follow_request" | "error_or_broken" | "too_slow" | "other"; outcome: "created" | "updated";
   }>;
   job_enqueued: Readonly<{ job_id: string; subsystem: "attachments" | "knowledge" | "memory" | "pdf" | "chat_title" }>;
-  job_attempt: LifecycleFields & Readonly<{ category?: PushTransportFailureCategory }>;
+  job_attempt: LifecycleFields & Readonly<{ category?: PushTransportFailureCategory; push_service?: PushServiceClass }>;
   job_persistence: Omit<LifecycleFields, "outcome"> & Readonly<{ outcome: "confirmed" | "not_applied" | "unconfirmed" }>;
   run_recovery: LifecycleFields;
   runtime_lifecycle: LifecycleFields;
