@@ -216,7 +216,9 @@ describe("provider runtime factory", () => {
     });
 
     expect(runtime.adapter).toBeDefined();
-    expect(Boolean(runtime.searchAdapter)).toBe(adapterKind === "openrouter_chat_completions");
+    // A DeepSeek binding always carries the DeepSeek Search API.
+    expect(Boolean(runtime.searchAdapter)).toBe(adapterKind === "openrouter_chat_completions" ||
+      adapterKind === "deepseek_responses_native");
     expect(Boolean(runtime.structuredOutputAdapter)).toBe([
       "anthropic_messages",
       "deepseek_responses_native",
@@ -523,9 +525,10 @@ describe("provider runtime factory", () => {
     })).toThrow("provider_safe_fetch_required");
   });
 
+  // DeepSeek's hosted Search keeps this rule inside its binding's Search
+  // adapter (deepSeekSearchApi.test.ts); the binding also carries the API.
   it.each([
     "anthropic_messages",
-    "deepseek_responses_native",
     "gemini_interactions_native",
     "openai_responses_native",
     "openai_responses_compatible"

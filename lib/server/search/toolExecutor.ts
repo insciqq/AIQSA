@@ -22,6 +22,7 @@ import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types
 import {
   boundedEngineSearchSources,
   normalizeSearchFindings,
+  SEARCH_NO_RESULTS_FINDINGS,
   type SearchSource
 } from "./evidence";
 import { validateSearchToolArguments } from "./query";
@@ -264,6 +265,13 @@ function queryOnlyRequest(
       reasoningPolicy: configured.reasoningPolicy,
       strategyId: "deepseek-responses-web-search"
     };
+  } else if (option.protocol === "deepseek_search_api" && option.provider === "deepseek") {
+    searchPolicy = {
+      maxResults: configured.maxResults,
+      modelId: option.modelId ?? "",
+      provider: "deepseek",
+      strategyId: "deepseek-search-api"
+    };
   } else if (option.protocol === "gemini_google_search" && option.provider === "gemini") {
     searchPolicy = {
       maxOutputTokens: configured.maxOutputTokens,
@@ -303,6 +311,7 @@ async function consumeProviderSearch(
 ): Promise<{
   costUsd: number | null;
   findings: string;
+  noResults?: true;
   sourceAttribution: "available" | "provider_unavailable";
   sources: SearchSource[];
   usage: ModelRunUsage;
@@ -311,6 +320,20 @@ async function consumeProviderSearch(
   const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
   const costUsd = result.costUsd ?? null;
   const sourceAttribution = result.sourceAttribution ?? "available";
+  if (result.noResults === true) {
+    // An explicit empty answer of a raw results API is an ordinary outcome:
+    // no sources and no provider text, only the server's own words.
+    if (option.protocol !== "deepseek_search_api" || option.provider !== "deepseek" || result.sources.length > 0 ||
+      result.findings !== SEARCH_NO_RESULTS_FINDINGS || sourceAttribution !== "available") {
+      throw new ProviderSearchExecutionError({
+        artifacts: result.artifacts,
+        code: "search_sources_invalid",
+        costUsd,
+        usage: result.usage
+      });
+    }
+    return { costUsd, findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, sourceAttribution, sources: [], usage: result.usage };
+  }
   const sources = boundedEngineSearchSources(result.sources, searchExecutionConfiguration(option).maxResults);
   const providerSourcesUnavailable =
     sourceAttribution === "provider_unavailable" &&
@@ -463,7 +486,9 @@ async function executeOne(input: Readonly<{
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
-      ...(result.sourceAttribution === "provider_unavailable"
+      // The protocol vouches for a source-free result: DeepSeek's hosted
+      // Search without URLs, or a raw results API that found nothing.
+      ...(result.sourceAttribution === "provider_unavailable" || result.noResults
         ? { protocol: input.option.protocol }
         : {}),
       revisionId: input.option.revisionId,

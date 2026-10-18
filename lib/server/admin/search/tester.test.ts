@@ -102,6 +102,15 @@ describe("admin Search diagnostic policies", () => {
       provider: "openai"
     })).toThrow("search_protocol_not_supported");
   });
+
+  it("checks the DeepSeek Search API with one raw results request, never the carrier model", () => {
+    const input = { capabilities, defaultParams: {}, draft: { ...draft("deepseek_search_api"), queryMaxCharacters: 128 },
+      modelId: "deepseek-flash", provider: "deepseek" };
+    expect(adminSearchProviderPolicy(input)).toEqual({
+      maxResults: 8, modelId: "deepseek-search-api", provider: "deepseek", strategyId: "deepseek-search-api"
+    });
+    expect(() => adminSearchProviderPolicy({ ...input, provider: "openrouter" })).toThrow("search_protocol_not_supported");
+  });
 });
 
 describe("admin Search diagnostic execution", () => {

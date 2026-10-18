@@ -687,6 +687,77 @@ describe("prisma catalog data loader", () => {
     ]);
   });
 
+  it("publishes the DeepSeek Search API as web search for any tool-calling answer model", () => {
+    // A DeepSeek model without hosted Search still carries the connection key.
+    const carrier = providerModel({
+      activeConfig: {
+        adapterKind: "deepseek_responses_native",
+        capabilities: { ...capabilities, nativeSearch: false },
+        defaultParams: {},
+        upstreamModelId: "deepseek-flash"
+      },
+      connection: { family: "deepseek", id: "connection-deepseek" },
+      model: { connectionId: "connection-deepseek", id: "deployment-deepseek-flash" }
+    });
+    const configuration = {
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      maxOutputTokens: null,
+      maxResults: 8,
+      maxSearchCallsPerAnswer: 8,
+      protocol: "deepseek_search_api",
+      providerModelId: "deployment-deepseek-flash",
+      queryMaxCharacters: 128,
+      reasoningPolicy: "lowest_supported",
+      timeoutMs: 120_000
+    };
+    const route = searchStrategy({
+      activeRevision: {
+        adapterKind: "provider_model_client", configuration, credentialMode: "provider_model",
+        id: "search-revision-api", providerModelId: "deployment-deepseek-flash"
+      },
+      activeRevisionId: "search-revision-api",
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      kind: "provider_model_web_search",
+      provider: "deepseek",
+      providerModelId: "deployment-deepseek-flash",
+      strategyId: "deepseek-search-api-1:client"
+    });
+    const stored = (kind: string) => searchOption({
+      kind,
+      optionId: "deepseek-search-api-1",
+      sourceConnection: { id: "connection-deepseek" },
+      sourceConnectionId: "connection-deepseek",
+      strategies: [route]
+    });
+    const exposed = (tools: boolean) => filterExposedSearchOptions({
+      availableProviderModels: [carrier],
+      entitlements: entitlements({ searches: ["deepseek-search-api-1"] }),
+      exposedProviderModels: [providerModel({
+        activeConfig: {
+          adapterKind: "anthropic_messages", capabilities: { ...capabilities, toolCalling: tools },
+          defaultParams: {}, upstreamModelId: "claude-opus-5"
+        },
+        connection: { family: "anthropic", id: "connection-answer" },
+        model: { connectionId: "connection-answer", id: "deployment-answer" }
+      })],
+      searchOptions: [stored("deepseek_search_api")]
+    });
+
+    expect(exposed(true)).toEqual([expect.objectContaining({
+      kind: "web_search",
+      routes: [expect.objectContaining({
+        adapterKind: "provider_model_client", protocol: "deepseek_search_api", providerModelId: "deployment-deepseek-flash"
+      })],
+      sourceConnectionId: "connection-deepseek",
+      strategyId: "deepseek-search-api-1"
+    })]);
+    expect(exposed(false)).toEqual([]);
+    // The hosted DeepSeek Search slot never adopts the API's route.
+    expect(searchOptionToCatalogEntry(stored("web_search"))?.routes).toEqual([]);
+  });
+
   it("publishes hosted Search only when an entitled available answer model can run it", () => {
     const hosted = searchStrategy({
       adapterKind: "answer_provider_hosted",
