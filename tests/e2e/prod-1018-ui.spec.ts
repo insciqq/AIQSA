@@ -280,8 +280,10 @@ test("Admin Search Add source offers the DeepSeek Search API on a DeepSeek conne
     testInfo.annotations.push({ description: JSON.stringify(offered.map((model) => ({ connection: model.connectionDisplayName,
       enabled: model.enabled, kind: model.searchKind, model: model.displayName }))), type: "search-models-offered" });
     console.log(`search-models-offered ${JSON.stringify(offered.map((model) => [model.searchKind, model.enabled, model.connectionDisplayName === connectionName]))}`);
-    await expect(searchModel.locator("option", { hasText: optionLabel })).toHaveCount(1);
-    await searchModel.selectOption({ label: optionLabel });
+    // The option names the connection's key source; its model part follows the catalog's model name.
+    const option = searchModel.locator("option", { hasText: `${connectionName} Search API · key via ` });
+    await expect(option, `the offered choice (${optionLabel})`).toHaveCount(1);
+    await searchModel.selectOption({ label: (await option.textContent())!.trim() });
     await expect(sheet).toContainText("Searches with the DeepSeek Search API using this connection's key; the model itself is never called.");
     await expect(sheet.getByLabel("Name", { exact: true })).toHaveValue(`${connectionName} Search API`);
     await sheet.getByText("Advanced Search execution", { exact: true }).click();
