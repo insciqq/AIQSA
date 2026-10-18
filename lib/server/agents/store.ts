@@ -12,6 +12,7 @@ import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import type { McpRunPlanResult } from "../mcp/runPlan";
 import { AGENT_GRANT_LEASE_MS, type NormalizedRunAgent } from "./config";
 import { AgentExecutionError, agentFailureCode, type AgentFailureCode } from "./failures";
+import { AGENT_LEASE_CANCELLED } from "./lease";
 import { CODEX_PROVIDER_MAX_RETRIES } from "./codexProfile";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import { AGENT_BUILTIN_TOOL_NAMES } from "./builtinTools";
@@ -106,7 +107,14 @@ export function createAgentRunStore(database: PrismaClient, input: Readonly<{
     assertActive: async () => { await assertActive(); },
     // Existing streams remain alive until the exact native process receives
     // SIGINT. A lease check must not race that signal with a synthetic EOF.
-    assertLeaseActive: async () => { await assertActive(database, true); },
+    // A user's Stop ends the authority too; that end is reported as a
+    // cancellation so the gateway closes its streams instead of failing them.
+    assertLeaseActive: async () => {
+      try { await assertActive(database, true); } catch (error) {
+        const cancelled = await database.modelRun.count({ where: { id: runId, userId, status: "cancelled" } }).catch(() => 0);
+        throw cancelled ? new Error(AGENT_LEASE_CANCELLED) : error;
+      }
+    },
     async assertActiveInTransaction(tx: Prisma.TransactionClient) {
       await lock(tx);
       await assertActive(tx);
