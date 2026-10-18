@@ -283,13 +283,15 @@ export function searchFormFrom(source: AdminSearchIntegration): SearchSourceForm
 
 /** Models a manual source can be built on: enabled Perplexity models, and
  * DeepSeek models carrying their connection's key for the DeepSeek Search
- * API, whose connection has no live source of that kind yet. */
+ * API, whose connection has no live, configured source of that kind yet. A
+ * built-in source that provider setup skipped, such as one switched off
+ * before its key was added, is completed here and keeps its identity. */
 export function manuallyAddableModels(catalog: AdminSearchCatalog): AdminSearchProviderModelOption[] {
   return catalog.providerModels.filter((model) =>
     model.enabled &&
     (model.searchKind === "perplexity_search" || model.searchKind === "deepseek_search_api") &&
     !catalog.integrations.some((source) =>
-      source.archivedAt === null && source.kind === model.searchKind &&
+      source.archivedAt === null && source.configurable && source.kind === model.searchKind &&
       source.sourceConnectionId === model.connectionId));
 }
 

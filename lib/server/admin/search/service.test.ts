@@ -1680,8 +1680,11 @@ describe("DeepSeek Search API source", () => {
     }) });
   });
 
-  it("completes the built-in source with one client route after one check during provider setup", async () => {
-    const builtIn = { id: "00000000-0000-4000-8000-000000001407", optionId: "deepseek-search-api",
+  it.each([
+    { bootstrap: true, enabled: true, label: "provider setup" },
+    { bootstrap: false, enabled: false, label: "Add source on a built-in that setup skipped while switched off" }
+  ])("completes the built-in source with one client route after one check through $label", async ({ bootstrap, enabled }) => {
+    const builtIn = { enabled, id: "00000000-0000-4000-8000-000000001407", optionId: "deepseek-search-api",
       templateKey: "search:deepseek-search-api" };
     const technical = deepSeekModel("deepseek-flash", false);
     const optionCreate = vi.fn(async () => ({}));
@@ -1712,7 +1715,7 @@ describe("DeepSeek Search API source", () => {
       tester: { currentBinding: vi.fn(async () => apiBinding), test }
     });
 
-    await expect(service.createDraft({ bootstrap: true, check: true, description: "Ignored for the built-in.",
+    await expect(service.createDraft({ bootstrap, check: true, description: "Ignored for the built-in.",
       displayName: "Ignored", draft: apiDraft, userId: "admin-1" })).resolves.toEqual({ created: false, id: builtIn.id });
 
     expect(test).toHaveBeenCalledOnce();
@@ -1724,10 +1727,16 @@ describe("DeepSeek Search API source", () => {
     expect(revisions.create).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
       validationEvidence: expect.objectContaining({ method: "provider_search", normalizedSourceCount: 3 })
     }) });
-    expect(optionUpdate).toHaveBeenCalledWith({ data: { enabled: true }, where: { id: builtIn.id } });
-    expect(tx.searchPolicy.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ defaultPlan: { mode: "all_selected", optionIds: ["deepseek-search-api"] } })
-    }));
+    if (bootstrap) {
+      expect(optionUpdate).toHaveBeenCalledWith({ data: { enabled: true }, where: { id: builtIn.id } });
+      expect(tx.searchPolicy.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ defaultPlan: { mode: "all_selected", optionIds: ["deepseek-search-api"] } })
+      }));
+    } else {
+      // The operator's off switch holds until they enable the now ready source.
+      expect(optionUpdate).not.toHaveBeenCalled();
+      expect(tx.searchPolicy.updateMany).not.toHaveBeenCalled();
+    }
   });
 
   it.each([
