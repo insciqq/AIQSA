@@ -1,6 +1,7 @@
 import type { AdminProviderBootstrapResult, AdminProviderConnection } from "../../../contracts/adminProviders";
 import {
   adminSearchExecutionDefaults,
+  DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
   type AdminSearchDraft,
   type AdminSearchProviderModelOption
 } from "../../../contracts/adminSearch";
@@ -13,6 +14,12 @@ import type { createAdminKnowledgeProfileService } from "../knowledge/profileSer
 import { embeddingPresetsForFamily } from "../../../domain/embeddingModels";
 import { rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 import { DEFAULT_DECISION_FEATURES, JEV_MODEL_ID } from "../../../domain/decisionModels";
+
+const searchProtocols = {
+  anthropic_web_search: "anthropic_web_search", deepseek_search_api: "deepseek_search_api",
+  deepseek_web_search: "deepseek_responses_web_search", gemini_google_search: "gemini_google_search",
+  perplexity_search: "openrouter_perplexity_chat", web_search: "openai_responses_web_search"
+} as const satisfies Record<AdminSearchProviderModelOption["searchKind"], AdminSearchDraft["protocol"]>;
 
 /** Finish setup through the ordinary, version-fenced owners. Existing
  * destinations stay operator-owned; an empty Knowledge profile adopts vision. */
@@ -171,46 +178,50 @@ export function createAdminProviderBootstrap(input: {
       value.signal.throwIfAborted();
       result.state = "partial";
     }
-    try {
-      value.signal.throwIfAborted();
-      const search = await input.search.list({ userId: value.userId });
-      // Setup owns only the connection's own Search; an administrator adds
-      // the separate, paid DeepSeek Search API source by hand.
-      const existing = search.integrations.find((source) =>
-        source.sourceConnectionId === connection.id && source.kind !== "deepseek_search_api");
-      // An established off switch and an unfinished Search edit remain owned
-      // by the operator, even when a different key was just saved.
-      if (existing?.archivedAt || existing?.configurationActive && (!existing.enabled || existing.draftDirty)) return result;
-      const target = pick(search.providerModels.filter((model): model is AdminSearchProviderModelOption & {
-        searchKind: Exclude<AdminSearchProviderModelOption["searchKind"], "deepseek_search_api">;
-      } => model.enabled && model.searchKind !== "deepseek_search_api"));
-      if (!target) return result;
-      const protocol = {
-        anthropic_web_search: "anthropic_web_search", deepseek_web_search: "deepseek_responses_web_search",
-        gemini_google_search: "gemini_google_search", perplexity_search: "openrouter_perplexity_chat",
-        web_search: "openai_responses_web_search"
-      } as const;
-      const draft: AdminSearchDraft = existing?.configurationActive && existing.configuration
-        ? existing.configuration : {
-          ...adminSearchExecutionDefaults,
-          adapterKind: "provider_model_client", credentialMode: "provider_model", providerModelId: target.id,
-          protocol: protocol[target.searchKind],
-          timeoutMs: Math.min(adminSearchExecutionDefaults.timeoutMs,
-            (target.responseTimeoutSeconds ?? adminSearchExecutionDefaults.timeoutMs / 1_000) * 1_000)
-        };
-      value.signal.throwIfAborted();
-      if (existing?.configurationActive) {
-        await input.search.saveAndCheck({ description: existing.description, displayName: existing.displayName,
-          draft, expectedDraftVersion: existing.draftVersion, id: existing.id, signal: value.signal, userId: value.userId });
-      } else {
-        await input.search.createDraft({ bootstrap: true, check: true, description: `Web search through ${connection.displayName}.`,
-          displayName: `${connection.displayName} Search`, draft, signal: value.signal, userId: value.userId });
+    // Setup owns the connection's own Search and, on DeepSeek, the separate
+    // DeepSeek Search API source. Each is checked and published on its own.
+    for (const searchApi of connection.family === "deepseek" ? [false, true] : [false]) {
+      try {
+        value.signal.throwIfAborted();
+        const search = await input.search.list({ userId: value.userId });
+        const existing = search.integrations.find((source) => source.sourceConnectionId === connection.id &&
+          (source.kind === "deepseek_search_api") === searchApi);
+        // An off switch, also one set before any setup, and an unfinished
+        // Search edit remain owned by the operator, even when a different key
+        // was just saved. Setup never pays for a check it cannot publish.
+        if (existing && (existing.archivedAt || !existing.enabled || existing.configurationActive && existing.draftDirty)) continue;
+        const target = pick(search.providerModels.filter((model) =>
+          model.enabled && (model.searchKind === "deepseek_search_api") === searchApi));
+        if (!target) continue;
+        const draft: AdminSearchDraft = existing?.configurationActive && existing.configuration
+          ? existing.configuration : {
+            ...adminSearchExecutionDefaults,
+            adapterKind: "provider_model_client", credentialMode: "provider_model", providerModelId: target.id,
+            protocol: searchProtocols[target.searchKind],
+            ...(searchApi ? { queryMaxCharacters: DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS } : {}),
+            timeoutMs: Math.min(adminSearchExecutionDefaults.timeoutMs,
+              (target.responseTimeoutSeconds ?? adminSearchExecutionDefaults.timeoutMs / 1_000) * 1_000)
+          };
+        value.signal.throwIfAborted();
+        if (existing?.configurationActive) {
+          await input.search.saveAndCheck({ description: existing.description, displayName: existing.displayName,
+            draft, expectedDraftVersion: existing.draftVersion, id: existing.id, signal: value.signal, userId: value.userId });
+        } else {
+          await input.search.createDraft({ bootstrap: true, check: true, draft, signal: value.signal, userId: value.userId,
+            ...searchApi ? {
+              description: `Web results with source links from the ${connection.displayName} Search API.`,
+              displayName: `${connection.displayName} Search API`
+            } : {
+              description: `Web search through ${connection.displayName}.`,
+              displayName: `${connection.displayName} Search`
+            } });
+        }
+        if (result.search === "skipped") result.search = "ready";
+      } catch {
+        value.signal.throwIfAborted();
+        result.search = "failed";
+        result.state = "partial";
       }
-      result.search = "ready";
-    } catch {
-      value.signal.throwIfAborted();
-      result.search = "failed";
-      result.state = "partial";
     }
     return result;
   };

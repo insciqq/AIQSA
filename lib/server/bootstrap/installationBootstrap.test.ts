@@ -20,6 +20,8 @@ const bootstrapSearchStrategies = defaultSearchStrategies.filter(
 );
 const bootstrapSearchRoutes = bootstrapSearchStrategies.flatMap((strategy) => strategy.routes);
 const bootstrapPhysicalSearchStrategyCount = bootstrapSearchRoutes.length + 1;
+// Provider setup adds the DeepSeek Search API route; bootstrap owns only its row.
+const bootstrapSearchOptionCount = defaultSearchStrategies.length + 1;
 
 const baseInput: InstallationBootstrapInput = {
   displayName: "Initial Admin",
@@ -127,6 +129,8 @@ function createBootstrapTransaction(input: {
     providerModelUpdate: record("providerModel.update", { id: "reranker-model-id" }),
     providerModelUpsert: record("providerModel.upsert", { id: "model-id" }),
     searchIntegrationRevisionCreate: record("searchIntegrationRevision.create", { id: "search-revision-id" }),
+    searchOptionFindUnique: record("searchOption.findUnique", null as null | { id: string }),
+    searchOptionUpdate: record("searchOption.update", { id: "search-option-id" }),
     searchOptionUpsert: record("searchOption.upsert", { id: "search-option-id" }),
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
@@ -207,6 +211,8 @@ function createBootstrapTransaction(input: {
       create: spies.searchIntegrationRevisionCreate
     },
     searchOption: {
+      findUnique: spies.searchOptionFindUnique,
+      update: spies.searchOptionUpdate,
       upsert: spies.searchOptionUpsert
     },
     searchStrategy: {
@@ -510,8 +516,18 @@ describe("installation bootstrap", () => {
       where: { id: "installation" }
     });
     expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
-      defaultSearchStrategies.length
+      bootstrapSearchOptionCount
     );
+    expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        displayName: "DeepSeek Search API",
+        enabled: true,
+        kind: "deepseek_search_api",
+        optionId: "deepseek-search-api",
+        templateKey: "search:deepseek-search-api"
+      })
+    }));
+    expect(fixture.spies.searchOptionUpdate).not.toHaveBeenCalled();
     expect(fixture.spies.providerModelUpsert.mock.calls[0]?.[0]).toMatchObject({
       create: {
         draftConfig: {
@@ -647,7 +663,7 @@ describe("installation bootstrap", () => {
       expect.objectContaining({ where: { templateKey: "fake:fake-qsa" } })
     );
     expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
-      defaultSearchStrategies.length
+      bootstrapSearchOptionCount
     );
     expect(fixture.spies.searchStrategyUpsert).toHaveBeenCalledTimes(
       bootstrapPhysicalSearchStrategyCount
@@ -701,6 +717,32 @@ describe("installation bootstrap", () => {
     ]) {
       expect(mutation).not.toHaveBeenCalled();
     }
+  });
+
+  it("makes a DeepSeek Search API source added by hand the built-in instead of adding a second one", async () => {
+    const fixture = createBootstrapTransaction({ adopted: ADOPTED, nonempty: true });
+    fixture.spies.searchOptionFindUnique.mockResolvedValueOnce({ id: "hand-added-api" });
+    const { prisma } = createBootstrapClient(fixture);
+
+    await expect(bootstrapInstallationDatabase(prisma, baseInput, { hashPassword: vi.fn() }))
+      .resolves.toMatchObject({ status: "already_adopted" });
+
+    expect(fixture.spies.searchOptionFindUnique).toHaveBeenCalledExactlyOnceWith({
+      where: { sourceConnectionId_kind: { kind: "deepseek_search_api", sourceConnectionId: expect.any(String) } }
+    });
+    // Its row, optionId, enabled state and routes stay; only code-owned metadata changes.
+    expect(fixture.spies.searchOptionUpdate).toHaveBeenCalledExactlyOnceWith({
+      data: {
+        description: "Web results with source links from the DeepSeek Search API.",
+        displayName: "DeepSeek Search API",
+        kind: "deepseek_search_api",
+        sourceConnectionId: expect.any(String),
+        templateKey: "search:deepseek-search-api"
+      },
+      where: { id: "hand-added-api" }
+    });
+    expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(defaultSearchStrategies.length);
+    expect(JSON.stringify(fixture.spies.searchOptionUpsert.mock.calls)).not.toContain("deepseek_search_api");
   });
 
   it("allows the adopted rerun after the plaintext bootstrap password is removed", async () => {
