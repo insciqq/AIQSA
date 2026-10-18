@@ -54,7 +54,11 @@ export function searchModelsReachDetail(source: AdminSearchIntegration): string 
     return "Google Search runs inside Gemini answers; other chat models cannot use it.";
   }
   if (!source.ready) {
-    return "Choose an enabled Search model in Configure so chats can use this source.";
+    if (source.configurable) return "Choose an enabled Search model in Configure so chats can use this source.";
+    // A built-in without its own route yet: provider setup adds it with the key.
+    return source.kind === "perplexity_search" || source.kind === "deepseek_search_api"
+      ? "Adding a key on its provider page sets it up. Add source can also set it up with one of that connection's models."
+      : "Adding a key on its provider page sets it up.";
   }
   if (source.kind !== "perplexity_search" && source.broaderModelSetup === "setup_required") {
     return "Only this provider's own chat models can use it now. Choose a working Search model in Configure to open it to every chat model.";
@@ -283,13 +287,15 @@ export function searchFormFrom(source: AdminSearchIntegration): SearchSourceForm
 
 /** Models a manual source can be built on: enabled Perplexity models, and
  * DeepSeek models carrying their connection's key for the DeepSeek Search
- * API, whose connection has no live source of that kind yet. */
+ * API, whose connection has no live, configured source of that kind yet. A
+ * built-in source that provider setup skipped, such as one switched off
+ * before its key was added, is completed here and keeps its identity. */
 export function manuallyAddableModels(catalog: AdminSearchCatalog): AdminSearchProviderModelOption[] {
   return catalog.providerModels.filter((model) =>
     model.enabled &&
     (model.searchKind === "perplexity_search" || model.searchKind === "deepseek_search_api") &&
     !catalog.integrations.some((source) =>
-      source.archivedAt === null && source.kind === model.searchKind &&
+      source.archivedAt === null && source.configurable && source.kind === model.searchKind &&
       source.sourceConnectionId === model.connectionId));
 }
 

@@ -133,7 +133,7 @@ test("setup without a qualified Memory model finishes with a Memory hint instead
     expect(await prisma.memoryUtilityModelPolicy.findUnique({ where: { id: "installation" } }))
       .toMatchObject({ assignmentSource: "UNASSIGNED", providerModelId: null });
 
-    await expect(page.getByText("Search checked and ready.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Memory hint OpenAI Search checked and ready.", { exact: true })).toBeVisible();
     const hint = page.getByTestId("provider-setup-memory-hint");
     await expect(hint).toHaveText("Memory needs a model. Choose one in Defaults & roles");
     await expect(page.getByText("Some setup work is unfinished.")).toHaveCount(0);

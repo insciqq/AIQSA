@@ -104,13 +104,17 @@ function isModel(value: unknown): boolean {
 const checkRunStates = new Set(["cancelled", "completed", "interrupted", "running"]);
 const checkRunReasons = new Set(["credential", "model", "requested", "setup"]);
 
-/** Results produced before `needsConfiguration` existed omit it and stay valid. */
+/** Results produced before `needsConfiguration` or `searchResults` existed omit them and stay valid. */
 function isBootstrapResult(value: Record<string, unknown>, text: (entry: unknown, maxLength: number) => boolean): boolean {
-  const keys = Object.keys(value).sort().join(",");
+  const keys = Object.keys(value);
   const needs = value.needsConfiguration;
-  return (keys === "defaults,search,state" || keys === "defaults,needsConfiguration,search,state" &&
-      Array.isArray(needs) && needs.length > 0 && new Set(needs).size === needs.length &&
+  const searchResults = value.searchResults;
+  return keys.every((key) => ["defaults", "needsConfiguration", "search", "searchResults", "state"].includes(key)) &&
+    (needs === undefined || Array.isArray(needs) && needs.length > 0 && new Set(needs).size === needs.length &&
       needs.every((need) => (ADMIN_PROVIDER_SETUP_CONFIGURATION_NEEDS as readonly unknown[]).includes(need))) &&
+    (searchResults === undefined || Array.isArray(searchResults) && searchResults.length > 0 && searchResults.length <= 4 &&
+      searchResults.every((entry) => record(entry) && Object.keys(entry).sort().join(",") === "name,status" &&
+        text(entry.name, 160) && (entry.status === "ready" || entry.status === "failed"))) &&
     ["completed", "partial"].includes(String(value.state)) && Array.isArray(value.defaults) &&
     value.defaults.length <= 16 && value.defaults.every((label) => text(label, 512)) &&
     ["ready", "failed", "skipped"].includes(String(value.search));

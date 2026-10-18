@@ -17,6 +17,7 @@ import { applyLocalMcpRemovalGate } from "@/lib/server/bootstrap/localMcpRemoval
 const BOOTSTRAP_LOCK_KEY = "aiqsa:installation-bootstrap:v1";
 const MAX_DISPLAY_NAME_LENGTH = 200;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const BOOTSTRAP_TRANSACTION_ATTEMPTS = 3;
 
 export type InstallationBootstrapInput = {
   /** Operator consent to delete leftover local MCP rows (`AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1`). */
@@ -449,8 +450,8 @@ export async function bootstrapInstallationDatabase(
   const now = dependencies.now ?? (() => new Date());
   const randomUUID = dependencies.randomUUID ?? randomNodeUuid;
 
-  return prisma.$transaction(
-    async (tx) => {
+  const attempt = () => prisma.$transaction(
+    async (tx): Promise<InstallationBootstrapResult> => {
       await lockBootstrapTransaction(tx);
       const state = await inspectBootstrapState(tx, input);
 
@@ -527,4 +528,16 @@ export async function bootstrapInstallationDatabase(
       timeout: 120_000
     }
   );
+
+  // The previous release keeps serving during an upgrade. A write of its
+  // that conflicts aborts this serializable transaction, and a fresh attempt
+  // sees it (for example a source the code-owned catalog then adopts).
+  for (let attempts = 1; ; attempts += 1) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (attempts >= BOOTSTRAP_TRANSACTION_ATTEMPTS ||
+        !(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2034") throw error;
+    }
+  }
 }

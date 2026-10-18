@@ -56,6 +56,16 @@ const builtInSearchOptions = Object.freeze({
     sourceConnectionId: providerTemplateIds.deepSeekConnection,
     templateKey: "search:deepseek"
   }),
+  // A client route on the same DeepSeek connection; provider setup adds it
+  // after one check, as for the other provider searches.
+  "deepseek-search-api": Object.freeze({
+    description: "Web results with source links from the DeepSeek Search API.",
+    displayName: "DeepSeek Search API",
+    id: "00000000-0000-4000-8000-000000001407",
+    kind: "deepseek_search_api",
+    sourceConnectionId: providerTemplateIds.deepSeekConnection,
+    templateKey: "search:deepseek-search-api"
+  }),
   "gemini-google-search": Object.freeze({
     description: "Google Search grounding for eligible Gemini models.",
     displayName: "Google Search",
@@ -374,24 +384,33 @@ async function synchronizeSearch(
   providerModelIds: ReadonlyMap<string, string>
 ): Promise<number> {
   for (const [optionId, option] of Object.entries(builtInSearchOptions)) {
+    const metadata = {
+      description: option.description,
+      displayName: option.displayName,
+      kind: option.kind,
+      sourceConnectionId: option.sourceConnectionId,
+      templateKey: option.templateKey
+    };
+    // Administrators added the DeepSeek Search API by hand before it was
+    // built in. That source becomes the built-in with its identity, state and
+    // routes, so selections and grants that name it keep working.
+    const adopted = option.kind === "deepseek_search_api" && option.sourceConnectionId
+      ? await client.searchOption.findUnique({
+          where: {
+            sourceConnectionId_kind: {
+              kind: option.kind,
+              sourceConnectionId: option.sourceConnectionId
+            }
+          }
+        })
+      : null;
+    if (adopted) {
+      await client.searchOption.update({ data: metadata, where: { id: adopted.id } });
+      continue;
+    }
     await client.searchOption.upsert({
-      create: {
-        description: option.description,
-        displayName: option.displayName,
-        enabled: true,
-        id: option.id,
-        kind: option.kind,
-        optionId,
-        sourceConnectionId: option.sourceConnectionId,
-        templateKey: option.templateKey
-      },
-      update: {
-        description: option.description,
-        displayName: option.displayName,
-        kind: option.kind,
-        sourceConnectionId: option.sourceConnectionId,
-        templateKey: option.templateKey
-      },
+      create: { ...metadata, enabled: true, id: option.id, optionId },
+      update: metadata,
       where: { id: option.id }
     });
   }
