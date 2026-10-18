@@ -155,6 +155,8 @@ export const CONNECT_PAIRING_POLL_PATH = `${CONNECT_DEVICE_API_PREFIX}/pairings/
 export const CONNECT_DEVICE_STREAM_PATH = `${CONNECT_DEVICE_API_PREFIX}/stream`;
 export const CONNECT_DEVICE_EVENTS_PATH = `${CONNECT_DEVICE_API_PREFIX}/events`;
 export const CONNECT_CLIENT_MANIFEST_PATH = `${CONNECT_DEVICE_API_PREFIX}/client`;
+/** The client version on every device API request; the server records it on the device when the stream opens. */
+export const CONNECT_CLIENT_VERSION_HEADER = "X-AIQSA-Connect-Version";
 
 // Browser API: the AIQSA cookie session.
 export const CONNECT_BROWSER_API_PREFIX = "/api/connect";

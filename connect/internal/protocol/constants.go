@@ -231,6 +231,10 @@ const (
 	ClientBinaryPrefix   = "aiqsa-connect"
 )
 
+// ClientVersionHeader carries the client version on every device API request;
+// the server records it on the device when the stream opens.
+const ClientVersionHeader = "X-AIQSA-Connect-Version"
+
 // ClientBinaryName is the release file name of one target, for example aiqsa-connect-linux-amd64.
 func ClientBinaryName(os OS, arch Arch) string {
 	return ClientBinaryPrefix + "-" + string(os) + "-" + string(arch)
