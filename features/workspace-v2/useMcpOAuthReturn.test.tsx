@@ -3,6 +3,10 @@ import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deactivateMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
 import { deactivatePersonalMcp, usePersonalMcpStore } from "@/components/app-shell/personalMcpStore";
+import {
+  initialSettingsDestinationSnapshot,
+  useSettingsDestinationStore
+} from "@/components/app-shell/settingsDestinationStore";
 import { useMcpOAuthReturn } from "./useMcpOAuthReturn";
 
 beforeEach(() => {
@@ -28,6 +32,17 @@ function useConnectionsReturn(accountId: string, open: () => void) {
 }
 
 describe("MCP OAuth return lifecycle", () => {
+  it("opens Settings on the agent connections from a link outside the chat shell", async () => {
+    window.history.replaceState(null, "", "/?settings=connected_apps&keep=yes");
+    const open = vi.fn();
+    renderHook(() => useShellReturn("account-1", open), { wrapper: StrictMode });
+    await waitFor(() => expect(useSettingsDestinationStore.getState().settingsOpen).toBe(true));
+    expect(useSettingsDestinationStore.getState().settingsSection).toBe("connected_apps");
+    expect(window.location.search).toBe("?keep=yes");
+    expect(open).not.toHaveBeenCalled();
+    useSettingsDestinationStore.setState(initialSettingsDestinationSnapshot);
+  });
+
   it.each(["settings", "library"].flatMap(destination => ["connected", "cancelled", "failed"].map(kind => ({ destination, kind }))))("preserves $destination $kind through shell effect replay", async ({ destination, kind }) => {
     window.history.replaceState(null, "", `/?${destination}=mcp&oauth=${kind}&server=server-1&keep=yes#anchor`);
     const open = vi.fn();
