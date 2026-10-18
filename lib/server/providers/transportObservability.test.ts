@@ -5,6 +5,7 @@ import { createFetchDeepSeekResponsesClient } from "./deepSeekResponsesTransport
 import { ProviderRequestTimeoutError, readBoundedResponseText, withTimeoutSignal } from "./network";
 import { observeProviderFetch, observeProviderOperation, transportFailureFacts } from "./providerObservability";
 import { createProviderSafeFetch } from "./providerSafeFetch";
+import { mcpSafeFetch } from "../mcp/safeFetch";
 import { parseSseStream } from "./sse";
 import { parseOpenAIResponsesSse } from "./openaiResponsesResponse";
 
@@ -187,5 +188,36 @@ describe("provider transport observations", () => {
       .toEqual({ category: "connect", code: "ECONNRESET" });
     expect(transportFailureFacts(new Error("PRIVATE_UNKNOWN_CANARY"), deadline)).toEqual({ category: "unknown", code: "unknown" });
     expect(getter).not.toHaveBeenCalled();
+  });
+
+  it("labels a provider request outside a provider operation (the Agent gateway's stream) as provider transport", async () => {
+    const records = capture();
+    const fetchFn = createProviderSafeFetch({
+      configuration: { allowPrivateNetwork: false, apiRoot: "https://provider.example.test", authenticationMode: "bearer", responseTimeoutMs: 300_000 },
+      dispatch: async () => new Response("unavailable", { status: 503 }),
+      lookupHostname: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    expect((await fetchFn("https://provider.example.test/responses", { method: "POST", body: "{}" })).status).toBe(503);
+    const transport = records().filter((entry) => entry.event === "transport_stage");
+    expect(transport.length).toBeGreaterThan(0);
+    expect(transport.every((entry) => entry.transport === "provider")).toBe(true);
+  });
+
+  it.each([
+    ["GET", "text/event-stream", 405, "completed", "info"],
+    ["GET", "application/json, text/event-stream", 404, "completed", "info"],
+    ["GET", "text/event-stream", 500, "failed", "warn"],
+    ["GET", "application/json", 405, "failed", "warn"],
+    ["POST", "application/json, text/event-stream", 405, "failed", "warn"],
+    ["POST", "application/json, text/event-stream", 404, "failed", "warn"]
+  ])("records an MCP %s (accept %s) answered %i at headers as %s", async (method, accept, status, outcome, level) => {
+    const records = capture();
+    const response = await mcpSafeFetch("https://mcp.example.test/mcp", { method, headers: { accept }, ...(method === "POST" ? { body: "{}" } : {}) }, {
+      dispatch: async () => new Response(null, { status }),
+      lookupHostname: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    expect(response.status).toBe(status);
+    expect(records().filter((entry) => entry.event === "transport_stage" && entry.stage === "headers"))
+      .toMatchObject([{ transport: "mcp", outcome, level, httpStatus: status }]);
   });
 });

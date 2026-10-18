@@ -29,8 +29,9 @@ Rank problems by who they hit and since when, not by log volume:
 
 - `errorGroups`: new failures (`newInRange`), their code site, and `usersAtLeast`/`runsAtLeast` — many users versus one persistent user. Incidents are sampled, so these are lower bounds; counters hold the totals.
 - `runs`: failure and cancel rates against `previous`; `failures` and `timeouts` by event, code, provider, route or tool family, with first/last seen and app versions.
+- `failures` and `http` rows marked `unauthenticatedOrUnknownRoute` (unrouted paths, 401s, mutations sent to pages such as `POST /login`) are signed-out clients, bots and scanners; rank them below what signed-in users hit unless their volume threatens the installation.
 - `signIns`: failures by method, step and code (users who cannot sign in cannot report it).
-- `toolCalls`: families that fail or time out while their runs still complete.
+- `toolCalls`: families that fail or time out while their runs still complete. `awaitingApproval` counts MCP calls paused for their user's approval, not failures.
 - `latency`: run duration and time to first output p50/p95 per provider/model (bucket upper bounds).
 - `problemReports`: what users reported, with run references; `operations`: restarts, stalled queues, dropped log lines, telemetry write failures.
 
