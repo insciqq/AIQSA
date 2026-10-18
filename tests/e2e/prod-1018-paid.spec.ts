@@ -815,12 +815,13 @@ async function searchCatalog(request: APIRequestContext): Promise<AdminSearchCat
   return (await response.json() as { search: AdminSearchCatalog }).search;
 }
 
+/** The connection's set-up API source; a built-in that setup has not completed does not count. */
 function searchApiSource(catalog: AdminSearchCatalog, connectionId: string): AdminSearchIntegration | null {
   return catalog.integrations.find((source) => source.kind === "deepseek_search_api" && source.sourceConnectionId === connectionId &&
-    source.archivedAt === null) ?? null;
+    source.archivedAt === null && source.ready) ?? null;
 }
 
-/** Adds the source through Admin → Search → Add source (Save runs one probe search) and enables it; an existing one is reused. */
+/** Adds the source through Admin → Search → Add source (Save runs one probe search) and enables it; a set-up one is reused. */
 async function deepSeekSearchApiSource(page: Page, connectionId: string, summary: Record<string, unknown>): Promise<AdminSearchIntegration> {
   const existing = searchApiSource(await searchCatalog(page.request), connectionId);
   summary.sourceReused = Boolean(existing);

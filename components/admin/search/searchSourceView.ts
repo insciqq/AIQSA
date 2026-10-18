@@ -54,7 +54,11 @@ export function searchModelsReachDetail(source: AdminSearchIntegration): string 
     return "Google Search runs inside Gemini answers; other chat models cannot use it.";
   }
   if (!source.ready) {
-    return "Choose an enabled Search model in Configure so chats can use this source.";
+    if (source.configurable) return "Choose an enabled Search model in Configure so chats can use this source.";
+    // A built-in without its own route yet: provider setup adds it with the key.
+    return source.kind === "perplexity_search" || source.kind === "deepseek_search_api"
+      ? "Adding a key on its provider page sets it up. Add source can also set it up with one of that connection's models."
+      : "Adding a key on its provider page sets it up.";
   }
   if (source.kind !== "perplexity_search" && source.broaderModelSetup === "setup_required") {
     return "Only this provider's own chat models can use it now. Choose a working Search model in Configure to open it to every chat model.";

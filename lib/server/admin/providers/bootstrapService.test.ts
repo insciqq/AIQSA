@@ -308,7 +308,16 @@ describe("provider automatic setup", () => {
         .mockRejectedValueOnce(new Error("synthetic_search_failure"));
       expect(await value.run()).toMatchObject({ search: "failed", state: "partial" });
       expect(value.searchCreate).toHaveBeenCalledTimes(2);
+      // The hosted Search is now published; the retry rechecks it and finishes the API.
+      const hosted = value.search.integrations[0]!;
+      Object.assign(hosted, { configurable: true, configurationActive: true, draftVersion: 1, configuration: {
+        ...adminSearchExecutionDefaults, adapterKind: "provider_model_client", credentialMode: "provider_model",
+        protocol: "deepseek_responses_web_search", providerModelId: "model-terra" } });
       expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
+      expect(value.searchSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "hosted" }));
+      expect(value.searchCreate).toHaveBeenCalledTimes(3);
+      expect(value.searchCreate).toHaveBeenLastCalledWith(expect.objectContaining({
+        draft: expect.objectContaining({ protocol: "deepseek_search_api" }) }));
     });
   });
 
