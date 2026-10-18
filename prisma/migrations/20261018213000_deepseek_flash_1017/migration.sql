@@ -27,7 +27,8 @@ WITH prices(template, input, cached, write, output) AS (VALUES
 UPDATE "ProviderModel" AS model SET
   "inputTokenPriceUsdPerMillion" = prices.input,
   "cachedInputTokenPriceUsdPerMillion" = prices.cached,
-  "cacheWriteInputTokenPriceUsdPerMillion" = prices.write,
+  -- No listed tariff has a cache-write price, and an all-NULL VALUES column is text.
+  "cacheWriteInputTokenPriceUsdPerMillion" = prices.write::numeric,
   "outputTokenPriceUsdPerMillion" = prices.output
 FROM identities JOIN prices ON prices.template = identities.template
 WHERE model.id = identities.id AND model."priceSource" = 'catalog';
