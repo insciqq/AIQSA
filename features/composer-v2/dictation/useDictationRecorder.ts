@@ -5,6 +5,7 @@ import { usageLimitRefusalMessage } from "@/components/app-shell/shellFormatting
 import {
   DICTATION_AUDIO_MAX_BYTES,
   DICTATION_MAX_DURATION_MS,
+  DICTATION_RECORDER_BITS_PER_SECOND,
   DICTATION_RECORDER_MIME_TYPES,
   decodeTranscriptionResponse,
   dictationAudioExtension,
@@ -58,7 +59,7 @@ const TRANSCRIPTION_MESSAGES: Record<TranscriptionErrorCode, string> = {
   unauthorized: "Your session has ended. Sign in again to dictate; your draft is kept.",
   multipart_required: "The recording could not be sent. Try again.",
   audio_required: "Nothing was recorded. Check your microphone and try again.",
-  audio_too_large: "The recording is too long to transcribe. Keep dictations under 5 minutes.",
+  audio_too_large: `The recording is too long to transcribe. Keep dictations under ${DICTATION_MAX_DURATION_MS / 60_000} minutes.`,
   audio_type_unsupported: "This browser's recording format is not supported. Try another browser.",
   dictation_unavailable: "Dictation is unavailable right now. Ask your administrator to check Speech to text.",
   dictation_rate_limited: "You've dictated a lot in the last few minutes. Wait a little and try again.",
@@ -90,9 +91,11 @@ type Session = {
 
 /**
  * One dictation at a time: microphone permission, recording with an elapsed
- * timer and a 5-minute auto-stop, upload to `/api/me/transcriptions`, then
- * `onText` with the transcript. Cancel discards the audio at any phase. The
- * audio only lives in this browser until it is sent; nothing is kept after.
+ * timer and an auto-stop at the 10-minute dictation limit (recorded at a
+ * fixed bitrate so a full-length dictation stays under the upload bound),
+ * upload to `/api/me/transcriptions`, then `onText` with the transcript.
+ * Cancel discards the audio at any phase. The audio only lives in this
+ * browser until it is sent; nothing is kept after.
  */
 export function useDictationRecorder(input: Readonly<{
   onError(message: string): void;
@@ -206,7 +209,7 @@ export function useDictationRecorder(input: Readonly<{
     let recorder: MediaRecorder;
     const mimeType = recorderMimeType();
     try {
-      recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recorder = new MediaRecorder(stream, { audioBitsPerSecond: DICTATION_RECORDER_BITS_PER_SECOND, ...(mimeType ? { mimeType } : {}) });
     } catch (error) {
       finish(current);
       callbacks.current.onError(microphoneError(error));

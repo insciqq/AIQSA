@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
-import type { CatalogDictation } from "@/lib/contracts/speechToText";
+import {
+  DICTATION_MAX_DURATION_MS,
+  DICTATION_RECORDER_BITS_PER_SECOND,
+  type CatalogDictation
+} from "@/lib/contracts/speechToText";
 import { ComposerV2 } from "../ComposerV2";
 import { insertDictatedText } from "./ComposerDictationV2";
 
@@ -14,7 +18,7 @@ class FakeMediaRecorder extends EventTarget {
   static isTypeSupported = vi.fn((type: string) => type === "audio/webm;codecs=opus");
   readonly mimeType: string;
   state: "inactive" | "recording" = "inactive";
-  constructor(readonly stream: MediaStream, options?: { mimeType?: string }) {
+  constructor(readonly stream: MediaStream, readonly options?: MediaRecorderOptions) {
     super();
     this.mimeType = options?.mimeType ?? "audio/webm";
     FakeMediaRecorder.instances.push(this);
@@ -82,6 +86,7 @@ describe("composer dictation", () => {
     await record();
     expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
     expect(FakeMediaRecorder.instances[0]!.mimeType).toBe("audio/webm;codecs=opus");
+    expect(FakeMediaRecorder.instances[0]!.options?.audioBitsPerSecond).toBe(DICTATION_RECORDER_BITS_PER_SECOND);
     expect(screen.getByRole("group", { name: "Dictation" })).toHaveTextContent("0:00");
     respond({ text: "brave new" });
     fireEvent.click(screen.getByRole("button", { name: "Stop dictation and transcribe" }));
@@ -110,12 +115,16 @@ describe("composer dictation", () => {
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Hello world");
   });
 
-  it("stops by itself after five minutes", async () => {
+  it("stops by itself at the ten-minute dictation limit", async () => {
+    expect(DICTATION_MAX_DURATION_MS).toBe(10 * 60 * 1_000);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<Harness initial="" />);
     await record();
     respond({ text: "long talk" });
-    await act(async () => { vi.advanceTimersByTime(5 * 60 * 1_000); });
+    await act(async () => { vi.advanceTimersByTime(DICTATION_MAX_DURATION_MS - 5_000); });
+    expect(FakeMediaRecorder.instances[0]!.state).toBe("recording");
+    expect(fetch).not.toHaveBeenCalled();
+    await act(async () => { vi.advanceTimersByTime(5_000); });
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("long talk"));
   });
 
@@ -132,7 +141,7 @@ describe("composer dictation", () => {
   });
 
   it.each([
-    [{ error: "audio_too_large" }, 413, "too long to transcribe"],
+    [{ error: "audio_too_large" }, 413, "too long to transcribe. Keep dictations under 10 minutes."],
     [{ error: "transcription_failed" }, 502, "could not be transcribed"],
     [{ error: "dictation_rate_limited" }, 429, "dictated a lot"],
     [{ text: "  " }, 200, "No speech was recognized"]
