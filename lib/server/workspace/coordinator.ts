@@ -1288,11 +1288,13 @@ async function objectMatches(
   storage: StorageAdapter,
   storageKey: string,
   output: WorkspaceOutputStream,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  expectMissing = false
 ): Promise<boolean> {
   if (!storage.inspectObject) return false;
   try {
     const inspected = await storage.inspectObject(storageKey, {
+      expectMissing,
       maxBytes: output.byteSize,
       sampleBytes: 1,
       signal
@@ -2721,7 +2723,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
           if (!(await exportStep(() => input.repository.prepareOutput({ ...lease, storageKey })))) {
             throw new WorkspaceRuntimeError("workspace_operation_stale");
           }
-          if (!(await objectMatches(input.storage, storageKey, output, exportSignal))) {
+          // A first export of this key finds no object: that miss is the
+          // write-once check's expected answer, not a storage failure.
+          if (!(await objectMatches(input.storage, storageKey, output, exportSignal, true))) {
             if (!input.storage.putObjectStream) {
               throw new WorkspaceRuntimeError("workspace_output_export_failed");
             }
