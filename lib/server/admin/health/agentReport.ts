@@ -136,6 +136,10 @@ export type HealthFailureRow = Seen & {
   /** The per-event overflow key: records beyond the writer's key bound, without their fields. */
   overflow: boolean;
   appVersions: string[];
+  /** HTTP method of a request record. */
+  method: string | null;
+  /** See `isUnauthenticatedOrUnknownRoute`: counted apart from users' failures. */
+  unauthenticatedOrUnknownRoute: boolean;
 };
 
 export type HealthTimeoutRow = Seen & {
@@ -158,11 +162,30 @@ export type HealthSignInRow = Seen & { method: string | null; step: string | nul
 export type HealthToolCallRow = Seen & { toolKind: string | null; outcome: string | null; code: string | null };
 export type HealthToolFamilyRow = HealthDurationStats & {
   toolKind: string | null; calls: number; failed: number; timedOut: number; cancelled: number;
+  /** MCP calls paused for their initiator's approval; not failures. */
+  awaitingApproval: number;
 };
 export type HealthHttpRow = Seen & {
   event: string; level: string; routePath: string | null; method: string | null; status: number | null;
   outcome: string | null; stage: string | null;
+  /** See `isUnauthenticatedOrUnknownRoute`: counted apart from users' failures. */
+  unauthenticatedOrUnknownRoute: boolean;
 };
+
+/**
+ * Signed-out or unknown-route traffic (bots, scanners, a client whose session
+ * ended): a client error on a path the router could not place, a 401, or a
+ * mutation sent to a page route (`POST /login`). Still counted, but not a
+ * failure a signed-in user met.
+ */
+export function isUnauthenticatedOrUnknownRoute(row: Readonly<{
+  event: string; routePath: string | null; method: string | null; status: number | null;
+}>): boolean {
+  if (row.event !== "http.request_completed" || row.status === null || row.status < 400 || row.status >= 500) return false;
+  if (row.routePath === null || row.status === 401) return true;
+  return (row.status === 404 || row.status === 405) && row.method !== null && row.method !== "GET" && row.method !== "HEAD" &&
+    !row.routePath.startsWith("/api/");
+}
 export type HealthClientErrorRow = Seen & { kind: string | null; routePath: string | null };
 
 export type HealthProblemReportRow = {
@@ -523,7 +546,7 @@ const RUN_TOTAL_QUERY = {
 
 function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[] {
   const key = (row: TelemetryCounterGroup) => JSON.stringify(["event", "level", "code", "subsystem", "stage", "reason", "routePath",
-    "status", "httpStatus", "providerFamily", "tool_kind", "overflow"].map((name) => row.group[name as keyof typeof row.group] ?? null));
+    "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "method"].map((name) => row.group[name as keyof typeof row.group] ?? null));
   return groupRows(rows, key).map((group): HealthFailureRow => {
     const first = group[0]!.group;
     return {
@@ -540,7 +563,10 @@ function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[]
       toolKind: text(first.tool_kind),
       overflow: first.overflow === true,
       ...seen(group),
-      appVersions: [...new Set(group.map((row) => text(row.group.appVersion)).filter((value): value is string => value !== null))].sort()
+      appVersions: [...new Set(group.map((row) => text(row.group.appVersion)).filter((value): value is string => value !== null))].sort(),
+      method: text(first.method),
+      unauthenticatedOrUnknownRoute: isUnauthenticatedOrUnknownRoute({ event: text(first.event) ?? "unknown",
+        routePath: text(first.routePath), method: text(first.method), status: integer(first.status) })
     };
   }).sort(byCount);
 }
@@ -580,6 +606,7 @@ function toolFamilies(rows: readonly TelemetryCounterGroup[]): HealthToolFamilyR
       failed: outcome("failed"),
       timedOut: outcome("timeout"),
       cancelled: outcome("cancelled"),
+      awaitingApproval: outcome("awaiting_approval"),
       ...stats(group)
     };
   }).sort((left, right) => right.calls - left.calls || (left.toolKind ?? "").localeCompare(right.toolKind ?? ""));
@@ -642,7 +669,7 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     counters({ ...base, events: ["run_execution"], dimensions: { outcome: "completed" },
       groupBy: ["stage", "after", "providerFamily", "connectionId", "providerModelId"] }),
     counters({ ...base, levels: ["warn", "error", "fatal"], groupBy: ["event", "level", "code", "subsystem", "stage", "reason",
-      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion"] }),
+      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion", "method"] }),
     counters({ ...base, events: ["nested_abort"], levels: ["warn"], groupBy: ["layer", "abort_source", "operation", "stage", "providerFamily"] }),
     counters({ ...base, events: ["transport_stage"], dimensions: { category: "timeout" },
       groupBy: ["transport", "stage", "operation", "providerFamily", "code"] }),
@@ -698,11 +725,12 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
   const toolCallRows = toolRows.map((row): HealthToolCallRow => ({
     toolKind: text(row.group.tool_kind), outcome: text(row.group.outcome), code: text(row.group.code), ...seen([row])
   })).sort(byCount);
-  const http = httpRows.map((row): HealthHttpRow => ({
-    event: text(row.group.event) ?? "unknown", level: text(row.group.level) ?? "unknown", routePath: text(row.group.routePath),
-    method: text(row.group.method), status: integer(row.group.status), outcome: text(row.group.outcome), stage: text(row.group.stage),
-    ...seen([row])
-  })).sort(byCount);
+  const http = httpRows.map((row): HealthHttpRow => {
+    const fields = { event: text(row.group.event) ?? "unknown", routePath: text(row.group.routePath), method: text(row.group.method),
+      status: integer(row.group.status) };
+    return { ...fields, level: text(row.group.level) ?? "unknown", outcome: text(row.group.outcome), stage: text(row.group.stage),
+      ...seen([row]), unauthenticatedOrUnknownRoute: isUnauthenticatedOrUnknownRoute(fields) };
+  }).sort(byCount);
   const clientErrors = clientRows.map((row): HealthClientErrorRow => ({
     kind: text(row.group.kind), routePath: text(row.group.routePath), ...seen([row])
   })).sort(byCount);

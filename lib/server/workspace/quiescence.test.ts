@@ -90,6 +90,22 @@ describe("Workspace terminal registry drain", () => {
     if (kind === "sync") expect(value.runtime.terminateExecutions).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["sync", "workspace_execution_sync_obligation", "completed", "info"],
+    ["unknown", "workspace_execution_termination_unknown", "degraded", "warn"]
+  ] as const)("logs the VM stop a %s obligation needs as %s", async (kind, code, outcome, level) => {
+    const value = fixture(1);
+    if (kind === "sync") Object.assign(value.rows[0]!, { runtimeExecSessionId: workspaceSyncCleanupId("call") });
+    else vi.mocked(value.runtime.terminateExecutions).mockResolvedValue([{ outcome: "unknown", runtimeExecSessionId: "exec_0" }]);
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await expect(quiesceWorkspaceExecutions(value.input)).resolves.toEqual({ proven: true, stoppedVm: true });
+      const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+      expect(records.filter((record) => record.event === "runtime_lifecycle" && record.stage === "quiesce"))
+        .toEqual([expect.objectContaining({ code, outcome, level, action: "stop" })]);
+    } finally { writer.mockRestore(); }
+  });
+
   it("does not write cleanup proof when the VM stop itself fails", async () => {
     const value = fixture(1);
     vi.mocked(value.runtime.terminateExecutions).mockRejectedValue(new Error("PRIVATE_TERMINATE"));

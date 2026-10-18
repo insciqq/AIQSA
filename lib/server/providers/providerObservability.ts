@@ -38,6 +38,17 @@ const transportScopeKey = Symbol.for("aiqsa.providerTransportObservation");
 type TransportAttempt = { failureObserved: boolean };
 const transportGlobal = globalThis as typeof globalThis & { [transportScopeKey]?: AsyncLocalStorage<TransportAttempt> };
 const transportScopes = transportGlobal[transportScopeKey] ??= new AsyncLocalStorage<TransportAttempt>();
+// Provider requests reuse the pinned MCP fetch primitive. Outside a provider
+// observation scope (the Agent gateway's provider streams) this marker keeps
+// their transport records labelled as provider traffic.
+const providerTransportKey = Symbol.for("aiqsa.providerTransportLabel");
+const providerTransportGlobal = globalThis as typeof globalThis & { [providerTransportKey]?: AsyncLocalStorage<true> };
+const providerTransports = providerTransportGlobal[providerTransportKey] ??= new AsyncLocalStorage<true>();
+
+/** Runs a provider request through the shared pinned fetch with provider transport labels. */
+export function withProviderTransport<T>(operation: () => Promise<T>): Promise<T> {
+  return providerTransports.run(true, operation);
+}
 
 function transportBinding(source?: Response | ReadableStream<Uint8Array>, transport: "provider" | "mcp" = "provider"): TransportBinding {
   const retained = source && responseBindings.get(source);
@@ -45,7 +56,7 @@ function transportBinding(source?: Response | ReadableStream<Uint8Array>, transp
   const scope = scopes.getStore();
   return {
     fields: {
-      transport: scope ? "provider" : transport,
+      transport: scope || providerTransports.getStore() ? "provider" : transport,
       operation: scope?.stage, adapterKind: scope?.identity.adapterKind,
       connectionId: scope?.identity.connectionId, providerFamily: scope?.identity.providerFamily,
       providerModelId: scope?.identity.providerModelId, attempt: scope?.attempt,
@@ -184,7 +195,11 @@ export function observeStreamParseFailure(source: ReadableStream<Uint8Array>): v
   binding.emit({ ...binding.fields, stage: "parse", outcome: "failed", category: "parse", code: "provider_response_invalid_json" });
 }
 
-export async function observeMcpFetch(operation: () => Promise<Response>, signal?: AbortSignal): Promise<Response> {
+/** `optionalStream` marks the Streamable HTTP client's optional GET that opens
+ * a server-to-client event stream: a server without one refuses it with 405
+ * (or 404 where GET is not routed), an expected answer recorded as completed. */
+export async function observeMcpFetch(operation: () => Promise<Response>, signal?: AbortSignal,
+  options: Readonly<{ optionalStream?: boolean }> = {}): Promise<Response> {
   if (transportScopes.getStore()) return operation();
   return transportScopes.run({ failureObserved: false }, async () => {
     const binding = transportBinding(undefined, "mcp");
@@ -194,8 +209,9 @@ export async function observeMcpFetch(operation: () => Promise<Response>, signal
     try {
       const response = await operation();
       bindTransportResponse(response, binding);
-      binding.emit({ ...binding.fields, stage: "headers", outcome: response.ok ? "completed" : "failed", httpStatus: response.status,
-        category: response.ok ? undefined : "http", duration_ms: Math.max(0, performance.now() - startedAt) });
+      const answered = response.ok || options.optionalStream === true && (response.status === 404 || response.status === 405);
+      binding.emit({ ...binding.fields, stage: "headers", outcome: answered ? "completed" : "failed", httpStatus: response.status,
+        category: answered ? undefined : "http", duration_ms: Math.max(0, performance.now() - startedAt) });
       return response;
     } catch (error) {
       failureObserver(transportFailureFacts(error, signal));

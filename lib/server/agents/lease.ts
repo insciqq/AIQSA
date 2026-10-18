@@ -1,3 +1,11 @@
+/** Message of the error a lease check throws when the run's authority ended
+ * because its user stopped the run: its streams end as cancelled, not failed. */
+export const AGENT_LEASE_CANCELLED = "agent_run_cancelled";
+
+function cancelledByUser(reason: unknown): boolean {
+  return reason instanceof Error && reason.message === AGENT_LEASE_CANCELLED;
+}
+
 /** A gateway request cannot outlive its executor, even in another app process. */
 export async function withAgentLease(
   request: Request,
@@ -10,7 +18,8 @@ export async function withAgentLease(
   const timer = setInterval(() => {
     if (checking || signal.aborted) return;
     checking = true;
-    void assertActive().catch(() => controller.abort(new Error("agent_authority_expired")))
+    void assertActive().catch((error: unknown) =>
+      controller.abort(cancelledByUser(error) ? error : new Error("agent_authority_expired")))
       .finally(() => { checking = false; });
   }, 1000);
   timer.unref();
@@ -33,10 +42,12 @@ export async function withAgentLease(
         } catch {
           dispose();
           await reader.cancel().catch(() => undefined);
-          // The client inside the VM closed its own request: nobody reads the
-          // rest, so the stream just ends. An expired grant or an upstream
-          // failure still interrupts it as a failure.
+          // The client inside the VM closed its own request, or its user
+          // stopped the run: nobody reads the rest, so the stream just ends.
+          // An expired grant or an upstream failure still interrupts it as a
+          // failure.
           if (request.signal.aborted && !controller.signal.aborted) output.close();
+          else if (controller.signal.aborted && cancelledByUser(controller.signal.reason)) output.close();
           else output.error(new Error("agent_request_interrupted"));
         }
       },

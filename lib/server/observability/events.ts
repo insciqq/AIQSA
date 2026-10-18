@@ -143,7 +143,8 @@ export type EventFields = {
   }>;
   /** One terminal record per settled model tool call; never its name, arguments or result. */
   tool_call: CaughtError & Readonly<{
-    tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled";
+    /** `awaiting_approval`: an MCP call paused for its initiator's approval. */
+    tool_kind: ToolCallKind; outcome: "completed" | "failed" | "timeout" | "cancelled" | "awaiting_approval";
     code?: string; duration_ms?: number; error_category?: "unexpected";
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;
