@@ -76,6 +76,7 @@
     "smoke:openrouter": "tsx scripts/smoke-openrouter-perplexity.ts",
     "smoke:parsers": "tsx scripts/smoke-parser-sidecars.ts",
     "smoke:tool-result-recall-paid": "tsx scripts/smoke-tool-result-recall-paid.ts",
+    "smoke:telegram": "tsx scripts/smoke-telegram.ts",
     "smoke:workspace-live": "tsx scripts/smoke-workspace-live.ts",
     "pretest": "prisma generate",
     "preprune": "prisma generate",
