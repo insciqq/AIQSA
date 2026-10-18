@@ -745,6 +745,26 @@ describe("installation bootstrap", () => {
     expect(JSON.stringify(fixture.spies.searchOptionUpsert.mock.calls)).not.toContain("deepseek_search_api");
   });
 
+  it("starts over after a serialization conflict with the previous release, a bounded number of times", async () => {
+    const conflict = (code: string) => new Prisma.PrismaClientKnownRequestError("synthetic conflict", { clientVersion: "test", code });
+    const fixture = createBootstrapTransaction({ adopted: ADOPTED, nonempty: true });
+    const { prisma, transaction } = createBootstrapClient(fixture);
+    transaction.mockRejectedValueOnce(conflict("P2034"));
+    await expect(bootstrapInstallationDatabase(prisma, baseInput, { hashPassword: vi.fn() }))
+      .resolves.toMatchObject({ status: "already_adopted" });
+    expect(transaction).toHaveBeenCalledTimes(2);
+
+    transaction.mockClear();
+    transaction.mockRejectedValue(conflict("P2034"));
+    await expect(bootstrapInstallationDatabase(prisma, baseInput, { hashPassword: vi.fn() })).rejects.toMatchObject({ code: "P2034" });
+    expect(transaction).toHaveBeenCalledTimes(3);
+
+    transaction.mockClear();
+    transaction.mockRejectedValue(conflict("P2002"));
+    await expect(bootstrapInstallationDatabase(prisma, baseInput, { hashPassword: vi.fn() })).rejects.toMatchObject({ code: "P2002" });
+    expect(transaction).toHaveBeenCalledOnce();
+  });
+
   it("allows the adopted rerun after the plaintext bootstrap password is removed", async () => {
     const fixture = createBootstrapTransaction({
       adopted: {
