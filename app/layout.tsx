@@ -25,6 +25,7 @@ import "../features/settings-v2/settings.css";
 import "../components/auth/auth.css";
 import "../features/projects-v2/projects.css";
 import "../features/workspace-v2/workspace.css";
+import "../features/connect/connect.css";
 import "./globals.css";
 
 const sans = Golos_Text({
