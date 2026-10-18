@@ -1,0 +1,25 @@
+# Fallback for hosts without systemd-journald, selected in .env with
+# COMPOSE_FILE=compose.yaml:compose.json-file-logging.yaml. Docker rotates each
+# container's log by size and deletes it with the container, so up and upgrade
+# lose the history. Lists every service of compose.yaml.
+x-json-file-logging: &json-file-logging
+  driver: json-file
+  options:
+    max-file: "${AIQSA_LOG_MAX_FILES:-5}"
+    max-size: "${AIQSA_LOG_MAX_SIZE:-10m}"
+
+services:
+  app: { logging: *json-file-logging }
+  memory-worker: { logging: *json-file-logging }
+  memory-search-worker: { logging: *json-file-logging }
+  knowledge-search-worker: { logging: *json-file-logging }
+  docling: { logging: *json-file-logging }
+  tika: { logging: *json-file-logging }
+  migrate-bootstrap: { logging: *json-file-logging }
+  workspace-runner: { logging: *json-file-logging }
+  workspace-maintenance: { logging: *json-file-logging }
+  postgres: { logging: *json-file-logging }
+  opensearch: { logging: *json-file-logging }
+  seaweedfs: { logging: *json-file-logging }
+  minio: { logging: *json-file-logging }
+  storage-init: { logging: *json-file-logging }

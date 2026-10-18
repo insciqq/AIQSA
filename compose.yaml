@@ -1,10 +1,18 @@
 name: aiqsa
 
+# Logs go to the host journal, so they survive the container recreation of
+# up and upgrade: `docker compose logs` reads the current containers and
+# `./aiqsa.sh logs --since` earlier ones too. Hosts without systemd-journald,
+# where this driver cannot start containers, add compose.json-file-logging.yaml
+# to COMPOSE_FILE (`./aiqsa.sh configure` does). Non-blocking mode drops lines
+# on a full buffer instead of stalling a service.
 x-logging: &default-logging
-  driver: json-file
+  driver: journald
   options:
-    max-file: "${AIQSA_LOG_MAX_FILES:-5}"
-    max-size: "${AIQSA_LOG_MAX_SIZE:-10m}"
+    tag: "{{.Name}}"
+    labels: com.docker.compose.project,com.docker.compose.service
+    mode: non-blocking
+    max-buffer-size: 4m
 
 services:
   app:
