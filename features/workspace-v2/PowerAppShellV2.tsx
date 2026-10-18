@@ -614,12 +614,14 @@ export function PowerAppShellV2({
   accountId,
   accountDisplayName,
   accountEmail,
-  adminEntryVisible = false
+  adminEntryVisible = false,
+  connectEntryVisible = false
 }: {
   accountId: string;
   accountDisplayName: string;
   accountEmail: string | null;
   adminEntryVisible?: boolean;
+  connectEntryVisible?: boolean;
 }) {
   const catalog = useWorkspaceStore((state) => state.catalogAccountId === accountId ? state.catalog : null);
   const settingsSession = useMemo(() => Symbol(accountId), [accountId]);
@@ -2011,6 +2013,7 @@ export function PowerAppShellV2({
     activeChatId,
     activeChatTitle,
     adminEntryVisible,
+    connectEntryVisible,
     copyProjectChatLink: async () => {
       const workspace = useWorkspaceStore.getState();
       const chat = workspace.activeChatId

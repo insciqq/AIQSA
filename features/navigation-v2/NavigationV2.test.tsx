@@ -337,6 +337,13 @@ describe("Navigation v2", () => {
     expect(screen.queryByText(/Memory off|Normal memory|Exclude from Memory|Resume Memory/)).toBeNull();
   });
 
+  it("lists AIQSA Connect among the drawer destinations only while it is on", () => {
+    const { view } = sidebar({ drawerDestinations: true, onSettings: vi.fn() });
+    expect(screen.queryByRole("link", { name: "AIQSA Connect" })).toBeNull();
+    view.rerender(<NavigationSidebar {...sidebarProps({ connectEntryVisible: true, drawerDestinations: true, onSettings: vi.fn() })} />);
+    expect(screen.getByRole("link", { name: "AIQSA Connect" })).toHaveAttribute("href", "/connect");
+  });
+
   it("omits the composer skip path when the selected Project cannot start a chat", () => {
     sidebar({
       chats: [],
