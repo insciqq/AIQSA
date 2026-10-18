@@ -33,6 +33,7 @@ async function withOAuthData<T>(
       repository: createPrismaOAuthIdentityRepository(prisma)
     });
   } finally {
+    await prisma.signInRefusal.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
     await prisma.user.deleteMany({
       where: {
         email: {

@@ -1,5 +1,5 @@
 import { getAuthConfig } from "@/lib/server/auth/config";
-import { authRateLimiter, passwordAuthRepository } from "@/lib/server/auth/defaultAuth";
+import { authRateLimiter, passwordAuthRepository, signInRefusalRecorder } from "@/lib/server/auth/defaultAuth";
 import { createPasswordLoginHandler } from "@/lib/server/auth/handlers";
 import { ldapPasswordFormSignIn } from "@/lib/server/auth/ldap/defaultLdapSignIn";
 import { readSignInPolicy } from "@/lib/server/auth/signInSettings/defaultSignInSettings";
@@ -10,6 +10,7 @@ export const POST = createPasswordLoginHandler({
   directorySignIn: ldapPasswordFormSignIn,
   getConfig: () => getAuthConfig(),
   loginRateLimiter: authRateLimiter,
+  refusals: signInRefusalRecorder,
   repository: passwordAuthRepository,
   signInPolicy: readSignInPolicy
 });
