@@ -22,6 +22,7 @@ const VISION_ERRORS = new Set([
   "vision_analysis_limit_exceeded", "vision_analysis_cancelled", "vision_analysis_response_invalid",
   "workspace_image_invalid", "workspace_image_unsupported", "workspace_image_limit_exceeded", "workspace_image_unavailable", "workspace_image_cancelled",
   "workspace_capture_busy", "workspace_capture_invalid", "workspace_capture_limit_exceeded", "workspace_capture_stale", "workspace_capture_unavailable",
+  "workspace_capture_source_invalid", "workspace_capture_unsupported",
   "chat_image_unavailable", "chat_image_unsupported", "chat_image_invalid", "chat_image_limit_exceeded"
 ]);
 
@@ -31,6 +32,18 @@ const CHAT_IMAGE_HINTS: Readonly<Record<string, string>> = {
   chat_image_unsupported: "Only PNG, JPEG, WebP and static GIF images can be analyzed. Ask the user for a PNG or JPEG copy of the image.",
   chat_image_invalid: "Keep crop and resize within the image's width and height. If the image itself cannot be read, ask the user to upload it again.",
   chat_image_limit_exceeded: "The image exceeds the analysis size or pixel limits. Use fewer images, or ask the user for a smaller copy."
+};
+
+/** Actionable next steps for the Workspace form's refusals before dispatch.
+ * The guest's source checks stay; a regular copy in the run's output passes them. */
+const WORKSPACE_IMAGE_HINTS: Readonly<Record<string, string>> = {
+  workspace_capture_source_invalid: "Analyze an existing regular file (not a symlink or hard link) under /workspace/output, /workspace/project or " +
+    "/workspace/inbox/messages. Copy it with `cp` into /workspace/output and retry with the copy's path.",
+  workspace_capture_busy: "The file was being written while it was read. Retry after the process writing it finishes.",
+  workspace_capture_unsupported: "This file cannot be read safely where it is. Copy it with `cp` into /workspace/output and retry with the copy's path.",
+  workspace_capture_limit_exceeded: "The selected files exceed the Workspace capture size or count limits. Use fewer images, or analyze a smaller copy.",
+  workspace_image_unsupported: "Only PNG, JPEG, WebP and static GIF images can be analyzed. Convert a copy to PNG or JPEG in /workspace/output and analyze it.",
+  workspace_image_limit_exceeded: "The image exceeds the analysis size or pixel limits. Use fewer images, or analyze a smaller copy."
 };
 
 /** An abort signal for one phase deadline. Unlike `AbortSignal.timeout`, its
@@ -188,7 +201,7 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
       let providerDeadline: ReturnType<typeof phaseDeadline> | undefined;
       let providerStartedAt: number | undefined;
       let providerEndedAt: number | undefined;
-      const observe = (code: string | undefined) => observeVisionAttempt({ stage: "execution", startedAt, code, snapshot: plan.snapshot,
+      const observe = (code: string | undefined, error?: unknown) => observeVisionAttempt({ stage: "execution", startedAt, code, error, snapshot: plan.snapshot,
         phases: { preparationMs: (providerStartedAt ?? performance.now()) - startedAt, timeoutMs,
           ...(providerStartedAt === undefined ? {} : { providerMs: (providerEndedAt ?? performance.now()) - providerStartedAt }) } });
       const c = { runId: context.runId, userId: context.userId, toolCallId: context.persistedToolCallId,
@@ -205,6 +218,7 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
         let result: ToolExecutionResult;
         let unknown = false;
         let failureCode: string | undefined;
+        let unmapped: unknown;
         try {
           bounded.throwIfAborted();
           const restored = await store.restore(c);
@@ -268,16 +282,21 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
         } catch (error) {
           if (providerStartedAt !== undefined) providerEndedAt ??= performance.now();
           const observed = observedFailureCode(error);
+          // The runner's own capture deadline is a deadline before any dispatch.
           const code = signal?.aborted ? "vision_analysis_cancelled" : bounded.aborted ? "vision_analysis_timeout" :
-            VISION_ERRORS.has(observed) ? observed : dispatched ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
+            VISION_ERRORS.has(observed) ? observed : !dispatched && observed === "workspace_tool_timeout" ? "vision_analysis_timeout" :
+            dispatched ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
           unknown = dispatched && !providerCompleted;
           failureCode = code;
+          // Recorded by its content-free class and site only, so the next unmapped cause is diagnosable.
+          if (code === "vision_analysis_internal_failed") unmapped = error;
+          const hint = (workspace ? WORKSPACE_IMAGE_HINTS : CHAT_IMAGE_HINTS)[code];
           result = visionFailure(call, code, unknown, error instanceof VisionContextLimitError && code === error.code ? { ...error.detail,
             hint: "The estimated input exceeds the Vision model context window. Use fewer images, or crop or resize them, before retrying." }
-            : CHAT_IMAGE_HINTS[code] ? { hint: CHAT_IMAGE_HINTS[code] } : undefined);
+            : hint ? { hint } : undefined);
         }
         if (!dispatched) {
-          observe(failureCode);
+          observe(failureCode, unmapped);
           return result;
         }
         // This transaction is keyed by the durable attempt and has one winner.

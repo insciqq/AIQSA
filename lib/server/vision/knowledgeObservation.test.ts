@@ -162,9 +162,15 @@ describe("Knowledge image observation", () => {
   });
 
   it("settles a claim that never reached the provider as a definite failure", async () => {
+    const observation = await captureRunObservation();
     const f = fixture();
-    const onDispatch = vi.fn(async () => { throw new Error("journal_unavailable"); });
+    const onDispatch = vi.fn(async () => { throw new RangeError("PRIVATE journal_unavailable"); });
     await expect(f.observe({ ...f.input, onDispatch })).resolves.toEqual({ kind: "failed", code: "vision_analysis_internal_failed" });
+    // The unmapped cause is diagnosable by its content-free class and site alone.
+    const records = observation.records().filter((record) => record.event === "tool_execution" && record.tool_kind === "vision");
+    expect(records).toEqual([expect.objectContaining({ code: "vision_analysis_internal_failed", error_class: "RangeError",
+      error_site: expect.stringMatching(/^lib\/server\/vision\/knowledgeObservation\.test\.ts:\d+/u) })]);
+    expect(JSON.stringify(records)).not.toContain("PRIVATE");
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.store.settle).toHaveBeenCalledOnce();
     // Not ambiguous: nothing was sent, so the failure is final rather than an unknown outcome.
