@@ -27,12 +27,15 @@ aiqsa_diag_dir=$(mktemp -d "${TMPDIR:-/tmp}/aiqsa-diagnostics.XXXXXX")
 
 Rank problems by who they hit and since when, not by log volume:
 
+- `failureStreaks`: users who lost 3+ answers in a row in one chat (`ongoing`: still failing at the range's end), with codes and run references — the strongest sign of a stuck user.
 - `errorGroups`: new failures (`newInRange`), their code site, and `usersAtLeast`/`runsAtLeast` — many users versus one persistent user. Incidents are sampled, so these are lower bounds; counters hold the totals.
-- `runs`: failure and cancel rates against `previous`; `failures` and `timeouts` by event, code, provider, route or tool family, with first/last seen and app versions.
+- `runs`: failure and cancel rates against `previous`; `models`: the same per answer connection and model, counted from the runs, with top failure codes; `failures` and `timeouts` by event, code, provider, route or tool family, with first/last seen and app versions.
+- Causes on failure rows: `providerErrorCode` is the provider's own error identity (`server_error`, `server_is_overloaded`, `rate_limit_exceeded`, ...; `other` when unreviewed). Agent requests are `provider_operation` records with `reason` `upstream`, `authority_expired` (lease ended), `cancelled` (user's Stop) or `interrupted`. A Workspace `tool_execution` failure names its `operation` and the runner's cause as `reason`: `guest_*` (the sandbox operation failed), `transport_*` (the runner's channel to it) or `state_*` (sandbox or MCP unavailable).
 - `failures` and `http` rows marked `unauthenticatedOrUnknownRoute` (unrouted paths, 401s, mutations sent to pages such as `POST /login`) are signed-out clients, bots and scanners; rank them below what signed-in users hit unless their volume threatens the installation.
-- `signIns`: failures by method, step and code (users who cannot sign in cannot report it).
+- `signIns`: failures by method, step and code (users who cannot sign in cannot report it); `signInBursts`: hours with 5+ failures of one method within 10 minutes (guessing or a broken client), without identities.
 - `toolCalls`: families that fail or time out while their runs still complete. `awaitingApproval` counts MCP calls paused for their user's approval, not failures.
-- `latency`: run duration and time to first output p50/p95 per provider/model (bucket upper bounds).
+- `pushDelivery`: browser push outcomes per push service (`fcm`, `mozilla`, `apple`, `other`); a missing service had no deliveries.
+- `latency`: run duration and time to first output p50/p95 per provider/model (bucket upper bounds, up to 30 min).
 - `problemReports`: what users reported, with run references; `operations`: restarts, stalled queues, dropped log lines, telemetry write failures.
 
 ## 4. Drill into one case
