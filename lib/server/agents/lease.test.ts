@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { withAgentLease } from "./lease";
+import { AGENT_LEASE_CANCELLED, withAgentLease } from "./lease";
 
 afterEach(() => vi.useRealTimers());
 
@@ -38,6 +38,29 @@ it("ends the stream without an error when the client inside the VM closes its ow
   await vi.advanceTimersByTimeAsync(0);
   client.abort();
   // A failed body would make Next log "failed to pipe response" and answer 500.
+  await expect(reading).resolves.toBe("partial");
+  expect(upstreamSignal?.aborted).toBe(true);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("ends the stream without an error when the user stops the run", async () => {
+  vi.useFakeTimers();
+  let stopped = false;
+  let upstreamSignal: AbortSignal | undefined;
+  const response = await withAgentLease(new Request("http://agent.invalid"), async () => {
+    if (stopped) throw new Error(AGENT_LEASE_CANCELLED);
+  }, async (signal) => {
+    upstreamSignal = signal;
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(new TextEncoder().encode("partial"));
+      signal.addEventListener("abort", () => controller.error(new Error("aborted upstream")), { once: true });
+    } }));
+  });
+  const reading = response.text();
+  await vi.advanceTimersByTimeAsync(0);
+  stopped = true;
+  await vi.advanceTimersByTimeAsync(1000);
+  // Stop is not a server failure: no failed pipe, no 500.
   await expect(reading).resolves.toBe("partial");
   expect(upstreamSignal?.aborted).toBe(true);
   expect(vi.getTimerCount()).toBe(0);
