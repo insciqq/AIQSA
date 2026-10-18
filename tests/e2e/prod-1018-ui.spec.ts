@@ -295,8 +295,10 @@ test("Admin Search Add source offers the DeepSeek Search API on a DeepSeek conne
     await shots(page, testInfo, "admin-search-add-deepseek-search-api", searchModel);
     // Not saved: Save would run a real DeepSeek search.
     await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
-    const discard = page.getByRole("button", { name: /^Discard/u }).first();
-    if (await discard.isVisible().catch(() => false)) await discard.click();
+    // A filled new source asks before it is dropped.
+    const confirm = page.getByRole("dialog", { name: "Discard the new source" });
+    await confirm.waitFor({ state: "visible", timeout: 5_000 }).catch(() => undefined);
+    if (await confirm.isVisible()) await confirm.getByRole("button", { name: "Discard changes", exact: true }).click();
     await expect(sheet).toHaveCount(0);
     expect(await db().searchOption.count({ where: { kind: "deepseek_search_api", displayName: `${connectionName} Search API` } })).toBe(0);
   } finally {
