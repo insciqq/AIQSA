@@ -3,7 +3,7 @@ import { captureMcpObservation, projectObservationForProvider, wholeDeliveryAllo
 import { observationFailure } from "../toolObservations/contract";
 import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { createAgentAiqsaSearch } from "./aiqsaSearchTool";
-import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
+import { mcpOversizedResponseMessage, mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import { agentFailureCode, agentFailureMessage } from "./failures";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -206,7 +206,9 @@ export async function createAgentMcpGateway(input: Readonly<{
             return { ...textResult(value, true), structuredContent: value };
           }
           if (code === "result_unsupported") {
-            const value = { ...detail, message: `${toolFailure ? mcpToolFailureMessage(toolFailure) : "The MCP tool was called, but its response was too large, invalid or used unsupported content."} For a read-only query, request fewer records or fields. Do not repeat a write operation solely because its response could not be read.` };
+            const value = { ...detail, message: toolFailure === "mcp_call_result_too_large"
+              ? mcpOversizedResponseMessage((error as McpHubServiceError).toolFailureMaxBytes)
+              : `${toolFailure ? mcpToolFailureMessage(toolFailure) : "The MCP tool was called, but its response was too large, invalid or used unsupported content."} For a read-only query, request fewer records or fields. Do not repeat a write operation solely because its response could not be read.` };
             return { ...textResult(value, true), structuredContent: value };
           }
           return textResult({ code, message: agentCode ? agentFailureMessage(agentCode) : "The call could not complete. Do not repeat an operation whose outcome is unknown." }, true);

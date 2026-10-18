@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 10;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 11;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -252,9 +252,9 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "openrouter:deepseek/deepseek-v4-pro-0813"
     }),
     Object.freeze({
-      candidateId: "p8-r6",
+      candidateId: "p11-r17",
       recommended: false,
-      templateKey: "openrouter:deepseek/deepseek-v4.1-flash"
+      templateKey: "openrouter:deepseek/deepseek-v4.1-flash-1017"
     }),
     Object.freeze({
       candidateId: "p7-r4",
@@ -276,6 +276,12 @@ const candidateDefinitions: Readonly<Record<
       legacy: true,
       recommended: false,
       templateKey: "openrouter:anthropic/claude-opus-5"
+    }),
+    Object.freeze({
+      candidateId: "p8-r6",
+      legacy: true,
+      recommended: false,
+      templateKey: "openrouter:deepseek/deepseek-v4.1-flash"
     })
   ])
 });

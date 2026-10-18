@@ -9,6 +9,7 @@ type SchedulerInput = Readonly<{
 const mocks = vi.hoisted(() => ({
   log: vi.fn(),
   pass: vi.fn(),
+  pruneRefusals: vi.fn(async () => 0),
   pruneReports: vi.fn(async () => 0),
   schedulers: [] as SchedulerInput[],
   start: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("../observability", () => ({ logEvent: mocks.log }));
 vi.mock("../prisma", () => ({ prisma: { kind: "prisma" } }));
 vi.mock("../uploads/storage", () => ({ createS3StorageAdapter: () => mocks.storage }));
 vi.mock("../answerProblemReports/repository", () => ({ deleteExpiredAnswerProblemReports: mocks.pruneReports }));
+vi.mock("../auth/signInRefusals", () => ({ deleteExpiredSignInRefusals: mocks.pruneRefusals }));
 vi.mock("./prune", () => ({
   createPrismaRetentionRepository: (client: unknown) => ({ client, kind: "repository" }),
   runObjectDeletionPass: mocks.pass
@@ -104,6 +106,34 @@ describe("default object deletion worker", () => {
       ["runtime_lifecycle", { count: 7, outcome: "completed", stage: "cleanup", subsystem: "database" }],
       ["runtime_lifecycle", expect.objectContaining({
         action: "retry", code: "answer_problem_report_prune_failed", outcome: "failed", stage: "cleanup", subsystem: "database"
+      })]
+    ]);
+  });
+
+  it("prunes refused sign-ins on the same hourly pass, and one prune's failure never skips the other", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-18T12:00:00.000Z"));
+    getDefaultObjectDeletionWorker();
+    const scheduler = mocks.schedulers[0]!;
+    mocks.pass.mockResolvedValue({ batches: 1, claimed: 0, completed: 0, failed: 0, knowledgeJobsFinalized: 0 });
+    mocks.pruneReports.mockRejectedValueOnce(new Error("database busy"));
+    mocks.pruneRefusals.mockResolvedValueOnce(3).mockRejectedValueOnce(new Error("database busy"));
+
+    await scheduler.reconcile(new AbortController().signal);
+    expect(mocks.pruneRefusals).toHaveBeenCalledExactlyOnceWith({ kind: "prisma" }, new Date("2026-10-18T12:00:00.000Z"));
+    vi.setSystemTime(new Date("2026-10-18T12:30:00.000Z"));
+    await scheduler.reconcile(new AbortController().signal);
+    expect(mocks.pruneRefusals).toHaveBeenCalledOnce();
+    vi.setSystemTime(new Date("2026-10-18T13:00:00.000Z"));
+    await scheduler.reconcile(new AbortController().signal);
+
+    expect(mocks.pruneRefusals).toHaveBeenCalledTimes(2);
+    expect(mocks.pruneReports).toHaveBeenCalledTimes(2);
+    expect(mocks.log.mock.calls).toEqual([
+      ["runtime_lifecycle", expect.objectContaining({ code: "answer_problem_report_prune_failed", outcome: "failed" })],
+      ["runtime_lifecycle", { count: 3, outcome: "completed", stage: "cleanup", subsystem: "database" }],
+      ["runtime_lifecycle", expect.objectContaining({
+        action: "retry", code: "sign_in_refusal_prune_failed", outcome: "failed", stage: "cleanup", subsystem: "database"
       })]
     ]);
   });

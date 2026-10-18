@@ -1,6 +1,11 @@
 import type { PrismaClient } from "@prisma/client";
 import type { OAuthClientProviderId } from "../../auth/oauth";
-import { settleExternalIdentity, type ExternalIdentityPolicy } from "./externalIdentity";
+import {
+  recordExternalSignInRefusal,
+  settleExternalIdentity,
+  type ExternalIdentityInput,
+  type ExternalIdentityPolicy
+} from "./externalIdentity";
 
 export type OAuthIdentitySettlementInput = {
   displayName: string;
@@ -20,6 +25,7 @@ export type OAuthIdentitySettlementResult =
     };
 
 export type OAuthIdentityRepository = {
+  /** Settles the profile; a refusal is journaled with the verified email once it committed. */
   settleIdentity(input: OAuthIdentitySettlementInput): Promise<OAuthIdentitySettlementResult>;
 };
 
@@ -46,19 +52,22 @@ const OAUTH_EMAIL_VERIFIED = {
 export function createPrismaOAuthIdentityRepository(prisma: PrismaClient): OAuthIdentityRepository {
   return {
     async settleIdentity(input) {
-      const outcome = await prisma.$transaction((tx) =>
-        settleExternalIdentity(tx, {
-          displayName: input.displayName,
-          email: input.email,
-          emailVerified: OAUTH_EMAIL_VERIFIED[input.provider],
-          groups: null,
-          now: input.now,
-          policy: OAUTH_POLICY,
-          provider: input.provider,
-          source: null,
-          subject: input.providerAccountId
-        })
-      );
+      const settlement: ExternalIdentityInput = {
+        displayName: input.displayName,
+        email: input.email,
+        emailVerified: OAUTH_EMAIL_VERIFIED[input.provider],
+        groups: null,
+        now: input.now,
+        policy: OAUTH_POLICY,
+        provider: input.provider,
+        source: null,
+        subject: input.providerAccountId
+      };
+      const outcome = await prisma.$transaction((tx) => settleExternalIdentity(tx, settlement));
+
+      if (outcome.status !== "active") {
+        await recordExternalSignInRefusal(prisma, settlement, outcome.status);
+      }
 
       switch (outcome.status) {
         case "active":

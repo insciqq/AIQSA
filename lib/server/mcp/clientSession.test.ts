@@ -8,6 +8,8 @@ import {
 import {
   Server,
   type CallToolResult,
+  type EventStore,
+  type JSONRPCMessage,
   type ListToolsResult,
   type Tool
 } from "@modelcontextprotocol/server";
@@ -21,7 +23,13 @@ import {
 } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import type { McpResponseWireLimits } from "./responseLimits";
+import {
+  McpRuntimeCoordinator,
+  type McpRuntimeCoordinatorRepository,
+  type McpRuntimeGenerationLaunch
+} from "./runtimeCoordinator";
 import { McpSafeFetchError } from "./safeFetch";
+import { mcpResponseOverflowToolExecutionResult } from "../runs/mcpOverflowToolResult";
 
 type FixtureOptions = Readonly<{
   callTool?: (input: Readonly<{
@@ -34,6 +42,8 @@ type FixtureOptions = Readonly<{
   instructions?: string;
   listTools?: (cursor: string | undefined) => ListToolsResult | Promise<ListToolsResult>;
   ping?: (signal: AbortSignal) => Promise<void>;
+  /** Stores events so each SSE response opens with a priming event a client may resume from. */
+  resumable?: boolean;
   serverVersion?: string;
 }>;
 
@@ -41,6 +51,7 @@ type Fixture = Readonly<{
   close(): Promise<void>;
   requestHeaders: Array<Readonly<{
     authorization: string | undefined;
+    lastEventId: string | undefined;
     method: string;
     staticValue: string | undefined;
   }>>;
@@ -144,6 +155,34 @@ async function closeHttpServer(server: HttpServer): Promise<void> {
   });
 }
 
+/** The fixture's adapter declares the length of a body it finished at once; this streams it instead. */
+const withoutContentLength: FetchLike = async (url, init) => {
+  const response = await fetch(url, init);
+  if (!response.body || !response.headers.has("content-length")) return response;
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(response.body, { headers, status: response.status, statusText: response.statusText });
+};
+
+function memoryEventStore(): EventStore {
+  const events: Array<Readonly<{ id: string; message: JSONRPCMessage; streamId: string }>> = [];
+  return {
+    async storeEvent(streamId, message) {
+      const id = `${streamId}:${events.length}`;
+      events.push({ id, message, streamId });
+      return id;
+    },
+    async replayEventsAfter(lastEventId, { send }) {
+      const index = events.findIndex((event) => event.id === lastEventId);
+      const streamId = events[index]?.streamId ?? "";
+      for (const event of events.slice(index + 1)) {
+        if (event.streamId === streamId) await send(event.id, event.message);
+      }
+      return streamId;
+    }
+  };
+}
+
 async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const requestHeaders: Fixture["requestHeaders"] = [];
   const server = new Server(
@@ -175,6 +214,7 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
 
   const transport = new NodeStreamableHTTPServerTransport({
     enableJsonResponse: options.enableJsonResponse ?? true,
+    ...(options.resumable ? { eventStore: memoryEventStore(), retryInterval: 10 } : {}),
     sessionIdGenerator: () => "aiqsa-test-session"
   });
   await server.connect(transport);
@@ -183,6 +223,9 @@ async function startFixture(options: FixtureOptions = {}): Promise<Fixture> {
       authorization: Array.isArray(request.headers.authorization)
         ? request.headers.authorization[0]
         : request.headers.authorization,
+      lastEventId: Array.isArray(request.headers["last-event-id"])
+        ? request.headers["last-event-id"][0]
+        : request.headers["last-event-id"],
       method: request.method ?? "",
       staticValue: Array.isArray(request.headers["x-aiqsa-static"])
         ? request.headers["x-aiqsa-static"][0]
@@ -981,37 +1024,93 @@ describe("McpClientSession", () => {
     expect(inventorySession.isClosed()).toBe(true);
   });
 
-  it("closes an SDK POST-SSE call on wire overflow and keeps the semantic result bound separate", async () => {
+  it.each([
+    [true, true], [true, false], [false, true], [false, false]
+  ] as const)("fails only an over-bound call while a parallel call and the session continue (JSON: %s, declared length: %s)", async (enableJsonResponse, declaredLength) => {
     const privateMarker = "private-wire-call-marker";
-    const called = vi.fn();
+    const parallelStarted = deferred();
+    const releaseParallel = deferred();
+    const calls: string[] = [];
     const fixture = await startFixture({
-      callTool() {
-        called();
-        return { content: [{ text: privateMarker.repeat(128), type: "text" }] };
+      async callTool({ name }) {
+        calls.push(name);
+        if (name === "whole_thread") return { content: [{ text: privateMarker.repeat(256), type: "text" }] };
+        if (name === "parallel") {
+          parallelStarted.resolve();
+          await releaseParallel.promise;
+        }
+        return { content: [{ text: `done:${name}`, type: "text" }] };
       },
-      enableJsonResponse: false
+      enableJsonResponse
     });
+    // The transport accepts twice the configured tools/call limit: 1 KiB.
     const session = createSession(fixture, {
-      limits: { maxToolResultBytes: 16 * 1_024 },
-      requestTimeoutMs: 1_000,
+      ...(declaredLength ? {} : { fetch: withoutContentLength }),
+      limits: { maxToolResultBytes: undefined },
+      requestTimeoutMs: 5_000,
       responseLimits: { callToolResponseMaxBytes: 512 }
     });
-    await session.initialize();
-
     try {
-      await session.callTool("large-wire-result", {});
-      throw new Error("expected_call_wire_failure");
-    } catch (error) {
+      await session.initialize();
+      const parallel = session.callTool("parallel", {});
+      await parallelStarted.promise;
+
+      const error = await session.callTool("whole_thread", {}).catch((cause: unknown) => cause);
       expect(error).toBeInstanceOf(McpClientSessionError);
-      expect(error).toMatchObject({
-        code: "mcp_call_result_too_large",
-        operation: "call_tool",
-        retryable: false
-      });
+      expect(error).toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 1_024, operation: "call_tool", retryable: false });
       expect(JSON.stringify(error)).not.toContain(privateMarker);
+      // What the model reads: the bound reached and how to ask for less.
+      const [content] = mcpResponseOverflowToolExecutionResult({ arguments: {}, id: "call-1", name: "whole_thread" }, error)
+        ?.content ?? [];
+      const text = content?.type === "text" ? content.text : undefined;
+      expect(text).toContain("larger than 1 KiB and was not read");
+      expect(text).toContain("Request less data");
+      expect(text).toContain("a single item instead of a whole collection or thread");
+      expect(text).not.toContain(privateMarker);
+
+      // Only that request failed: no fatal cause, the session stays ready.
+      expect(session.isClosed()).toBe(false);
+      expect(session.fatalResponseErrorCode()).toBeNull();
+      releaseParallel.resolve();
+      await expect(parallel).resolves.toMatchObject({ isError: false, text: ["done:parallel"] });
+      await expect(session.callTool("after", {})).resolves.toMatchObject({ isError: false, text: ["done:after"] });
+      expect(calls).toEqual(["parallel", "whole_thread", "after"]);
+      expect(session.isClosed()).toBe(false);
+    } finally {
+      releaseParallel.resolve();
+      await session.close();
     }
-    expect(called).toHaveBeenCalledOnce();
-    expect(session.isClosed()).toBe(true);
+  });
+
+  it("settles an over-bound resumable SSE call locally without replaying it through GET", async () => {
+    const privateMarker = "private-resumable-call-marker";
+    const fixture = await startFixture({
+      callTool: ({ name }) => ({
+        content: [{ text: name === "whole_thread" ? privateMarker.repeat(256) : `done:${name}`, type: "text" }]
+      }),
+      enableJsonResponse: false,
+      resumable: true
+    });
+    const session = createSession(fixture, {
+      limits: { maxToolResultBytes: undefined },
+      requestTimeoutMs: 5_000,
+      responseLimits: { callToolResponseMaxBytes: 512 }
+    });
+    try {
+      await session.initialize();
+      await expect(session.callTool("first", {})).resolves.toMatchObject({ text: ["done:first"] });
+      const started = Date.now();
+      await expect(session.callTool("whole_thread", {})).rejects.toMatchObject({
+        code: "mcp_call_result_too_large", maxBytes: 1_024, operation: "call_tool"
+      });
+      // Settled by its own stream, not by the request timeout.
+      expect(Date.now() - started).toBeLessThan(2_000);
+      // The server asks for a 10 ms reconnect delay; give a resumption time to show.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(fixture.requestHeaders.filter(({ lastEventId }) => lastEventId !== undefined)).toEqual([]);
+      expect(session.isClosed()).toBe(false);
+      await expect(session.callTool("after", {})).resolves.toMatchObject({ text: ["done:after"] });
+    } finally { await session.close(); }
   });
 
   it("closes an oversized persistent GET event and suppresses SDK reconnect", async () => {
@@ -1202,5 +1301,82 @@ describe("McpClientSession", () => {
     expect(JSON.stringify(result)).not.toContain(accessSecret);
     expect(JSON.stringify(result)).not.toContain(refreshSecret);
     await runtime.close();
+  });
+});
+
+describe("MCP runtime over-bound call isolation", () => {
+  it("keeps the generation live and records the bound reached, without an evict record", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const records = () => writer.mock.calls.flatMap(([line]) => {
+      try { return [JSON.parse(String(line)) as Record<string, unknown>]; } catch { return []; }
+    });
+    const privateMarker = "private-runtime-call-marker";
+    const fixture = await startFixture({
+      callTool: ({ name }) => ({
+        content: [{ text: name === "whole_thread" ? privateMarker.repeat(256) : `done:${name}`, type: "text" }]
+      }),
+      enableJsonResponse: false,
+      listTools: () => ({ tools: [tool("whole_thread"), tool("after")] })
+    });
+    const launch: McpRuntimeGenerationLaunch = {
+      callTimeoutMs: 5_000,
+      fingerprint: "fingerprint-isolation",
+      generationId: "generation-isolation",
+      headers: {},
+      publishedTools: { kind: "names", names: new Set(["whole_thread", "after"]) },
+      redactionValues: [],
+      retryAt: null,
+      startupTimeoutMs: 5_000,
+      url: fixture.url.toString()
+    };
+    const hashes = new Map<string, string>();
+    const markFailed = vi.fn(async () => ({ applied: true, retryAt: null }));
+    const repository: McpRuntimeCoordinatorRepository = {
+      deleteDrainedGeneration: async () => true,
+      finalizeDeletedServers: async () => 0,
+      listDrainedGenerationIds: async () => [],
+      loadAcceptedGeneration: async () => null,
+      markFailed,
+      markReady: async ({ inventory }) => {
+        for (const entry of inventory.tools) hashes.set(entry.name, entry.definitionHash);
+        return true;
+      },
+      markStarting: async () => true,
+      synchronizeDesired: async () => [launch],
+      synchronizeShared: async () => [],
+      touchLastUsed: async () => undefined
+    };
+    const coordinator = new McpRuntimeCoordinator({
+      repository,
+      sessions: createMcpClientSessionFactory({
+        // A streamed SSE response: the call's own stream is answered locally.
+        fetch: withoutContentLength,
+        limits: { ...defaultLimits, maxToolResultBytes: undefined },
+        responseLimits: { callToolResponseMaxBytes: 512 }
+      })
+    });
+    const call = (name: string) => coordinator.callTool({
+      arguments: {}, definitionHash: hashes.get(name) ?? "", generationId: launch.generationId,
+      inputSchema: { type: "object" }, name
+    });
+    try {
+      await coordinator.reconcileNow();
+      expect(coordinator.hasLiveGeneration(launch.generationId)).toBe(true);
+      writer.mockClear();
+
+      await expect(call("whole_thread")).rejects.toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 1_024 });
+      expect(coordinator.hasLiveGeneration(launch.generationId)).toBe(true);
+      expect(markFailed).not.toHaveBeenCalled();
+      await expect(call("after")).resolves.toMatchObject({ text: ["done:after"] });
+
+      expect(records()).toContainEqual(expect.objectContaining({
+        event: "tool_execution", tool_kind: "mcp", stage: "request", outcome: "failed",
+        code: "mcp_call_result_too_large", max_bytes: 1_024
+      }));
+      expect(records().filter((record) => record.stage === "evict" || record.code === "mcp_session_closed")).toEqual([]);
+      expect(JSON.stringify(records())).not.toContain(privateMarker);
+    } finally {
+      try { await coordinator.stop(); } finally { writer.mockRestore(); }
+    }
   });
 });

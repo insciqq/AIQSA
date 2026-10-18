@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminSearchDraft } from "../../../contracts/adminSearch";
+import { ProviderSearchExecutionError } from "../../providers/types";
 import { searchDraftHash } from "../../search/configuration";
 import type { SearchProbeBinding } from "../../search/probeBinding";
 import { createAdminSearchService, type AdminSearchTester } from "./service";
@@ -1571,5 +1572,138 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
     expect(state.test).not.toHaveBeenCalled();
     expect(state.transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("DeepSeek Search API source", () => {
+  const apiDraft: AdminSearchDraft = {
+    ...draft,
+    maxOutputTokens: null,
+    protocol: "deepseek_search_api",
+    providerModelId: "deepseek-flash",
+    queryMaxCharacters: 128
+  };
+  const apiBinding = { ...PROBE_BINDING, connectionId: "connection-deepseek", providerModelId: "deepseek-flash" };
+
+  function deepSeekModel(id: string, nativeSearch: boolean) {
+    const base = providerModel({ connectionId: "connection-deepseek", id });
+    return {
+      ...base,
+      activeConfig: {
+        ...base.activeConfig,
+        adapterKind: "deepseek_responses_native",
+        capabilities: { ...base.activeConfig.capabilities, nativeSearch },
+        upstreamModelId: id
+      },
+      connection: { ...base.connection, displayName: "DeepSeek", family: "deepseek" },
+      displayName: id
+    };
+  }
+
+  function apiOption(strategies: ReturnType<typeof child>[], overrides: Record<string, unknown> = {}) {
+    return option(strategies, {
+      description: "Web results with source links from the DeepSeek Search API.",
+      displayName: "DeepSeek Search API",
+      id: "source-api",
+      kind: "deepseek_search_api",
+      optionId: "deepseek-search-api-1",
+      sourceConnectionId: "connection-deepseek",
+      templateKey: null,
+      ...overrides
+    });
+  }
+
+  it("lists every DeepSeek model as a key carrier and the source as reaching all chat models", async () => {
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [deepSeekModel("deepseek-flash", false), deepSeekModel("deepseek-pro", true)]) },
+      searchOption: {
+        findMany: vi.fn(async () => [apiOption([child(apiDraft, { id: "strategy-api", strategyId: "deepseek-search-api-1:client" })])])
+      },
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
+    } as unknown as PrismaClient;
+    const catalog = await createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } }).list();
+
+    expect(catalog.integrations).toEqual([expect.objectContaining({
+      broaderModelSetup: "not_applicable",
+      configurable: true,
+      executionModes: ["all_selected", "model_choice"],
+      kind: "deepseek_search_api",
+      providerModel: expect.objectContaining({ id: "deepseek-flash" }),
+      ready: true
+    })]);
+    expect(catalog.providerModels.map(({ id, searchKind }) => `${searchKind}:${id}`)).toEqual([
+      "deepseek_web_search:deepseek-pro",
+      "deepseek_search_api:deepseek-flash",
+      "deepseek_search_api:deepseek-pro"
+    ]);
+  });
+
+  function createFixture() {
+    const technical = deepSeekModel("deepseek-flash", false);
+    const created = apiOption([child(apiDraft, { id: "strategy-api", strategyId: "deepseek-search-api-1:client" })], { enabled: false });
+    const optionCreate = vi.fn(async () => ({}));
+    const strategyCreate = vi.fn(async () => ({}));
+    const write = vi.fn(async () => ({ count: 1 }));
+    const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
+      $queryRaw: vi.fn(async () => []),
+      providerModel: { findFirst: vi.fn(async () => technical) },
+      searchIntegrationRevision: revisionRepository(),
+      searchOption: { create: optionCreate, findMany: vi.fn(async () => []), findUnique: vi.fn(async () => created), update: write },
+      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null), update: write, updateMany: write }
+    };
+    const transaction = vi.fn(async (callback: (store: typeof tx) => Promise<unknown>) => callback(tx));
+    const prisma = { ...tx, $transaction: transaction } as unknown as PrismaClient;
+    const test = vi.fn<AdminSearchTester["test"]>(async () => ({
+      method: "provider_search", normalizedSourceCount: 3, probeBinding: apiBinding, protocol: "deepseek_search_api", status: "available"
+    }));
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: vi.fn(async () => apiBinding), test } });
+    const create = () => service.createDraft({
+      check: true, description: "Web results with source links from the DeepSeek Search API.",
+      displayName: "DeepSeek Search API", draft: apiDraft, userId: "admin-1"
+    });
+    return { create, optionCreate, strategyCreate, test, transaction };
+  }
+
+  it("adds the API on a DeepSeek connection as its own kind with only a client route, after one check", async () => {
+    const state = createFixture();
+    await state.create();
+
+    expect(state.test).toHaveBeenCalledOnce();
+    expect(state.optionCreate).toHaveBeenCalledWith({ data: expect.objectContaining({
+      enabled: false, kind: "deepseek_search_api", sourceConnectionId: "connection-deepseek"
+    }) });
+    expect(state.strategyCreate).toHaveBeenCalledOnce();
+    expect(state.strategyCreate).toHaveBeenCalledWith({ data: expect.objectContaining({
+      adapterKind: "provider_model_client", kind: "provider_model_web_search", provider: "deepseek",
+      providerModelId: "deepseek-flash"
+    }) });
+  });
+
+  it.each([
+    [401, "provider_auth_rejected", "search_test_auth_rejected"],
+    [402, "provider_quota_exhausted", "search_test_quota_exhausted"]
+  ] as const)("names a check refused with HTTP %i for the administrator", async (httpStatus, code, expected) => {
+    const state = createFixture();
+    state.test.mockRejectedValueOnce(Object.assign(new ProviderSearchExecutionError({
+      artifacts: [], code, costUsd: 0, usage: {}
+    }), { httpStatus }));
+    await expect(state.create()).rejects.toMatchObject({ code: expected });
+    expect(state.transaction).not.toHaveBeenCalled();
+    state.test.mockRejectedValueOnce(new Error("provider_unavailable"));
+    await expect(state.create()).rejects.toMatchObject({ code: "search_test_failed" });
+  });
+
+  it("refuses a hosted route or a query bound the API cannot take", async () => {
+    const state = createFixture();
+    const service = createAdminSearchService({
+      prisma: { providerModel: { findFirst: vi.fn() } } as unknown as PrismaClient,
+      tester: { currentBinding: currentProbeBinding, test: state.test }
+    });
+    for (const invalid of [{ ...apiDraft, queryMaxCharacters: 129 }, { ...hostedDraft, protocol: "deepseek_search_api" as const }]) {
+      await expect(service.createDraft({ check: true, description: "x", displayName: "x", draft: invalid, userId: "admin-1" }))
+        .rejects.toMatchObject({ code: "search_configuration_invalid" });
+    }
+    expect(state.test).not.toHaveBeenCalled();
   });
 });

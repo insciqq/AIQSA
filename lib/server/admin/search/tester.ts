@@ -6,6 +6,10 @@ import {
   type AdminSearchDraft
 } from "../../../contracts/adminSearch";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
+import {
+  DEEPSEEK_SEARCH_API_MODEL_ID,
+  DEEPSEEK_SEARCH_API_STRATEGY_ID
+} from "../../providers/deepSeekSearchApi";
 import { providerAuthenticationMode } from "../../providers/providerConfiguration";
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
 import { createProviderRuntimeBinding } from "../../providers/runtimeFactory";
@@ -66,6 +70,16 @@ export function adminSearchProviderPolicy(input: Readonly<{
       provider: input.provider,
       reasoningPolicy: input.draft.reasoningPolicy,
       strategyId: "openai-responses-web-search"
+    };
+  }
+  if (input.draft.protocol === "deepseek_search_api") {
+    // One search call; the model only resolved the connection key.
+    if (input.provider !== "deepseek") throw new Error("search_protocol_not_supported");
+    return {
+      maxResults: input.draft.maxResults,
+      modelId: DEEPSEEK_SEARCH_API_MODEL_ID,
+      provider: "deepseek",
+      strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID
     };
   }
   if (input.draft.protocol === "deepseek_responses_web_search") {

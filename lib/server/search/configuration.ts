@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
+  DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
   type AdminSearchDraft,
   type AdminSearchReasoningPolicy
 } from "../../contracts/adminSearch";
@@ -95,7 +96,9 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
     (!hosted && credentialMode !== "provider_model") ||
     (hosted && normalized.providerModelId !== null) ||
     (!hosted && normalized.providerModelId === null) ||
-    (protocol === "openrouter_perplexity_chat" && hosted)
+    (protocol === "openrouter_perplexity_chat" && hosted) ||
+    (protocol === "deepseek_search_api" &&
+      (hosted || normalized.queryMaxCharacters > DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS))
   ) {
     throw new SearchConfigurationError("search_configuration_invalid");
   }
@@ -137,6 +140,7 @@ export function searchStrategyKind(
   }
   if (protocol === "gemini_google_search") return "gemini_google_search";
   if (protocol === "openrouter_perplexity_chat") return "perplexity_tool_search";
+  if (protocol === "deepseek_search_api") return "provider_model_web_search";
   return adapterKind === "answer_provider_hosted"
     ? "openai_native_web_search"
     : "provider_model_web_search";
@@ -152,10 +156,24 @@ export function compatibleTechnicalAdapter(protocol: SearchProtocol, adapterKind
   if (protocol === "openai_responses_web_search") {
     return adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible";
   }
-  if (protocol === "deepseek_responses_web_search") {
+  if (protocol === "deepseek_responses_web_search" || protocol === "deepseek_search_api") {
     return adapterKind === "deepseek_responses_native";
   }
   return adapterKind === "gemini_interactions_native";
+}
+
+/**
+ * Whether a client route's technical model can carry the protocol. A
+ * model-backed protocol searches with that model, so the model's native Search
+ * is required. The DeepSeek Search API only borrows the DeepSeek connection
+ * and credential the model resolves; the model itself is never called.
+ */
+export function technicalSearchModelSupports(
+  protocol: SearchProtocol,
+  model: Readonly<{ adapterKind: string; nativeSearch?: boolean }>
+): boolean {
+  return compatibleTechnicalAdapter(protocol, model.adapterKind) &&
+    (protocol === "deepseek_search_api" || model.nativeSearch === true);
 }
 
 export function builtInSearchDraft(input: Readonly<{

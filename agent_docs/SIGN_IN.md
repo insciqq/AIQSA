@@ -30,6 +30,15 @@ Only administrators configure sign-in methods, in the admin panel: a draft valid
 
 Every sign-in that creates a session decides it through one completion seam in the transaction that creates the session (for password and invite sign-in, the one that re-checks the credential), and each session records its sign-in method.
 
+## Refused Sign-Ins
+
+Administrators see who was refused at sign-in on the Users page and can invite them (operator decision 2026-10-18), because content-free telemetry cannot say who it was. One row per UTC day, method, reason and subject counts the attempts with their first and last time.
+
+- An external method's settlement refusal names the email only when the source verified it or the method trusts its emails; otherwise the row names nobody. LDAP is recorded only after the directory authenticated the name.
+- Password and second-factor refusals name only an existing account, by id. An address typed for no account is never stored, so bots and typos cannot fill the journal, and the form never waits for the write, so known and unknown addresses still answer alike.
+- Never a typed email, password, code, token, IdP payload or IP address. A day itemizes at most 500 subjects; later attempts count in a per-method, per-reason row that names nobody.
+- The application prunes rows 30 days after their last attempt; deleting an account removes the rows naming it or its emails. Invite is offered only for an email no account has.
+
 ## Two-Factor Sign-In
 
 TOTP is optional per user and covers only the sign-ins AIQSA verifies itself: password and LDAP. Google, Yandex, OIDC, SAML and the trusted header rely on the identity provider's MFA; accounts that only use one see no setting. Invite acceptance needs no code, and the bootstrap token is the break-glass path that never asks for one.

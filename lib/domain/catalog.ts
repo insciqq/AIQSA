@@ -584,6 +584,11 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   }),
   openRouterModel(
     deepSeekModel({ displayName: "DeepSeek V4.1 Flash", modelId: "deepseek-flash", vision: true }),
+    "deepseek/deepseek-v4.1-flash-1017"
+  ),
+  // The September snapshot, kept for the connections that already use it.
+  openRouterModel(
+    deepSeekModel({ displayName: "DeepSeek V4.1 Flash 0910", modelId: "deepseek-flash", vision: true }),
     "deepseek/deepseek-v4.1-flash"
   ),
   openRouterModel(

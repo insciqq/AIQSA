@@ -1,3 +1,4 @@
+import { mcpOversizedResponseMessage } from "../../contracts/mcpToolFailure";
 import {
   McpClientSessionError,
   type McpFatalResponseErrorCode
@@ -27,9 +28,11 @@ export function mcpResponseOverflowToolExecutionResult(
   if (!code || !(error instanceof McpClientSessionError)) return null;
 
   const message = error.message;
+  // The model learns how to ask for less; the durable preview keeps the code's message.
+  const modelText = code === "mcp_call_result_too_large" ? mcpOversizedResponseMessage(error.maxBytes) : message;
   return {
     callId: call.id,
-    content: [{ text: `${label} failed: ${message}`, type: "text" }],
+    content: [{ text: `${label} failed: ${modelText}`, type: "text" }],
     name: call.name,
     rawPreview: {
       finalProviderResponsePreview: { code, error: message },

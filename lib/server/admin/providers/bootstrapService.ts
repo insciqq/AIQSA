@@ -1,5 +1,9 @@
 import type { AdminProviderBootstrapResult, AdminProviderConnection } from "../../../contracts/adminProviders";
-import { adminSearchExecutionDefaults, type AdminSearchDraft } from "../../../contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  type AdminSearchDraft,
+  type AdminSearchProviderModelOption
+} from "../../../contracts/adminSearch";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
 import type { createAdminSearchService } from "../search/service";
 import type { createAdminModelPolicyService } from "./modelPolicyService";
@@ -170,11 +174,16 @@ export function createAdminProviderBootstrap(input: {
     try {
       value.signal.throwIfAborted();
       const search = await input.search.list({ userId: value.userId });
-      const existing = search.integrations.find((source) => source.sourceConnectionId === connection.id);
+      // Setup owns only the connection's own Search; an administrator adds
+      // the separate, paid DeepSeek Search API source by hand.
+      const existing = search.integrations.find((source) =>
+        source.sourceConnectionId === connection.id && source.kind !== "deepseek_search_api");
       // An established off switch and an unfinished Search edit remain owned
       // by the operator, even when a different key was just saved.
       if (existing?.archivedAt || existing?.configurationActive && (!existing.enabled || existing.draftDirty)) return result;
-      const target = pick(search.providerModels.filter(({ enabled }) => enabled));
+      const target = pick(search.providerModels.filter((model): model is AdminSearchProviderModelOption & {
+        searchKind: Exclude<AdminSearchProviderModelOption["searchKind"], "deepseek_search_api">;
+      } => model.enabled && model.searchKind !== "deepseek_search_api"));
       if (!target) return result;
       const protocol = {
         anthropic_web_search: "anthropic_web_search", deepseek_web_search: "deepseek_responses_web_search",

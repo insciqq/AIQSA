@@ -7,6 +7,7 @@ import { createPrismaLoginRateLimiter } from "./prismaRateLimit";
 import { createPrismaAuthRegistrationRepository } from "./registrationRepository";
 import { createPrismaAuthSessionStore } from "./prismaSessions";
 import { createRequestAuthResolver } from "./requestAuth";
+import { createPrismaSignInRefusalRecorder } from "./signInRefusals";
 import {
   OAUTH_FLOW_MAX_AGE_SECONDS,
   OAUTH_PROVIDER_ADMISSION_MAX_ATTEMPTS,
@@ -34,6 +35,7 @@ export const oauthIdentityRepository = createPrismaOAuthIdentityRepository(prism
 export const passwordAuthRepository = createPrismaPasswordAuthRepository(prisma);
 export const authRegistrationRepository = createPrismaAuthRegistrationRepository(prisma);
 export const authSessionStore = createPrismaAuthSessionStore(prisma);
+export const signInRefusalRecorder = createPrismaSignInRefusalRecorder(prisma);
 export const authRateLimiter = createPrismaLoginRateLimiter({
   keySecret: () => getAuthConfig().sessionSecret,
   prisma

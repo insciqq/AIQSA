@@ -27,10 +27,10 @@ import {
 import { configuredModelParameterControls, resolveProviderModelCapabilities } from "@/lib/server/providers/providerModelCapabilities";
 import { hasVerifiedPdfInput } from "@/lib/server/providers/pdfInputEvidence";
 import {
-  compatibleTechnicalAdapter,
   searchStrategyKind,
   normalizeSearchDraft,
-  searchExecutionModes
+  searchExecutionModes,
+  technicalSearchModelSupports
 } from "@/lib/server/search/configuration";
 import type { SearchProbeBinding } from "@/lib/server/search/probeBinding";
 import type {
@@ -193,6 +193,9 @@ export function providerModelCatalogAuthorityInclude(userId: string) {
 }
 
 const supportedSearchOptionKinds = new Map<string, SearchStrategyCatalogEntry["kind"]>([
+  // People choose it as web search; its stored kind keeps it a separate
+  // source beside the same DeepSeek connection's hosted Search.
+  ["deepseek_search_api", "web_search"],
   ["gemini_google_search", "gemini_google_search"],
   ["none", "none"],
   ["perplexity_search", "perplexity_tool_search"],
@@ -445,19 +448,25 @@ export function providerModelToCatalogEntry(
   };
 }
 
+/** Routes are matched against the stored option kind: two stored kinds share
+ * the catalog's `web_search`, each with its own protocols. */
 function routeBelongsToOption(
-  optionKind: SearchStrategyCatalogEntry["kind"],
+  storedKind: string,
   route: SearchStrategyRouteCatalogEntry
 ): boolean {
-  if (optionKind === "web_search") {
+  if (storedKind === "web_search") {
     return route.protocol === "anthropic_web_search" ||
       route.protocol === "deepseek_responses_web_search" ||
       route.protocol === "openai_responses_web_search";
   }
-  if (optionKind === "gemini_google_search") {
+  if (storedKind === "deepseek_search_api") {
+    return route.adapterKind === "provider_model_client" &&
+      route.protocol === "deepseek_search_api";
+  }
+  if (storedKind === "gemini_google_search") {
     return route.protocol === "gemini_google_search";
   }
-  if (optionKind === "perplexity_tool_search") {
+  if (storedKind === "perplexity_search") {
     return route.adapterKind === "provider_model_client" &&
       route.protocol === "openrouter_perplexity_chat";
   }
@@ -543,7 +552,7 @@ export function searchOptionToCatalogEntry(
     description: option.description,
     displayName: option.displayName,
     kind,
-    routes: routes.filter((route) => routeBelongsToOption(kind, route)),
+    routes: routes.filter((route) => routeBelongsToOption(option.kind, route)),
     sourceConnectionId: option.sourceConnectionId,
     strategyId: option.optionId
   };
@@ -594,8 +603,10 @@ export function filterExposedSearchOptions(input: {
       return configuration &&
         currentAuthority &&
         (!option.sourceConnectionId || technicalModel?.connectionId === option.sourceConnectionId) &&
-        compatibleTechnicalAdapter(route.protocol, configuration.adapterKind) &&
-        configuration.capabilities.nativeSearch
+        technicalSearchModelSupports(route.protocol, {
+          adapterKind: configuration.adapterKind,
+          nativeSearch: configuration.capabilities.nativeSearch
+        })
         ? [route]
         : [];
     });

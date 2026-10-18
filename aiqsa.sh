@@ -12,8 +12,12 @@
 # chooses the project name (COMPOSE_PROJECT_NAME, else `name:` in compose.yaml).
 # The CLI never sources .env, never prints its values, never runs sudo, never
 # runs `docker compose down` on the installation's project (restore only removes
-# its own isolated aiqsa-restore-* project) and never changes sysctls, groups or
-# packages.
+# its own isolated aiqsa-restore-* project) and never changes sysctls, groups,
+# packages or the journald configuration.
+#
+# Container logs go to the host journal (compose.yaml) unless .env selects the
+# json-file fallback for hosts without systemd-journald through COMPOSE_FILE;
+# `logs --since/--until` then reads the journal, including recreated containers.
 #
 # `backup` is a cold copy: application writers and object storage stop while
 # PostgreSQL and the bundled object volume are copied, and a trap restarts
@@ -24,6 +28,8 @@
 # Test-only hooks; never set them on a real installation:
 #   AIQSA_CLI_KVM_DEVICE        KVM device path (default /dev/kvm)
 #   AIQSA_CLI_PROC_ROOT         proc root for meminfo and cpuinfo (default /proc)
+#   AIQSA_CLI_HOST_ROOT         prefix of the journald socket, configuration and
+#                               journal directories (default: none, the host's /)
 #   AIQSA_CLI_RESTORE_OVERRIDE  extra Compose file appended to the isolated
 #                               restore project (for example explicit subnets
 #                               on hosts without free Docker address pools)
@@ -59,6 +65,11 @@ PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly PROJECT_DIR
 readonly KVM_DEVICE=${AIQSA_CLI_KVM_DEVICE:-/dev/kvm}
 readonly PROC_ROOT=${AIQSA_CLI_PROC_ROOT:-/proc}
+readonly HOST_ROOT=${AIQSA_CLI_HOST_ROOT:-}
+readonly JOURNAL_SOCKET=$HOST_ROOT/run/systemd/journal/socket
+readonly JSON_FILE_LOGGING=compose.json-file-logging.yaml
+readonly JSON_FILE_LOGGING_LINE=COMPOSE_FILE=compose.yaml:$JSON_FILE_LOGGING
+readonly JOURNAL_DROPIN=/etc/systemd/journald.conf.d/50-aiqsa.conf
 RESTORE_OVERRIDE_HOOK=${AIQSA_CLI_RESTORE_OVERRIDE:-}
 readonly BACKUP_FORMAT=1
 # Services that keep running while the backup stops application writers.
@@ -75,7 +86,7 @@ TARGET_TAG="" BACKUP_CONFIRMED=0 BACKUP_NOW=0 ADD_MISSING_KEYS=0 PREVIOUS_REF=""
 OUTPUT_DIR="" RESTORE_DIR=""
 LOGS_ERRORS=0 LOGS_WARNINGS=0 LOGS_FOLLOW=0 LOGS_TAIL="" LOG_SERVICES=()
 # --since: a log window for logs, a Health range for health.
-SINCE="" HEALTH_JSON=0 HEALTH_RUN="" HEALTH_FULL=0 HEALTH_USER=""
+SINCE="" UNTIL="" HEALTH_JSON=0 HEALTH_RUN="" HEALTH_FULL=0 HEALTH_USER=""
 declare -A GIVEN=()
 
 # State.
@@ -87,6 +98,8 @@ TEMP_DIR="" CONFIGURE_TMP=""
 PASS_COUNT=0 WARN_COUNT=0 FAIL_COUNT=0
 DOCKER_STATE="" DOCKER_SERVER_VERSION="" DOCKER_ERROR=""
 PROJECT_NAME=""
+# Distinct log drivers of the resolved Compose services, set with PROJECT_NAME.
+LOG_DRIVERS=()
 KVM_OK=0 KVM_GID="" KVM_REASON="" KVM_VIRT=""
 COLOR=0
 # Backup: the writers are stopped while BACKUP_STOPPED=1; RESTART_SERVICES is
@@ -371,13 +384,39 @@ docker_probe() {
 
 docker_ready() { docker_probe; [[ $DOCKER_STATE == ok ]]; }
 
-# Sets PROJECT_NAME as Compose resolves it; call directly, not in $(...).
+# Sets PROJECT_NAME and LOG_DRIVERS as Compose resolves them; call directly,
+# not in $(...).
 load_project_name() {
   [[ -z $PROJECT_NAME ]] || return 0
-  # The JSON carries resolved secrets: it is only piped to sed, never shown.
-  PROJECT_NAME=$(dc config --format json 2>/dev/null \
-    | sed -n 's/^  "name": "\([^"]*\)",\{0,1\}$/\1/p' | head -n 1) || PROJECT_NAME=""
+  local facts kind value
+  # The JSON carries resolved secrets: it is only piped to awk, never shown.
+  # A service's logging sits at six spaces; x-* extensions at two are skipped.
+  facts=$(dc config --format json 2>/dev/null | awk '
+    /^  "name": "/ && !named { value = $0; sub(/^  "name": "/, "", value); sub(/",?$/, "", value); print "name " value; named = 1 }
+    /^      "logging": \{$/ { logging = 1; next }
+    logging && /^        "driver": "/ { value = $0; sub(/^ *"driver": "/, "", value); sub(/",?$/, "", value); print "driver " value }
+    logging && /^      [}]/ { logging = 0 }') || facts=""
+  LOG_DRIVERS=()
+  while read -r kind value; do
+    case $kind in
+      name) PROJECT_NAME=$value ;;
+      driver) [[ " ${LOG_DRIVERS[*]-} " == *" $value "* ]] || LOG_DRIVERS+=("$value") ;;
+    esac
+  done <<< "$facts"
 }
+
+# Sets REPLY to the log mode of the resolved services: journald, json-file,
+# none (no service sets a driver) or the drivers when they differ.
+log_mode() {
+  load_project_name
+  case ${#LOG_DRIVERS[@]} in
+    0) REPLY=none ;;
+    1) REPLY=${LOG_DRIVERS[0]} ;;
+    *) REPLY=${LOG_DRIVERS[*]} ;;
+  esac
+}
+
+uses_journald() { load_project_name; [[ " ${LOG_DRIVERS[*]-} " == *" journald "* ]]; }
 
 # ---------------------------------------------------------------- host facts
 
@@ -421,6 +460,71 @@ workspace_lines() {
 kvm_required_help() {
   printf '%s\n' "Workspace runs commands in KVM virtual machines and most of AIQSA depends on it, so installations without a usable $KVM_DEVICE are not supported." \
     "On cloud and other virtual machines enable nested virtualization for the VM, or use a bare-metal host; ./aiqsa.sh doctor shows the KVM checks."
+}
+
+# Docker's journald log driver needs this socket; without it containers fail to start.
+journal_socket_present() { [[ -S $JOURNAL_SOCKET ]]; }
+
+# Whether this user can read the system journal (root, or the systemd-journal
+# or adm group on most distributions).
+journal_readable() {
+  local file
+  for file in "$HOST_ROOT"/var/log/journal/*/system.journal "$HOST_ROOT"/run/log/journal/*/system.journal; do
+    [[ -r $file ]] && return 0
+  done
+  return 1
+}
+
+# Effective [Journal] setting of systemd-journald, empty when unset: the main
+# file, then the drop-ins ordered by file name, where /etc overrides /run and
+# /run overrides /usr/local/lib and /usr/lib. The last assignment wins.
+journald_setting() {
+  local key=$1 directory file name main files=()
+  local -A dropins=()
+  for directory in etc/systemd run/systemd usr/local/lib/systemd usr/lib/systemd; do
+    for file in "$HOST_ROOT/$directory/journald.conf.d"/*.conf; do
+      [[ -f $file ]] || continue
+      name=${file##*/}
+      [[ -n ${dropins[$name]:-} ]] || dropins[$name]=$file
+    done
+  done
+  main=$HOST_ROOT/etc/systemd/journald.conf
+  [[ -f $main ]] || main=$HOST_ROOT/usr/lib/systemd/journald.conf
+  [[ -f $main ]] && files+=("$main")
+  if (( ${#dropins[@]} )); then
+    while IFS= read -r name; do files+=("${dropins[$name]}"); done < <(printf '%s\n' "${!dropins[@]}" | LC_ALL=C sort)
+  fi
+  (( ${#files[@]} )) || return 0
+  awk -v key="$key" '
+    FNR == 1 { section = "" }
+    /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section); next }
+    section == "[Journal]" && match($0, "^[[:space:]]*" key "[[:space:]]*=") {
+      value = substr($0, RLENGTH + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+    }
+    END { print value }' "${files[@]}"
+}
+
+# Whether a journald size (bytes, or a K/M/G/T/P/E suffix of base 1024) is below 1 GiB.
+journal_size_small() {
+  local value=${1^^}
+  [[ $value =~ ^([0-9]+)(\.[0-9]+)?([KMGTPE]?)B?$ ]] || return 1
+  local whole=$((10#${BASH_REMATCH[1]})) unit=${BASH_REMATCH[3]}
+  case $unit in
+    '') (( whole < 1073741824 )) ;;
+    K) (( whole < 1048576 )) ;;
+    M) (( whole < 1024 )) ;;
+    G) (( whole < 1 )) ;;
+    *) return 1 ;;
+  esac
+}
+
+# The recommended host journal budget: on disk, size-capped and host-wide, so
+# without an age limit that would also cut the history of other services.
+journal_dropin_help() {
+  printf '%s\n' "Keep the host journal on disk with a size cap; 4G holds two weeks or more of a typical installation's logs:" \
+    "  sudo mkdir -p ${JOURNAL_DROPIN%/*}" \
+    "  printf '[Journal]\\nStorage=persistent\\nSystemMaxUse=4G\\nSystemMaxFileSize=128M\\nMaxFileSec=1day\\n' | sudo tee $JOURNAL_DROPIN" \
+    "  sudo systemctl restart systemd-journald"
 }
 
 # ---------------------------------------------------------------- doctor: host
@@ -742,6 +846,7 @@ doctor_compose_config() {
     check FAIL compose-config "docker compose config rejected the configuration: $(tail -n 3 "$errors" | tr '\n' ' ' | mask_stream)"
     return 0
   fi
+  doctor_logs
   if profile_enabled storage-migration; then
     check FAIL legacy-storage "COMPOSE_PROFILES contains storage-migration" \
       "Finish the v0.2.34 runbook, then drop storage-migration from COMPOSE_PROFILES: $LEGACY_RUNBOOK_URL"
@@ -755,6 +860,69 @@ doctor_compose_config() {
     check WARN legacy-storage "the ${PROJECT_NAME}_minio_data volume from the MinIO era still exists" \
       "Keep it until the v0.2.34 migration is verified ($LEGACY_RUNBOOK_URL), then remove it with docker volume rm."
   fi
+}
+
+# The active log mode, whether it keeps history across container recreation,
+# and for journald the host journal's storage, size budget and readability.
+doctor_logs() {
+  local mode storage max_use first=""
+  log_mode
+  mode=$REPLY
+  if uses_journald && ! journal_socket_present; then
+    check FAIL logs "the journald log driver is selected, but this host has no systemd-journald ($JOURNAL_SOCKET is missing): containers cannot start" \
+      "Select the json-file fallback in $(display_path "$ENV_FILE"), keeping any other Compose files you list there:" \
+      "  $JSON_FILE_LOGGING_LINE" \
+      "Container logs are then lost whenever a container is recreated."
+    return 0
+  fi
+  case $mode in
+    journald) ;;
+    json-file)
+      if journal_socket_present; then
+        check WARN logs "json-file: container logs are lost whenever up or upgrade recreates a container; history is not kept" \
+          "This host has systemd-journald: remove $JSON_FILE_LOGGING from COMPOSE_FILE in $(display_path "$ENV_FILE")," \
+          "then run ./aiqsa.sh up to keep the logs in the host journal."
+      else
+        check WARN logs "json-file (this host has no systemd-journald): container logs are lost whenever up or upgrade recreates a container; history is not kept" \
+          "Save the logs you need with ./aiqsa.sh logs before up or upgrade."
+      fi
+      return 0 ;;
+    none)
+      check INFO logs "the Compose configuration sets no log driver; Docker's default applies"
+      return 0 ;;
+    *)
+      check WARN logs "services use the log drivers $mode; only journald keeps history across container recreation" \
+        "Remove the logging settings of your Compose overrides, or select $JSON_FILE_LOGGING for every service."
+      return 0 ;;
+  esac
+  # Storage=auto keeps the journal on disk only when /var/log/journal exists.
+  storage=$(journald_setting Storage)
+  storage=${storage:-auto}
+  storage=${storage,,}
+  if [[ $storage == auto && -d $HOST_ROOT/var/log/journal ]]; then storage=persistent; fi
+  case $storage in
+    persistent) ;;
+    none)
+      check WARN logs "journald, but the host journal discards every line (Storage=none): history is not kept" "$(journal_dropin_help)"
+      return 0 ;;
+    *)
+      [[ $storage != auto ]] || storage+=" without /var/log/journal"
+      check WARN logs "journald, but the host journal is kept in memory only (Storage=$storage): history ends at reboot" "$(journal_dropin_help)"
+      return 0 ;;
+  esac
+  max_use=$(journald_setting SystemMaxUse)
+  if [[ -n $max_use ]] && journal_size_small "$max_use"; then
+    check WARN journal-budget "SystemMaxUse=$max_use may keep less than two weeks of logs; the limit is host-wide" "$(journal_dropin_help)"
+  fi
+  if ! journal_readable; then
+    check WARN logs-access "$(id -un) cannot read the host journal, so ./aiqsa.sh logs --since shows only the current containers" \
+      "sudo usermod -aG systemd-journal \"\$USER\", then log out and back in (or run ./aiqsa.sh as root)."
+  elif command -v journalctl >/dev/null 2>&1 && [[ -n $PROJECT_NAME ]]; then
+    # Only the first line is read; journalctl then stops on the closed pipe.
+    first=$(run journalctl --no-pager --quiet --output short-iso "COM_DOCKER_COMPOSE_PROJECT=$PROJECT_NAME" 2>/dev/null | head -n 1) || true
+    first=${first%% *}
+  fi
+  check PASS logs "journald: kept across container recreation in the persistent host journal (SystemMaxUse=${max_use:-default, 10% of the file system up to 4G})${first:+; history since $first}"
 }
 
 legacy_volume_present() {
@@ -1005,7 +1173,9 @@ configure_create() {
     (( KVM_OK )) || die "$EXIT_PREFLIGHT" "AIQSA needs KVM for Workspace, but $KVM_REASON; no .env was written." "$(kvm_required_help)"
     enable_workspace=1
   fi
-  local seen_profiles=0 seen_url=0 seen_token=0 seen_gid=0
+  local seen_profiles=0 seen_url=0 seen_token=0 seen_gid=0 json_file_logs=0 seen_logging=0
+  # Docker's journald driver cannot start containers without systemd-journald.
+  journal_socket_present || json_file_logs=1
   old_umask=$(umask)
   umask 077
   CONFIGURE_TMP=$(mktemp "$(dirname -- "$ENV_FILE")/.env.tmp.XXXXXX")
@@ -1018,6 +1188,8 @@ configure_create() {
       line="AIQSA_APP_BASE_URL=$BASE_URL"
     elif [[ $line == AIQSA_INITIAL_ADMIN_EMAIL= && -n $ADMIN_EMAIL ]]; then
       line="AIQSA_INITIAL_ADMIN_EMAIL=$ADMIN_EMAIL"
+    elif (( json_file_logs )) && [[ $line == "# $JSON_FILE_LOGGING_LINE" ]]; then
+      line=${line#\# }; seen_logging=1
     elif (( enable_workspace )); then
       case $line in
         '# COMPOSE_PROFILES=workspace') line=COMPOSE_PROFILES=workspace; seen_profiles=1 ;;
@@ -1041,6 +1213,7 @@ configure_create() {
       (( seen_gid )) || printf '%s\n' "AIQSA_KVM_GID=$KVM_GID"
     } >> "$CONFIGURE_TMP"
   fi
+  if (( json_file_logs && ! seen_logging )); then printf '%s\n' "$JSON_FILE_LOGGING_LINE" >> "$CONFIGURE_TMP"; fi
   # Hard-link publication is atomic and never replaces an existing file or symlink.
   ln -- "$CONFIGURE_TMP" "$ENV_FILE" || die "$EXIT_FAILURE" "$(display_path "$ENV_FILE") appeared meanwhile; it was preserved."
   rm -f -- "$CONFIGURE_TMP"
@@ -1051,6 +1224,10 @@ configure_create() {
     say "Workspace enabled (KVM group $KVM_GID)."
   else
     note "Workspace left off (--workspace off): an unsupported configuration, only for disposable test installations."
+  fi
+  if (( json_file_logs )); then
+    note "This host has no systemd-journald ($JOURNAL_SOCKET is missing): $JSON_FILE_LOGGING_LINE selects rotating json-file logs," \
+      "which are lost whenever a container is recreated."
   fi
 }
 
@@ -2000,6 +2177,13 @@ cmd_restore() {
   [[ $PROJECT_NAME =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
     || restore_refuse "the Compose project name could not be resolved from the backup's environment."
   restore_target_empty
+  # The restored .env stays byte for byte the backup's, so the process
+  # environment selects the fallback a host without systemd-journald needs.
+  if uses_journald && ! journal_socket_present; then
+    restore_refuse "the backup's configuration logs to journald, but this host has no systemd-journald ($JOURNAL_SOCKET is missing)." \
+      "Rerun with the json-file fallback: $JSON_FILE_LOGGING_LINE ./aiqsa.sh restore $(printf '%q' "$(display_path "$dir")")" \
+      "and afterwards add $JSON_FILE_LOGGING_LINE to $(display_path "$ENV_FILE")."
+  fi
   restore_kvm_gid
   if (( ! SKIP_PREFLIGHT )); then
     doctor_host
@@ -2028,6 +2212,8 @@ cmd_restore() {
   RESTORE_OVERRIDE=$TEMP_DIR/restore-override.yaml
   restore_override
   RC_ARGS=(--project-directory "$PROJECT_DIR" -p "$RESTORE_PROJECT" -f "$PROJECT_DIR/compose.yaml" -f "$RESTORE_OVERRIDE")
+  # The isolated project's logs are disposable; journald needs systemd-journald.
+  journal_socket_present || RC_ARGS+=(-f "$PROJECT_DIR/$JSON_FILE_LOGGING")
   if [[ -n $RESTORE_OVERRIDE_HOOK ]]; then RC_ARGS+=(-f "$RESTORE_OVERRIDE_HOOK"); fi
   RC_ARGS+=(${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"})
   say "Starting the isolated project $RESTORE_PROJECT: postgres, seaweedfs and minio on internal networks, no published ports."
@@ -2078,31 +2264,96 @@ logs_filter() {
   done
 }
 
+logs_print() {
+  if [[ -n $1 ]]; then logs_filter "$1" | mask_stream; else mask_stream; fi
+}
+
+# journal_time VALUE: sets REPLY to the @<epoch seconds> journalctl reads for a
+# --since/--until value: a Go duration ago (as Compose takes it) or a time.
+journal_time() {
+  local epoch
+  if [[ $1 =~ ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$ ]]; then
+    epoch=$(date +%s) || return 1
+    epoch=$(awk -v now="$epoch" -v left="$1" 'BEGIN {
+      split("h m s ms us ns", units, " "); split("3600 60 1 0.001 0.000001 0.000000001", factors, " ")
+      while (match(left, /^[0-9.]+/)) {
+        amount = substr(left, 1, RLENGTH); left = substr(left, RLENGTH + 1)
+        # ns, us and ms are tried before s and m.
+        for (i = 6; i >= 1; i--) if (index(left, units[i]) == 1) break
+        ago += amount * factors[i]; left = substr(left, length(units[i]) + 1)
+      }
+      printf "%d\n", now - ago
+    }') || return 1
+  else
+    epoch=$(date -d "$1" +%s 2>/dev/null) || return 1
+  fi
+  REPLY=@$epoch
+}
+
+# journalctl's short-iso `<time> <host> <container>[<pid>]: <message>` becomes
+# `<time> <container>  | <message>`, which logs_filter reads like Compose output.
+journal_lines() {
+  sed -E 's/^([^ ]+) [^ ]+ ([^][ :]+)(\[[0-9]+\])?: ?/\1 \2  | /'
+}
+
+# With journald, a --since/--until window comes from the host journal, so it
+# includes containers that up or upgrade have since recreated. Otherwise, or
+# when the journal cannot be read, Compose shows the current containers only.
+logs_from_journal() {
+  [[ -n $SINCE$UNTIL ]] || return 1
+  log_mode
+  [[ $REPLY == journald ]] || return 1
+  local reason=""
+  if [[ -z $PROJECT_NAME ]]; then
+    reason="the Compose project name could not be resolved"
+  elif ! command -v journalctl >/dev/null 2>&1; then
+    reason="journalctl is not installed"
+  elif ! journal_readable; then
+    reason="$(id -un) cannot read the host journal (join the systemd-journal group, or run as root)"
+  fi
+  [[ -z $reason ]] && return 0
+  (( QUIET )) || note "Showing the current containers only: $reason."
+  return 1
+}
+
 cmd_logs() {
-  local args=(logs --no-color) levels="" errors failed=0
+  local args=(logs --no-color) levels="" errors failed=0 service reader="docker compose logs"
   env_load
   docker_ready || die "$EXIT_FAILURE" "Cannot read logs: Docker is not usable ($DOCKER_STATE)${DOCKER_ERROR:+: $DOCKER_ERROR}."
-  if [[ -n $SINCE ]]; then args+=(--since "$SINCE"); fi
-  if [[ -n $LOGS_TAIL ]]; then
-    args+=(--tail "$LOGS_TAIL")
-  elif [[ -z $SINCE ]]; then
-    args+=(--tail "$LOGS_DEFAULT_TAIL")
-  fi
-  if (( LOGS_FOLLOW )); then args+=(--follow); fi
-  args+=(${LOG_SERVICES[@]+"${LOG_SERVICES[@]}"})
   if (( LOGS_ERRORS )); then levels="error|fatal"; elif (( LOGS_WARNINGS )); then levels="warn|error|fatal"; fi
   ensure_temp_dir
   errors=$TEMP_DIR/logs.err
-  if [[ -n $levels ]]; then
-    if (( ! QUIET )); then
-      note "Showing AIQSA JSON lines at level ${levels//|/, } only; plain-text lines (PostgreSQL, OpenSearch, Tika, Docling, SeaweedFS) are hidden."
+  if [[ -n $levels ]] && (( ! QUIET )); then
+    note "Showing AIQSA JSON lines at level ${levels//|/, } only; plain-text lines (PostgreSQL, OpenSearch, Tika, Docling, SeaweedFS) are hidden."
+  fi
+  if logs_from_journal; then
+    # Same-field matches are alternatives, so this is the project AND any listed service.
+    args=(journalctl --no-pager --quiet --all --output short-iso "COM_DOCKER_COMPOSE_PROJECT=$PROJECT_NAME")
+    for service in ${LOG_SERVICES[@]+"${LOG_SERVICES[@]}"}; do args+=("COM_DOCKER_COMPOSE_SERVICE=$service"); done
+    if [[ -n $SINCE ]]; then journal_time "$SINCE" || usage_error "--since is not a time: $SINCE"; args+=("--since=$REPLY"); fi
+    if [[ -n $UNTIL ]]; then journal_time "$UNTIL" || usage_error "--until is not a time: $UNTIL"; args+=("--until=$REPLY"); fi
+    if [[ -n $LOGS_TAIL && $LOGS_TAIL != all ]]; then
+      args+=("--lines=$LOGS_TAIL")
+    elif [[ -z $LOGS_TAIL && -z $SINCE ]]; then
+      args+=("--lines=$LOGS_DEFAULT_TAIL")
     fi
-    dc "${args[@]}" 2>"$errors" | logs_filter "$levels" | mask_stream || failed=1
+    if (( LOGS_FOLLOW )); then args+=(--follow); fi
+    reader=journalctl
+    run "${args[@]}" 2>"$errors" | journal_lines | logs_print "$levels" || failed=1
   else
-    dc "${args[@]}" 2>"$errors" | mask_stream || failed=1
+    if [[ -n $SINCE ]]; then args+=(--since "$SINCE"); fi
+    if [[ -n $UNTIL ]]; then args+=(--until "$UNTIL"); fi
+    if [[ -n $LOGS_TAIL ]]; then
+      args+=(--tail "$LOGS_TAIL")
+    elif [[ -z $SINCE ]]; then
+      args+=(--tail "$LOGS_DEFAULT_TAIL")
+    fi
+    if (( LOGS_FOLLOW )); then args+=(--follow); fi
+    args+=(${LOG_SERVICES[@]+"${LOG_SERVICES[@]}"})
+    dc "${args[@]}" 2>"$errors" | logs_print "$levels" || failed=1
   fi
   mask_stream < "$errors" >&2
-  (( ! failed )) || die "$EXIT_FAILURE" "docker compose logs failed; ./aiqsa.sh doctor shows the state of the stack."
+  (( ! failed )) || die "$EXIT_FAILURE" "$reader failed; ./aiqsa.sh doctor shows the state of the stack."
 }
 
 # ---------------------------------------------------------------- health
@@ -2170,6 +2421,8 @@ Commands:
   logs [service...]
              Print the stack's container logs with .env secrets masked
              (default: the last 200 lines per container, all services).
+             With the default journald logging, --since and --until read the
+             host journal, which keeps the lines of recreated containers.
   health     Read-only report of recent problems from the persisted telemetry: what needs
              attention, error totals, failing providers, restarts, stuck queues and the
              latest incidents (works while the app container is down).
@@ -2205,7 +2458,9 @@ Options:
   --since <duration>     logs: only lines newer than a duration (30m, 2h, 1h30m)
                          or an RFC 3339 time (2026-01-31T08:00:00Z); without
                          --tail every line in that window is printed.
-  --tail <n|all>         logs: last lines per container (default 200 without --since).
+  --until <duration>     logs: only lines older than a duration or an RFC 3339 time.
+  --tail <n|all>         logs: last lines per container, or of the whole window when
+                         read from the journal (default 200 without --since).
   --follow, -f           logs: keep streaming new lines until interrupted.
   --since 24h|7d|14d|30d health: report range (default 24h).
   --json                 health: machine-readable JSON instead of text.
@@ -2277,6 +2532,7 @@ parse_args() {
       --errors) LOGS_ERRORS=1 ;;
       --warnings) LOGS_WARNINGS=1 ;;
       --since) option_value "$argument" "$@"; SINCE=$1; shift ;;
+      --until) option_value "$argument" "$@"; UNTIL=$1; shift ;;
       --json) HEALTH_JSON=1 ;;
       --run) option_value "$argument" "$@"; HEALTH_RUN=$1; shift ;;
       --full) HEALTH_FULL=1 ;;
@@ -2300,8 +2556,14 @@ parse_args() {
   done
 }
 
+# A logs --since/--until value: a duration ago, or an RFC 3339 time or date.
+log_time_valid() {
+  [[ $1 =~ ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$ \
+    || $1 =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$ ]]
+}
+
 validate_args() {
-  local allowed option
+  local allowed option value
   case $COMMAND in
     install) allowed=" --base-url --admin-email --no-start --skip-preflight " ;;
     configure) allowed=" --base-url --admin-email --workspace " ;;
@@ -2310,7 +2572,7 @@ validate_args() {
     upgrade) allowed=" --to --backup --backup-confirmed --add-missing-keys --skip-preflight " ;;
     backup) allowed=" --output " ;;
     restore) allowed=" --skip-preflight " ;;
-    logs) allowed=" --errors --warnings --since --tail -f --follow " ;;
+    logs) allowed=" --errors --warnings --since --until --tail -f --follow " ;;
     health) allowed=" --since --json --run --full --user " ;;
     __upgrade-apply) allowed=" --previous-ref --add-missing-keys --skip-preflight " ;;
     version | help) allowed=" " ;;
@@ -2338,9 +2600,15 @@ validate_args() {
     if [[ -n $HEALTH_RUN && ! $HEALTH_RUN =~ ^[0-9A-Fa-f][0-9A-Fa-f-]{7,35}$ ]]; then
       usage_error "--run needs an error reference: at least the first 8 characters of a run id."
     fi
-  elif [[ -n $SINCE && ! $SINCE =~ ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$ \
-    && ! $SINCE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?$ ]]; then
-    usage_error "--since must be a duration like 30m, 2h or 1h30m, or an RFC 3339 time like 2026-01-31T08:00:00Z."
+  else
+    for option in --since --until; do
+      value=$SINCE
+      [[ $option == --since ]] || value=$UNTIL
+      if [[ -n $value ]] && ! log_time_valid "$value"; then
+        usage_error "$option must be a duration like 30m, 2h or 1h30m, or an RFC 3339 time like 2026-01-31T08:00:00Z."
+      fi
+    done
+    if [[ -n $UNTIL ]] && (( LOGS_FOLLOW )); then usage_error "--until and --follow are mutually exclusive."; fi
   fi
   for option in ${LOG_SERVICES[@]+"${LOG_SERVICES[@]}"}; do
     [[ $option =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || usage_error "Not a Compose service name: $option"

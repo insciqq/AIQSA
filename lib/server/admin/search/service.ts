@@ -28,12 +28,14 @@ import {
   normalizeProviderModelConfiguration
 } from "../../providers/providerConfiguration";
 import { lowestSupportedOpenAIResponsesSearchEffort } from "../../providers/openaiResponsesSearch";
+import { observedFailure } from "../../providers/providerObservability";
 import {
   SearchConfigurationError,
   compatibleTechnicalAdapter,
   searchStrategyKind,
   normalizeSearchDraft,
-  searchDraftHash
+  searchDraftHash,
+  technicalSearchModelSupports
 } from "../../search/configuration";
 import {
   searchProbeBinding,
@@ -70,7 +72,18 @@ export type AdminSearchServiceErrorCode =
   | "search_provider_model_not_available"
   | "search_source_not_ready"
   | "search_system_integration_forbidden"
-  | "search_test_failed";
+  | "search_test_auth_rejected"
+  | "search_test_failed"
+  | "search_test_quota_exhausted";
+
+/** A failed check the administrator can act on names its cause: the
+ * provider refused the key, or the account has no balance or quota left. */
+function checkFailureCode(error: unknown): AdminSearchServiceErrorCode {
+  const code = observedFailure(error).code;
+  return code === "provider_auth_rejected" ? "search_test_auth_rejected"
+    : code === "provider_quota_exhausted" ? "search_test_quota_exhausted"
+    : "search_test_failed";
+}
 
 export class AdminSearchServiceError extends Error {
   constructor(readonly code: AdminSearchServiceErrorCode) {
@@ -162,13 +175,14 @@ function providerModelConfiguration(value: unknown) {
 }
 
 function logicalKind(value: unknown): AdminSearchKind | null {
-  return value === "gemini_google_search" || value === "perplexity_search" ||
-    value === "web_search"
+  return value === "deepseek_search_api" || value === "gemini_google_search" ||
+    value === "perplexity_search" || value === "web_search"
     ? value
     : null;
 }
 
 function draftKind(draft: AdminSearchDraft): AdminSearchKind {
+  if (draft.protocol === "deepseek_search_api") return "deepseek_search_api";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
   if (draft.protocol === "openrouter_perplexity_chat") return "perplexity_search";
   return "web_search";
@@ -189,6 +203,7 @@ function draftClientSearchKind(
 ): AdminSearchProviderModelOption["searchKind"] {
   if (draft.protocol === "anthropic_web_search") return "anthropic_web_search";
   if (draft.protocol === "deepseek_responses_web_search") return "deepseek_web_search";
+  if (draft.protocol === "deepseek_search_api") return "deepseek_search_api";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
   return draft.protocol === "openrouter_perplexity_chat" ? "perplexity_search" : "web_search";
 }
@@ -415,7 +430,7 @@ function routeReady(
   if (draft.adapterKind === "provider_model_client") {
     const model = providerModels.find((candidate) => candidate.id === draft.providerModelId);
     return model?.enabled && model.connectionId === option.sourceConnectionId &&
-      model.nativeSearch && compatibleTechnicalAdapter(draft.protocol, model.adapterKind)
+      technicalSearchModelSupports(draft.protocol, model)
       ? { adapterKind: draft.adapterKind, draft }
       : null;
   }
@@ -548,9 +563,14 @@ export function createAdminSearchService(input: Readonly<{
     const configuration = providerModelConfiguration(model.activeConfig);
     if (
       !configuration ||
-      clientSearchKind(configuration.adapterKind) !== draftClientSearchKind(draft) ||
-      !compatibleTechnicalAdapter(draft.protocol, configuration.adapterKind) ||
-      configuration.capabilities.nativeSearch !== true
+      // The DeepSeek Search API is offered beside a DeepSeek model's own
+      // Search kind: any DeepSeek answer model may carry the connection key.
+      draft.protocol !== "deepseek_search_api" &&
+        clientSearchKind(configuration.adapterKind) !== draftClientSearchKind(draft) ||
+      !technicalSearchModelSupports(draft.protocol, {
+        adapterKind: configuration.adapterKind,
+        nativeSearch: configuration.capabilities.nativeSearch
+      })
     ) {
       throw new AdminSearchServiceError("search_provider_model_not_available");
     }
@@ -754,9 +774,25 @@ export function createAdminSearchService(input: Readonly<{
         return integration ? [integration] : [];
       }),
       policy: searchPolicy,
-      providerModels: runtimeModels.flatMap((model) => {
-        const searchKind = clientSearchKind(model.adapterKind);
-        return model.nativeSearch && searchKind
+      providerModels: [
+        ...runtimeModels.flatMap((model) => {
+          const searchKind = clientSearchKind(model.adapterKind);
+          return model.nativeSearch && searchKind
+            ? [{
+                connectionDisplayName: model.connectionDisplayName,
+                connectionId: model.connectionId,
+                displayName: model.displayName,
+                enabled: model.enabled,
+                id: model.id,
+                responseTimeoutSeconds: model.responseTimeoutSeconds,
+                searchReasoningSupported: model.searchReasoningSupported,
+                searchKind
+              }]
+            : [];
+        }),
+        // After every model's own Search kind: a DeepSeek model also carries
+        // its connection key for the DeepSeek Search API.
+        ...runtimeModels.flatMap((model) => technicalSearchModelSupports("deepseek_search_api", model)
           ? [{
               connectionDisplayName: model.connectionDisplayName,
               connectionId: model.connectionId,
@@ -764,11 +800,11 @@ export function createAdminSearchService(input: Readonly<{
               enabled: model.enabled,
               id: model.id,
               responseTimeoutSeconds: model.responseTimeoutSeconds,
-              searchReasoningSupported: model.searchReasoningSupported,
-              searchKind
+              searchReasoningSupported: false,
+              searchKind: "deepseek_search_api" as const
             }]
-          : [];
-      })
+          : [])
+      ]
     };
   }
 
@@ -786,7 +822,9 @@ export function createAdminSearchService(input: Readonly<{
         executionModes: integration.executionModes,
         kind: integration.kind === "perplexity_search"
           ? "perplexity_tool_search" as const
-          : integration.kind,
+          : integration.kind === "deepseek_search_api"
+            ? "web_search" as const
+            : integration.kind,
         strategyId: integration.strategyId
       }));
     const plan: SearchPlan = decoded.plan;
@@ -909,8 +947,8 @@ export function createAdminSearchService(input: Readonly<{
     let outcome: Awaited<ReturnType<AdminSearchTester["test"]>>;
     try {
       outcome = await input.tester.test({ draft, userId, ...(signal ? { signal } : {}) });
-    } catch {
-      throw new AdminSearchServiceError("search_test_failed");
+    } catch (error) {
+      throw new AdminSearchServiceError(checkFailureCode(error));
     }
     const binding = searchProbeBinding(outcome.probeBinding);
     const sourceUrlsUnavailable = draft.protocol === "deepseek_responses_web_search" &&
@@ -1275,8 +1313,8 @@ export function createAdminSearchService(input: Readonly<{
     }>;
     try {
       outcome = await input.tester.test({ draft: editable.draft, userId: args.userId });
-    } catch {
-      throw new AdminSearchServiceError("search_test_failed");
+    } catch (error) {
+      throw new AdminSearchServiceError(checkFailureCode(error));
     }
     if (
       outcome.probeBinding.providerModelId !== editable.draft.providerModelId ||
