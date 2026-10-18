@@ -334,8 +334,8 @@ function toolValue(call: Pick<ModelRunToolCall, "result">): ToolValue | null {
 }
 
 const SYMLINK_PROMPT = "This is a test of image analysis in the Workspace. Run exactly these steps: " +
-  "1) With one shell command, create a symbolic link named linked-image.png in your current output directory that points to " +
-  "the attached image file in /workspace/inbox/messages (use ln -s). " +
+  "1) With one shell command, create a symbolic link /workspace/project/linked-image.png that points to " +
+  "the attached image file in /workspace/inbox/messages (use mkdir -p and ln -s; not in the output directory). " +
   "2) Call analyze_image once on the absolute path of linked-image.png, asking which colour fills the image. " +
   "3) If that call fails, follow the hint in its error exactly: copy the image with cp into your current output directory as " +
   "copied-image.png and call analyze_image once on the copy's absolute path. " +
