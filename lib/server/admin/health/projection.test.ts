@@ -57,6 +57,8 @@ describe("admin health projection", () => {
     expect(adminHealthFailureClass("provider_rate_limited", 429, "http")).toBe("quota");
     expect(adminHealthFailureClass("provider_quota_exhausted", 400, "http")).toBe("quota");
     expect(adminHealthFailureClass("provider_server_error", 503, "http")).toBe("provider_error");
+    // An Agent request whose stream named an upstream failure, without a status.
+    expect(adminHealthFailureClass("agent_provider_failed", null, "upstream")).toBe("provider_error");
     expect(adminHealthFailureClass("provider_request_timed_out", null, "deadline")).toBe("timeout");
     expect(adminHealthFailureClass("vision_analysis_timeout", null, null)).toBe("timeout");
     expect(adminHealthFailureClass("provider_http_dns_failed", null, "network")).toBe("network");

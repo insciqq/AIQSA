@@ -11,7 +11,8 @@ import { providerErrorCode, providerErrorCodeOf } from "./providerErrorCode";
 
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
-type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
+type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response" |
+  "upstream" | "authority_expired" | "interrupted";
 type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
 type ProviderStatus = "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
 type ProviderCause = "max_output_tokens" | "content_filter";
@@ -355,6 +356,16 @@ type ObservedFailure = Readonly<{
   provider_error_code?: string;
 }>;
 
+/** Why an Agent run or its model request ended, named by its failure code:
+ * the provider failed, the run's authority (lease) ended, its user stopped
+ * it, or the request was interrupted. */
+const agentFailureReasons: Readonly<Record<string, FailureReason>> = {
+  agent_provider_failed: "upstream", agent_search_failed: "upstream",
+  agent_authority_expired: "authority_expired",
+  agent_run_cancelled: "cancelled",
+  agent_provider_interrupted: "interrupted", agent_execution_interrupted: "interrupted"
+};
+
 const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]);
 type ProviderHttpFailureClass = "provider_auth_rejected" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_server_error";
 
@@ -444,7 +455,7 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
         ? "invalid_response"
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
-        ? "policy" : "unknown";
+        ? "policy" : Object.hasOwn(agentFailureReasons, code) ? agentFailureReasons[code]! : "unknown";
     const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,
       value instanceof GeminiHttpError && ownValue(value, "keyRejected") === true) : null;
     const streamDrop = providerStreamDrop(value);

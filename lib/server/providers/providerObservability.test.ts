@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runWithContext } from "../observability";
+import { logEvent, runWithContext } from "../observability";
+import { AgentExecutionError } from "../agents/failures";
 import {
   observedFailure,
   observedFailureWithoutHttpClass,
@@ -433,5 +434,22 @@ describe("provider diagnostics", () => {
       { stage: "answer", outcome: "failed", code: "provider_response_failed" }
     ]);
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("names why an Agent run ended from its failure code: upstream, authority, Stop or interruption", () => {
+    const reason = (code: string) => observedFailure(new AgentExecutionError(code as never));
+    expect(reason("agent_provider_failed")).toMatchObject({ code: "agent_provider_failed", reason: "upstream" });
+    expect(reason("agent_authority_expired")).toMatchObject({ code: "agent_authority_expired", reason: "authority_expired" });
+    expect(reason("agent_provider_interrupted")).toMatchObject({ code: "agent_provider_interrupted", reason: "interrupted" });
+    expect(reason("agent_execution_interrupted")).toMatchObject({ reason: "interrupted" });
+    expect(observedFailure(Object.assign(new Error("x"), { code: "agent_run_cancelled" }))).toMatchObject({ reason: "cancelled" });
+    // Codes that name their own cause keep their reason or none.
+    expect(reason("agent_provider_dns_failed")).toMatchObject({ reason: "network" });
+    expect(reason("agent_time_limit")).toMatchObject({ code: "agent_time_limit", reason: "unknown" });
+    const records = capture();
+    runWithContext({ trace_id: "2".repeat(32), run_id: "run-agent" }, () => logEvent("run_execution", { run_id: "run-agent",
+      stage: "execution", outcome: "failed", code: "agent_provider_failed", reason: "upstream" }));
+    expect(records()).toEqual([expect.objectContaining({ event: "run_execution", level: "error", code: "agent_provider_failed",
+      reason: "upstream" })]);
   });
 });
