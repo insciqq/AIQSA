@@ -48,6 +48,7 @@ import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import { GeminiInteractionsStreamError } from "../providers/geminiInteractionsStreamError";
 import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanResult, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
+import { mcpOversizedResponseMessage } from "../../contracts/mcpToolFailure";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import { mcpDispatchError } from "../mcp/dispatchStatus";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
@@ -7722,10 +7723,14 @@ describe("run execution", () => {
       }
       return providerResult({ finalText: "Safe completion", usage: usage(1, 1, 0) });
     });
-    const overflow = new McpClientSessionError({ code, operation });
+    const overflow = new McpClientSessionError({ code, maxBytes: 16 * 1_024 * 1_024, operation });
     for (const [key, value] of Object.entries(prohibitedMarkers)) {
       Object.defineProperty(overflow, key, { enumerable: true, value });
     }
+    // An over-bound call result tells the model how to ask for less.
+    const modelText = `Tool failed: ${code === "mcp_call_result_too_large"
+      ? mcpOversizedResponseMessage(16 * 1_024 * 1_024) : overflow.message}`;
+    if (code === "mcp_call_result_too_large") expect(modelText).toContain("larger than 16 MiB");
     const mcpRuntime: NonNullable<RunExecutionInput["mcpRuntime"]> = {
       async callTool() {
         throw overflow;
@@ -7757,7 +7762,7 @@ describe("run execution", () => {
     if (!settledCall?.result) throw new Error("expected persisted overflow result");
     expect(settledCall.result).toMatchObject({
       callId: "overflow-call",
-      content: [{ text: `Tool failed: ${overflow.message}`, type: "text" }],
+      content: [{ text: modelText, type: "text" }],
       name: namespacedName,
       rawPreview: {
         finalProviderResponsePreview: { code, error: overflow.message },
@@ -7784,7 +7789,7 @@ describe("run execution", () => {
       },
       {
         call_id: "overflow-call",
-        output: `Tool failed: ${overflow.message}`,
+        output: modelText,
         type: "function_call_output"
       }
     ]);
