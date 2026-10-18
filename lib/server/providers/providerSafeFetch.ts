@@ -10,6 +10,7 @@ import {
   normalizeProviderConnectionConfiguration,
   type ProviderConnectionConfiguration
 } from "./providerConfiguration";
+import { withProviderTransport } from "./providerObservability";
 
 export type ProviderSafeFetchErrorCode =
   | "provider_http_address_forbidden"
@@ -133,7 +134,7 @@ export async function providerSafeFetch(
   }
 
   try {
-    return await mcpSafeFetch(
+    return await withProviderTransport(() => mcpSafeFetch(
       input,
       { ...init, redirect: "error" },
       {
@@ -146,7 +147,7 @@ export async function providerSafeFetch(
         requestBodyMaxBytes:
           options.requestBodyMaxBytes ?? PROVIDER_HTTP_REQUEST_MAX_BYTES
       }
-    );
+    ));
   } catch (error) {
     if (error instanceof McpSafeFetchError) {
       throw mapSafeFetchError(error);
