@@ -272,7 +272,8 @@ test("Admin Search Add source offers the DeepSeek Search API on a DeepSeek conne
     const sheet = page.getByRole("dialog", { name: "Add source" });
     await expect(sheet).toBeVisible();
     const optionLabel = `${connectionName} Search API · key via ${modelName}`;
-    const searchModel = sheet.getByRole("combobox", { exact: true, name: "Search model" });
+    // The select's accessible name also carries its selected option, so it is found by its label.
+    const searchModel = sheet.locator("label").filter({ has: page.locator("span", { hasText: /^Search model$/u }) }).locator("select");
     // Synthetic names only: which Search model choices the admin catalog offers, for a failed lookup.
     const offered = (await (await page.request.get("/api/admin/search")).json() as { search?: { providerModels?: Array<{
       connectionDisplayName: string; displayName: string; enabled: boolean; searchKind: string }> } }).search?.providerModels ?? [];

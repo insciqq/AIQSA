@@ -470,7 +470,7 @@ async function publishMcpServer(request: APIRequestContext, endpoint: MutableMcp
 }
 
 const MCP_PROMPT = "This is a test with one synthetic mail service. First call read_thread exactly once with id T-1. " +
-  "If that call fails, call read_message exactly once with id M-1 instead. Do not call any other tool and do not call any tool twice. " +
+  "Then, whatever read_thread returned (also if it failed or told you to request less data), call read_message exactly once with id M-1. Do not call any other tool and do not call any tool twice. " +
   "Then reply in one short sentence saying which call returned text.";
 
 test("MCP: an over-bound tools/call fails alone with its hint while the next call on the server succeeds in the same run", async ({ request }, testInfo) => {
@@ -689,7 +689,8 @@ async function deepSeekSearchApiSource(page: Page, connectionId: string, summary
     await expect(add).toBeEnabled({ timeout: 60_000 });
     await add.click();
     const sheet = page.getByRole("dialog", { name: "Add source" });
-    const searchModel = sheet.getByRole("combobox", { exact: true, name: "Search model" });
+    // The select's accessible name also carries its selected option, so it is found by its label.
+    const searchModel = sheet.locator("label").filter({ has: page.locator("span", { hasText: /^Search model$/u }) }).locator("select");
     const option = searchModel.locator("option").filter({ hasText: `${connectionName} Search API · key via ` }).first();
     await expect(option).toBeAttached();
     await searchModel.selectOption({ label: (await option.textContent())!.trim() });
