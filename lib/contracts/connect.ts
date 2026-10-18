@@ -693,6 +693,48 @@ export const connectViewStreamEventSchema = z.discriminatedUnion("event", [
 export type ConnectViewStreamEvent = z.infer<typeof connectViewStreamEventSchema>;
 export type ConnectViewStreamEventName = ConnectViewStreamEvent["event"];
 
+/** HTTP status of each refusal; the body is always `{code}`. Clients decide by `code`, not by status. */
+export const CONNECT_REASON_HTTP_STATUS = Object.freeze({
+  connect_disabled: 403,
+  connect_unauthorized: 401,
+  connect_device_offline: 409,
+  connect_device_timeout: 504,
+  connect_device_limit: 409,
+  connect_session_limit: 409,
+  connect_view_limit: 409,
+  connect_session_not_found: 404,
+  connect_cwd_invalid: 422,
+  connect_client_outdated: 426,
+  /** One neutral answer for unknown, expired, consumed and already decided pairing codes. */
+  connect_pairing_expired: 404,
+  connect_rate_limited: 429,
+  connect_input_too_large: 413,
+  connect_stream_required: 409,
+  connect_unsupported: 501,
+  connect_client_unavailable: 503,
+  /** One answer for unknown and foreign devices, sessions and views, for admins too. */
+  connect_not_found: 404,
+  connect_request_invalid: 400,
+  connect_device_error: 502
+} satisfies Record<ConnectReasonCode, number>);
+
+// Admin policy `/api/admin/connect` (admin cookie session; errors use the admin `{error}` convention).
+export const CONNECT_ADMIN_POLICY_PATH = "/api/admin/connect";
+export const CONNECT_ADMIN_POLICY_CONFLICT_ERROR = "connect_policy_version_conflict";
+export const connectAdminPolicySchema = z.strictObject({
+  enabled: z.boolean(),
+  version: boundedInt(1, Number.MAX_SAFE_INTEGER)
+});
+export const connectAdminPolicyResponseSchema = z.strictObject({ connect: connectAdminPolicySchema });
+/** PATCH body; a stale `expectedVersion` answers 409 `{error: CONNECT_ADMIN_POLICY_CONFLICT_ERROR}`. */
+export const connectAdminPolicyUpdateRequestSchema = z.strictObject({
+  enabled: z.boolean(),
+  expectedVersion: boundedInt(1, Number.MAX_SAFE_INTEGER)
+});
+export type ConnectAdminPolicy = z.infer<typeof connectAdminPolicySchema>;
+export type ConnectAdminPolicyResponse = z.infer<typeof connectAdminPolicyResponseSchema>;
+export type ConnectAdminPolicyUpdateRequest = z.infer<typeof connectAdminPolicyUpdateRequestSchema>;
+
 export const CONNECT_DEVICE_STREAM_EVENTS = ["hello", "command", "ping", "replaced", "closed"] as const satisfies
   readonly ConnectDeviceStreamEventName[];
 export const CONNECT_EVENTS_STREAM_EVENTS = ["devices", "device", "closed", "ping"] as const satisfies
@@ -750,6 +792,7 @@ export const decodeConnectSessionHistoryResponse = decoder(connectSessionHistory
 export const decodeConnectSessionOptionsResponse = decoder(connectSessionOptionsResponseSchema);
 export const decodeConnectRecentDirsResponse = decoder(connectRecentDirsResponseSchema);
 export const decodeConnectViewCreateResponse = decoder(connectViewCreateResponseSchema);
+export const decodeConnectAdminPolicyResponse = decoder(connectAdminPolicyResponseSchema);
 
 const decodeEventsStreamEvent = decoder(connectEventsStreamEventSchema);
 const decodeViewStreamEvent = decoder(connectViewStreamEventSchema);
