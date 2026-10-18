@@ -483,7 +483,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 10 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 11 }
       }
     });
     expect(result.outcome).toBe("ready");
@@ -499,7 +499,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-legacy-choice",
-        selectedModel: { candidateId: "p2-o1", policyVersion: 10 }
+        selectedModel: { candidateId: "p2-o1", policyVersion: 11 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -612,6 +612,45 @@ describe("provider Quick setup service", () => {
     });
     expect(plan.candidates.map(({ candidateId }) => candidateId)).toEqual(["p10-o8", "p2-o2"]);
     expect(plan.grants.map(({ modelId }) => modelId)).toEqual(plan.candidates.map(({ modelId }) => modelId));
+  });
+
+  it("keeps the September DeepSeek Flash slug of an existing OpenRouter Quick model on key replacement", async () => {
+    const replacement = inspection("openrouter", {
+      actingUserDefault: true,
+      configured: true,
+      mode: "replacement",
+      model: {
+        checkedAt,
+        displayName: "DeepSeek V4.1 Flash",
+        id: "00000000-0000-4000-8000-000000001236",
+        templateKey: "openrouter:deepseek/deepseek-v4.1-flash"
+      },
+      quickSetupCredential: { draftVersion: 2, id: "credential-primary" },
+      preservedModels: [{
+        id: "00000000-0000-4000-8000-000000001236",
+        upstreamModelId: "deepseek/deepseek-v4.1-flash"
+      }],
+      state: "ready"
+    });
+    const value = fixture({
+      inspections: { openrouter: replacement },
+      modelIds: ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017"]
+    });
+    await value.service.setup({
+      actor,
+      request: {
+        expectedState: await expectedState(value.service, "openrouter"),
+        provider: "openrouter",
+        secret: "sk-or-replacement"
+      }
+    });
+    const plan = value.commit.mock.calls[0][0];
+    expect(plan).toMatchObject({
+      candidate: { candidateId: "p8-r6", configuration: { upstreamModelId: "deepseek/deepseek-v4.1-flash" } },
+      mode: "replacement",
+      preservedModels: replacement.preservedModels
+    });
+    expect(plan.candidates.map(({ candidateId }) => candidateId)).toEqual(["p11-r17", "p8-r6"]);
   });
 
   it("preserves every currently available model on replacement", async () => {
@@ -952,7 +991,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 10 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 11 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);

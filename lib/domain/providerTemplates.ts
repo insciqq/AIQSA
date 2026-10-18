@@ -26,6 +26,7 @@ export const providerModelTemplateIds = Object.freeze({
   "openrouter:google/gemini-4-argon": "00000000-0000-4000-8000-000000001260",
   "openrouter:anthropic/claude-sonnet-5.5": "00000000-0000-4000-8000-000000001261",
   "openrouter:anthropic/claude-haiku-5.5": "00000000-0000-4000-8000-000000001262",
+  "openrouter:deepseek/deepseek-v4.1-flash-1017": "00000000-0000-4000-8000-000000001263",
   "openrouter:typesafe/jev-1.13": "00000000-0000-4000-8000-000000001245",
   "deepseek:deepseek-flash": "00000000-0000-4000-8000-000000001235",
   "openrouter:deepseek/deepseek-v4.1-flash": "00000000-0000-4000-8000-000000001236",
