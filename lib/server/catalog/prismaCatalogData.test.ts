@@ -731,8 +731,8 @@ describe("prisma catalog data loader", () => {
       sourceConnectionId: "connection-deepseek",
       strategies: [route]
     });
-    const exposed = (tools: boolean) => filterExposedSearchOptions({
-      availableProviderModels: [carrier],
+    const exposed = (tools: boolean, keyCarrier = carrier) => filterExposedSearchOptions({
+      availableProviderModels: [keyCarrier],
       entitlements: entitlements({ searches: ["deepseek-search-api-1"] }),
       exposedProviderModels: [providerModel({
         activeConfig: {
@@ -754,6 +754,8 @@ describe("prisma catalog data loader", () => {
       strategyId: "deepseek-search-api-1"
     })]);
     expect(exposed(false)).toEqual([]);
+    // A removed key takes the source away again, as for the other provider searches.
+    expect(exposed(true, { ...carrier, connection: { ...carrier.connection, credentials: [] } })).toEqual([]);
     // The hosted DeepSeek Search slot never adopts the API's route.
     expect(searchOptionToCatalogEntry(stored("web_search"))?.routes).toEqual([]);
   });
