@@ -423,7 +423,9 @@ describe("SAML assertion consumer service and completion", () => {
       { code: "sign_in_failed", level: "error", outcome: "failed", sign_in_method: "saml", step: "callback" }
     ]);
     expect(records[4]).toMatchObject({ error_class: "Error" });
-    expect(JSON.stringify(records)).not.toMatch(/Ada|example\.test|synthetic|staff|admins|idp\./iu);
+    // The random hex instance id can spell "ada"; only the records' own fields are checked.
+    expect(JSON.stringify(records.map(({ instance_id: _instanceId, ...fields }) => fields)))
+      .not.toMatch(/Ada|example\.test|synthetic|staff|admins|idp\./iu);
   });
 });
 
