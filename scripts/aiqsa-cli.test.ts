@@ -4,6 +4,7 @@ import {
   chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
   symlinkSync, writeFileSync
 } from "node:fs";
+import { createServer, type Server } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -20,6 +21,8 @@ const generatedKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRE
   "AIQSA_S3_SECRET_ACCESS_KEY"];
 const directories: string[] = [];
 let toolbox = "";
+let journalSocket = "";
+let journalServer: Server | undefined;
 
 interface Rule { match: string; exit?: number; stdout?: string; stderr?: string; delay?: number }
 interface Result { status: number | null; stdout: string; stderr: string; output: string }
@@ -53,6 +56,8 @@ class Fixture {
   readonly state = path.join(this.root, "fake-state");
   readonly proc = path.join(this.root, "proc");
   readonly kvm = path.join(this.root, "kvm");
+  // Host root of the journald socket, configuration and journal directories.
+  readonly host = path.join(this.root, "host");
   readonly project: string;
   rules: Rule[] = [];
   env: Record<string, string> = {};
@@ -77,6 +82,40 @@ class Fixture {
     this.tool("ss", 'cat "$FAKE_STATE/ss.out" 2>/dev/null || true');
     this.tool("df", 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 1 1 %s 1%% /\\n" "${FAKE_DF_AVAILABLE:-100000000}"');
     this.tool("systemd-detect-virt", 'echo "${FAKE_VIRT:-none}"; [ "${FAKE_VIRT:-none}" != none ]');
+    // A systemd host by default: journald running, persistent and readable.
+    this.journald(true);
+    this.hostFile("var/log/journal/0123abcd/system.journal", "");
+  }
+
+  hostFile(name: string, body: string): void {
+    mkdirSync(path.dirname(path.join(this.host, name)), { recursive: true });
+    writeFileSync(path.join(this.host, name), body);
+  }
+
+  journald(running: boolean): void {
+    const socket = path.join(this.host, "run/systemd/journal/socket");
+    rmSync(socket, { force: true });
+    if (!running) return;
+    mkdirSync(path.dirname(socket), { recursive: true });
+    symlinkSync(journalSocket, socket);
+  }
+
+  // The resolved Compose configuration with one log driver per service.
+  logDrivers(drivers: Record<string, string>): void {
+    const services = Object.fromEntries(Object.entries(drivers).map(([name, driver]) =>
+      [name, { image: "aiqsa", logging: { driver, options: { tag: "{{.Name}}" } } }]));
+    this.rules.push({ match: " config --format json",
+      stdout: JSON.stringify({ name: "aiqsa-test", services, "x-logging": { driver: "journald" } }, null, 2) + "\n" });
+  }
+
+  journal(lines: string[]): void {
+    writeFileSync(path.join(this.state, "journal.out"), lines.map((line) => `${line}\n`).join(""));
+    this.tool("journalctl", '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_STATE/journalctl.log"\ncat "$FAKE_STATE/journal.out"\n');
+  }
+
+  get journalLog(): string {
+    const log = path.join(this.state, "journalctl.log");
+    return existsSync(log) ? readFileSync(log, "utf8") : "";
   }
 
   tool(name: string, body: string): void {
@@ -137,6 +176,7 @@ class Fixture {
         FAKE_STATE: this.state,
         AIQSA_CLI_KVM_DEVICE: this.kvm,
         AIQSA_CLI_PROC_ROOT: this.proc,
+        AIQSA_CLI_HOST_ROOT: this.host,
         ...this.env,
         ...env
       }
@@ -156,15 +196,25 @@ function expectNoSecrets(output: string, body: string): void {
   }
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   toolbox = mkdtempSync(path.join(os.tmpdir(), "aiqsa-cli-toolbox-"));
   for (const name of toolNames) {
     const found = spawnSync("bash", ["-c", `command -v ${name}`], { encoding: "utf8" }).stdout.trim();
     if (found.startsWith("/")) symlinkSync(found, path.join(toolbox, name));
   }
+  // A real Unix socket: the CLI tests the journald socket with -S.
+  journalSocket = path.join(toolbox, "journal.socket");
+  journalServer = createServer();
+  await new Promise<void>((resolve, reject) => {
+    journalServer!.once("error", reject);
+    journalServer!.listen(journalSocket, resolve);
+  });
 });
 
-afterAll(() => rmSync(toolbox, { recursive: true, force: true }));
+afterAll(async () => {
+  await new Promise<void>((resolve) => journalServer ? journalServer.close(() => resolve()) : resolve());
+  rmSync(toolbox, { recursive: true, force: true });
+});
 
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -216,6 +266,20 @@ describe("configure", () => {
     expect(body.replace(new RegExp(`^(${generatedKeys.join("|")})=.*$`, "gmu"), "$1=")).toBe(template);
     expect(result.stderr).toContain("an unsupported configuration, only for disposable test installations");
     expect(readdirSync(fixture.project).filter((name) => name.startsWith(".env.tmp."))).toEqual([]);
+  });
+
+  it("selects the json-file log fallback only on a host without systemd-journald", () => {
+    const fixture = new Fixture();
+    fixture.journald(false);
+    const result = fixture.run(["configure", "--yes", "--workspace", "off"]);
+    expect(result.status, result.stderr).toBe(0);
+    const body = readFileSync(fixture.file(".env"), "utf8");
+    expect(values(body).COMPOSE_FILE).toBe("compose.yaml:compose.json-file-logging.yaml");
+    expect(body.replace(new RegExp(`^(${generatedKeys.join("|")})=.*$`, "gmu"), "$1="))
+      .toBe(template.replace("# COMPOSE_FILE=compose.yaml:", "COMPOSE_FILE=compose.yaml:"));
+    expect(result.stderr).toContain("This host has no systemd-journald");
+    expect(result.stderr).toContain("lost whenever a container is recreated");
+    expect(template).toContain("\n# COMPOSE_FILE=compose.yaml:compose.json-file-logging.yaml\n");
   });
 
   it("preserves an existing installation byte for byte, also when --workspace is given", () => {
@@ -431,7 +495,66 @@ describe("doctor", () => {
         AIQSA_WORKSPACE_RUNNER_TOKEN: secretOf("TOKEN"), AIQSA_KVM_GID: String(statSync(f.kvm).gid) });
       f.rules.push({ match: " ps -a --format", stdout: `${readyRows}workspace-runner|running|healthy|0|c8\n` },
         { match: " exec -T workspace-runner node", stdout: "200 unavailable workspace_runtime_unavailable\n" });
-    }, expected: [/WARN workspace-runner: runtime unavailable \(workspace_runtime_unavailable\); Workspace is unavailable/u] }
+    }, expected: [/WARN workspace-runner: runtime unavailable \(workspace_runtime_unavailable\); Workspace is unavailable/u] },
+    { name: "journald logs with the default budget and their history", status: 0, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald", postgres: "journald" });
+      f.journal(["2026-10-01T08:00:00+0000 host aiqsa-test-postgres-1[812]: starting", "2026-10-02T08:00:00+0000 host x[1]: later"]);
+    }, expected: [/PASS logs: journald: kept across container recreation in the persistent host journal \(SystemMaxUse=default, 10% of the file system up to 4G\); history since 2026-10-01T08:00:00\+0000\n/u] },
+    { name: "journald selected on a host without systemd-journald", status: 4, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald" });
+      f.journald(false);
+    }, expected: [/FAIL logs: the journald log driver is selected, but this host has no systemd-journald \(\S+\/run\/systemd\/journal\/socket is missing\): containers cannot start/u,
+      /^ {4}COMPOSE_FILE=compose\.yaml:compose\.json-file-logging\.yaml$/mu] },
+    { name: "json-file logs on a journald host", status: 0, setup: (f) => {
+      f.writeEnv({ COMPOSE_FILE: "compose.yaml:compose.json-file-logging.yaml" });
+      f.logDrivers({ app: "json-file", postgres: "json-file" });
+    }, expected: [/WARN logs: json-file: container logs are lost whenever up or upgrade recreates a container; history is not kept/u,
+      /remove compose\.json-file-logging\.yaml from COMPOSE_FILE in \.env/u] },
+    { name: "json-file logs without systemd-journald", status: 0, setup: (f) => {
+      f.writeEnv({ COMPOSE_FILE: "compose.yaml:compose.json-file-logging.yaml" });
+      f.logDrivers({ app: "json-file" });
+      f.journald(false);
+    }, expected: [/WARN logs: json-file \(this host has no systemd-journald\): .*history is not kept/u, /Save the logs you need/u] },
+    { name: "mixed log drivers", status: 0, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald", postgres: "json-file" });
+    }, expected: [/WARN logs: services use the log drivers journald json-file; only journald keeps history/u] },
+    { name: "a volatile host journal", status: 0, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald" });
+      rmSync(path.join(f.host, "var/log/journal"), { recursive: true });
+      f.hostFile("run/log/journal/0123abcd/system.journal", "");
+    }, expected: [/WARN logs: journald, but the host journal is kept in memory only \(Storage=auto without \/var\/log\/journal\): history ends at reboot/u,
+      /printf '\[Journal\]\\nStorage=persistent\\nSystemMaxUse=4G\\nSystemMaxFileSize=128M\\nMaxFileSec=1day\\n' \| sudo tee \/etc\/systemd\/journald\.conf\.d\/50-aiqsa\.conf/u,
+      /sudo systemctl restart systemd-journald/u] },
+    { name: "a journal that stores nothing", status: 0, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald" });
+      f.hostFile("etc/systemd/journald.conf", "[Journal]\n#Storage=auto\nStorage=none\n");
+    }, expected: [/WARN logs: journald, but the host journal discards every line \(Storage=none\): history is not kept/u] },
+    { name: "a small host journal budget", status: 0, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald" });
+      f.hostFile("etc/systemd/journald.conf", "[Journal]\nSystemMaxUse=8G\n");
+      f.hostFile("usr/lib/systemd/journald.conf.d/60-vendor.conf", "[Journal]\nSystemMaxUse=500M\n");
+    }, expected: [/WARN journal-budget: SystemMaxUse=500M may keep less than two weeks of logs; the limit is host-wide/u,
+      /PASS logs: journald: .*\(SystemMaxUse=500M\)/u] },
+    { name: "an /etc drop-in that masks a vendor one", status: 0, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald" });
+      f.hostFile("usr/lib/systemd/journald.conf.d/50-aiqsa.conf", "[Journal]\nSystemMaxUse=100M\n");
+      f.hostFile("etc/systemd/journald.conf.d/50-aiqsa.conf", "[Journal]\nStorage=persistent\nSystemMaxUse=4G\n");
+      f.hostFile("run/systemd/journald.conf.d/10-early.conf", "[Other]\nSystemMaxUse=1M\n");
+    }, expected: [/PASS logs: journald: kept across container recreation in the persistent host journal \(SystemMaxUse=4G\)\n/u] },
+    { name: "a journal this user cannot read", status: 0, setup: (f) => {
+      f.writeEnv();
+      f.logDrivers({ app: "journald" });
+      rmSync(path.join(f.host, "var/log/journal/0123abcd/system.journal"));
+      f.journal(["2026-10-01T08:00:00+0000 host aiqsa-test-app-1[1]: unseen"]);
+    }, expected: [/WARN logs-access: \S+ cannot read the host journal, so \.\/aiqsa\.sh logs --since shows only the current containers/u,
+      /sudo usermod -aG systemd-journal "\$USER"/u, /PASS logs: journald: .*up to 4G\)\n/u] }
   ];
 
   it.each(configCases)("configuration and stack check: $name", ({ setup, expected, status }) => {
@@ -500,6 +623,19 @@ describe("doctor", () => {
 });
 
 describe("up and install", () => {
+  it("refuses journald logging on a host without systemd-journald before any container changes", () => {
+    const fixture = new Fixture();
+    fixture.kvmDevice(0o660);
+    fixture.writeEnv();
+    fixture.logDrivers({ app: "journald" });
+    fixture.journald(false);
+    const result = fixture.run(["up"]);
+    expect(result.status).toBe(4);
+    expect(result.stdout).toContain("FAIL logs: the journald log driver is selected");
+    expect(result.stderr).toContain("Preflight failed");
+    expect(fixture.dockerLog).not.toContain(" up -d");
+  });
+
   it("starts the stack, waits with the timeout and prints no secret", () => {
     const fixture = new Fixture();
     const body = fixture.writeEnv();
@@ -1100,6 +1236,30 @@ describe("restore", () => {
     expectNoSecrets(result.output, body);
   });
 
+  it("refuses a journald backup on a host without systemd-journald and names the fallback", () => {
+    const fixture = new Fixture();
+    const { directory } = makeBackup(fixture);
+    fixture.logDrivers({ app: "journald" });
+    fixture.journald(false);
+    const result = fixture.run(["restore", directory]);
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain("Restore refused: the backup's configuration logs to journald, but this host has no systemd-journald");
+    expect(result.stderr).toContain("COMPOSE_FILE=compose.yaml:compose.json-file-logging.yaml ./aiqsa.sh restore");
+    expect(existsSync(fixture.file(".env"))).toBe(false);
+    expect(fixture.dockerLog).not.toMatch(/ create | up -d/u);
+  });
+
+  it("gives the isolated project json-file logs on a host without systemd-journald", () => {
+    const fixture = new Fixture();
+    const { directory } = makeBackup(fixture, { env: { COMPOSE_FILE: "compose.yaml:compose.json-file-logging.yaml" } });
+    fixture.logDrivers({ app: "json-file" });
+    fixture.journald(false);
+    const result = fixture.run(["restore", directory]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(new RegExp(
+      `-p aiqsa-restore-\\d{14} -f ${fixture.project}/compose.yaml -f \\S+/restore-override.yaml -f ${fixture.project}/compose.json-file-logging.yaml up -d`, "u"));
+  });
+
   it("stops before the real project starts when reconciliation leaves duties and prints the cleanup", () => {
     const fixture = new Fixture();
     const { directory, body } = makeBackup(fixture);
@@ -1219,7 +1379,81 @@ describe("logs", () => {
     expectNoSecrets(result.output, body);
   });
 
+  it("reads a --since/--until window from the host journal, recreated containers included, masked and filtered", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    const password = values(body).AIQSA_POSTGRES_PASSWORD;
+    fixture.logDrivers({ app: "journald", postgres: "journald" });
+    fixture.journal([
+      `2026-10-07T09:30:00+0000 host aiqsa-test-app-1[812]: ${json("error", "run_http_failed", `,"reason":"auth ${password}"`)}`,
+      `2026-10-07T09:31:00+0000 host aiqsa-test-app-1[812]: ${json("info", "run_accepted")}`,
+      `2026-10-07T09:32:00+0000 host aiqsa-test-postgres-1[812]: FATAL:  password authentication failed: ${password}`,
+      `2026-10-07T09:33:00+0000 host aiqsa-test-app-1: ${json("fatal", "process_exit")}`
+    ]);
+    // Durations become absolute epoch seconds, as Compose reads them, not systemd time spans.
+    const ago = (line: string, option: string) => Date.now() / 1000 - Number(new RegExp(`--${option}=@(\\d+)`, "u").exec(line)![1]);
+    const window = fixture.run(["logs", "--since", "2026-10-07T09:00:00Z", "--until", "30m", "app", "postgres"]);
+    expect(window.status, window.stderr).toBe(0);
+    expect(fixture.journalLog).toMatch(new RegExp("^--no-pager --quiet --all --output short-iso COM_DOCKER_COMPOSE_PROJECT=aiqsa-test "
+      + `COM_DOCKER_COMPOSE_SERVICE=app COM_DOCKER_COMPOSE_SERVICE=postgres --since=@${Date.parse("2026-10-07T09:00:00Z") / 1000} --until=@\\d+\n$`, "u"));
+    expect(ago(fixture.journalLog, "until")).toBeGreaterThanOrEqual(1799);
+    expect(ago(fixture.journalLog, "until")).toBeLessThan(1830);
+    expect(window.stdout).toBe([
+      `2026-10-07T09:30:00+0000 aiqsa-test-app-1  | ${json("error", "run_http_failed", ',"reason":"auth ***"')}`,
+      `2026-10-07T09:31:00+0000 aiqsa-test-app-1  | ${json("info", "run_accepted")}`,
+      "2026-10-07T09:32:00+0000 aiqsa-test-postgres-1  | FATAL:  password authentication failed: ***",
+      `2026-10-07T09:33:00+0000 aiqsa-test-app-1  | ${json("fatal", "process_exit")}`
+    ].join("\n") + "\n");
+    expect(fixture.dockerLog).not.toContain(" logs ");
+    const errors = fixture.run(["logs", "--errors", "--since", "1h30m0.5s200ms", "--tail", "50", "-f"]);
+    expect(errors.status, errors.stderr).toBe(0);
+    const follow = fixture.journalLog.split("\n")[1]!;
+    expect(follow).toMatch(/^--no-pager --quiet --all --output short-iso COM_DOCKER_COMPOSE_PROJECT=aiqsa-test --since=@\d+ --lines=50 --follow$/u);
+    expect(ago(follow, "since")).toBeGreaterThanOrEqual(5399);
+    expect(ago(follow, "since")).toBeLessThan(5430);
+    expect(errors.stdout.trimEnd().split("\n")).toEqual([
+      `2026-10-07T09:30:00+0000 aiqsa-test-app-1  | ${json("error", "run_http_failed", ',"reason":"auth ***"')}`,
+      `2026-10-07T09:33:00+0000 aiqsa-test-app-1  | ${json("fatal", "process_exit")}`
+    ]);
+    const untilOnly = fixture.run(["logs", "--until", "2026-10-07"]);
+    expect(untilOnly.status, untilOnly.stderr).toBe(0);
+    expect(fixture.journalLog.split("\n")[2]).toMatch(/ --until=@\d+ --lines=200$/u);
+    const current = fixture.run(["logs", "app"]);
+    expect(current.status, current.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(/ logs --no-color --tail 200 app\n/u);
+    expect(fixture.journalLog.split("\n")).toHaveLength(4);
+    expectNoSecrets(window.output + errors.output, body);
+  });
+
+  it("falls back to the current containers with the reason when the journal cannot be read", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    fixture.logDrivers({ app: "journald" });
+    fixture.journal(["2026-10-07T09:30:00+0000 host aiqsa-test-app-1[812]: unseen"]);
+    rmSync(path.join(fixture.host, "var/log/journal/0123abcd/system.journal"));
+    const result = fixture.run(["logs", "--since", "1h", "app"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/Showing the current containers only: \S+ cannot read the host journal/u);
+    expect(fixture.dockerLog).toMatch(/ logs --no-color --since 1h app\n/u);
+    expect(fixture.journalLog).toBe("");
+  });
+
+  it("passes --since and --until to Compose with json-file logs", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv({ COMPOSE_FILE: "compose.yaml:compose.json-file-logging.yaml" });
+    fixture.logDrivers({ app: "json-file" });
+    fixture.journal([]);
+    const result = fixture.run(["logs", "--since", "2h", "--until", "2026-10-07T10:00:00Z", "app"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(fixture.dockerLog).toMatch(/ logs --no-color --since 2h --until 2026-10-07T10:00:00Z app\n/u);
+    expect(fixture.journalLog).toBe("");
+    expect(result.stderr).toBe("");
+  });
+
   it.each([
+    [["logs", "--until", "yesterday"], "--until must be a duration"],
+    [["logs", "--until", "1h", "--follow"], "--until and --follow are mutually exclusive"],
+    [["health", "--until", "1h"], "--until is not valid for health"],
     [["logs", "--bogus"], "Unknown option: --bogus"],
     [["logs", "--errors", "--warnings"], "mutually exclusive"],
     [["logs", "--tail", "ten"], "--tail must be a line count or all"],
