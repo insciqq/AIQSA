@@ -130,7 +130,7 @@ export async function openRouterConnection(request: APIRequestContext, secret: s
  * when Quick Setup asks for a choice.
  */
 export async function quickSetupConnection(
-  request: APIRequestContext, provider: "openai" | "openrouter", secret: string, prefer: RegExp
+  request: APIRequestContext, provider: "deepseek" | "openai" | "openrouter", secret: string, prefer: RegExp
 ): Promise<string> {
   const existing = readConnections(await (await request.get("/api/admin/providers")).json())
     ?.find((connection) => connection.family === provider && connection.enabled && connection.active &&

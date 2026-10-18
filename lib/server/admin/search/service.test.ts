@@ -1681,6 +1681,65 @@ describe("DeepSeek Search API source", () => {
   });
 
   it.each([
+    { bootstrap: true, enabled: true, label: "provider setup" },
+    { bootstrap: false, enabled: false, label: "Add source on a built-in that setup skipped while switched off" }
+  ])("completes the built-in source with one client route after one check through $label", async ({ bootstrap, enabled }) => {
+    const builtIn = { enabled, id: "00000000-0000-4000-8000-000000001407", optionId: "deepseek-search-api",
+      templateKey: "search:deepseek-search-api" };
+    const technical = deepSeekModel("deepseek-flash", false);
+    const optionCreate = vi.fn(async () => ({}));
+    const optionUpdate = vi.fn(async () => ({}));
+    const strategyCreate = vi.fn(async () => ({}));
+    const revisions = revisionRepository();
+    const tx = {
+      searchPolicy: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      $queryRaw: vi.fn(async () => []),
+      providerModel: { findFirst: vi.fn(async () => technical) },
+      searchIntegrationRevision: revisions,
+      searchOption: {
+        create: optionCreate,
+        findMany: vi.fn(async () => [apiOption([], builtIn)]),
+        findUnique: vi.fn(async () => apiOption([pendingChild(apiDraft, {
+          id: "strategy-api", strategyId: "deepseek-search-api:client"
+        })], builtIn)),
+        update: optionUpdate
+      },
+      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null), update: vi.fn(async () => ({})) }
+    };
+    const test = vi.fn<AdminSearchTester["test"]>(async () => ({
+      method: "provider_search", normalizedSourceCount: 3, probeBinding: apiBinding, protocol: "deepseek_search_api", status: "available"
+    }));
+    const service = createAdminSearchService({
+      idFactory: () => "generated-id",
+      prisma: { ...tx, $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx) } as unknown as PrismaClient,
+      tester: { currentBinding: vi.fn(async () => apiBinding), test }
+    });
+
+    await expect(service.createDraft({ bootstrap, check: true, description: "Ignored for the built-in.",
+      displayName: "Ignored", draft: apiDraft, userId: "admin-1" })).resolves.toEqual({ created: false, id: builtIn.id });
+
+    expect(test).toHaveBeenCalledOnce();
+    expect(optionCreate).not.toHaveBeenCalled();
+    expect(strategyCreate).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
+      adapterKind: "provider_model_client", enabled: true, providerModelId: "deepseek-flash",
+      searchOptionId: builtIn.id, strategyId: "deepseek-search-api:client"
+    }) });
+    expect(revisions.create).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
+      validationEvidence: expect.objectContaining({ method: "provider_search", normalizedSourceCount: 3 })
+    }) });
+    if (bootstrap) {
+      expect(optionUpdate).toHaveBeenCalledWith({ data: { enabled: true }, where: { id: builtIn.id } });
+      expect(tx.searchPolicy.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ defaultPlan: { mode: "all_selected", optionIds: ["deepseek-search-api"] } })
+      }));
+    } else {
+      // The operator's off switch holds until they enable the now ready source.
+      expect(optionUpdate).not.toHaveBeenCalled();
+      expect(tx.searchPolicy.updateMany).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
     [401, "provider_auth_rejected", "search_test_auth_rejected"],
     [402, "provider_quota_exhausted", "search_test_quota_exhausted"]
   ] as const)("names a check refused with HTTP %i for the administrator", async (httpStatus, code, expected) => {

@@ -11,6 +11,7 @@ import {
   searchHeaderStatus,
   searchModelOptionLabel,
   searchModelsReach,
+  searchModelsReachDetail,
   searchSourceStatus,
   selectablePlanSources,
   sourceIdentityFor
@@ -93,6 +94,15 @@ describe("searchModelsReach", () => {
     expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required" }))).toBe("This provider's models");
     expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required", ready: false, readiness: "setup_required" }))).toBe("No Search model yet");
     expect(searchModelsReach(source({ kind: "gemini_google_search", broaderModelSetup: "not_applicable" }))).toBe("Gemini models");
+  });
+
+  it("points a source that is not set up at the action that exists for it", () => {
+    const unready = { ready: false, readiness: "setup_required" as const };
+    expect(searchModelsReachDetail(source(unready))).toContain("in Configure");
+    expect(searchModelsReachDetail(source({ ...unready, configurable: false, kind: "deepseek_search_api" })))
+      .toBe("Adding a key on its provider page sets it up. Add source can also set it up with one of that connection's models.");
+    expect(searchModelsReachDetail(source({ ...unready, configurable: false, kind: "web_search" })))
+      .toBe("Adding a key on its provider page sets it up.");
   });
 });
 
@@ -244,6 +254,11 @@ describe("DeepSeek Search API choices", () => {
     expect(manuallyAddableModels(catalog([])).map(({ id, searchKind }) => `${searchKind}:${id}`))
       .toEqual(["deepseek_search_api:model-flash"]);
     expect(manuallyAddableModels(catalog([apiSource]))).toEqual([]);
+    // A built-in that setup skipped (switched off before the key) has no route
+    // to configure: Add source completes it instead of leaving it stuck.
+    const skipped = { ...apiSource, configurable: false, configuration: null, enabled: false, providerModel: null,
+      ready: false, readiness: "setup_required" as const, system: true };
+    expect(manuallyAddableModels(catalog([skipped])).map(({ id }) => id)).toEqual(["model-flash"]);
     expect(searchModelOptionLabel(carrier)).toBe("DeepSeek Search API · key via DeepSeek V4 Flash");
     expect(sourceIdentityFor(carrier)).toEqual({
       description: "Web results with source links from the DeepSeek Search API.",

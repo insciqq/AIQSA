@@ -43,16 +43,25 @@
  *    probes of the 1017 model (model access, structured output, tool calling,
  *    forced tool call, parallel tool calls, vision, PDF, streaming) and 1
  *    answer request.
- * 6. DeepSeek Search API (DEEPSEEK_API_KEY + codex keys): a keyed native
+ * 6. Built-in DeepSeek Search API (DEEPSEEK_API_KEY + codex keys) on the
+ *    fresh stand: Admin Search lists it as a built-in source needing setup;
+ *    DeepSeek Quick Setup with the key enables it without "Add source"; one
+ *    codex-lb answer with only that source leaves exactly one billed
+ *    `web_search` row. Admin Search is captured before and after on
+ *    desktop, tablet and phone. Bound on DeepSeek: Quick Setup's checks of
+ *    its 2 candidates, its hosted Search check, 1 probe search of the API
+ *    and 1 search in the answer; on codex-lb about 2 answer rounds.
+ * 7. DeepSeek Search API (DEEPSEEK_API_KEY + codex keys): a keyed native
  *    DeepSeek connection with an enabled model is reused (no probe), else
  *    one is made the same way with only DeepSeek V4.1 Flash (at most 8
- *    probes of that model, no Quick Setup); the source is added through
- *    Admin Search "Add source" with at most one request per answer and
- *    enabled; one codex-lb answer with only that source shows cited sources
- *    and leaves exactly one billed `web_search` row. Bound on DeepSeek: at
- *    most 8 model probes (new connection only), 1 probe search on Save and 1
- *    search in the answer; on codex-lb about 2 answer rounds.
- * 7. DeepSeek Search API unbilled paths (DEEPSEEK_API_KEY): straight through
+ *    probes of that model, no Quick Setup), whose setup adds the source after
+ *    one probe search; a source the connection lacks is added through Admin
+ *    Search "Add source" with at most one request per answer and enabled;
+ *    one codex-lb answer with only that source shows cited sources and
+ *    leaves exactly one billed `web_search` row. Bound on DeepSeek: at most
+ *    8 model probes (new connection only), 1 probe search in setup or on
+ *    Save and 1 search in the answer; on codex-lb about 2 answer rounds.
+ * 8. DeepSeek Search API unbilled paths (DEEPSEEK_API_KEY): straight through
  *    the product adapter, one query whose site cannot exist answers as an
  *    unbilled no-results result, and one request with an unknown key is the
  *    free `provider_auth_rejected` (HTTP 401). Bound: 2 requests, none billed
@@ -90,7 +99,8 @@ import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
 import {
-  newExcludedChat, paidEnv, pollUntil, PAID_SETUP_TIMEOUT_MS, PAID_TURN_TIMEOUT_MS, setupCodexLbAnswerModel, waitForCatalogModel,
+  newExcludedChat, paidEnv, pollUntil, PAID_SETUP_TIMEOUT_MS, PAID_TURN_TIMEOUT_MS, quickSetupConnection, setupCodexLbAnswerModel,
+  waitForCatalogModel,
   type PaidAnswerModel
 } from "./support/paidProviders";
 import { disableMemoryRecall, openLastActivity } from "./support/workspace";
@@ -571,6 +581,7 @@ test("MCP: an over-bound tools/call fails alone with its hint while the next cal
 
 type RawCheckRun = Readonly<{
   id?: unknown; results?: Array<{ checks?: Record<string, unknown>; providerModelId?: unknown; state?: unknown }>; state?: unknown;
+  setup?: { search?: unknown; searchResults?: Array<{ name?: unknown; status?: unknown }>; state?: unknown };
 }>;
 type RawCheck = Readonly<{
   credentialVersionId?: unknown; evidence?: { capabilitySetup?: { checks?: Record<string, unknown> } }; modelVersion?: unknown;
@@ -706,7 +717,110 @@ test("OpenRouter DeepSeek V4.1 Flash 1017: the model Check verifies tools and st
   }
 });
 
-// ---------------------------------------------- 6. DeepSeek Search API ---
+// ------------------------------------- 6. DeepSeek Search API built in ---
+
+const BUILT_IN_SEARCH_API = "deepseek-search-api";
+
+function builtInSearchApi(catalog: AdminSearchCatalog): AdminSearchIntegration | null {
+  return catalog.integrations.find((source) => source.strategyId === BUILT_IN_SEARCH_API) ?? null;
+}
+
+/** Admin → Search with the built-in row in view, as viewport shots on desktop, tablet and phone. */
+async function adminSearchShots(page: Page, testInfo: TestInfo, stage: string, sourceId: string): Promise<string[]> {
+  const statuses: string[] = [];
+  for (const [name, viewport] of [["desktop", { height: 900, width: 1440 }], ["tablet", { height: 1024, width: 768 }],
+    ["phone", { height: 844, width: 390 }]] as const) {
+    await page.setViewportSize(viewport);
+    await page.goto("/admin?section=search", { timeout: WARMUP_TIMEOUT_MS });
+    const row = page.getByTestId(`search-source-row-${sourceId}`);
+    await expect(row, "Admin Search lists the built-in DeepSeek Search API").toBeVisible({ timeout: 60_000 });
+    await row.scrollIntoViewIfNeeded();
+    statuses.push(`${name}:${await row.getAttribute("data-search-status")}`);
+    await page.screenshot({ path: testInfo.outputPath(`admin-search-${stage}-${name}.png`) });
+  }
+  await page.setViewportSize({ height: 900, width: 1440 });
+  return statuses;
+}
+
+test("DeepSeek Search API built in: setup with the key enables it without Add source, one billed search", async ({ page }, testInfo) => {
+  const secret = paidEnv("DEEPSEEK_API_KEY");
+  test.skip(!secret, "paid: DEEPSEEK_API_KEY is not set");
+  test.skip(!codexConfigured, "paid: requires CODEX_LB_API_KEY and CODEX_LB_BASE_URL for the answer model");
+  test.setTimeout(45 * 60_000);
+  const summary: Record<string, unknown> = {};
+  let chatId: string | null = null;
+  try {
+    await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
+    await authenticateWithLocalToken(page.request);
+    const request = page.request;
+    const fresh = builtInSearchApi(await searchCatalog(request));
+    Object.assign(summary, { before: fresh && { enabled: fresh.enabled, readiness: fresh.readiness, system: fresh.system,
+      configurable: fresh.configurable } });
+    expect(fresh, "a fresh install lists the built-in source").toBeTruthy();
+    expect(fresh).toMatchObject({ displayName: "DeepSeek Search API", kind: "deepseek_search_api", ready: false,
+      readiness: "setup_required", system: true });
+    summary.beforeShots = await adminSearchShots(page, testInfo, "before", fresh!.id);
+
+    const connectionId = await quickSetupConnection(request, "deepseek", secret!, /flash/iu);
+    summary.templateConnection = connectionId === fresh!.sourceConnectionId;
+    expect(summary.templateConnection, "Quick Setup keyed the source's DeepSeek connection").toBe(true);
+    const source = await pollUntil(120_000, async () => {
+      const current = builtInSearchApi(await searchCatalog(request));
+      return current?.ready && current.configurationActive ? current : null;
+    }, "built_in_search_api_not_ready");
+    Object.assign(summary, { after: { enabled: source.enabled, readiness: source.readiness, system: source.system,
+      check: source.draftTestEvidence && { method: source.draftTestEvidence.method, sources: source.draftTestEvidence.normalizedSourceCount },
+      maxSearchCallsPerAnswer: source.configuration?.maxSearchCallsPerAnswer ?? null },
+    apiSourcesOnConnection: await db().searchOption.count({ where: { kind: "deepseek_search_api", sourceConnectionId: connectionId } }) });
+    expect(source.enabled, "setup enabled the source").toBe(true);
+    expect(source.draftTestEvidence?.method, "setup published it after a live check").toBe("provider_search");
+    expect(summary.apiSourcesOnConnection, "exactly one DeepSeek Search API source on the connection").toBe(1);
+    // The connection's own hosted Search is checked and published too, first, so it takes the untouched default plan.
+    const setup = (await rawConnection(request, connectionId))?.checkRun?.setup;
+    const hosted = (await searchCatalog(request)).integrations.find((entry) => entry.strategyId === "deepseek-native-web-search");
+    const plan = await db().searchPolicy.findUniqueOrThrow({ select: { defaultPlan: true }, where: { id: "installation" } });
+    Object.assign(summary, { setup: setup && { search: setup.search, state: setup.state, searchResults: setup.searchResults },
+      hosted: hosted && { ready: hosted.ready, configurationActive: hosted.configurationActive, broaderModelSetup: hosted.broaderModelSetup },
+      defaultPlan: plan.defaultPlan });
+    expect(setup, "setup checked both DeepSeek Search sources").toMatchObject({ search: "ready", state: "completed", searchResults: [
+      { name: "DeepSeek Search", status: "ready" }, { name: "DeepSeek Search API", status: "ready" }] });
+    expect(hosted, "the hosted DeepSeek Search is published for every chat model").toMatchObject({
+      broaderModelSetup: "ready", configurationActive: true, ready: true });
+    expect(plan.defaultPlan).toMatchObject({ optionIds: ["deepseek-native-web-search"] });
+    summary.afterShots = await adminSearchShots(page, testInfo, "after", source.id);
+
+    const codex = await codexAnswerModel(request);
+    summary.answerModel = codex.upstreamModelId;
+    const catalog = await waitForCatalogModel(request, codex.connectionId, (candidate) => candidate.modelId === codex.modelId &&
+      candidate.searchStrategyIds.includes(BUILT_IN_SEARCH_API));
+    const model: PaidAnswerModel = { ...codex, params: journeyRunParams(catalog, 512) };
+    chatId = await newExcludedChat(request, `Prod 1018 built-in DeepSeek Search ${randomUUID().slice(0, 8)}`);
+    const run = await apiTurn(request, chatId, model, { searchOptionIds: [BUILT_IN_SEARCH_API],
+      blocks: [{ text: ONE_SEARCH_PROMPT, type: "text" }] });
+    const rows = await db().usageEvent.findMany({ where: { modelRunId: run.id, purpose: "web_search" } });
+    Object.assign(summary, { status: run.status, code: runErrorCode(run), webSearchRows: rows.map((row) => ({
+      provider: row.provider, modelId: row.modelId, operationCount: row.operationCount, webSearchCount: row.webSearchCount,
+      estimatedCostMicros: row.estimatedCostMicros })) });
+    expect(run.status, `the answer completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
+    expect(rows, "exactly one web_search usage row").toHaveLength(1);
+    expect(rows[0]).toMatchObject({ estimatedCostMicros: DEEPSEEK_SEARCH_API_COST_MICROS, modelId: DEEPSEEK_SEARCH_API_MODEL,
+      operationCount: 1, provider: "deepseek", webSearchCount: 1 });
+
+    await page.goto(`/c/${chatId}`, { timeout: WARMUP_TIMEOUT_MS });
+    const answer = page.locator('article[data-role="assistant"]').last();
+    const toggle = answer.getByTestId("answer-sources-toggle");
+    await expect(toggle, "the answer shows its sources").toBeVisible({ timeout: 60_000 });
+    await toggle.click();
+    summary.citedSources = await answer.getByTestId("answer-sources").getByRole("link").count();
+    expect(summary.citedSources, "at least one cited source link").not.toBe(0);
+  } finally {
+    await page.goto("about:blank").catch(() => undefined);
+    if (chatId) await deleteOwnedChatPermanently(page.request, chatId, { timeout: 60_000 }).catch(() => undefined);
+    await report(testInfo, "prod_1018_built_in_deepseek_search_api_summary", summary);
+  }
+});
+
+// ---------------------------------------------- 7. DeepSeek Search API ---
 
 async function searchCatalog(request: APIRequestContext): Promise<AdminSearchCatalog> {
   const response = await request.get("/api/admin/search");
@@ -714,12 +828,13 @@ async function searchCatalog(request: APIRequestContext): Promise<AdminSearchCat
   return (await response.json() as { search: AdminSearchCatalog }).search;
 }
 
+/** The connection's set-up API source; a built-in that setup has not completed does not count. */
 function searchApiSource(catalog: AdminSearchCatalog, connectionId: string): AdminSearchIntegration | null {
   return catalog.integrations.find((source) => source.kind === "deepseek_search_api" && source.sourceConnectionId === connectionId &&
-    source.archivedAt === null) ?? null;
+    source.archivedAt === null && source.ready) ?? null;
 }
 
-/** Adds the source through Admin → Search → Add source (Save runs one probe search) and enables it; an existing one is reused. */
+/** Adds the source through Admin → Search → Add source (Save runs one probe search) and enables it; a set-up one is reused. */
 async function deepSeekSearchApiSource(page: Page, connectionId: string, summary: Record<string, unknown>): Promise<AdminSearchIntegration> {
   const existing = searchApiSource(await searchCatalog(page.request), connectionId);
   summary.sourceReused = Boolean(existing);
@@ -825,7 +940,7 @@ test("DeepSeek Search API: one search through the new source, cited sources, one
   }
 });
 
-// ------------------------------- 7. DeepSeek Search API: unbilled real paths ---
+// ------------------------------- 8. DeepSeek Search API: unbilled real paths ---
 
 /** One real request straight through the product adapter and client: the shapes DeepSeek really answers. */
 function directSearchApiRequest(apiKey: string, query: string) {

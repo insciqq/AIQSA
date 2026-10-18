@@ -109,6 +109,18 @@ describe("independent model check feedback", () => {
     expect(restart).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { label: "one source failed beside a ready one", search: "failed" as const, state: "partial" as const,
+      results: [{ name: "DeepSeek Search", status: "ready" as const }, { name: "DeepSeek Search API", status: "failed" as const }],
+      text: "DeepSeek Search API could not be verified. DeepSeek Search is checked and ready. Your saved key and model results are kept." },
+    { label: "every source ready", search: "ready" as const, state: "completed" as const,
+      results: [{ name: "DeepSeek Search", status: "ready" as const }, { name: "DeepSeek Search API", status: "ready" as const }],
+      text: "DeepSeek Search and DeepSeek Search API checked and ready." }
+  ])("names each Search source setup checked: $label", ({ results, search, state, text }) => {
+    fixture(saved, [], { reason: "setup", setup: { defaults: [], search, searchResults: results, state } });
+    expect(screen.getByText(text)).toBeVisible();
+  });
+
   it("keeps the unsaved-defaults copy and Retry for a partial save without the Memory hint", () => {
     fixture(saved, [], { reason: "setup", setup: { defaults: [], search: "ready", state: "partial" } });
     expect(screen.getByText("Some default assignments could not be saved. Retry setup to finish.")).toBeVisible();
