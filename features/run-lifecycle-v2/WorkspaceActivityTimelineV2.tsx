@@ -15,7 +15,8 @@ import {
   aggregateWorkspaceActivityV2,
   workspaceActivityLabelV2,
   workspaceCodeMcpCopyV2,
-  workspaceDurationV2
+  workspaceDurationV2,
+  workspaceOutputSkipsCopyV2
 } from "./workspaceActivityPresentation";
 
 function compactEntries(entries: readonly ThreadWorkspaceActivityEntry[]): { visible: ThreadWorkspaceActivityEntry[]; earlier: number } {
@@ -146,6 +147,7 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
 function PlainRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
   const duration = workspaceDurationV2(entry.durationMs);
   const failure = failureCopy(entry);
+  const skipped = entry.kind === "outputs_export" ? workspaceOutputSkipsCopyV2(entry.skipped) : null;
   return (
     <div className="v2-workspace-row">
       <ActivityMarkV2 phase={entry.kind === "elided" ? "unknown" : entry.phase} />
@@ -153,6 +155,7 @@ function PlainRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
         <span className="v2-workspace-row-label">{workspaceActivityLabelV2(entry)}</span>
         {duration ? <span className="v2-workspace-row-meta">{duration}</span> : null}
         {failure ? <span className="v2-workspace-row-note" role="note">{failure}</span> : null}
+        {skipped ? <span className="v2-workspace-row-note" role="note">{skipped}</span> : null}
         {entry.kind === "workspace_recreated" ? (
           <span className="v2-workspace-row-note" role="note">{WORKSPACE_RECREATED_NOTICE_V2}</span>
         ) : null}

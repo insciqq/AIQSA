@@ -30,6 +30,8 @@ describe("Workspace capability contract", () => {
     expect(text).toContain("Do not claim that a file was created or a check passed until a tool verified it.");
     // Exported files become downloads; nothing suggests they are published as anything more.
     expect(text).toContain("the interface lists successfully exported files as downloads automatically.");
+    // The export skips links and special files; the model is told how to deliver the real file.
+    expect(text).toContain("Links and special files in the output directory are not exported; put real files there (cp -L copies a link's target).");
     expect(text).not.toContain("publishes");
     expect(text).toContain("/workspace/SECRETS.md");
     expect(text).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
@@ -54,6 +56,7 @@ describe("Workspace capability contract", () => {
       expect(text.includes(agent ? "Read messageManifestPath" : "Current message manifest")).toBe(enabled);
       expect(text.includes("Web search is available in this chat as its own tool.")).toBe(enabled);
       expect(text).toContain("Internet inside the workspace: disabled.");
+      expect(text).toContain("Links and special files in the output directory are not exported;");
     }
   });
 
