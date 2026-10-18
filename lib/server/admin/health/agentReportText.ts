@@ -144,6 +144,7 @@ function failureSection(report: HealthFullReport): string[] {
       row.routePath,
       row.status !== null && `status ${row.status}`,
       row.httpStatus !== null && `HTTP ${row.httpStatus}`,
+      row.providerErrorCode && `provider error ${row.providerErrorCode}`,
       row.providerFamily,
       row.toolKind && `tool ${row.toolKind}`
     ]), [...seenParts(row), `version ${row.appVersions.join(", ") || "-"}`])));

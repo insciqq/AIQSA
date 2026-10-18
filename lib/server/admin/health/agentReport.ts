@@ -140,6 +140,8 @@ export type HealthFailureRow = Seen & {
   method: string | null;
   /** See `isUnauthenticatedOrUnknownRoute`: counted apart from users' failures. */
   unauthenticatedOrUnknownRoute: boolean;
+  /** The provider's own reviewed error identity (`server_is_overloaded`, ...; `other` when unreviewed). */
+  providerErrorCode: string | null;
 };
 
 export type HealthTimeoutRow = Seen & {
@@ -546,7 +548,8 @@ const RUN_TOTAL_QUERY = {
 
 function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[] {
   const key = (row: TelemetryCounterGroup) => JSON.stringify(["event", "level", "code", "subsystem", "stage", "reason", "routePath",
-    "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "method"].map((name) => row.group[name as keyof typeof row.group] ?? null));
+    "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "method", "provider_error_code"]
+    .map((name) => row.group[name as keyof typeof row.group] ?? null));
   return groupRows(rows, key).map((group): HealthFailureRow => {
     const first = group[0]!.group;
     return {
@@ -566,7 +569,8 @@ function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[]
       appVersions: [...new Set(group.map((row) => text(row.group.appVersion)).filter((value): value is string => value !== null))].sort(),
       method: text(first.method),
       unauthenticatedOrUnknownRoute: isUnauthenticatedOrUnknownRoute({ event: text(first.event) ?? "unknown",
-        routePath: text(first.routePath), method: text(first.method), status: integer(first.status) })
+        routePath: text(first.routePath), method: text(first.method), status: integer(first.status) }),
+      providerErrorCode: text(first.provider_error_code)
     };
   }).sort(byCount);
 }
@@ -669,7 +673,7 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     counters({ ...base, events: ["run_execution"], dimensions: { outcome: "completed" },
       groupBy: ["stage", "after", "providerFamily", "connectionId", "providerModelId"] }),
     counters({ ...base, levels: ["warn", "error", "fatal"], groupBy: ["event", "level", "code", "subsystem", "stage", "reason",
-      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion", "method"] }),
+      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion", "method", "provider_error_code"] }),
     counters({ ...base, events: ["nested_abort"], levels: ["warn"], groupBy: ["layer", "abort_source", "operation", "stage", "providerFamily"] }),
     counters({ ...base, events: ["transport_stage"], dimensions: { category: "timeout" },
       groupBy: ["transport", "stage", "operation", "providerFamily", "code"] }),

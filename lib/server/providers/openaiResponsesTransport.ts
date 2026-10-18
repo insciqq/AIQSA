@@ -24,6 +24,7 @@ import { parseRetryAfterMs } from "../retryAfter";
 import { randomUUID } from "node:crypto";
 import { parseProviderSseStream } from "./sse";
 import { markProviderOutputObserved, markProviderStreamDrop, providerStreamDrop, responsesOutputItem } from "./streamDrop";
+import { inheritProviderErrorCode, markProviderErrorDetail } from "./providerErrorCode";
 
 export type OpenAIResponseObject = Record<string, unknown>;
 
@@ -135,13 +136,16 @@ async function collectStreamedEvents(response: Response, signal: AbortSignal, ti
         : [...items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item) };
     }
     if (payload.type === "error") {
-      // Only the reviewed context-length identity and counts leave the event.
-      const contextLength = providerContextLengthRejection(payload.error && typeof payload.error === "object" &&
-        !Array.isArray(payload.error) ? payload.error as Record<string, unknown> : payload);
+      // Only the reviewed context-length identity and counts, and the
+      // provider's reviewed error identity, leave the event.
+      const detail = payload.error && typeof payload.error === "object" &&
+        !Array.isArray(payload.error) ? payload.error as Record<string, unknown> : payload;
+      const contextLength = providerContextLengthRejection(detail);
       if (contextLength) {
-        throw Object.assign(new Error("openai_response_stream_failed"), { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength });
+        throw markProviderErrorDetail(Object.assign(new Error("openai_response_stream_failed"),
+          { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength }), detail);
       }
-      throw markProviderStreamDrop(new Error("openai_response_stream_failed"), "error_event");
+      throw markProviderErrorDetail(markProviderStreamDrop(new Error("openai_response_stream_failed"), "error_event"), detail);
     }
   }
   throw markProviderStreamDrop(new Error("openai_response_not_completed"), "truncated");
@@ -154,12 +158,14 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
   let unsupportedInput = false;
   let capabilityFailureReason: "refusal" | "budget_exhausted" | undefined;
   let quotaExhausted = false;
+  let decoded: Error | undefined;
   try {
     const text = await readBoundedResponseText(response, { signal });
     try {
       const parsed: unknown = observeJsonParse(response, () => JSON.parse(text));
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         const failure = providerResponseFailure("provider_response_failed", parsed as Record<string, unknown>);
+        decoded = failure;
         failureCode = "code" in failure && typeof failure.code === "string" ? failure.code : undefined;
         contextLength = providerContextLengthFacts(failure);
         unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
@@ -173,13 +179,13 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
     }
   }
 
-  throw Object.assign(new OpenAIHttpError(
+  throw inheritProviderErrorCode(Object.assign(new OpenAIHttpError(
     providerHttpErrorMessage("OpenAI", response.status),
     response.status,
     retryAfterMs
   ), failureCode && response.status !== 401 && response.status !== 403
     ? { code: failureCode, ...contextLength, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}), ...(quotaExhausted ? { quotaExhausted: true } : {}) }
-    : {});
+    : {}), decoded);
 }
 
 /**

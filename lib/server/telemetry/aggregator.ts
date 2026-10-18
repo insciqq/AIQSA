@@ -16,7 +16,7 @@ export const TELEMETRY_DIMENSIONS = Object.freeze([
   "abort_source", "action", "adapterKind", "after", "category", "cause", "code", "connectionId", "db_failure", "error_category",
   "error_class", "error_fingerprint", "error_site",
   "httpStatus", "job_kind", "kind", "layer", "method", "mode", "operation", "outcome", "prisma_code", "providerFamily",
-  "providerModelId", "provider_code", "provider_status", "reason", "routePath", "sign_in_method", "stage", "state",
+  "providerModelId", "provider_code", "provider_error_code", "provider_status", "reason", "routePath", "sign_in_method", "stage", "state",
   "status", "step", "stream_drop", "subsystem", "sys_code", "syscall", "termination", "tool_kind", "transport", "work_stage"
 ] as const);
 export type TelemetryDimension = (typeof TELEMETRY_DIMENSIONS)[number];

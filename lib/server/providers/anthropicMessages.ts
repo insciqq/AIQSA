@@ -39,6 +39,7 @@ import {
   providerImageCaption
 } from "./attachmentPayload";
 import { parseSseStream } from "./sse";
+import { markProviderErrorCode, markProviderErrorDetail, providerErrorCodeOfBody } from "./providerErrorCode";
 import {
   addAnthropicMessageUsage,
   addAnthropicWebSearchUsage,
@@ -1150,7 +1151,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             break;
           }
 
-          if (type === "error") throw new Error("anthropic_stream_error");
+          // `{ type: "error", error: { type: "overloaded_error", ... } }`: only the type leaves.
+          if (type === "error") throw markProviderErrorDetail(new Error("anthropic_stream_error"), objectValue(event.error));
           throw new Error("anthropic_stream_event_unsupported");
         }
 
@@ -1239,8 +1241,11 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
   let forcedToolUseUnsupported = false;
   let invalidRequest = false;
   let contextLength: ProviderContextLengthCounts | null = null;
+  // The error type (`overloaded_error`, `rate_limit_error`, ...) of any status, for telemetry only.
+  let providerError: string | null = null;
   try {
     const text = await readBoundedResponseText(response, { maxBytes: Math.min(providerResponseMaxBytes(), 64 * 1024), signal });
+    providerError = providerErrorCodeOfBody(text);
     if (response.status === 400) {
       let body: unknown;
       try { body = observeJsonParse(response, () => JSON.parse(text)); } catch { body = null; }
@@ -1257,19 +1262,19 @@ async function throwAnthropicHttpError(response: Response, signal: AbortSignal):
     }
   }
   if (forcedToolUseUnsupported) {
-    throw Object.assign(new Error("provider_capability_unsupported"), {
+    throw markProviderErrorCode(Object.assign(new Error("provider_capability_unsupported"), {
       code: "provider_capability_unsupported", httpStatus: 400, unsupportedCapability: "forcedToolCall"
-    });
+    }), providerError);
   }
   if (contextLength) {
-    throw Object.assign(new Error(providerHttpErrorMessage("Anthropic", response.status)), {
+    throw markProviderErrorCode(Object.assign(new Error(providerHttpErrorMessage("Anthropic", response.status)), {
       code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, httpStatus: response.status, ...contextLength
-    });
+    }), providerError);
   }
-  throw Object.assign(new Error(providerHttpErrorMessage("Anthropic", response.status)), {
+  throw markProviderErrorCode(Object.assign(new Error(providerHttpErrorMessage("Anthropic", response.status)), {
     httpStatus: response.status,
     ...(invalidRequest ? { code: "provider_http_invalid_request" } : {})
-  });
+  }), providerError);
 }
 
 export function createFetchAnthropicMessagesClient(input: {

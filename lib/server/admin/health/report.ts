@@ -413,7 +413,8 @@ export function incidentLines(incident: AdminHealthIncident): string[] {
       : where || null,
     incident.connectionName,
     incident.modelName,
-    incident.httpStatus === null ? null : `HTTP ${incident.httpStatus}`
+    incident.httpStatus === null ? null : `HTTP ${incident.httpStatus}`,
+    detailText("provider_error_code") === null ? null : `provider error ${detailText("provider_error_code")}`
   ].filter((part): part is string => part !== null);
   return [...wrapParts(head, "  ", "  "), ...wrapParts(detail, "      ", " · ")];
 }
