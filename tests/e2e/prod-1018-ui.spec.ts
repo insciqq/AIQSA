@@ -273,6 +273,12 @@ test("Admin Search Add source offers the DeepSeek Search API on a DeepSeek conne
     await expect(sheet).toBeVisible();
     const optionLabel = `${connectionName} Search API · key via ${modelName}`;
     const searchModel = sheet.getByRole("combobox", { exact: true, name: "Search model" });
+    // Synthetic names only: which Search model choices the admin catalog offers, for a failed lookup.
+    const offered = (await (await page.request.get("/api/admin/search")).json() as { search?: { providerModels?: Array<{
+      connectionDisplayName: string; displayName: string; enabled: boolean; searchKind: string }> } }).search?.providerModels ?? [];
+    testInfo.annotations.push({ description: JSON.stringify(offered.map((model) => ({ connection: model.connectionDisplayName,
+      enabled: model.enabled, kind: model.searchKind, model: model.displayName }))), type: "search-models-offered" });
+    console.log(`search-models-offered ${JSON.stringify(offered.map((model) => [model.searchKind, model.enabled, model.connectionDisplayName === connectionName]))}`);
     await expect(searchModel.locator("option", { hasText: optionLabel })).toHaveCount(1);
     await searchModel.selectOption({ label: optionLabel });
     await expect(sheet).toContainText("Searches with the DeepSeek Search API using this connection's key; the model itself is never called.");
