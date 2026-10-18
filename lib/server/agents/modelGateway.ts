@@ -46,8 +46,14 @@ function retryableProviderFailure(error: unknown): boolean {
     ["provider_http_request_failed", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ETIMEDOUT"].includes(facts.code ?? "");
 }
 
+// A transient upstream failure: Codex reconnects instead of the run failing.
+// Overload arrives as a code (codex-lb's `server_is_overloaded`) or as an
+// Anthropic-style error type (`overloaded_error`).
+const RETRYABLE_PROVIDER_EVENT_CODES = new Set(["server_error", "rate_limit_exceeded", "server_is_overloaded",
+  "overloaded_error", "service_unavailable"]);
+
 function providerEventFailure(value: unknown): Error {
-  return record(value) && ["server_error", "rate_limit_exceeded"].includes(String(value.code))
+  return record(value) && (RETRYABLE_PROVIDER_EVENT_CODES.has(String(value.code)) || RETRYABLE_PROVIDER_EVENT_CODES.has(String(value.type)))
     ? new RetryableProviderError("agent_provider_failed") : new Error("agent_provider_failed");
 }
 
@@ -207,7 +213,8 @@ export function createAgentModelGateway(input: Readonly<{
       if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
         await response.body?.cancel().catch(() => undefined);
         await settle("ERROR");
-        if ([408, 429, 500, 502, 503, 504].includes(response.status)) throw new RetryableProviderError("agent_provider_failed");
+        // 529 is an overloaded upstream, like 503.
+        if ([408, 429, 500, 502, 503, 504, 529].includes(response.status)) throw new RetryableProviderError("agent_provider_failed");
         throw new Error("agent_provider_failed");
       }
       events = parseSseStream(response.body, { signal, maxBytes: 64 * 1024 * 1024,
