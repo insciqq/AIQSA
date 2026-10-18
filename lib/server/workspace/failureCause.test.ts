@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { workspaceSandboxName } from "@/lib/domain/workspace";
+import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceSandboxName } from "@/lib/domain/workspace";
 import { serializeEvent } from "../observability/runtime.cjs";
 import { getWorkspaceConfig } from "./config";
 import { workspaceMcpFailure } from "./operationFailure";
@@ -91,11 +91,11 @@ describe("Workspace failure causes from the runner to the app", () => {
   });
 
   it("validates every cause and Workspace operation at the logging leaf", () => {
-    for (const cause of WORKSPACE_FAILURE_CAUSES) {
-      const line = JSON.parse(serializeEvent("tool_execution", { tool_kind: "workspace", stage: "request", outcome: "failed",
-        reason: cause, operation: "sandbox_exec_start" })!) as Record<string, unknown>;
-      expect(line).toMatchObject({ reason: cause, operation: "sandbox_exec_start" });
-    }
+    const line = (reason: string, operation: string) => JSON.parse(serializeEvent("tool_execution", { tool_kind: "workspace",
+      stage: "request", outcome: "failed", reason: reason as never, operation })!) as Record<string, unknown>;
+    for (const cause of WORKSPACE_FAILURE_CAUSES) expect(line(cause, "sandbox_exec_start")).toMatchObject({ reason: cause });
+    // The leaf keeps its own copy of the official tool list; every tool passes.
+    for (const tool of WORKSPACE_MCP_TOOL_ALLOWLIST) expect(line("guest_other", tool)).toMatchObject({ operation: tool });
     const forged = JSON.parse(serializeEvent("tool_execution", { tool_kind: "workspace", stage: "request", outcome: "failed",
       reason: "PRIVATE" as never, operation: "PRIVATE_TOOL" })!) as Record<string, unknown>;
     expect(forged).not.toHaveProperty("reason");
