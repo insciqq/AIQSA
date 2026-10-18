@@ -352,4 +352,15 @@ describe("workspace activity projection", () => {
       type: "artifact"
     })).toBeNull();
   });
+
+  it("carries an export's skipped counts across the durable event boundary and only on the export row", () => {
+    const exported = workspaceLifecycleActivity({ count: 1, durationMs: 40, kind: "outputs_export", ordinal: 2, phase: "succeeded",
+      runId: "run-1", skipped: { link: 2, special: 1 }, startedAt: new Date("2026-10-18T10:00:00.000Z") });
+    expect(exported).toMatchObject({ count: 1, kind: "outputs_export", skipped: { link: 2, special: 1 } });
+    const event = workspaceActivityEvent(exported);
+    expect(projectRunOutputArtifactEvent(event)).toEqual(event);
+    expect(isRunOutputArtifactEvent(event)).toBe(true);
+    expect(workspaceLifecycleActivity({ count: 1, kind: "attachments_prepare", phase: "succeeded", runId: "run-1",
+      skipped: { link: 1 } })).not.toHaveProperty("skipped");
+  });
 });

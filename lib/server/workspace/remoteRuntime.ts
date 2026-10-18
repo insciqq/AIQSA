@@ -18,14 +18,17 @@ import { outputIdentities, parseOutputCaptureRequest, parseWorkspaceFileSelectio
 import { parseSkillBundleRef, parseSkillInitial, skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity, WORKSPACE_SKILLS_DIRECTORY } from "./skillBundles";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, isWorkspaceBrowserSessionFilename } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_BROWSER_SKIP_CODES, type WorkspaceBrowserSkipCode } from "./secrets/browserSession";
+import { decodeWorkspaceOutputSkips } from "@/lib/contracts/workspace";
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
   WORKSPACE_RUNTIME_INVENTORY_STATES,
+  workspaceOutputCollection,
   type WorkspaceRuntimeInventoryInput,
   type WorkspaceRuntimeInventoryPage,
   type WorkspaceBoundTool,
   type WorkspaceExecutionTermination,
+  type WorkspaceOutputCollection,
   type WorkspaceOutputReleaseInput,
   type WorkspaceOutputStream,
   type WorkspaceOperationInput,
@@ -628,7 +631,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     };
   }
 
-  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<WorkspaceOutputCollection> {
     const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
     const value = await this.json(`/v1/sessions/${encodeURIComponent(input.sessionId)}/outputs/list`, {
       body: JSON.stringify({
@@ -647,6 +650,10 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
     if (selection && JSON.stringify(parseWorkspaceFileSelection(value.selection)) !== JSON.stringify(selection)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
+    // Absent from a runner that predates it, or when nothing was skipped.
+    // Selected captures name exact files and never skip.
+    const skipped = value.skipped === undefined ? undefined : decodeWorkspaceOutputSkips(value.skipped);
+    if (skipped === null || (skipped && selection)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     const metadata = value.outputs.map((entry) => outputMetadata(entry, selection !== undefined));
     if (metadata.some((entry) => entry === null)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
@@ -655,8 +662,8 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       JSON.stringify(selection.files.map((file) => `${file.root}/${file.relativePath}`))) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
-    return (metadata as Omit<WorkspaceOutputStream, "body">[])
-      .map((entry) => this.output(input.sessionId, entry, input.signal));
+    return workspaceOutputCollection((metadata as Omit<WorkspaceOutputStream, "body">[])
+      .map((entry) => this.output(input.sessionId, entry, input.signal)), skipped);
   }
 
   async releaseOutputs(input: WorkspaceOutputReleaseInput): Promise<void> {

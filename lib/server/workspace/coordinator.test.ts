@@ -29,7 +29,7 @@ import type {
   WorkspaceRuntime,
   WorkspaceToolResult
 } from "./runtime";
-import { WorkspaceRuntimeError } from "./runtime";
+import { WorkspaceRuntimeError, workspaceOutputCollection } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 import { sameOutputIdentities, type WorkspaceOutputCapture } from "./outputManifest";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
@@ -1502,6 +1502,34 @@ describe("Workspace coordinator incremental staging", () => {
 });
 
 describe("Workspace coordinator export settlement", () => {
+  it("repeats the walk's skipped counts on every export row update while the regular files export", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    const entries: ThreadWorkspaceActivityEntry[] = [];
+    vi.mocked(value.runtime.collectOutputs).mockImplementation(async () =>
+      workspaceOutputCollection([outputStream("report", "report.txt")], { link: 1, special: 1 }));
+    await expect(value.coordinator.finalize({ onActivity: async (entry) => { entries.push(entry); }, runId: value.runId,
+      userId: "user_1", workspace: value.workspace })).resolves.toMatchObject({ status: "complete", files: [{ relativePath: "report.txt" }] });
+    expect(entries.filter((entry) => entry.kind === "outputs_export").map(({ count, phase, skipped }) => ({ count, phase, skipped })))
+      .toEqual([
+        { count: 1, phase: "running", skipped: { link: 1, special: 1 } },
+        { count: 1, phase: "succeeded", skipped: { link: 1, special: 1 } }
+      ]);
+  });
+
+  it.each([[{ link: 1 }, 1], [undefined, 0]] as const)("hands off an export with nothing to transfer and skips %o in %i rows",
+    async (skipped, rows) => {
+      const value = fixture();
+      value.setRuntimeSandboxId("runtime_1");
+      const entries: ThreadWorkspaceActivityEntry[] = [];
+      vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce(workspaceOutputCollection([], skipped));
+      await expect(value.coordinator.handoff({ onActivity: async (entry) => { entries.push(entry); }, runId: value.runId,
+        userId: "user_1", workspace: value.workspace })).resolves.toEqual({ status: "ready" });
+      const exported = entries.filter((entry) => entry.kind === "outputs_export");
+      expect(exported).toHaveLength(rows);
+      if (skipped) expect(exported[0]).toMatchObject({ count: 0, phase: "succeeded", skipped });
+    });
+
   it("recovers owed outputs without requiring current Skill access or changing managed bundles", async () => {
     const value = fixture();
     value.setRuntimeSandboxId("runtime_1");

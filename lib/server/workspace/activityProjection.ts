@@ -11,7 +11,8 @@ import {
   type ThreadWorkspaceActivityEntry,
   type WorkspaceActivityKind,
   type WorkspaceActivityPhase,
-  type WorkspaceErrorCode
+  type WorkspaceErrorCode,
+  type WorkspaceOutputSkips
 } from "@/lib/contracts/workspace";
 import type { ModelRunSseEvent } from "@/lib/domain/modelRunEvents";
 import {
@@ -471,6 +472,8 @@ export function workspaceLifecycleActivity(input: Readonly<{
   ordinal?: number;
   phase: WorkspaceActivityPhase;
   runId: string;
+  /** `outputs_export` only: counts by reason, never names or paths. */
+  skipped?: WorkspaceOutputSkips;
   startedAt?: Date;
 }>): ThreadWorkspaceActivityEntry {
   return {
@@ -480,6 +483,7 @@ export function workspaceLifecycleActivity(input: Readonly<{
     id: workspaceLifecycleEntryId(input.runId, input.kind, input.ordinal),
     kind: input.kind,
     phase: input.phase,
+    ...(input.skipped && input.kind === "outputs_export" ? { skipped: input.skipped } : {}),
     ...(input.startedAt ? { startedAt: input.startedAt.toISOString() } : {})
   };
 }

@@ -42,6 +42,7 @@ import {
   type WorkspaceMcpToolName,
   type WorkspaceStagedAttachmentEntry
 } from "@/lib/domain/workspace";
+import type { WorkspaceOutputSkipReason } from "@/lib/contracts/workspace";
 import { mimeTypeForFileName } from "@/lib/domain/fileTypes";
 import type { WorkspaceConfig } from "./config";
 import { AgentExecutionOutput } from "../agents/executionOutput";
@@ -80,9 +81,11 @@ import {
 import {
   WorkspaceRuntimeError,
   WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE,
+  workspaceOutputCollection,
   type WorkspaceRuntimeInventoryInput,
   type WorkspaceRuntimeInventoryPage,
   type WorkspaceExecutionTermination,
+  type WorkspaceOutputCollection,
   type WorkspaceOutputStream,
   type WorkspaceRuntime,
   type WorkspaceRuntimeHealth,
@@ -1583,7 +1586,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     );
   }
 
-  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+  async collectOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<WorkspaceOutputCollection> {
     const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
     if (selection) {
       const deadline = AbortSignal.timeout(30_000);
@@ -1653,7 +1656,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     await this.outputCaptures().release(input);
   }
 
-  private async collectCurrentOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<readonly WorkspaceOutputStream[]> {
+  private async collectCurrentOutputs(input: Parameters<WorkspaceRuntime["collectOutputs"]>[0]): Promise<WorkspaceOutputCollection> {
     const session = await this.runningSession(input);
     const quiesced = await this.terminateExecutionIds(
       session,
@@ -1667,6 +1670,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     const outputPrefix = `${input.outputDirectory.replace(/\/+$/u, "")}/`;
     const maximumTraversedEntries = Math.max(256, this.config.outputMaxFiles * 16);
     let traversedEntries = 0;
+    const skipped: Partial<Record<WorkspaceOutputSkipReason, number>> = {};
     const visit = async (directory: string) => {
       for (const entry of await fs.list(directory)) {
         traversedEntries += 1;
@@ -1686,6 +1690,14 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         }
         if (entry.kind === "directory") {
           await visit(path);
+          continue;
+        }
+        // A link (to a file or a directory) or a socket, FIFO or device is
+        // never followed, traversed, hashed or read. It is counted by reason
+        // so the run says what it left out; the other files still export.
+        if (entry.kind === "symlink" || entry.kind === "other") {
+          const reason = entry.kind === "symlink" ? "link" : "special";
+          skipped[reason] = (skipped[reason] ?? 0) + 1;
           continue;
         }
         if (entry.kind !== "file") {
@@ -1723,7 +1735,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           .digest("hex"),
         relativePath: file.relativePath
       });
-      return outputs;
+      return workspaceOutputCollection(outputs, skipped);
     } catch (error) {
       if (error instanceof WorkspaceRuntimeError) throw error;
       throw new WorkspaceRuntimeError("workspace_output_export_failed", { factsOf: error });

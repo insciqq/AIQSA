@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getWorkspaceConfig } from "./config";
 import { WorkspaceOutputCaptureStore } from "./outputCapture";
-import type { WorkspaceOutputStream } from "./runtime";
+import { workspaceOutputCollection, type WorkspaceOutputStream } from "./runtime";
 
 const config = getWorkspaceConfig({});
 const input = { capture: { create: true, id: "a".repeat(32) }, modelRunId: "run", outputDirectory: "/workspace/output/run",
@@ -106,6 +106,55 @@ describe("Workspace private output capture", () => {
     expect(recovered.map((entry) => entry.relativePath)).toEqual(["report.txt"]);
     expect(await new Response(recovered[0]!.body).text()).toBe("original");
     expect(collect).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the walk's skipped counts with the capture, so a re-read after restart reports the same skips", async () => {
+    const { store, root } = await fixture();
+    const current = vi.fn(async () => workspaceOutputCollection([output("kept")], { link: 2, special: 1 }));
+    const first = await store.collect(input, current);
+    expect(first.skipped).toEqual({ link: 2, special: 1 });
+    await first[0]!.body.cancel();
+    const session = (await readdir(root))[0]!;
+    const capture = (await readdir(join(root, session)))[0]!;
+    const manifestPath = join(root, session, capture, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    expect(manifest).toEqual({ outputs: [expect.objectContaining({ relativePath: "report.txt" })], skipped: { link: 2, special: 1 } });
+    const lookup = { ...input, capture: { ...input.capture, create: false } };
+    const recovered = await new WorkspaceOutputCaptureStore(root, config).collect(lookup, current);
+    expect(recovered.map((entry) => entry.relativePath)).toEqual(["report.txt"]);
+    expect(recovered.skipped).toEqual({ link: 2, special: 1 });
+    expect(await new Response(recovered[0]!.body).text()).toBe("kept");
+    expect(current).toHaveBeenCalledOnce();
+    // Nothing but links: no bytes to transfer, and the skip still survives a re-read.
+    const linksOnly = { ...input, modelRunId: "links-only" };
+    expect((await store.collect(linksOnly, async () => workspaceOutputCollection([], { link: 1 }))).skipped).toEqual({ link: 1 });
+    const reread = await store.collect({ ...linksOnly, capture: lookup.capture }, current);
+    expect([...reread]).toEqual([]);
+    expect(reread.skipped).toEqual({ link: 1 });
+    for (const tampered of [{ ...manifest, skipped: { link: 0 } }, { ...manifest, skipped: {} }, { outputs: manifest.outputs },
+      { ...manifest, selection: { files: [] } }]) {
+      await writeFile(manifestPath, JSON.stringify(tampered));
+      await expect(store.collect(lookup, current)).rejects.toMatchObject({ code: "workspace_output_export_failed" });
+    }
+    expect(current).toHaveBeenCalledOnce();
+  });
+
+  it("writes the plain identity manifest without skips and refuses skips on a selected capture", async () => {
+    const { store, root } = await fixture();
+    const plain = await store.collect(input, async () => [output("plain")]);
+    expect(plain).not.toHaveProperty("skipped");
+    await plain[0]!.body.cancel();
+    const session = (await readdir(root))[0]!;
+    const capture = (await readdir(join(root, session)))[0]!;
+    expect(Array.isArray(JSON.parse(await readFile(join(root, session, capture, "manifest.json"), "utf8")))).toBe(true);
+    const operation = { owner: "run:producer", generation: 1 };
+    const request = { ...input, capture: { create: true, id: "b".repeat(32) }, operation, selection: {
+      files: [{ root: "project" as const, relativePath: "report.txt" }], producerOperation: operation
+    } };
+    await expect(store.collect(request, async () => workspaceOutputCollection([output("x", "project/report.txt")], { link: 1 })))
+      .rejects.toMatchObject({ code: "workspace_output_export_failed" });
+    await expect(store.collect({ ...request, capture: { ...request.capture, create: false } }, async () => []))
+      .rejects.toMatchObject({ code: "workspace_output_export_failed" });
   });
 
   it("distinguishes captured empty from an absent or interrupted capture", async () => {

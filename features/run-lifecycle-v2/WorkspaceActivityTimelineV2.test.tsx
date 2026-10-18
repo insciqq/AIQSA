@@ -8,6 +8,17 @@ vi.mock("@/components/clipboard/writeClipboardText", () => ({
 }));
 
 describe("WorkspaceActivityTimelineV2", () => {
+  it("says on the export row which output entries were not exported", () => {
+    render(<WorkspaceActivityTimelineV2 activity={{ entries: [
+      { count: 1, durationMs: 400, id: "export", kind: "outputs_export", phase: "succeeded", skipped: { link: 1 } },
+      { count: 0, id: "links-only", kind: "outputs_export", phase: "succeeded", skipped: { link: 2, special: 1 } }
+    ] }} />);
+    expect(screen.getByText("Exported 1 file")).toBeVisible();
+    expect(screen.getByText("1 link not exported")).toBeVisible();
+    expect(screen.getByText("No files exported")).toBeVisible();
+    expect(screen.getByText("2 links and 1 special file not exported")).toHaveAttribute("role", "note");
+  });
+
   it("shows only confirmed failure guidance and keeps command diagnostics collapsed", () => {
     const { container } = render(<WorkspaceActivityTimelineV2 activity={{ entries: [
       { id: "timeout", kind: "command", phase: "failed", command: { preview: "python export.py" }, errorCode: "workspace_tool_timeout" },
