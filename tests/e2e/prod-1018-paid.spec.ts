@@ -581,6 +581,7 @@ test("MCP: an over-bound tools/call fails alone with its hint while the next cal
 
 type RawCheckRun = Readonly<{
   id?: unknown; results?: Array<{ checks?: Record<string, unknown>; providerModelId?: unknown; state?: unknown }>; state?: unknown;
+  setup?: { search?: unknown; searchResults?: Array<{ name?: unknown; status?: unknown }>; state?: unknown };
 }>;
 type RawCheck = Readonly<{
   credentialVersionId?: unknown; evidence?: { capabilitySetup?: { checks?: Record<string, unknown> } }; modelVersion?: unknown;
@@ -774,6 +775,18 @@ test("DeepSeek Search API built in: setup with the key enables it without Add so
     expect(source.enabled, "setup enabled the source").toBe(true);
     expect(source.draftTestEvidence?.method, "setup published it after a live check").toBe("provider_search");
     expect(summary.apiSourcesOnConnection, "exactly one DeepSeek Search API source on the connection").toBe(1);
+    // The connection's own hosted Search is checked and published too, first, so it takes the untouched default plan.
+    const setup = (await rawConnection(request, connectionId))?.checkRun?.setup;
+    const hosted = (await searchCatalog(request)).integrations.find((entry) => entry.strategyId === "deepseek-native-web-search");
+    const plan = await db().searchPolicy.findUniqueOrThrow({ select: { defaultPlan: true }, where: { id: "installation" } });
+    Object.assign(summary, { setup: setup && { search: setup.search, state: setup.state, searchResults: setup.searchResults },
+      hosted: hosted && { ready: hosted.ready, configurationActive: hosted.configurationActive, broaderModelSetup: hosted.broaderModelSetup },
+      defaultPlan: plan.defaultPlan });
+    expect(setup, "setup checked both DeepSeek Search sources").toMatchObject({ search: "ready", state: "completed", searchResults: [
+      { name: "DeepSeek Search", status: "ready" }, { name: "DeepSeek Search API", status: "ready" }] });
+    expect(hosted, "the hosted DeepSeek Search is published for every chat model").toMatchObject({
+      broaderModelSetup: "ready", configurationActive: true, ready: true });
+    expect(plan.defaultPlan).toMatchObject({ optionIds: ["deepseek-native-web-search"] });
     summary.afterShots = await adminSearchShots(page, testInfo, "after", source.id);
 
     const codex = await codexAnswerModel(request);

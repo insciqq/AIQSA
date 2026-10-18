@@ -5,7 +5,7 @@ import { UiV2Button } from "@/components/ui-v2";
 import {
   AdminProviderSetupMemoryHint, AdminProviderSetupResults, CAPABILITY_LABELS, providerSetupNeedsRecovery
 } from "@/components/admin/providers/add/AdminProviderSetupResults";
-import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import type { AdminProviderBootstrapResult, AdminProviderConnection } from "@/lib/contracts/adminProviders";
 import { useState } from "react";
 
 export type AdminProviderCheckBannerProps = Readonly<{
@@ -24,6 +24,22 @@ export type AdminProviderCheckBannerProps = Readonly<{
  * page shows one banner with the count, a bar and `Stop checking`; a run
  * lost to a restart shows the same slot with `Restart`. Single-model checks share the same progress and terminal feedback.
  */
+function names(values: readonly string[]): string {
+  return values.length > 1 ? `${values.slice(0, -1).join(", ")} and ${values.at(-1)}` : values[0] ?? "";
+}
+
+/** The Search sentence of finished setup, naming each source it checked. */
+function searchOutcome(setup: AdminProviderBootstrapResult): string {
+  const ready = setup.searchResults?.filter(({ status }) => status === "ready").map(({ name }) => name) ?? [];
+  const failed = setup.searchResults?.filter(({ status }) => status === "failed").map(({ name }) => name) ?? [];
+  if (setup.search === "failed") {
+    if (!failed.length) return "Search could not be verified.";
+    return `${names(failed)} could not be verified.${ready.length
+      ? ` ${names(ready)} ${ready.length > 1 ? "are" : "is"} checked and ready.` : ""}`;
+  }
+  return ready.length ? `${names(ready)} checked and ready.` : "Search checked and ready.";
+}
+
 export function AdminProviderCheckBanner({ checks, connection, disabled, memoryAssigned, onOpenMemoryRole, selectedCredentialId }: AdminProviderCheckBannerProps) {
   const [stopping, setStopping] = useState(false);
   const run = selectedCredentialId === undefined || checks.run?.credentialId === selectedCredentialId ? checks.run : null;
@@ -94,9 +110,9 @@ export function AdminProviderCheckBanner({ checks, connection, disabled, memoryA
           : retry ? "Some setup work is unfinished." : run.reason === "setup" ? "Automatic setup finished." : "Model checks finished."}</p>
         <p className="mt-1 text-xs leading-5 text-ink-muted">{run.total === 0
           ? "Add a supported model or check which models this key can access."
-          : setup?.search === "failed" ? "Search could not be verified. Your saved key and model results are kept."
+          : setup?.search === "failed" ? `${searchOutcome(setup)} Your saved key and model results are kept.`
           : setup?.state === "partial" ? "Some default assignments could not be saved. Retry setup to finish."
-          : setup?.search === "ready" ? "Search checked and ready."
+          : setup?.search === "ready" ? searchOutcome(setup)
           : run.skipped?.length ? "Some models changed during checking. Recheck to use their current settings."
           : retry ? "Saved capabilities remain available. Retry to finish the interrupted checks or save."
           : `Capabilities for key ${keyLabel(run.credentialId)} are shown with each model.`}</p>

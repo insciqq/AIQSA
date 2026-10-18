@@ -5,7 +5,9 @@ import {
   createDeepSeekResponsesAdapter
 } from "./deepSeekResponses";
 import {
-  createDeepSeekResponsesSearchAdapter
+  buildDeepSeekResponsesSearchRequest,
+  createDeepSeekResponsesSearchAdapter,
+  lowestSupportedDeepSeekSearchEffort
 } from "./deepSeekResponsesSearch";
 import {
   createFetchDeepSeekResponsesClient,
@@ -381,6 +383,32 @@ describe("DeepSeek Responses provider", () => {
     expect(result.artifacts).toMatchObject([{
       data: { payload: { provider: "deepseek", sourceAttribution: "provider_unavailable" } }
     }]);
+  });
+
+  it.each([
+    { efforts: undefined, expected: { effort: "none" }, label: "a row without listed efforts takes the model's lowest level" },
+    { efforts: ["low", "high"], expected: { effort: "low" }, label: "listed efforts win" },
+    { efforts: undefined, expected: undefined, label: "no reasoning sends no effort", reasoning: false }
+  ])("asks DeepSeek Search for the lowest effort: $label", ({ efforts, expected, reasoning = true }) => {
+    // Without an explicit effort DeepSeek thinks by default and often answers
+    // a simple query without searching (observed on deepseek-v4-pro, 2026-10-18).
+    const body = buildDeepSeekResponsesSearchRequest({
+      correlationId: "search-test",
+      query: "OpenAI official website" as ValidatedSearchQuery,
+      searchPolicy: {
+        maxOutputTokens: 1_024,
+        modelCapabilities: { nativePdfInput: false, nativeSearch: true, pdf: true, reasoning,
+          ...(efforts ? { reasoningEfforts: efforts } : {}), vision: false },
+        modelId: "deepseek-v4-pro",
+        provider: "deepseek",
+        reasoningPolicy: "lowest_supported",
+        strategyId: "deepseek-responses-web-search"
+      },
+      strategyId: "deepseek-native-web-search"
+    });
+    expect(body.reasoning).toEqual(expected);
+    expect(lowestSupportedDeepSeekSearchEffort({ nativePdfInput: false, nativeSearch: true, pdf: true, reasoning: true,
+      vision: false }, "custom-deepseek-model")).toBe("none");
   });
 
   it("marks hosted Search artifacts as source-unavailable in ordinary answers", async () => {

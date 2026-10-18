@@ -181,6 +181,7 @@ export function createAdminProviderBootstrap(input: {
     // Setup owns the connection's own Search and, on DeepSeek, the separate
     // DeepSeek Search API source. Each is checked and published on its own.
     for (const searchApi of connection.family === "deepseek" ? [false, true] : [false]) {
+      let name: string | null = null;
       try {
         value.signal.throwIfAborted();
         const search = await input.search.list({ userId: value.userId });
@@ -193,6 +194,7 @@ export function createAdminProviderBootstrap(input: {
         const target = pick(search.providerModels.filter((model) =>
           model.enabled && (model.searchKind === "deepseek_search_api") === searchApi));
         if (!target) continue;
+        name = existing?.displayName ?? `${connection.displayName} ${searchApi ? "Search API" : "Search"}`;
         const draft: AdminSearchDraft = existing?.configurationActive && existing.configuration
           ? existing.configuration : {
             ...adminSearchExecutionDefaults,
@@ -207,20 +209,18 @@ export function createAdminProviderBootstrap(input: {
           await input.search.saveAndCheck({ description: existing.description, displayName: existing.displayName,
             draft, expectedDraftVersion: existing.draftVersion, id: existing.id, signal: value.signal, userId: value.userId });
         } else {
-          await input.search.createDraft({ bootstrap: true, check: true, draft, signal: value.signal, userId: value.userId,
-            ...searchApi ? {
-              description: `Web results with source links from the ${connection.displayName} Search API.`,
-              displayName: `${connection.displayName} Search API`
-            } : {
-              description: `Web search through ${connection.displayName}.`,
-              displayName: `${connection.displayName} Search`
-            } });
+          await input.search.createDraft({ bootstrap: true, check: true, displayName: name, draft, signal: value.signal,
+            userId: value.userId, description: searchApi
+              ? `Web results with source links from the ${connection.displayName} Search API.`
+              : `Web search through ${connection.displayName}.` });
         }
         if (result.search === "skipped") result.search = "ready";
+        (result.searchResults ??= []).push({ name, status: "ready" });
       } catch {
         value.signal.throwIfAborted();
         result.search = "failed";
         result.state = "partial";
+        if (name) (result.searchResults ??= []).push({ name, status: "failed" });
       }
     }
     return result;

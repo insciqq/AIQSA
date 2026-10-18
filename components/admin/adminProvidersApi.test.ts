@@ -65,6 +65,12 @@ describe("admin provider bootstrap result decoding", () => {
   it("rejects a marker on running setup and unknown setup fields", () => {
     expect(isAdminProviderCheckRun(run({ needsConfiguration: ["memory"], state: "running" }))).toBe(false);
     expect(isAdminProviderCheckRun(run({ defaults: [], search: "ready", state: "completed", memory: "missing" }))).toBe(false);
+    expect(isAdminProviderCheckRun(run({ defaults: [], search: "failed", state: "partial",
+      searchResults: [{ name: "DeepSeek Search", status: "ready" }, { name: "DeepSeek Search API", status: "failed" }] }))).toBe(true);
+    for (const searchResults of [[], [{ name: "", status: "ready" }], [{ name: "Search", status: "skipped" }],
+      [{ name: "Search", status: "ready", id: "x" }]]) {
+      expect(isAdminProviderCheckRun(run({ defaults: [], search: "ready", searchResults, state: "completed" }))).toBe(false);
+    }
   });
 });
 

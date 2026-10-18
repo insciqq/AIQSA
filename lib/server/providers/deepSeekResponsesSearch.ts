@@ -1,3 +1,4 @@
+import { resolveProviderModelParameterControls } from "../../domain/catalog";
 import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { dispatchSearchRequest } from "./searchDispatch";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -66,9 +67,23 @@ function policy(request: ProviderSearchRequest) {
   return value;
 }
 
-function lowestSupportedEffort(capabilities: ProviderModelCapabilities): string | undefined {
+/**
+ * The lowest reasoning effort the model takes. DeepSeek rows rarely list their
+ * efforts, so the model's own parameter controls (the composer's levels)
+ * decide. Without an explicit effort DeepSeek thinks by default and then often
+ * answers a simple query without searching.
+ */
+export function lowestSupportedDeepSeekSearchEffort(
+  capabilities: ProviderModelCapabilities,
+  upstreamModelId: string
+): string | undefined {
   if (!capabilities.reasoning) return undefined;
-  const supported = new Set(capabilities.reasoningEfforts ?? []);
+  const supported = new Set(capabilities.reasoningEfforts?.length
+    ? capabilities.reasoningEfforts
+    : resolveProviderModelParameterControls({
+        adapterKind: "deepseek_responses_native", defaultParams: {}, providerFamily: "deepseek",
+        supportsReasoning: true, supportsStreaming: false, upstreamModelId
+      }).reasoningEffort.options);
   return effortOrder.find((effort) => supported.has(effort));
 }
 
@@ -77,7 +92,7 @@ export function buildDeepSeekResponsesSearchRequest(
 ): DeepSeekResponsesSearchRequestBody {
   const configured = policy(request);
   const effort = configured.reasoningPolicy === "lowest_supported"
-    ? lowestSupportedEffort(configured.modelCapabilities)
+    ? lowestSupportedDeepSeekSearchEffort(configured.modelCapabilities, configured.modelId.trim())
     : undefined;
   const body: DeepSeekResponsesSearchRequestBody = {
     input: [{

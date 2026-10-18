@@ -27,6 +27,7 @@ import {
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration
 } from "../../providers/providerConfiguration";
+import { lowestSupportedDeepSeekSearchEffort } from "../../providers/deepSeekResponsesSearch";
 import { lowestSupportedOpenAIResponsesSearchEffort } from "../../providers/openaiResponsesSearch";
 import { observedFailure } from "../../providers/providerObservability";
 import {
@@ -757,9 +758,9 @@ export function createAdminSearchService(input: Readonly<{
           connectionConfiguration,
           configuration
         ) / 1_000,
-        searchReasoningSupported:
-          (configuration.adapterKind === "anthropic_messages" ||
-            configuration.adapterKind === "deepseek_responses_native" ||
+        searchReasoningSupported: configuration.adapterKind === "deepseek_responses_native"
+          ? Boolean(lowestSupportedDeepSeekSearchEffort(configuration.capabilities, configuration.upstreamModelId))
+          : (configuration.adapterKind === "anthropic_messages" ||
             configuration.adapterKind === "openai_responses_native" ||
             configuration.adapterKind === "openai_responses_compatible" ||
             configuration.adapterKind === "gemini_interactions_native") &&
