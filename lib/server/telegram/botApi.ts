@@ -250,7 +250,8 @@ export type TelegramEditMessageReplyMarkupParams = MessageTarget & Markup & Read
 export type TelegramAnswerCallbackQueryParams = Readonly<{ callback_query_id: string; text?: string; show_alert?: boolean }>;
 export type TelegramChatAction = "typing" | "upload_photo" | "upload_document";
 export type TelegramSendFileParams = MessageTarget & Markup & Readonly<{ caption?: string; reply_parameters?: TelegramReplyParameters }>;
-export type TelegramFileInput = Omit<TelegramUploadFile, "field">;
+/** An upload without its multipart field (the method picks it); keeps the buffer-or-stream union. */
+export type TelegramFileInput = TelegramUploadFile extends infer File ? File extends unknown ? Omit<File, "field"> : never : never;
 export type TelegramGetUpdatesParams = Readonly<{
   offset?: number; limit?: number; timeoutSeconds: number; allowedUpdates?: readonly string[];
 }>;
