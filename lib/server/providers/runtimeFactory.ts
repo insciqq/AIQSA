@@ -44,6 +44,7 @@ import {
 import { withTimeoutSignal } from "./network";
 import { effectiveOpenAIBackgroundPollTimeoutMs } from "./openaiBackgroundPolling";
 import { compatibleDroppedRoundDecision } from "./openaiResponsesTransport";
+import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } from "./providerRetry";
 import type { ProviderAdapter, ProviderDroppedRoundRetry, ProviderSearchAdapter } from "./types";
 import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
 import {
@@ -121,7 +122,8 @@ type ProviderRuntimeComponents = Readonly<{
 
 /** Operator decisions 2026-10-08 and 2026-10-15 (PROVIDERS.md): a dropped
  * Codex LB answer round, compaction summary or Vision request is sent at most
- * twice more. */
+ * twice more; since 2026-10-18 one dropped before any output is sent again
+ * within the before-output window. */
 const CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS = 3;
 
 /** Only an accepted codex-lb connection admits the dropped-round retry;
@@ -131,7 +133,8 @@ function droppedRoundRetry(
   options: ProviderRuntimeFactoryOptions
 ): Pick<ProviderRuntimeComponents, "droppedRoundRetry"> {
   return (!options.disableRequestRetries || options.droppedRequestRetry === true) && codexLbConnection(snapshot.connection)
-    ? { droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS } }
+    ? { droppedRoundRetry: { beforeOutput: PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW, decision: compatibleDroppedRoundDecision,
+        maxAttempts: CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS } }
     : {};
 }
 
