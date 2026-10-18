@@ -276,6 +276,47 @@ test("codex-lb Agent run in Workspace writes a file and completes", async ({ pag
   }
 });
 
+test("codex-lb Agent run that leaves links in its output folder completes, exports the file and says the links were skipped", async ({ page }, testInfo) => {
+  test.skip(!codexConfigured, "paid: requires CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
+  test.skip(!workspaceLive, "requires an explicitly disposable KVM Microsandbox topology (AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE)");
+  test.setTimeout(45 * 60_000);
+  const summary: Record<string, unknown> = {};
+  let chatId: string | null = null;
+  try {
+    await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
+    await authenticateWithLocalToken(page.request);
+    await disableMemoryRecall(page);
+    const model = await codexAnswerModel(page.request);
+    summary.model = model.upstreamModelId;
+    const params = await agentParams(page.request, model);
+    chatId = await newExcludedChat(page.request, `Prod 1018 Agent links ${randomUUID().slice(0, 8)}`);
+    const run = await apiTurn(page.request, chatId, model, { agent: true, params, timeoutMs: AGENT_TURN_TIMEOUT_MS, workspace: true,
+      blocks: [{ type: "text", text: "In your current output directory run exactly this one shell command: " +
+        "printf 'PROD-1018\\n' > report.txt && ln -s report.txt report-link.txt && ln -s /workspace/project project-link . " +
+        "Do not run anything else and do not remove the links. Then reply with exactly: AGENT-DONE" }] });
+    Object.assign(summary, { status: run.status, code: runErrorCode(run) });
+    expect(run.status, `the Agent run completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
+    const outputs = await runOutputs(run.id, (names) => names.includes("report.txt"));
+    summary.outputs = outputs.map((row) => row.fileName === "report.txt" ? "report.txt" : "other");
+    expect(outputs.map((row) => row.fileName), "only the regular file is exported").toEqual(["report.txt"]);
+
+    await page.goto(`/c/${chatId}`, { timeout: WARMUP_TIMEOUT_MS });
+    const note = page.getByText("2 links not exported", { exact: true });
+    if (!(await note.isVisible().catch(() => false))) {
+      await page.getByRole("button", { name: /Worked in Workspace/u }).last().click().catch(() => undefined);
+    }
+    await expect(note, "the run's Workspace activity says the links were skipped").toBeVisible({ timeout: 60_000 });
+    summary.noteVisible = true;
+    await page.screenshot({ path: testInfo.outputPath("agent-output-links-skipped-1440x900.png") });
+    await page.setViewportSize({ height: 844, width: 390 });
+    await note.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath("agent-output-links-skipped-390x844.png") });
+  } finally {
+    if (chatId) await cleanupAgentChat(page, chatId);
+    await report(testInfo, "prod_1018_agent_output_links_summary", summary);
+  }
+});
+
 // ------------------------------------------------ 3. Agent Vision capture ---
 
 async function connection(request: APIRequestContext, connectionId: string): Promise<JourneyConnection> {
