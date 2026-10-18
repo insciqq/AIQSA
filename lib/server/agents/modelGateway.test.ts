@@ -159,7 +159,7 @@ describe("Agent model gateway", () => {
     expect(f.onFailure).not.toHaveBeenCalled();
   });
 
-  it.each([408, 429, 500, 502, 503, 504])("permits a native retry for HTTP %s after settling the failed attempt", async (status) => {
+  it.each([408, 429, 500, 502, 503, 504, 529])("permits a native retry for HTTP %s after settling the failed attempt", async (status) => {
     const f = fixture(new Response("PRIVATE_PROVIDER_ERROR", { status }));
     f.store.canRetryProvider.mockResolvedValue(true);
     const response = await f.handle(request());
@@ -185,6 +185,28 @@ describe("Agent model gateway", () => {
     await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
     expect(f.store.settleProvider).toHaveBeenCalledWith(expect.any(String), "ERROR", expect.objectContaining({ totalTokens: 5 }));
     expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["response.failed server_is_overloaded", { type: "response.failed", response: { error: { code: "server_is_overloaded", message: "PRIVATE_ERROR" } } }],
+    ["error event server_is_overloaded", { type: "error", error: { code: "server_is_overloaded", message: "PRIVATE_ERROR" } }],
+    ["top-level error event server_is_overloaded", { type: "error", code: "server_is_overloaded", message: "PRIVATE_ERROR" }],
+    ["error event service_unavailable", { type: "error", error: { code: "service_unavailable", message: "PRIVATE_ERROR" } }],
+    ["error event overloaded_error type", { type: "error", error: { type: "overloaded_error", message: "PRIVATE_ERROR" } }]
+  ])("lets Codex reconnect after an overloaded upstream (%s)", async (_name, event) => {
+    const f = fixture(sse({ type: "response.created", response: { id: "synthetic" } }, event));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
+    expect(f.store.canRetryProvider).toHaveBeenCalledOnce();
+    expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unclassified Responses failure code fatal", async () => {
+    const f = fixture(sse({ type: "response.failed", response: { error: { code: "invalid_prompt", message: "PRIVATE_ERROR" } } }));
+    f.store.canRetryProvider.mockResolvedValue(true);
+    await expect((await f.handle(request())).text()).rejects.toThrow("agent_provider_failed");
+    expect(f.store.canRetryProvider).not.toHaveBeenCalled();
+    expect(f.onFailure).toHaveBeenCalledExactlyOnceWith("agent_provider_failed");
   });
 
   it("does not reconnect after cancellation, lost authority, or an unsettled receipt", async () => {
