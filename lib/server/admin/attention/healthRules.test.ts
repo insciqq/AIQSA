@@ -134,6 +134,12 @@ describe("evaluateHealthRules", () => {
     ]);
   });
 
+  it("names Telegram background failures by their own subsystem", () => {
+    const findings = evaluateHealthRules(rows({ backgroundErrors: [row({ subsystem: "telegram" }, 20, 15)] }), now);
+    expect(findings).toEqual([{ code: "background_failures", subsystem: "telegram", errors: 20 }]);
+    expect(healthAttentionItems(findings, []).map((item) => item.detail)).toEqual(["Telegram · 20 errors in the last hour"]);
+  });
+
   it("reports a tool or job subsystem whose finished operations time out too often over 24 hours", () => {
     const findings = evaluateHealthRules(rows({
       toolOutcomes: [
