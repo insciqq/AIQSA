@@ -146,7 +146,8 @@ function failureSection(report: HealthFullReport): string[] {
       row.httpStatus !== null && `HTTP ${row.httpStatus}`,
       row.providerErrorCode && `provider error ${row.providerErrorCode}`,
       row.providerFamily,
-      row.toolKind && `tool ${row.toolKind}`
+      row.toolKind && `tool ${row.toolKind}`,
+      row.operation && `operation ${row.operation}`
     ]), [...seenParts(row), `version ${row.appVersions.join(", ") || "-"}`])));
 }
 

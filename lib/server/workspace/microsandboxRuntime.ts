@@ -7,7 +7,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { logEvent } from "../observability";
-import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
+import {
+  beginWorkspaceToolStage, observeWorkspaceAbort, retainWorkspaceFailureCause, workspaceFailureCause, workspaceToolFailure,
+  type WorkspaceFailureCause
+} from "./toolObservability";
 import { workspaceMcpFailure } from "./operationFailure";
 import {
   Destination,
@@ -1363,9 +1366,14 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (error instanceof WorkspaceRuntimeError && error.code === "workspace_session_lost") {
         throw new WorkspaceRuntimeError("workspace_session_lost_before_dispatch");
       }
-      throw error;
+      // The guest could not be reached or started: its state, beside the code.
+      throw error instanceof WorkspaceRuntimeError && error.code === "workspace_runtime_unavailable"
+        ? retainWorkspaceFailureCause(error, "state_sandbox_unavailable") : error;
     });
-    const mcp = await this.mcp(session);
+    const mcp = await this.mcp(session).catch((error: unknown) => {
+      // The pinned MCP process could not be opened.
+      throw typeof error === "object" && error !== null ? retainWorkspaceFailureCause(error, "state_mcp_unavailable") : error;
+    });
     const execSessionId = typeof input.arguments.execSessionId === "string"
       ? input.arguments.execSessionId
       : null;
@@ -1434,7 +1442,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
         ? this.config.syncToolTimeoutSeconds * 1_000 : input.originalName === "sandbox_exec_start" ? this.config.turnTimeoutSeconds * 1_000 : undefined;
       logEvent("tool_deadline", { tool_kind: "workspace", configured_timeout_ms: toolTimeoutMs, effective_timeout_ms: toolTimeoutMs,
         request_timeout_ms: requestTimeoutMs });
-      finishRequest = beginWorkspaceToolStage("request");
+      finishRequest = beginWorkspaceToolStage("request", input.originalName);
       const result = await trackedMcpRequest(mcp, () => mcp.client.callTool({
         arguments: boundedArguments,
         name: input.originalName
@@ -1446,7 +1454,7 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       if (input.originalName === "sandbox_exec_start") {
         const failure = workspaceMcpFailure(result, this.config.toolOutputMaxBytes, input.originalName);
         if (failure) {
-          finishRequest({ outcome: "failed", code: failure.errorCode });
+          finishRequest({ outcome: "failed", code: failure.errorCode, reason: workspaceFailureCause(failure) });
           return failure;
         }
         const id = execSessionIdFrom(result);
@@ -1458,7 +1466,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       }
       // Closing an MCP observation cannot discharge descendant ownership.
       const normalized = boundedMcpResult(result, this.config.toolOutputMaxBytes, input.originalName);
-      finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed", code: normalized.errorCode });
+      finishRequest({ outcome: normalized.status === "error" ? "failed" : "completed", code: normalized.errorCode,
+        reason: normalized.status === "error" ? workspaceFailureCause(normalized) : undefined });
       return normalized;
     } catch (error) {
       const timedOut = error instanceof McpError && error.code === ErrorCode.RequestTimeout;
@@ -1467,18 +1476,27 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
       // calls lost with the same transport keep an unknown outcome.
       const overflowed = !controller.signal.aborted && !(error instanceof WorkspaceRuntimeError) &&
         mcp.state.overflow === "sole";
+      // How the channel to the pinned MCP failed, from the SDK's typed codes only.
+      const cause: WorkspaceFailureCause | undefined = error instanceof WorkspaceRuntimeError || controller.signal.aborted ? undefined
+        : timedOut ? "transport_timeout" : overflowed ? "transport_output_limit"
+          : error instanceof McpError && error.code === ErrorCode.ConnectionClosed ? "transport_closed"
+            : error instanceof McpError && error.code === ErrorCode.InvalidParams ? "transport_invalid_request" : "transport_other";
       const facts = timedOut ? { code: "workspace_tool_timeout", reason: "deadline" as const }
         : overflowed ? { code: "workspace_tool_output_limit_exceeded", reason: "safety_limit" as const } : workspaceToolFailure(error);
+      const reason = facts.reason === undefined || facts.reason === "unknown" ? cause ?? facts.reason : facts.reason;
       const outcome = controller.signal.aborted || facts.reason === "cancelled" ? "cancelled" : "failed";
-      if (finishRequest) finishRequest({ outcome, ...facts });
-      else logEvent("tool_execution", { error, tool_kind: "workspace", stage: "admission", outcome, ...facts });
+      if (finishRequest) finishRequest({ outcome, ...facts, reason });
+      else logEvent("tool_execution", { error, tool_kind: "workspace", stage: "admission", outcome, ...facts, reason,
+        operation: input.originalName });
       this.discardClosedMcp(session, mcp);
       if (error instanceof WorkspaceRuntimeError) throw error;
       if (controller.signal.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
-      if (overflowed) throw new WorkspaceRuntimeError("workspace_tool_output_limit_exceeded");
-      if (timedOut) throw new WorkspaceRuntimeError("workspace_tool_timeout");
-      if (error instanceof McpError && error.code === ErrorCode.InvalidParams) throw new WorkspaceRuntimeError("workspace_request_invalid");
-      throw new WorkspaceRuntimeError("workspace_tool_outcome_unknown");
+      if (overflowed) throw retainWorkspaceFailureCause(new WorkspaceRuntimeError("workspace_tool_output_limit_exceeded"), cause);
+      if (timedOut) throw retainWorkspaceFailureCause(new WorkspaceRuntimeError("workspace_tool_timeout"), cause);
+      if (error instanceof McpError && error.code === ErrorCode.InvalidParams) {
+        throw retainWorkspaceFailureCause(new WorkspaceRuntimeError("workspace_request_invalid"), cause);
+      }
+      throw retainWorkspaceFailureCause(new WorkspaceRuntimeError("workspace_tool_outcome_unknown"), cause);
     } finally {
       input.signal?.removeEventListener("abort", abort);
       controller.signal.removeEventListener("abort", onAbort);

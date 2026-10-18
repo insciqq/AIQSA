@@ -239,6 +239,9 @@ const fixtureCounters: Counter[] = [
     httpStatus: 429, provider_error_code: "rate_limit_exceeded", error_fingerprint: "0123456789ab", error_class: "ProviderError",
     error_site: "lib/server/providers/openai.ts:42" }, 2),
   counter("provider_operation", "error", { overflow: true }, 5),
+  // A Workspace operation the runner named the cause of.
+  counter("tool_execution", "error", { tool_kind: "workspace", stage: "request", outcome: "failed", code: "workspace_operation_failed",
+    reason: "guest_operation_failed", operation: "sandbox_fs_read" }, 6),
   // Sign-ins.
   counter("sign_in", "info", { sign_in_method: "oidc", step: "callback", outcome: "succeeded", code: "signed_in" }, 10),
   counter("sign_in", "warn", { sign_in_method: "oidc", step: "callback", outcome: "failed", code: "oidc_state_invalid" }, 2),
@@ -303,6 +306,8 @@ describe("full agent report", () => {
       expect.objectContaining({ code: null, count: 5, overflow: true })
     ]);
     expect(failure("nested_abort")).toEqual([expect.objectContaining({ level: "warn", count: 3 })]);
+    expect(failure("tool_execution")).toEqual([expect.objectContaining({ level: "error", code: "workspace_operation_failed",
+      reason: "guest_operation_failed", operation: "sandbox_fs_read", toolKind: "workspace", count: 6 })]);
     expect(failure("http.request_completed").map((row) => [row.level, row.status, row.routePath])).toEqual([
       ["warn", 404, "/api/chats/[chatId]"], ["error", 502, "/api/runs"]]);
     expect(failure("run_persistence")).toEqual([expect.objectContaining({ level: "error", stage: "complete", count: 1 })]);
@@ -479,7 +484,7 @@ describe("full agent report text", () => {
       "Answer problem reports (2, newest first)",
       "Runs (accepted runs; outcomes counted once per run from its terminal write)",
       "Error groups (class · where in AIQSA; NEW = first seen in this range) (1)",
-      "Failures: warn, error and fatal records by key (17)",
+      "Failures: warn, error and fatal records by key (18)",
       "Timeouts: deadline aborts, transport timeouts, tool and run deadlines (4)",
       "Tool calls by family, then calls that did not complete by code (3)",
       "HTTP: 4xx and 5xx responses and failed requests by route (3)",
@@ -507,7 +512,9 @@ describe("full agent report text", () => {
     expect(text).toContain("  accepted 8: send 5 · regenerate 2 · project 1\n" +
       "  completed 4 · failed 3 (37.5%) · cancelled 1 (12.5%) · stop requests 2\n");
     expect(text).toContain("  run duration      4 measured · p50 ≤ 2.5 s · p95 ≤ 25.0 s · max 25.0 s\n");
-    expect(text).toContain("  WARN   nested_abort · stage delivery · openai\n");
+    expect(text).toContain("  WARN   nested_abort · stage delivery · openai · operation answer\n");
+    expect(text).toContain("  ERROR  tool_execution · code workspace_operation_failed · stage request\n" +
+      "         reason guest_operation_failed · tool workspace · operation sandbox_fs_read\n");
     expect(text).toContain("  ERROR  provider_operation · code provider_rate_limited · stage answer · HTTP 429\n" +
       "         provider error rate_limit_exceeded · openai\n");
     expect(text).toContain('      comment: "It stopped [31m halfway through"\n');

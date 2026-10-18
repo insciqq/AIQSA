@@ -85,6 +85,16 @@ export type DbTransactionJobKind = "MEMORY_COMMAND" | "INDEX_HISTORY" | "EXTRACT
   "VERIFY_CANDIDATE" | "EMBED_ITEMS" | "RECONCILE_BRANCH" | "RECONCILE_SOURCE" | "REBUILD_INDEX" | "RECLASSIFY_FACTS" |
   "RESOLVE_FACT_RELATIONS" | "SYNTHESIZE_MEMORIES";
 export type PushTransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "unknown";
+/**
+ * Why a Workspace tool call failed where its code alone cannot say, as the
+ * runner observed it: the pinned MCP reported the guest operation failed
+ * (`guest_*`, by its envelope code), the runner's channel to that MCP broke
+ * (`transport_*`), or the sandbox or MCP was not available (`state_*`).
+ */
+export type WorkspaceFailureCause =
+  | "guest_operation_failed" | "guest_exec_failed" | "guest_path_denied" | "guest_operation_refused" | "guest_other" | "guest_unparsed"
+  | "transport_timeout" | "transport_closed" | "transport_output_limit" | "transport_invalid_request" | "transport_other"
+  | "state_sandbox_unavailable" | "state_mcp_unavailable";
 export type EventFields = {
   image_execution: CaughtError & Readonly<{
     stage: "input" | "binding" | "run" | "references" | "reference_read" | "reference_validation" | "authorization" |
@@ -138,7 +148,9 @@ export type EventFields = {
   tool_execution: ToolOperationFields & ProviderIdentity & CaughtError & Readonly<{
     tool_kind: ToolKind; stage: "admission" | "execution" | "request" | "result" | "grounding";
     outcome: "started" | "completed" | "failed" | "cancelled" | "degraded";
-    duration_ms?: number; attempt?: number; code?: string; reason?: Reason; httpStatus?: number;
+    duration_ms?: number; attempt?: number; code?: string; reason?: Reason | WorkspaceFailureCause; httpStatus?: number;
+    /** The official Workspace tool a Workspace record ran (`sandbox_shell`, `sandbox_fs_read`, ...). */
+    operation?: string;
     /** Vision phase timings: before the dispatch claim, the provider wait after it, and its deadline. */
     preparation_duration_ms?: number; provider_duration_ms?: number; timeout_ms?: number;
     action?: LifecycleAction; count?: number;

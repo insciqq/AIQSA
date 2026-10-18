@@ -142,6 +142,8 @@ export type HealthFailureRow = Seen & {
   unauthenticatedOrUnknownRoute: boolean;
   /** The provider's own reviewed error identity (`server_is_overloaded`, ...; `other` when unreviewed). */
   providerErrorCode: string | null;
+  /** What the record ran: a Workspace tool (`sandbox_shell`, ...), a provider stage, a timed transaction. */
+  operation: string | null;
 };
 
 export type HealthTimeoutRow = Seen & {
@@ -548,7 +550,7 @@ const RUN_TOTAL_QUERY = {
 
 function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[] {
   const key = (row: TelemetryCounterGroup) => JSON.stringify(["event", "level", "code", "subsystem", "stage", "reason", "routePath",
-    "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "method", "provider_error_code"]
+    "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "method", "provider_error_code", "operation"]
     .map((name) => row.group[name as keyof typeof row.group] ?? null));
   return groupRows(rows, key).map((group): HealthFailureRow => {
     const first = group[0]!.group;
@@ -570,7 +572,8 @@ function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[]
       method: text(first.method),
       unauthenticatedOrUnknownRoute: isUnauthenticatedOrUnknownRoute({ event: text(first.event) ?? "unknown",
         routePath: text(first.routePath), method: text(first.method), status: integer(first.status) }),
-      providerErrorCode: text(first.provider_error_code)
+      providerErrorCode: text(first.provider_error_code),
+      operation: text(first.operation)
     };
   }).sort(byCount);
 }
@@ -673,7 +676,8 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     counters({ ...base, events: ["run_execution"], dimensions: { outcome: "completed" },
       groupBy: ["stage", "after", "providerFamily", "connectionId", "providerModelId"] }),
     counters({ ...base, levels: ["warn", "error", "fatal"], groupBy: ["event", "level", "code", "subsystem", "stage", "reason",
-      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion", "method", "provider_error_code"] }),
+      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion", "method", "provider_error_code",
+      "operation"] }),
     counters({ ...base, events: ["nested_abort"], levels: ["warn"], groupBy: ["layer", "abort_source", "operation", "stage", "providerFamily"] }),
     counters({ ...base, events: ["transport_stage"], dimensions: { category: "timeout" },
       groupBy: ["transport", "stage", "operation", "providerFamily", "code"] }),
