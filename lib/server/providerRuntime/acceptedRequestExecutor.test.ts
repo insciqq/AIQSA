@@ -201,16 +201,24 @@ describe("accepted provider request executor", () => {
     const gateway502 = () => new Response("PRIVATE_GATEWAY_BODY", { status: 502, headers: { "retry-after": "1" } });
     const completed = () => new Response(JSON.stringify({ id: "response-1", model: "gpt-test", output_text: "settled", status: "completed",
       usage: { input_tokens: 40, output_tokens: 6, total_tokens: 46 } }));
-    async function real(replies: readonly (() => Response)[], apiRoot?: string) {
+    /** `requestMs`: how long each request takes on the fake clock. */
+    async function real(replies: readonly (() => Response)[], apiRoot?: string, requestMs = 0) {
       const actual = await vi.importActual<typeof import("../providers/runtimeFactory")>("../providers/runtimeFactory");
       bindingMock.mockImplementation(actual.createProviderRuntimeBinding);
+      const clock = { now: 1_000_000 };
       let index = 0;
-      const fetchFn = vi.fn<typeof fetch>(async () => replies[index++]!());
+      const fetchFn = vi.fn<typeof fetch>(async () => {
+        clock.now += requestMs;
+        return replies[index++]!();
+      });
       const sleeps: number[] = [];
       const usage: unknown[] = [];
       const execute = createAcceptedProviderRequestExecutor({ $transaction: noAuth } as unknown as Pick<PrismaClient, "$transaction">, {
         createFetch: () => fetchFn, disableRequestRetries: true,
-        droppedRequestRetry: { random: () => 0, sleep: async (delayMs) => { sleeps.push(delayMs); } }
+        droppedRequestRetry: { now: () => clock.now, random: () => 0, sleep: async (delayMs) => {
+          sleeps.push(delayMs);
+          clock.now += delayMs;
+        } }
       });
       const run = () => execute(apiRoot ? compatible(apiRoot) : codexLb, compatibleRequest(),
         { onUsage: (value) => usage.push(value) });
@@ -293,11 +301,31 @@ describe("accepted provider request executor", () => {
       expect(call.usage.at(-1)).toEqual(result.usage);
     });
 
-    it("gives up after the third dropped request and keeps other bindings to one request", async () => {
-      const bounded = await real([gateway502, gateway502, gateway502, completed]);
+    it("rides out four 502s within the before-output window, accounting every request", async () => {
+      const call = await real([gateway502, gateway502, gateway502, gateway502, completed]);
+      const result = await call.run();
+      expect(result.finalText).toBe("settled");
+      expect(call.fetchFn).toHaveBeenCalledTimes(5);
+      // About 2, 4 and 8 s at the jitter floor; a 1 s Retry-After never shortens them.
+      expect(call.sleeps).toEqual([1_000, 2_000, 4_000, 8_000]);
+      expect(result.usage).toMatchObject({ completeness: "partial", inputTokens: 40, outputTokens: 6 });
+    });
+
+    it("gives up when the next wait would end after the window", async () => {
+      // Each 502 takes 30 s: the third fails at 93 s, past the 90 s window.
+      const slow = await real([gateway502, gateway502, gateway502, gateway502, completed], undefined, 30_000);
+      await expect(slow.run()).rejects.toMatchObject({ status: 502 });
+      expect(slow.fetchFn).toHaveBeenCalledTimes(3);
+      expect(slow.sleeps).toEqual([1_000, 2_000]);
+      // Each dropped request was reported as its own operation.
+      expect(slow.usage).toHaveLength(2);
+    });
+
+    it("gives up after the sixth dropped request and keeps other bindings to one request", async () => {
+      const bounded = await real([gateway502, gateway502, gateway502, gateway502, gateway502, gateway502, completed]);
       await expect(bounded.run()).rejects.toMatchObject({ status: 502 });
-      expect(bounded.fetchFn).toHaveBeenCalledTimes(3);
-      expect(bounded.sleeps).toHaveLength(2);
+      expect(bounded.fetchFn).toHaveBeenCalledTimes(6);
+      expect(bounded.sleeps).toHaveLength(5);
       const other = await real([gateway502, completed], "http://127.0.0.1:11434/v1");
       await expect(other.run()).rejects.toMatchObject({ status: 502 });
       expect(other.fetchFn).toHaveBeenCalledOnce();

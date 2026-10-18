@@ -5,6 +5,7 @@ import type { NormalizedTokenUsage } from "../../domain/usage";
 import { buildAnthropicMessagesRequest } from "../providers/anthropicMessages";
 import { ProviderRequestTimeoutError } from "../providers/network";
 import { compatibleDroppedRoundDecision, createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
+import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } from "../providers/providerRetry";
 import { markProviderStreamDrop } from "../providers/streamDrop";
 import type { NormalizedSearchPlanOption, ProviderAdapter, ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
@@ -474,13 +475,13 @@ describe("context compaction summarizer", () => {
     const truncated = () => markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
 
     /** Fails the first requests with the given errors after partial output, then answers. */
-    function dropping(failures: readonly unknown[], calls: ProviderRunRequest[]): ContextSummaryAdapter {
+    function dropping(failures: readonly unknown[], calls: ProviderRunRequest[], silent = false): ContextSummaryAdapter {
       let index = 0;
       return { async *stream(next) {
         calls.push(next);
         const failure = failures[index++];
         if (failure !== undefined) {
-          yield { data: { delta: "{\"notes\": \"par" }, type: "token" };
+          if (!silent) yield { data: { delta: "{\"notes\": \"par" }, type: "token" };
           yield { data: { inputTokens: 12 }, type: "usage" };
           throw failure;
         }
@@ -491,14 +492,37 @@ describe("context compaction summarizer", () => {
       } };
     }
 
-    function admitted(adapter: ContextSummaryAdapter, sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>) {
+    function admitted(adapter: ContextSummaryAdapter, sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>, window = false) {
       const observe = vi.fn();
       const sleeps: number[] = [];
+      const clock = { now: 1_000_000 };
       return { observe, sleeps, adapter: { ...adapter, droppedRequestRetry: {
-        policy: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe }, random: () => 0,
-        sleep: sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); })
+        now: () => clock.now,
+        policy: { ...(window ? { beforeOutput: PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } : {}),
+          decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe }, random: () => 0,
+        sleep: sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); clock.now += delayMs; })
       } } satisfies ContextSummaryAdapter };
     }
+
+    it("sends a request dropped before any output again within the before-output window", async () => {
+      const calls: ProviderRunRequest[] = [];
+      const recorded = receipts();
+      const retry = admitted(dropping([await gateway502(), await gateway502(), await gateway502()], calls, true), undefined, true);
+      const summarized = await executeContextSummary({ adapter: retry.adapter, receipts: recorded.hooks, request: request() });
+      expect(summarized.summary.notes).toBe("bounded notes");
+      expect(calls).toHaveLength(4);
+      expect(recorded.settled.map(({ attempt }) => attempt.state)).toEqual(["failed", "failed", "failed", "committed"]);
+      expect(retry.sleeps).toEqual([1_000, 2_000, 4_000]);
+    });
+
+    it("keeps the existing bound for a summary request that streamed text, even with the window", async () => {
+      const calls: ProviderRunRequest[] = [];
+      const retry = admitted(dropping([await gateway502(), truncated(), await gateway502()], calls), undefined, true);
+      await expect(executeContextSummary({ adapter: retry.adapter, request: request() }))
+        .rejects.toMatchObject({ code: "context_compaction_provider_failed" });
+      expect(calls).toHaveLength(3);
+      expect(retry.sleeps).toEqual([125, 250]);
+    });
 
     it.each([
       ["a 502", () => gateway502("1"), 1_000],

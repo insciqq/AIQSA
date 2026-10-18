@@ -12,7 +12,8 @@ import {
 import { calculateContextBudgetLimits } from "../../domain/contextBudget";
 import { createCompatibleResponsesAdapter } from "../providers/compatibleResponses";
 import { compatibleDroppedRoundDecision, createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
-import { sleepWithSignal } from "../providers/providerRetry";
+import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW, sleepWithSignal } from "../providers/providerRetry";
+import { providerHttpFailureMessage } from "../providers/providerObservability";
 import { providerStreamDrop } from "../providers/streamDrop";
 import { anthropicMessagesToolBridge, geminiInteractionsToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import { runProviderToolLoop, toolSynthesisDecision } from "./providerToolLoop";
@@ -2067,6 +2068,14 @@ describe("dropped Codex LB round retry", () => {
       { headers: { "content-type": "application/json" }, status: 502 }),
     "502_retry_after": () => new Response("{}", { headers: { "retry-after": "2" }, status: 502 }),
     "502_retry_after_long": () => new Response("{}", { headers: { "retry-after": "301" }, status: 502 }),
+    "502_retry_after_100": () => new Response("{}", { headers: { "retry-after": "100" }, status: 502 }),
+    "502_overloaded": () => new Response(JSON.stringify({ error: { code: "server_is_overloaded", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }),
+      { headers: { "content-type": "application/json" }, status: 502 }),
+    "503": () => new Response("{}", { status: 503 }),
+    silent_truncated: () => sse([created("resp-drop")]),
+    silent_overloaded: () => sse([created("resp-drop"),
+      { code: "server_is_overloaded", message: "PRIVATE_PROVIDER_MESSAGE_CANARY", type: "error" }]),
+    silent_reset: () => sse([created("resp-drop")], Object.assign(new Error("aborted"), { code: "ECONNRESET" })),
     truncated: () => sse([created("resp-drop"), delta("Dropped par")]),
     error_event: () => sse([created("resp-drop"), delta("Dropped par"),
       { code: "server_error", message: "PRIVATE_PROVIDER_MESSAGE_CANARY", type: "error" }]),
@@ -2090,14 +2099,21 @@ describe("dropped Codex LB round retry", () => {
     admitted?: boolean;
     onUsage?: (usage: unknown, context: unknown) => void;
     reopen?: () => Promise<boolean>;
+    /** Time each request takes on the fake clock before it answers. */
+    requestMs?: number;
     roundTimeoutMs?: number;
     signal?: AbortSignal;
     sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
     tools?: readonly RunTool[];
+    /** The binding's before-output window, as a Codex LB runtime admits it. */
+    window?: boolean;
   }> = {}) {
     const bodies: Record<string, unknown>[] = [];
+    // The fake clock: requests and backoff waits advance it, nothing else.
+    const clock = { now: 1_000_000 };
     const fetchFn = vi.fn<typeof fetch>(async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      clock.now += input.requestMs ?? 0;
       const step = sequence[bodies.length - 1];
       if (!step) throw new Error("unexpected_request");
       return steps[step]();
@@ -2126,9 +2142,11 @@ describe("dropped Codex LB round retry", () => {
       },
       parallelToolCalls: false,
       ...(input.admitted === false ? {} : { roundRetry: {
-        policy: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe },
+        now: () => clock.now,
+        policy: { ...(input.window ? { beforeOutput: PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } : {}),
+          decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe },
         random: () => 0, reopen,
-        sleep: input.sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); })
+        sleep: input.sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); clock.now += delayMs; })
       } }),
       ...(input.signal ? { signal: input.signal } : {}),
       tools: [...(input.tools ?? [alpha])]
@@ -2246,5 +2264,110 @@ describe("dropped Codex LB round retry", () => {
     expect(loop.usage.map(([, context]) => context)).toEqual([
       { completeness: "partial", round: 1 }, { completeness: "terminal", round: 1 }, { completeness: "terminal", round: 2 }]);
     expect(loop.reopen).toHaveBeenCalledOnce();
+  });
+
+  describe("before-output window (operator decision 2026-10-18)", () => {
+    it("rides out four 502s before any output into one complete answer, every request accounted", async () => {
+      const loop = harness(["502", "502", "502", "502", "final"], { requestMs: 5_000, window: true });
+      const outcome = await loop.run();
+      expect(outcome).toMatchObject({ final: { finalText: "Final answer" }, providerRounds: 1, status: "complete" });
+      expect(loop.fetchFn).toHaveBeenCalledTimes(5);
+      expect(loop.usage).toEqual([unknownPartial, unknownPartial, unknownPartial, unknownPartial,
+        [expect.objectContaining({ inputTokens: 5, outputTokens: 2 }), { completeness: "terminal", round: 1 }]]);
+      // Waits grow from about 2 s (the jitter floor is half of each ceiling).
+      expect(loop.sleeps).toEqual([1_000, 2_000, 4_000, 8_000]);
+      expect(loop.text).toEqual(["Final answer"]);
+      expect(new Set(loop.bodies.map((body) => body.prompt_cache_key)).size).toBe(5);
+      expect(new Set(loop.bodies.map(withoutRoutingKey).map((body) => JSON.stringify(body))).size).toBe(1);
+    });
+
+    it.each(["502_overloaded", "silent_truncated", "silent_overloaded", "silent_reset"] as const)(
+      "sends again after %s before any output", async (step) => {
+        const loop = harness([step, step, "final"], { window: true });
+        expect(await loop.run()).toMatchObject({ final: { finalText: "Final answer" }, status: "complete" });
+        expect(loop.fetchFn).toHaveBeenCalledTimes(3);
+        expect(loop.sleeps).toEqual([1_000, 2_000]);
+        expect(loop.text).toEqual(["Final answer"]);
+      });
+
+    it("sends at most six requests", async () => {
+      const loop = harness(["502", "502", "502", "502", "502", "502", "final"], { window: true });
+      const outcome = await loop.run();
+      expect(outcome).toMatchObject({ failure: { code: "provider_server_error", httpStatus: 502, stage: "provider" }, status: "failed" });
+      expect(loop.fetchFn).toHaveBeenCalledTimes(6);
+      expect(loop.usage).toHaveLength(6);
+      expect(loop.sleeps).toEqual([1_000, 2_000, 4_000, 8_000, 15_000]);
+      expect(loop.observe.mock.calls.map(([value]) => value.action)).toEqual(["retry", "retry", "retry", "retry", "retry", "stop"]);
+    });
+
+    it("gives up when the next wait would end past the window, with the provider code and its message", async () => {
+      // Each 502 takes 20 s: the fourth fails at 87 s and an 8 s wait would end at 95 s.
+      const loop = harness(["502", "502", "502", "502", "final"], { requestMs: 20_000, window: true });
+      const outcome = await loop.run();
+      expect(outcome).toMatchObject({ failure: { code: "provider_server_error", httpStatus: 502, stage: "provider" }, status: "failed" });
+      expect(loop.fetchFn).toHaveBeenCalledTimes(4);
+      expect(loop.usage).toEqual([unknownPartial, unknownPartial, unknownPartial, unknownPartial]);
+      expect(loop.sleeps).toEqual([1_000, 2_000, 4_000]);
+      expect(loop.observe.mock.calls.map(([value]) => [value.action, value.attempt])).toEqual(
+        [["retry", 1], ["retry", 2], ["retry", 3], ["stop", 4]]);
+      const failure = outcome.status === "failed" ? outcome.failure : null;
+      expect(failure?.message).toBe("The model provider returned a server error (HTTP 502) and kept failing when retried. " +
+        "Try again in a moment, or choose another model.");
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+    });
+
+    it("honours a Retry-After inside the window and gives up on one that ends past it", async () => {
+      const within = harness(["502_retry_after", "final"], { window: true });
+      expect(await within.run()).toMatchObject({ status: "complete" });
+      expect(within.sleeps).toEqual([2_000]);
+
+      const beyond = harness(["502_retry_after_100", "final"], { window: true });
+      expect(await beyond.run()).toMatchObject({ failure: { code: "provider_server_error" }, status: "failed" });
+      expect(beyond.fetchFn).toHaveBeenCalledOnce();
+      expect(beyond.sleeps).toEqual([]);
+    });
+
+    it("keeps the existing rule once the round streamed text", async () => {
+      const loop = harness(["truncated", "truncated", "truncated", "final"], { window: true });
+      expect(await loop.run()).toMatchObject({ status: "failed" });
+      expect(loop.fetchFn).toHaveBeenCalledTimes(3);
+      expect(loop.sleeps).toEqual([125, 250]);
+    });
+
+    it.each([
+      ["tool arguments streamed", "tool_arguments", { tools: [alpha, artifact] }],
+      ["a hosted tool ran", "hosted_search", {}],
+      ["an HTTP 503 the adapter does not admit", "503", {}],
+      ["a binding without the admission", "502", { admitted: false }]
+    ] as const)("never sends again after %s", async (_name, step, options) => {
+      const loop = harness([step, "final"], { ...options, window: true });
+      expect((await loop.run()).status).toBe("failed");
+      expect(loop.fetchFn).toHaveBeenCalledOnce();
+      expect(loop.reopen).not.toHaveBeenCalled();
+      expect(loop.sleeps).toEqual([]);
+    });
+
+    it("ends a backoff wait on Stop as cancelled without another request", async () => {
+      const controller = new AbortController();
+      const loop = harness(["502", "final"], { signal: controller.signal, window: true, sleep: (delayMs, signal) => {
+        controller.abort();
+        return sleepWithSignal(delayMs, signal);
+      } });
+      expect(await loop.run()).toMatchObject({ status: "cancelled" });
+      expect(loop.fetchFn).toHaveBeenCalledOnce();
+      expect(loop.reopen).not.toHaveBeenCalled();
+      expect(loop.usage).toEqual([unknownPartial]);
+    });
+
+    it("fails a round still dropping past the window with the provider's message", async () => {
+      const loop = harness(["silent_truncated", "silent_truncated", "silent_truncated", "final"], { requestMs: 45_000, window: true });
+      const outcome = await loop.run();
+      expect(outcome.status).toBe("failed");
+      expect(loop.fetchFn).toHaveBeenCalledTimes(2);
+      const failure = outcome.status === "failed" ? outcome.failure : null;
+      expect(failure?.message).toBe(
+        "The model provider kept failing before the response was complete. Try again in a moment, or choose another model.");
+      expect(providerHttpFailureMessage(loop.observe.mock.calls.at(-1)![0].error)).toBe(failure?.message);
+    });
   });
 });
