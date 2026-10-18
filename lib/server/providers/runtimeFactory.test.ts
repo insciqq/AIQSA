@@ -458,8 +458,10 @@ describe("provider runtime factory", () => {
     }).adapter.droppedRoundRetry;
     const detected = { ...base, connection: { ...base.connection, responsesRequestIsolationDetected: true } };
     const legacyRoot = { ...base, connection: { ...base.connection, apiRoot: "https://lb.example.test/backend-api/codex" } };
-    expect(bind(detected)).toMatchObject({ maxAttempts: 3 });
-    expect(bind(legacyRoot)).toMatchObject({ maxAttempts: 3 });
+    // Before any output: up to six requests within 90 s; after text, three.
+    const window = { baseDelayMs: 2_000, maxAttempts: 6, maxBackoffMs: 30_000, windowMs: 90_000 };
+    expect(bind(detected)).toMatchObject({ beforeOutput: window, maxAttempts: 3 });
+    expect(bind(legacyRoot)).toMatchObject({ beforeOutput: window, maxAttempts: 3 });
     // The catalog evidence outranks the root; other bindings never get it.
     expect(bind({ ...legacyRoot, connection: { ...legacyRoot.connection, responsesRequestIsolationDetected: false } })).toBeUndefined();
     expect(bind(base)).toBeUndefined();
@@ -469,7 +471,7 @@ describe("provider runtime factory", () => {
     const resending = (value: ProviderExecutionSnapshot) => createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn, disableRequestRetries: true, droppedRequestRetry: true }, secret: "secret", snapshot: value
     }).adapter.droppedRoundRetry;
-    expect(resending(detected)).toMatchObject({ maxAttempts: 3 });
+    expect(resending(detected)).toMatchObject({ beforeOutput: window, maxAttempts: 3 });
     expect(resending(base)).toBeUndefined();
     for (const adapterKind of runtimeAdapterKinds.filter((kind) => kind !== "openai_responses_compatible")) {
       const other = snapshot(adapterKind);

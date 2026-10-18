@@ -52,20 +52,51 @@ function unitInterval(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+/** An exponential backoff schedule: the first wait's ceiling and the cap. */
+export type ProviderRetryBackoff = Readonly<{
+  baseDelayMs: number;
+  maxBackoffMs: number;
+}>;
+
+const SHARED_PROVIDER_RETRY_BACKOFF: ProviderRetryBackoff = {
+  baseDelayMs: PROVIDER_RETRY_BASE_DELAY_MS,
+  maxBackoffMs: PROVIDER_RETRY_MAX_BACKOFF_MS
+};
+
+/** A longer retry window for a request that failed before any of its output
+ * (PROVIDERS.md, operator decision 2026-10-18): at most `maxAttempts`
+ * requests, the first included, and no wait ending more than `windowMs`
+ * after the first request started. */
+export type ProviderRetryWindow = ProviderRetryBackoff & Readonly<{
+  maxAttempts: number;
+  windowMs: number;
+}>;
+
+/** Waits of about 2, 4, 8, 16 and 30 s (each 50-100% of its ceiling) fit
+ * five re-sends into the window: a minute-long provider burst passes, while
+ * Stop and the run's deadlines still end every wait at once. */
+export const PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW: ProviderRetryWindow = {
+  baseDelayMs: 2_000,
+  maxAttempts: MAX_PROVIDER_REQUEST_ATTEMPTS,
+  maxBackoffMs: 30_000,
+  windowMs: 90_000
+};
+
 /** The jittered exponential backoff after a failed attempt, never shorter
  * than the provider's Retry-After; null when that asks for more than five
  * minutes. */
 export function providerRetryDelayMs(
   failedAttempt: number,
   retryAfterMs: number | null,
-  random: () => number = Math.random
+  random: () => number = Math.random,
+  backoff: ProviderRetryBackoff = SHARED_PROVIDER_RETRY_BACKOFF
 ): number | null {
   if (retryAfterMs !== null && retryAfterMs > PROVIDER_RETRY_MAX_RETRY_AFTER_MS) {
     return null;
   }
   const ceiling = Math.min(
-    PROVIDER_RETRY_MAX_BACKOFF_MS,
-    PROVIDER_RETRY_BASE_DELAY_MS * (2 ** Math.max(0, failedAttempt - 1))
+    backoff.maxBackoffMs,
+    backoff.baseDelayMs * (2 ** Math.max(0, failedAttempt - 1))
   );
   const jittered = Math.max(
     1,
@@ -77,25 +108,43 @@ export function providerRetryDelayMs(
 /** A binding's Codex LB dropped-request admission (PROVIDERS.md) with the
  * seams of the shared provider backoff, as its live callers use it. */
 export type ProviderDroppedRequestRetry = Readonly<{
+  /** The clock of the before-output window; `Date.now` by default. */
+  now?: () => number;
   policy: import("./types").ProviderDroppedRoundRetry;
   random?: () => number;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
 }>;
 
+/** The time on the retry's clock, for the start of a call's first request. */
+export function droppedRequestRetryNow(retry: ProviderDroppedRequestRetry): number {
+  return (retry.now ?? Date.now)();
+}
+
 /** The wait before the next request after a dropped one, or null to keep the
  * failure: only a drop the binding recognizes, before any accepted output,
- * before Stop and within the request bound. Every decision on a recognized
- * drop is recorded. */
+ * before Stop and within the request bound. A request that failed before any
+ * output, text included, takes the binding's before-output window when it has
+ * one; one that streamed text keeps the shared backoff and request bound.
+ * Every decision on a recognized drop is recorded. */
 export function droppedRequestRetryDelay(retry: ProviderDroppedRequestRetry, input: Readonly<{
   acceptedOutput: boolean;
   attempt: number;
   error: unknown;
+  /** When the call's first request started, on the retry's clock. */
+  firstRequestAt: number;
   signal: AbortSignal | undefined;
+  /** The failed request streamed text, which a re-send replaces. */
+  textOutput?: boolean;
 }>): number | null {
   const decision = retry.policy.decision(input.error);
   if (!decision) return null;
-  const delayMs = !input.acceptedOutput && input.signal?.aborted !== true && input.attempt < retry.policy.maxAttempts
-    ? providerRetryDelayMs(input.attempt, decision.retryAfterMs, retry.random) : null;
+  const window = input.textOutput === true ? undefined : retry.policy.beforeOutput;
+  const proposed = !input.acceptedOutput && input.signal?.aborted !== true &&
+    input.attempt < (window?.maxAttempts ?? retry.policy.maxAttempts)
+    ? providerRetryDelayMs(input.attempt, decision.retryAfterMs, retry.random, window) : null;
+  // Inside the window a wait, a Retry-After included, must end there too.
+  const delayMs = proposed !== null && window !== undefined &&
+    droppedRequestRetryNow(retry) - input.firstRequestAt + proposed > window.windowMs ? null : proposed;
   retry.policy.observe(delayMs === null
     ? { action: "stop", attempt: input.attempt, error: input.error }
     : { action: "retry", attempt: input.attempt, delayMs, error: input.error });

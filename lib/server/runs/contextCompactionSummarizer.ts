@@ -9,7 +9,7 @@ import { normalizeTokenUsage, type NormalizedTokenUsage } from "../../domain/usa
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import { MIN_UTILITY_OUTPUT_TOKENS, UNKNOWN_MODEL_OUTPUT_ALLOWANCE } from "../providers/modelOutputAllowance";
 import { observedFailure } from "../providers/providerObservability";
-import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
+import { droppedRequestRetryDelay, droppedRequestRetryNow, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
 import type { ProviderConversationMessage, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import {
   canonicalJsonText,
@@ -860,8 +860,11 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
    * and so is every re-send of a dropped request. */
   async function step(kind: SummaryStep, text: string, notesBytes: number): Promise<StepOutcome> {
     let repair: RepairReason | undefined;
-    // `sends`: requests of the current try, for the dropped-request bound.
+    // `sends`: requests of the current try, for the dropped-request bound,
+    // the first of them started at `firstSentAt`.
+    let firstSentAt = 0;
     for (let tries = 0, sends = 1; tries < 2;) {
+      if (sends === 1 && input.adapter.droppedRequestRetry) firstSentAt = droppedRequestRetryNow(input.adapter.droppedRequestRetry);
       used += 1;
       if (used > CONTEXT_COMPACTION_LIMITS.summaryCalls) {
         throw new ContextSummaryError("context_compaction_summary_failed", "The bounded summary call budget for this source is exhausted.");
@@ -940,7 +943,8 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
         // only while the source's call cap leaves a number for the re-send.
         const retry = input.adapter.droppedRequestRetry;
         const delayMs = retry && used < CONTEXT_COMPACTION_LIMITS.summaryCalls
-          ? droppedRequestRetryDelay(retry, { acceptedOutput: false, attempt: sends, error, signal: input.signal }) : null;
+          ? droppedRequestRetryDelay(retry, { acceptedOutput: false, attempt: sends, error, firstRequestAt: firstSentAt,
+            signal: input.signal, textOutput: output !== "" }) : null;
         if (delayMs !== null) {
           // Stop and the run's deadlines end the wait with their own reason.
           await (retry!.sleep ?? sleepWithSignal)(delayMs, input.signal ?? new AbortController().signal);

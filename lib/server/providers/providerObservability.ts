@@ -294,10 +294,15 @@ export function providerHttpFailureMessage(value: unknown): string | null {
       return `The model provider reports that the account has no remaining quota or balance (${status}). Ask an administrator to check the provider account.`;
     case "provider_rate_limited":
       return `The model provider is limiting requests (${status}) and the retries did not succeed. Wait a minute before trying again.`;
+    // A run fails with these only after any admitted re-send did not help;
+    // nothing switches the model on the user's behalf.
     case "provider_server_error":
-      return `The model provider returned a server error (${status}) and the retries did not succeed. Try again later.`;
+      return `The model provider returned a server error (${status}) and kept failing when retried. ` +
+        "Try again in a moment, or choose another model.";
     default:
-      return null;
+      return observed.code === "unknown" && observed.stream_drop !== undefined
+        ? "The model provider kept failing before the response was complete. Try again in a moment, or choose another model."
+        : null;
   }
 }
 
