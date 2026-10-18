@@ -25,6 +25,7 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanResult } from "../mcp/runPlan";
 import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
+import { mcpOversizedResponseMessage } from "../../contracts/mcpToolFailure";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import type {
   NormalizedRunRequest,
@@ -7158,10 +7159,14 @@ describe("run recovery", () => {
       partialResult: `private-recovery-partial-result-${code}`
     };
     const canonicalArguments = { topic: argumentMarker, value: "alpha" };
-    const overflow = new McpClientSessionError({ code, operation });
+    const overflow = new McpClientSessionError({ code, maxBytes: 1_024 * 1_024, operation });
     for (const [key, value] of Object.entries(prohibitedMarkers)) {
       Object.defineProperty(overflow, key, { enumerable: true, value });
     }
+    // An over-bound call result tells the model how to ask for less.
+    const modelText = `Tool failed: ${code === "mcp_call_result_too_large"
+      ? mcpOversizedResponseMessage(1_024 * 1_024) : overflow.message}`;
+    if (code === "mcp_call_result_too_large") expect(modelText).toContain("larger than 1 MiB");
 
     const requests: ProviderRunRequest[] = [];
     const adapter: ProviderAdapter = {
@@ -7215,7 +7220,7 @@ describe("run recovery", () => {
     });
     expect(settledCall?.result).toMatchObject({
       callId: "provider-call-1",
-      content: [{ text: `Tool failed: ${overflow.message}`, type: "text" }],
+      content: [{ text: modelText, type: "text" }],
       name: recoveryToolName,
       rawPreview: {
         finalProviderResponsePreview: { code, error: overflow.message },
@@ -7257,7 +7262,7 @@ describe("run recovery", () => {
       },
       {
         call_id: "provider-call-1",
-        output: `Tool failed: ${overflow.message}`,
+        output: modelText,
         type: "function_call_output"
       }
     ]);

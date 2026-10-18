@@ -138,6 +138,8 @@ export type EventFields = {
     /** Vision phase timings: before the dispatch claim, the provider wait after it, and its deadline. */
     preparation_duration_ms?: number; provider_duration_ms?: number; timeout_ms?: number;
     action?: LifecycleAction; count?: number;
+    /** The byte bound an MCP response exceeded, so its call failed unread. */
+    max_bytes?: number;
     /** An MCP result over its byte limit, delivered cut to it: JSON snapshot sizes only. */
     truncated?: boolean; original_bytes?: number; delivered_bytes?: number;
   }>;
