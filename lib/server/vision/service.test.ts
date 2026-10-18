@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
-import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
+import { workspaceCaptureFailure, type createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
+import { WorkspaceRuntimeError } from "../workspace/runtime";
 import type { WorkspaceCapturedImage } from "../workspace/imageCapture";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 import { createVisionAnalysisService, parseConversationVisionInput, parseVisionAnalysisInput } from "./service";
@@ -552,5 +553,48 @@ describe("chat System Vision over conversation images", () => {
     for (const images of [[], Array(9).fill({ image_id: "a" }), [{ path: "/workspace/project/a.png" }], [{ image_id: "" }],
       [{ image_id: "x".repeat(129) }], [{ image_id: "a", url: "https://example.test/a.png" }]])
       expect(() => parseConversationVisionInput({ images, question: "What?" })).toThrow();
+  });
+});
+
+describe("Workspace capture refusals before dispatch", () => {
+  const visionRecords = (observation: Awaited<ReturnType<typeof captureRunObservation>>) =>
+    observation.records().filter(record => record.event === "tool_execution" && record.tool_kind === "vision");
+
+  it.each([
+    ["workspace_capture_source_invalid", "workspace_capture_source_invalid", /not a symlink or hard link\).*Copy it with `cp` into \/workspace\/output/su],
+    ["workspace_capture_source_busy", "workspace_capture_busy", /Retry after the process writing it finishes/u],
+    ["workspace_capture_unsupported", "workspace_capture_unsupported", /Copy it with `cp` into \/workspace\/output/u],
+    ["workspace_output_limit_exceeded", "workspace_capture_limit_exceeded", /fewer images/u]
+  ] as const)("returns the runner's %s as %s with a Workspace hint", async (runnerCode, code, hint) => {
+    const observation = await captureRunObservation();
+    const f = fixture();
+    // The capture owner's own translation of the runner's refusal.
+    f.captures.create.mockRejectedValue(workspaceCaptureFailure(new WorkspaceRuntimeError(runnerCode)));
+    const result = await f.service.execute(f.call, f.context);
+    expect(errorOf(result)).toMatchObject({ error: code, hint: expect.stringMatching(hint) });
+    expect(f.store.dispatch).not.toHaveBeenCalled(); expect(f.execute).not.toHaveBeenCalled();
+    const [record] = visionRecords(observation);
+    expect(record).toMatchObject({ code, outcome: "failed" });
+    expect(record).not.toHaveProperty("error_class");
+  });
+
+  it("reports the runner's capture deadline as a Vision timeout", async () => {
+    const observation = await captureRunObservation();
+    const f = fixture(); f.captures.create.mockRejectedValue(new WorkspaceRuntimeError("workspace_tool_timeout"));
+    expect(errorOf(await f.service.execute(f.call, f.context)).error).toBe("vision_analysis_timeout");
+    expect(visionRecords(observation)).toEqual([expect.objectContaining({ code: "vision_analysis_timeout", reason: "deadline" })]);
+    expect(f.store.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unmapped failure internal and records only its content-free class and site", async () => {
+    const observation = await captureRunObservation();
+    const f = fixture(); f.captures.create.mockRejectedValue(new TypeError("PRIVATE /workspace/project/secret.png"));
+    const result = await f.service.execute(f.call, f.context);
+    expect(errorOf(result).error).toBe("vision_analysis_internal_failed");
+    expect(JSON.stringify(result)).not.toContain("secret");
+    const records = visionRecords(observation);
+    expect(records).toEqual([expect.objectContaining({ code: "vision_analysis_internal_failed", error_class: "TypeError",
+      error_site: expect.stringMatching(/^lib\/server\/vision\/service\.test\.ts:\d+/u), error_fingerprint: expect.stringMatching(/^[0-9a-f]{12}$/u) })]);
+    expect(JSON.stringify(records)).not.toMatch(/PRIVATE|secret/u);
   });
 });

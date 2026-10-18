@@ -15,6 +15,7 @@ import { getWorkspaceConfig, workspaceToolTransportMaxBytes } from "./config";
 import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
 import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
+import { workspaceFailureCause } from "./toolObservability";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { tarGzipStream } from "../chats/tarArchive";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
@@ -556,7 +557,9 @@ describe("Microsandbox Workspace lifecycle", () => {
     const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(records).toContainEqual(expect.objectContaining({ event: "tool_deadline", tool_kind: "workspace", configured_timeout_ms: config.syncToolTimeoutSeconds * 1_000,
       effective_timeout_ms: config.syncToolTimeoutSeconds * 1_000, request_timeout_ms: config.syncToolTimeoutSeconds * 1_000 + 5_000 }));
-    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed", reason: typed ? "deadline" : "unknown", tool_call_id: "stored" }));
+    // An untyped transport failure names its class instead of `unknown`, beside the operation.
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed",
+      reason: typed ? "deadline" : "transport_other", operation: callInput.originalName, tool_call_id: "stored" }));
     expect(records.filter((entry) => entry.event === "nested_abort")).toHaveLength(typed ? 1 : 0);
     if (typed) expect(records).toContainEqual(expect.objectContaining({ event: "nested_abort", abort_source: "workspace_deadline", deadline_kind: "sdk_request", timeout_ms: config.syncToolTimeoutSeconds * 1_000 + 5_000 }));
     expect(JSON.stringify(records)).not.toContain("PRIVATE_");
@@ -1135,6 +1138,84 @@ describe("Microsandbox Workspace lifecycle", () => {
     }
   });
 
+  const linkedOutputs = (value: ReturnType<typeof fixture>, outputDirectory: string) => {
+    const report = Buffer.from("synthetic report");
+    value.files.set(`${outputDirectory}/report.txt`, report);
+    // Link targets that must never be read through the links.
+    value.files.set("/workspace/project/private.txt", Buffer.from("private target"));
+    value.fs.list.mockImplementation(async (directory) => {
+      if (directory !== outputDirectory) throw new Error("synthetic_unexpected_traversal");
+      return [
+        { kind: "file", path: `${outputDirectory}/report.txt`, size: report.length },
+        { kind: "symlink", path: `${outputDirectory}/report-link.txt`, size: 29 },
+        { kind: "symlink", path: `${outputDirectory}/project`, size: 18 },
+        { kind: "other", path: `${outputDirectory}/pipe`, size: 0 }
+      ];
+    });
+    return report;
+  };
+
+  it("skips file links, directory links and special files unread and still exports the regular file", async () => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    const report = linkedOutputs(value, outputDirectory);
+    const outputs = await value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory });
+    expect(outputs.map((output) => output.relativePath)).toEqual(["report.txt"]);
+    expect(outputs.skipped).toEqual({ link: 2, special: 1 });
+    expect(outputs[0]!.checksum).toBe(createHash("sha256").update(report).digest("hex"));
+    expect(Buffer.from(await new Response(outputs[0]!.body).arrayBuffer())).toEqual(report);
+    // The directory link is never traversed; nothing is hashed or read but the regular file.
+    expect(value.fs.list.mock.calls).toEqual([[outputDirectory]]);
+    expect(new Set(value.fs.readStream.mock.calls.map(([path]) => path))).toEqual(new Set([`${outputDirectory}/report.txt`]));
+  });
+
+  it("reports the same skips when a restarted receiver re-reads the capture", async () => {
+    const value = fixture();
+    const root = await mkdtemp(join(tmpdir(), "aiqsa-micro-skip-capture-")); skillDirectories.push(root);
+    const runtime = new MicrosandboxWorkspaceRuntime(config, root);
+    await runtime.ensureSession(ensureInput);
+    const outputDirectory = "/workspace/output/run_fixture";
+    linkedOutputs(value, outputDirectory);
+    const request = { ...sessionInput, modelRunId: "run_fixture", outputDirectory, capture: { create: true, id: "c".repeat(32) } };
+    const outputs = await runtime.collectOutputs(request);
+    expect(outputs.skipped).toEqual({ link: 2, special: 1 });
+    await outputs[0]!.body.cancel();
+    const listed = value.fs.list.mock.calls.length;
+    const recovered = await new MicrosandboxWorkspaceRuntime(config, root).collectOutputs({ ...request, capture: { ...request.capture, create: false } });
+    expect(recovered.map((output) => output.relativePath)).toEqual(["report.txt"]);
+    expect(recovered.skipped).toEqual({ link: 2, special: 1 });
+    expect(await new Response(recovered[0]!.body).text()).toBe("synthetic report");
+    expect(value.fs.list).toHaveBeenCalledTimes(listed);
+  });
+
+  it.each([
+    ["a link outside the output folder", "symlink", "/workspace/project/escape", "workspace_output_export_failed"],
+    ["a special file with an unsafe name", "other", "/workspace/output/run_fixture/bad\u0001name", "workspace_output_export_failed"],
+    ["an unknown entry kind", "socket", "/workspace/output/run_fixture/unknown", "workspace_output_export_failed"]
+  ] as const)("still fails closed on %s", async (_name, kind, path, code) => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    value.files.set(`${outputDirectory}/result.txt`, Buffer.from("result"));
+    value.fs.list.mockResolvedValueOnce([{ kind: "file", path: `${outputDirectory}/result.txt`, size: 6 },
+      { kind: kind as "symlink", path, size: 4 }]);
+    await expect(value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory }))
+      .rejects.toMatchObject({ code });
+    expect(value.fs.readStream).not.toHaveBeenCalled();
+  });
+
+  it("counts skipped entries toward the traversal bound", async () => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    const bound = Math.max(256, config.outputMaxFiles * 16);
+    value.files.set(`${outputDirectory}/result.txt`, Buffer.from("result"));
+    value.fs.list.mockResolvedValueOnce(Array.from({ length: bound + 1 }, (_, index) => ({
+      kind: index % 2 ? "other" as const : "symlink" as const, path: `${outputDirectory}/entry-${index}`, size: 0
+    })));
+    await expect(value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory }))
+      .rejects.toMatchObject({ code: "workspace_output_limit_exceeded" });
+    expect(value.fs.readStream).not.toHaveBeenCalled();
+  });
+
   it.each([-1, Number.NaN, 1.5])("still rejects an invalid output size %s", async (size) => {
     const value = fixture();
     const outputDirectory = "/workspace/output/run_fixture";
@@ -1222,9 +1303,16 @@ describe("Microsandbox Workspace lifecycle", () => {
     await value.runtime.ensureSession(ensureInput);
     value.setState(state);
     value.handle.connectOrStart.mockClear();
-    await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code: "workspace_runtime_unavailable" });
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const error = await value.runtime.callBoundTool(callInput).catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ code: "workspace_runtime_unavailable" });
     expect(value.handle.connectOrStart).not.toHaveBeenCalled();
     expect(sdk.callTool).not.toHaveBeenCalled();
+    // The refusal names the operation and the guest's state, here and to the app beside its code.
+    expect(workspaceFailureCause(error)).toBe("state_sandbox_unavailable");
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "admission", outcome: "failed",
+      code: "workspace_runtime_unavailable", reason: "state_sandbox_unavailable", operation: "sandbox_shell" }));
   });
 
   it("bounds reconciliation to one start and never dispatches on resume failure", async () => {
@@ -1257,7 +1345,9 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(JSON.stringify(result)).not.toContain("SDK details");
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
     const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
-    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed" }));
+    // The runner names the opaque envelope's class and the operation, never its text.
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed",
+      code: "workspace_operation_failed", reason: "guest_unparsed", operation: "sandbox_shell" }));
     expect(JSON.stringify(records)).not.toContain("SDK details");
   });
 

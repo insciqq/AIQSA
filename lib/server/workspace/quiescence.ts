@@ -87,7 +87,11 @@ export async function quiesceWorkspaceExecutions(input: Readonly<{
     if (remaining?.length === 0) return { proven: true, stoppedVm: false };
     if (remaining === null) fallbackCode = "workspace_execution_registry_unavailable";
   }
-  logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce", outcome: "degraded", code: fallbackCode, action: "stop" });
+  // A synchronous command leaves a cleanup obligation only a VM stop can
+  // prove, so a run that ran one routinely ends this way; any other fallback
+  // is a degraded proof.
+  logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "quiesce",
+    outcome: fallbackCode === "workspace_execution_sync_obligation" ? "completed" : "degraded", code: fallbackCode, action: "stop" });
   try {
     await input.runtime.stopSession({
       operation: input.operation,

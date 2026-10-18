@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { EventFields } from "../observability/events";
 import { attributeRequestUser, runInBackground, runWithContext, serializeEvent } from "../observability/runtime.cjs";
 import {
-  createTelemetryAggregator, DEFAULT_TELEMETRY_AGGREGATOR_LIMITS, TELEMETRY_DIMENSIONS, TELEMETRY_DURATION_BUCKETS,
-  telemetryDurationBucket, type TelemetryAggregatorLimits
+  createTelemetryAggregator, DEFAULT_TELEMETRY_AGGREGATOR_LIMITS, TELEMETRY_DIMENSIONS, TELEMETRY_DURATION_BOUNDS_MS,
+  TELEMETRY_DURATION_BUCKETS, TELEMETRY_LEGACY_DURATION_BOUNDS_MS, telemetryDurationBucket, telemetryDurationBucketsInCurrentLayout,
+  telemetryLegacyBucketIndexes, type TelemetryAggregatorLimits
 } from "./aggregator";
 
 const HOUR = Date.parse("2026-10-07T10:00:00.000Z");
@@ -269,6 +270,27 @@ describe("telemetry aggregation", () => {
   });
 
   it("places durations in fixed inclusive buckets", () => {
-    expect([0, 100, 101, 250, 1_000, 300_000, 300_001].map(telemetryDurationBucket)).toEqual([0, 0, 1, 1, 3, 10, 11]);
+    expect([0, 100, 101, 250, 1_000, 45_000, 300_000, 300_001, 1_800_000, 1_800_001].map(telemetryDurationBucket))
+      .toEqual([0, 0, 1, 1, 3, 8, 13, 14, 17, 18]);
+    expect(TELEMETRY_DURATION_BUCKETS).toBe(19);
+  });
+
+  it("maps a counter of the earlier 12-bucket layout into the current one by its length", () => {
+    const legacy = TELEMETRY_LEGACY_DURATION_BOUNDS_MS[12]!;
+    // Every earlier bound is a current bound, so each earlier bucket lands whole in one current bucket.
+    expect(legacy.every((bound) => (TELEMETRY_DURATION_BOUNDS_MS as readonly number[]).includes(bound))).toBe(true);
+    expect(telemetryLegacyBucketIndexes(legacy)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 9, 11, 13, 18]);
+    const stored = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    const current = telemetryDurationBucketsInCurrentLayout(stored);
+    expect(current).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 0, 9, 0, 10, 0, 11, 0, 0, 0, 0, 12]);
+    expect(current.reduce((sum, value) => sum + value, 0)).toBe(78);
+    // The current layout passes unchanged; a restored batch of either layout keeps its totals.
+    expect(telemetryDurationBucketsInCurrentLayout(current)).toEqual(current);
+    const aggregator = createTelemetryAggregator();
+    aggregator.restore({ counters: [{ bucketStart: new Date(HOUR), role: "app", event: "run_execution", level: "info",
+      appVersion: "0.3.18", dimensions: { outcome: "completed" }, count: 78, valueSum: 0, durationCount: 78, durationSumMs: 1,
+      durationMaxMs: 400_000, durationBuckets: stored, firstSeenAt: new Date(HOUR), lastSeenAt: new Date(HOUR) }],
+    incidents: [], lostObservations: 0 });
+    expect(aggregator.drain().counters[0]!.durationBuckets).toEqual(current);
   });
 });

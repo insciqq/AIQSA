@@ -1,3 +1,5 @@
+import { markProviderErrorDetail } from "./providerErrorCode";
+
 const unsupportedCodes = new Set([
   "unsupported_parameter", "unsupported_value", "unsupported_feature", "unsupported_content_type",
   "unsupported_image", "unsupported_file", "unsupported_file_type"
@@ -122,7 +124,8 @@ export function openRouterRoutingFailureMessage(code: keyof typeof openRouterRou
   return openRouterRoutingMessages[code];
 }
 
-/** Retains only a reviewed failure category, never the upstream message or body. */
+/** Retains only a reviewed failure category and the provider's reviewed error
+ * identity (`providerErrorCode.ts`), never the upstream message or body. */
 export function providerResponseFailure(
   message: string,
   response: Readonly<Record<string, unknown>>,
@@ -171,6 +174,7 @@ export function providerResponseFailure(
     choiceRecord?.finish_reason === "content_filter" || typeof choiceMessage?.refusal === "string" && choiceMessage.refusal.length > 0;
   const capabilityFailureReason = refusal ? "refusal" : incomplete?.reason === "max_output_tokens" || choiceRecord?.finish_reason === "length" ? "budget_exhausted" : undefined;
   const quotaExhausted = code === "provider_response_not_retryable" && typeof detail?.code === "string" && quotaCodes.has(detail.code);
-  return Object.assign(new Error(message), code ? { code } : {}, contextLength ?? {}, unsupportedInput ? { unsupportedInput: true } : {},
-    capabilityFailureReason ? { capabilityFailureReason } : {}, quotaExhausted ? { quotaExhausted: true } : {});
+  return markProviderErrorDetail(Object.assign(new Error(message), code ? { code } : {}, contextLength ?? {},
+    unsupportedInput ? { unsupportedInput: true } : {}, capabilityFailureReason ? { capabilityFailureReason } : {},
+    quotaExhausted ? { quotaExhausted: true } : {}), detail ?? (response.type === "error" ? response : null));
 }

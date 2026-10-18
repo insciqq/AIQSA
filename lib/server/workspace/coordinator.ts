@@ -8,7 +8,9 @@ import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./code
 import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
   type WorkspaceCodeRunIdentity } from "./codeMcpStore";
 import { workspaceCodeCallActivity, workspaceCodeCallSummaryLine, type WorkspaceCodeCallSummary } from "./codeMcpSummary";
-import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
+import {
+  inheritWorkspaceFailureCause, inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode
+} from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { agentExecutionId } from "../agents/runtime";
@@ -18,7 +20,8 @@ import { workspaceSkillPath, type WorkspaceSkillBundles, type WorkspaceSkillPlan
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   ThreadGeneratedFile,
-  ThreadWorkspaceActivityEntry
+  ThreadWorkspaceActivityEntry,
+  WorkspaceOutputSkips
 } from "@/lib/contracts/workspace";
 import { isWorkspaceErrorCode, type WorkspaceErrorCode } from "@/lib/contracts/workspace";
 import {
@@ -63,6 +66,7 @@ import {
 import type {
   WorkspaceAttachmentStream,
   WorkspaceBoundTool,
+  WorkspaceOutputCollection,
   WorkspaceOutputStream,
   WorkspaceRuntime,
   WorkspaceToolResult
@@ -1288,11 +1292,13 @@ async function objectMatches(
   storage: StorageAdapter,
   storageKey: string,
   output: WorkspaceOutputStream,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  expectMissing = false
 ): Promise<boolean> {
   if (!storage.inspectObject) return false;
   try {
     const inspected = await storage.inspectObject(storageKey, {
+      expectMissing,
       maxBytes: output.byteSize,
       sampleBytes: 1,
       signal
@@ -1362,7 +1368,7 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult, sec
     },
     status: result.status
   };
-  return result.errorCode ? retainWorkspaceResultCode(projected, result.errorCode) : projected;
+  return inheritWorkspaceFailureCause(result, result.errorCode ? retainWorkspaceResultCode(projected, result.errorCode) : projected);
 }
 
 /**
@@ -2386,6 +2392,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const mask = outputMaskByRun.get(runId) ??
             new WorkspaceSecretOutputMask(workspaceSecretMatches(await input.repository.personalSecrets(binding)));
           const output = mask.result(result, input.config.toolOutputMaxBytes);
+          inheritWorkspaceFailureCause(result, output.result);
           // A returned command's code can no longer call MCP; then summarize.
           await closeInvocation();
           const settled = withCodeCallSummary(resultFromRuntime(call, output.result, output.masked),
@@ -2564,6 +2571,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
       const exportStartedAt = new Date();
       const exportOrdinal = nextLifecycleOrdinal(runId);
       let exportCount = 0;
+      // Links and special files the capture left out, once it is read; every
+      // later update of this row repeats them, since the newest one wins.
+      let exportSkipped: WorkspaceOutputSkips | undefined;
       const exportActivity = (
         phase: "failed" | "running" | "succeeded",
         errorCode?: WorkspaceRuntimeError["code"]
@@ -2575,6 +2585,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         ordinal: exportOrdinal,
         phase,
         runId,
+        ...(exportSkipped ? { skipped: exportSkipped } : {}),
         startedAt: exportStartedAt
       })).catch(() => undefined) ?? Promise.resolve();
       try {
@@ -2605,7 +2616,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         // before collecting output, but never recreate a genuinely lost VM:
         // doing so would silently turn missing deliverables into a success.
         const collect = async (): Promise<Readonly<{
-          binding: WorkspaceExecutionBinding & Readonly<{ runtimeSandboxId: string }>; outputs: readonly WorkspaceOutputStream[];
+          binding: WorkspaceExecutionBinding & Readonly<{ runtimeSandboxId: string }>; outputs: WorkspaceOutputCollection;
         }>> => {
           step = "initialize";
           // Its guest-use marker and seed claim take the chat row too; a
@@ -2678,6 +2689,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
         const batchId = outputs.find((output) => output.batchId)?.batchId;
         if (batchId) batch = { batchId, runtimeSandboxId: binding.runtimeSandboxId };
         exportCount = outputs.length;
+        exportSkipped = outputs.skipped;
         if (outputs.length > 0) await exportActivity("running");
         const total = outputs.reduce((sum, output) => sum + output.byteSize, 0);
         if (
@@ -2709,6 +2721,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
             await input.runtime.releaseOutputCapture?.({ captureId: capture.id, modelRunId: runId,
               operation: lease.operation, runtimeSandboxId: binding.runtimeSandboxId, sessionId: binding.sessionId,
               signal: exportSignal }).catch(() => undefined);
+            // Nothing to transfer, but the reader learns what was left out.
+            if (exportSkipped) await exportActivity("succeeded");
             return { status: "complete", files: [] };
           }
           return { status: "pending" };
@@ -2721,7 +2735,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
           if (!(await exportStep(() => input.repository.prepareOutput({ ...lease, storageKey })))) {
             throw new WorkspaceRuntimeError("workspace_operation_stale");
           }
-          if (!(await objectMatches(input.storage, storageKey, output, exportSignal))) {
+          // A first export of this key finds no object: that miss is the
+          // write-once check's expected answer, not a storage failure.
+          if (!(await objectMatches(input.storage, storageKey, output, exportSignal, true))) {
             if (!input.storage.putObjectStream) {
               throw new WorkspaceRuntimeError("workspace_output_export_failed");
             }
@@ -2764,7 +2780,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           ...activityWindow(),
           operation: ownedOperation(binding), sessionId: binding.sessionId
         });
-        if (files.length > 0) await exportActivity("succeeded");
+        if (files.length > 0 || exportSkipped) await exportActivity("succeeded");
         return { files, status: "complete" };
       } catch (error) {
         if (error instanceof WorkspaceConfirmedSessionLoss) retirementOperation = error.operation;

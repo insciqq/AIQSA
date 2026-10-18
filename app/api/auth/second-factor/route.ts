@@ -1,5 +1,5 @@
 import { getAuthConfig } from "@/lib/server/auth/config";
-import { authRateLimiter } from "@/lib/server/auth/defaultAuth";
+import { authRateLimiter, signInRefusalRecorder } from "@/lib/server/auth/defaultAuth";
 import { getTotpKeys } from "@/lib/server/auth/totp";
 import { createSecondFactorSignInHandler } from "@/lib/server/auth/totpHandlers";
 import { createPrismaSecondFactorSignInRepository } from "@/lib/server/auth/totpRepository";
@@ -12,6 +12,7 @@ export const POST = createSecondFactorSignInHandler({
   getConfig: () => getAuthConfig(),
   getKeys: () => getTotpKeys(),
   rateLimiter: authRateLimiter,
+  refusals: signInRefusalRecorder,
   repository: createPrismaSecondFactorSignInRepository(prisma),
   signInPolicy: readSignInPolicy
 });

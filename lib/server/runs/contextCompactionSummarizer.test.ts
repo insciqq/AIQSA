@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
+import { contextTokenEstimator } from "../../domain/tokenEstimate";
 import type { NormalizedTokenUsage } from "../../domain/usage";
 import { buildAnthropicMessagesRequest } from "../providers/anthropicMessages";
 import { ProviderRequestTimeoutError } from "../providers/network";
 import { compatibleDroppedRoundDecision, createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
+import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } from "../providers/providerRetry";
 import { markProviderStreamDrop } from "../providers/streamDrop";
 import type { NormalizedSearchPlanOption, ProviderAdapter, ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
@@ -474,13 +476,13 @@ describe("context compaction summarizer", () => {
     const truncated = () => markProviderStreamDrop(new Error("openai_stream_truncated"), "truncated");
 
     /** Fails the first requests with the given errors after partial output, then answers. */
-    function dropping(failures: readonly unknown[], calls: ProviderRunRequest[]): ContextSummaryAdapter {
+    function dropping(failures: readonly unknown[], calls: ProviderRunRequest[], silent = false): ContextSummaryAdapter {
       let index = 0;
       return { async *stream(next) {
         calls.push(next);
         const failure = failures[index++];
         if (failure !== undefined) {
-          yield { data: { delta: "{\"notes\": \"par" }, type: "token" };
+          if (!silent) yield { data: { delta: "{\"notes\": \"par" }, type: "token" };
           yield { data: { inputTokens: 12 }, type: "usage" };
           throw failure;
         }
@@ -491,14 +493,37 @@ describe("context compaction summarizer", () => {
       } };
     }
 
-    function admitted(adapter: ContextSummaryAdapter, sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>) {
+    function admitted(adapter: ContextSummaryAdapter, sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>, window = false) {
       const observe = vi.fn();
       const sleeps: number[] = [];
+      const clock = { now: 1_000_000 };
       return { observe, sleeps, adapter: { ...adapter, droppedRequestRetry: {
-        policy: { decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe }, random: () => 0,
-        sleep: sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); })
+        now: () => clock.now,
+        policy: { ...(window ? { beforeOutput: PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } : {}),
+          decision: compatibleDroppedRoundDecision, maxAttempts: 3, observe }, random: () => 0,
+        sleep: sleep ?? (async (delayMs: number) => { sleeps.push(delayMs); clock.now += delayMs; })
       } } satisfies ContextSummaryAdapter };
     }
+
+    it("sends a request dropped before any output again within the before-output window", async () => {
+      const calls: ProviderRunRequest[] = [];
+      const recorded = receipts();
+      const retry = admitted(dropping([await gateway502(), await gateway502(), await gateway502()], calls, true), undefined, true);
+      const summarized = await executeContextSummary({ adapter: retry.adapter, receipts: recorded.hooks, request: request() });
+      expect(summarized.summary.notes).toBe("bounded notes");
+      expect(calls).toHaveLength(4);
+      expect(recorded.settled.map(({ attempt }) => attempt.state)).toEqual(["failed", "failed", "failed", "committed"]);
+      expect(retry.sleeps).toEqual([1_000, 2_000, 4_000]);
+    });
+
+    it("keeps the existing bound for a summary request that streamed text, even with the window", async () => {
+      const calls: ProviderRunRequest[] = [];
+      const retry = admitted(dropping([await gateway502(), truncated(), await gateway502()], calls), undefined, true);
+      await expect(executeContextSummary({ adapter: retry.adapter, request: request() }))
+        .rejects.toMatchObject({ code: "context_compaction_provider_failed" });
+      expect(calls).toHaveLength(3);
+      expect(retry.sleeps).toEqual([125, 250]);
+    });
 
     it.each([
       ["a 502", () => gateway502("1"), 1_000],
@@ -641,6 +666,52 @@ describe("context compaction summarizer", () => {
     for (const ref of summarized.summary.sourceRefs.filter(ref => !ref.startsWith("ctxm1_") && !ref.startsWith("ctxu1_"))) {
       expect(bodies.some(body => body.includes(ref))).toBe(true);
     }
+    expect(summarized.attempts.map(({ state }) => state)).toEqual([...partials.map(() => "settled"), "committed"]);
+  });
+
+  it("commits when a split message leaves a tiny trailing piece, which joins the reduction verbatim without a paid call", async () => {
+    // A 16,384-token window with a large declared output limit: each call reads
+    // about 7,000 source tokens, and the first message is a little larger, so
+    // its split leaves a trailing piece of about 150 tokens.
+    const window = 16_384;
+    const estimate = contextTokenEstimator({ modelId: "answer-model", provider: "openai" });
+    const { budgetTokens } = calculateContextBudgetLimits({ contextWindow: window, maxOutputTokens: 512 });
+    const filler = (label: string, tokens: number) => {
+      let value = label;
+      for (let index = 0; estimate(value) < tokens; index += 1) value += ` ${label.toLowerCase()} word${index} fact-${(index * 7_919) % 10_007}`;
+      return value;
+    };
+    const first = `${filler("FIRST", Math.floor(budgetTokens * 0.5))} FIRST_MESSAGE_END`;
+    const source = request({ maxOutputTokens: 128_000, window, messages: [text(first, "first"),
+      text("Acknowledged.", "reply", "assistant"), text(filler("SECOND", Math.floor(budgetTokens * 0.4)), "current")] });
+    const calls: ProviderRunRequest[] = [];
+    const recorded = receipts();
+    const reduce = (next: ProviderRunRequest) => next.prompt.system!.includes("notes of consecutive parts");
+    const summarized = await executeContextSummary({
+      // Models write 1.1–1.5 KB of notes for any part, however small.
+      adapter: adapter([(next) => json(reduce(next) ? "combined notes of every part" : `part notes ${"p".repeat(1_490)}`)], calls),
+      receipts: recorded.hooks,
+      request: source
+    });
+    expect(summarized.summary.notes).toBe("combined notes of every part");
+    const partials = calls.filter((call) => !reduce(call));
+    expect(calls).toHaveLength(partials.length + 1);
+    // Every paid part is larger than the notes floor, so its allowance holds those notes.
+    for (const call of partials) {
+      expect(Buffer.byteLength(envelopeText(call), "utf8")).toBeGreaterThan(CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes);
+      expect(Number(/under (\d+) UTF-8 bytes/u.exec(call.prompt.system!)?.[1])).toBeGreaterThan(1_500);
+    }
+    // The trailing piece reached the reduction verbatim as its own part notes.
+    const tail = /<part-notes>\n((?:(?!<\/part-notes>)[\s\S])*FIRST_MESSAGE_END\n<\/message>)\n<\/part-notes>/u.exec(envelopeText(calls.at(-1)!))?.[1];
+    expect(tail).toBeDefined();
+    expect(Buffer.byteLength(tail!, "utf8")).toBeLessThan(1_000);
+    expect(partials.some((call) => envelopeText(call).includes("FIRST_MESSAGE_END"))).toBe(false);
+    // Nothing is cut: the paid parts and the verbatim piece hold the whole message.
+    const head = envelopeText(partials[0]!).slice("<context-source>\n".length, -"\n</context-source>".length);
+    expect(`${head}${tail}`).toBe(`<message id="first" role="user">\n${first}\n</message>`);
+    // Every paid call is claimed, dispatched and settled; none failed or repaired.
+    expect(recorded.claims).toHaveLength(calls.length);
+    expect(recorded.dispatched).toHaveLength(calls.length);
     expect(summarized.attempts.map(({ state }) => state)).toEqual([...partials.map(() => "settled"), "committed"]);
   });
 

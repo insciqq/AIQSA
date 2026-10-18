@@ -1,4 +1,5 @@
 import { deleteExpiredAnswerProblemReports } from "../answerProblemReports/repository";
+import { deleteExpiredSignInRefusals } from "../auth/signInRefusals";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { prisma } from "../prisma";
@@ -7,27 +8,32 @@ import { createS3StorageAdapter } from "../uploads/storage";
 import { createPrismaRetentionRepository, runObjectDeletionPass } from "./prune";
 
 const PASS_INTERVAL_MS = 60_000;
-const PROBLEM_REPORT_PRUNE_INTERVAL_MS = 3_600_000;
+const RECORD_PRUNE_INTERVAL_MS = 3_600_000;
+
+type RecordPrune = Readonly<{ failureCode: string; prune(now: Date): Promise<number> }>;
 
 /**
- * Answer problem reports past their 90 days, at most hourly and in bounded
- * batches. A failure is reported and retried on a later pass; it never stops
+ * Small records past their retention, at most hourly and in bounded batches:
+ * answer problem reports after 90 days, refused sign-ins after 30. A failure
+ * is reported and retried on a later pass; it never stops the other prune or
  * object deletion.
  */
-function createProblemReportPrune(now: () => number = Date.now): () => Promise<void> {
+function createRecordPrune(prunes: readonly RecordPrune[], now: () => number = Date.now): () => Promise<void> {
   let nextAt = 0;
   return async () => {
     const time = now();
     if (time < nextAt) return;
-    nextAt = time + PROBLEM_REPORT_PRUNE_INTERVAL_MS;
-    try {
-      const deleted = await deleteExpiredAnswerProblemReports(prisma, new Date(time));
-      if (deleted > 0) {
-        logEvent("runtime_lifecycle", { subsystem: "database", stage: "cleanup", outcome: "completed", count: deleted });
+    nextAt = time + RECORD_PRUNE_INTERVAL_MS;
+    for (const { failureCode, prune } of prunes) {
+      try {
+        const deleted = await prune(new Date(time));
+        if (deleted > 0) {
+          logEvent("runtime_lifecycle", { subsystem: "database", stage: "cleanup", outcome: "completed", count: deleted });
+        }
+      } catch (error) {
+        logEvent("runtime_lifecycle", { error, subsystem: "database", stage: "cleanup", outcome: "failed", action: "retry",
+          code: failureCode, prisma_code: databaseFailureCode(error) });
       }
-    } catch (error) {
-      logEvent("runtime_lifecycle", { error, subsystem: "database", stage: "cleanup", outcome: "failed", action: "retry",
-        code: "answer_problem_report_prune_failed", prisma_code: databaseFailureCode(error) });
     }
   };
 }
@@ -45,11 +51,14 @@ export function getDefaultObjectDeletionWorker(): RunRecoveryScheduler {
   if (!globalForObjectDeletion.__aiqsaObjectDeletionWorker) {
     const repository = createPrismaRetentionRepository(prisma);
     const storage = createS3StorageAdapter();
-    const pruneProblemReports = createProblemReportPrune();
+    const pruneRecords = createRecordPrune([
+      { failureCode: "answer_problem_report_prune_failed", prune: (now) => deleteExpiredAnswerProblemReports(prisma, now) },
+      { failureCode: "sign_in_refusal_prune_failed", prune: (now) => deleteExpiredSignInRefusals(prisma, now) }
+    ]);
     globalForObjectDeletion.__aiqsaObjectDeletionWorker = new RunRecoveryScheduler({
       intervalMs: PASS_INTERVAL_MS,
       async reconcile(signal) {
-        await pruneProblemReports();
+        await pruneRecords();
         const pass = await runObjectDeletionPass({ repository, signal, storage });
         if (pass.claimed === 0) return;
         logEvent("runtime_lifecycle", {

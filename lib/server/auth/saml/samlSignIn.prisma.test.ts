@@ -137,6 +137,7 @@ async function withSamlData<T>(overrides: Record<string, unknown>, run: (fixture
       value: (name) => `${name}-${id}`
     });
   } finally {
+    await prisma.signInRefusal.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
     // Accounts created from an unverified SAML email have no email; their identity still names it.
     await prisma.user.deleteMany({ where: { authIdentities: { some: { normalizedEmail: { endsWith: `@${domain}` } } } } });
     await prisma.user.deleteMany({ where: { email: { endsWith: `@${domain}` } } });

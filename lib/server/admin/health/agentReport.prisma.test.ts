@@ -122,9 +122,13 @@ describe("agent health reports over PostgreSQL", () => {
     expect(full.incidents.keys.filter((key) => key.code === CODE))
       .toEqual([expect.objectContaining({ incidents: 3, usersAtLeast: 1, runsAtLeast: 1, fingerprint: FINGERPRINT })]);
     expect(Array.isArray(full.operations.queues)).toBe(true);
-    for (const flag of [full.failures.truncated, full.timeouts.truncated, full.incidents.newestTruncated, full.problemReports.truncated]) {
+    for (const flag of [full.failures.truncated, full.timeouts.truncated, full.incidents.newestTruncated, full.problemReports.truncated,
+      full.models.truncated, full.failureStreaks.truncated, full.pushDelivery.truncated, full.signInBursts.truncated]) {
       expect(typeof flag).toBe("boolean");
     }
+    // The owner's runs read per model (no answer binding) and form no streak: a completed run precedes the two others.
+    expect(full.models.rows.some((row) => row.connectionId === null && row.accepted >= 3)).toBe(true);
+    expect(full.failureStreaks.rows.filter((row) => row.userId === OWNER)).toEqual([]);
     const output = JSON.stringify(full) + formatHealthFullReport(full);
     expect(output).not.toMatch(/Private agent report|Private answer|Private provider detail|Agent report owner/u);
 
@@ -136,6 +140,7 @@ describe("agent health reports over PostgreSQL", () => {
       expect.objectContaining({ runId: RUN_CANCELLED, status: "cancelled", failureCode: null, incidentCount: 0 })
     ] });
     expect(user.problemReports).toEqual({ total: 1, truncated: false, rows: [expect.objectContaining({ userId: OWNER })] });
+    expect(user.failureStreaks).toEqual({ streaks: 0, users: 0, longest: 0, minRuns: 3, rows: [], truncated: false });
     expect(JSON.stringify(user)).not.toMatch(/Private agent report|Private answer|Private provider detail|Agent report owner/u);
 
     await expect(collectHealthUserReport(healthAgentReportSources, `missing-${MARK}`, "24h")).resolves.toMatchObject({

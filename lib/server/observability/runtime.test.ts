@@ -297,6 +297,13 @@ describe("bounded observability runtime", () => {
     expect(record("http.request_completed", completion).level).toBe("info");
     expect(record("http.request_completed", { ...completion, status: 400 }).level).toBe("warn");
     expect(record("http.request_completed", { ...completion, status: 500 }).level).toBe("error");
+    // A reader navigating away closes its GET: routine. A closed mutation may
+    // leave its outcome unknown to the client and still warns.
+    expect(record("http.request_completed", { method: "GET", status: 200, outcome: "closed", stream: false }).level).toBe("info");
+    expect(record("http.request_completed", { method: "HEAD", status: 200, outcome: "closed", stream: false }).level).toBe("info");
+    expect(record("http.request_completed", { method: "POST", status: 200, outcome: "closed", stream: false }).level).toBe("warn");
+    expect(record("http.request_completed", { status: 200, outcome: "closed", stream: false }).level).toBe("warn");
+    expect(record("http.request_completed", { method: "GET", status: 404, outcome: "closed", stream: false }).level).toBe("warn");
     expect(record("run_execution", { run_id: "run-1", stage: "execution", outcome: "cancelled" }).level).toBe("info");
     expect(record("provider_retry", { action: "retry", attempt: 1 }).level).toBe("warn");
     expect(record("provider_request", { outcome: "failed", httpStatus: 503 }).level).toBe("warn");

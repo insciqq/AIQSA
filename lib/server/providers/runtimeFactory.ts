@@ -8,6 +8,11 @@ import {
   createFetchDeepSeekResponsesClient
 } from "./deepSeekResponses";
 import { createDeepSeekResponsesSearchAdapter } from "./deepSeekResponsesSearch";
+import {
+  createDeepSeekSearchAdapter,
+  createDeepSeekSearchApiAdapter,
+  createFetchDeepSeekSearchApiClient
+} from "./deepSeekSearchApi";
 import { createCompatibleResponsesAdapter } from "./compatibleResponses";
 import { createFakeProviderAdapter } from "./fakeProvider";
 import {
@@ -44,6 +49,7 @@ import {
 import { withTimeoutSignal } from "./network";
 import { effectiveOpenAIBackgroundPollTimeoutMs } from "./openaiBackgroundPolling";
 import { compatibleDroppedRoundDecision } from "./openaiResponsesTransport";
+import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } from "./providerRetry";
 import type { ProviderAdapter, ProviderDroppedRoundRetry, ProviderSearchAdapter } from "./types";
 import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
 import {
@@ -121,7 +127,8 @@ type ProviderRuntimeComponents = Readonly<{
 
 /** Operator decisions 2026-10-08 and 2026-10-15 (PROVIDERS.md): a dropped
  * Codex LB answer round, compaction summary or Vision request is sent at most
- * twice more. */
+ * twice more; since 2026-10-18 one dropped before any output is sent again
+ * within the before-output window. */
 const CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS = 3;
 
 /** Only an accepted codex-lb connection admits the dropped-round retry;
@@ -131,7 +138,8 @@ function droppedRoundRetry(
   options: ProviderRuntimeFactoryOptions
 ): Pick<ProviderRuntimeComponents, "droppedRoundRetry"> {
   return (!options.disableRequestRetries || options.droppedRequestRetry === true) && codexLbConnection(snapshot.connection)
-    ? { droppedRoundRetry: { decision: compatibleDroppedRoundDecision, maxAttempts: CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS } }
+    ? { droppedRoundRetry: { beforeOutput: PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW, decision: compatibleDroppedRoundDecision,
+        maxAttempts: CODEX_LB_DROPPED_ROUND_MAX_ATTEMPTS } }
     : {};
 }
 
@@ -415,9 +423,23 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       });
       return {
         adapter: createDeepSeekResponsesAdapter({ client }),
-        ...(snapshot.model.capabilities.nativeSearch
-          ? { searchAdapter: createDeepSeekResponsesSearchAdapter({ client }) }
-          : {}),
+        // The DeepSeek Search API borrows only this connection's key; the
+        // model's own hosted Search still requires its native Search.
+        searchAdapter: createDeepSeekSearchAdapter({
+          ...(snapshot.model.capabilities.nativeSearch
+            ? { responses: createDeepSeekResponsesSearchAdapter({ client }) }
+            : {}),
+          searchApi: createDeepSeekSearchApiAdapter({
+            client: createFetchDeepSeekSearchApiClient({
+              apiKey: clientSecret,
+              apiRoot: baseUrl,
+              defaultTimeoutMs: responseTimeoutMs,
+              fetchFn
+            }),
+            ...(input.options.disableRequestRetries ? { maxAttempts: 1 } : {}),
+            rateLimitKey: snapshot.credentialId ?? snapshot.connectionId
+          })
+        }),
         structuredOutputAdapter: createDeepSeekResponsesStructuredOutputAdapter({
           client,
           model: snapshot.model

@@ -26,6 +26,7 @@ import { CODEX_DEVELOPER_INSTRUCTIONS_MAX_BYTES, renderCodexManagedProfile, type
 import { CODEX_OUTPUT_LIMITS } from "../agents/codexProtocol";
 import { AgentExecutionError } from "../agents/failures";
 import { observeWorkspaceHealth, workspaceLifecycleFailure } from "./lifecycleObservability";
+import { workspaceToolErrorWire, workspaceToolResultWire } from "./toolObservability";
 import { parseSkillBundleRef, parseSkillInitial, SKILL_RUNTIME_JSON_MAX_BYTES,
   skillOperationSignal, validateSkillArchiveMetadata, validateSkillIdentity } from "./skillBundles";
 
@@ -501,7 +502,8 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         if (!isRecord(toolArguments)) throw new Error("field_invalid");
         if (body.invocationId !== undefined && !isWorkspaceCodeInvocationId(body.invocationId)) throw new Error("field_invalid");
         const invocationId = body.invocationId as string | undefined;
-        sendJson(response, 200, await execute(body.operation, (signal) => {
+        // A failed result carries the cause this runner observed beside it.
+        sendJson(response, 200, workspaceToolResultWire(await execute(body.operation, (signal) => {
           const modelRunId = requiredString(body.modelRunId, 128);
           const modelRunToolCallId = requiredString(body.modelRunToolCallId, 128);
           return runWithContext({ run_id: modelRunId, tool_call_id: modelRunToolCallId }, () => input.runtime.callBoundTool({
@@ -513,7 +515,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
             runtimeSandboxId: requiredString(body.runtimeSandboxId, 256),
             sessionId, signal
           }));
-        }));
+        })));
         return;
       }
 
@@ -590,7 +592,9 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           batchId,
           ...(capture ? { captureId: capture.id } : {}),
           ...(selection ? { selection } : {}),
-          outputs: outputs.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId }))
+          outputs: outputs.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId })),
+          // Additive: counts by reason only; an older app ignores the field.
+          ...(outputs.skipped ? { skipped: outputs.skipped } : {})
         });
         return;
       }
@@ -708,7 +712,9 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       const httpStatus = errorCode(error) === "workspace_operation_stale" ? 409 : 400;
       if (stage === "health") reportSubsystemFailure({ error, subsystem: "workspace", stage, scope_id: "runner", ...failure, httpStatus, action: "wait" });
       else logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage, ...failure, httpStatus, action: "stop" });
-      if (!response.headersSent) sendJson(response, errorCode(error) === "workspace_operation_stale" ? 409 : 400, { error: errorCode(error) });
+      // A failed tool call's error carries the cause this runner observed.
+      if (!response.headersSent) sendJson(response, errorCode(error) === "workspace_operation_stale" ? 409 : 400,
+        workspaceToolErrorWire(errorCode(error), error));
       else response.destroy();
     }
   }));

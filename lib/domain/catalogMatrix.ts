@@ -155,8 +155,11 @@ function clientRouteCompatible(
     return route.protocol === "gemini_google_search";
   }
   if (option.kind === "web_search") {
+    // The DeepSeek Search API is a web_search source of its own, reached
+    // only through this client route.
     return route.protocol === "anthropic_web_search" ||
       route.protocol === "deepseek_responses_web_search" ||
+      route.protocol === "deepseek_search_api" ||
       route.protocol === "openai_responses_web_search";
   }
   return option.kind === "perplexity_tool_search" &&

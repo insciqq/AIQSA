@@ -68,6 +68,8 @@ type Correlation = {
 type RequestClassification = Readonly<{
   cancellations: readonly (readonly string[])[];
   requests: readonly Readonly<{
+    /** The id as sent, when a local JSON-RPC error response can echo it. */
+    id?: number | string;
     keys: readonly string[];
     operation: McpResponseOperation;
   }>[];
@@ -248,9 +250,49 @@ function classifyJsonRpc(bytes: Uint8Array | null): RequestClassification {
       continue;
     }
     const keys = responseIdKeys(message.id);
-    requests.push({ keys, operation: operationForMethod(message.method) });
+    const id = echoableId(message.id);
+    requests.push({ ...(id === undefined ? {} : { id }), keys, operation: operationForMethod(message.method) });
   }
   return { cancellations, requests };
+}
+
+function echoableId(value: unknown): number | string | undefined {
+  if (typeof value === "number") return Number.isSafeInteger(value) ? value : undefined;
+  return typeof value === "string" && Buffer.byteLength(value, "utf8") <= MAX_RESPONSE_ID_BYTES ? value : undefined;
+}
+
+/**
+ * The id of a POST that carries exactly one tools/call. Its response belongs
+ * to that call alone, so a response over the bound fails only the call: the
+ * session, its other streams and its other calls stay usable.
+ */
+function callLocalRequestId(prepared: PreparedRequest): number | string | undefined {
+  const [request, ...others] = prepared.classification.requests;
+  return prepared.method === "POST" && request?.operation === "call_tool" && others.length === 0
+    ? request.id
+    : undefined;
+}
+
+/**
+ * Ends a call's request-bound SSE stream with a local JSON-RPC error for that
+ * call instead of erroring the stream: the SDK settles the request, and having
+ * received a response it never resumes the stream to replay the overflow.
+ */
+class McpCallStreamEnd extends Error {
+  readonly failure: McpResponseTooLargeError;
+  /** Complete events to deliver before closing; the local error comes last. */
+  frames: readonly Uint8Array[];
+
+  constructor(failure: McpResponseTooLargeError, id: number | string) {
+    super("mcp_call_stream_end");
+    this.name = "McpCallStreamEnd";
+    this.failure = failure;
+    this.frames = [new TextEncoder().encode(`data: ${JSON.stringify({
+      error: { code: -32603, message: "mcp_response_too_large" },
+      id,
+      jsonrpc: "2.0"
+    })}\n\n`)];
+  }
 }
 
 async function prepareRequest(url: string | URL, init: RequestInit | undefined): Promise<PreparedRequest> {
@@ -554,6 +596,7 @@ export class McpResponseGuard {
         throw closedError();
       }
       return this.guardResponse(response, {
+        callId: callLocalRequestId(prepared),
         context,
         method: prepared.method,
         operation,
@@ -636,6 +679,7 @@ export class McpResponseGuard {
   private guardResponse(
     response: Response,
     request: Readonly<{
+      callId: number | string | undefined;
       context: RequestContext | undefined;
       method: string;
       operation: McpResponseOperation;
@@ -654,7 +698,8 @@ export class McpResponseGuard {
         operation: request.operation
       });
       if (!isSse) beginTransportStage("body", response, "mcp").finish("failed", { code: "mcp_response_too_large", category: "unknown" });
-      this.triggerFatal(error, request.context ? [[request.context, error]] : []);
+      if (request.callId !== undefined) this.failCall(error, request);
+      else this.triggerFatal(error, request.context ? [[request.context, error]] : []);
       cancelReaderFromResponse(response, error);
       throw error;
     }
@@ -671,6 +716,7 @@ export class McpResponseGuard {
   private guardFiniteResponse(
     response: Response,
     request: Readonly<{
+      callId: number | string | undefined;
       context: RequestContext | undefined;
       registered: readonly Correlation[];
       signal: AbortSignal | undefined;
@@ -696,7 +742,9 @@ export class McpResponseGuard {
             observedBytes: maxBytes + 1,
             operation: request.operation
           });
-          this.triggerFatal(error, request.context ? [[request.context, error]] : []);
+          // Erroring the body rejects only this POST's request in the SDK.
+          if (request.callId !== undefined) this.failCall(error, request);
+          else this.triggerFatal(error, request.context ? [[request.context, error]] : []);
           throw error;
         }
         observedBytes = nextBytes;
@@ -708,6 +756,7 @@ export class McpResponseGuard {
   private guardSseResponse(
     response: Response,
     request: Readonly<{
+      callId: number | string | undefined;
       context: RequestContext | undefined;
       registered: readonly Correlation[];
       signal: AbortSignal | undefined;
@@ -717,19 +766,24 @@ export class McpResponseGuard {
   ): Response {
     const cumulativeLimit = mcpResponseMaxBytes(this.limits, request.operation);
     let cumulativeBytes = 0;
-    const framer = new SseByteFramer(this.limits.sseEventMaxBytes, (observedBytes) => {
-      const operation = persistentGet ? "unknown" : request.operation;
-      const error = new McpResponseTooLargeError({
-        maxBytes: this.limits.sseEventMaxBytes,
-        observedBytes,
-        operation
-      });
+    const overflow = (error: McpResponseTooLargeError): never => {
+      if (request.callId !== undefined) {
+        this.failCall(error, request);
+        throw new McpCallStreamEnd(error, request.callId);
+      }
       this.triggerFatal(
         error,
         !persistentGet && request.context ? [[request.context, error]] : []
       );
       throw error;
-    });
+    };
+    const framer = new SseByteFramer(this.limits.sseEventMaxBytes, (observedBytes) => overflow(
+      new McpResponseTooLargeError({
+        maxBytes: this.limits.sseEventMaxBytes,
+        observedBytes,
+        operation: persistentGet ? "unknown" : request.operation
+      })
+    ));
 
     const inspectFrame = (frame: Uint8Array): Uint8Array => {
       const ids = responseIdsFromEvent(frame);
@@ -774,18 +828,22 @@ export class McpResponseGuard {
       flush: () => framer.finish().map(inspectFrame),
       transform: (chunk) => {
         const frames: Uint8Array[] = [];
-        for (let index = 0; index < chunk.byteLength; index += 1) {
-          cumulativeBytes += 1;
-          if (!persistentGet && cumulativeBytes > cumulativeLimit) {
-            const error = new McpResponseTooLargeError({
-              maxBytes: cumulativeLimit,
-              observedBytes: cumulativeBytes,
-              operation: request.operation
-            });
-            this.triggerFatal(error, request.context ? [[request.context, error]] : []);
-            throw error;
+        try {
+          for (let index = 0; index < chunk.byteLength; index += 1) {
+            cumulativeBytes += 1;
+            if (!persistentGet && cumulativeBytes > cumulativeLimit) {
+              overflow(new McpResponseTooLargeError({
+                maxBytes: cumulativeLimit,
+                observedBytes: cumulativeBytes,
+                operation: request.operation
+              }));
+            }
+            for (const frame of framer.push(chunk[index])) frames.push(inspectFrame(frame));
           }
-          for (const frame of framer.push(chunk[index])) frames.push(inspectFrame(frame));
+        } catch (error) {
+          // Events completed before a call's overflow still reach the SDK.
+          if (error instanceof McpCallStreamEnd) error.frames = [...frames, ...error.frames];
+          throw error;
         }
         return frames;
       }
@@ -826,9 +884,11 @@ export class McpResponseGuard {
       this.activeStreams.delete(terminate);
       callbacks.finish();
     };
-    const terminate = (reason: unknown, consumerCancelled = false) => {
+    const terminate = (cause: unknown, consumerCancelled = false) => {
       if (terminated) return;
       terminated = true;
+      const end = cause instanceof McpCallStreamEnd ? cause : undefined;
+      const reason = end ? end.failure : cause;
       localFailure = reason;
       if (callbacks.observation) {
         const facts = reason instanceof McpResponseTooLargeError
@@ -838,7 +898,12 @@ export class McpResponseGuard {
       cleanup();
       cancelReader(reader, reason);
       try {
-        controller?.error(reason);
+        if (end) {
+          for (const frame of end.frames) controller?.enqueue(frame);
+          controller?.close();
+        } else {
+          controller?.error(reason);
+        }
       } catch {
         // The consumer may already have cancelled the guarded stream.
       }
@@ -885,6 +950,16 @@ export class McpResponseGuard {
       }
     });
     return copyResponseMetadata(response, body);
+  }
+
+  /** Fails one tools/call alone: no fatal cause, and every other stream and correlation stays. */
+  private failCall(
+    error: McpResponseTooLargeError,
+    request: Readonly<{ context: RequestContext | undefined; registered: readonly Correlation[] }>
+  ): void {
+    const context = request.context;
+    if (context && !context.finished && !context.failure) context.failure = error;
+    for (const correlation of request.registered) this.removeCorrelation(correlation);
   }
 
   private triggerFatal(

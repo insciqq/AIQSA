@@ -2,12 +2,24 @@ import { workspaceOperationFailureMessage, type WorkspaceOperationFailureCode } 
 import type { WorkspaceMcpToolName } from "@/lib/domain/workspace";
 import { plainWorkspaceActivityText } from "./activityText";
 import type { WorkspaceToolResult } from "./runtime";
+import { retainWorkspaceFailureCause, type WorkspaceFailureCause } from "./toolObservability";
 
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function workspaceOperationFailureResult(code: WorkspaceOperationFailureCode): WorkspaceToolResult {
   return { errorCode: code, content: [{ type: "text", text: JSON.stringify({ ok: false,
     error: { code, message: workspaceOperationFailureMessage(code) } }) }], status: "error" };
+}
+
+/** The pinned MCP's envelope codes (`fail(code, ...)`), as a cause; never its message. */
+const envelopeCauses: Readonly<Record<string, WorkspaceFailureCause>> = {
+  operation_failed: "guest_operation_failed", exec_failed: "guest_exec_failed", host_path_denied: "guest_path_denied",
+  dangerous_operation_disabled: "guest_operation_refused"
+};
+
+function envelopeCause(error: Record<string, unknown> | null): WorkspaceFailureCause {
+  if (error === null || typeof error.code !== "string") return "guest_unparsed";
+  return Object.hasOwn(envelopeCauses, error.code) ? envelopeCauses[error.code]! : "guest_other";
 }
 
 /** The pinned microsandbox-mcp contract: fail(code, message, {details}).
@@ -44,7 +56,9 @@ export function workspaceMcpFailure(value: unknown, maximum: number, tool: Works
       originalByteCount, truncated: bounded.truncated };
   }
   if (value.isError !== true) return null;
-  return workspaceOperationFailureResult(error?.code === "host_path_denied" ? "workspace_path_access_denied" : "workspace_operation_failed");
+  // The model sees only the stable code; telemetry also learns which envelope the MCP sent.
+  return retainWorkspaceFailureCause(workspaceOperationFailureResult(error?.code === "host_path_denied"
+    ? "workspace_path_access_denied" : "workspace_operation_failed"), envelopeCause(error));
 }
 
 /** UTF-8 bytes a string adds inside a `JSON.stringify` literal, quotes excluded. */

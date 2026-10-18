@@ -82,6 +82,7 @@ async function withOidc<T>(run: (fixture: Fixture) => Promise<T>): Promise<T> {
       value: (name) => `${name}-${id}`
     });
   } finally {
+    await prisma.signInRefusal.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
     await prisma.user.deleteMany({
       where: { authIdentities: { some: { normalizedEmail: { endsWith: `@${domain}` } } } }
     });

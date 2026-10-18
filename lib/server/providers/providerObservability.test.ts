@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runWithContext } from "../observability";
+import { logEvent, runWithContext } from "../observability";
+import { AgentExecutionError } from "../agents/failures";
 import {
   observedFailure,
   observedFailureWithoutHttpClass,
@@ -161,7 +162,8 @@ describe("provider diagnostics", () => {
   const authMessage = (status: number) => `The model provider rejected the configured credentials (HTTP ${status}). Ask an administrator to check the provider key.`;
   const quotaMessage = (status: number) => `The model provider reports that the account has no remaining quota or balance (HTTP ${status}). Ask an administrator to check the provider account.`;
   const rateMessage = "The model provider is limiting requests (HTTP 429) and the retries did not succeed. Wait a minute before trying again.";
-  const unavailableMessage = (status: number) => `The model provider returned a server error (HTTP ${status}) and the retries did not succeed. Try again later.`;
+  const unavailableMessage = (status: number) => `The model provider returned a server error (HTTP ${status}) and kept failing when retried. ` +
+    "Try again in a moment, or choose another model.";
   const openai = (fetchFn: typeof fetch) => () => createFetchOpenAIResponsesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn }).create({});
   const openrouter = (fetchFn: typeof fetch) => () => createFetchOpenAIChatCompletionClient({ bodyMissingError: "missing",
     endpoint: "https://openrouter.test/api/v1/chat/completions", fetchFn, headers: { authorization: "Bearer PRIVATE_KEY_CANARY" },
@@ -307,6 +309,20 @@ describe("provider diagnostics", () => {
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 
+  it("tells the user to retry or choose another model when the provider kept dropping the response", () => {
+    for (const drop of ["truncated", "error_event", "response_failed", "reset"]) {
+      const error = Object.defineProperty(new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"), "streamDrop", { value: drop });
+      expect(providerHttpFailureMessage(error)).toBe(
+        "The model provider kept failing before the response was complete. Try again in a moment, or choose another model.");
+    }
+    expect(providerHttpFailureMessage(new Error("openai_response_not_completed"))).toBeNull();
+    expect(providerHttpFailureMessage(Object.assign(new Error("x"), { streamDrop: "PRIVATE_DROP_CANARY" }))).toBeNull();
+    // A classified failure keeps its own wording even when its stream dropped.
+    const contextLength = Object.defineProperty(Object.assign(new Error("x"), { code: "provider_context_length_exceeded" }), "streamDrop",
+      { value: "error_event" });
+    expect(providerHttpFailureMessage(contextLength)).toContain("context window");
+  });
+
   it("does not treat the Gemini diagnostic prefix or exception text as an allowlist", () => {
     expect(observedFailure(new Error("gemini_interactions_stream_truncated")))
       .toEqual({ code: "unknown", reason: "unknown" });
@@ -418,5 +434,22 @@ describe("provider diagnostics", () => {
       { stage: "answer", outcome: "failed", code: "provider_response_failed" }
     ]);
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
+  it("names why an Agent run ended from its failure code: upstream, authority, Stop or interruption", () => {
+    const reason = (code: string) => observedFailure(new AgentExecutionError(code as never));
+    expect(reason("agent_provider_failed")).toMatchObject({ code: "agent_provider_failed", reason: "upstream" });
+    expect(reason("agent_authority_expired")).toMatchObject({ code: "agent_authority_expired", reason: "authority_expired" });
+    expect(reason("agent_provider_interrupted")).toMatchObject({ code: "agent_provider_interrupted", reason: "interrupted" });
+    expect(reason("agent_execution_interrupted")).toMatchObject({ reason: "interrupted" });
+    expect(observedFailure(Object.assign(new Error("x"), { code: "agent_run_cancelled" }))).toMatchObject({ reason: "cancelled" });
+    // Codes that name their own cause keep their reason or none.
+    expect(reason("agent_provider_dns_failed")).toMatchObject({ reason: "network" });
+    expect(reason("agent_time_limit")).toMatchObject({ code: "agent_time_limit", reason: "unknown" });
+    const records = capture();
+    runWithContext({ trace_id: "2".repeat(32), run_id: "run-agent" }, () => logEvent("run_execution", { run_id: "run-agent",
+      stage: "execution", outcome: "failed", code: "agent_provider_failed", reason: "upstream" }));
+    expect(records()).toEqual([expect.objectContaining({ event: "run_execution", level: "error", code: "agent_provider_failed",
+      reason: "upstream" })]);
   });
 });

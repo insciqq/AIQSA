@@ -51,7 +51,9 @@ function serviceError(error: AdminSearchServiceError): Response {
         error.code === "search_integration_material_identity_changed" ||
         error.code === "search_source_not_ready"
       ? 409
-      : error.code === "search_test_failed"
+      : error.code === "search_test_failed" ||
+          error.code === "search_test_auth_rejected" ||
+          error.code === "search_test_quota_exhausted"
         ? 422
         : 400;
   return Response.json({ error: error.code }, { status });

@@ -39,13 +39,19 @@ async function prepare(page: Page, servers: () => UserMcpServer[]) {
   let hubReads = 0;
   await page.route("**/api/me/mcp**", async route => {
     const request = route.request();
-    // Personal chats load the separate personal connections list; this spec observes the installation catalog.
-    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/me/mcp-connections") {
+    const pathname = new URL(request.url()).pathname;
+    // Personal chats load the separate personal connections list, and the MCP
+    // section loads its Always-allowed list; this spec observes the installation catalog.
+    if (request.method() === "GET" && pathname === "/api/me/mcp-connections") {
       await route.fulfill({ json: { servers: [] } });
       return;
     }
-    requests.push(`${request.method()} ${new URL(request.url()).pathname}`);
-    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/me/mcp") {
+    if (request.method() === "GET" && pathname === "/api/me/mcp-consents") {
+      await route.fulfill({ json: { consents: [] } });
+      return;
+    }
+    requests.push(`${request.method()} ${pathname}`);
+    if (request.method() === "GET" && pathname === "/api/me/mcp") {
       await route.fulfill({ json: { servers: servers() } });
     } else await route.fulfill({ status: 400, json: { error: "unexpected_test_mutation" } });
   });

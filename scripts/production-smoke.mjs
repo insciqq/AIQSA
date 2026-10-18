@@ -92,7 +92,7 @@ try {
 `;
 
 try {
-  for (const name of ["compose.yaml", ".env.example", "aiqsa.sh"]) await copyFile(path.join(source, name), path.join(root, name));
+  for (const name of ["compose.yaml", "compose.json-file-logging.yaml", ".env.example", "aiqsa.sh"]) await copyFile(path.join(source, name), path.join(root, name));
   const appPort = await freePort();
   // The operator CLI owns .env creation; the project name pins every later CLI call.
   await command("bash", ["aiqsa.sh", "configure", "--yes", "--workspace", "off", "--base-url", `http://localhost:${appPort}`,

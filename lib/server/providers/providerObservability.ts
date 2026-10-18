@@ -7,10 +7,12 @@ import { isProviderSearchExecutionError } from "./types";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import { ProviderStreamSafetyError } from "./streamSafety";
 import { providerStreamDrop, type ProviderStreamDrop } from "./streamDrop";
+import { providerErrorCode, providerErrorCodeOf } from "./providerErrorCode";
 
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
-type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
+type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response" |
+  "upstream" | "authority_expired" | "interrupted";
 type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
 type ProviderStatus = "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
 type ProviderCause = "max_output_tokens" | "content_filter";
@@ -38,6 +40,17 @@ const transportScopeKey = Symbol.for("aiqsa.providerTransportObservation");
 type TransportAttempt = { failureObserved: boolean };
 const transportGlobal = globalThis as typeof globalThis & { [transportScopeKey]?: AsyncLocalStorage<TransportAttempt> };
 const transportScopes = transportGlobal[transportScopeKey] ??= new AsyncLocalStorage<TransportAttempt>();
+// Provider requests reuse the pinned MCP fetch primitive. Outside a provider
+// observation scope (the Agent gateway's provider streams) this marker keeps
+// their transport records labelled as provider traffic.
+const providerTransportKey = Symbol.for("aiqsa.providerTransportLabel");
+const providerTransportGlobal = globalThis as typeof globalThis & { [providerTransportKey]?: AsyncLocalStorage<true> };
+const providerTransports = providerTransportGlobal[providerTransportKey] ??= new AsyncLocalStorage<true>();
+
+/** Runs a provider request through the shared pinned fetch with provider transport labels. */
+export function withProviderTransport<T>(operation: () => Promise<T>): Promise<T> {
+  return providerTransports.run(true, operation);
+}
 
 function transportBinding(source?: Response | ReadableStream<Uint8Array>, transport: "provider" | "mcp" = "provider"): TransportBinding {
   const retained = source && responseBindings.get(source);
@@ -45,7 +58,7 @@ function transportBinding(source?: Response | ReadableStream<Uint8Array>, transp
   const scope = scopes.getStore();
   return {
     fields: {
-      transport: scope ? "provider" : transport,
+      transport: scope || providerTransports.getStore() ? "provider" : transport,
       operation: scope?.stage, adapterKind: scope?.identity.adapterKind,
       connectionId: scope?.identity.connectionId, providerFamily: scope?.identity.providerFamily,
       providerModelId: scope?.identity.providerModelId, attempt: scope?.attempt,
@@ -184,7 +197,11 @@ export function observeStreamParseFailure(source: ReadableStream<Uint8Array>): v
   binding.emit({ ...binding.fields, stage: "parse", outcome: "failed", category: "parse", code: "provider_response_invalid_json" });
 }
 
-export async function observeMcpFetch(operation: () => Promise<Response>, signal?: AbortSignal): Promise<Response> {
+/** `optionalStream` marks the Streamable HTTP client's optional GET that opens
+ * a server-to-client event stream: a server without one refuses it with 405
+ * (or 404 where GET is not routed), an expected answer recorded as completed. */
+export async function observeMcpFetch(operation: () => Promise<Response>, signal?: AbortSignal,
+  options: Readonly<{ optionalStream?: boolean }> = {}): Promise<Response> {
   if (transportScopes.getStore()) return operation();
   return transportScopes.run({ failureObserved: false }, async () => {
     const binding = transportBinding(undefined, "mcp");
@@ -194,8 +211,9 @@ export async function observeMcpFetch(operation: () => Promise<Response>, signal
     try {
       const response = await operation();
       bindTransportResponse(response, binding);
-      binding.emit({ ...binding.fields, stage: "headers", outcome: response.ok ? "completed" : "failed", httpStatus: response.status,
-        category: response.ok ? undefined : "http", duration_ms: Math.max(0, performance.now() - startedAt) });
+      const answered = response.ok || options.optionalStream === true && (response.status === 404 || response.status === 405);
+      binding.emit({ ...binding.fields, stage: "headers", outcome: answered ? "completed" : "failed", httpStatus: response.status,
+        category: answered ? undefined : "http", duration_ms: Math.max(0, performance.now() - startedAt) });
       return response;
     } catch (error) {
       failureObserver(transportFailureFacts(error, signal));
@@ -294,10 +312,15 @@ export function providerHttpFailureMessage(value: unknown): string | null {
       return `The model provider reports that the account has no remaining quota or balance (${status}). Ask an administrator to check the provider account.`;
     case "provider_rate_limited":
       return `The model provider is limiting requests (${status}) and the retries did not succeed. Wait a minute before trying again.`;
+    // A run fails with these only after any admitted re-send did not help;
+    // nothing switches the model on the user's behalf.
     case "provider_server_error":
-      return `The model provider returned a server error (${status}) and the retries did not succeed. Try again later.`;
+      return `The model provider returned a server error (${status}) and kept failing when retried. ` +
+        "Try again in a moment, or choose another model.";
     default:
-      return null;
+      return observed.code === "unknown" && observed.stream_drop !== undefined
+        ? "The model provider kept failing before the response was complete. Try again in a moment, or choose another model."
+        : null;
   }
 }
 
@@ -329,7 +352,19 @@ type ObservedFailure = Readonly<{
   cause?: ProviderCause;
   /** Why an answer stream ended before its completion event. */
   stream_drop?: ProviderStreamDrop;
+  /** The provider's own reviewed error identity a decoder marked (`providerErrorCode.ts`). */
+  provider_error_code?: string;
 }>;
+
+/** Why an Agent run or its model request ended, named by its failure code:
+ * the provider failed, the run's authority (lease) ended, its user stopped
+ * it, or the request was interrupted. */
+const agentFailureReasons: Readonly<Record<string, FailureReason>> = {
+  agent_provider_failed: "upstream", agent_search_failed: "upstream",
+  agent_authority_expired: "authority_expired",
+  agent_run_cancelled: "cancelled",
+  agent_provider_interrupted: "interrupted", agent_execution_interrupted: "interrupted"
+};
 
 const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]);
 type ProviderHttpFailureClass = "provider_auth_rejected" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_server_error";
@@ -420,20 +455,22 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
         ? "invalid_response"
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
-        ? "policy" : "unknown";
+        ? "policy" : Object.hasOwn(agentFailureReasons, code) ? agentFailureReasons[code]! : "unknown";
     const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,
       value instanceof GeminiHttpError && ownValue(value, "keyRejected") === true) : null;
     const streamDrop = providerStreamDrop(value);
+    const providerError = providerErrorCode(value);
     return { code: classified ?? code, reason, ...(status === undefined ? {} : { httpStatus: status }),
       ...(providerStatus === undefined ? {} : { provider_status: providerStatus }),
       ...(cause === undefined ? {} : { cause }),
-      ...(streamDrop === null ? {} : { stream_drop: streamDrop }) };
+      ...(streamDrop === null ? {} : { stream_drop: streamDrop }),
+      ...(providerError === null ? {} : { provider_error_code: providerError }) };
   } catch { return { code: "unknown", reason: "unknown" }; }
 }
 
 function writeOperation(scope: ProviderObservation, startedAt: number,
   outcome: "started" | "completed" | "failed" | "cancelled", error?: unknown, signal?: AbortSignal,
-  result?: Readonly<{ provider_status?: ProviderStatus; action?: "retry"; code?: ObservedFailureCode }>) {
+  result?: Readonly<{ provider_status?: ProviderStatus; action?: "retry"; code?: ObservedFailureCode; provider_error_code?: string }>) {
   const failure = observedFailure(error, signal);
   logEvent("provider_operation", {
     adapterKind: scope.identity.adapterKind, connectionId: scope.identity.connectionId,
@@ -441,7 +478,8 @@ function writeOperation(scope: ProviderObservation, startedAt: number,
     stage: scope.stage, outcome, duration_ms: Math.max(0, Date.now() - startedAt),
     action: result?.action ?? "none", timeout_ms: failure.timeout_ms ?? scope.timeoutMs, code: result?.code ?? failure.code, reason: failure.reason,
     provider_status: result?.provider_status ?? failure.provider_status, cause: failure.cause,
-    httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop
+    httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop,
+    provider_error_code: result?.provider_error_code ?? failure.provider_error_code
   });
 }
 
@@ -455,6 +493,8 @@ function responseOutcome(value: unknown) {
     outcome: providerStatus === "cancelled" ? "cancelled" as const
       : error != null || providerStatus === "failed" || providerStatus === "incomplete" || providerStatus === "retrying" ? "failed" as const : "completed" as const,
     action: providerStatus === "retrying" ? "retry" as const : undefined,
+    // A polled response's own error record names the provider's identity.
+    provider_error_code: providerErrorCodeOf(error) ?? undefined,
     code: observedFailureCode(error) !== "unknown" ? observedFailureCode(error)
       : providerStatus === "cancelled" ? "provider_response_cancelled" as const
       : error != null || providerStatus === "failed" || providerStatus === "incomplete" || providerStatus === "retrying" ? "provider_response_failed" as const : undefined
@@ -595,6 +635,6 @@ function writeRetry(identity: Partial<ProviderStreamSafetyIdentity>, stage: Prov
     stage, attempt, action, delay_ms: delayMs,
     code: failure.code, reason: failure.reason, httpStatus: failure.httpStatus,
     timeout_ms: failure.timeout_ms, provider_status: failure.provider_status, cause: failure.cause,
-    stream_drop: failure.stream_drop
+    stream_drop: failure.stream_drop, provider_error_code: failure.provider_error_code
   });
 }

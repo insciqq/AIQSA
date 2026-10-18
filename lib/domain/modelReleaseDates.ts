@@ -35,7 +35,8 @@ const gemini: Record<string, string> = {
   "gemini-2.5-flash-image": "2025-10-07"
 };
 const deepseek: Record<string, string> = {
-  "deepseek-flash": "2026-09-10",
+  // DeepSeek's API serves V4.1 Flash 1017 under this name since 2026-10-17.
+  "deepseek-flash": "2026-10-17",
   "deepseek-v4-flash": "2026-04-24",
   "deepseek-v4-pro": "2026-04-24",
   "deepseek-v4-flash-vision-exp": "2026-08-21"
@@ -58,6 +59,7 @@ const openrouter: Record<string, string> = {
   "google/gemini-3.8-flash": "2026-09-02",
   "google/gemini-3.5-flash": "2026-05-19",
   "~google/gemini-pro-latest": "2026-04-27",
+  "deepseek/deepseek-v4.1-flash-1017": "2026-10-17",
   "deepseek/deepseek-v4.1-flash": "2026-09-10",
   "deepseek/deepseek-v4-pro-0813": "2026-08-12",
   "perplexity/sonar-pro-search": "2025-10-30",

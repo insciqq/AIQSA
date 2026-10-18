@@ -9,7 +9,7 @@ import { normalizeTokenUsage, type NormalizedTokenUsage } from "../../domain/usa
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import { MIN_UTILITY_OUTPUT_TOKENS, UNKNOWN_MODEL_OUTPUT_ALLOWANCE } from "../providers/modelOutputAllowance";
 import { observedFailure } from "../providers/providerObservability";
-import { droppedRequestRetryDelay, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
+import { droppedRequestRetryDelay, droppedRequestRetryNow, sleepWithSignal, type ProviderDroppedRequestRetry } from "../providers/providerRetry";
 import type { ProviderConversationMessage, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import {
   canonicalJsonText,
@@ -580,6 +580,12 @@ type CallPlan = Readonly<{ calls: number; notes: string | null; parts: readonly 
 
 const partNotesWrapperTokens = (estimate: Estimate) => estimate("<part-notes>\n\n</part-notes>\n");
 
+/** A source part no larger than the floor of the final notes allowance is its
+ * own notes: it joins the reduction verbatim without a paid call. A paid part
+ * is therefore never asked for notes far below what a model reliably writes
+ * (a split's tiny trailing piece would otherwise get a few hundred bytes). */
+const partIsOwnNotes = (part: string) => utf8Bytes(part) <= CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes;
+
 /** Consecutive groups of token counts within the bound. */
 function packTokens(counts: readonly number[], tokenLimit: number): number[] {
   const groups: number[] = [];
@@ -595,9 +601,10 @@ function packTokens(counts: readonly number[], tokenLimit: number): number[] {
   return groups;
 }
 
-/** The parts of a source and an upper estimate of its paid calls: every part,
- * each reduction level (part notes are at most half their input) and the
- * final call. Earlier notes that fit one call join the reduction verbatim. */
+/** The parts of a source and an upper estimate of its paid calls: every part
+ * that is not its own notes, each reduction level (part notes are at most half
+ * their input) and the final call. Earlier notes that fit one call, and parts
+ * that are their own notes, join the reduction verbatim. */
 function planCalls(units: readonly SourceUnit[], inputTokens: number, estimate: Estimate, task?: SourceUnit): CallPlan {
   let parts = packParts(units, inputTokens, estimate);
   const notes = parts.length > 1 && units[0]?.notes === true && units[0].tokens <= inputTokens ? units[0].text : null;
@@ -609,10 +616,10 @@ function planCalls(units: readonly SourceUnit[], inputTokens: number, estimate: 
   if (task && rest.length > 0 && task.tokens * TASK_CONTEXT_SHARE <= inputTokens) {
     parts = packParts(rest, inputTokens - task.tokens - 1, estimate).map((part) => `${task.text}\n${part}`);
   }
-  let calls = parts.length + 1;
+  let calls = parts.filter((part) => !partIsOwnNotes(part)).length + 1;
   const wrapperTokens = partNotesWrapperTokens(estimate);
   let level = [...(notes !== null ? [units[0]!.tokens] : []),
-    ...parts.map((part) => Math.ceil(estimate(part) / 2) + wrapperTokens)];
+    ...parts.map((part) => (partIsOwnNotes(part) ? estimate(part) : Math.ceil(estimate(part) / 2)) + wrapperTokens)];
   let total = level.reduce((sum, count) => sum + count, 0);
   while (total > inputTokens) {
     const groups = packTokens(level, inputTokens);
@@ -860,8 +867,11 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
    * and so is every re-send of a dropped request. */
   async function step(kind: SummaryStep, text: string, notesBytes: number): Promise<StepOutcome> {
     let repair: RepairReason | undefined;
-    // `sends`: requests of the current try, for the dropped-request bound.
+    // `sends`: requests of the current try, for the dropped-request bound,
+    // the first of them started at `firstSentAt`.
+    let firstSentAt = 0;
     for (let tries = 0, sends = 1; tries < 2;) {
+      if (sends === 1 && input.adapter.droppedRequestRetry) firstSentAt = droppedRequestRetryNow(input.adapter.droppedRequestRetry);
       used += 1;
       if (used > CONTEXT_COMPACTION_LIMITS.summaryCalls) {
         throw new ContextSummaryError("context_compaction_summary_failed", "The bounded summary call budget for this source is exhausted.");
@@ -940,7 +950,8 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
         // only while the source's call cap leaves a number for the re-send.
         const retry = input.adapter.droppedRequestRetry;
         const delayMs = retry && used < CONTEXT_COMPACTION_LIMITS.summaryCalls
-          ? droppedRequestRetryDelay(retry, { acceptedOutput: false, attempt: sends, error, signal: input.signal }) : null;
+          ? droppedRequestRetryDelay(retry, { acceptedOutput: false, attempt: sends, error, firstRequestAt: firstSentAt,
+            signal: input.signal, textOutput: output !== "" }) : null;
         if (delayMs !== null) {
           // Stop and the run's deadlines end the wait with their own reason.
           await (retry!.sleep ?? sleepWithSignal)(delayMs, input.signal ?? new AbortController().signal);
@@ -981,6 +992,10 @@ async function summarize(input: ContextSummaryInput, attempts: ContextSummaryAtt
   } else {
     let partials: string[] = notes === null ? [] : [notes];
     for (const part of parts) {
+      if (partIsOwnNotes(part)) {
+        partials.push(`<part-notes>\n${part}\n</part-notes>`);
+        continue;
+      }
       const partial = await step("partial", part, partialNotes(part));
       await partial.settle("settled");
       partials.push(`<part-notes>\n${partial.notes}\n</part-notes>`);

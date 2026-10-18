@@ -100,6 +100,60 @@ function failedRunSection(report: HealthFullReport): string[] {
   ]));
 }
 
+function codeCounts(codes: ReadonlyArray<Readonly<{ code: string | null; runs?: number; count?: number }>>): string[] {
+  return codes.map((item) => `${item.code ?? "no code"} ×${item.runs ?? item.count ?? 0}`);
+}
+
+function modelSection(report: HealthFullReport): string[] {
+  const { models } = report;
+  return section(heading("Runs by model (runs created in the range, most failures first)", models.rows.length, models.truncated),
+    models.rows.flatMap((row) => [
+      ...wrapParts([present([row.connectionName ?? "unattributed", row.modelName]).join(" · ")], "  ", " · "),
+      ...wrapParts(present([`accepted ${row.accepted}`, `completed ${row.completed}`, `failed ${row.failed} (${percent(row.failureRate)})`,
+        `cancelled ${row.cancelled}`, row.refusedInput > 0 && `refused input ${row.refusedInput}`, row.open > 0 && `open ${row.open}`,
+        plural(row.users, "user"), row.lastFailedAt && `last failure ${minute(row.lastFailedAt)}`]), "      ", " · "),
+      ...(row.codes.length > 0 ? wrapParts(codeCounts(row.codes), "      codes ", ", ") : [])
+    ]));
+}
+
+/** Streak rows of the agent reports, with the user ids only they carry. */
+function streakLines(streaks: HealthFullReport["failureStreaks"]): string[] {
+  return streaks.rows.flatMap((row) => [
+    ...wrapParts(present([`user ${row.userId}`, `${row.runs} runs in a row`, `failed ${row.failed}`, `cancelled ${row.cancelled}`,
+      row.ongoing && "STILL FAILING"]), "  ", " · "),
+    `      first ${minute(row.firstAt)} · last ${minute(row.lastAt)}`,
+    ...(row.codes.length > 0 ? wrapParts(codeCounts(row.codes), "      codes ", ", ") : []),
+    ...wrapParts(row.newest.map((run) => `ref ${run.runReference}`), row.newest.length < row.runs ? `      newest ${row.newest.length}: ` : "      ",
+      " · ")
+  ]);
+}
+
+function streakTitle(streaks: HealthFullReport["failureStreaks"]): string {
+  return `Failure streaks (${streaks.minRuns}+ failed or cancelled runs in a row in one chat: ${plural(streaks.streaks, "streak")}, ` +
+    `${plural(streaks.users, "user")}, longest ${streaks.longest}${streaks.truncated ? "; more exist" : ""})`;
+}
+
+function streakSection(report: HealthFullReport): string[] {
+  return section(streakTitle(report.failureStreaks), streakLines(report.failureStreaks));
+}
+
+function pushSection(report: HealthFullReport): string[] {
+  const { pushDelivery } = report;
+  return section(heading("Browser push deliveries by push service, outcome and code", pushDelivery.rows.length, pushDelivery.truncated),
+    pushDelivery.rows.flatMap((row) => plain(present([row.service ?? "service unknown", row.outcome, row.code && `code ${row.code}`,
+      row.category && `transport ${row.category}`, row.httpStatus !== null && `HTTP ${row.httpStatus}`]), seenParts(row))));
+}
+
+function signInBurstSection(report: HealthFullReport): string[] {
+  const { signInBursts } = report;
+  const window = signInBursts.windowMs % 60_000 === 0 ? `${signInBursts.windowMs / 60_000} min` : duration(signInBursts.windowMs);
+  return section(heading(`Sign-in refusal bursts (${signInBursts.minFailures}+ failures of one method within ${window} ` +
+    "in one hour; no identities)", signInBursts.rows.length, signInBursts.truncated),
+  signInBursts.rows.flatMap((row) => plain(present([row.method ?? "method unknown", `${row.failures} failures`,
+    `within ${duration(row.spanMs)}`, `hour ${minute(row.hourStart)}`]), [`first ${second(row.firstAt)}`, `last ${second(row.lastAt)}`,
+    ...codeCounts(row.codes)])));
+}
+
 function providerName(row: HealthLatencyProviderRow): string {
   return present([row.providerFamily, row.connectionName, row.modelName]).join(" · ") || "unattributed";
 }
@@ -120,21 +174,34 @@ function latencySection(report: HealthFullReport): string[] {
   ]);
 }
 
+const UNAUTHENTICATED_LABEL = "  Unauthenticated / unknown route (signed-out clients, bots, scanners):";
+
+/** Users' rows (then `userLines`) first; signed-out and unknown-route traffic after its own label. */
+function byAudience<T extends Readonly<{ unauthenticatedOrUnknownRoute: boolean }>>(rows: readonly T[],
+  lines: (row: T) => string[], userLines: readonly string[] = []): string[] {
+  const outside = rows.filter((row) => row.unauthenticatedOrUnknownRoute);
+  return [...rows.filter((row) => !row.unauthenticatedOrUnknownRoute).flatMap(lines), ...userLines,
+    ...(outside.length > 0 ? [UNAUTHENTICATED_LABEL, ...outside.flatMap(lines)] : [])];
+}
+
 function failureSection(report: HealthFullReport): string[] {
   const { failures } = report;
   return section(heading("Failures: warn, error and fatal records by key", failures.rows.length, failures.truncated),
-    failures.rows.flatMap((row) => tagged(row.level, present([
+    byAudience(failures.rows, (row) => tagged(row.level, present([
       row.event,
       row.overflow ? "overflow (fields dropped)" : null,
       row.code && `code ${row.code}`,
       row.subsystem && `subsystem ${row.subsystem}`,
       row.stage && `stage ${row.stage}`,
       row.reason && `reason ${row.reason}`,
+      row.method,
       row.routePath,
       row.status !== null && `status ${row.status}`,
       row.httpStatus !== null && `HTTP ${row.httpStatus}`,
+      row.providerErrorCode && `provider error ${row.providerErrorCode}`,
       row.providerFamily,
-      row.toolKind && `tool ${row.toolKind}`
+      row.toolKind && `tool ${row.toolKind}`,
+      row.operation && `operation ${row.operation}`
     ]), [...seenParts(row), `version ${row.appVersions.join(", ") || "-"}`])));
 }
 
@@ -174,6 +241,7 @@ function toolSection(report: HealthFullReport): string[] {
   return section(heading("Tool calls by family, then calls that did not complete by code", unfinished.length, toolCalls.truncated), [
     ...toolCalls.families.flatMap((family) => wrapParts([
       plural(family.calls, "call"), `failed ${family.failed}`, `timed out ${family.timedOut}`, `cancelled ${family.cancelled}`,
+      ...(family.awaitingApproval > 0 ? [`awaiting approval ${family.awaitingApproval}`] : []),
       ...statParts(family)
     ], `  ${fit(family.toolKind ?? "unknown", 16)}  `, " · ")),
     ...unfinished.flatMap((row) => plain(present([row.toolKind ?? "unknown", row.outcome, row.code && `code ${row.code}`]),
@@ -185,12 +253,11 @@ function httpSection(report: HealthFullReport): string[] {
   const { http } = report;
   return section(heading("HTTP: 4xx and 5xx responses and failed requests by route", http.rows.length + http.clientErrors.length,
     http.truncated), [
-    ...http.rows.flatMap((row) => tagged(row.level, present([
+    ...byAudience(http.rows, (row) => tagged(row.level, present([
       row.event, row.method, row.routePath ?? "route unknown", row.status !== null && `status ${row.status}`, row.outcome,
       row.stage && `stage ${row.stage}`
-    ]), seenParts(row))),
-    ...http.clientErrors.flatMap((row) => tagged("warn", present(["client.error", row.kind, row.routePath ?? "route unknown"]),
-      seenParts(row)))
+    ]), seenParts(row)), http.clientErrors.flatMap((row) => tagged("warn", present(["client.error", row.kind,
+      row.routePath ?? "route unknown"]), seenParts(row))))
   ]);
 }
 
@@ -277,9 +344,9 @@ function operationSection(report: HealthFullReport): string[] {
  * then where AIQSA failed, then how it performed and ran.
  */
 const FULL_SECTIONS: ReadonlyArray<(report: HealthFullReport) => string[]> = [
-  failedRunSection, (report) => problemSection("Answer problem reports", report.problemReports), runSection,
-  errorGroupSection, failureSection, timeoutSection, toolSection, httpSection, signInSection, slowTransactionSection, incidentSection,
-  latencySection, operationSection
+  failedRunSection, streakSection, (report) => problemSection("Answer problem reports", report.problemReports), runSection, modelSection,
+  errorGroupSection, failureSection, timeoutSection, toolSection, httpSection, signInSection, signInBurstSection, pushSection,
+  slowTransactionSection, incidentSection, latencySection, operationSection
 ];
 
 export function formatHealthFullReport(report: HealthFullReport): string {
@@ -307,6 +374,8 @@ export function formatHealthUserReport(report: HealthUserReport): string {
       ...wrapParts(present([run.failureCode && `failure ${run.failureCode}`, run.connectionName, run.modelName,
         plural(run.incidentCount, "incident")]), "    ", " · ")
     ])),
+    "",
+    ...section(streakTitle(report.failureStreaks), streakLines(report.failureStreaks)),
     "",
     ...section(heading("Incidents (UTC, newest first)", report.incidents.rows.length, report.incidents.truncated),
       report.incidents.rows.flatMap(agentIncidentLines)),

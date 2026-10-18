@@ -351,6 +351,12 @@ export type ThreadWorkspaceActivityCodeMcp = Readonly<{
 
 export const WORKSPACE_ACTIVITY_CODE_MCP_MAX_TOOLS = 8;
 
+/** Why the end-of-run export left an output-folder entry out: a symbolic link, or a socket, FIFO or device. */
+export const WORKSPACE_OUTPUT_SKIP_REASONS = Object.freeze(["link", "special"] as const);
+export type WorkspaceOutputSkipReason = (typeof WORKSPACE_OUTPUT_SKIP_REASONS)[number];
+/** Content-free: skipped entries counted by reason, never their names or paths. Only positive counts are present. */
+export type WorkspaceOutputSkips = Readonly<Partial<Record<WorkspaceOutputSkipReason, number>>>;
+
 export type ThreadWorkspaceActivityCommand = Readonly<{
   /** MCP calls made by this command's code, aggregated. */
   codeMcp?: ThreadWorkspaceActivityCodeMcp;
@@ -395,6 +401,8 @@ export type ThreadWorkspaceActivityEntry = Readonly<{
   search?: Readonly<{ query: string; source: string }>;
   /** Assigned by ModelRunEvent persistence and retained when this update is replayed. */
   sequence?: number;
+  /** `outputs_export` only: output-folder entries the export did not include. */
+  skipped?: WorkspaceOutputSkips;
   startedAt?: string;
   text?: string;
   /** Unknown rows at or below this durable boundary have already been elided. */
@@ -435,6 +443,7 @@ const ACTIVITY_ENTRY_KEYS = new Set([
   "runOutcome",
   "search",
   "sequence",
+  "skipped",
   "startedAt",
   "text",
   "throughSequence",
@@ -473,6 +482,21 @@ function boundedCount(value: unknown, maximum: number): number | null {
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+const OUTPUT_SKIP_KEYS: ReadonlySet<string> = new Set(WORKSPACE_OUTPUT_SKIP_REASONS);
+
+/** Null unless only known reasons, each with a positive bounded count, and at least one. */
+export function decodeWorkspaceOutputSkips(value: unknown): WorkspaceOutputSkips | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, OUTPUT_SKIP_KEYS)) return null;
+  const skips: Partial<Record<WorkspaceOutputSkipReason, number>> = {};
+  for (const reason of WORKSPACE_OUTPUT_SKIP_REASONS) {
+    if (value[reason] === undefined) continue;
+    const count = boundedCount(value[reason], 1_000_000);
+    if (!count) return null;
+    skips[reason] = count;
+  }
+  return Object.keys(skips).length > 0 ? skips : null;
 }
 
 export function decodeThreadWorkspaceActivityCodeMcp(value: unknown): ThreadWorkspaceActivityCodeMcp | null {
@@ -602,6 +626,9 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
   if (durationMs === null) return null;
   const count = value.count === undefined ? undefined : boundedCount(value.count, 1_000_000);
   if (count === null) return null;
+  const skipped = value.skipped === undefined ? undefined
+    : kind === "outputs_export" ? decodeWorkspaceOutputSkips(value.skipped) : null;
+  if (skipped === null) return null;
   const errorCode = value.errorCode === undefined
     ? undefined
     : isWorkspaceErrorCode(value.errorCode) ? value.errorCode : null;
@@ -694,6 +721,7 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     ...(runOutcome ? { runOutcome } : {}),
     ...(search ? { search } : {}),
     ...(sequence !== undefined ? { sequence } : {}),
+    ...(skipped ? { skipped } : {}),
     ...(startedAt ? { startedAt } : {}),
     ...(text !== undefined ? { text } : {}),
     ...(elided.throughSequence !== undefined ? { throughSequence: elided.throughSequence } : {}),

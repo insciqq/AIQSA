@@ -177,7 +177,7 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
       ? visionAnalysisTimeoutMs(input.plan.vision) : LIMITS.timeoutMs), 1_000), 600_000);
     let providerStartedAt: number | undefined;
     let providerEndedAt: number | undefined;
-    const observe = (code: string | undefined) => observeVisionAttempt({ stage: "grounding", startedAt, code, snapshot,
+    const observe = (code: string | undefined, error?: unknown) => observeVisionAttempt({ stage: "grounding", startedAt, code, error, snapshot,
       phases: { preparationMs: (providerStartedAt ?? performance.now()) - startedAt, timeoutMs,
         ...(providerStartedAt === undefined ? {} : { providerMs: (providerEndedAt ?? performance.now()) - providerStartedAt }) } });
     const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]);
@@ -190,6 +190,7 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
     let finish: ((ok: boolean, code: string | null) => Promise<void>) | null = null;
     try {
       let result: Settlement;
+      let unmapped: unknown;
       try {
         bounded.throwIfAborted();
         const destination = await store.destination(c, input.plan);
@@ -229,12 +230,14 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
         const observed = observedFailureCode(error);
         const code = input.signal.aborted ? "vision_analysis_cancelled" : bounded.aborted ? "vision_analysis_timeout"
           : KNOWN_FAILURES.has(observed) ? observed : sent ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
+        // Recorded by its content-free class and site only, so the next unmapped cause is diagnosable.
+        if (code === "vision_analysis_internal_failed") unmapped = error;
         result = { kind: "failed", code };
       }
       const failureCode = result.kind === "failed" ? result.code : undefined;
       // Nothing was claimed: the run fails visibly and nothing needs settling.
       if (!dispatched) {
-        observe(failureCode);
+        observe(failureCode, unmapped);
         return result;
       }
       // A claim that never reached the provider settles as a definite failure.
@@ -251,7 +254,7 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
           return { kind: "unknown" };
         }
       }
-      observe(failureCode);
+      observe(failureCode, unmapped);
       return settled;
     } finally {
       for (const image of images) image.dispose();

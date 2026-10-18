@@ -48,6 +48,7 @@ import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import { GeminiInteractionsStreamError } from "../providers/geminiInteractionsStreamError";
 import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanResult, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
+import { mcpOversizedResponseMessage } from "../../contracts/mcpToolFailure";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import { mcpDispatchError } from "../mcp/dispatchStatus";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
@@ -3994,7 +3995,7 @@ describe("run execution", () => {
     [403, "provider_auth_rejected", "The model provider rejected the configured credentials (HTTP 403). Ask an administrator to check the provider key."],
     [402, "provider_quota_exhausted", "The model provider reports that the account has no remaining quota or balance (HTTP 402). Ask an administrator to check the provider account."],
     [429, "provider_rate_limited", "The model provider is limiting requests (HTTP 429) and the retries did not succeed. Wait a minute before trying again."],
-    [503, "provider_server_error", "The model provider returned a server error (HTTP 503) and the retries did not succeed. Try again later."]
+    [503, "provider_server_error", "The model provider returned a server error (HTTP 503) and kept failing when retried. Try again in a moment, or choose another model."]
   ] as const)("persists the provider failure class of HTTP %i with its identity, never provider text", async (status, code, message) => {
     const observation = await captureRunObservation();
     const repository = createRepository();
@@ -7722,10 +7723,14 @@ describe("run execution", () => {
       }
       return providerResult({ finalText: "Safe completion", usage: usage(1, 1, 0) });
     });
-    const overflow = new McpClientSessionError({ code, operation });
+    const overflow = new McpClientSessionError({ code, maxBytes: 16 * 1_024 * 1_024, operation });
     for (const [key, value] of Object.entries(prohibitedMarkers)) {
       Object.defineProperty(overflow, key, { enumerable: true, value });
     }
+    // An over-bound call result tells the model how to ask for less.
+    const modelText = `Tool failed: ${code === "mcp_call_result_too_large"
+      ? mcpOversizedResponseMessage(16 * 1_024 * 1_024) : overflow.message}`;
+    if (code === "mcp_call_result_too_large") expect(modelText).toContain("larger than 16 MiB");
     const mcpRuntime: NonNullable<RunExecutionInput["mcpRuntime"]> = {
       async callTool() {
         throw overflow;
@@ -7757,7 +7762,7 @@ describe("run execution", () => {
     if (!settledCall?.result) throw new Error("expected persisted overflow result");
     expect(settledCall.result).toMatchObject({
       callId: "overflow-call",
-      content: [{ text: `Tool failed: ${overflow.message}`, type: "text" }],
+      content: [{ text: modelText, type: "text" }],
       name: namespacedName,
       rawPreview: {
         finalProviderResponsePreview: { code, error: overflow.message },
@@ -7784,7 +7789,7 @@ describe("run execution", () => {
       },
       {
         call_id: "overflow-call",
-        output: `Tool failed: ${overflow.message}`,
+        output: modelText,
         type: "function_call_output"
       }
     ]);
@@ -7793,6 +7798,44 @@ describe("run execution", () => {
     for (const marker of Object.values(prohibitedMarkers)) {
       expect(JSON.stringify(providerRequests)).not.toContain(marker);
     }
+  });
+
+  it.each([0, 1] as const)("gives the model the oversized-response hint for a session error of another bundle's runtime (observations v%s)", async (version) => {
+    // The shared MCP runtime starts in instrumentation's bundle, so the error a
+    // chat route receives is another copy of the class, never instanceof it.
+    const foreign = Object.assign(new Error(new McpClientSessionError({ code: "mcp_call_result_too_large", operation: "call_tool" }).message), {
+      code: "mcp_call_result_too_large", maxBytes: 65_536, name: "McpClientSessionError", operation: "call_tool", retryable: false
+    });
+    expect(foreign).not.toBeInstanceOf(McpClientSessionError);
+    const namespacedName = "mcp_mail_read_thread";
+    const mcp: McpRunPlanSnapshot = { version: 1,
+      servers: [{ fingerprint: "fingerprint-mail", revisionId: "revision-mail", serverId: "server-mail", serverName: "Mail" }],
+      tools: [{ definitionHash: "d".repeat(64), description: "Read one thread", inputSchema: { type: "object" },
+        name: "read_thread", namespacedName, originalName: "read_thread", serverId: "server-mail", serverName: "Mail" }] };
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      return providerRequests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ arguments: { id: "t-1" }, id: "thread-call", name: namespacedName }], usage: usage(1, 1, 0) })
+        : providerResult({ finalText: "Asked for less", usage: usage(1, 1, 0) });
+    });
+    const base = preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, toolObservationVersion: version },
+      providerRequest: { ...base.providerRequest, toolObservationVersion: version } };
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+      mcpRuntime: { async callTool() { throw foreign; }, ensureAcceptedGeneration: async () => true } }),
+    observations: memoryToolObservations().service() }).text();
+
+    const hint = `Tool failed: ${mcpOversizedResponseMessage(65_536)}`;
+    expect(hint).toContain("MCP tool response exceeded its size limit. The tool was called, but its response was larger than 64 KiB");
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe("Asked for less");
+    const [settled] = [...repository.toolCalls.values()];
+    expect(settled).toMatchObject({ state: "error", result: { content: [{ text: hint, type: "text" }], status: "error",
+      rawPreview: { finalProviderResponsePreview: { code: "mcp_call_result_too_large", error: foreign.message } } } });
+    expect(JSON.stringify(settled?.result)).not.toContain("without a confirmed specific cause");
+    expect(providerRequests[1]?.providerToolMessages?.at(-1)).toEqual({ call_id: "thread-call", output: hint, type: "function_call_output" });
   });
 
   it("persists partial Search usage when Stop interrupts its provider call", async () => {

@@ -11,6 +11,7 @@ import {
   providerContextLengthRejection,
   type ProviderContextLengthCounts
 } from "./responseFailure";
+import { markProviderErrorCode, providerErrorCodeOfBody } from "./providerErrorCode";
 
 export type DeepSeekResponseObject = Record<string, unknown>;
 
@@ -88,15 +89,18 @@ function rejectionFacts(text: string): Readonly<{
 async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
   let contextLength: ProviderContextLengthCounts | null = null;
   let invalidRequest = false;
+  // The error code or type of any status, for telemetry only.
+  let providerError: string | null = null;
   try {
     const text = await readBoundedResponseText(response, { maxBytes: Math.min(providerResponseMaxBytes(), 64 * 1024), signal });
+    providerError = providerErrorCodeOfBody(text);
     if (response.status === 400) ({ contextLength, invalidRequest } = rejectionFacts(text));
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) throw error;
   }
-  throw Object.assign(new DeepSeekHttpError(response.status),
+  throw markProviderErrorCode(Object.assign(new DeepSeekHttpError(response.status),
     contextLength ? { code: PROVIDER_CONTEXT_LENGTH_EXCEEDED, ...contextLength }
-      : invalidRequest ? { code: "provider_http_invalid_request" } : {});
+      : invalidRequest ? { code: "provider_http_invalid_request" } : {}), providerError);
 }
 
 export function createFetchDeepSeekResponsesClient(input: Readonly<{
