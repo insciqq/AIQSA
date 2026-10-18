@@ -24,11 +24,12 @@ import {
   type SearchPlan
 } from "../../domain/search";
 import {
-  compatibleTechnicalAdapter,
   searchStrategyKind,
   normalizeSearchDraft,
-  searchExecutionModes
+  searchExecutionModes,
+  technicalSearchModelSupports
 } from "../search/configuration";
+import { DEEPSEEK_SEARCH_API_MODEL_ID } from "../providers/deepSeekSearchApi";
 import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
 import { hasVerifiedToolChoiceMode } from "../providers/forcedToolCallEvidence";
@@ -815,6 +816,7 @@ function supportedSearchOption(option: LoadedSearchOption): boolean {
   if (option.kind === "none") return false;
   return (
     option.kind === "web_search" ||
+    option.kind === "deepseek_search_api" ||
     option.kind === "gemini_google_search" ||
     option.kind === "perplexity_search"
   ) && typeof option.sourceConnectionId === "string" && option.sourceConnectionId.length > 0;
@@ -921,6 +923,11 @@ function clientRouteCompatible(
   if (option.kind === "gemini_google_search") {
     return route.draft.protocol === "gemini_google_search";
   }
+  // Raw results reach any tool-calling answer model; the technical model
+  // only carries the DeepSeek connection key and never answers.
+  if (option.kind === "deepseek_search_api") {
+    return route.draft.protocol === "deepseek_search_api";
+  }
   return option.kind === "perplexity_search" &&
     route.draft.protocol === "openrouter_perplexity_chat" &&
     route.draft.providerModelId !== answerModelId;
@@ -937,6 +944,10 @@ function routeBelongsToOption(
   }
   if (option.kind === "gemini_google_search") {
     return route.draft.protocol === "gemini_google_search";
+  }
+  if (option.kind === "deepseek_search_api") {
+    return route.draft.adapterKind === "provider_model_client" &&
+      route.draft.protocol === "deepseek_search_api";
   }
   return option.kind === "perplexity_search" &&
     route.draft.adapterKind === "provider_model_client" &&
@@ -1044,8 +1055,10 @@ async function loadClientRouteRole(
   });
   return role.authority &&
     role.snapshot.connectionId === input.option.sourceConnectionId &&
-    role.modelConfiguration.capabilities.nativeSearch === true &&
-    compatibleTechnicalAdapter(input.route.draft.protocol, role.snapshot.model.adapterKind)
+    technicalSearchModelSupports(input.route.draft.protocol, {
+      adapterKind: role.snapshot.model.adapterKind,
+      nativeSearch: role.modelConfiguration.capabilities.nativeSearch
+    })
     ? role
     : null;
 }
@@ -1074,7 +1087,11 @@ function searchConfiguration(
     displayName: option.displayName,
     executionModes: searchExecutionModes(route.draft.adapterKind),
     kind: route.strategy.kind,
-    modelId: role?.snapshot.model.upstreamModelId ?? null,
+    // The raw results API names itself in usage and evidence, not the model
+    // whose connection key it borrows.
+    modelId: route.draft.protocol === "deepseek_search_api" && role
+      ? DEEPSEEK_SEARCH_API_MODEL_ID
+      : role?.snapshot.model.upstreamModelId ?? null,
     protocol: route.draft.protocol,
     provider: role?.snapshot.providerFamily ?? answer.snapshot.providerFamily,
     providerModelId: route.draft.providerModelId,

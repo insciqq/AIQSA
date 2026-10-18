@@ -26,6 +26,7 @@ export type SearchCredentialMode = (typeof searchCredentialModes)[number];
 export const searchProtocols = [
   "anthropic_web_search",
   "deepseek_responses_web_search",
+  "deepseek_search_api",
   "gemini_google_search",
   "openai_responses_web_search",
   "openrouter_perplexity_chat"

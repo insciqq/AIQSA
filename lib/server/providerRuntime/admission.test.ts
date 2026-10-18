@@ -33,6 +33,7 @@ const capabilities = (input: Readonly<{
 type ModelSpec = Readonly<{
   adapterKind:
     | "anthropic_messages"
+    | "deepseek_responses_native"
     | "gemini_interactions_native"
     | "openai_chat_completions_compatible"
     | "openai_responses_compatible"
@@ -44,7 +45,7 @@ type ModelSpec = Readonly<{
   contextWindow?: number;
   defaultParams?: Readonly<Record<string, unknown>>;
   displayName?: string;
-  family: "anthropic" | "gemini" | "openai" | "openai_compatible" | "openrouter";
+  family: "anthropic" | "deepseek" | "gemini" | "openai" | "openai_compatible" | "openrouter";
   id: string;
   nativePdfInput?: boolean;
   nativeSearch?: boolean;
@@ -62,6 +63,7 @@ type RouteSpec = Readonly<{
   id: string;
   protocol:
     | "anthropic_web_search"
+    | "deepseek_search_api"
     | "gemini_google_search"
     | "openai_responses_web_search"
     | "openrouter_perplexity_chat";
@@ -71,7 +73,7 @@ type RouteSpec = Readonly<{
 
 type OptionSpec = Readonly<{
   displayName: string;
-  kind: "gemini_google_search" | "none" | "perplexity_search" | "web_search";
+  kind: "deepseek_search_api" | "gemini_google_search" | "none" | "perplexity_search" | "web_search";
   optionId: string;
   routes?: readonly RouteSpec[];
   sourceConnectionId: string | null;
@@ -79,6 +81,7 @@ type OptionSpec = Readonly<{
 
 function apiRoot(family: ModelSpec["family"]): string {
   if (family === "anthropic") return "https://api.anthropic.com/v1";
+  if (family === "deepseek") return "https://api.deepseek.com";
   if (family === "gemini") return "https://generativelanguage.googleapis.com/v1beta";
   if (family === "openrouter") return "https://openrouter.ai/api/v1";
   if (family === "openai_compatible") return "https://compatible.example.test/v1";
@@ -165,7 +168,8 @@ function physicalRoute(spec: RouteSpec) {
     maxSearchCallsPerAnswer: 2,
     protocol: spec.protocol,
     providerModelId,
-    queryMaxCharacters: 500,
+    // The DeepSeek Search API takes at most 128 query characters.
+    queryMaxCharacters: spec.protocol === "deepseek_search_api" ? 128 : 500,
     reasoningPolicy: spec.adapterKind === "provider_model_client"
       ? "lowest_supported"
       : "provider_default",
@@ -1617,6 +1621,79 @@ describe("provider admission", () => {
       optionId: "perplexity-tool-search",
       revisionId: "revision-perplexity-client",
       role: { snapshot: { connectionId: "connection-openrouter" } }
+    });
+  });
+
+  describe("DeepSeek Search API", () => {
+    // A DeepSeek model without hosted Search still carries the connection key.
+    const carrier: ModelSpec = {
+      adapterKind: "deepseek_responses_native",
+      connectionId: "connection-deepseek",
+      family: "deepseek",
+      id: "model-deepseek-flash",
+      nativeSearch: false,
+      upstreamModelId: "deepseek-flash"
+    };
+    const apiOption = (providerModelId = carrier.id): OptionSpec => ({
+      displayName: "DeepSeek Search API",
+      kind: "deepseek_search_api",
+      optionId: "deepseek-search-api-1",
+      routes: [{
+        adapterKind: "provider_model_client",
+        id: "route-deepseek-api",
+        protocol: "deepseek_search_api",
+        providerModelId,
+        revisionId: "revision-deepseek-api"
+      }],
+      sourceConnectionId: carrier.connectionId
+    });
+
+    it.each([
+      ["OpenAI", officialOpenAiModel],
+      ["Claude", {
+        adapterKind: "anthropic_messages", connectionId: "connection-anthropic", family: "anthropic",
+        id: "model-opus", upstreamModelId: "claude-opus-5"
+      }],
+      ["DeepSeek", { ...carrier, id: "model-deepseek-pro", nativeSearch: true, upstreamModelId: "deepseek-v4-pro" }]
+    ] satisfies Array<[string, ModelSpec]>)("admits the raw results route for a %s answer model", async (_name, answer) => {
+      const { db } = admissionDb({ answer, options: [apiOption()], technicalModels: [carrier] });
+      const search = expectSearch(await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+        providerConnectionId: answer.connectionId,
+        providerModelId: answer.id,
+        searchPlan: { mode: "model_choice", optionIds: ["deepseek-search-api-1"] },
+        userId: "user-1"
+      }));
+
+      expect(search).toMatchObject({
+        bindingKey: "search:deepseek-search-api-1",
+        configuration: {
+          adapterKind: "provider_model_client",
+          executionModes: ["all_selected", "model_choice"],
+          kind: "provider_model_web_search",
+          // Usage and evidence name the API, not the carrier model.
+          modelId: "deepseek-search-api",
+          protocol: "deepseek_search_api",
+          provider: "deepseek",
+          providerModelId: carrier.id
+        },
+        integrationId: "route-deepseek-api",
+        role: { snapshot: { connectionId: "connection-deepseek", providerModelId: carrier.id } }
+      });
+    });
+
+    it("refuses a carrier that is not a DeepSeek model of the source connection", async () => {
+      const foreign: ModelSpec = { ...officialOpenAiSearchModel, connectionId: "connection-deepseek" };
+      const { db } = admissionDb({
+        answer: officialOpenAiModel,
+        options: [apiOption(foreign.id)],
+        technicalModels: [foreign]
+      });
+      await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+        providerConnectionId: officialOpenAiModel.connectionId,
+        providerModelId: officialOpenAiModel.id,
+        searchPlan: { mode: "model_choice", optionIds: ["deepseek-search-api-1"] },
+        userId: "user-1"
+      })).rejects.toMatchObject({ code: "search_strategy_not_available" });
     });
   });
 
