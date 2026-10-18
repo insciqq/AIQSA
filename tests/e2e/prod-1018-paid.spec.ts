@@ -689,7 +689,7 @@ async function deepSeekSearchApiSource(page: Page, connectionId: string, summary
     await expect(add).toBeEnabled({ timeout: 60_000 });
     await add.click();
     const sheet = page.getByRole("dialog", { name: "Add source" });
-    const searchModel = sheet.getByLabel("Search model");
+    const searchModel = sheet.getByRole("combobox", { exact: true, name: "Search model" });
     const option = searchModel.locator("option").filter({ hasText: `${connectionName} Search API · key via ` }).first();
     await expect(option).toBeAttached();
     await searchModel.selectOption({ label: (await option.textContent())!.trim() });
