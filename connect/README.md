@@ -28,7 +28,23 @@ and serves the binaries itself; nothing is published to a package registry.
     Adding a fixture file needs no code change.
   - `contract.json` holds the limits, codes, patterns and paths; both suites
     compare their exported constants with it.
+- `internal/config/` — directories (XDG, overridable with
+  `AIQSA_CONNECT_CONFIG_DIR`, `AIQSA_CONNECT_STATE_DIR` and the tmux socket
+  name `AIQSA_CONNECT_TMUX_SOCKET`), origin validation and the 0600
+  credentials file.
+- `internal/api/` — the device API client: pairing, the SSE device stream
+  and event batches.
+- `internal/tmux/` — the client's own tmux server (`tmux -L <socket>` with a
+  generated config): sessions and their metadata in `@aiqsa_*` user options,
+  history and the answer-option parser.
+- `internal/daemon/` — the `up` main loop: reconnects, the single event
+  sender, PTY views, server commands and `ReportStatus`.
+- `internal/logx/` — the content-free log (event names, codes and counts).
 - `dist/` — locally built binaries (ignored by Git and Docker).
+
+Tests never touch the user's own tmux servers or client directories: they
+run tmux on a random socket in a private `TMUX_TMPDIR` and set the
+directory overrides; tmux tests are skipped when tmux is not installed.
 
 ## Development
 
