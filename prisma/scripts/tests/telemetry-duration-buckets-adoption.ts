@@ -1,4 +1,4 @@
-export const TELEMETRY_DURATION_BUCKETS_MIGRATION = "20261018153700_telemetry_duration_buckets";
+export const TELEMETRY_DURATION_BUCKETS_MIGRATION = "20261018234500_telemetry_duration_buckets";
 
 const columns = `"bucketStart", "role", "event", "level", "appVersion", "dimensionHash", "dimensions",
   "count", "valueSum", "durationCount", "durationSumMs", "durationMaxMs", "durationBuckets", "firstSeenAt", "lastSeenAt"`;
