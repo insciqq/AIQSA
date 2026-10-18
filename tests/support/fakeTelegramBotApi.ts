@@ -927,6 +927,6 @@ export type FakeTelegramBotApi = ReturnType<typeof createFakeTelegramBotApi>;
 
 async function readStream(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+  for await (const chunk of stream) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
