@@ -43,6 +43,10 @@ export const adminSearchExecutionLimits = Object.freeze({
   timeoutMs: Object.freeze({ maximum: 900_000, minimum: 5_000 })
 });
 
+/** The DeepSeek Search API accepts queries of at most 128 characters; its
+ * sources reject longer generated queries rather than truncate them. */
+export const DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS = 128;
+
 export type AdminSearchTestEvidence = {
   checkedAt: string;
   method: "configuration" | "provider_search";
@@ -51,7 +55,7 @@ export type AdminSearchTestEvidence = {
   status: "available" | "unavailable";
 };
 
-export type AdminSearchKind = "gemini_google_search" | "perplexity_search" | "web_search";
+export type AdminSearchKind = "deepseek_search_api" | "gemini_google_search" | "perplexity_search" | "web_search";
 export type AdminSearchReadiness = "ready" | "setup_required" | "source_unavailable";
 export type AdminSearchBroaderModelSetup = "not_applicable" | "ready" | "setup_required";
 
@@ -94,7 +98,9 @@ export type AdminSearchProviderModelOption = {
   id: string;
   responseTimeoutSeconds?: number;
   searchReasoningSupported: boolean;
-  searchKind: "anthropic_web_search" | "deepseek_web_search" | "gemini_google_search" | "perplexity_search" | "web_search";
+  /** `deepseek_search_api` lists a DeepSeek model whose connection key the
+   * DeepSeek Search API uses; that model is never called for Search. */
+  searchKind: "anthropic_web_search" | "deepseek_search_api" | "deepseek_web_search" | "gemini_google_search" | "perplexity_search" | "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -143,6 +149,7 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
     ) &&
     (value.protocol === "anthropic_web_search" ||
       value.protocol === "deepseek_responses_web_search" ||
+      value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
       value.protocol === "openrouter_perplexity_chat") &&
@@ -178,6 +185,7 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
     Number.isSafeInteger(value.normalizedSourceCount) &&
     (value.protocol === "anthropic_web_search" ||
       value.protocol === "deepseek_responses_web_search" ||
+      value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
       value.protocol === "openrouter_perplexity_chat") &&
@@ -200,8 +208,8 @@ function integration(value: unknown): boolean {
     Array.isArray(value.executionModes) && value.executionModes.every((mode) =>
       mode === "all_selected" || mode === "model_choice") &&
     string(value.id) &&
-    (value.kind === "gemini_google_search" || value.kind === "perplexity_search" ||
-      value.kind === "web_search") &&
+    (value.kind === "deepseek_search_api" || value.kind === "gemini_google_search" ||
+      value.kind === "perplexity_search" || value.kind === "web_search") &&
     (providerModel === null ||
       (isRecord(providerModel) && string(providerModel.connectionDisplayName) &&
         string(providerModel.connectionId) && string(providerModel.displayName) &&
@@ -222,6 +230,7 @@ function providerModel(value: unknown): boolean {
       boundedInteger(value.responseTimeoutSeconds, providerResponseTimeoutSeconds.minimum, providerResponseTimeoutSeconds.maximum)) &&
     typeof value.searchReasoningSupported === "boolean" &&
     (value.searchKind === "anthropic_web_search" ||
+      value.searchKind === "deepseek_search_api" ||
       value.searchKind === "deepseek_web_search" ||
       value.searchKind === "gemini_google_search" ||
       value.searchKind === "perplexity_search" || value.searchKind === "web_search");

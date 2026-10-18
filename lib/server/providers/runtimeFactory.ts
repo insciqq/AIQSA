@@ -8,6 +8,11 @@ import {
   createFetchDeepSeekResponsesClient
 } from "./deepSeekResponses";
 import { createDeepSeekResponsesSearchAdapter } from "./deepSeekResponsesSearch";
+import {
+  createDeepSeekSearchAdapter,
+  createDeepSeekSearchApiAdapter,
+  createFetchDeepSeekSearchApiClient
+} from "./deepSeekSearchApi";
 import { createCompatibleResponsesAdapter } from "./compatibleResponses";
 import { createFakeProviderAdapter } from "./fakeProvider";
 import {
@@ -415,9 +420,23 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
       });
       return {
         adapter: createDeepSeekResponsesAdapter({ client }),
-        ...(snapshot.model.capabilities.nativeSearch
-          ? { searchAdapter: createDeepSeekResponsesSearchAdapter({ client }) }
-          : {}),
+        // The DeepSeek Search API borrows only this connection's key; the
+        // model's own hosted Search still requires its native Search.
+        searchAdapter: createDeepSeekSearchAdapter({
+          ...(snapshot.model.capabilities.nativeSearch
+            ? { responses: createDeepSeekResponsesSearchAdapter({ client }) }
+            : {}),
+          searchApi: createDeepSeekSearchApiAdapter({
+            client: createFetchDeepSeekSearchApiClient({
+              apiKey: clientSecret,
+              apiRoot: baseUrl,
+              defaultTimeoutMs: responseTimeoutMs,
+              fetchFn
+            }),
+            ...(input.options.disableRequestRetries ? { maxAttempts: 1 } : {}),
+            rateLimitKey: snapshot.credentialId ?? snapshot.connectionId
+          })
+        }),
         structuredOutputAdapter: createDeepSeekResponsesStructuredOutputAdapter({
           client,
           model: snapshot.model

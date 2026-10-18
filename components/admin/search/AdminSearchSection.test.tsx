@@ -529,4 +529,54 @@ describe("AdminSearchSection", () => {
     expect(feedback.reportNotice).toHaveBeenCalledWith("Search source added and working.");
     expect(onSelectResource).toHaveBeenCalledWith("source-new");
   });
+
+  it("adds the DeepSeek Search API on a DeepSeek connection with its own name and query bound", async () => {
+    const deepSeek = {
+      connectionDisplayName: "DeepSeek", connectionId: "conn-deepseek", displayName: "DeepSeek V4 Flash", enabled: true,
+      id: "model-flash", responseTimeoutSeconds: 300, searchReasoningSupported: true
+    } as const;
+    state.current = {
+      ...state.current,
+      providerModels: [
+        ...state.current.providerModels,
+        { ...deepSeek, searchKind: "deepseek_web_search" },
+        { ...deepSeek, searchKind: "deepseek_search_api", searchReasoningSupported: false }
+      ]
+    };
+    const calls = mockFetch(state, ({ method, url }) => method === "POST" && url === "/api/admin/search"
+      ? Response.json({ error: "search_test_quota_exhausted" }, { status: 422 })
+      : null);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add source" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add source" });
+    const model = within(sheet).getByLabelText(/^Search model/);
+    expect(within(model).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Select a Search-capable model",
+      "OpenRouter EU · Sonar Pro",
+      "DeepSeek Search API · key via DeepSeek V4 Flash"
+    ]);
+    fireEvent.change(model, { target: { value: "model-flash" } });
+    expect(within(sheet).getByLabelText("Name")).toHaveValue("DeepSeek Search API");
+    expect(within(sheet).getByLabelText("Generated query limit, characters")).toHaveValue(128);
+    expect(within(sheet).getByLabelText("Generated query limit, characters")).toHaveAttribute("max", "128");
+    expect(within(sheet).getByText(/the model itself is never called/u)).toBeInTheDocument();
+    expect(within(sheet).queryByLabelText("Maximum Search output, tokens")).not.toBeInTheDocument();
+    expect(sheet.textContent).not.toMatch(bannedWords);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("no balance or quota left");
+    expect(calls.find(({ method }) => method === "POST")?.body).toEqual({
+      check: true,
+      description: "Web results with source links from the DeepSeek Search API.",
+      displayName: "DeepSeek Search API",
+      draft: expect.objectContaining({
+        maxOutputTokens: null,
+        protocol: "deepseek_search_api",
+        providerModelId: "model-flash",
+        queryMaxCharacters: 128
+      })
+    });
+  });
 });

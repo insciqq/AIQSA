@@ -23,7 +23,9 @@ import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { observeProviderOperation } from "../providers/providerObservability";
 import { createOpenAIResponsesSearchAdapter } from "../providers/openaiResponsesSearch";
 import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
-import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION } from "./toolResult";
+import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient } from "../providers/deepSeekSearchApi";
+import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION, searchUsageAttribution } from "./toolResult";
+import { SEARCH_NO_RESULTS_FINDINGS } from "./evidence";
 
 function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {}): NormalizedSearchPlanOption {
   return {
@@ -1619,4 +1621,131 @@ it("uses the admitted model allowance in Auto without the old Search ceiling and
   expect(searchExecutionConfiguration(option("old")).maxOutputTokens).toBe(4096);
   expect(() => searchExecutionConfiguration(option("broken", { config: { maxOutputTokens: null } })))
     .toThrow("search_generation_budget_invalid");
+});
+
+describe("DeepSeek Search API engine", () => {
+  const apiOption = option("deepseek-api", {
+    config: { ...option("deepseek-api").config, maxResults: 8, queryMaxCharacters: 128 },
+    displayName: "DeepSeek Search API",
+    modelId: "deepseek-search-api",
+    protocol: "deepseek_search_api",
+    provider: "deepseek"
+  });
+
+  function apiRouter(fetchFn: typeof fetch) {
+    return createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [apiOption] },
+      runtimes: {
+        "deepseek-api": {
+          adapter: runtime().adapter,
+          responseTimeoutMs: 300_000,
+          searchAdapter: createDeepSeekSearchApiAdapter({
+            client: createFetchDeepSeekSearchApiClient({ apiKey: "sk-synthetic", fetchFn }),
+            rateLimiter: { acquire: async () => undefined },
+            rateLimitKey: "credential-1"
+          })
+        }
+      }
+    })!;
+  }
+
+  function roundTrips(result: Awaited<ReturnType<ReturnType<typeof apiRouter>["execute"]>>): void {
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toEqual(result);
+  }
+
+  it("gives any answer model the results as findings and cited sources, billed once", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ results: [{
+      date: "2026-10-01", site_name: "Example News", snippet: "Short snippet.",
+      summary: "The longer summary the model reads.", title: "Example headline", url: "https://example.com/story"
+    }] }));
+    const router = apiRouter(fetchFn);
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [execution] = searchExecutionsFromToolResult(result);
+
+    // The tool advertises the API's query bound; only the generated query is sent.
+    expect(router.tools[0]!.inputSchema).toMatchObject({ properties: { query: { maxLength: 128 } } });
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toEqual({ count: 8, need_content: false, query: "bounded query" });
+    expect(JSON.stringify(fetchFn.mock.calls)).not.toContain("private");
+    expect(result.status).toBe("complete");
+    expect((result.content[0] as { text: string }).text).toBe([
+      'Search source "DeepSeek Search API":\n[1] Example headline — Example News · 2026-10-01\nThe longer summary the model reads.',
+      'Sources for "DeepSeek Search API":\n[1] Example headline — https://example.com/story'
+    ].join("\n\n"));
+    expect(execution).toMatchObject({
+      costUsd: 0.00075, modelId: "deepseek-search-api", provider: "deepseek", status: "complete",
+      sources: [{ citation: 1, date: "2026-10-01", rank: 1, snippet: "Short snippet.", title: "Example headline", url: "https://example.com/story" }]
+    });
+    expect(searchUsageAttribution(execution!)).toMatchObject({
+      estimatedCostMicros: 750, modelId: "deepseek-search-api", operationCount: 1, provider: "deepseek",
+      purpose: "web_search", usage: { webSearchCount: 1 }
+    });
+    roundTrips(result);
+  });
+
+  it("keeps an empty answer an ordinary, unbilled no-results result", async () => {
+    const router = apiRouter(vi.fn<typeof fetch>(async () => Response.json({ results: [] })));
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [execution] = searchExecutionsFromToolResult(result);
+
+    expect(result.status).toBe("complete");
+    expect((result.content[0] as { text: string }).text)
+      .toBe(`Search source "DeepSeek Search API":\n${SEARCH_NO_RESULTS_FINDINGS}`);
+    expect(execution).toMatchObject({
+      costUsd: 0, findings: SEARCH_NO_RESULTS_FINDINGS, protocol: "deepseek_search_api", sources: [], status: "complete"
+    });
+    const attribution = searchUsageAttribution(execution!);
+    expect(attribution.estimatedCostMicros).toBe(0);
+    expect(attribution.usage.webSearchCount).toBeUndefined();
+    roundTrips(result);
+  });
+
+  it("reports a rejected key or an empty balance as an engine warning without a charge", async () => {
+    const router = apiRouter(vi.fn<typeof fetch>(async () => Response.json({ error: { message: "PRIVATE" } }, { status: 402 })));
+
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    const [execution] = searchExecutionsFromToolResult(result);
+
+    expect(result.status).toBe("error");
+    expect(execution).toMatchObject({ costUsd: 0, failure: { code: "provider_quota_exhausted" }, status: "error" });
+    expect((result.content[0] as { text: string }).text)
+      .toBe('Search warnings: "DeepSeek Search API": provider_quota_exhausted');
+    expect(searchUsageAttribution(execution!).estimatedCostMicros).toBe(0);
+  });
+
+  it("accepts an explicit empty answer only from the raw results protocol", async () => {
+    const pretending: ProviderRuntimeBinding = {
+      ...runtime(),
+      searchAdapter: {
+        buildRequestPreview: () => ({}),
+        search: async () => ({
+          artifacts: [], findings: SEARCH_NO_RESULTS_FINDINGS, finalProviderResponsePreview: {}, noResults: true,
+          requestPreview: {}, sources: [], usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+        })
+      }
+    };
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [option("openai")] }, runtimes: { openai: pretending }
+    })!;
+    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({ failure: { code: "search_sources_invalid" }, status: "error" })
+    ]);
+
+    // A saved source-free result decodes only with the API's protocol and the server's own words.
+    const saved = (findings: string, protocol: string) => ({
+      callId: "call-1", content: [{ text: "x", type: "text" as const }], name: "search_engine_1",
+      rawPreview: { searchExecutions: [{
+        displayName: "DeepSeek Search API", findings, invocationId: "call-1:deepseek-api", modelId: "deepseek-search-api",
+        optionId: "deepseek-api", protocol, provider: "deepseek", revisionId: "revision-1", sources: [], status: "complete",
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+      }], searchResultVersion: SEARCH_TOOL_RESULT_VERSION },
+      status: "complete" as const
+    });
+    expect(searchExecutionsFromToolResult(saved(SEARCH_NO_RESULTS_FINDINGS, "deepseek_search_api"))).toHaveLength(1);
+    expect(searchExecutionsFromToolResult(saved("Provider claims without sources.", "deepseek_search_api"))).toEqual([]);
+    expect(searchExecutionsFromToolResult(saved(SEARCH_NO_RESULTS_FINDINGS, "openai_responses_web_search"))).toEqual([]);
+  });
 });

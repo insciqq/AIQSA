@@ -25,6 +25,10 @@ export const MAX_SEARCH_FINDINGS_CHARACTERS = 1_024 * 1_024;
 export const MAX_SEARCH_FINDINGS_BYTES = 1_024 * 1_024;
 /** Sources one engine result keeps: the adapter ceiling and the durable bound. */
 export const MAX_SEARCH_ENGINE_SOURCES = 20;
+/** The only findings a complete engine result may carry without sources: a
+ * raw results API's explicit empty answer, in these server-owned words. It
+ * holds no provider text, so it needs no attribution. */
+export const SEARCH_NO_RESULTS_FINDINGS = "The search returned no results for this query.";
 const MAX_SEARCH_CITATION_NUMBER = 10_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -11,6 +11,7 @@ import {
   searchExecutionValidation,
   searchFormFrom,
   searchFormsEqual,
+  searchModelOptionLabel,
   sourceIdentityFor,
   type SearchSourceForm
 } from "@/components/admin/search/searchSourceView";
@@ -20,6 +21,7 @@ import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
+  DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
   type AdminSearchCatalog,
   type AdminSearchDraft,
   type AdminSearchIntegration,
@@ -41,16 +43,17 @@ function ModelField({
   disabled,
   form,
   options,
-  providerModels,
   setForm
 }: Readonly<{
   creating: boolean;
   disabled: boolean;
   form: SearchSourceForm;
+  /** The choices of this source, one per model: a model may be listed once
+   * for its own Search and once for the DeepSeek Search API. */
   options: readonly AdminSearchProviderModelOption[];
-  providerModels: readonly AdminSearchProviderModelOption[];
   setForm(value: SearchSourceForm): void;
 }>) {
+  const selected = options.find((candidate) => candidate.id === form.draft.providerModelId);
   return (
     <label className="block min-w-0">
       <span className={fieldLabel}>Search model</span>
@@ -58,9 +61,9 @@ function ModelField({
         className={inputClass}
         disabled={disabled}
         onChange={(event) => {
-          const previousModel = providerModels.find((candidate) => candidate.id === form.draft.providerModelId);
+          const previousModel = selected;
           const previousIdentity = previousModel ? sourceIdentityFor(previousModel) : null;
-          const model = providerModels.find((candidate) => candidate.id === event.currentTarget.value);
+          const model = options.find((candidate) => candidate.id === event.currentTarget.value);
           if (!model) {
             setForm({
               ...form,
@@ -89,15 +92,17 @@ function ModelField({
       >
         <option value="">Select a Search-capable model</option>
         {options.map((model) => (
-          <option disabled={!model.enabled} key={model.id} value={model.id}>
-            {model.connectionDisplayName} · {model.displayName}
+          <option disabled={!model.enabled} key={`${model.searchKind}:${model.id}`} value={model.id}>
+            {searchModelOptionLabel(model)}
           </option>
         ))}
       </select>
       <span className={helpText}>
         {creating && options.length === 0
-          ? "No model is available for a manual source. Manual sources use a Perplexity model on OpenRouter; turn one on first."
-          : "The connection and model this source searches with."}
+          ? "No model is available for a manual source. Manual sources use a Perplexity model on OpenRouter or the DeepSeek Search API on a DeepSeek connection; turn one on first."
+          : selected?.searchKind === "deepseek_search_api"
+            ? "Searches with the DeepSeek Search API using this connection's key; the model itself is never called."
+            : "The connection and model this source searches with."}
       </span>
     </label>
   );
@@ -118,7 +123,9 @@ function SourceFields({
 }>) {
   const creating = mode.kind === "create";
   const options = creating ? providerModels : configurableModels(mode.source, providerModels);
-  const selectedModel = providerModels.find((model) => model.id === form.draft.providerModelId);
+  const selectedModel = options.find((model) => model.id === form.draft.providerModelId);
+  // The raw results API has no model reply to limit and a 128-character query.
+  const searchApi = form.draft.protocol === "deepseek_search_api";
   const selectedModelTimeoutSeconds = selectedModel?.responseTimeoutSeconds ?? 300;
   const validation = searchExecutionValidation(form);
   const ids = useId();
@@ -139,7 +146,6 @@ function SourceFields({
           disabled={disabled}
           form={form}
           options={options}
-          providerModels={providerModels}
           setForm={setForm}
         />
       ) : null}
@@ -183,7 +189,7 @@ function SourceFields({
           <input
             className={inputClass}
             disabled={disabled}
-            max={adminSearchExecutionLimits.queryMaxCharacters.maximum}
+            max={searchApi ? DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS : adminSearchExecutionLimits.queryMaxCharacters.maximum}
             min={adminSearchExecutionLimits.queryMaxCharacters.minimum}
             onChange={(event) => updateDraft({ queryMaxCharacters: Number(event.currentTarget.value) })}
             type="number"
@@ -229,34 +235,35 @@ function SourceFields({
                 disabled={disabled}
                 form={form}
                 options={options}
-                providerModels={providerModels}
                 setForm={setForm}
               />
             ) : null}
-            <label className="block min-w-0">
-              <span className={fieldLabel}>Maximum Search output, tokens</span>
-              <input
-                aria-describedby={`${outputHelpId}${validation.maxOutputTokens ? ` ${outputErrorId}` : ""}`}
-                aria-invalid={validation.maxOutputTokens ? true : undefined}
-                className={inputClass}
-                disabled={disabled}
-                max={adminSearchExecutionLimits.maxOutputTokens.maximum}
-                min={adminSearchExecutionLimits.maxOutputTokens.minimum}
-                onChange={(event) => setForm({
-                  ...form,
-                  draft: { ...form.draft, maxOutputTokens: event.currentTarget.value.trim() ? Number(event.currentTarget.value) : null },
-                  executionInputs: { ...form.executionInputs, maxOutputTokens: event.currentTarget.value }
-                })}
-                step={1}
-                type="number"
-                value={form.executionInputs.maxOutputTokens}
-                placeholder="Auto"
-              />
-              <span className={helpText} id={outputHelpId}>Limits each Search model reply, including reasoning tokens where the provider counts them. Leave blank for Auto to use the selected model’s allowance. The final answer has its own output limit.</span>
-              {validation.maxOutputTokens ? (
-                <span className="mt-1 block text-xs text-critical" id={outputErrorId}>{validation.maxOutputTokens}</span>
-              ) : null}
-            </label>
+            {searchApi ? null : (
+              <label className="block min-w-0">
+                <span className={fieldLabel}>Maximum Search output, tokens</span>
+                <input
+                  aria-describedby={`${outputHelpId}${validation.maxOutputTokens ? ` ${outputErrorId}` : ""}`}
+                  aria-invalid={validation.maxOutputTokens ? true : undefined}
+                  className={inputClass}
+                  disabled={disabled}
+                  max={adminSearchExecutionLimits.maxOutputTokens.maximum}
+                  min={adminSearchExecutionLimits.maxOutputTokens.minimum}
+                  onChange={(event) => setForm({
+                    ...form,
+                    draft: { ...form.draft, maxOutputTokens: event.currentTarget.value.trim() ? Number(event.currentTarget.value) : null },
+                    executionInputs: { ...form.executionInputs, maxOutputTokens: event.currentTarget.value }
+                  })}
+                  step={1}
+                  type="number"
+                  value={form.executionInputs.maxOutputTokens}
+                  placeholder="Auto"
+                />
+                <span className={helpText} id={outputHelpId}>Limits each Search model reply, including reasoning tokens where the provider counts them. Leave blank for Auto to use the selected model’s allowance. The final answer has its own output limit.</span>
+                {validation.maxOutputTokens ? (
+                  <span className="mt-1 block text-xs text-critical" id={outputErrorId}>{validation.maxOutputTokens}</span>
+                ) : null}
+              </label>
+            )}
             {reasoningProtocol && selectedModel?.searchReasoningSupported ? (
               <label className="block min-w-0">
                 <span className={fieldLabel}>Search reasoning</span>
