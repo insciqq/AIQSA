@@ -387,6 +387,16 @@ export type ProviderSearchPolicy =
       strategyId: "deepseek-responses-web-search";
     }>
   | Readonly<{
+      /** The raw results API generates no model output. */
+      maxOutputTokens?: never;
+      /** Results requested (`count`); the per-request price ignores it. */
+      maxResults: number;
+      /** The API's usage label, never the model that carries the key. */
+      modelId: string;
+      provider: "deepseek";
+      strategyId: "deepseek-search-api";
+    }>
+  | Readonly<{
       maxOutputTokens: number;
       modelCapabilities: ProviderModelCapabilities;
       modelId: string;
@@ -513,6 +523,9 @@ export type ProviderSearchResult = {
   costUsd?: number | null;
   finalProviderResponsePreview: Record<string, unknown>;
   findings: string;
+  /** Only a raw results API (DeepSeek Search API) reports an explicit empty
+   * answer: no sources and exactly `SEARCH_NO_RESULTS_FINDINGS`. */
+  noResults?: true;
   providerResponseId?: string;
   requestPreview: Record<string, unknown>;
   /** Omitted by legacy/test adapters means normal source attribution. Only

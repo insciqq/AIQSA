@@ -2,6 +2,7 @@ import { formatCheckedAt } from "@/components/admin/providers/providerListView";
 import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
+  DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
   type AdminSearchCatalog,
   type AdminSearchDraft,
   type AdminSearchIntegration,
@@ -40,7 +41,8 @@ export function searchSourceStatus(source: AdminSearchIntegration): SearchSource
 export function searchModelsReach(source: AdminSearchIntegration): string {
   if (source.kind === "gemini_google_search") return "Gemini models";
   if (!source.ready) return "No Search model yet";
-  if (source.kind === "perplexity_search" || source.broaderModelSetup === "ready") {
+  if (source.kind === "perplexity_search" || source.kind === "deepseek_search_api" ||
+    source.broaderModelSetup === "ready") {
     return "All chat models";
   }
   return "This provider's models";
@@ -61,9 +63,11 @@ export function searchModelsReachDetail(source: AdminSearchIntegration): string 
 }
 
 export function searchModelLabel(source: AdminSearchIntegration): string {
-  return source.providerModel
-    ? `${source.providerModel.displayName} on ${source.providerModel.connectionDisplayName}`
-    : "Managed with its provider";
+  if (!source.providerModel) return "Managed with its provider";
+  // The API searches; the model only routes its connection's key.
+  return source.kind === "deepseek_search_api"
+    ? `${source.providerModel.connectionDisplayName} Search API, key via ${source.providerModel.displayName}`
+    : `${source.providerModel.displayName} on ${source.providerModel.connectionDisplayName}`;
 }
 
 export type SearchCheckSummary = Readonly<{
@@ -117,6 +121,7 @@ export type SearchPlanOption = Readonly<{
 }>;
 
 export function planKind(source: AdminSearchIntegration): SearchPlanOption["kind"] {
+  if (source.kind === "deepseek_search_api") return "web_search";
   return source.kind === "perplexity_search" ? "perplexity_tool_search" : source.kind;
 }
 
@@ -179,7 +184,8 @@ export function searchExecutionValidation(form: SearchSourceForm): Readonly<{
   if (form.draft.adapterKind !== "provider_model_client") {
     return { maxOutputTokens: null, maxSearchCallsPerAnswer: null, valid: true };
   }
-  const maxOutputTokens = boundedInputInteger(
+  // The raw results API has no model reply to limit, so the field is hidden.
+  const maxOutputTokens = form.draft.protocol === "deepseek_search_api" ? undefined : boundedInputInteger(
     form.executionInputs.maxOutputTokens,
     adminSearchExecutionLimits.maxOutputTokens
   );
@@ -212,10 +218,15 @@ export function draftForModel(
     | "timeoutMs"
   >
 ): AdminSearchDraft {
+  const queryMaxCharacters = current?.queryMaxCharacters ?? adminSearchExecutionDefaults.queryMaxCharacters;
+  const searchApi = model.searchKind === "deepseek_search_api";
   return {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
-    maxOutputTokens: current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
+    // The raw results API generates no reply; its hidden limit stays Auto.
+    maxOutputTokens: searchApi
+      ? adminSearchExecutionDefaults.maxOutputTokens
+      : current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
     maxResults: current?.maxResults ?? adminSearchExecutionDefaults.maxResults,
     maxSearchCallsPerAnswer: current?.maxSearchCallsPerAnswer ??
       adminSearchExecutionDefaults.maxSearchCallsPerAnswer,
@@ -227,9 +238,13 @@ export function draftForModel(
           ? "anthropic_web_search"
           : model.searchKind === "deepseek_web_search"
             ? "deepseek_responses_web_search"
-            : "openai_responses_web_search",
+            : model.searchKind === "deepseek_search_api"
+              ? "deepseek_search_api"
+              : "openai_responses_web_search",
     providerModelId: model.id,
-    queryMaxCharacters: current?.queryMaxCharacters ?? adminSearchExecutionDefaults.queryMaxCharacters,
+    queryMaxCharacters: searchApi
+      ? Math.min(queryMaxCharacters, DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS)
+      : queryMaxCharacters,
     reasoningPolicy: current?.reasoningPolicy ?? adminSearchExecutionDefaults.reasoningPolicy,
     timeoutMs: current?.timeoutMs ?? adminSearchExecutionDefaults.timeoutMs
   };
@@ -266,14 +281,23 @@ export function searchFormFrom(source: AdminSearchIntegration): SearchSourceForm
   };
 }
 
-/** Models a manual source can be built on: enabled Perplexity models whose
- * connection has no live Perplexity source yet. */
+/** Models a manual source can be built on: enabled Perplexity models, and
+ * DeepSeek models carrying their connection's key for the DeepSeek Search
+ * API, whose connection has no live source of that kind yet. */
 export function manuallyAddableModels(catalog: AdminSearchCatalog): AdminSearchProviderModelOption[] {
   return catalog.providerModels.filter((model) =>
-    model.enabled && model.searchKind === "perplexity_search" &&
+    model.enabled &&
+    (model.searchKind === "perplexity_search" || model.searchKind === "deepseek_search_api") &&
     !catalog.integrations.some((source) =>
       source.archivedAt === null && source.kind === model.searchKind &&
       source.sourceConnectionId === model.connectionId));
+}
+
+/** The model choice as the Search model field lists it. */
+export function searchModelOptionLabel(model: AdminSearchProviderModelOption): string {
+  return model.searchKind === "deepseek_search_api"
+    ? `${model.connectionDisplayName} Search API · key via ${model.displayName}`
+    : `${model.connectionDisplayName} · ${model.displayName}`;
 }
 
 /** Models the Configure sheet may pick: same connection, same Search kind. */
@@ -293,6 +317,14 @@ export function sourceIdentityFor(model: AdminSearchProviderModelOption): Readon
   displayName: string;
 }> {
   const sourceName = model.connectionDisplayName.trim();
+  if (model.searchKind === "deepseek_search_api") {
+    return {
+      description: sourceName
+        ? `Web results with source links from the ${sourceName} Search API.`
+        : DEFAULT_SEARCH_DESCRIPTION,
+      displayName: sourceName ? `${sourceName} Search API` : ""
+    };
+  }
   return {
     description: sourceName ? `Web search through ${sourceName}.` : DEFAULT_SEARCH_DESCRIPTION,
     displayName: sourceName ? `${sourceName} Search` : ""

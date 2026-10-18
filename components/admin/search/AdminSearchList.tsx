@@ -59,7 +59,7 @@ export function AdminSearchList({
       <div className="rounded-[12px] border border-trace-subtle bg-answer-paper px-5 py-10 text-center" role="status">
         <p className="text-sm font-semibold text-ink-secondary">No Search sources yet</p>
         <p className="mx-auto mt-1 max-w-xl text-sm leading-6 text-ink-muted">
-          Sources for built-in providers appear when the provider is added. Add source creates one from a Perplexity model.
+          Sources for built-in providers appear when the provider is added. Add source creates one from a Perplexity model or the DeepSeek Search API.
         </p>
       </div>
     );
