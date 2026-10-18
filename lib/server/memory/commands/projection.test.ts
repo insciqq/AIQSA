@@ -38,13 +38,32 @@ describe("Memory command feedback", () => {
 
 describe("chat command projection", () => {
   it("requires a retained personal owner chat before reading any jobs", async () => {
-    const chat = { findFirst: vi.fn().mockResolvedValue(null) };
+    const chat = { findFirst: vi.fn().mockResolvedValue(null), findUnique: vi.fn().mockResolvedValue(null) };
     const memoryJob = { findMany: vi.fn() };
     expect(await listChatMemoryCommands({ chat, memoryJob } as unknown as PrismaClient,
       { chatId: "chat", userId: "owner" })).toBeNull();
     expect(chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: {
       id: "chat", userId: "owner", projectId: null, memoryMode: "NORMAL", permanentDeletionAt: null
     } }));
+    expect(memoryJob.findMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["another user's chat", { userId: "other", projectId: null, permanentDeletionAt: null, archived: false }],
+    ["a permanently deleted chat", { userId: "owner", projectId: null, permanentDeletionAt: new Date(), archived: false }]
+  ])("keeps %s a missing resource", async (_label, row) => {
+    const chat = { findFirst: vi.fn().mockResolvedValue(null), findUnique: vi.fn().mockResolvedValue(row) };
+    const memoryJob = { findMany: vi.fn() };
+    expect(await listChatMemoryCommands({ chat, memoryJob } as unknown as PrismaClient,
+      { chatId: "chat", userId: "owner" })).toBeNull();
+  });
+
+  it("answers an owned chat outside personal Memory with no commands instead of a miss", async () => {
+    const chat = { findFirst: vi.fn().mockResolvedValue(null),
+      findUnique: vi.fn().mockResolvedValue({ userId: "owner", projectId: null, permanentDeletionAt: null, archived: false }) };
+    const memoryJob = { findMany: vi.fn() };
+    expect(await listChatMemoryCommands({ chat, memoryJob } as unknown as PrismaClient,
+      { chatId: "chat", userId: "owner" })).toEqual({ commands: [] });
     expect(memoryJob.findMany).not.toHaveBeenCalled();
   });
 
