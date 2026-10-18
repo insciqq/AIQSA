@@ -291,8 +291,8 @@ test("codex-lb Agent run that leaves links in its output folder completes, expor
     const params = await agentParams(page.request, model);
     chatId = await newExcludedChat(page.request, `Prod 1018 Agent links ${randomUUID().slice(0, 8)}`);
     const run = await apiTurn(page.request, chatId, model, { agent: true, params, timeoutMs: AGENT_TURN_TIMEOUT_MS, workspace: true,
-      blocks: [{ type: "text", text: "In your current output directory run exactly this one shell command: " +
-        "printf 'PROD-1018\\n' > report.txt && ln -s report.txt report-link.txt && ln -s /workspace/project project-link . " +
+      blocks: [{ type: "text", text: "In your current output directory run exactly this one shell command (the line between the " +
+        "backticks, nothing more):\n`printf 'PROD-1018\\n' > report.txt && ln -s report.txt report-link.txt && ln -s /workspace/project project-link`\n" +
         "Do not run anything else and do not remove the links. Then reply with exactly: AGENT-DONE" }] });
     Object.assign(summary, { status: run.status, code: runErrorCode(run) });
     expect(run.status, `the Agent run completes (${runErrorCode(run) ?? run.status})`).toBe("complete");
