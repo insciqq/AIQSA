@@ -3,8 +3,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { logEvent } from "../observability";
 import { prisma } from "../prisma";
+import { adminHealthQuantile } from "../admin/health/projection";
 import {
-  TELEMETRY_DURATION_BUCKETS, telemetryDurationBucket, type TelemetryCounterDelta, type TelemetryIncidentInput
+  TELEMETRY_DURATION_BUCKETS, telemetryDurationBucket, telemetryDurationBucketsInCurrentLayout, type TelemetryCounterDelta,
+  type TelemetryIncidentInput
 } from "./aggregator";
 import { createTelemetryRecorder } from "./recorder";
 import {
@@ -107,7 +109,7 @@ describe("Prisma telemetry store", () => {
       expect(group).toEqual({
         group: { bucket: BUCKET, code: expect.stringMatching(/^code_\d{2}$/u) },
         count: 21, valueSum: 0, durationCount: 6, durationSumMs: 2_100, durationMaxMs: 600,
-        durationBuckets: [1, 1, 3, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        durationBuckets: [1, 1, 3, 1, ...new Array<number>(TELEMETRY_DURATION_BUCKETS - 4).fill(0)],
         firstSeenAt: BUCKET, lastSeenAt: new Date(BUCKET.getTime() + 5_000)
       });
     }
@@ -118,6 +120,49 @@ describe("Prisma telemetry store", () => {
       dimensionHash: telemetryDimensionHash({ code: "code_00", connectionId: CONNECTION }),
       dimensions: { code: "code_00", connectionId: CONNECTION }
     });
+  });
+
+  it("aggregates counters of the earlier 12-bucket layout with new ones in the current layout", async () => {
+    // Rows a previous release wrote: 12 buckets, one per 60 s, 120 s, 300 s and above 300 s, and one under 100 ms.
+    const legacy = async (code: string, buckets: readonly number[], maxMs: number) => {
+      const dimensions = { code, connectionId: CONNECTION };
+      await prisma.$executeRaw`
+        INSERT INTO "TelemetryCounter" ("bucketStart", "role", "event", "level", "appVersion", "dimensionHash", "dimensions",
+          "count", "valueSum", "durationCount", "durationSumMs", "durationMaxMs", "durationBuckets", "firstSeenAt", "lastSeenAt")
+        VALUES ((${BUCKET}::timestamptz AT TIME ZONE 'UTC'), 'app', 'run_execution', 'info', ${VERSION}, ${telemetryDimensionHash(dimensions)},
+          ${JSON.stringify(dimensions)}::jsonb, ${buckets.reduce((sum, value) => sum + value, 0)}::bigint, 0,
+          ${buckets.reduce((sum, value) => sum + value, 0)}::bigint, 0, ${maxMs}::bigint, ${[...buckets]}::bigint[],
+          (${BUCKET}::timestamptz AT TIME ZONE 'UTC'), (${BUCKET}::timestamptz AT TIME ZONE 'UTC'))`;
+    };
+    const earlier = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1];
+    await legacy("legacy_layout", earlier, 400_000);
+    await legacy("legacy_only", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 50);
+    // A current writer adds to the first key (400 s) and writes a key of its own (1,000 s).
+    await store.write({ counters: [
+      delta({ code: "legacy_layout", event: "run_execution", level: "info", durationMs: 400_000 }),
+      delta({ code: "current_layout", event: "run_execution", level: "info", durationMs: 1_000_000 })
+    ], incidents: [], lostObservations: 0 });
+
+    // The added-to row is rewritten in the current layout; the untouched one stays as written.
+    const rows = await prisma.$queryRaw<Array<{ code: string; buckets: bigint[] }>>`
+      SELECT "dimensions" ->> 'code' AS code, "durationBuckets" AS buckets FROM "TelemetryCounter"
+      WHERE "appVersion" = ${VERSION} ORDER BY 1`;
+    const merged = telemetryDurationBucketsInCurrentLayout(earlier);
+    merged[telemetryDurationBucket(400_000)]! += 1;
+    expect(rows.map((row) => [row.code, row.buckets.map(Number)])).toEqual([
+      ["current_layout", Object.assign(new Array<number>(TELEMETRY_DURATION_BUCKETS).fill(0), { [telemetryDurationBucket(1_000_000)]: 1 })],
+      ["legacy_layout", merged],
+      ["legacy_only", [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+    ]);
+
+    const [group] = await store.readCounters({ from: BUCKET, to: new Date(currentHour), events: ["run_execution"],
+      dimensions: { connectionId: CONNECTION } });
+    const expected = new Array<number>(TELEMETRY_DURATION_BUCKETS).fill(0);
+    for (const index of [0, 9, 11, 13, 14, 16, 18]) expected[index] = 1;
+    expect(group).toMatchObject({ count: 7, durationCount: 7, durationMaxMs: 1_000_000, durationBuckets: expected });
+    // Percentiles are the upper bounds they were: 300 s at the median, the maximum above 30 min.
+    expect(adminHealthQuantile(group!.durationBuckets, group!.durationMaxMs, 0.5)).toBe(300_000);
+    expect(adminHealthQuantile(group!.durationBuckets, group!.durationMaxMs, 0.95)).toBe(1_000_000);
   });
 
   it("reads counters by range, filters and hour or day groups", async () => {

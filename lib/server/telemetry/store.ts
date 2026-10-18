@@ -3,7 +3,8 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { normalizeRunReference, runReferenceRange } from "../../contracts/runReference";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
 import {
-  TELEMETRY_DIMENSIONS, TELEMETRY_DURATION_BUCKETS, TELEMETRY_LEVELS, telemetryDimensionsJson,
+  TELEMETRY_DIMENSIONS, TELEMETRY_DURATION_BUCKETS, TELEMETRY_LEGACY_DURATION_BOUNDS_MS, TELEMETRY_LEVELS, telemetryDimensionsJson,
+  telemetryLegacyBucketIndexes,
   type TelemetryBatch, type TelemetryCounterDelta, type TelemetryDimension, type TelemetryDimensionValue,
   type TelemetryDimensions, type TelemetryIncidentInput, type TelemetryIncidentLevel, type TelemetryLevel
 } from "./aggregator";
@@ -170,10 +171,30 @@ const fingerprintPattern = /^[0-9a-f]{12}$/u;
 const printable = /^[\x20-\x7e]{1,512}$/u;
 
 const utc = (date: Date): Prisma.Sql => Prisma.sql`(${date}::timestamptz AT TIME ZONE 'UTC')`;
-const bucketIndexes = Array.from({ length: TELEMETRY_DURATION_BUCKETS }, (_, index) => index + 1);
+
+/**
+ * One current bucket (0-based) of a stored histogram column, whatever its
+ * layout: a row of an earlier layout (`TELEMETRY_LEGACY_DURATION_BOUNDS_MS`,
+ * named by its array length) gives the earlier bucket that lands in it, or
+ * 0. Writers append rows of their own layout, so sums are formed per bucket
+ * of the current layout only.
+ */
+export function telemetryCurrentBucketSql(column: string, index: number): string {
+  const layouts = Object.entries(TELEMETRY_LEGACY_DURATION_BOUNDS_MS).map(([length, bounds]) => {
+    const source = telemetryLegacyBucketIndexes(bounds).indexOf(index);
+    return `WHEN ${Number(length)} THEN ${source === -1 ? "0" : `${column}[${source + 1}]`}`;
+  });
+  return layouts.length === 0 ? `${column}[${index + 1}]`
+    : `(CASE cardinality(${column}) ${layouts.join(" ")} ELSE ${column}[${index + 1}] END)`;
+}
+
+const bucketIndexes = Array.from({ length: TELEMETRY_DURATION_BUCKETS }, (_, index) => index);
+// An existing row of an earlier layout is rewritten in the current one when a writer adds to it.
 const mergedBuckets = Prisma.raw(bucketIndexes
-  .map((index) => `"TelemetryCounter"."durationBuckets"[${index}] + EXCLUDED."durationBuckets"[${index}]`).join(", "));
-const summedBuckets = Prisma.raw(bucketIndexes.map((index) => `SUM("durationBuckets"[${index}])::bigint`).join(", "));
+  .map((index) => `${telemetryCurrentBucketSql(`"TelemetryCounter"."durationBuckets"`, index)} + EXCLUDED."durationBuckets"[${index + 1}]`)
+  .join(", "));
+const summedBuckets = Prisma.raw(bucketIndexes.map((index) => `SUM(${telemetryCurrentBucketSql(`"durationBuckets"`, index)})::bigint`)
+  .join(", "));
 
 function invalid(): never {
   throw new TelemetryQueryError();
