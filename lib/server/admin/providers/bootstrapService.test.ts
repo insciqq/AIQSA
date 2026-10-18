@@ -270,9 +270,10 @@ describe("provider automatic setup", () => {
     it("checks and publishes the hosted Search and the built-in Search API, each once", async () => {
       const value = deepSeekFixture();
       expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
-      expect(value.searchCreate.mock.calls.map(([args]) => (args as { draft: AdminSearchDraft }).draft.protocol))
-        .toEqual(["deepseek_responses_web_search", "deepseek_search_api"]);
-      expect(value.searchCreate).toHaveBeenLastCalledWith(expect.objectContaining({ bootstrap: true, check: true,
+      expect(value.searchCreate).toHaveBeenCalledTimes(2);
+      expect(value.searchCreate).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        draft: expect.objectContaining({ protocol: "deepseek_responses_web_search" }) }));
+      expect(value.searchCreate).toHaveBeenNthCalledWith(2, expect.objectContaining({ bootstrap: true, check: true,
         displayName: "DeepSeek Search API", userId: "operator", draft: expect.objectContaining({ adapterKind: "provider_model_client",
           maxSearchCallsPerAnswer: 8, protocol: "deepseek_search_api", providerModelId: "model-terra", queryMaxCharacters: 128 }) }));
       expect(value.searchSave).not.toHaveBeenCalled();
