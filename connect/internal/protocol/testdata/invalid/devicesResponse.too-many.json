@@ -1,0 +1,136 @@
+{
+  "devices": [
+    {
+      "id": "00000000-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000001-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000002-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000003-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000004-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000005-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000006-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000007-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000008-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000009-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    },
+    {
+      "id": "00000010-0000-4000-8000-000000000000",
+      "name": "Work laptop",
+      "hostname": "laptop.local",
+      "os": "linux",
+      "arch": "amd64",
+      "clientVersion": "0.3.20",
+      "online": true,
+      "lastSeenAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "sessions": []
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "event": "device",
+  "data": {
+    "id": "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11",
+    "name": "Work laptop",
+    "hostname": "laptop.local",
+    "os": "linux",
+    "arch": "amd64",
+    "clientVersion": "0.3.20",
+    "online": true,
+    "lastSeenAt": "2026-10-19T10:15:30.000Z",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "sessions": [
+      {
+        "id": "ac-k3x9q2",
+        "title": "Claude Code · AIQSA",
+        "cwd": "/home/user/src/AIQSA",
+        "program": "claude",
+        "status": "running",
+        "statusAt": "2026-10-19T10:15:30.000Z",
+        "createdAt": "2026-10-19T09:00:00Z",
+        "attachedClients": 1
+      },
+      {
+        "id": "ac-7m2p4z8w",
+        "title": "Shell",
+        "cwd": "/home/user",
+        "program": "shell",
+        "status": "idle",
+        "statusAt": "2026-10-19T08:00:00+03:00",
+        "createdAt": "2026-10-19T08:00:00+03:00",
+        "attachedClients": 0
+      }
+    ]
+  }
+}

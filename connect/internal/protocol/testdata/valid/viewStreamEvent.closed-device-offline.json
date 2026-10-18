@@ -1,0 +1,6 @@
+{
+  "event": "closed",
+  "data": {
+    "reason": "connect_device_offline"
+  }
+}
