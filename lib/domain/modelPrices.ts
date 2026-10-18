@@ -64,7 +64,9 @@ const openrouter: Record<string, Tariff> = {
   "google/gemini-3.5-flash": gemini["gemini-3.5-flash"],
   "~google/gemini-pro-latest": gemini["gemini-3.1-pro-preview"],
   // OpenRouter's top-level default pricing; weekday UTC peak overrides are out of scope.
-  "deepseek/deepseek-v4.1-flash": [0.0198, 0.00291, null, 0.396],
+  // V4.1 Flash checked 2026-10-18; 1017 costs double on weekdays UTC 01:00-04:00 and 06:00-10:00.
+  "deepseek/deepseek-v4.1-flash-1017": [0.15, 0.003, null, 0.6],
+  "deepseek/deepseek-v4.1-flash": [0.04, 0.0016, null, 0.144],
   "deepseek/deepseek-v4-pro-0813": [0.66, 0.022, null, 1.98],
   "perplexity/sonar-pro-search": [3, null, null, 15]
 };
