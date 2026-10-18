@@ -6,8 +6,14 @@
 
 /** The bounded audio a browser may send for one dictation. */
 export const DICTATION_AUDIO_MAX_BYTES = 10 * 1024 * 1024;
-/** The composer stops recording on its own after this long. */
-export const DICTATION_MAX_DURATION_MS = 5 * 60 * 1_000;
+/** The product-wide dictation length: the composer stops recording on its own after this long. */
+export const DICTATION_MAX_DURATION_MS = 10 * 60 * 1_000;
+/**
+ * The bitrate the composer asks its recorder for. Browsers otherwise pick
+ * their own (Chromium's Opus default is about 128 kbps, 10 minutes ≈ 9.2 MiB);
+ * at 64 kbps a full-length dictation is about 4.8 MB, well under the byte bound.
+ */
+export const DICTATION_RECORDER_BITS_PER_SECOND = 64_000;
 /** A transcript longer than this is refused as an invalid provider response. */
 export const DICTATION_TEXT_MAX_CHARACTERS = 64_000;
 
