@@ -138,7 +138,7 @@ describe("provider automatic setup", () => {
       const result = await value.run();
       expect(result).toEqual({ state: "completed", search: "ready", needsConfiguration: ["memory"], defaults: [
         "Chat: GPT-5.6 Terra", "System model: GPT-5.6 Terra", "Page-image reader: GPT-5.6 Terra"
-      ] });
+      ], searchResults: [{ name: "OpenAI Search", status: "ready" }] });
       expect(value.memoryUpdate).not.toHaveBeenCalled();
       expect(value.chatUpdate).toHaveBeenCalledOnce();
     }
@@ -269,7 +269,8 @@ describe("provider automatic setup", () => {
 
     it("checks and publishes the hosted Search and the built-in Search API, each once", async () => {
       const value = deepSeekFixture();
-      expect(await value.run()).toMatchObject({ search: "ready", state: "completed" });
+      expect(await value.run()).toMatchObject({ search: "ready", state: "completed", searchResults: [
+        { name: "DeepSeek Search", status: "ready" }, { name: "DeepSeek Search API", status: "ready" }] });
       expect(value.searchCreate).toHaveBeenCalledTimes(2);
       expect(value.searchCreate).toHaveBeenNthCalledWith(1, expect.objectContaining({
         draft: expect.objectContaining({ protocol: "deepseek_responses_web_search" }) }));
@@ -306,7 +307,8 @@ describe("provider automatic setup", () => {
       const value = deepSeekFixture();
       value.searchCreate.mockResolvedValueOnce({ created: false, id: "hosted" })
         .mockRejectedValueOnce(new Error("synthetic_search_failure"));
-      expect(await value.run()).toMatchObject({ search: "failed", state: "partial" });
+      expect(await value.run()).toMatchObject({ search: "failed", state: "partial", searchResults: [
+        { name: "DeepSeek Search", status: "ready" }, { name: "DeepSeek Search API", status: "failed" }] });
       expect(value.searchCreate).toHaveBeenCalledTimes(2);
       // The hosted Search is now published; the retry rechecks it and finishes the API.
       const hosted = value.search.integrations[0]!;

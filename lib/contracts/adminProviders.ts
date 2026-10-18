@@ -370,6 +370,8 @@ export type AdminProviderBootstrapResult = {
   /** Not a failure and not retryable; omitted when nothing needs a choice. */
   needsConfiguration?: AdminProviderSetupConfigurationNeed[];
   search: "ready" | "failed" | "skipped";
+  /** Each Search source setup checked, by name; omitted when none was. */
+  searchResults?: Array<{ name: string; status: "ready" | "failed" }>;
   /** `partial` means a save or check failed and a retry can finish it. */
   state: "completed" | "partial";
 };
