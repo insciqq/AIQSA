@@ -1,7 +1,7 @@
 import type { BrowserPushMessage } from "../../contracts/browserPush";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
-import type { PushTransportFailureCategory } from "../observability/events";
+import type { PushServiceClass, PushTransportFailureCategory } from "../observability/events";
 import { browserPushMessage } from "./payload";
 import { PushTransportError, type PushPost } from "./pushTransport";
 import type { AnswerReviewEndedEvent } from "../answerReviews/autoDriver";
@@ -45,12 +45,27 @@ const SHOWN_RUNS_LIMIT = 1_000;
 /** How long a push service keeps an undelivered message for an offline device. */
 const MESSAGE_TTL_SECONDS = 24 * 60 * 60;
 
-/** Content-free: run or occurrence identity, stable codes, transport categories and HTTP status only. */
+/** Content-free: run or occurrence identity, stable codes, transport categories, HTTP status and the push service class only. */
 function log(fields: Readonly<{
   action?: "fail" | "skip"; category?: PushTransportFailureCategory; code?: string; count?: number; httpStatus?: number; job_id?: string;
-  outcome: "completed" | "failed" | "skipped"; prisma_code?: string; run_id?: string; stage: "claim" | "dispatch";
+  outcome: "completed" | "failed" | "skipped"; prisma_code?: string; push_service?: PushServiceClass; run_id?: string;
+  stage: "claim" | "dispatch";
 }>): void {
   logEvent("job_attempt", { subsystem: "push", ...fields });
+}
+
+/**
+ * The push service of a subscription endpoint, by its host alone (Chrome and
+ * Android's FCM, Firefox's Mozilla service, Safari's Apple service); never
+ * the endpoint, which identifies the device.
+ */
+export function pushServiceClass(endpoint: URL): PushServiceClass {
+  const host = endpoint.hostname.toLowerCase();
+  const within = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (within("fcm.googleapis.com") || within("android.googleapis.com")) return "fcm";
+  if (within("push.services.mozilla.com")) return "mozilla";
+  if (within("push.apple.com")) return "apple";
+  return "other";
 }
 
 function outcomeOf(status: number): BrowserPushDeliveryOutcome {
@@ -101,8 +116,10 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
   async function post(message: BrowserPushMessage, target: BrowserPushTarget, keys: VapidKeyPair, jobId: string): Promise<BrowserPushDeliveryOutcome> {
     let status: number | undefined;
     let outcome: BrowserPushDeliveryOutcome;
+    let service: PushServiceClass | undefined;
     try {
       const endpoint = new URL(target.endpoint);
+      service = pushServiceClass(endpoint);
       const body = encryptWebPushPayload(Buffer.from(JSON.stringify(message)), {
         auth: Buffer.from(target.auth, "base64url"), p256dh: Buffer.from(target.p256dh, "base64url")
       });
@@ -122,14 +139,14 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
       outcome = "failed";
       log({ action: "skip", code: error instanceof PushTransportError ? error.code : "push_delivery_failed",
         category: error instanceof PushTransportError ? error.category : undefined,
-        job_id: jobId, outcome: "failed", stage: "dispatch" });
+        job_id: jobId, outcome: "failed", push_service: service, stage: "dispatch" });
     }
     if (status !== undefined) {
       log({
         ...(outcome === "delivered" ? { outcome: "completed" as const } : {
           action: "skip" as const, code: outcome === "gone" ? "push_subscription_gone" : "push_delivery_failed", outcome: "failed" as const
         }),
-        httpStatus: status, job_id: jobId, stage: "dispatch"
+        httpStatus: status, job_id: jobId, push_service: service, stage: "dispatch"
       });
     }
     return outcome;

@@ -375,7 +375,9 @@ describe("compatible Responses context-length refusal (codex-lb shapes)", () => 
   ])("classifies a streamed response.failed terminal under %s (HTTP 200)", async (_case, body) => {
     const { events, failure } = await run(streamed(body), streamingRequest);
     expect(failure).toMatchObject({ code: "provider_context_length_exceeded", message: "openai_response_failed" });
-    expect(observedFailure(failure)).toEqual({ code: "provider_context_length_exceeded", reason: "safety_limit" });
+    // The proxy's own error code is kept as the provider's reviewed identity, never its message.
+    expect(observedFailure(failure)).toEqual({ code: "provider_context_length_exceeded", reason: "safety_limit",
+      provider_error_code: "context_length_exceeded" });
     // No usage and no output before the refusal: only the lifecycle summary.
     expect(events).toEqual([expect.objectContaining({ data: expect.objectContaining({ artifactType: "summary" }), type: "artifact" })]);
     expect(JSON.stringify(failure)).not.toContain(sentinel);
@@ -425,7 +427,8 @@ describe("compatible Responses context-length refusal (codex-lb shapes)", () => 
     const { events, failure } = await run(adapter, request({ params: { maxOutputTokens: 16, stream: false } }));
     expect(failure).toMatchObject({ code: "provider_context_length_exceeded", status: 400,
       message: "OpenAI request failed with status 400" });
-    expect(observedFailure(failure)).toEqual({ code: "provider_context_length_exceeded", httpStatus: 400, reason: "http" });
+    expect(observedFailure(failure)).toEqual({ code: "provider_context_length_exceeded", httpStatus: 400, reason: "http",
+      provider_error_code: "context_length_exceeded" });
     expect(events).toEqual([]);
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(JSON.stringify(failure)).not.toContain(sentinel);

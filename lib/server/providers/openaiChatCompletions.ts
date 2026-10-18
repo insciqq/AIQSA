@@ -22,6 +22,7 @@ import {
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
 import { providerResponseFailure } from "./responseFailure";
+import { markProviderErrorDetail } from "./providerErrorCode";
 
 export type OpenAIChatCompletionsRecord = Readonly<Record<string, unknown>>;
 
@@ -535,7 +536,7 @@ export async function* streamOpenAIChatSseResponse<
         usage = normalizeTokenUsage({ ...mergeTokenUsage(usage, profile.extractUsage(parsed)), completeness: "partial" });
         yield { data: usage, type: "usage" };
       }
-      throw new Error(profile.streamError);
+      throw markProviderErrorDetail(new Error(profile.streamError), parsed.error);
     }
 
     responseId = openAIChatString(parsed.id) ?? responseId;

@@ -7,10 +7,12 @@ import { isProviderSearchExecutionError } from "./types";
 import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 import { ProviderStreamSafetyError } from "./streamSafety";
 import { providerStreamDrop, type ProviderStreamDrop } from "./streamDrop";
+import { providerErrorCode, providerErrorCodeOf } from "./providerErrorCode";
 
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
-type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
+type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response" |
+  "upstream" | "authority_expired" | "interrupted";
 type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
 type ProviderStatus = "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
 type ProviderCause = "max_output_tokens" | "content_filter";
@@ -350,7 +352,19 @@ type ObservedFailure = Readonly<{
   cause?: ProviderCause;
   /** Why an answer stream ended before its completion event. */
   stream_drop?: ProviderStreamDrop;
+  /** The provider's own reviewed error identity a decoder marked (`providerErrorCode.ts`). */
+  provider_error_code?: string;
 }>;
+
+/** Why an Agent run or its model request ended, named by its failure code:
+ * the provider failed, the run's authority (lease) ended, its user stopped
+ * it, or the request was interrupted. */
+const agentFailureReasons: Readonly<Record<string, FailureReason>> = {
+  agent_provider_failed: "upstream", agent_search_failed: "upstream",
+  agent_authority_expired: "authority_expired",
+  agent_run_cancelled: "cancelled",
+  agent_provider_interrupted: "interrupted", agent_execution_interrupted: "interrupted"
+};
 
 const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]);
 type ProviderHttpFailureClass = "provider_auth_rejected" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_server_error";
@@ -441,20 +455,22 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
         ? "invalid_response"
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
-        ? "policy" : "unknown";
+        ? "policy" : Object.hasOwn(agentFailureReasons, code) ? agentFailureReasons[code]! : "unknown";
     const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,
       value instanceof GeminiHttpError && ownValue(value, "keyRejected") === true) : null;
     const streamDrop = providerStreamDrop(value);
+    const providerError = providerErrorCode(value);
     return { code: classified ?? code, reason, ...(status === undefined ? {} : { httpStatus: status }),
       ...(providerStatus === undefined ? {} : { provider_status: providerStatus }),
       ...(cause === undefined ? {} : { cause }),
-      ...(streamDrop === null ? {} : { stream_drop: streamDrop }) };
+      ...(streamDrop === null ? {} : { stream_drop: streamDrop }),
+      ...(providerError === null ? {} : { provider_error_code: providerError }) };
   } catch { return { code: "unknown", reason: "unknown" }; }
 }
 
 function writeOperation(scope: ProviderObservation, startedAt: number,
   outcome: "started" | "completed" | "failed" | "cancelled", error?: unknown, signal?: AbortSignal,
-  result?: Readonly<{ provider_status?: ProviderStatus; action?: "retry"; code?: ObservedFailureCode }>) {
+  result?: Readonly<{ provider_status?: ProviderStatus; action?: "retry"; code?: ObservedFailureCode; provider_error_code?: string }>) {
   const failure = observedFailure(error, signal);
   logEvent("provider_operation", {
     adapterKind: scope.identity.adapterKind, connectionId: scope.identity.connectionId,
@@ -462,7 +478,8 @@ function writeOperation(scope: ProviderObservation, startedAt: number,
     stage: scope.stage, outcome, duration_ms: Math.max(0, Date.now() - startedAt),
     action: result?.action ?? "none", timeout_ms: failure.timeout_ms ?? scope.timeoutMs, code: result?.code ?? failure.code, reason: failure.reason,
     provider_status: result?.provider_status ?? failure.provider_status, cause: failure.cause,
-    httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop
+    httpStatus: failure.httpStatus, abort_source: failure.abort_source, stream_drop: failure.stream_drop,
+    provider_error_code: result?.provider_error_code ?? failure.provider_error_code
   });
 }
 
@@ -476,6 +493,8 @@ function responseOutcome(value: unknown) {
     outcome: providerStatus === "cancelled" ? "cancelled" as const
       : error != null || providerStatus === "failed" || providerStatus === "incomplete" || providerStatus === "retrying" ? "failed" as const : "completed" as const,
     action: providerStatus === "retrying" ? "retry" as const : undefined,
+    // A polled response's own error record names the provider's identity.
+    provider_error_code: providerErrorCodeOf(error) ?? undefined,
     code: observedFailureCode(error) !== "unknown" ? observedFailureCode(error)
       : providerStatus === "cancelled" ? "provider_response_cancelled" as const
       : error != null || providerStatus === "failed" || providerStatus === "incomplete" || providerStatus === "retrying" ? "provider_response_failed" as const : undefined
@@ -616,6 +635,6 @@ function writeRetry(identity: Partial<ProviderStreamSafetyIdentity>, stage: Prov
     stage, attempt, action, delay_ms: delayMs,
     code: failure.code, reason: failure.reason, httpStatus: failure.httpStatus,
     timeout_ms: failure.timeout_ms, provider_status: failure.provider_status, cause: failure.cause,
-    stream_drop: failure.stream_drop
+    stream_drop: failure.stream_drop, provider_error_code: failure.provider_error_code
   });
 }

@@ -13,6 +13,8 @@ import {
   adminHealthErrorGroupsWithReach, adminHealthQuantile, adminHealthRetentionWindow, adminHealthWindow, foldAdminHealthErrorGroups
 } from "./projection";
 import type { FailedRunLoad, FailedRunQuery } from "./failedRuns";
+import { FAILURE_STREAK_MIN_RUNS, type FailureStreakLoad, type FailureStreakQuery } from "./failureStreaks";
+import type { ModelRunLoad, ModelRunQuery } from "./modelRuns";
 import type { AdminHealthQueuesService } from "./queues";
 import { HEALTH_REPORT_VERSION } from "./report";
 import { projectAdminHealthRun, type AdminHealthRunRow } from "./runLookup";
@@ -50,6 +52,25 @@ export const HEALTH_USER_RUN_LIMIT = 500;
 /** Failure codes of the failed-runs section, and the newest runs listed per code. */
 export const HEALTH_FULL_FAILED_RUN_CODE_LIMIT = 200;
 export const HEALTH_FULL_FAILED_RUNS_PER_CODE = 20;
+/** Connection and model rows of the runs-by-model section, and the failure codes listed per model. */
+export const HEALTH_FULL_MODEL_LIMIT = 200;
+export const HEALTH_FULL_MODEL_CODES = 5;
+/** Failure streaks listed, and the newest runs listed per streak. */
+export const HEALTH_FULL_STREAK_LIMIT = 200;
+export const HEALTH_FULL_STREAK_RUNS = 5;
+/** Rows of the push delivery and sign-in burst sections. */
+export const HEALTH_FULL_PUSH_LIMIT = 200;
+export const HEALTH_FULL_BURST_LIMIT = 200;
+/**
+ * A sign-in refusal burst: at least this many failed or refused attempts of
+ * one method within one UTC hour, the first and last of them at most this far
+ * apart. Read from the hourly counters' first and last times, so a burst
+ * mixed with other failures of its hour, or crossing an hour, may go unseen.
+ */
+export const SIGN_IN_BURST_MIN_FAILURES = 5;
+export const SIGN_IN_BURST_WINDOW_MS = 10 * 60_000;
+/** Codes listed per burst, most failures first. */
+const SIGN_IN_BURST_CODES = 5;
 
 /** The store's own row bound per counter read: a read that fills it may miss rows. */
 const READ_LIMIT = 5_000;
@@ -140,6 +161,10 @@ export type HealthFailureRow = Seen & {
   method: string | null;
   /** See `isUnauthenticatedOrUnknownRoute`: counted apart from users' failures. */
   unauthenticatedOrUnknownRoute: boolean;
+  /** The provider's own reviewed error identity (`server_is_overloaded`, ...; `other` when unreviewed). */
+  providerErrorCode: string | null;
+  /** What the record ran: a Workspace tool (`sandbox_shell`, ...), a provider stage, a timed transaction. */
+  operation: string | null;
 };
 
 export type HealthTimeoutRow = Seen & {
@@ -235,6 +260,76 @@ export type HealthOperationRow = Seen & {
 };
 export type HealthReadinessRow = Seen & { state: string | null; code: string | null };
 
+export type HealthModelRow = {
+  connectionId: string | null;
+  connectionName: string | null;
+  providerModelId: string | null;
+  modelName: string | null;
+  /** Runs created in the range with this answer connection and model. */
+  accepted: number;
+  completed: number;
+  /** Failed runs, refused user input aside. */
+  failed: number;
+  refusedInput: number;
+  cancelled: number;
+  /** Still preparing, queued or running. */
+  open: number;
+  users: number;
+  /** failed / (completed + failed + cancelled); `null` without settled runs. */
+  failureRate: number | null;
+  lastFailedAt: string | null;
+  /** The most frequent failure codes, most runs first. */
+  codes: Array<{ code: string | null; runs: number }>;
+};
+
+export type HealthFailureStreakRow = {
+  userId: string;
+  /** Consecutive failed or cancelled runs of one user in one chat. */
+  runs: number;
+  failed: number;
+  cancelled: number;
+  firstAt: string;
+  lastAt: string;
+  /** No later run of that chat in the range ended it. */
+  ongoing: boolean;
+  codes: Array<{ code: string | null; runs: number }>;
+  /** The streak's newest runs, newest first. */
+  newest: Array<{ runId: string; runReference: string }>;
+};
+
+export type HealthFailureStreaks = {
+  /** Every streak of the range and the distinct users they hit, beyond the listed rows too. */
+  streaks: number;
+  users: number;
+  longest: number;
+  /** Runs a streak needs at least. */
+  minRuns: number;
+  rows: HealthFailureStreakRow[];
+  truncated: boolean;
+};
+
+export type HealthPushDeliveryRow = Seen & {
+  /** The push service by its host: `fcm`, `mozilla`, `apple` or `other`; null for records from before it was recorded. */
+  service: string | null;
+  outcome: string | null;
+  code: string | null;
+  /** The transport category of a delivery that got no HTTP answer. */
+  category: string | null;
+  httpStatus: number | null;
+};
+
+export type HealthSignInBurstRow = {
+  method: string | null;
+  /** The UTC hour the burst fell in. */
+  hourStart: string;
+  /** Failed and refused attempts counted for the burst. */
+  failures: number;
+  firstAt: string;
+  lastAt: string;
+  spanMs: number;
+  codes: Array<{ code: string | null; count: number }>;
+};
+
 export type HealthFullReport = {
   privacy: typeof HEALTH_AGENT_PRIVACY;
   kind: "full";
@@ -295,6 +390,22 @@ export type HealthFullReport = {
     readiness: HealthReadinessRow[];
     truncated: boolean;
   };
+  /**
+   * Runs created in the range per answer connection and model, read from the
+   * runs themselves (every run once, preparation and recovery failures
+   * included), most failures first. Counts are runs.
+   */
+  models: { rows: HealthModelRow[]; truncated: boolean };
+  /** Users who lost several answers in a row in one chat (`FAILURE_STREAK_MIN_RUNS`), longest first. */
+  failureStreaks: HealthFailureStreaks;
+  /** Browser push deliveries by push service, outcome and code. */
+  pushDelivery: { rows: HealthPushDeliveryRow[]; truncated: boolean };
+  /**
+   * Hours in which one sign-in method failed or was refused at least
+   * `minFailures` times within `windowMs` (`SIGN_IN_BURST_MIN_FAILURES`):
+   * counts and codes, never who tried.
+   */
+  signInBursts: { bursts: number; minFailures: number; windowMs: number; rows: HealthSignInBurstRow[]; truncated: boolean };
 };
 
 export type HealthUserRun = AdminHealthRunSummary & { runReference: string };
@@ -314,6 +425,8 @@ export type HealthUserReport = {
   /** Failed and cancelled runs created in the range, newest first. */
   failedRuns: { rows: HealthUserRun[]; truncated: boolean };
   problemReports: { rows: HealthProblemReportRow[]; total: number; truncated: boolean };
+  /** This user's failure streaks of the range, longest first. */
+  failureStreaks: HealthFailureStreaks;
 };
 
 export type HealthAgentReportSources = Readonly<{
@@ -326,6 +439,10 @@ export type HealthAgentReportSources = Readonly<{
   failedRuns(query: AdminHealthUserRunsQuery): Promise<readonly AdminHealthRunRow[]>;
   /** Every user's failed runs of a range by failure code (`readFailedRunLoad`). */
   failedRunGroups(query: Omit<FailedRunQuery, "statementTimeoutMs">): Promise<FailedRunLoad>;
+  /** Runs of a range per answer connection and model (`readModelRunLoad`). */
+  modelRuns(query: Omit<ModelRunQuery, "statementTimeoutMs">): Promise<ModelRunLoad>;
+  /** Failure streaks of a range, of every user or one (`readFailureStreakLoad`). */
+  failureStreaks(query: Omit<FailureStreakQuery, "statementTimeoutMs">): Promise<FailureStreakLoad>;
   userExists(userId: string): Promise<boolean>;
   now?: () => Date;
 }>;
@@ -546,7 +663,8 @@ const RUN_TOTAL_QUERY = {
 
 function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[] {
   const key = (row: TelemetryCounterGroup) => JSON.stringify(["event", "level", "code", "subsystem", "stage", "reason", "routePath",
-    "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "method"].map((name) => row.group[name as keyof typeof row.group] ?? null));
+    "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "method", "provider_error_code", "operation"]
+    .map((name) => row.group[name as keyof typeof row.group] ?? null));
   return groupRows(rows, key).map((group): HealthFailureRow => {
     const first = group[0]!.group;
     return {
@@ -566,7 +684,9 @@ function failureRows(rows: readonly TelemetryCounterGroup[]): HealthFailureRow[]
       appVersions: [...new Set(group.map((row) => text(row.group.appVersion)).filter((value): value is string => value !== null))].sort(),
       method: text(first.method),
       unauthenticatedOrUnknownRoute: isUnauthenticatedOrUnknownRoute({ event: text(first.event) ?? "unknown",
-        routePath: text(first.routePath), method: text(first.method), status: integer(first.status) })
+        routePath: text(first.routePath), method: text(first.method), status: integer(first.status) }),
+      providerErrorCode: text(first.provider_error_code),
+      operation: text(first.operation)
     };
   }).sort(byCount);
 }
@@ -646,6 +766,89 @@ function failedRunSection(load: FailedRunLoad): HealthFullReport["failedRuns"] {
   };
 }
 
+function modelSection(load: ModelRunLoad, names: AdminHealthProviderNames): HealthFullReport["models"] {
+  return {
+    rows: load.rows.map((row): HealthModelRow => ({
+      connectionId: row.connectionId,
+      connectionName: row.connectionId === null ? null : adminHealthConnectionLabel(row.connectionId, names).connectionName,
+      providerModelId: row.providerModelId,
+      modelName: adminHealthModelLabel(row.providerModelId, names),
+      accepted: row.accepted, completed: row.completed, failed: row.failed, refusedInput: row.refusedInput,
+      cancelled: row.cancelled, open: row.open, users: row.users,
+      failureRate: rate(row.failed, row.completed + row.failed + row.cancelled),
+      lastFailedAt: row.lastFailedAt === null ? null : row.lastFailedAt.toISOString(),
+      codes: row.codes.map((code) => ({ code: code.code, runs: code.runs }))
+    })),
+    truncated: load.truncated
+  };
+}
+
+/** Failure streaks as the agent reports list them: user ids and the newest runs' references. */
+function healthFailureStreaks(load: FailureStreakLoad): HealthFailureStreaks {
+  return {
+    streaks: load.streaks,
+    users: load.users,
+    longest: load.longest,
+    minRuns: FAILURE_STREAK_MIN_RUNS,
+    rows: load.rows.map((row) => ({
+      userId: row.userId, runs: row.runs, failed: row.failed, cancelled: row.cancelled,
+      firstAt: row.firstAt.toISOString(), lastAt: row.lastAt.toISOString(), ongoing: row.ongoing,
+      codes: row.codes.map((code) => ({ code: code.code, runs: code.runs })),
+      newest: row.newestRunIds.flatMap((id) => {
+        const runId = runIdOf(id);
+        return runId === null ? [] : [{ runId, runReference: runReferenceLabel(runId) }];
+      })
+    })),
+    truncated: load.truncated
+  };
+}
+
+function pushDeliveryRows(rows: readonly TelemetryCounterGroup[]): HealthPushDeliveryRow[] {
+  return rows.map((row): HealthPushDeliveryRow => ({
+    service: text(row.group.push_service), outcome: text(row.group.outcome), code: text(row.group.code),
+    category: text(row.group.category), httpStatus: integer(row.group.httpStatus), ...seen([row])
+  })).sort(byCount);
+}
+
+/**
+ * Sign-in refusal bursts from hourly counters of failed and refused steps:
+ * per hour and method, when its failures reach the bound within the window,
+ * else per hour, method and code when one code alone does.
+ */
+function signInBursts(rows: readonly TelemetryCounterGroup[]): HealthSignInBurstRow[] {
+  const failures = rows.filter((row) => row.group.outcome === "failed" || row.group.outcome === "refused");
+  const bursts: HealthSignInBurstRow[] = [];
+  const qualifies = (group: readonly TelemetryCounterGroup[]) => {
+    const count = group.reduce((total, row) => total + row.count, 0);
+    const first = Math.min(...group.map((row) => row.firstSeenAt.getTime()));
+    const last = Math.max(...group.map((row) => row.lastSeenAt.getTime()));
+    return count >= SIGN_IN_BURST_MIN_FAILURES && last - first <= SIGN_IN_BURST_WINDOW_MS ? { count, first, last } : null;
+  };
+  for (const group of groupRows(failures, (row) => JSON.stringify([row.group.bucket instanceof Date ? row.group.bucket.getTime() : null,
+    row.group.sign_in_method ?? null]))) {
+    const bucket = group[0]!.group.bucket;
+    if (!(bucket instanceof Date)) continue;
+    const codes = groupRows(group, (row) => JSON.stringify(row.group.code ?? null));
+    const evidence = qualifies(group);
+    const matched = evidence ? [{ evidence, rows: group }]
+      : codes.flatMap((rowsOfCode) => {
+        const one = qualifies(rowsOfCode);
+        return one ? [{ evidence: one, rows: rowsOfCode }] : [];
+      });
+    for (const { evidence: found, rows: burst } of matched) {
+      bursts.push({
+        method: text(group[0]!.group.sign_in_method), hourStart: bucket.toISOString(), failures: found.count,
+        firstAt: new Date(found.first).toISOString(), lastAt: new Date(found.last).toISOString(), spanMs: found.last - found.first,
+        codes: groupRows(burst, (row) => JSON.stringify(row.group.code ?? null))
+          .map((rowsOfCode) => ({ code: text(rowsOfCode[0]!.group.code), count: rowsOfCode.reduce((total, row) => total + row.count, 0) }))
+          .sort((left, right) => right.count - left.count || (left.code ?? "").localeCompare(right.code ?? ""))
+          .slice(0, SIGN_IN_BURST_CODES)
+      });
+    }
+  }
+  return bursts.sort((left, right) => right.failures - left.failures || right.hourStart.localeCompare(left.hourStart));
+}
+
 // --- Collection
 
 /** Every problem of the range, complete and structured, for an agent on the host. */
@@ -662,14 +865,15 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
   const [
     runRows, previousRows, latencyRows, failureCounters, nested, transport, toolTimeouts, runDeadlines, errorRows, errorFirstSeen,
     signInRows, toolRows, httpRows, clientRows, operationRows, telemetryRows, queues, problemReports, newest, firsts, keyRows,
-    failedRunLoad, slowTransactionRows
+    failedRunLoad, slowTransactionRows, modelRunLoad, streakLoad, pushRows, signInHourRows
   ] = await Promise.all([
     counters({ ...span, ...RUN_TOTAL_QUERY }),
     window.previous ? counters({ ...window.previous, ...RUN_TOTAL_QUERY }) : Promise.resolve(null),
     counters({ ...base, events: ["run_execution"], dimensions: { outcome: "completed" },
       groupBy: ["stage", "after", "providerFamily", "connectionId", "providerModelId"] }),
     counters({ ...base, levels: ["warn", "error", "fatal"], groupBy: ["event", "level", "code", "subsystem", "stage", "reason",
-      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion", "method"] }),
+      "routePath", "status", "httpStatus", "providerFamily", "tool_kind", "overflow", "appVersion", "method", "provider_error_code",
+      "operation"] }),
     counters({ ...base, events: ["nested_abort"], levels: ["warn"], groupBy: ["layer", "abort_source", "operation", "stage", "providerFamily"] }),
     counters({ ...base, events: ["transport_stage"], dimensions: { category: "timeout" },
       groupBy: ["transport", "stage", "operation", "providerFamily", "code"] }),
@@ -691,7 +895,13 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     read(() => store.readFirstIncidentPerKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
     read(() => store.countIncidentReachByKey({ ...span, limit: HEALTH_INCIDENT_KEY_LIMIT })),
     read(() => sources.failedRunGroups({ ...span, perCode: HEALTH_FULL_FAILED_RUNS_PER_CODE, groupLimit: HEALTH_FULL_FAILED_RUN_CODE_LIMIT })),
-    counters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY })
+    counters({ ...span, ...HEALTH_SLOW_TRANSACTION_QUERY }),
+    read(() => sources.modelRuns({ ...span, limit: HEALTH_FULL_MODEL_LIMIT, codesPerModel: HEALTH_FULL_MODEL_CODES })),
+    read(() => sources.failureStreaks({ ...span, limit: HEALTH_FULL_STREAK_LIMIT, runsPerStreak: HEALTH_FULL_STREAK_RUNS })),
+    counters({ ...base, events: ["job_attempt"], dimensions: { subsystem: "push", stage: "dispatch" },
+      groupBy: ["push_service", "outcome", "code", "category", "httpStatus"] }),
+    counters({ ...base, events: ["sign_in"], levels: ["warn", "error"], groupBy: ["bucket", "sign_in_method", "outcome", "code"],
+      interval: "hour" })
   ]);
 
   const errorFold = foldAdminHealthErrorGroups(errorRows, errorFirstSeen, generatedAt, HEALTH_FULL_ERROR_GROUP_LIMIT);
@@ -703,11 +913,13 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
     reachByFingerprint(store, span, errorFold.groups.map((group) => group.fingerprint)),
     sources.providerNames({
       connectionIds: adminHealthBoundedIds([
+        ...modelRunLoad.rows.map((row) => row.connectionId),
         ...latencyRows.map((row) => text(row.group.connectionId)),
         ...[...incidentItems.values()].map((item) => item.connectionId),
         ...keyRows.map((row) => row.key.connectionId)
       ]),
       modelIds: adminHealthBoundedIds([
+        ...modelRunLoad.rows.map((row) => row.providerModelId),
         ...latencyRows.map((row) => text(row.group.providerModelId)),
         ...[...incidentItems.values()].map(adminHealthIncidentModelId)
       ])
@@ -716,6 +928,7 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
 
   const firstIds = new Set(firsts.items.map((item) => item.id));
   const failures = failureRows(failureCounters);
+  const bursts = signInBursts(signInHourRows);
   const timeouts = timeoutRows({ nested, transport, tools: toolTimeouts, runs: runDeadlines });
   const signIns = groupRows(signInRows, (row) => JSON.stringify([row.group.sign_in_method, row.group.step, row.group.outcome, row.group.code]))
     .map((group): HealthSignInRow => ({
@@ -829,7 +1042,12 @@ export async function collectHealthFullReport(sources: HealthAgentReportSources,
       readiness: readiness.slice(0, HEALTH_FULL_ROW_LIMIT),
       truncated: operationRows.length >= READ_LIMIT || telemetryRows.length >= READ_LIMIT ||
         telemetry.length > HEALTH_FULL_ROW_LIMIT || readiness.length > HEALTH_FULL_ROW_LIMIT
-    }
+    },
+    models: modelSection(modelRunLoad, names),
+    failureStreaks: healthFailureStreaks(streakLoad),
+    pushDelivery: bounded(pushDeliveryRows(pushRows), HEALTH_FULL_PUSH_LIMIT, pushRows.length >= READ_LIMIT),
+    signInBursts: { bursts: bursts.length, minFailures: SIGN_IN_BURST_MIN_FAILURES, windowMs: SIGN_IN_BURST_WINDOW_MS,
+      ...bounded(bursts, HEALTH_FULL_BURST_LIMIT, signInHourRows.length >= READ_LIMIT) }
   };
 }
 
@@ -844,10 +1062,11 @@ export async function collectHealthUserReport(
   const span = { from: window.from, to: window.to };
   // The account first: an unreachable database fails once.
   const userExists = await sources.userExists(userId);
-  const [incidents, runRows, problemReports] = await Promise.all([
+  const [incidents, runRows, problemReports, streaks] = await Promise.all([
     readNewestIncidents(sources.store, { ...span, userId }, HEALTH_NEWEST_INCIDENT_LIMIT),
     sources.failedRuns({ ...span, userId, limit: HEALTH_USER_RUN_LIMIT + 1 }),
-    readProblemReports(sources, { ...span, userId })
+    readProblemReports(sources, { ...span, userId }),
+    sources.failureStreaks({ ...span, userId, limit: HEALTH_FULL_STREAK_LIMIT, runsPerStreak: HEALTH_FULL_STREAK_RUNS })
   ]);
   const selected = runRows.slice(0, HEALTH_USER_RUN_LIMIT).filter((row) => runIdOf(row.id) !== null);
   const read = readLimiter(PARALLEL_READS);
@@ -877,6 +1096,7 @@ export async function collectHealthUserReport(
       }),
       truncated: runRows.length > HEALTH_USER_RUN_LIMIT
     },
-    problemReports
+    problemReports,
+    failureStreaks: healthFailureStreaks(streaks)
   };
 }
