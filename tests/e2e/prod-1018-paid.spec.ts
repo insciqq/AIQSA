@@ -93,7 +93,7 @@ import {
   newExcludedChat, paidEnv, pollUntil, PAID_SETUP_TIMEOUT_MS, PAID_TURN_TIMEOUT_MS, setupCodexLbAnswerModel, waitForCatalogModel,
   type PaidAnswerModel
 } from "./support/paidProviders";
-import { disableMemoryRecall } from "./support/workspace";
+import { disableMemoryRecall, openLastActivity } from "./support/workspace";
 import { cleanupWorkspaceFixtureChat } from "./support/workspaceFixture";
 
 const enabled = process.env.AIQSA_FEATURES_PAID_E2E === "DISPOSABLE";
@@ -301,11 +301,10 @@ test("codex-lb Agent run that leaves links in its output folder completes, expor
     expect(outputs.map((row) => row.fileName), "only the regular file is exported").toEqual(["report.txt"]);
 
     await page.goto(`/c/${chatId}`, { timeout: WARMUP_TIMEOUT_MS });
-    const note = page.getByText("2 links not exported", { exact: true });
-    if (!(await note.isVisible().catch(() => false))) {
-      await page.getByRole("button", { name: /Worked in Workspace/u }).last().click().catch(() => undefined);
-    }
-    await expect(note, "the run's Workspace activity says the links were skipped").toBeVisible({ timeout: 60_000 });
+    const activity = await openLastActivity(page);
+    await expect(activity).toContainText("Exported 1 file", { timeout: 60_000 });
+    const note = activity.getByRole("note").filter({ hasText: "2 links not exported" });
+    await expect(note, "the run's Workspace activity says the links were skipped").toBeVisible();
     summary.noteVisible = true;
     await page.screenshot({ path: testInfo.outputPath("agent-output-links-skipped-1440x900.png") });
     await page.setViewportSize({ height: 844, width: 390 });
