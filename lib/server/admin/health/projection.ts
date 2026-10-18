@@ -47,7 +47,8 @@ export function adminHealthIncidentFrom(range: AdminHealthRange, now: Date): Dat
 /**
  * A provider failure's class from its stable code, HTTP status and reason:
  * rejected key (401/403), quota or rate limit (402/429), provider-side error
- * (5xx), timeout, network/transport, otherwise other.
+ * (5xx, or an upstream failure such as an Agent stream's error event),
+ * timeout, network/transport, otherwise other.
  */
 export function adminHealthFailureClass(
   code: string | null,
@@ -58,7 +59,9 @@ export function adminHealthFailureClass(
   if (code === "provider_quota_exhausted" || code === "provider_rate_limited" || httpStatus === 402 || httpStatus === 429) {
     return "quota";
   }
-  if (code === "provider_server_error" || httpStatus !== null && httpStatus >= 500 && httpStatus <= 599) return "provider_error";
+  if (code === "provider_server_error" || reason === "upstream" || httpStatus !== null && httpStatus >= 500 && httpStatus <= 599) {
+    return "provider_error";
+  }
   if (reason === "deadline" || code !== null && (code === "timeout" || /_(?:timed_out|timeout)$/u.test(code))) return "timeout";
   if (reason === "network") return "network";
   return "other";
@@ -100,7 +103,8 @@ export const ADMIN_HEALTH_INCIDENT_DETAIL_KEYS: ReadonlySet<string> = new Set([
   "engine_index", "error_category", "error_class", "error_fingerprint", "error_site", "failed_count", "headers_ms", "issue_count",
   "job_kind", "kind", "layer", "limit", "lock_wait_ms", "method",
   "mode", "node_version", "observed", "operation", "operation_index", "operation_stage", "outcome", "pending_count",
-  "prisma_code", "providerFamily", "provider_code", "provider_status", "reason", "repeat_count", "retry_at",
+  "prisma_code", "providerFamily", "provider_code", "provider_error_code", "provider_status", "push_service", "reason", "repeat_count",
+  "retry_at",
   "routePath", "route_source", "sign_in_method", "sqlstate", "state", "status", "step", "stream", "stream_drop", "sys_code", "syscall",
   "termination", "timeout_ms", "tx_elapsed_ms", "tx_timeout_ms",
   "tool_kind",

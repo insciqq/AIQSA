@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import { workspaceMcpFailure, workspaceOperationFailureResult } from "./operationFailure";
-import { observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
+import { observeWorkspaceToolExecution, retainWorkspaceResultCode, workspaceFailureCause } from "./toolObservability";
 
 const wire = (value: unknown, isError = true) => ({ isError, content: [{ type: "text", text: JSON.stringify(value) }] });
 describe("Workspace confirmed operation failures", () => {
@@ -118,5 +118,21 @@ describe("Workspace command failure telemetry", () => {
   it("keeps a failed workspace operation an error", async () => {
     const failed = await records("workspace_operation_failed");
     expect(failed.map((record) => [record.stage, record.level])).toEqual([["execution", "error"], ["result", "error"]]);
+  });
+
+  it("names the envelope the pinned MCP sent as the failure's cause, never its message, and keeps the model's text", () => {
+    const cause = (value: unknown) => workspaceFailureCause(workspaceMcpFailure(value, 1024, "sandbox_fs_read"));
+    expect(cause(wire({ ok: false, error: { code: "operation_failed", message: "PRIVATE_EXCEPTION" } }))).toBe("guest_operation_failed");
+    expect(cause(wire({ ok: false, error: { code: "exec_failed", message: "PRIVATE", details: { exitCode: -1 } } })))
+      .toBe("guest_exec_failed");
+    expect(cause(wire({ ok: false, error: { code: "host_path_denied", message: "PRIVATE_PATH" } }))).toBe("guest_path_denied");
+    expect(cause(wire({ ok: false, error: { code: "dangerous_operation_disabled", message: "PRIVATE" } }))).toBe("guest_operation_refused");
+    expect(cause(wire({ ok: false, error: { code: "PRIVATE_UNREVIEWED", message: "PRIVATE" } }))).toBe("guest_other");
+    expect(cause({ isError: true, content: [{ type: "text", text: "opaque PRIVATE text" }] })).toBe("guest_unparsed");
+    // A model's own command exit is its result, not an operation failure.
+    expect(cause(wire({ ok: true, data: { exitCode: 1, stdout: "", stderr: "" } }, false))).toBeUndefined();
+    const failed = workspaceMcpFailure(wire({ ok: false, error: { code: "operation_failed", message: "PRIVATE" } }), 1024, "sandbox_fs_read")!;
+    expect(failed).toEqual(workspaceOperationFailureResult("workspace_operation_failed"));
+    expect(JSON.stringify(failed)).not.toMatch(/guest_|PRIVATE/u);
   });
 });

@@ -204,6 +204,31 @@ describe("browser push sender", () => {
     expect(phone.open(h.requests[0]!.body)).toMatchObject({ body: "Scheduled task finished", title: "Brief", url: "/scheduled" });
   });
 
+  it("names each delivery's push service by its endpoint host class, never the endpoint", async () => {
+    const records: ObservedRecord[] = [];
+    setRecordObserver((record) => records.push(record));
+    const endpoints: Record<string, string> = {
+      chrome: "https://fcm.googleapis.com/fcm/send/PRIVATE_DEVICE_A", firefox: "https://updates.push.services.mozilla.com/wpush/v2/PRIVATE_B",
+      safari: "https://web.push.apple.com/PRIVATE_DEVICE_C", edge: "https://wns2-par02p.notify.windows.com/w/?token=PRIVATE_D"
+    };
+    const post: PushPost = vi.fn(async (request: PushPostRequest) => {
+      if (request.endpoint.hostname.endsWith("mozilla.com")) throw new PushTransportError("push_transport_failed", "network_unreachable");
+      return { status: 201 };
+    });
+    const targets = Object.entries(endpoints).map(([id, endpoint]) => ({ ...device(id).target, endpoint }));
+    const h = harness({ post, targets });
+    h.sender.notifyRun("run-1");
+    await h.sender.idle();
+    expect(records.filter((record) => record.stage === "dispatch").map((record) => [record.push_service, record.outcome, record.category]))
+      .toEqual([["fcm", "completed", undefined], ["mozilla", "failed", "network_unreachable"], ["apple", "completed", undefined],
+        ["other", "completed", undefined]]);
+    expect(JSON.stringify(records)).not.toMatch(/PRIVATE_|googleapis|mozilla\.com|apple\.com|windows\.com/u);
+    const aggregator = createTelemetryAggregator();
+    for (const record of records) aggregator.observe(record);
+    expect(aggregator.drain().counters.filter((counter) => counter.dimensions.stage === "dispatch")
+      .map((counter) => counter.dimensions.push_service).sort()).toEqual(["apple", "fcm", "mozilla", "other"]);
+  });
+
   it("drops expired subscriptions, counts other failures and keeps going after a transport error", async () => {
     const statuses = [410, 404, 500, 201];
     const post: PushPost = vi.fn(async (request: PushPostRequest) => {

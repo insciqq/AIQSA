@@ -16,7 +16,8 @@ export const TELEMETRY_DIMENSIONS = Object.freeze([
   "abort_source", "action", "adapterKind", "after", "category", "cause", "code", "connectionId", "db_failure", "error_category",
   "error_class", "error_fingerprint", "error_site",
   "httpStatus", "job_kind", "kind", "layer", "method", "mode", "operation", "outcome", "prisma_code", "providerFamily",
-  "providerModelId", "provider_code", "provider_status", "reason", "routePath", "sign_in_method", "stage", "state",
+  "providerModelId", "provider_code", "provider_error_code", "provider_status", "push_service", "reason", "routePath", "sign_in_method",
+  "stage", "state",
   "status", "step", "stream_drop", "subsystem", "sys_code", "syscall", "termination", "tool_kind", "transport", "work_stage"
 ] as const);
 export type TelemetryDimension = (typeof TELEMETRY_DIMENSIONS)[number];
@@ -29,10 +30,42 @@ export const TELEMETRY_OVERFLOW_DIMENSIONS: TelemetryDimensions = Object.freeze(
 
 /** Upper bounds (inclusive, ms) of the fixed duration histogram; the last
  * bucket counts everything above the last bound. */
-export const TELEMETRY_DURATION_BOUNDS_MS = Object.freeze(
-  [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000] as const
-);
+export const TELEMETRY_DURATION_BOUNDS_MS = Object.freeze([
+  100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 45_000, 60_000, 90_000, 120_000, 180_000, 300_000,
+  600_000, 900_000, 1_200_000, 1_800_000
+] as const);
 export const TELEMETRY_DURATION_BUCKETS = TELEMETRY_DURATION_BOUNDS_MS.length + 1;
+
+/**
+ * Earlier histogram layouts that stored counters may still carry, by their
+ * bucket count: a row's array length names its layout, so rows of every
+ * layout aggregate together within counter retention (30 days). Each
+ * earlier bound is also a current bound, so an earlier bucket lands whole in
+ * the current bucket with its upper bound and the open last bucket stays
+ * open: a percentile over mixed rows stays the upper bound it was. Drop a
+ * layout once retention removed its rows.
+ */
+export const TELEMETRY_LEGACY_DURATION_BOUNDS_MS: Readonly<Record<number, readonly number[]>> = Object.freeze({
+  12: Object.freeze([100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000])
+});
+
+/** The current bucket each bucket of an earlier layout lands in, by index. */
+export function telemetryLegacyBucketIndexes(bounds: readonly number[]): number[] {
+  const current: readonly number[] = TELEMETRY_DURATION_BOUNDS_MS;
+  return [...bounds.map((bound) => current.indexOf(bound)), TELEMETRY_DURATION_BUCKETS - 1];
+}
+
+/** A stored histogram of any known layout in the current one; an unknown length keeps what fits. */
+export function telemetryDurationBucketsInCurrentLayout(buckets: readonly number[]): number[] {
+  const legacy = Object.hasOwn(TELEMETRY_LEGACY_DURATION_BOUNDS_MS, buckets.length) && buckets.length !== TELEMETRY_DURATION_BUCKETS
+    ? telemetryLegacyBucketIndexes(TELEMETRY_LEGACY_DURATION_BOUNDS_MS[buckets.length]!) : null;
+  const result = new Array<number>(TELEMETRY_DURATION_BUCKETS).fill(0);
+  buckets.forEach((value, index) => {
+    const target = legacy ? legacy[index]! : index;
+    if (target >= 0 && target < TELEMETRY_DURATION_BUCKETS) result[target] = (result[target] ?? 0) + value;
+  });
+  return result;
+}
 
 export type TelemetryCounterDelta = Readonly<{
   bucketStart: Date;
@@ -232,7 +265,7 @@ function entryFromDelta(delta: TelemetryCounterDelta): Entry {
     durationCount: delta.durationCount,
     durationSumMs: delta.durationSumMs,
     durationMaxMs: delta.durationMaxMs,
-    durationBuckets: Array.from({ length: TELEMETRY_DURATION_BUCKETS }, (_, index) => delta.durationBuckets[index] ?? 0),
+    durationBuckets: telemetryDurationBucketsInCurrentLayout(delta.durationBuckets),
     firstSeenAt: delta.firstSeenAt.getTime(),
     lastSeenAt: delta.lastSeenAt.getTime()
   };

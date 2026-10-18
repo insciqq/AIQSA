@@ -1380,5 +1380,15 @@
   "answer_problem_report_prune_failed",
   "sign_in_refusal_record_failed",
   "sign_in_refusal_prune_failed",
-  "sign_in_refusals_failed"
+  "sign_in_refusals_failed",
+  "agent_authority_expired",
+  "agent_context_too_large",
+  "agent_generation_output_limit",
+  "agent_mcp_call_limit",
+  "agent_model_call_limit",
+  "agent_provider_interrupted",
+  "agent_run_cancelled",
+  "agent_search_failed",
+  "agent_time_limit",
+  "agent_token_limit"
 ]
