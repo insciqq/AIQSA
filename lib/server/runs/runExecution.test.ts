@@ -7800,6 +7800,44 @@ describe("run execution", () => {
     }
   });
 
+  it.each([0, 1] as const)("gives the model the oversized-response hint for a session error of another bundle's runtime (observations v%s)", async (version) => {
+    // The shared MCP runtime starts in instrumentation's bundle, so the error a
+    // chat route receives is another copy of the class, never instanceof it.
+    const foreign = Object.assign(new Error(new McpClientSessionError({ code: "mcp_call_result_too_large", operation: "call_tool" }).message), {
+      code: "mcp_call_result_too_large", maxBytes: 65_536, name: "McpClientSessionError", operation: "call_tool", retryable: false
+    });
+    expect(foreign).not.toBeInstanceOf(McpClientSessionError);
+    const namespacedName = "mcp_mail_read_thread";
+    const mcp: McpRunPlanSnapshot = { version: 1,
+      servers: [{ fingerprint: "fingerprint-mail", revisionId: "revision-mail", serverId: "server-mail", serverName: "Mail" }],
+      tools: [{ definitionHash: "d".repeat(64), description: "Read one thread", inputSchema: { type: "object" },
+        name: "read_thread", namespacedName, originalName: "read_thread", serverId: "server-mail", serverName: "Mail" }] };
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      return providerRequests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [{ arguments: { id: "t-1" }, id: "thread-call", name: namespacedName }], usage: usage(1, 1, 0) })
+        : providerResult({ finalText: "Asked for less", usage: usage(1, 1, 0) });
+    });
+    const base = preparedData({ mcp, modelId: "gpt-tool-model", provider: "openai" });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, toolObservationVersion: version },
+      providerRequest: { ...base.providerRequest, toolObservationVersion: version } };
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+      mcpRuntime: { async callTool() { throw foreign; }, ensureAcceptedGeneration: async () => true } }),
+    observations: memoryToolObservations().service() }).text();
+
+    const hint = `Tool failed: ${mcpOversizedResponseMessage(65_536)}`;
+    expect(hint).toContain("MCP tool response exceeded its size limit. The tool was called, but its response was larger than 64 KiB");
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe("Asked for less");
+    const [settled] = [...repository.toolCalls.values()];
+    expect(settled).toMatchObject({ state: "error", result: { content: [{ text: hint, type: "text" }], status: "error",
+      rawPreview: { finalProviderResponsePreview: { code: "mcp_call_result_too_large", error: foreign.message } } } });
+    expect(JSON.stringify(settled?.result)).not.toContain("without a confirmed specific cause");
+    expect(providerRequests[1]?.providerToolMessages?.at(-1)).toEqual({ call_id: "thread-call", output: hint, type: "function_call_output" });
+  });
+
   it("persists partial Search usage when Stop interrupts its provider call", async () => {
     const repository = createRepository();
     let answerRounds = 0;

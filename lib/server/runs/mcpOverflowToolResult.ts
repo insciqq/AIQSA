@@ -6,7 +6,9 @@ import {
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 
 export function mcpResponseOverflowCode(error: unknown): McpFatalResponseErrorCode | null {
-  if (!(error instanceof McpClientSessionError)) return null;
+  // The shared runtime starts in instrumentation's bundle, so its session
+  // errors are another copy of the class than a run route's: never instanceof.
+  if (!McpClientSessionError.isInstance(error)) return null;
 
   switch (error.code) {
     case "mcp_initialize_response_too_large":
@@ -25,7 +27,7 @@ export function mcpResponseOverflowToolExecutionResult(
   label: "Search" | "Tool" | "Workspace" = "Tool"
 ): ToolExecutionResult | null {
   const code = mcpResponseOverflowCode(error);
-  if (!code || !(error instanceof McpClientSessionError)) return null;
+  if (!code || !McpClientSessionError.isInstance(error)) return null;
 
   const message = error.message;
   // The model learns how to ask for less; the durable preview keeps the code's message.
