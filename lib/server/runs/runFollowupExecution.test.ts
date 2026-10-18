@@ -247,10 +247,11 @@ describe("in-run clarification execution", () => {
       adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: consumer
     }));
     expect(answer.result.finalText).toBe("final");
-    // One pass (two parts of the unmasked source and their reduction): the
-    // replacement re-enters the same consumer with the committed summary
-    // already carried, so it is not bought again.
-    expect(summaries).toHaveLength(3);
+    // One pass (a paid part of the unmasked source, a part small enough to be
+    // its own notes, and their reduction): the replacement re-enters the same
+    // consumer with the committed summary already carried, so it is not bought again.
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]?.prompt.system).toContain("one consecutive part of a longer source");
     expect(summaries.at(-1)?.prompt.system).toContain("notes of consecutive parts");
     expect(consumer).toHaveBeenCalledTimes(2);
     expect(consumer.mock.calls[1]?.[0].contextCompactionSummary?.notes).toContain("correction");
