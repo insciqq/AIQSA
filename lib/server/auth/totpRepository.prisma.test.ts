@@ -74,6 +74,7 @@ async function withTotpData<T>(run: (fixture: Fixture) => Promise<T>): Promise<T
       }
     });
   } finally {
+    await prisma.signInRefusal.deleteMany({ where: { email: { endsWith: `@${domain}` } } });
     // Revoked-by references from the admin reset go first: they restrict deleting the admin.
     await prisma.authSession.deleteMany({ where: { user: { email: { endsWith: `@${domain}` } } } });
     await prisma.user.deleteMany({
