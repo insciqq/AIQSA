@@ -6,6 +6,7 @@ import {
   decodeThreadWorkspaceCheckpointOutput,
   decodeThreadWorkspaceActivity,
   decodeThreadWorkspaceActivityEntry,
+  decodeWorkspaceOutputSkips,
   decodeWorkspacePolicyResponse,
   decodeWorkspaceRuntimeHealth,
   isWorkspaceErrorCode
@@ -133,6 +134,18 @@ describe("workspace activity contract", () => {
     }
     expect(decodeThreadWorkspaceActivityEntry({ ...entries[1], mcp: { toolName: "Tool", rawToolId: "private" } })).toBeNull();
     expect(decodeThreadWorkspaceActivityEntry({ ...base, kind: "command", text: "unrelated" })).toBeNull();
+  });
+
+  it("admits export skips only as positive counts by known reason on the export row", () => {
+    const exported = { count: 1, id: "outputs_export:fixture", kind: "outputs_export", phase: "succeeded", skipped: { link: 2, special: 1 } };
+    expect(decodeThreadWorkspaceActivityEntry(exported)).toEqual(exported);
+    expect(decodeThreadWorkspaceActivityEntry({ ...exported, skipped: { link: 1 } })).toEqual({ ...exported, skipped: { link: 1 } });
+    for (const skipped of [{}, { link: 0 }, { link: -1 }, { link: 1.5 }, { link: 1_000_001 }, { link: 1, path: "/workspace/output/a" },
+      { socket: 1 }, ["link"], "link"]) {
+      expect(decodeWorkspaceOutputSkips(skipped)).toBeNull();
+      expect(decodeThreadWorkspaceActivityEntry({ ...exported, skipped })).toBeNull();
+    }
+    expect(decodeThreadWorkspaceActivityEntry({ ...exported, kind: "attachments_prepare" })).toBeNull();
   });
 
   it("enforces byte, text, collection and elision bounds at the wire boundary", () => {
