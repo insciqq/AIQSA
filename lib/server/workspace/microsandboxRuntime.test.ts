@@ -15,6 +15,7 @@ import { getWorkspaceConfig, workspaceToolTransportMaxBytes } from "./config";
 import { execPollEventMaxBytes, MicrosandboxWorkspaceRuntime } from "./microsandboxRuntime";
 import { projectArchiveLimits, PROJECT_RESTORE_SCRIPT } from "./projectArchive";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "./runtime";
+import { workspaceFailureCause } from "./toolObservability";
 import { AGENT_GATEWAY_ORIGIN } from "../agents/relay";
 import { tarGzipStream } from "../chats/tarArchive";
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
@@ -1224,9 +1225,16 @@ describe("Microsandbox Workspace lifecycle", () => {
     await value.runtime.ensureSession(ensureInput);
     value.setState(state);
     value.handle.connectOrStart.mockClear();
-    await expect(value.runtime.callBoundTool(callInput)).rejects.toMatchObject({ code: "workspace_runtime_unavailable" });
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const error = await value.runtime.callBoundTool(callInput).catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ code: "workspace_runtime_unavailable" });
     expect(value.handle.connectOrStart).not.toHaveBeenCalled();
     expect(sdk.callTool).not.toHaveBeenCalled();
+    // The refusal names the operation and the guest's state, here and to the app beside its code.
+    expect(workspaceFailureCause(error)).toBe("state_sandbox_unavailable");
+    const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "admission", outcome: "failed",
+      code: "workspace_runtime_unavailable", reason: "state_sandbox_unavailable", operation: "sandbox_shell" }));
   });
 
   it("bounds reconciliation to one start and never dispatches on resume failure", async () => {

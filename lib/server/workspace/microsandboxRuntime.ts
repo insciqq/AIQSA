@@ -1360,20 +1360,27 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     if (!workspaceToolIsAllowed(input.originalName)) {
       throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
     }
+    // A call refused before dispatch: one runner record of its operation and
+    // state cause, which the app also receives beside the error's code.
+    const refused = (error: unknown, cause: WorkspaceFailureCause | undefined): never => {
+      if (cause !== undefined && typeof error === "object" && error !== null) retainWorkspaceFailureCause(error, cause);
+      const facts = workspaceToolFailure(error);
+      logEvent("tool_execution", { error, tool_kind: "workspace", stage: "admission",
+        outcome: facts.reason === "cancelled" ? "cancelled" : "failed", ...facts, operation: input.originalName });
+      throw error;
+    };
     // Only this preflight can mint a retryable no-dispatch proof. Anything
     // thrown by callTool below is an ambiguous dispatch and never upgraded.
     const session = await this.runningSession(input).catch((error: unknown) => {
+      // The guest is gone, or could not be reached or started.
       if (error instanceof WorkspaceRuntimeError && error.code === "workspace_session_lost") {
-        throw new WorkspaceRuntimeError("workspace_session_lost_before_dispatch");
+        return refused(new WorkspaceRuntimeError("workspace_session_lost_before_dispatch"), "state_sandbox_unavailable");
       }
-      // The guest could not be reached or started: its state, beside the code.
-      throw error instanceof WorkspaceRuntimeError && error.code === "workspace_runtime_unavailable"
-        ? retainWorkspaceFailureCause(error, "state_sandbox_unavailable") : error;
+      return refused(error, error instanceof WorkspaceRuntimeError && error.code === "workspace_runtime_unavailable"
+        ? "state_sandbox_unavailable" : undefined);
     });
-    const mcp = await this.mcp(session).catch((error: unknown) => {
-      // The pinned MCP process could not be opened.
-      throw typeof error === "object" && error !== null ? retainWorkspaceFailureCause(error, "state_mcp_unavailable") : error;
-    });
+    // The pinned MCP process could not be opened.
+    const mcp = await this.mcp(session).catch((error: unknown) => refused(error, "state_mcp_unavailable"));
     const execSessionId = typeof input.arguments.execSessionId === "string"
       ? input.arguments.execSessionId
       : null;
