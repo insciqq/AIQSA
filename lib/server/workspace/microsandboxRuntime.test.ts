@@ -1138,6 +1138,84 @@ describe("Microsandbox Workspace lifecycle", () => {
     }
   });
 
+  const linkedOutputs = (value: ReturnType<typeof fixture>, outputDirectory: string) => {
+    const report = Buffer.from("synthetic report");
+    value.files.set(`${outputDirectory}/report.txt`, report);
+    // Link targets that must never be read through the links.
+    value.files.set("/workspace/project/private.txt", Buffer.from("private target"));
+    value.fs.list.mockImplementation(async (directory) => {
+      if (directory !== outputDirectory) throw new Error("synthetic_unexpected_traversal");
+      return [
+        { kind: "file", path: `${outputDirectory}/report.txt`, size: report.length },
+        { kind: "symlink", path: `${outputDirectory}/report-link.txt`, size: 29 },
+        { kind: "symlink", path: `${outputDirectory}/project`, size: 18 },
+        { kind: "other", path: `${outputDirectory}/pipe`, size: 0 }
+      ];
+    });
+    return report;
+  };
+
+  it("skips file links, directory links and special files unread and still exports the regular file", async () => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    const report = linkedOutputs(value, outputDirectory);
+    const outputs = await value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory });
+    expect(outputs.map((output) => output.relativePath)).toEqual(["report.txt"]);
+    expect(outputs.skipped).toEqual({ link: 2, special: 1 });
+    expect(outputs[0]!.checksum).toBe(createHash("sha256").update(report).digest("hex"));
+    expect(Buffer.from(await new Response(outputs[0]!.body).arrayBuffer())).toEqual(report);
+    // The directory link is never traversed; nothing is hashed or read but the regular file.
+    expect(value.fs.list.mock.calls).toEqual([[outputDirectory]]);
+    expect(new Set(value.fs.readStream.mock.calls.map(([path]) => path))).toEqual(new Set([`${outputDirectory}/report.txt`]));
+  });
+
+  it("reports the same skips when a restarted receiver re-reads the capture", async () => {
+    const value = fixture();
+    const root = await mkdtemp(join(tmpdir(), "aiqsa-micro-skip-capture-")); skillDirectories.push(root);
+    const runtime = new MicrosandboxWorkspaceRuntime(config, root);
+    await runtime.ensureSession(ensureInput);
+    const outputDirectory = "/workspace/output/run_fixture";
+    linkedOutputs(value, outputDirectory);
+    const request = { ...sessionInput, modelRunId: "run_fixture", outputDirectory, capture: { create: true, id: "c".repeat(32) } };
+    const outputs = await runtime.collectOutputs(request);
+    expect(outputs.skipped).toEqual({ link: 2, special: 1 });
+    await outputs[0]!.body.cancel();
+    const listed = value.fs.list.mock.calls.length;
+    const recovered = await new MicrosandboxWorkspaceRuntime(config, root).collectOutputs({ ...request, capture: { ...request.capture, create: false } });
+    expect(recovered.map((output) => output.relativePath)).toEqual(["report.txt"]);
+    expect(recovered.skipped).toEqual({ link: 2, special: 1 });
+    expect(await new Response(recovered[0]!.body).text()).toBe("synthetic report");
+    expect(value.fs.list).toHaveBeenCalledTimes(listed);
+  });
+
+  it.each([
+    ["a link outside the output folder", "symlink", "/workspace/project/escape", "workspace_output_export_failed"],
+    ["a special file with an unsafe name", "other", "/workspace/output/run_fixture/bad\u0001name", "workspace_output_export_failed"],
+    ["an unknown entry kind", "socket", "/workspace/output/run_fixture/unknown", "workspace_output_export_failed"]
+  ] as const)("still fails closed on %s", async (_name, kind, path, code) => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    value.files.set(`${outputDirectory}/result.txt`, Buffer.from("result"));
+    value.fs.list.mockResolvedValueOnce([{ kind: "file", path: `${outputDirectory}/result.txt`, size: 6 },
+      { kind: kind as "symlink", path, size: 4 }]);
+    await expect(value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory }))
+      .rejects.toMatchObject({ code });
+    expect(value.fs.readStream).not.toHaveBeenCalled();
+  });
+
+  it("counts skipped entries toward the traversal bound", async () => {
+    const value = fixture();
+    const outputDirectory = "/workspace/output/run_fixture";
+    const bound = Math.max(256, config.outputMaxFiles * 16);
+    value.files.set(`${outputDirectory}/result.txt`, Buffer.from("result"));
+    value.fs.list.mockResolvedValueOnce(Array.from({ length: bound + 1 }, (_, index) => ({
+      kind: index % 2 ? "other" as const : "symlink" as const, path: `${outputDirectory}/entry-${index}`, size: 0
+    })));
+    await expect(value.runtime.collectOutputs({ ...sessionInput, modelRunId: "run_fixture", outputDirectory }))
+      .rejects.toMatchObject({ code: "workspace_output_limit_exceeded" });
+    expect(value.fs.readStream).not.toHaveBeenCalled();
+  });
+
   it.each([-1, Number.NaN, 1.5])("still rejects an invalid output size %s", async (size) => {
     const value = fixture();
     const outputDirectory = "/workspace/output/run_fixture";

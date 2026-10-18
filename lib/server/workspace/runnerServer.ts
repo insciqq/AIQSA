@@ -592,7 +592,9 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           batchId,
           ...(capture ? { captureId: capture.id } : {}),
           ...(selection ? { selection } : {}),
-          outputs: outputs.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId }))
+          outputs: outputs.map(({ body: _body, ...metadata }) => ({ ...metadata, batchId })),
+          // Additive: counts by reason only; an older app ignores the field.
+          ...(outputs.skipped ? { skipped: outputs.skipped } : {})
         });
         return;
       }

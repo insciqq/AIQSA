@@ -977,6 +977,15 @@ describe("summarizeMessageRunWorkspaceActivity", () => {
     expect(projected?.entries).toEqual([{ ...output, firstSequence: 7, phase: expected }]);
   });
 
+  it("keeps a handed-off export row's skipped counts when the finished transfer settles it on reload", () => {
+    const output = { count: 1, id: "export", kind: "outputs_export", phase: "running", sequence: 7, skipped: { link: 1 } };
+    expect(summarizeMessageRunWorkspaceActivity({
+      events: [{ payload: { artifactType: "workspace_activity", payload: output } }],
+      status: "complete",
+      workspaceRunBinding: { exportAttemptCount: 1, exportLeaseExpiresAt: null, exportState: "COMPLETE", lastExportErrorCode: null }
+    })?.entries).toEqual([{ ...output, firstSequence: 7, phase: "succeeded" }]);
+  });
+
   it("folds persisted entries, settles running steps from the run outcome, and projects export state", () => {
     expect(summarizeMessageRunWorkspaceActivity({
       events: [

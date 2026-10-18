@@ -45,6 +45,7 @@ export function workspacePromptContract(input: Readonly<{
     "Do not modify originals in inbox; copy files that need changes into project.",
     "You may install required packages through available package managers.",
     "Put user-downloadable files only in this turn's output directory.",
+    "Links and special files in the output directory are not exported; put real files there (cp -L copies a link's target).",
     "After changing code or files in the Workspace, run appropriate tests or checks.",
     "Do not claim that a file was created or a check passed until a tool verified it.",
     agent ? "Use your native Codex shell and file tools inside this Workspace. Where a guide describes sandbox shell or persistent-process tools, use their native Codex equivalents."

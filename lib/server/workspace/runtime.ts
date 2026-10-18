@@ -5,6 +5,7 @@ import type { WorkspaceAgentIdentity, WorkspaceAgentStart } from "../agents/runt
 import type { AgentExecutionOutputPage } from "../agents/executionOutput";
 import type { WorkspaceFileSelection } from "./outputManifest";
 import type { WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
+import type { WorkspaceOutputSkips } from "@/lib/contracts/workspace";
 import type {
   WorkspaceMcpToolName,
   WorkspaceStagedAttachmentEntry
@@ -104,6 +105,20 @@ export type WorkspaceOutputStream = Readonly<{
   opaqueFileId: string;
   relativePath: string;
 }>;
+
+/**
+ * An output listing. `skipped` counts output-folder entries the export walk
+ * left out (links, special files): present only when something was skipped,
+ * and absent from a runner that predates it. Selected captures never skip.
+ */
+export type WorkspaceOutputCollection = readonly WorkspaceOutputStream[] & Readonly<{ skipped?: WorkspaceOutputSkips }>;
+
+export function workspaceOutputCollection(
+  files: readonly WorkspaceOutputStream[],
+  skipped: WorkspaceOutputSkips | undefined
+): WorkspaceOutputCollection {
+  return skipped && Object.keys(skipped).length > 0 ? Object.assign([...files], { skipped }) : files;
+}
 
 /**
  * Result of quiescing one long-lived execution. `closed` proves the guest
@@ -278,7 +293,7 @@ export interface WorkspaceRuntime {
     operation?: WorkspaceOperation;
     sessionId: string;
     signal?: AbortSignal;
-  }>): Promise<readonly WorkspaceOutputStream[]>;
+  }>): Promise<WorkspaceOutputCollection>;
   /** Private cache input, collected only after accepted-run quiescence; never an output capture. */
   collectBrowserSessions(input: Readonly<{
     modelRunId: string;

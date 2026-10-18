@@ -7,6 +7,7 @@ import {
   workspaceActivityLabelV2,
   workspaceCodeMcpCopyV2,
   workspaceLiveLabelV2,
+  workspaceOutputSkipsCopyV2,
   workspaceOutputStatusCopyV2,
   workspaceProcessLabelV2
 } from "./workspaceActivityPresentation";
@@ -50,6 +51,17 @@ describe("workspace activity presentation", () => {
     expect(visibleWorkspaceActivityV2({ entries: [{ id: "failed", kind: "workspace_start", phase: "failed" }] }))
       .not.toBeNull();
     expect(visibleWorkspaceActivityV2({ entries: [], outputStatus: { state: "failed" } })).not.toBeNull();
+  });
+
+  it("keeps an export that skipped links or special files visible and says what was left out", () => {
+    const linksOnly = { count: 0, id: "export", kind: "outputs_export", phase: "succeeded", skipped: { link: 1 } } as const;
+    expect(visibleWorkspaceActivityV2({ entries: [linksOnly], outputStatus: { state: "complete" } })?.entries).toEqual([linksOnly]);
+    expect(workspaceActivityLabelV2(linksOnly)).toBe("No files exported");
+    expect(workspaceActivityLabelV2({ ...linksOnly, count: 1 })).toBe("Exported 1 file");
+    expect(workspaceOutputSkipsCopyV2(linksOnly.skipped)).toBe("1 link not exported");
+    expect(workspaceOutputSkipsCopyV2({ link: 2, special: 1 })).toBe("2 links and 1 special file not exported");
+    expect(workspaceOutputSkipsCopyV2({ special: 3 })).toBe("3 special files not exported");
+    expect(workspaceOutputSkipsCopyV2(undefined)).toBeNull();
   });
 
   it("shows a failed discovery instead of claiming tools were found", () => {

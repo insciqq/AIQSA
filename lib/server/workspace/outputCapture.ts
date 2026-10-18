@@ -4,13 +4,32 @@ import { lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promi
 import { join } from "node:path";
 import { Readable, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { decodeWorkspaceOutputSkips, type WorkspaceOutputSkips } from "@/lib/contracts/workspace";
 import type { WorkspaceConfig } from "./config";
-import { outputIdentities, parseOutputCaptureRequest, selectedCaptureRequest, type WorkspaceFileSelection } from "./outputManifest";
-import { WorkspaceRuntimeError, type WorkspaceOutputStream, type WorkspaceRuntime } from "./runtime";
+import {
+  outputIdentities, parseOutputCaptureRequest, selectedCaptureRequest, type WorkspaceFileSelection, type WorkspaceOutputIdentity
+} from "./outputManifest";
+import {
+  WorkspaceRuntimeError, workspaceOutputCollection, type WorkspaceOutputCollection, type WorkspaceOutputStream, type WorkspaceRuntime
+} from "./runtime";
 
 type CaptureInput = Parameters<WorkspaceRuntime["collectOutputs"]>[0];
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const failed = () => new WorkspaceRuntimeError("workspace_output_export_failed");
+
+/**
+ * A final capture's manifest is its identity array, or `{ outputs, skipped }`
+ * when the walk skipped links or special files, so a re-read reports the same
+ * skips. Anything else, including a selected capture's manifest, is refused.
+ */
+function finalManifest(value: unknown): Readonly<{ outputs: unknown; skipped?: WorkspaceOutputSkips }> {
+  if (Array.isArray(value)) return { outputs: value };
+  const manifest = value as Record<string, unknown> | null;
+  if (!manifest || typeof manifest !== "object" || Object.keys(manifest).some((key) => key !== "outputs" && key !== "skipped")) throw failed();
+  const skipped = decodeWorkspaceOutputSkips(manifest.skipped);
+  if (!skipped) throw failed();
+  return { outputs: manifest.outputs, skipped };
+}
 
 /** Runner-private bytes on the existing VM volume. Never mounted into a guest. */
 export class WorkspaceOutputCaptureStore {
@@ -39,14 +58,19 @@ export class WorkspaceOutputCaptureStore {
     try { await handle.sync(); } finally { await handle.close(); }
   }
 
-  private async readManifest(key: string, selection?: WorkspaceFileSelection) {
+  private async readManifest(key: string, selection?: WorkspaceFileSelection): Promise<Readonly<{
+    identities: readonly WorkspaceOutputIdentity[]; skipped?: WorkspaceOutputSkips;
+  }>> {
     const path = join(this.directory, key, "manifest.json");
     const stat = await lstat(path);
     if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw failed();
     const manifest = JSON.parse(await readFile(path, "utf8"));
-    if (!selection) return outputIdentities(manifest, this.config);
+    if (!selection) {
+      const { outputs, skipped } = finalManifest(manifest);
+      return { identities: outputIdentities(outputs, this.config), skipped };
+    }
     if (!manifest || JSON.stringify(manifest.selection) !== JSON.stringify(selection)) throw failed();
-    return this.identities(manifest.outputs, selection);
+    return { identities: this.identities(manifest.outputs, selection) };
   }
 
   private identities(outputs: unknown, selection?: WorkspaceFileSelection) {
@@ -155,8 +179,8 @@ export class WorkspaceOutputCaptureStore {
     if (used + needed > this.config.diskMiB * 1024 * 1024) throw new WorkspaceRuntimeError("workspace_output_limit_exceeded");
   }
 
-  async collect(input: CaptureInput, collectCurrent: () => Promise<readonly WorkspaceOutputStream[]>,
-    validateSource?: () => Promise<void>, readSignal: AbortSignal | null = input.signal ?? null): Promise<readonly WorkspaceOutputStream[]> {
+  async collect(input: CaptureInput, collectCurrent: () => Promise<WorkspaceOutputCollection>,
+    validateSource?: () => Promise<void>, readSignal: AbortSignal | null = input.signal ?? null): Promise<WorkspaceOutputCollection> {
     const capture = parseOutputCaptureRequest(input.capture);
     const selection = selectedCaptureRequest(input, this.config.outputMaxFiles);
     const sessionKey = this.sessionKey(input);
@@ -187,6 +211,9 @@ export class WorkspaceOutputCaptureStore {
         const outputs = await collectCurrent();
         try {
           const identities = this.identities(outputs, selection);
+          // Only the final walk skips entries; a selected capture names exact files.
+          const skipped = outputs.skipped && decodeWorkspaceOutputSkips(outputs.skipped);
+          if (skipped === null || (selection && skipped)) throw failed();
           for (let index = 0; index < identities.length; index += 1) {
             const identity = identities[index]!;
             const output = outputs.find((entry) => entry.relativePath === identity.relativePath)!;
@@ -201,7 +228,10 @@ export class WorkspaceOutputCaptureStore {
           input.signal?.throwIfAborted();
           const temporary = join(path, `manifest-${randomUUID()}`);
           const handle = await open(temporary, "wx", 0o600);
-          try { await handle.writeFile(JSON.stringify(selection ? { selection, outputs: identities } : identities)); await handle.sync(); } finally { await handle.close(); }
+          try {
+            await handle.writeFile(JSON.stringify(selection ? { selection, outputs: identities } : skipped ? { outputs: identities, skipped } : identities));
+            await handle.sync();
+          } finally { await handle.close(); }
           input.signal?.throwIfAborted();
           await rename(temporary, join(path, "manifest.json"));
           await this.sync(path);
@@ -211,7 +241,7 @@ export class WorkspaceOutputCaptureStore {
       }
       // No manifest means capture never finished, including a genuinely empty
       // directory whose capture was interrupted before its durable commit.
-      const identities = await this.readManifest(key, selection).catch(() => { throw failed(); });
+      const { identities, skipped } = await this.readManifest(key, selection).catch(() => { throw failed(); });
       input.signal?.throwIfAborted();
       if (selection) this.selectedReaders.set(key, (this.selectedReaders.get(key) ?? 0) + identities.length);
       const onClose = selection ? async () => {
@@ -220,8 +250,8 @@ export class WorkspaceOutputCaptureStore {
         this.selectedReaders.delete(key);
         if (this.releasedSelections.has(key)) await this.serial(sessionKey, () => this.removeReleasedBytes(key));
       } : undefined;
-      return identities.map((identity, index) => ({ ...identity,
-        body: this.body(`${key}/${index}`, identity.byteSize, readSignal ?? undefined, onClose), opaqueFileId: digest(`${key}/${index}`) }));
+      return workspaceOutputCollection(identities.map((identity, index) => ({ ...identity,
+        body: this.body(`${key}/${index}`, identity.byteSize, readSignal ?? undefined, onClose), opaqueFileId: digest(`${key}/${index}`) })), skipped);
     });
   }
 

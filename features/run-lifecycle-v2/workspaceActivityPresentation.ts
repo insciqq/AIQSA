@@ -4,7 +4,8 @@ import {
   type ThreadWorkspaceActivity,
   type ThreadWorkspaceActivityCodeMcp,
   type ThreadWorkspaceActivityEntry,
-  type ThreadWorkspaceOutputStatus
+  type ThreadWorkspaceOutputStatus,
+  type WorkspaceOutputSkips
 } from "@/lib/contracts/workspace";
 import { formatWorkDurationV2 } from "./runPresentation";
 import { closeWorkspaceActivityEntries, isWorkspaceActivityActive, mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
@@ -54,7 +55,7 @@ export function visibleWorkspaceActivityV2(
 ): ThreadWorkspaceActivity | null {
   const entries = (activity?.entries ?? []).filter(entry =>
     !(entry.kind === "execution_status" && entry.phase === "closed") &&
-    !(entry.kind === "outputs_export" && entry.phase === "succeeded" && entry.count === 0) &&
+    !(entry.kind === "outputs_export" && entry.phase === "succeeded" && entry.count === 0 && !entry.skipped) &&
     !(entry.kind === "attachments_prepare" && entry.phase === "succeeded" && entry.count === 0)
   );
   const substantiveEntry = entries.some(entry =>
@@ -168,7 +169,8 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
     }
     case "outputs_export": {
       const count = plural(entry.count ?? 0, "file");
-      return running ? `Exporting ${count}…` : entry.phase === "failed" ? "Export failed" : `Exported ${count}`;
+      return running ? `Exporting ${count}…` : entry.phase === "failed" ? "Export failed"
+        : entry.count ? `Exported ${count}` : "No files exported";
     }
     case "command":
       return commandLabel(entry);
@@ -193,6 +195,15 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
     default:
       return fileLabel(entry);
   }
+}
+
+/** What an export left out of the output folder, in plain words; null when nothing. */
+export function workspaceOutputSkipsCopyV2(skipped: WorkspaceOutputSkips | undefined): string | null {
+  const parts = [
+    ...(skipped?.link ? [plural(skipped.link, "link")] : []),
+    ...(skipped?.special ? [plural(skipped.special, "special file")] : [])
+  ];
+  return parts.length > 0 ? `${parts.join(" and ")} not exported` : null;
 }
 
 export function workspaceActivityOutcomeV2(activity: ThreadWorkspaceActivity | null): string | null {
