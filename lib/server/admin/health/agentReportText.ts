@@ -174,6 +174,7 @@ function toolSection(report: HealthFullReport): string[] {
   return section(heading("Tool calls by family, then calls that did not complete by code", unfinished.length, toolCalls.truncated), [
     ...toolCalls.families.flatMap((family) => wrapParts([
       plural(family.calls, "call"), `failed ${family.failed}`, `timed out ${family.timedOut}`, `cancelled ${family.cancelled}`,
+      ...(family.awaitingApproval > 0 ? [`awaiting approval ${family.awaitingApproval}`] : []),
       ...statParts(family)
     ], `  ${fit(family.toolKind ?? "unknown", 16)}  `, " · ")),
     ...unfinished.flatMap((row) => plain(present([row.toolKind ?? "unknown", row.outcome, row.code && `code ${row.code}`]),

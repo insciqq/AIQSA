@@ -225,6 +225,7 @@ const fixtureCounters: Counter[] = [
   counter("tool_call", "warn", { tool_kind: "fetch_url", outcome: "timeout", code: "fetch_url_timeout" }, 1, { durations: [15_000] }),
   counter("tool_call", "info", { tool_kind: "fetch_url", outcome: "completed" }, 3, { durations: [300, 600, 900] }),
   counter("tool_call", "warn", { tool_kind: "mcp", outcome: "failed", code: "mcp_tool_failed" }, 2, { durations: [100, 120] }),
+  counter("tool_call", "info", { tool_kind: "mcp", outcome: "awaiting_approval", code: "mcp_approval_required" }, 1, { durations: [5] }),
   counter("run_execution", "error", { stage: "execution", outcome: "failed", reason: "deadline", abort_source: "workspace_deadline",
     code: "workspace_tool_timeout" }, 1),
   counter("http.request_completed", "warn", { routePath: "/api/chats/[chatId]", method: "GET", status: 404, outcome: "completed" }, 6),
@@ -320,7 +321,7 @@ describe("full agent report", () => {
       ["oidc", "callback", "succeeded", "signed_in", 10], ["oidc", "callback", "failed", "oidc_state_invalid", 2]]);
     expect(full.toolCalls.families).toEqual([
       expect.objectContaining({ toolKind: "fetch_url", calls: 4, failed: 0, timedOut: 1, measured: 4, p95Ms: 15_000 }),
-      expect.objectContaining({ toolKind: "mcp", calls: 2, failed: 2, timedOut: 0 })
+      expect.objectContaining({ toolKind: "mcp", calls: 3, failed: 2, timedOut: 0, awaitingApproval: 1 })
     ]);
     expect(full.http.rows.map((row) => row.status)).toEqual([404, 502]);
     expect(full.http.clientErrors).toEqual([expect.objectContaining({ kind: "render", routePath: "/chat/[chatId]", count: 2 })]);
@@ -479,7 +480,7 @@ describe("full agent report text", () => {
       "Error groups (class · where in AIQSA; NEW = first seen in this range) (1)",
       "Failures: warn, error and fatal records by key (17)",
       "Timeouts: deadline aborts, transport timeouts, tool and run deadlines (4)",
-      "Tool calls by family, then calls that did not complete by code (2)",
+      "Tool calls by family, then calls that did not complete by code (3)",
       "HTTP: 4xx and 5xx responses and failed requests by route (3)",
       "Sign-in outcomes by method, step and code (2)",
       "Slow database transactions (held rows over 2.0 s; ERROR: over the 5.0 s budget) (0)",
@@ -496,6 +497,8 @@ describe("full agent report text", () => {
       "  code workspace_output_export_failed · 1 run · 1 user\n" +
       "      first 2026-10-06 10:00 · last 2026-10-06 10:00\n" +
       "      ref 1a2b3c4d user user_a 2026-10-06 10:00\n");
+    // A call held for write approval is counted apart from failures.
+    expect(lines.find((line) => line.startsWith("  mcp "))).toContain("3 calls · failed 2 · timed out 0 · cancelled 0 · awaiting approval 1");
     const empty = formatHealthFullReport(await collectHealthFullReport(sources(fixtureCounters, fixtureIncidents, {
       failedRunGroups: vi.fn().mockResolvedValue({ runs: 0, users: 0, groups: [], groupsTruncated: false })
     }), "7d"));
