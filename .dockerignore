@@ -9,6 +9,7 @@ CLAUDE.local.md
 backups
 node_modules
 public/agents/skills-client.mjs
+connect/dist
 .next
 *.tsbuildinfo
 coverage

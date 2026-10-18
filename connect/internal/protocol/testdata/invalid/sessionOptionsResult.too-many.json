@@ -1,0 +1,44 @@
+{
+  "options": [
+    {
+      "key": "1",
+      "label": "x"
+    },
+    {
+      "key": "2",
+      "label": "x"
+    },
+    {
+      "key": "3",
+      "label": "x"
+    },
+    {
+      "key": "4",
+      "label": "x"
+    },
+    {
+      "key": "5",
+      "label": "x"
+    },
+    {
+      "key": "6",
+      "label": "x"
+    },
+    {
+      "key": "7",
+      "label": "x"
+    },
+    {
+      "key": "8",
+      "label": "x"
+    },
+    {
+      "key": "9",
+      "label": "x"
+    },
+    {
+      "key": "1",
+      "label": "y"
+    }
+  ]
+}

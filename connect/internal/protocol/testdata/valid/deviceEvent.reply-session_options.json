@@ -1,0 +1,21 @@
+{
+  "type": "reply",
+  "requestId": "e4da3b7f-bbce-4345-9777-2b0670b8a1c4",
+  "ok": true,
+  "result": {
+    "options": [
+      {
+        "key": "1",
+        "label": "Yes"
+      },
+      {
+        "key": "2",
+        "label": "Yes, and don't ask again for this command"
+      },
+      {
+        "key": "3",
+        "label": "No, and tell Claude what to do differently"
+      }
+    ]
+  }
+}
