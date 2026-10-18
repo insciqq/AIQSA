@@ -633,7 +633,18 @@ export async function mcpSafeFetch(
   options: McpSafeFetchOptions = {}
 ): Promise<Response> {
   return observeMcpFetch(() => mcpSafeFetchUnobserved(input, init, options),
-    init?.signal ?? (input instanceof Request ? input.signal : undefined));
+    init?.signal ?? (input instanceof Request ? input.signal : undefined), { optionalStream: isEventStreamGet(input, init) });
+}
+
+/** The Streamable HTTP client's GET for a server-to-client event stream. */
+function isEventStreamGet(input: RequestInfo | URL, init: RequestInit | undefined): boolean {
+  try {
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    const accept = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("accept");
+    return method.toUpperCase() === "GET" && accept !== null && /(?:^|,)\s*text\/event-stream\s*(?:;|,|$)/iu.test(accept);
+  } catch {
+    return false;
+  }
 }
 
 async function mcpSafeFetchUnobserved(
