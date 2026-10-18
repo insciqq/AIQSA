@@ -67,7 +67,7 @@ describe("admin provider credential tester", () => {
   it("discovers exact native endpoints only for available requested setup models", async () => {
     const candidates = adminProviderQuickSetupPolicy("openrouter").candidates;
     const models = [
-      "anthropic/claude-opus-5.5", "google/gemini-3.8-flash", "deepseek/deepseek-v4.1-flash",
+      "anthropic/claude-opus-5.5", "google/gemini-3.8-flash", "deepseek/deepseek-v4.1-flash-1017",
       "deepseek/deepseek-v4-pro-0813", "openai/gpt-6-sol", "openai/gpt-6-luna",
       "openai/gpt-6.1-sol", "google/gemini-4-argon", "anthropic/claude-haiku-5.5"
     ].map(id => candidates.find(({ configuration }) => configuration.upstreamModelId === id)!.configuration);

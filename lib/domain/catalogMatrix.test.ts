@@ -8,9 +8,10 @@ import { availableSearchStrategiesForModel, buildCatalogModel, isSearchCombinati
 
 describe("catalog capability matrix", () => {
   it.each([
-    ["deepseek", "deepseek-flash", "deepseek_responses_native"],
-    ["openrouter", "deepseek/deepseek-v4.1-flash", "openrouter_chat_completions"]
-  ])("offers V4.1 Flash with vision through the %s adapter", (provider, modelId, adapterKind) => {
+    ["deepseek", "deepseek-flash", "deepseek_responses_native", "DeepSeek V4.1 Flash"],
+    ["openrouter", "deepseek/deepseek-v4.1-flash-1017", "openrouter_chat_completions", "DeepSeek V4.1 Flash"],
+    ["openrouter", "deepseek/deepseek-v4.1-flash", "openrouter_chat_completions", "DeepSeek V4.1 Flash 0910"]
+  ])("offers V4.1 Flash with vision through the %s adapter (%s)", (provider, modelId, adapterKind, displayName) => {
     const model = defaultProviderModels.find((entry) => entry.provider === provider && entry.modelId === modelId)!;
     expect(model).toMatchObject({
       adapterKind,
@@ -19,7 +20,7 @@ describe("catalog capability matrix", () => {
       upstreamModelId: modelId
     });
     const catalog = buildCatalogModel(model, defaultSearchStrategies);
-    expect(catalog.displayName).toBe("DeepSeek V4.1 Flash");
+    expect(catalog.displayName).toBe(displayName);
     expect(catalog.capabilities).toMatchObject({
       imageInput: true, nativeWebSearch: false, streaming: true, toolCalling: true
     });

@@ -466,7 +466,7 @@ describe("admin provider service", () => {
       method: "models_catalog", modelIds: [...policy.candidates.map((c) => c.configuration.upstreamModelId), reranker.upstreamModelId],
       nativeRoutes: Object.fromEntries(([
         ["anthropic/claude-opus-5.5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
-        ["deepseek/deepseek-v4.1-flash", "deepseek"], ["openai/gpt-6-astra", "openai"], [reranker.upstreamModelId, "voyageai"]
+        ["deepseek/deepseek-v4.1-flash-1017", "deepseek"], ["openai/gpt-6-astra", "openai"], [reranker.upstreamModelId, "voyageai"]
       ] as const).map(([id, provider]) => [id, { available: true as const, provider }])),
       modelIdsByClass: { answer: policy.candidates.map((c) => c.configuration.upstreamModelId), embedding: ["qwen/qwen3-embedding-8b"], reranker: [reranker.upstreamModelId] }
     }));
@@ -476,16 +476,17 @@ describe("admin provider service", () => {
     expect(test).toHaveBeenCalledWith(expect.objectContaining({ modelClasses: version === 0 ? ["reranker", "answer", "embedding", "decision", "image"] : ["reranker"] }));
     const added = activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId) ?? [];
     if (version === 0) expect(added).toEqual(expect.arrayContaining([
-        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "anthropic/claude-opus-5.5", "anthropic/claude-fable-5.1",
+        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash-1017", "anthropic/claude-opus-5.5", "anthropic/claude-fable-5.1",
         "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search", "qwen/qwen3-embedding-8b"
       ]));
     else expect(added).toEqual([]);
     expect(added).not.toContain("deepseek/deepseek-v4-flash");
     // Legacy Quick Setup models are never imported, even when the key lists them.
     expect(added).not.toContain("anthropic/claude-opus-5");
+    expect(added).not.toContain("deepseek/deepseek-v4.1-flash");
     if (version === 0) {
       for (const [upstream, provider] of [["anthropic/claude-opus-5.5", "anthropic"], ["google/gemini-3.8-flash", "google-ai-studio"],
-        ["deepseek/deepseek-v4.1-flash", "deepseek"], ["openai/gpt-6-astra", "openai"]]) {
+        ["deepseek/deepseek-v4.1-flash-1017", "deepseek"], ["openai/gpt-6-astra", "openai"]]) {
         expect(activateCredentialCas.mock.calls[0]![0].catalogAdditions?.find(({ configuration }) => configuration.upstreamModelId === upstream)?.configuration)
           .toMatchObject({ openRouterRouting: { mode: "only_selected", providers: [provider] },
             defaultParams: { provider: { only: [provider], order: [provider], allowFallbacks: false } } });
