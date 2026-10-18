@@ -11,6 +11,7 @@ import {
   searchHeaderStatus,
   searchModelOptionLabel,
   searchModelsReach,
+  searchModelsReachDetail,
   searchSourceStatus,
   selectablePlanSources,
   sourceIdentityFor
@@ -93,6 +94,15 @@ describe("searchModelsReach", () => {
     expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required" }))).toBe("This provider's models");
     expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required", ready: false, readiness: "setup_required" }))).toBe("No Search model yet");
     expect(searchModelsReach(source({ kind: "gemini_google_search", broaderModelSetup: "not_applicable" }))).toBe("Gemini models");
+  });
+
+  it("points a source that is not set up at the action that exists for it", () => {
+    const unready = { ready: false, readiness: "setup_required" as const };
+    expect(searchModelsReachDetail(source(unready))).toContain("in Configure");
+    expect(searchModelsReachDetail(source({ ...unready, configurable: false, kind: "deepseek_search_api" })))
+      .toBe("Adding a key on its provider page sets it up. Add source can also set it up with one of that connection's models.");
+    expect(searchModelsReachDetail(source({ ...unready, configurable: false, kind: "web_search" })))
+      .toBe("Adding a key on its provider page sets it up.");
   });
 });
 
