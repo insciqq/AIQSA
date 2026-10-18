@@ -52,6 +52,11 @@
  *    and leaves exactly one billed `web_search` row. Bound on DeepSeek: at
  *    most 8 model probes (new connection only), 1 probe search on Save and 1
  *    search in the answer; on codex-lb about 2 answer rounds.
+ * 7. DeepSeek Search API unbilled paths (DEEPSEEK_API_KEY): straight through
+ *    the product adapter, one query whose site cannot exist answers as an
+ *    unbilled no-results result, and one request with an unknown key is the
+ *    free `provider_auth_rejected` (HTTP 401). Bound: 2 requests, none billed
+ *    unless DeepSeek unexpectedly finds results for the first.
  *
  * Oracles are persisted state (runs, tool calls, Vision attempts, usage
  * rows, Workspace outputs, admin check evidence) and the synthetic MCP
@@ -73,6 +78,9 @@ import type { AdminSearchCatalog, AdminSearchIntegration } from "../../lib/contr
 import type { AdminSystemModelPolicyResponse } from "../../lib/contracts/adminSystemModelPolicy";
 import type { CatalogModel } from "../../lib/contracts/catalog";
 import type { ContentBlock } from "../../lib/domain/content";
+import type { ValidatedSearchQuery } from "../../lib/domain/search";
+import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient, DEEPSEEK_SEARCH_API_STRATEGY_ID } from "../../lib/server/providers/deepSeekSearchApi";
+import { ProviderSearchExecutionError } from "../../lib/server/providers/types";
 import { providerModelTemplateId } from "../../lib/domain/providerTemplates";
 import { agentMaxOutputTokensLimit } from "../../lib/domain/runParams";
 import {
@@ -771,5 +779,51 @@ test("DeepSeek Search API: one search through the new source, cited sources, one
     await page.goto("about:blank").catch(() => undefined);
     if (chatId) await deleteOwnedChatPermanently(page.request, chatId, { timeout: 60_000 }).catch(() => undefined);
     await report(testInfo, "prod_1018_deepseek_search_api_summary", summary);
+  }
+});
+
+// ------------------------------- 7. DeepSeek Search API: unbilled real paths ---
+
+/** One real request straight through the product adapter and client: the shapes DeepSeek really answers. */
+function directSearchApiRequest(apiKey: string, query: string) {
+  const adapter = createDeepSeekSearchApiAdapter({
+    client: createFetchDeepSeekSearchApiClient({ apiKey, defaultTimeoutMs: 30_000 }),
+    maxAttempts: 1,
+    rateLimitKey: "prod-1018-direct"
+  });
+  return adapter.search({
+    correlationId: "prod-1018-direct",
+    query: query as ValidatedSearchQuery,
+    searchPolicy: { maxResults: 3, modelId: DEEPSEEK_SEARCH_API_MODEL, provider: "deepseek", strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID },
+    strategyId: "prod-1018-direct"
+  }, { timeoutMs: 30_000 });
+}
+
+test("DeepSeek Search API: a query without matches is an unbilled no-results answer, and a rejected key maps to auth", async ({}, testInfo) => {
+  const secret = paidEnv("DEEPSEEK_API_KEY");
+  test.skip(!secret, "paid: DEEPSEEK_API_KEY is not set");
+  test.setTimeout(5 * 60_000);
+  const summary: Record<string, unknown> = {};
+  try {
+    // One request whose site cannot exist; DeepSeek bills only answers with results.
+    const empty = await directSearchApiRequest(secret!, `"${randomUUID()}" site:${randomUUID().slice(0, 8)}.invalid`);
+    Object.assign(summary, { noResults: empty.noResults === true, sources: empty.sources.length, costUsd: empty.costUsd,
+      webSearchCount: empty.usage?.webSearchCount ?? 0 });
+    expect(empty.noResults, "a query without matches is a no-results answer").toBe(true);
+    expect(empty.sources).toHaveLength(0);
+    expect(empty.costUsd, "an empty answer is not billed").toBe(0);
+
+    // One request with a key DeepSeek does not know: refused before any search, free.
+    const refused = await directSearchApiRequest(`sk-${randomUUID().replaceAll("-", "")}`, "DeepSeek V4")
+      .then(() => null, (error: unknown) => error);
+    const failure = refused instanceof ProviderSearchExecutionError ? refused : null;
+    Object.assign(summary, { refusedCode: failure?.code ?? (refused === null ? "none" : "unexpected"),
+      refusedHttpStatus: (refused as { httpStatus?: number } | null)?.httpStatus ?? null, refusedCostUsd: failure?.costUsd ?? null });
+    expect(failure, "a rejected key is a typed Search failure").not.toBeNull();
+    expect(failure!.code).toBe("provider_auth_rejected");
+    expect(summary.refusedHttpStatus).toBe(401);
+    expect(failure!.costUsd, "a rejected request costs nothing").toBe(0);
+  } finally {
+    await report(testInfo, "prod_1018_deepseek_search_api_unbilled_summary", summary);
   }
 });
