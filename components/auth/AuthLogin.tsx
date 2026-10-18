@@ -285,7 +285,24 @@ const authResponseFallbackCodes: Record<PendingAction, string> = {
   verify: "verification_failed"
 };
 
-function authErrorMessage(code: string, operation: PendingAction): string {
+/**
+ * Added to a refused password sign-in while the page offers external methods: people who
+ * usually sign in with one often type an email and some password first. It names only
+ * the page's own buttons (below the form's feedback), never anything about the submitted
+ * account, since the server's `unauthorized` does not say whether it exists.
+ */
+function externalSignInHint(labels: readonly string[]): string | null {
+  if (labels.length === 0) return null;
+  if (labels.length === 1) return `If you usually sign in with ${labels[0]}, use the ${labels[0]} button below.`;
+  const names = `${labels.slice(0, -1).join(", ")} or ${labels[labels.length - 1]}`;
+  return `If you usually sign in with ${names}, use that button below.`;
+}
+
+function authErrorMessage(
+  code: string,
+  operation: PendingAction,
+  externalMethodLabels: readonly string[] = []
+): string {
   const messages: Record<string, string> = {
     auth_not_configured: "Authentication is not configured on this server.",
     credentials_required: "Enter email and password.",
@@ -319,8 +336,9 @@ function authErrorMessage(code: string, operation: PendingAction): string {
   const message = Object.prototype.hasOwnProperty.call(messages, code)
     ? messages[code]
     : authOperationFallbacks[operation];
+  const hint = operation === "login" && code === "unauthorized" ? externalSignInHint(externalMethodLabels) : null;
 
-  return `${message} (${code})`;
+  return hint ? `${message} ${hint} (${code})` : `${message} (${code})`;
 }
 
 function authFieldIdsForError(operation: PendingAction, code: string): readonly AuthFieldId[] {
@@ -591,6 +609,13 @@ export function AuthLogin({
     mode === "password" &&
     ((initialFeedback.error !== null && error === initialFeedback.error) ||
       (initialFeedback.notice !== null && notice === initialFeedback.notice));
+  // The names on the "Continue with …" buttons under the password form, as they read there.
+  const externalMethodLabels = [
+    ...new Set([
+      ...oauthProviders.map((provider) => oauthProviderLabel(provider, oidcButtonLabel)),
+      ...(samlSignIn ? [samlSignIn.buttonLabel] : [])
+    ])
+  ];
   const loginEmailInvalid = invalidFieldIds.has("email");
   const loginPasswordInvalid = invalidFieldIds.has("password");
 
@@ -717,7 +742,7 @@ export function AuthLogin({
     code: string,
     fieldIds: readonly AuthFieldId[] = authFieldIdsForError(operation, code)
   ) {
-    setError(authErrorMessage(code, operation));
+    setError(authErrorMessage(code, operation, externalMethodLabels));
     setFieldError(fieldIds.length > 0 ? { code, fieldIds } : null);
   }
 
