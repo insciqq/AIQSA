@@ -952,6 +952,25 @@ describe("Workspace coordinator", () => {
     ]);
   });
 
+  it("checks a new output key as an expected miss and verifies the written object as required", async () => {
+    const value = fixture();
+    value.setRuntimeSandboxId("runtime_1");
+    const output = "generated output";
+    vi.mocked(value.runtime.collectOutputs).mockResolvedValueOnce([{
+      body: body(output),
+      byteSize: Buffer.byteLength(output),
+      checksum: createHash("sha256").update(output).digest("hex"),
+      mimeType: "text/plain",
+      opaqueFileId: "b".repeat(64),
+      relativePath: "nested/result.txt"
+    }]);
+    const inspections = vi.spyOn(value.storage, "inspectObject");
+    await expect(value.coordinator.finalize({ runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .resolves.toMatchObject({ status: "complete" });
+    const outputChecks = inspections.mock.calls.filter(([key]) => key.includes("/workspace-outputs/"));
+    expect(outputChecks.map(([, options]) => options?.expectMissing)).toEqual([true, false]);
+  });
+
   it("recreates a lost sandbox once and surfaces the loss in the tool result", async () => {
     const value = fixture();
     value.setRuntimeSandboxId("runtime_lost");
