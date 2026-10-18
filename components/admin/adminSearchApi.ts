@@ -119,7 +119,9 @@ export function adminSearchErrorMessage(code: string): string {
     search_source_not_ready: "This Search source cannot be enabled until its provider connection, Search-capable model, and saved configuration are ready.",
     search_policy_stale: "The organization Search default changed elsewhere. Reload and apply your edit again.",
     search_system_integration_forbidden: "This built-in Search source cannot be archived.",
-    search_test_failed: "The check found no working source, so nothing was changed. Check the model and its key, then try again."
+    search_test_auth_rejected: "The provider rejected this connection's key, so nothing was changed. Replace the key on the provider's page, then try again.",
+    search_test_failed: "The check found no working source, so nothing was changed. Check the model and its key, then try again.",
+    search_test_quota_exhausted: "The provider account has no balance or quota left, so nothing was changed. Top up the provider account, then try again."
   };
   return messages[code] ?? code.replaceAll("_", " ");
 }

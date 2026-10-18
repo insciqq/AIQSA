@@ -58,6 +58,32 @@ async function rejected(promise: Promise<unknown>): Promise<unknown> {
   }
 }
 
+/** The JSON-RPC messages of a complete SSE body. */
+function sseMessages(text: string): unknown[] {
+  return text.split(/\n\n/u).filter(Boolean).map((event) => JSON.parse(event.replace(/^data: /u, "")) as unknown);
+}
+
+function callFailure(id: number | string) {
+  return { error: { code: -32603, message: "mcp_response_too_large" }, id, jsonrpc: "2.0" };
+}
+
+/** A response body that stays open after its first chunk until released. */
+function heldStream(first: Uint8Array) {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let index = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index++ === 0) controller.enqueue(first);
+      else {
+        await released;
+        controller.close();
+      }
+    }
+  }, { highWaterMark: 0 });
+  return { body, release };
+}
+
 function limits(overrides: Partial<McpResponseWireLimits> = {}): McpResponseWireLimits {
   return {
     callToolResponseMaxBytes: 128,
@@ -393,15 +419,34 @@ describe("McpResponseGuard SSE bodies", () => {
       body: rpcRequest("tools/call", 6),
       method: "POST"
     }));
-    const failure = await rejected(overflowResponse.arrayBuffer());
-    expect(failure).toMatchObject({
+    // The call's stream ends with a local error answering that call alone.
+    expect(sseMessages(await overflowResponse.text())).toEqual([callFailure(6)]);
+    expect(overflowRequest.failure()).toMatchObject({
       maxBytes: exact.byteLength - 1,
       observedBytes: exact.byteLength,
       operation: "call_tool"
     });
-    expect(overflowRequest.failure()).toMatchObject({ operation: "call_tool" });
     expect(cancel).toHaveBeenCalledOnce();
+    expect(overflowGuard.fatalFailure()).toBeUndefined();
     overflowRequest.finish();
+  });
+
+  it("delivers the events completed before a call's overflow, then its local error", async () => {
+    const progress = `data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/progress", params: { progress: 1 } })}\n\n`;
+    const guard = new McpResponseGuard({ limits: limits({ callToolResponseMaxBytes: Buffer.byteLength(progress) + 16 }) });
+    const request = guard.beginRequest("call_tool");
+    const response = await request.run(() => guard.wrapFetch(async () => new Response(
+      byteStream([encoder.encode(`${progress}data: {"jsonrpc":"2.0","id":"call-7","result":{"padding":"${"x".repeat(64)}"}}\n\n`)]),
+      { headers: { "content-type": "text/event-stream" } }
+    ))("https://mcp.example", { body: JSON.stringify({ id: "call-7", jsonrpc: "2.0", method: "tools/call", params: {} }), method: "POST" }));
+
+    expect(sseMessages(await response.text())).toEqual([
+      { jsonrpc: "2.0", method: "notifications/progress", params: { progress: 1 } },
+      callFailure("call-7")
+    ]);
+    expect(request.failure()).toMatchObject({ operation: "call_tool" });
+    expect(guard.fatalFailure()).toBeUndefined();
+    request.finish();
   });
 
   it("keeps POST 202 correlation for GET, allows large notifications, then rejects a correlated result", async () => {
@@ -619,5 +664,88 @@ describe("McpResponseGuard SSE bodies", () => {
     }))).rejects.toThrow("mcp_response_correlation_limit");
     expect(baseFetch).toHaveBeenCalledTimes(4);
     request.finish();
+  });
+});
+
+describe("McpResponseGuard over-bound call isolation", () => {
+  const keepalive = encoder.encode(": keepalive\n\n");
+  const post = (body: string) => ({ body, method: "POST" });
+
+  /** A parallel call whose SSE stream stays open, read past its first event. */
+  async function openParallelCall(guard: McpResponseGuard, fetch: FetchLike) {
+    const request = guard.beginRequest("call_tool");
+    const reader = (await request.run(() => fetch("https://mcp.example", post(rpcRequest("tools/call", 1))))).body!.getReader();
+    expect(Array.from((await reader.read()).value ?? [])).toEqual(Array.from(keepalive));
+    return { reader, request };
+  }
+
+  it.each([
+    ["declared length", { "content-length": "64", "content-type": "application/json" }],
+    ["streamed JSON body", { "content-type": "application/json" }],
+    ["request-bound SSE body", { "content-type": "text/event-stream" }]
+  ] as const)("fails only the tools/call whose own %s exceeds the bound", async (_name, headers) => {
+    const held = heldStream(keepalive);
+    const cancel = vi.fn();
+    const responses = [
+      new Response(held.body, { headers: { "content-type": "text/event-stream" } }),
+      new Response(byteStream([encoder.encode("x".repeat(64))], cancel), { headers }),
+      new Response("{}", { headers: { "content-type": "application/json" } })
+    ];
+    const guard = new McpResponseGuard({ limits: limits({ callToolResponseMaxBytes: 32 }) });
+    const fetch = guard.wrapFetch(async () => responses.shift()!);
+    const parallel = await openParallelCall(guard, fetch);
+
+    const request = guard.beginRequest("call_tool");
+    const settled = await request.run(() => fetch("https://mcp.example", post(rpcRequest("tools/call", 2)))
+      .then((response) => response.text()))
+      .then((text) => ({ text }), (error: unknown) => ({ error }));
+    if (headers["content-type"] === "text/event-stream") {
+      expect(sseMessages((settled as { text: string }).text)).toEqual([callFailure(2)]);
+    } else {
+      expect(settled).toEqual({ error: expect.any(McpResponseTooLargeError) });
+    }
+    expect(request.failure()).toMatchObject({ maxBytes: 32, operation: "call_tool" });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(guard.fatalFailure()).toBeUndefined();
+    request.finish();
+
+    // The parallel call's stream and later calls are untouched.
+    held.release();
+    await expect(parallel.reader.read()).resolves.toMatchObject({ done: true });
+    expect(parallel.request.failure()).toBeUndefined();
+    parallel.request.finish();
+    const later = guard.beginRequest("call_tool");
+    await expect(later.run(() => fetch("https://mcp.example", post(rpcRequest("tools/call", 3)))
+      .then((response) => response.text()))).resolves.toBe("{}");
+    later.finish();
+  });
+
+  it.each([
+    ["initialize", "initialize", rpcRequest("initialize", 2), { initializeResponseMaxBytes: 32 }],
+    ["tools/list", "list_tools", rpcRequest("tools/list", 2), { listToolsResponseMaxBytes: 32 }],
+    ["two-call batch", "call_tool", JSON.stringify([2, 3].map((id) => JSON.parse(rpcRequest("tools/call", id)) as unknown)),
+      { callToolResponseMaxBytes: 32 }]
+  ] as const)("keeps an over-bound %s response fatal to the session", async (_name, operation, body, overrides) => {
+    const held = heldStream(keepalive);
+    const responses = [
+      new Response(held.body, { headers: { "content-type": "text/event-stream" } }),
+      new Response(byteStream([encoder.encode("x".repeat(64))]), { headers: { "content-type": "application/json" } })
+    ];
+    const guard = new McpResponseGuard({ limits: limits(overrides) });
+    const fetch = guard.wrapFetch(async () => responses.shift()!);
+    const parallel = await openParallelCall(guard, fetch);
+
+    const request = guard.beginRequest(operation);
+    const failure = await rejected(request.run(() => fetch("https://mcp.example", post(body))
+      .then((response) => response.arrayBuffer())));
+    expect(failure).toBeInstanceOf(McpResponseTooLargeError);
+    expect(guard.fatalFailure()).toBe(failure);
+    expect(request.failure()).toBe(failure);
+    request.finish();
+
+    await expect(parallel.reader.read()).rejects.toBe(failure);
+    parallel.request.finish();
+    await expect(fetch("https://mcp.example", post(rpcRequest("tools/call", 4)))).rejects.toThrow("mcp_response_guard_closed");
+    held.release();
   });
 });

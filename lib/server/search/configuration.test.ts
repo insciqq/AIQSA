@@ -5,7 +5,8 @@ import {
   searchStrategyKind,
   normalizeSearchDraft,
   searchDraftHash,
-  searchExecutionModes
+  searchExecutionModes,
+  technicalSearchModelSupports
 } from "./configuration";
 
 const clientDraft = {
@@ -119,5 +120,20 @@ describe("Search adapter configuration", () => {
       protocol: "anthropic_web_search",
       providerModelId: null
     });
+  });
+
+  it("admits the DeepSeek Search API only as a client route within its query bound", () => {
+    const api = { ...clientDraft, protocol: "deepseek_search_api", queryMaxCharacters: 128 } as const;
+    expect(normalizeSearchDraft(api)).toEqual(api);
+    expect(searchStrategyKind(api.protocol, api.adapterKind)).toBe("provider_model_web_search");
+    expect(() => normalizeSearchDraft({ ...api, queryMaxCharacters: 129 })).toThrow("search_configuration_invalid");
+    expect(() => normalizeSearchDraft({
+      ...api, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", providerModelId: null
+    })).toThrow("search_configuration_invalid");
+    // Any DeepSeek model carries the key; model-backed protocols still need native Search.
+    expect(technicalSearchModelSupports("deepseek_search_api", { adapterKind: "deepseek_responses_native", nativeSearch: false })).toBe(true);
+    expect(technicalSearchModelSupports("deepseek_search_api", { adapterKind: "openai_responses_native", nativeSearch: true })).toBe(false);
+    expect(technicalSearchModelSupports("deepseek_responses_web_search", { adapterKind: "deepseek_responses_native", nativeSearch: false })).toBe(false);
+    expect(technicalSearchModelSupports("deepseek_responses_web_search", { adapterKind: "deepseek_responses_native", nativeSearch: true })).toBe(true);
   });
 });

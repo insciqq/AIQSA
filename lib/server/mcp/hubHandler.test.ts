@@ -2,6 +2,7 @@ import { Client, StreamableHTTPClientTransport, type FetchLike } from "@modelcon
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAuthConfig } from "../auth/config";
 import { createFixedWindowLoginRateLimiter } from "../auth/rateLimit";
+import { McpClientSessionError } from "./clientSession";
 import { createMcpHubHandler } from "./hubHandler";
 import { createMcpHubService, type McpHubServiceDependencies } from "./hubService";
 import { namespacedMcpToolName, type McpRunPlanResult } from "./runPlan";
@@ -224,6 +225,21 @@ describe("MCP Hub protocol boundary", () => {
     const result = await client.callTool({ name: "call_tool", arguments: { ...tool, arguments: { query: "fixture" } } });
     expect(result).toMatchObject({ isError: true, structuredContent: { code: "authorization_required" } });
     expect(JSON.stringify(result)).not.toContain("private fixture result");
+    expect(test.dependencies.callRuntimeTool).toHaveBeenCalledOnce();
+  });
+
+  it("tells the client's model the bound an over-bound upstream response exceeded and how to ask for less", async () => {
+    const test = fixture({ callRuntimeTool: vi.fn(async () => {
+      throw new McpClientSessionError({ code: "mcp_call_result_too_large", maxBytes: 16 * 1_024 * 1_024, operation: "call_tool" });
+    }) });
+    const client = await connect(test.handler);
+    const tool = await find(client);
+    const result = await client.callTool({ name: "call_tool", arguments: { ...tool, arguments: { query: "fixture" } } });
+    expect(result).toMatchObject({ isError: true, structuredContent: {
+      code: "result_unsupported", toolFailure: "mcp_call_result_too_large",
+      message: expect.stringContaining("larger than 16 MiB and was not read")
+    } });
+    expect((result.structuredContent as { message: string }).message).toContain("Request less data");
     expect(test.dependencies.callRuntimeTool).toHaveBeenCalledOnce();
   });
 

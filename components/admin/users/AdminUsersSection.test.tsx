@@ -10,6 +10,7 @@ import { useAdminInvitesController } from "@/components/admin/useAdminInvitesCon
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { useAdminUsersController } from "@/components/admin/useAdminUsersController";
 import type { AdminActionRequest, AdminDashboard, AdminGroup, AdminInviteRecord, AdminUserRecord } from "@/lib/contracts/admin";
+import type { AdminSignInRefusal } from "@/lib/contracts/adminSignInRefusals";
 import { fixtureConnection, fixtureCredential } from "@/components/admin/providers/providerFixtures";
 import { AdminUsersSection } from "./AdminUsersSection";
 
@@ -218,6 +219,9 @@ function rowFor(name: string): HTMLElement {
   return row;
 }
 
+/** What the refused sign-ins read returns; empty unless a test sets it. */
+let refusals: AdminSignInRefusal[] = [];
+
 describe("AdminUsersSection", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/admin?section=users");
@@ -238,6 +242,9 @@ describe("AdminUsersSection", () => {
         });
         return Response.json({ connections: [openai] });
       }
+      if (url === "/api/admin/sign-in/refusals") {
+        return Response.json({ signInRefusals: { generatedAt: "2026-09-07T12:00:00.000Z", refusals, total: refusals.length, truncated: false } });
+      }
       return Response.json({ error: "unexpected_request" }, { status: 500 });
     });
   });
@@ -245,6 +252,51 @@ describe("AdminUsersSection", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     updateDashboard = null;
+    refusals = [];
+  });
+
+  it("invites a refused person from the refused sign-ins with their verified email prefilled", async () => {
+    refusals = [{
+      attempts: 2, code: "not_allowed", firstSeenAt: "2026-09-07T06:31:00.000Z", id: "refusal-1",
+      lastSeenAt: "2026-09-07T06:32:00.000Z", method: "yandex",
+      subject: { account: null, email: "stranger@example.com", kind: "email" }
+    }];
+    const { posts } = renderSection();
+
+    const block = screen.getByTestId("admin-sign-in-refusals");
+    const row = await within(block).findByTestId("admin-sign-in-refusal");
+    expect(row).toHaveTextContent("stranger@example.com");
+    expect(row).toHaveTextContent("Yandex · Not allowed to sign in · 2 attempts");
+
+    fireEvent.click(within(row).getByRole("button", { name: "Invite stranger@example.com" }));
+    let sheet = await screen.findByRole("dialog", { name: "Invite" });
+    expect(within(sheet).getByLabelText("Email")).toHaveValue("stranger@example.com");
+    // The prefilled email is not the admin's own edit: closing asks nothing.
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Invite" })).not.toBeInTheDocument());
+    expect(screen.queryByTestId("admin-invite-discard")).not.toBeInTheDocument();
+
+    fireEvent.click(within(row).getByRole("button", { name: "Invite stranger@example.com" }));
+    sheet = await screen.findByRole("dialog", { name: "Invite" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create invite" }));
+    await waitFor(() => expect(posts).toEqual([
+      { action: "create_invite", email: "stranger@example.com", groupIds: [], sendEmail: true }
+    ]));
+    act(() => {
+      updateDashboard?.({
+        ...dashboardFixture(),
+        invites: [invite({ email: "stranger@example.com", id: "invite-new", normalizedEmail: "stranger@example.com" }), ...invites]
+      });
+    });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Invite" })).not.toBeInTheDocument());
+    expect(within(row).getByText("Invited")).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /Invite/u })).not.toBeInTheDocument();
+
+    // The topbar Invite still starts empty.
+    fireEvent.click(screen.getByRole("button", { name: "Invite" }));
+    sheet = await screen.findByRole("dialog", { name: "Invite" });
+    expect(within(sheet).getByLabelText("Email")).toHaveValue("");
   });
 
   it("lists users pending first with tags, access, last seen and filter pills, and opens a page from a row", () => {

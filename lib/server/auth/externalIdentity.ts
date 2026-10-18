@@ -16,6 +16,12 @@ import {
 import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import {
+  recordSignInRefusal,
+  settlementRefusalCode,
+  trustedRefusalSubject,
+  type SignInRefusalDatabase
+} from "./signInRefusals";
+import {
   lockActiveAdmins,
   lockAuthIdentity,
   lockAuthRegistrationEmail,
@@ -562,10 +568,45 @@ export async function settleExternalIdentity(
 }
 
 /**
+ * Journals a settlement that admitted no session (Sign-in: refused sign-ins), after its
+ * transaction: the email only when the source verified it or the method trusts it, otherwise
+ * nobody. Never rejects.
+ */
+export async function recordExternalSignInRefusal(
+  db: SignInRefusalDatabase,
+  input: Pick<ExternalIdentityInput, "email" | "emailVerified" | "now" | "policy" | "provider">,
+  status: Exclude<ExternalIdentityOutcome, { status: "active" }>["status"]
+): Promise<void> {
+  await recordSignInRefusal(db, {
+    code: settlementRefusalCode(status),
+    method: input.provider,
+    now: input.now,
+    subject: trustedRefusalSubject({
+      email: input.email,
+      emailVerified: input.emailVerified,
+      trustUnverifiedEmail: input.policy.trustUnverifiedEmail
+    })
+  });
+}
+
+/**
  * Settles an external sign-in and ends it through the completion seam in one transaction, so
- * the session decision sees the settled account.
+ * the session decision sees the settled account. A refusal is journaled once it committed.
  */
 export async function completeExternalSignIn(
+  prisma: PrismaClient,
+  input: ExternalIdentityInput & { session: SignInSessionInput; signInMethod: AuthSessionSignInMethod }
+): Promise<ExternalSignInResult> {
+  const result = await settleAndIssueSession(prisma, input);
+
+  if (result.status !== "active" && result.status !== "second_factor_required") {
+    await recordExternalSignInRefusal(prisma, input, result.status);
+  }
+
+  return result;
+}
+
+function settleAndIssueSession(
   prisma: PrismaClient,
   input: ExternalIdentityInput & { session: SignInSessionInput; signInMethod: AuthSessionSignInMethod }
 ): Promise<ExternalSignInResult> {

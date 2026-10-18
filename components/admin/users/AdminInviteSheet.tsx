@@ -28,13 +28,15 @@ function deliveryCopy(delivery: AdminInviteEmailDelivery): string {
 function InviteSheetBody({
   controller,
   groups,
+  initialEmail,
   onClose
 }: Readonly<{
   controller: AdminInvitesController;
   groups: readonly AdminGroup[];
+  initialEmail: string;
   onClose(): void;
 }>) {
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail);
   const [groupIds, setGroupIds] = useState<string[]>([]);
   const [sendEmail, setSendEmail] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +49,8 @@ function InviteSheetBody({
   const errorId = useId();
   const linkId = useId();
   const busy = controller.actionsDisabled || submitting;
-  const dirty = !created && (email !== "" || groupIds.length > 0 || !sendEmail);
+  // A prefilled email (from a refused sign-in) is not a change of the admin's own.
+  const dirty = !created && (email !== initialEmail || groupIds.length > 0 || !sendEmail);
   const fresh = created && controller.fresh?.email === created.email ? controller.fresh : null;
 
   const requestClose = () => {
@@ -219,19 +222,22 @@ function InviteSheetBody({
  * Invite sheet (PRD 5.8): email, groups and whether to send the email; after
  * creation the same sheet shows the one-time link with Copy and the delivery
  * outcome. The discard dialog lives inside the sheet because the page behind
- * an open sheet is inert.
+ * an open sheet is inert. `initialEmail` prefills the email (Invite from a
+ * refused sign-in); the admin can still change it.
  */
 export function AdminInviteSheet({
   controller,
   groups,
+  initialEmail = "",
   onClose,
   open
 }: Readonly<{
   controller: AdminInvitesController;
   groups: readonly AdminGroup[];
+  initialEmail?: string;
   onClose(): void;
   open: boolean;
 }>) {
   if (!open) return null;
-  return <InviteSheetBody controller={controller} groups={groups} onClose={onClose} />;
+  return <InviteSheetBody controller={controller} groups={groups} initialEmail={initialEmail} onClose={onClose} />;
 }

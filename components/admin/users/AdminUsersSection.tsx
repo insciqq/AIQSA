@@ -8,6 +8,7 @@ import { useAdminProvidersController } from "@/components/admin/useAdminProvider
 import type { AdminUsersController } from "@/components/admin/useAdminUsersController";
 import { AdminInviteSheet } from "@/components/admin/users/AdminInviteSheet";
 import { AdminOpenInvites } from "@/components/admin/users/AdminOpenInvites";
+import { AdminSignInRefusals } from "@/components/admin/users/AdminSignInRefusals";
 import { AdminUserPage } from "@/components/admin/users/AdminUserPage";
 import { AdminUsersList } from "@/components/admin/users/AdminUsersList";
 import {
@@ -59,7 +60,7 @@ function Crumbs({ current, onBack }: Readonly<{ current: string; onBack(): void 
 
 /**
  * Users section (PRD 5.8): the table with search and filter pills, the open
- * invites under it, one user page per `?resource=`, and the Invite sheet. The section owns the topbar; the panel owns the
+ * invites and refused sign-ins under it, one user page per `?resource=`, and the Invite sheet. The section owns the topbar; the panel owns the
  * controllers so the one-time invite link survives a section switch.
  */
 export function AdminUsersSection({
@@ -73,7 +74,8 @@ export function AdminUsersSection({
   users
 }: AdminUsersSectionProps) {
   const [query, setQuery] = useState("");
-  const [inviteOpen, setInviteOpen] = useState(false);
+  // The open Invite sheet's starting email: empty from the topbar, a verified email from a refused sign-in.
+  const [inviteEmail, setInviteEmail] = useState<string | null>(null);
   const [leaveDeletedPage, setLeaveDeletedPage] = useState(false);
   const listFilter = parseAdminUserListFilter(filter);
   const providers = useAdminProvidersController(resource !== null);
@@ -116,7 +118,7 @@ export function AdminUsersSection({
     return {
       actions: (
         <>
-          <UiV2Button data-testid="users-invite" icon="plus" onClick={() => setInviteOpen(true)} tone="primary" type="button">
+          <UiV2Button data-testid="users-invite" icon="plus" onClick={() => setInviteEmail("")} tone="primary" type="button">
             Invite
           </UiV2Button>
           <AdminTopbarMenu
@@ -142,8 +144,9 @@ export function AdminUsersSection({
       <AdminInviteSheet
         controller={invites}
         groups={dashboard.groups}
-        onClose={() => setInviteOpen(false)}
-        open={inviteOpen}
+        initialEmail={inviteEmail ?? ""}
+        onClose={() => setInviteEmail(null)}
+        open={inviteEmail !== null}
       />
     </>
   );
@@ -196,6 +199,7 @@ export function AdminUsersSection({
         users={users}
       />
       <AdminOpenInvites controller={invites} expanded={listFilter === "invited"} />
+      <AdminSignInRefusals invites={invites} onInvite={setInviteEmail} onOpenUser={onSelectResource} />
       {sheets}
     </div>
   );

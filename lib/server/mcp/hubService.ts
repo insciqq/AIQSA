@@ -49,6 +49,12 @@ export class McpHubServiceError extends Error {
       ? decodeMcpToolFailure(this.cause.code) : null;
   }
 
+  /** The byte bound an oversized upstream response exceeded, when the runtime reported it. */
+  get toolFailureMaxBytes(): number | undefined {
+    return this.toolFailure === "mcp_call_result_too_large" && McpClientSessionError.isInstance(this.cause)
+      ? this.cause.maxBytes : undefined;
+  }
+
   /** The runtime refused a changed definition after dispatch began, before anything was sent. */
   get refusedBeforeSend(): boolean {
     return this.code === "tool_definition_changed" && isMcpDispatchError(this.cause, "mcp_tool_definition_changed");

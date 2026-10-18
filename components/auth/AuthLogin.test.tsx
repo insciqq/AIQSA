@@ -623,6 +623,56 @@ describe("AuthLogin", () => {
     expectAssociatedInvalidField(screen.getByLabelText("Password"), alert);
   });
 
+  it("keeps a rejected password sign-in without a method hint when only passwords are offered", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ error: "unauthorized" }, { status: 401 }));
+    render(<AuthLogin nextPath="/" />);
+
+    fillCredentialForm();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^The credentials were not accepted\. \(unauthorized\)$/u);
+  });
+
+  it("points a rejected password sign-in to the Google button below, whatever email was typed", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ error: "unauthorized" }, { status: 401 }));
+    render(<AuthLogin nextPath="/" oauthProviders={["google"]} />);
+    const message =
+      "The credentials were not accepted. If you usually sign in with Google, use the Google button below. (unauthorized)";
+
+    fillCredentialForm();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(new RegExp(`^${message.replace(/[.()]/gu, "\\$&")}$`, "u"));
+    expect(alert.compareDocumentPosition(screen.getByRole("link", { name: "Continue with Google" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "nobody@example.test" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  });
+
+  it("names every offered external method in the hint and keeps it off other refusals", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ error: "unauthorized" }, { status: 401 }));
+    render(
+      <AuthLogin
+        nextPath="/"
+        oauthProviders={["google", "yandex", "oidc"]}
+        oidcButtonLabel="Company SSO"
+        samlSignIn={{ buttonLabel: "Okta" }}
+      />
+    );
+
+    fillCredentialForm();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The credentials were not accepted. If you usually sign in with Google, Yandex, Company SSO or Okta, use that button below. (unauthorized)"
+    );
+
+    fetchMock.mockResolvedValue(Response.json({ error: "rate_limited" }, { status: 429 }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByText(/^Too many attempts\. Wait a bit before trying again\. \(rate_limited\)$/u)).toBeInTheDocument();
+  });
+
   it("shows a readable network error when credential login cannot reach the server", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     render(<AuthLogin nextPath="/" />);

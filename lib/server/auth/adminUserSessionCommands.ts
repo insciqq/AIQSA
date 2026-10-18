@@ -24,6 +24,7 @@ import {
   revokeInboundMcpGrantsForUser
 } from "../memoryMcp/oauth/repository";
 import { clearTelemetryIncidentUser } from "../telemetry/store";
+import { deleteSignInRefusalsOfEmails } from "./signInRefusals";
 
 export type AdminUserSessionCommands = Pick<
   AdminRepository,
@@ -115,6 +116,12 @@ export function createAdminUserSessionCommands(
           await lockAuthUser(tx, input.userId);
           const user = await tx.user.findUnique({
             select: {
+              authIdentities: {
+                select: {
+                  normalizedEmail: true
+                }
+              },
+              email: true,
               id: true,
               status: true
             },
@@ -189,6 +196,11 @@ export function createAdminUserSessionCommands(
           }
 
           await clearTelemetryIncidentUser(tx, user.id);
+          // Refused sign-ins under the account's emails; those naming the account go with it.
+          await deleteSignInRefusalsOfEmails(tx, [
+            user.email,
+            ...user.authIdentities.map((identity) => identity.normalizedEmail)
+          ]);
           await tx.user.delete({
             where: {
               id: user.id

@@ -12,6 +12,7 @@ import {
 } from "./rateLimit";
 import { prepareAuthSession, type RequestAuthResolver } from "./requestAuth";
 import { refuseWhenPasswordSignInOff, type SignInPolicyReader } from "./signInPolicy";
+import { noteSignInRefusal, type SignInRefusalRecorder } from "./signInRefusals";
 import { observeSignInStep } from "./signInTelemetry";
 import {
   clearSecondFactorChallengeCookie,
@@ -29,6 +30,8 @@ export type SecondFactorSignInHandlerDeps = {
   getKeys(): TotpKeys;
   now?: () => Date;
   rateLimiter?: LoginRateLimiter;
+  /** The refused sign-in journal; absent records nothing. */
+  refusals?: SignInRefusalRecorder;
   repository: SecondFactorSignInRepository;
   /** The password sign-in switch; absent means on. */
   signInPolicy?: SignInPolicyReader;
@@ -197,6 +200,10 @@ export function createSecondFactorSignInHandler(deps: SecondFactorSignInHandlerD
     }
 
     if (result.kind === "invalid_code") {
+      // The challenge proves the account; the code itself is never journaled.
+      noteSignInRefusal(deps.refusals, {
+        code: "invalid_code", method: challenge.signInMethod, now, subject: { userId: challenge.userId }
+      });
       return attempt.end(noStoreJson({ error: "invalid_code" }, { status: 401 }), "failed", "invalid_code");
     }
 

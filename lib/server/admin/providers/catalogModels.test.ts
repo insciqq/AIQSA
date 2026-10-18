@@ -63,6 +63,18 @@ describe("installed provider catalog suggestions", () => {
     expect(codexSuggested).not.toContain("codex-lb:gpt-5.6-terra");
   });
 
+  it("suggests DeepSeek V4.1 Flash 1017 beside an installed September Flash on OpenRouter", () => {
+    const [september] = adminProviderQuickSetupPolicy("openrouter").candidates.filter(({ templateKey }) =>
+      templateKey === "openrouter:deepseek/deepseek-v4.1-flash");
+    expect(september).toMatchObject({ displayName: "DeepSeek V4.1 Flash 0910", legacy: true });
+    const installed = fixtureModel({ id: september!.modelId, connectionId: "openrouter", displayName: "DeepSeek V4.1 Flash 0910",
+      activeConfig: adminProviderModelConfiguration(september!.configuration), draftConfig: adminProviderModelConfiguration(september!.configuration) });
+    const connection = fixtureConnection({ displayName: "OpenRouter", family: "openrouter", id: "openrouter", models: [installed] });
+    const suggested = providerCatalogUpdates(connection, []).available;
+    expect(suggested).toContainEqual(expect.objectContaining({ displayName: "DeepSeek V4.1 Flash", upstreamModelId: "deepseek/deepseek-v4.1-flash-1017" }));
+    expect(suggested.map(({ upstreamModelId }) => upstreamModelId)).not.toContain("deepseek/deepseek-v4.1-flash");
+  });
+
   it("keeps skip specific to IDs and this connection; later candidates remain visible", () => {
     const connection = fixtureConnection({ displayName: "Gemini", family: "gemini", id: "first", models: [] });
     const candidates = providerSetupModels("gemini");
