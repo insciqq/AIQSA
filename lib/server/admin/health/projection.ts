@@ -47,7 +47,8 @@ export function adminHealthIncidentFrom(range: AdminHealthRange, now: Date): Dat
 /**
  * A provider failure's class from its stable code, HTTP status and reason:
  * rejected key (401/403), quota or rate limit (402/429), provider-side error
- * (5xx), timeout, network/transport, otherwise other.
+ * (5xx, or an upstream failure such as an Agent stream's error event),
+ * timeout, network/transport, otherwise other.
  */
 export function adminHealthFailureClass(
   code: string | null,
@@ -58,7 +59,9 @@ export function adminHealthFailureClass(
   if (code === "provider_quota_exhausted" || code === "provider_rate_limited" || httpStatus === 402 || httpStatus === 429) {
     return "quota";
   }
-  if (code === "provider_server_error" || httpStatus !== null && httpStatus >= 500 && httpStatus <= 599) return "provider_error";
+  if (code === "provider_server_error" || reason === "upstream" || httpStatus !== null && httpStatus >= 500 && httpStatus <= 599) {
+    return "provider_error";
+  }
   if (reason === "deadline" || code !== null && (code === "timeout" || /_(?:timed_out|timeout)$/u.test(code))) return "timeout";
   if (reason === "network") return "network";
   return "other";

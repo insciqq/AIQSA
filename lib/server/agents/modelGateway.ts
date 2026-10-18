@@ -10,7 +10,10 @@ import { supportsAgentNativeWebSearch, type AgentResponsesTransport } from "../p
 import { AGENT_REQUEST_MAX_BYTES, type NormalizedRunAgent } from "./config";
 import type { createAgentRunStore } from "./store";
 import { setTimeout as sleep } from "node:timers/promises";
-import { logEvent } from "../observability";
+import { bindContext, logEvent, type EventFields } from "../observability";
+import { readBoundedResponseText } from "../providers/network";
+import { markProviderErrorCode, markProviderErrorDetail, providerErrorCode, providerErrorCodeOfBody } from "../providers/providerErrorCode";
+import { AGENT_LEASE_CANCELLED } from "./lease";
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -27,12 +30,33 @@ function modelFailureCode(error: unknown) {
 
 const ADMISSION_CODES = ["agent_model_request_invalid", "agent_model_tools_invalid", "agent_model_input_invalid"];
 
-/** The run keeps the generic provider failure; operators get the exact fence. */
-function observeAdmissionRejection(error: unknown, snapshot: AgentResponsesTransport["snapshot"]): void {
-  if (!(error instanceof Error) || !ADMISSION_CODES.includes(error.message)) return;
-  logEvent("provider_operation", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
-    providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId,
-    stage: "answer", outcome: "failed", action: "stop", code: error.message, reason: "policy" });
+/** The exact admission fence an operator reads; the run keeps the generic provider failure. */
+function admissionRejection(error: unknown): string | null {
+  return error instanceof Error && ADMISSION_CODES.includes(error.message) ? error.message : null;
+}
+
+/** AIQSA's own budgets of the turn; the provider did not fail. */
+const LIMIT_CODES = new Set(["agent_model_call_limit", "agent_token_limit", "agent_mcp_call_limit", "agent_generation_output_limit"]);
+
+/** Why one gateway model request ended: `upstream` (the provider failed),
+ * `authority_expired` (the run's lease ended), `cancelled` (its user stopped
+ * the run), `interrupted` (Codex closed it or a follow-up steered it), its
+ * `deadline`, a turn budget (`safety_limit`) or a refused request (`policy`). */
+type AgentRequestReason = NonNullable<EventFields["provider_operation"]["reason"]>;
+
+/** The bounded wait for an upstream error body that only names its identity. */
+const ERROR_BODY_WAIT_MS = 2_000;
+const ERROR_BODY_MAX_BYTES = 16 * 1024;
+
+/** The reviewed identity of an upstream error answer, read bounded and never retained. */
+async function upstreamErrorCode(response: Response, signal: AbortSignal): Promise<string | null> {
+  if (!response.body) return null;
+  try {
+    return providerErrorCodeOfBody(await readBoundedResponseText(response, { maxBytes: ERROR_BODY_MAX_BYTES,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(ERROR_BODY_WAIT_MS)]) }));
+  } catch {
+    return null;
+  }
 }
 
 class RetryableProviderError extends Error {
@@ -52,9 +76,11 @@ function retryableProviderFailure(error: unknown): boolean {
 const RETRYABLE_PROVIDER_EVENT_CODES = new Set(["server_error", "rate_limit_exceeded", "server_is_overloaded",
   "overloaded_error", "service_unavailable"]);
 
+/** The failure of an upstream error event or failed terminal, marked with its reviewed identity. */
 function providerEventFailure(value: unknown): Error {
-  return record(value) && (RETRYABLE_PROVIDER_EVENT_CODES.has(String(value.code)) || RETRYABLE_PROVIDER_EVENT_CODES.has(String(value.type)))
-    ? new RetryableProviderError("agent_provider_failed") : new Error("agent_provider_failed");
+  return markProviderErrorDetail(record(value) && (RETRYABLE_PROVIDER_EVENT_CODES.has(String(value.code)) ||
+    RETRYABLE_PROVIDER_EVENT_CODES.has(String(value.type)))
+    ? new RetryableProviderError("agent_provider_failed") : new Error("agent_provider_failed"), value);
 }
 
 type HostedTools = Readonly<{ webSearch?: boolean; toolSearch?: boolean }>;
@@ -179,20 +205,66 @@ export function createAgentModelGateway(input: Readonly<{
       settled = true;
       await input.onUsage();
     };
+    // One `provider_operation` record per dispatched request, plus the
+    // admission fence: its outcome, why it ended (`endedBy`), the upstream
+    // status and the provider's reviewed error identity. Bound here, so a
+    // record written while Codex reads the stream keeps the run's context.
+    const startedAt = Date.now();
+    let dispatched = false;
+    let upstreamStatus: number | undefined;
+    let recorded = false;
+    const observeOutcome = bindContext((outcome: "completed" | "failed" | "cancelled", fields: Readonly<{
+      action?: "retry" | "stop"; code?: string; reason?: AgentRequestReason; error?: unknown;
+    }> = {}) => {
+      if (recorded) return;
+      recorded = true;
+      const { snapshot } = input.transport;
+      logEvent("provider_operation", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
+        providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId, stage: "answer", outcome,
+        duration_ms: Math.max(0, Date.now() - startedAt), action: fields.action ?? "none", code: fields.code, reason: fields.reason,
+        httpStatus: upstreamStatus, provider_error_code: providerErrorCode(fields.error) ?? undefined, error: fields.error });
+    });
+    /** The user's Stop or the lease's expiry, an interruption, the deadline, a turn budget, else the provider. */
+    const endedBy = (code: string): AgentRequestReason => {
+      const lease = input.signal.aborted ? input.signal.reason : undefined;
+      if (lease instanceof Error && lease.message === AGENT_LEASE_CANCELLED) return "cancelled";
+      if (code === "agent_authority_expired") return "authority_expired";
+      if (code === "agent_provider_interrupted" || code === "agent_execution_interrupted" || request.signal.aborted) return "interrupted";
+      if (timeoutSignal.aborted || code === "agent_time_limit") return "deadline";
+      return LIMIT_CODES.has(code) ? "safety_limit" : "upstream";
+    };
     const failure = async (error: unknown) => {
       // Only an owned cancellation is steering. A real EOF/provider error
       // still fails even when an interrupt request happens concurrently.
       if (!timeoutSignal.aborted && (parentSignal.aborted || error instanceof Error && error.message === "agent_followup_interrupt") &&
-        await input.store.expectedFollowupInterruption()) return "agent_provider_interrupted" as const;
-      let code = modelFailureCode(error);
+        await input.store.expectedFollowupInterruption()) {
+        if (dispatched) observeOutcome("cancelled", { action: "stop", code: "agent_provider_interrupted", reason: "interrupted", error });
+        return "agent_provider_interrupted" as const;
+      }
+      // An expired lease names the cause, whatever error its abort surfaced as.
+      let code = agentFailureCode(input.signal.aborted ? input.signal.reason : undefined) ?? modelFailureCode(error);
       if (attemptId && settled && !parentSignal.aborted && retryableProviderFailure(error)) {
         try {
-          if (await input.store.canRetryProvider(attemptId)) return code;
+          if (await input.store.canRetryProvider(attemptId)) {
+            // Handed back: Codex reconnects with a new physical request.
+            observeOutcome("failed", { action: "retry", code, reason: endedBy(code), error });
+            return code;
+          }
         } catch (authorityError) {
           code = agentFailureCode(authorityError) ?? code;
         }
       }
       await input.onFailure(code).catch(() => undefined);
+      const admission = admissionRejection(error);
+      if (admission !== null) {
+        observeOutcome("failed", { action: "stop", code: admission, reason: "policy", error });
+      } else if (dispatched) {
+        const reason = endedBy(code);
+        // The request ended because AIQSA or Codex ended it, not because the provider failed.
+        const ended = reason === "cancelled" || reason === "interrupted" || reason === "authority_expired";
+        observeOutcome(ended ? "cancelled" : "failed", { action: "stop", code: reason === "cancelled" ? AGENT_LEASE_CANCELLED : code,
+          reason, error });
+      }
       return code;
     };
     try {
@@ -209,13 +281,19 @@ export function createAgentModelGateway(input: Readonly<{
       // Hosted tools can have effects before their first streamed event.
       if (supportsAgentNativeWebSearch(input.transport.snapshot)) await input.store.releaseModelTools(attemptId);
       await input.store.assertActive();
+      dispatched = true;
       const response = await input.transport.request(body, signal);
       if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+        let providerError: string | null = null;
+        if (!response.ok) {
+          upstreamStatus = response.status;
+          providerError = await upstreamErrorCode(response, signal);
+        }
         await response.body?.cancel().catch(() => undefined);
         await settle("ERROR");
         // 529 is an overloaded upstream, like 503.
-        if ([408, 429, 500, 502, 503, 504, 529].includes(response.status)) throw new RetryableProviderError("agent_provider_failed");
-        throw new Error("agent_provider_failed");
+        throw markProviderErrorCode([408, 429, 500, 502, 503, 504, 529].includes(response.status)
+          ? new RetryableProviderError("agent_provider_failed") : new Error("agent_provider_failed"), providerError);
       }
       events = parseSseStream(response.body, { signal, maxBytes: 64 * 1024 * 1024,
         maxEventBytes: 2 * 1024 * 1024, ...providerStreamTimingLimits(requestTimeoutMs) });
@@ -261,6 +339,7 @@ export function createAgentModelGateway(input: Readonly<{
                 record(payload.response.incomplete_details) && payload.response.incomplete_details.reason === "max_output_tokens"
                   ? "agent_generation_output_limit" : "agent_provider_failed");
               completed = true;
+              observeOutcome("completed");
             }
             controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${event.data}\n\n`));
             if (completed) {
@@ -293,12 +372,13 @@ export function createAgentModelGateway(input: Readonly<{
             if (timeoutSignal.aborted || !(await input.store.expectedFollowupInterruption())) {
               await input.onFailure("agent_provider_interrupted").catch(() => undefined);
             }
+            // Codex stopped reading before the terminal event.
+            observeOutcome("cancelled", { action: "stop", code: "agent_provider_interrupted", reason: "interrupted" });
           }
         }
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
     } catch (error) {
-      observeAdmissionRejection(error, input.transport.snapshot);
       await settle("UNKNOWN").catch(() => undefined);
       if (error instanceof Error && error.message === "agent_followup_interrupt" &&
         await input.store.expectedFollowupInterruption()) {

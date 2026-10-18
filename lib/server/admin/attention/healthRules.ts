@@ -283,7 +283,7 @@ function providerFailureKind(row: TelemetryCounterGroup): ProviderFailureKind {
   const status = numeric(row, "httpStatus");
   const reason = text(row, "reason");
   if (code === "provider_rate_limited" || status === 429) return "rate_limited";
-  if (code === "provider_server_error" || status !== null && status >= 500) return "server_error";
+  if (code === "provider_server_error" || reason === "upstream" || status !== null && status >= 500) return "server_error";
   if (reason === "deadline" || status === 408) return "timeout";
   if (reason === "network") return "network";
   return "other";
