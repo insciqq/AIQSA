@@ -127,12 +127,15 @@ export class McpClientSessionError extends Error {
   readonly operation: SessionOperation;
   readonly retryable: boolean;
   readonly httpStatus?: number;
+  /** The byte bound a response exceeded, for the response-size codes. */
+  readonly maxBytes?: number;
 
   constructor(input: Readonly<{
     code: McpClientSessionErrorCode;
     operation: SessionOperation;
     retryable?: boolean;
     httpStatus?: number;
+    maxBytes?: number;
   }>) {
     super(ERROR_MESSAGES[input.code]);
     this.name = "McpClientSessionError";
@@ -140,6 +143,7 @@ export class McpClientSessionError extends Error {
     this.operation = input.operation;
     this.retryable = input.retryable ?? false;
     if (Number.isInteger(input.httpStatus) && input.httpStatus! >= 400 && input.httpStatus! <= 599) this.httpStatus = input.httpStatus;
+    if (Number.isSafeInteger(input.maxBytes) && input.maxBytes! > 0) this.maxBytes = input.maxBytes;
   }
 
   toJSON(): Readonly<{
@@ -148,12 +152,14 @@ export class McpClientSessionError extends Error {
     operation: SessionOperation;
     retryable: boolean;
     httpStatus?: number;
+    maxBytes?: number;
   }> {
     return {
       code: this.code,
       message: this.message,
       operation: this.operation,
       ...(this.httpStatus ? { httpStatus: this.httpStatus } : {}),
+      ...(this.maxBytes ? { maxBytes: this.maxBytes } : {}),
       retryable: this.retryable
     };
   }
@@ -287,7 +293,7 @@ function responseTooLargeFailure(error: McpResponseTooLargeError): McpClientSess
   const operation: SessionOperation = error.operation === "unknown"
     ? "session"
     : error.operation;
-  return sessionError(code, operation);
+  return new McpClientSessionError({ code, maxBytes: error.maxBytes, operation });
 }
 
 function requestFailure(
@@ -1044,7 +1050,9 @@ export class McpClientSession {
       let truncation: McpResultTruncation | undefined;
       if (resultSnapshot.bytes > this.limits.maxToolResultBytes) {
         const truncated = truncateMcpCallResult(resultSnapshot.value, resultSnapshot.bytes, this.limits.maxToolResultBytes);
-        if (!truncated) throw sessionError("mcp_call_result_too_large", "call_tool");
+        if (!truncated) {
+          throw new McpClientSessionError({ code: "mcp_call_result_too_large", maxBytes: this.limits.maxToolResultBytes, operation: "call_tool" });
+        }
         ({ truncation, value } = truncated);
       }
       const normalized = normalizeCallResult(value);

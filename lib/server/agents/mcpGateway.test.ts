@@ -490,7 +490,7 @@ describe("Agent MCP discovery surface", () => {
 
   it.each(["result_unsupported", "agent_mcp_outcome_unknown"] as const)("explains %s without confusing a rejected response with an unknown action", async (code) => {
     const failure = code === "result_unsupported" ? new hub.McpHubServiceError(code, {
-      cause: new McpClientSessionError({ code: "mcp_call_result_too_large", operation: "call_tool" })
+      cause: new McpClientSessionError({ code: "mcp_call_result_too_large", maxBytes: 16_777_216, operation: "call_tool" })
     }) : new AgentExecutionError(code);
     vi.spyOn(hub, "createMcpToolService").mockReturnValue({
       prepareToolCall: async () => ({}), dispatchPreparedToolCall: async () => { throw failure; }
@@ -515,6 +515,7 @@ describe("Agent MCP discovery surface", () => {
       expect(value.message).toContain("MCP tool response exceeded its size limit.");
       expect(body.result.structuredContent.toolFailure).toBe("mcp_call_result_too_large");
       expect(value.message).toContain("request fewer records or fields");
+      expect(value.message).toContain("larger than 16 MiB and was not read");
       expect(onFailure).not.toHaveBeenCalled();
     } else {
       expect(agentFailureCode(code)).toBe(code);
