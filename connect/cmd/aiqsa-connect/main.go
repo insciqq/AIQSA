@@ -81,6 +81,6 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands:")
 	for _, name := range names {
 		c := commands[name]
-		fmt.Fprintf(w, "  %-28s %s\n", c.usage, c.summary)
+		fmt.Fprintf(w, "  %-32s %s\n", c.usage, c.summary)
 	}
 }
