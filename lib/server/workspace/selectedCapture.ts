@@ -8,7 +8,7 @@ import type { WorkspaceConfig } from "./config";
 import type { WorkspaceImageSource } from "./imageCapture";
 import { outputIdentities, parseWorkspaceFileSelection, type WorkspaceSelectedFile } from "./outputManifest";
 import { lockWorkspaceSession, workspaceRunOperationOwner } from "./sessionOperation";
-import type { WorkspaceRuntime, WorkspaceOutputStream } from "./runtime";
+import { WorkspaceRuntimeError, type WorkspaceRuntime, type WorkspaceOutputStream } from "./runtime";
 
 const LEASE_MS = 120_000;
 const MAX_CAPTURES_PER_RUN = 100;
@@ -18,10 +18,25 @@ const identifier = () => randomUUID().replaceAll("-", "");
 
 export class WorkspaceCaptureError extends Error {
   constructor(readonly code: "workspace_capture_invalid" | "workspace_capture_unavailable" | "workspace_capture_busy" |
-    "workspace_capture_stale" | "workspace_capture_limit_exceeded") {
+    "workspace_capture_stale" | "workspace_capture_limit_exceeded" | "workspace_capture_source_invalid" | "workspace_capture_unsupported") {
     super(code);
     this.name = "WorkspaceCaptureError";
   }
+}
+
+/** The runner's refusals of a selected source, in this owner's vocabulary.
+ * `source_invalid` (not a regular single-link file under an allowed root) and
+ * `unsupported` (no read lease on that file) differ from `workspace_capture_invalid`,
+ * which is a malformed consumer request. Other failures pass through unchanged. */
+const RUNNER_CAPTURE_CODES: Readonly<Record<string, WorkspaceCaptureError["code"]>> = {
+  workspace_capture_source_invalid: "workspace_capture_source_invalid",
+  workspace_capture_source_busy: "workspace_capture_busy",
+  workspace_capture_unsupported: "workspace_capture_unsupported",
+  workspace_output_limit_exceeded: "workspace_capture_limit_exceeded"
+};
+export function workspaceCaptureFailure(error: unknown): unknown {
+  const code = error instanceof WorkspaceRuntimeError ? RUNNER_CAPTURE_CODES[error.code] : undefined;
+  return code ? new WorkspaceCaptureError(code) : error;
 }
 const unavailable = () => new WorkspaceCaptureError("workspace_capture_unavailable");
 const stale = () => new WorkspaceCaptureError("workspace_capture_stale");
@@ -118,6 +133,8 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
       selection: parseWorkspaceFileSelection(capture.selection, config.outputMaxFiles), signal };
   };
 
+  const collect: WorkspaceRuntime["collectOutputs"] = input => runtime.collectOutputs(input).catch(error => { throw workspaceCaptureFailure(error); });
+
   async function releaseBatch(outputs: readonly WorkspaceOutputStream[], input: { runtimeSandboxId: string; sessionId: string; operation: { generation: number; owner: string } }) {
     await Promise.allSettled(outputs.map(output => output.body.cancel()));
     const ids = [...new Set(outputs.flatMap(output => output.batchId ? [output.batchId] : []))];
@@ -163,7 +180,7 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
     const args = { ...runtimeInput(reserved.capture, reserved.current, input.signal), capture: { id: reserved.capture.id, create: reserved.created } };
     // A replay has create:false even when the first attempt never reached the
     // runner. It can recover committed bytes, never re-read a mutable path.
-    const outputs = await runtime.collectOutputs(args);
+    const outputs = await collect(args);
     try {
       const identities = outputIdentities(outputs, config, true);
       const selected = args.selection.files.map(file => `${file.root}/${file.relativePath}`).sort();
@@ -273,7 +290,7 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
         reader = object.body.getReader();
         if (object.byteSize !== lease.file.byteSize) throw unavailable();
       } else {
-        outputs = await runtime.collectOutputs(runtimeInput(lease.capture, lease, signal));
+        outputs = await collect(runtimeInput(lease.capture, lease, signal));
         const output = outputs.find(item => item.relativePath === input.relativePath);
         if (!output || output.byteSize !== lease.file.byteSize || output.checksum !== lease.file.checksum) throw unavailable();
         reader = output.body.getReader();
