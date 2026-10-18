@@ -418,7 +418,7 @@ test("Agent Vision: a symlinked image gets the capture refusal with its copy hin
     const run = await apiTurn(request, chatId, model, { agent: true, params, timeoutMs: AGENT_TURN_TIMEOUT_MS, workspace: true,
       blocks: [{ attachmentId, type: "image" }, { text: SYMLINK_PROMPT, type: "text" }] });
     const calls = await db().modelRunToolCall.findMany({ orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
-      select: { id: true, result: true, state: true }, where: { modelRunId: run.id, toolName: "analyze_image" } });
+      select: { arguments: true, id: true, result: true, state: true }, where: { modelRunId: run.id, toolName: "analyze_image" } });
     const attempts = await db().visionAnalysisAttempt.findMany({ where: { modelRunId: run.id } });
     const receipts = await db().usageEvent.findMany({ where: { visionAnalysisAttemptId: { in: attempts.map((attempt) => attempt.toolCallId) } } });
     const refusal = calls.findIndex((call) => toolValue(call)?.error === "workspace_capture_source_invalid");
@@ -429,7 +429,9 @@ test("Agent Vision: a symlinked image gets the capture refusal with its copy hin
     // Recorded before the assertions, so a failing run still leaves its evidence.
     Object.assign(summary, {
       status: run.status, code: runErrorCode(run),
-      analyzeCalls: calls.map((call) => ({ state: call.state, error: typeof toolValue(call)?.error === "string" ? toolValue(call)!.error : null })),
+      analyzeCalls: calls.map((call) => ({ state: call.state, error: typeof toolValue(call)?.error === "string" ? toolValue(call)!.error : null,
+        // Synthetic test paths only: which file each call named.
+        paths: JSON.stringify(call.arguments).match(/\/workspace\/[A-Za-z0-9_./-]+/gu) ?? [] })),
       refusalHasCopyHint: typeof refusalHint === "string" && refusalHint.includes("Copy it with `cp` into /workspace/output"),
       visionAttempts: attempts.map((attempt) => ({ state: attempt.state, failureCode: attempt.failureCode })),
       laterUsage: laterReceipt ? { inputTokens: laterReceipt.inputTokens, outputTokens: laterReceipt.outputTokens } : null
