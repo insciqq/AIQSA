@@ -16,6 +16,7 @@ import {
 } from "./providerRetry";
 import { providerRequestNotSent } from "./providerSafeFetch";
 import { providerContextLengthRejection, type ProviderContextLengthCounts } from "./responseFailure";
+import { markProviderErrorCode, providerErrorCodeOfBody } from "./providerErrorCode";
 import { parseRetryAfterMs } from "../retryAfter";
 
 export type GeminiInteractionObject = Record<string, unknown>;
@@ -191,17 +192,21 @@ async function parseJsonResponse(
 async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
   const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   let identity: ReturnType<typeof geminiHttpErrorIdentity> = {};
+  // Google's `error.status` (`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...), for telemetry only.
+  let providerError: string | null = null;
   try {
-    identity = geminiHttpErrorIdentity(await readBoundedResponseText(response, {
+    const text = await readBoundedResponseText(response, {
       signal, maxBytes: Math.min(providerResponseMaxBytes(), 16_384)
-    }), response.status);
+    });
+    identity = geminiHttpErrorIdentity(text, response.status);
+    providerError = providerErrorCodeOfBody(text);
   } catch (error) {
     if (!(error instanceof ProviderResponseTooLargeError)) {
       throw error;
     }
   }
 
-  const error = new GeminiHttpError(response.status, identity.code, identity.counts, retryAfterMs);
+  const error = markProviderErrorCode(new GeminiHttpError(response.status, identity.code, identity.counts, retryAfterMs), providerError);
   throw identity.keyRejected ? Object.assign(error, { keyRejected: true }) : error;
 }
 

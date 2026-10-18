@@ -233,10 +233,11 @@ const fixtureCounters: Counter[] = [
   counter("http.request_completed", "info", { routePath: "/api/runs", method: "POST", status: 200, outcome: "completed" }, 50),
   counter("client.error", "warn", { kind: "render", routePath: "/chat/[chatId]", route_source: "manifest" }, 2),
   counter("provider_operation", "error", { ...identity, stage: "answer", outcome: "failed", code: "provider_rate_limited",
-    httpStatus: 429, error_fingerprint: "0123456789ab", error_class: "ProviderError", error_site: "lib/server/providers/openai.ts:42" },
-  4, { appVersion: "1.3.9" }),
+    httpStatus: 429, provider_error_code: "rate_limit_exceeded", error_fingerprint: "0123456789ab", error_class: "ProviderError",
+    error_site: "lib/server/providers/openai.ts:42" }, 4, { appVersion: "1.3.9" }),
   counter("provider_operation", "error", { ...identity, stage: "answer", outcome: "failed", code: "provider_rate_limited",
-    httpStatus: 429, error_fingerprint: "0123456789ab", error_class: "ProviderError", error_site: "lib/server/providers/openai.ts:42" }, 2),
+    httpStatus: 429, provider_error_code: "rate_limit_exceeded", error_fingerprint: "0123456789ab", error_class: "ProviderError",
+    error_site: "lib/server/providers/openai.ts:42" }, 2),
   counter("provider_operation", "error", { overflow: true }, 5),
   // Sign-ins.
   counter("sign_in", "info", { sign_in_method: "oidc", step: "callback", outcome: "succeeded", code: "signed_in" }, 10),
@@ -298,7 +299,7 @@ describe("full agent report", () => {
     const failure = (event: string) => full.failures.rows.filter((row) => row.event === event);
     expect(failure("provider_operation")).toEqual([
       expect.objectContaining({ level: "error", code: "provider_rate_limited", httpStatus: 429, providerFamily: "openai", stage: "answer",
-        count: 6, appVersions: ["1.3.9", "1.4.0"], overflow: false }),
+        count: 6, appVersions: ["1.3.9", "1.4.0"], overflow: false, providerErrorCode: "rate_limit_exceeded" }),
       expect.objectContaining({ code: null, count: 5, overflow: true })
     ]);
     expect(failure("nested_abort")).toEqual([expect.objectContaining({ level: "warn", count: 3 })]);
@@ -507,6 +508,8 @@ describe("full agent report text", () => {
       "  completed 4 · failed 3 (37.5%) · cancelled 1 (12.5%) · stop requests 2\n");
     expect(text).toContain("  run duration      4 measured · p50 ≤ 2.5 s · p95 ≤ 25.0 s · max 25.0 s\n");
     expect(text).toContain("  WARN   nested_abort · stage delivery · openai\n");
+    expect(text).toContain("  ERROR  provider_operation · code provider_rate_limited · stage answer · HTTP 429\n" +
+      "         provider error rate_limit_exceeded · openai\n");
     expect(text).toContain('      comment: "It stopped [31m halfway through"\n');
     expect(text).not.toContain("\u001b");
     expect(text).toContain("      user user_a · version 1.4.0 · fingerprint 0123456789ab · first of its key\n");

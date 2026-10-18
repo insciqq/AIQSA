@@ -68,6 +68,8 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   provider_status?: "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
   /** Why an answer stream ended before its completion event. */
   stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
+  /** The provider's own error identity from providerErrorCodes.json; any other is `other`. */
+  provider_error_code?: string;
 }>;
 /** Subsystems whose hot-path interactive transactions are timed (`db_transaction`). */
 export type DbTransactionSubsystem = "memory" | "workspace" | "runs";
@@ -110,7 +112,7 @@ export type EventFields = {
   "logging.dropped_records": Readonly<{ count: number }>;
   run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf" }>;
   run_preparation: CaughtError & Readonly<{ run_id: string; stage: "preparing"; outcome: PreparationOutcome; duration_ms?: number; code?: string }>;
-  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion" | "first_output"; outcome: OperationOutcome; duration_ms?: number; after?: "dispatch" | "tools"; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number }>;
+  run_execution: ProviderIdentity & CaughtError & Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion" | "first_output"; outcome: OperationOutcome; duration_ms?: number; after?: "dispatch" | "tools"; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number; provider_error_code?: string }>;
   run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string; db_failure?: DatabaseFailureKind; duration_ms?: number; lock_wait_ms?: number }>;
   /** A timed transaction that held its rows past the slow bound: warn, error past the foreground budget. */
   db_transaction: Readonly<{
