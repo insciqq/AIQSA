@@ -511,6 +511,36 @@ describe("full agent report text", () => {
     expect(text).not.toContain("\u001b");
     expect(text).toContain("      user user_a · version 1.4.0 · fingerprint 0123456789ab · first of its key\n");
   });
+
+  it("counts signed-out and unknown-route traffic apart from users' failures", async () => {
+    const counters = [...fixtureCounters,
+      counter("http.request_completed", "warn", { routePath: "/login", method: "POST", status: 404, outcome: "completed" }, 159),
+      counter("http.request_completed", "warn", { method: "GET", status: 404, outcome: "completed" }, 125),
+      counter("http.request_completed", "warn", { routePath: "/api/me/catalog", method: "GET", status: 401, outcome: "completed" }, 4)];
+    const report = await collectHealthFullReport(sources(counters, fixtureIncidents), "7d");
+    expect(report.http.rows.map((row) => [row.method, row.routePath, row.status, row.unauthenticatedOrUnknownRoute])).toEqual([
+      ["POST", "/login", 404, true], ["GET", null, 404, true], ["GET", "/api/chats/[chatId]", 404, false],
+      ["GET", "/api/me/catalog", 401, true], ["POST", "/api/runs", 502, false]]);
+    expect(report.failures.rows.filter((row) => row.event === "http.request_completed")
+      .map((row) => [row.method, row.routePath, row.status, row.unauthenticatedOrUnknownRoute])).toEqual([
+      ["POST", "/login", 404, true], ["GET", null, 404, true], ["GET", "/api/chats/[chatId]", 404, false],
+      ["GET", "/api/me/catalog", 401, true], ["POST", "/api/runs", 502, false]]);
+    const lines = formatHealthFullReport(report).split("\n");
+    const http = lines.slice(lines.findIndex((line) => line.startsWith("HTTP: ")));
+    const label = http.indexOf("  Unauthenticated / unknown route (signed-out clients, bots, scanners):");
+    expect(label).toBeGreaterThan(0);
+    // Users' failures and browser crashes come first; the outside traffic follows its label.
+    expect(http.slice(1, label).filter((line) => line.startsWith("  WARN") || line.startsWith("  ERROR"))).toEqual([
+      "  WARN   http.request_completed · GET · /api/chats/[chatId] · status 404 · completed",
+      "  ERROR  http.request_completed · POST · /api/runs · status 502 · completed",
+      "  WARN   client.error · render · /chat/[chatId]"
+    ]);
+    expect(http.slice(label + 1).filter((line) => line.startsWith("  WARN")).slice(0, 3)).toEqual([
+      "  WARN   http.request_completed · POST · /login · status 404 · completed",
+      "  WARN   http.request_completed · GET · route unknown · status 404 · completed",
+      "  WARN   http.request_completed · GET · /api/me/catalog · status 401 · completed"
+    ]);
+  });
 });
 
 describe("agent report arguments", () => {

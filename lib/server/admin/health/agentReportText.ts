@@ -120,16 +120,27 @@ function latencySection(report: HealthFullReport): string[] {
   ]);
 }
 
+const UNAUTHENTICATED_LABEL = "  Unauthenticated / unknown route (signed-out clients, bots, scanners):";
+
+/** Users' rows (then `userLines`) first; signed-out and unknown-route traffic after its own label. */
+function byAudience<T extends Readonly<{ unauthenticatedOrUnknownRoute: boolean }>>(rows: readonly T[],
+  lines: (row: T) => string[], userLines: readonly string[] = []): string[] {
+  const outside = rows.filter((row) => row.unauthenticatedOrUnknownRoute);
+  return [...rows.filter((row) => !row.unauthenticatedOrUnknownRoute).flatMap(lines), ...userLines,
+    ...(outside.length > 0 ? [UNAUTHENTICATED_LABEL, ...outside.flatMap(lines)] : [])];
+}
+
 function failureSection(report: HealthFullReport): string[] {
   const { failures } = report;
   return section(heading("Failures: warn, error and fatal records by key", failures.rows.length, failures.truncated),
-    failures.rows.flatMap((row) => tagged(row.level, present([
+    byAudience(failures.rows, (row) => tagged(row.level, present([
       row.event,
       row.overflow ? "overflow (fields dropped)" : null,
       row.code && `code ${row.code}`,
       row.subsystem && `subsystem ${row.subsystem}`,
       row.stage && `stage ${row.stage}`,
       row.reason && `reason ${row.reason}`,
+      row.method,
       row.routePath,
       row.status !== null && `status ${row.status}`,
       row.httpStatus !== null && `HTTP ${row.httpStatus}`,
@@ -186,12 +197,11 @@ function httpSection(report: HealthFullReport): string[] {
   const { http } = report;
   return section(heading("HTTP: 4xx and 5xx responses and failed requests by route", http.rows.length + http.clientErrors.length,
     http.truncated), [
-    ...http.rows.flatMap((row) => tagged(row.level, present([
+    ...byAudience(http.rows, (row) => tagged(row.level, present([
       row.event, row.method, row.routePath ?? "route unknown", row.status !== null && `status ${row.status}`, row.outcome,
       row.stage && `stage ${row.stage}`
-    ]), seenParts(row))),
-    ...http.clientErrors.flatMap((row) => tagged("warn", present(["client.error", row.kind, row.routePath ?? "route unknown"]),
-      seenParts(row)))
+    ]), seenParts(row)), http.clientErrors.flatMap((row) => tagged("warn", present(["client.error", row.kind,
+      row.routePath ?? "route unknown"]), seenParts(row))))
   ]);
 }
 
