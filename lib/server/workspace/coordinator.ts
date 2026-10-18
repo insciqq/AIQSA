@@ -8,7 +8,9 @@ import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./code
 import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
   type WorkspaceCodeRunIdentity } from "./codeMcpStore";
 import { workspaceCodeCallActivity, workspaceCodeCallSummaryLine, type WorkspaceCodeCallSummary } from "./codeMcpSummary";
-import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
+import {
+  inheritWorkspaceFailureCause, inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode
+} from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { agentExecutionId } from "../agents/runtime";
@@ -1364,7 +1366,7 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult, sec
     },
     status: result.status
   };
-  return result.errorCode ? retainWorkspaceResultCode(projected, result.errorCode) : projected;
+  return inheritWorkspaceFailureCause(result, result.errorCode ? retainWorkspaceResultCode(projected, result.errorCode) : projected);
 }
 
 /**
@@ -2388,6 +2390,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const mask = outputMaskByRun.get(runId) ??
             new WorkspaceSecretOutputMask(workspaceSecretMatches(await input.repository.personalSecrets(binding)));
           const output = mask.result(result, input.config.toolOutputMaxBytes);
+          inheritWorkspaceFailureCause(result, output.result);
           // A returned command's code can no longer call MCP; then summarize.
           await closeInvocation();
           const settled = withCodeCallSummary(resultFromRuntime(call, output.result, output.masked),

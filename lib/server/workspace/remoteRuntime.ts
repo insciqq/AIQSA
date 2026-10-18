@@ -7,7 +7,10 @@ import {
   workspaceAttachmentPath
 } from "@/lib/domain/workspace";
 import { workspaceToolTransportMaxBytes, type WorkspaceConfig } from "./config";
-import { beginWorkspaceToolStage, observeWorkspaceAbort, workspaceToolFailure } from "./toolObservability";
+import {
+  beginWorkspaceToolStage, observeWorkspaceAbort, retainWorkspaceFailureCause, workspaceFailureCause, workspaceFailureCauseOfWire,
+  workspaceToolFailure
+} from "./toolObservability";
 import { transportFailureFacts } from "../providers/providerObservability";
 import { AgentExecutionError } from "../agents/failures";
 import { parseWorkspaceOperation } from "./operationFence";
@@ -519,7 +522,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       method: "POST",
       signal: input.signal
     };
-    const finish = beginWorkspaceToolStage("request");
+    const finish = beginWorkspaceToolStage("request", input.originalName);
     const observeAbort = observeWorkspaceAbort();
     const onAbort = () => observeAbort({ stage: "delivery", abort_source: "parent_signal", deadline_kind: "request" });
     if (input.signal?.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "request" });
@@ -534,7 +537,11 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
         maxBytes: workspaceToolTransportMaxBytes(this.config.toolOutputMaxBytes),
         oversize: "workspace_tool_output_limit_exceeded"
       });
-      if (!response.ok) throw workspaceError(value);
+      // The cause the runner observed stays with this process's records; the
+      // result itself never carries it further.
+      if (!response.ok) {
+        throw retainWorkspaceFailureCause(workspaceError(value), isRecord(value) ? workspaceFailureCauseOfWire(value.cause) : undefined);
+      }
       if (
         !isRecord(value) ||
         !Array.isArray(value.content) ||
@@ -544,9 +551,12 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
       ) {
         throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       }
-      finish({ outcome: value.status === "error" ? "failed" : "completed", httpStatus,
-        code: isWorkspaceOperationFailureCode(value.errorCode) ? value.errorCode : undefined });
-      return value as WorkspaceToolResult;
+      const { failureCause, ...answered } = value;
+      const result = retainWorkspaceFailureCause(answered as WorkspaceToolResult,
+        answered.status === "error" ? workspaceFailureCauseOfWire(failureCause) : undefined);
+      finish({ outcome: result.status === "error" ? "failed" : "completed", httpStatus,
+        code: isWorkspaceOperationFailureCode(result.errorCode) ? result.errorCode : undefined, reason: workspaceFailureCause(result) });
+      return result;
     } catch (error) {
       const facts = workspaceToolFailure(error);
       const transport = transportFailureFacts(error, input.signal);

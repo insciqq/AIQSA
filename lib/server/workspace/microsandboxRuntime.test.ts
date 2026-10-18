@@ -556,7 +556,9 @@ describe("Microsandbox Workspace lifecycle", () => {
     const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
     expect(records).toContainEqual(expect.objectContaining({ event: "tool_deadline", tool_kind: "workspace", configured_timeout_ms: config.syncToolTimeoutSeconds * 1_000,
       effective_timeout_ms: config.syncToolTimeoutSeconds * 1_000, request_timeout_ms: config.syncToolTimeoutSeconds * 1_000 + 5_000 }));
-    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed", reason: typed ? "deadline" : "unknown", tool_call_id: "stored" }));
+    // An untyped transport failure names its class instead of `unknown`, beside the operation.
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed",
+      reason: typed ? "deadline" : "transport_other", operation: callInput.originalName, tool_call_id: "stored" }));
     expect(records.filter((entry) => entry.event === "nested_abort")).toHaveLength(typed ? 1 : 0);
     if (typed) expect(records).toContainEqual(expect.objectContaining({ event: "nested_abort", abort_source: "workspace_deadline", deadline_kind: "sdk_request", timeout_ms: config.syncToolTimeoutSeconds * 1_000 + 5_000 }));
     expect(JSON.stringify(records)).not.toContain("PRIVATE_");
@@ -1257,7 +1259,9 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(JSON.stringify(result)).not.toContain("SDK details");
     expect(sdk.callTool).toHaveBeenCalledTimes(1);
     const records = writer.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
-    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed" }));
+    // The runner names the opaque envelope's class and the operation, never its text.
+    expect(records).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "request", outcome: "failed",
+      code: "workspace_operation_failed", reason: "guest_unparsed", operation: "sandbox_shell" }));
     expect(JSON.stringify(records)).not.toContain("SDK details");
   });
 
