@@ -22,13 +22,13 @@ export const AIQSA_THEMES: ThemeOption[] = [
   },
   {
     colorScheme: "light",
-    description: "Cool paper",
+    description: "Paper",
     id: "light",
     name: "Light"
   },
   {
     colorScheme: "dark",
-    description: "Deep navy",
+    description: "Graphite",
     id: "dark",
     name: "Dark"
   }
