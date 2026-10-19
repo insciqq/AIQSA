@@ -8981,6 +8981,22 @@ describe("tool-free synthesis and repeated calls in live execution", () => {
       expect(repository.completeRuns).toHaveLength(1);
     });
 
+    it("refuses the whole batch before any call runs when an undeclared call was not kept settled", async () => {
+      const repository = createRepository();
+      const persist = repository.repository.persistToolLoopCallBatch;
+      // A store that dropped the mark would leave the call pending, claimable.
+      repository.repository.persistToolLoopCallBatch = async (input) =>
+        persist({ ...input, calls: input.calls.map(({ unknownTool: _unknown, ...call }) => call) });
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      await createRunExecutionResponse(executionInput({ adapter: scripted([[readNote, "read_notes"], []], requests),
+        mcpRuntime, prepared: notesPrepared(), repository: repository.repository })).text();
+      expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({
+        code: "tool_loop_checkpoint_failed" }) })]);
+    });
+
     it("asks the initiator's approval for a normalized tool that may change data, exactly like a direct call", async () => {
       const repository = createRepository();
       const requests: ProviderRunRequest[] = [];

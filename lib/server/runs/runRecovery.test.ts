@@ -11402,6 +11402,33 @@ describe("recovered tool-free synthesis and repeated calls", () => {
       expect(JSON.stringify(requests[0]!.providerToolMessages)).not.toContain("DSML｜");
       expect(harness.state.completed).not.toBeNull();
     });
+
+    it("refuses a refreshed batch before any call runs when an undeclared call was not kept settled", async () => {
+      const { adapter, requests } = synthesisAdapter({ events: [], providerResponseId: "round-1", status: "completed", terminal: true,
+        result: { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+          toolCalls: [{ id: "declared-1", name: recoveryToolName, arguments: { value: "alpha" } },
+            { id: "unknown-1", name: "remember_value", arguments: {} }] } });
+      const runtimeCall = vi.fn();
+      const harness = createHarness({ controls: [control({ providerResponseId: "round-1" })], providers: { openai: adapter },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      installCheckpointState(harness, {
+        ...checkpointedRun({ answerRoundUsage: [], calls: [], phase: "provider_running", providerResponseId: "round-1",
+          providerToolMessages: [], roundIndex: 1 }),
+        normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
+      });
+      const persist = harness.repository.persistToolLoopCallBatch;
+      // A store that dropped the mark would leave the call pending, claimable.
+      harness.repository.persistToolLoopCallBatch = async (input) =>
+        persist({ ...input, calls: input.calls.map(({ unknownTool: _unknown, ...call }) => call) });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+      expect(runtimeCall).not.toHaveBeenCalled();
+      expect(requests).toEqual([]);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+        error: expect.objectContaining({ code: "tool_loop_checkpoint_conflict" }) })]);
+    });
   });
 });
 
