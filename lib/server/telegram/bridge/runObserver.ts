@@ -1,9 +1,11 @@
 import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
+import { reachTelegramChat, type TelegramChatBinding } from "../control/reach";
 import type { TelegramBotSession } from "../dispatcher";
 import type { TelegramLinkRecord } from "../store/links";
 import type { TelegramAdmitted } from "./admission";
 import { deliverTelegramRun, type TelegramDeliveryDeps, type TelegramDeliveryResult } from "./delivery";
-import { createTelegramDraftStreamer } from "./drafts";
+import { createTelegramDraftStreamer, type TelegramDraftApi } from "./drafts";
 import { publishTelegramRunEvent, type TelegramRunEvent, type TelegramRunEventContext } from "./events";
 
 /**
@@ -11,6 +13,8 @@ import { publishTelegramRunEvent, type TelegramRunEvent, type TelegramRunEventCo
  * subscribers in order, the answer streams into its draft (D-09), and once the
  * run settled the final message is delivered and `delivered` published. A run
  * this process stops following before it settled stays pending for recovery.
+ * Every draft first checks that the run's link still reaches its chat (D-04);
+ * once it does not, the drafts end while the run goes on in AIQSA.
  */
 
 export type TelegramRunObserverDeps = TelegramDeliveryDeps & Readonly<{
@@ -40,6 +44,26 @@ export async function publishTelegramDelivery(
   }, { ...context, bot: result.bot, chatId: result.answer.chatId });
 }
 
+/** The draft's Bot API while the run's link still reaches its chat; null (logged once) when it no longer does. */
+function draftReach(deps: TelegramRunObserverDeps, binding: TelegramChatBinding, runId: string): () => Promise<TelegramDraftApi | null> {
+  return async () => {
+    try {
+      const reached = await reachTelegramChat(deps, binding);
+      if (reached.ok) return reached.bot.api;
+      logEvent("service_operation", {
+        code: reached.reasonCode, outcome: "skipped", run_id: runId, stage: "dispatch", subsystem: "telegram"
+      });
+      return null;
+    } catch (error) {
+      logEvent("service_operation", {
+        code: "telegram_run_delivery_failed", error, outcome: "failed", prisma_code: databaseFailureCode(error), run_id: runId,
+        stage: "dispatch", subsystem: "telegram"
+      });
+      throw error;
+    }
+  };
+}
+
 export async function observeTelegramRun(deps: TelegramRunObserverDeps, input: TelegramRunObservation): Promise<void> {
   const publish = deps.publish ?? publishTelegramRunEvent;
   const { admission, bot, link } = input;
@@ -48,7 +72,8 @@ export async function observeTelegramRun(deps: TelegramRunObserverDeps, input: T
     userId: link.userId
   };
   const drafts = createTelegramDraftStreamer({
-    api: bot.api, chatId: link.telegramChatId, draftId: admission.draftId,
+    chatId: link.telegramChatId, draftId: admission.draftId,
+    reach: draftReach(deps, { botId: bot.botId, linkId: link.id, telegramChatId: link.telegramChatId, userId: link.userId }, admission.runId),
     ...(deps.draftThrottleMs === undefined ? {} : { throttleMs: deps.draftThrottleMs }),
     ...(deps.draftRefreshMs === undefined ? {} : { refreshMs: deps.draftRefreshMs })
   });

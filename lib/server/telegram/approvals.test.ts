@@ -341,6 +341,44 @@ describe("Telegram MCP approvals: decisions", () => {
     expect(h.fake.botMessages(h.user.id).at(-1)).toMatchObject({ rich_message: renderTelegramAnswer("Created at last.").messages[0] });
   });
 
+  it.each([
+    ["the user unlinks (the link and its rows go)", (h: Harness, run: FakeRun) => {
+      h.links.records.delete("user-1");
+      h.runLinks.rows.delete(run.id);
+    }],
+    ["Telegram access ends for the user", (h: Harness) => {
+      h.setUser({ activeGroupIds: [], scimDeactivatedAt: null, status: "disabled" });
+    }]
+  ])("stops a decision waiting for its run once %s: no consent is stored, shown or continued", async (_case, revoke) => {
+    const h = harness();
+    const run = await ask(h, "create the issue", 1);
+    const card = h.store.add(run);
+    run.emit({ data: { artifactType: "mcp_approval", payload: card }, type: "artifact" });
+    await vi.waitFor(() => expect(approvalMessages(h, h.user.id)).toHaveLength(1));
+    const [approval] = approvalMessages(h, h.user.id);
+
+    // Always allow pressed while the answer still streams: during the wait the authority ends, then the run settles.
+    let revoked = false;
+    h.clock.onSleep = () => {
+      if (revoked) return;
+      revoked = true;
+      revoke(h, run);
+      run.token("Waiting for approval.");
+      run.complete();
+    };
+    h.aiqsa.setAutoAnswer((body) => body.systemTurn ? "Continued after the change." : null);
+    await press(h, approval!, "Always allow Jira", { settle: false });
+    await h.settle();
+    await h.approvals.idle();
+
+    expect(revoked).toBe(true);
+    expect(h.store.rows.get(card.approvalId)!.decision).toBeNull();
+    expect(h.store.decisions).toHaveLength(1);
+    expect(h.fake.calls("editMessageText")).toHaveLength(0);
+    expect(h.aiqsa.sent).toHaveLength(1);
+    expect(JSON.stringify(h.fake.calls())).not.toContain("Continued after the change.");
+  });
+
   it("asks to try again when the decision cannot be saved, and the retry replays the same nonce", async () => {
     const h = harness();
     const { approval, card } = await settledApproval(h);

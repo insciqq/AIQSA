@@ -196,6 +196,24 @@ describe("Telegram answer files: sending", () => {
     expect(h.fake.botMessages(h.user.id).at(-1)!.text).toBe("2 files couldn't be sent here; they're in AIQSA.");
   });
 
+  it("asks after every read and before every upload, and once the chat may no longer receive files sends and names nothing more", async () => {
+    const h = setup();
+    h.bytes.set("wide", telegramPhotoFixture());
+    h.bytes.set("doc", Buffer.from("%PDF-1.7 synthetic"));
+    h.fake.failNext("sendPhoto", { description: "Bad Request: PHOTO_INVALID_DIMENSIONS", status: 400 });
+    // Allowed for the photo's first upload only: neither its document form nor the next file goes.
+    const authorize = vi.fn(async () => authorize.mock.calls.length <= 1);
+    const result = await deliverTelegramFiles({
+      authorize, chatId: h.user.id, files: [file("wide", "wide.png", "image/png", 305), file("doc", "doc.pdf", "application/pdf", 18)],
+      outbound: h.outbound, owner: OWNER, read: h.read, userId: "user-1"
+    });
+    expect(result).toEqual({ failed: 2, left: 0, sent: 0 });
+    expect(authorize).toHaveBeenCalledTimes(2);
+    expect(h.fake.calls("sendPhoto")).toHaveLength(1);
+    expect(h.fake.calls("sendDocument")).toHaveLength(0);
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
+  });
+
   it("stops at a chat that refuses files, counting the rest, and never names a file Telegram may have received", async () => {
     const h = setup();
     for (const id of ["a", "b", "c"]) h.bytes.set(id, Buffer.from(id));
@@ -272,6 +290,31 @@ describe("Telegram answer files: after a run's final message", () => {
     expect(off.access.resolveTelegramAccess).toHaveBeenCalledWith("user-1");
     expect(off.read).not.toHaveBeenCalled();
     expect(off.fake.calls("sendDocument")).toHaveLength(0);
+  });
+
+  it("sends none of a run's files once its link stops reaching the chat while one is read, and names none there", async () => {
+    const h = harness();
+    let linked = true;
+    h.access.resolveTelegramAccess.mockImplementation(async () => linked
+      ? { allowed: true, control: {} as never, link: link(h.user.id, h.fake.bot.id) }
+      : { allowed: false, link: null, reasonCode: "telegram_not_linked" });
+    h.bytes.set("out-1", Buffer.from("done"));
+    h.bytes.set("out-2", Buffer.from("more"));
+    // The user unlinks while the first file's bytes are read.
+    h.read.mockImplementationOnce(async (input) => {
+      linked = false;
+      return h.bytes.get(input.attachmentId) ?? null;
+    });
+    const two: ThreadArtifactSummary = {
+      ...summary,
+      generatedFiles: [...summary.generatedFiles!, {
+        attachmentId: "out-2", byteSize: 4, fileName: "more.txt", mimeType: "text/plain", relativePath: "outputs/more.txt"
+      }]
+    };
+    h.files.listener({ artifactSummary: two, messageIds: [1], sent: true, status: "complete", type: "delivered" }, h.context);
+    await h.files.idle();
+    expect(h.fake.calls("sendDocument")).toHaveLength(0);
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
   });
 
   it("reads the export state of the user's own run: none without Workspace, pending until complete or failed", async () => {

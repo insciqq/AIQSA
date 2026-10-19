@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { memoryLinkStore, memoryMessageRefStore, memoryRunLinkStore } from "@/tests/support/telegramChatBridge";
+import { telegramControlHooks } from "../control/hooks";
 import { telegramHandlerRegistry } from "../dispatcher";
 import { startTelegramChatBridge, telegramChatBridge } from "./defaultBridge";
+import { TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS } from "./recovery";
 
 afterEach(() => {
+  (globalThis as { __aiqsaTelegramChatBridge?: { unregister(): void } }).__aiqsaTelegramChatBridge?.unregister();
   delete (globalThis as { __aiqsaTelegramChatBridge?: unknown }).__aiqsaTelegramChatBridge;
   delete (globalThis as { __aiqsaTelegramHandlers?: unknown }).__aiqsaTelegramHandlers;
   delete (globalThis as { __aiqsaTelegramRunListeners?: unknown }).__aiqsaTelegramRunListeners;
+  delete (globalThis as { __aiqsaTelegramControlHooks?: unknown }).__aiqsaTelegramControlHooks;
+  vi.useRealTimers();
 });
 
 function runListeners(): number {
@@ -49,5 +54,30 @@ describe("default chat bridge", () => {
     expect(registry.stopHandlers()).toHaveLength(1);
     expect(registry.callbackHandler("approval_deny")).toBeTruthy();
     expect(runListeners()).toBe(3);
+  });
+
+  it("sweeps interrupted deliveries again once a minute and after every control change, until its services are rebuilt", async () => {
+    vi.useFakeTimers();
+    const first = defaults();
+    startTelegramChatBridge(first);
+    await vi.advanceTimersByTimeAsync(0);
+    // The bot is off: every sweep asks for it and waits for the next one.
+    expect(first.sessions.current).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS);
+    expect(first.sessions.current).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2 * TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS);
+    expect(first.sessions.current).toHaveBeenCalledTimes(4);
+    // An administrator switches the bot on (any control change): swept at once, not a minute later.
+    telegramControlHooks().changed();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.sessions.current).toHaveBeenCalledTimes(5);
+
+    const rebuilt = defaults();
+    startTelegramChatBridge(rebuilt);
+    await vi.advanceTimersByTimeAsync(TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS);
+    telegramControlHooks().changed();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first.sessions.current).toHaveBeenCalledTimes(5);
+    expect(rebuilt.sessions.current).toHaveBeenCalledTimes(3);
   });
 });
