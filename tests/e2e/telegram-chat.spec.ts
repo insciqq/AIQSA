@@ -66,8 +66,14 @@ async function expectText(since: number, text: string | RegExp): Promise<string>
   return textsSince(since, tgAlice.id).find((sent) => typeof text === "string" ? sent === text : text.test(sent))!;
 }
 
-async function nextAnswer(since: number): Promise<FakeTelegramCall> {
-  await expect.poll(() => callsSince(since, "sendRichMessage", tgAlice.id).length, { timeout: REPLY_TIMEOUT_MS }).toBeGreaterThan(0);
+async function nextAnswer(since: number, timeout = REPLY_TIMEOUT_MS): Promise<FakeTelegramCall> {
+  try {
+    await expect.poll(() => callsSince(since, "sendRichMessage", tgAlice.id).length, { timeout }).toBeGreaterThan(0);
+  } catch (error) {
+    // Name what the bot did instead, so a missing answer is diagnosable from the report.
+    const seen = bot.calls().slice(since).map((call) => `${call.method}:${call.status}`).join(", ") || "nothing";
+    throw new Error(`no rich answer within ${timeout} ms; the bot sent: ${seen}`, { cause: error });
+  }
   return callsSince(since, "sendRichMessage", tgAlice.id)[0]!;
 }
 
@@ -188,7 +194,8 @@ test("a text message becomes a new personal chat: a Thinking… draft, paced dra
   const since = bot.calls().length;
   const startedAt = Date.now();
   bot.inject.text(tgAlice, question);
-  const answer = await nextAnswer(since);
+  // The first Telegram message compiles the run pipeline under `next dev`.
+  const answer = await nextAnswer(since, 120_000);
   const elapsed = Date.now() - startedAt;
 
   const chatId = (await currentChatId())!;

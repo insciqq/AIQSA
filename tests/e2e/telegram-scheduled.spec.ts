@@ -238,11 +238,14 @@ test("a reply to the delivered result continues the task's chat", async () => {
   });
   const delivered = bot.botMessages(tgUser.id).filter((message) => JSON.stringify(message).includes("Telegram morning brief")).at(-1)!;
   const question = `Tell me more about point 2 (${people.suffix})`;
+  const since = bot.calls().length;
   bot.inject.text(tgUser, question, { replyTo: delivered.message_id });
   await expect.poll(async () => {
     const messages = await prisma.message.findMany({ select: { content: true }, where: { chatId: occurrence.chatId!, role: "user" } });
     return messages.some((message) => JSON.stringify(message.content).includes(question));
   }, { timeout: DELIVERY_TIMEOUT_MS }).toBe(true);
+  // The bridge answers the reply in Telegram; it must arrive here, not during the next case.
+  await expect.poll(() => richSince(since).some((rich) => rich.includes(question)), { timeout: DELIVERY_TIMEOUT_MS }).toBe(true);
 });
 
 test("a task with Telegram delivery off sends nothing and records nothing", async () => {
