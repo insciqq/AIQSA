@@ -233,6 +233,8 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
   const held = new Map<string, Held>();
   /** When this process first saw a row's result files still exported. */
   const exporting = new Map<string, number>();
+  /** One wake serves every row waiting for an export. */
+  let exportWake = false;
   let scanning: Promise<void> | null = null;
   let rescan = false;
   let interval: ReturnType<typeof setInterval> | null = null;
@@ -295,7 +297,13 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     }
     exporting.set(row.id, since);
     log({ action: "wait", delay_ms: TELEGRAM_FILES_EXPORT_POLL_MS, job_id: row.id, outcome: "waiting", stage: "dispatch" });
-    setTimer(TELEGRAM_FILES_EXPORT_POLL_MS, wake);
+    if (!exportWake) {
+      exportWake = true;
+      setTimer(TELEGRAM_FILES_EXPORT_POLL_MS, () => {
+        exportWake = false;
+        wake();
+      });
+    }
     return true;
   }
 
