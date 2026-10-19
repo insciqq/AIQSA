@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { TELEGRAM_E2E_API_ORIGIN } from "./tests/e2e/support/telegramApiOrigin";
 
 const baseURL = "http://127.0.0.1:3000";
 const fakeProviderTokenDelayMs = process.env.AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS?.trim() || "10";
@@ -41,6 +42,8 @@ export default defineConfig({
       AIQSA_ENCRYPTION_KEY: encryptionKey,
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: fakeProviderTokenDelayMs,
       AIQSA_LOCAL_DEV_PROFILE_DISABLED: "1",
+      // The fake Bot API a Telegram spec starts on this loopback port; read only in test mode.
+      AIQSA_TELEGRAM_API_ORIGIN: TELEGRAM_E2E_API_ORIGIN,
       AIQSA_TEST_MODE: "1",
       AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: workspaceDeterministicRuntime,
       AIQSA_WORKSPACE_RUNNER_TOKEN: process.env.AIQSA_WORKSPACE_RUNNER_TOKEN?.trim() || "",
