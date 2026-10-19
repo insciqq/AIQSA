@@ -116,13 +116,6 @@ func (c *connection) execute(ctx context.Context, command protocol.RequestComman
 	d := c.d
 	switch m := command.(type) {
 	case *protocol.SessionCreate:
-		list, err := d.tmux.List(ctx)
-		if err != nil {
-			return nil, protocol.CodeDeviceError
-		}
-		if len(list) >= c.limits.MaxSessions {
-			return nil, protocol.CodeSessionLimit
-		}
 		cwd, err := tmux.ResolveCwd(m.Cwd, d.home)
 		if err != nil || sanitizePath(cwd) != cwd {
 			return nil, protocol.CodeCwdInvalid
@@ -133,12 +126,10 @@ func (c *connection) execute(ctx context.Context, command protocol.RequestComman
 				title = given
 			}
 		}
-		id, err := d.tmux.Create(ctx, tmux.CreateOptions{Program: m.Program, Cwd: cwd, Title: title})
-		if err != nil {
-			d.log.Event("session_create_failed", "err", err)
-			return nil, protocol.CodeDeviceError
+		id, code := c.createSession(ctx, tmux.CreateOptions{Program: m.Program, Cwd: cwd, Title: title})
+		if code != "" {
+			return nil, code
 		}
-		d.setCachedStatus(id, protocol.StatusIdle)
 		if err := d.recent.add(cwd); err != nil {
 			d.log.Event("recent_dirs_failed", "err", err)
 		}
@@ -183,6 +174,32 @@ func (c *connection) execute(ctx context.Context, command protocol.RequestComman
 		return &protocol.RecentDirsResult{Home: d.home, Dirs: d.recent.list(d.home, c.limits.MaxRecentDirs)}, ""
 	}
 	return nil, protocol.CodeUnsupported
+}
+
+// createSession counts the sessions and creates one while holding the
+// daemon's create slot; other request commands stay concurrent.
+func (c *connection) createSession(ctx context.Context, opts tmux.CreateOptions) (string, protocol.ReasonCode) {
+	d := c.d
+	select {
+	case d.createSlot <- struct{}{}:
+	case <-ctx.Done():
+		return "", protocol.CodeDeviceError
+	}
+	defer func() { <-d.createSlot }()
+	list, err := d.tmux.List(ctx)
+	if err != nil {
+		return "", protocol.CodeDeviceError
+	}
+	if len(list) >= c.limits.MaxSessions {
+		return "", protocol.CodeSessionLimit
+	}
+	id, err := d.tmux.Create(ctx, opts)
+	if err != nil {
+		d.log.Event("session_create_failed", "err", err)
+		return "", protocol.CodeDeviceError
+	}
+	d.setCachedStatus(id, protocol.StatusIdle)
+	return id, ""
 }
 
 func existsCode(err error) protocol.ReasonCode {

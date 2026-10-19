@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,6 +38,56 @@ func TestViewLimitsWithRealTmux(t *testing.T) {
 	server.waitUntil(t, "backlog limit", func(e []protocol.DeviceEvent) bool { return closedReason(e, viewA) == protocol.ViewClosedLimit })
 	if exists, _ := ts.Manager.Exists(ctx, id); !exists {
 		t.Fatal("closing a view over its backlog ended the session")
+	}
+	h.stop(t)
+}
+
+// Concurrent session_create requests share one count: a burst at one
+// below the limit creates exactly one more session.
+func TestReviewConcurrentSessionLimit(t *testing.T) {
+	ts := tmuxtest.New(t)
+	server := newFakeServer(t)
+	h := newHarness(t, server, ts.Manager, fastTiming())
+	ctx := context.Background()
+	limit := server.limits.MaxSessions
+	dir := t.TempDir()
+	for range limit - 1 {
+		if _, err := ts.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: dir, Title: "t"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.start()
+	stream := server.nextStream(t)
+	var requests []string
+	for i := range 8 {
+		id := fmt.Sprintf("%08x-2222-4000-8000-%012x", i+1, i+1)
+		requests = append(requests, id)
+		stream.command(map[string]any{"type": "session_create", "requestId": id, "program": "shell", "cwd": dir})
+	}
+	events := server.waitUntil(t, "create replies", func(e []protocol.DeviceEvent) bool {
+		for _, id := range requests {
+			if findReply(e, id) == nil {
+				return false
+			}
+		}
+		return true
+	})
+	created := 0
+	for _, id := range requests {
+		reply := findReply(events, id)
+		switch {
+		case reply.OK:
+			created++
+		case *reply.Code != protocol.CodeSessionLimit:
+			t.Fatalf("create %s failed with %s", id, *reply.Code)
+		}
+	}
+	list, err := ts.Manager.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 1 || len(list) != limit {
+		t.Fatalf("created %d, %d sessions, limit %d", created, len(list), limit)
 	}
 	h.stop(t)
 }

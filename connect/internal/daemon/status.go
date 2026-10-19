@@ -57,8 +57,9 @@ func (d *Daemon) ReportStatus(sessionID string, status protocol.SessionStatus, r
 	return nil
 }
 
-// reportInput marks a session running after input from a view, without
-// blocking the stream when it already is.
+// reportInput marks an agent session running after input from a view,
+// without blocking the stream when it already is. Views call it only for
+// agent sessions: a shell has no turns, so its status stays as reported.
 func (d *Daemon) reportInput(sessionID string) {
 	if status, known := d.cachedStatus(sessionID); known && status == protocol.StatusRunning {
 		return
