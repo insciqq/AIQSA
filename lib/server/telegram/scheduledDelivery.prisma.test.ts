@@ -28,6 +28,7 @@ afterEach(async () => {
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.attachment.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
+  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
   objects.clear();
 });
@@ -129,7 +130,15 @@ describe("Telegram scheduled delivery outbox", () => {
 
     // The switch turned off and the chat waiting for deletion are read as they are now.
     await prisma.scheduledTask.update({ data: { telegramNotify: false }, where: { id: brief.id } });
-    await prisma.chat.update({ data: { permanentDeletionAt: NOW }, where: { id: chat.id } });
+    // The deletion fence needs its exact durable purge operation (database guard).
+    const revision = await prisma.chat.findUniqueOrThrow({ select: { memorySourceRevision: true }, where: { id: chat.id } });
+    const deletion = await prisma.memoryDeletionOutbox.create({ data: {
+      admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: revision.memorySourceRevision, alsoForgetOriginMemories: false,
+      memoryGeneration: 0, operation: "SOURCE_PURGE", targetId: chat.id, targetType: "CHAT@memory-chat-delete-v1", userId
+    } });
+    await prisma.chat.update({
+      data: { archived: true, memoryMode: "EXCLUDED", permanentDeletionAt: NOW, permanentDeletionOperationId: deletion.id }, where: { id: chat.id }
+    });
     const later = await store.load(await due(occurrence.id));
     expect(later?.task.telegramNotify).toBe(false);
     expect(later?.chat?.usable).toBe(false);
