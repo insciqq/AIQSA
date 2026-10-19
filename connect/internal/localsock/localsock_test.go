@@ -14,6 +14,7 @@ import (
 
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/logx"
+	"github.com/insciqq/AIQSA/connect/internal/monoclock"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 	"github.com/insciqq/AIQSA/connect/internal/status"
 )
@@ -160,15 +161,29 @@ func TestAReportOlderThanTheLastAppliedIsDropped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	started := time.Now()
+	// Hooks started on this computer's clock, before the daemon reads it.
+	clock := monoclock.Now()
+	ms := int64(time.Millisecond)
+	started := clock.At - 10*ms
 	// The session ended; the background hook of the turn before arrives late.
-	send(Message{Session: "ac-abc123", Status: protocol.StatusIdle, At: started.UnixNano()})
+	send(Message{Session: "ac-abc123", Status: protocol.StatusIdle, At: started, Clock: clock.Kind})
 	s.reporter.wait(t, 1)
-	send(Message{Session: "ac-abc123", Status: protocol.StatusWaiting, Reason: protocol.ReasonTurnEnd, At: started.Add(-time.Millisecond).UnixNano()})
+	send(Message{Session: "ac-abc123", Status: protocol.StatusWaiting, Reason: protocol.ReasonTurnEnd, At: started - ms, Clock: clock.Kind})
 	s.waitLog(t, "hook_status_stale")
-	send(Message{Session: "ac-abc123", Status: protocol.StatusRunning, Reason: protocol.ReasonInput, At: started.Add(time.Millisecond).UnixNano()})
+	send(Message{Session: "ac-abc123", Status: protocol.StatusRunning, Reason: protocol.ReasonInput, At: started + ms, Clock: clock.Kind})
 	got := s.reporter.wait(t, 2)
 	if len(got) != 2 || got[1].status != protocol.StatusRunning {
+		t.Fatalf("got %+v", got)
+	}
+	// A report without a stamp, or of another clock, goes in arrival order.
+	other := monoclock.Wall
+	if clock.Kind == monoclock.Wall {
+		other = monoclock.Mono
+	}
+	send(Message{Session: "ac-abc123", Status: protocol.StatusWaiting, Reason: protocol.ReasonTurnEnd, At: 1, Clock: other})
+	s.reporter.wait(t, 3)
+	send(Message{Session: "ac-abc123", Status: protocol.StatusIdle})
+	if got := s.reporter.wait(t, 4); got[2].status != protocol.StatusWaiting || got[3].status != protocol.StatusIdle {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -306,6 +321,10 @@ func TestTheDaemonRejectsInvalidAndOversizedMessages(t *testing.T) {
 		`{"session":"../x","status":"idle"}`,
 		`{"session":"ac-abc123","status":"waiting","reason":"bell","prompt":"secret"}`,
 		`{"session":"ac-abc123","status":"idle","at":-1}`,
+		`{"session":"ac-abc123","status":"idle","at":-1,"clock":"mono"}`,
+		`{"session":"ac-abc123","status":"idle","at":5}`,
+		`{"session":"ac-abc123","status":"idle","clock":"mono"}`,
+		`{"session":"ac-abc123","status":"idle","at":5,"clock":"boot"}`,
 		`not json`,
 		`{"session":"ac-abc123","status":"waiting","reason":"` + strings.Repeat("x", 1024) + `"}`,
 	} {

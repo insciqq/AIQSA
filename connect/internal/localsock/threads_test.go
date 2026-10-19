@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/insciqq/AIQSA/connect/internal/logx"
+	"github.com/insciqq/AIQSA/connect/internal/monoclock"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 	"github.com/insciqq/AIQSA/connect/internal/tmux"
 )
@@ -72,17 +73,19 @@ func TestAThreadOnlyReportAppliesToTheSessionItIsBoundTo(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Hook start times in event order, whatever the wall clock does.
-	at := time.Now().UnixNano()
-	next := func() int64 {
+	// Hook start times in event order, before the daemon reads its clock.
+	clock := monoclock.Now()
+	at := clock.At - int64(time.Second)
+	stamped := func(m Message) Message {
 		at += int64(time.Millisecond)
-		return at
+		m.At, m.Clock = at, clock.Kind
+		return m
 	}
 	running := func(session, thread string) Message {
-		return Message{Session: session, Thread: thread, Status: protocol.StatusRunning, Reason: protocol.ReasonInput, At: next()}
+		return stamped(Message{Session: session, Thread: thread, Status: protocol.StatusRunning, Reason: protocol.ReasonInput})
 	}
 	stop := func(thread string) Message {
-		return Message{Thread: thread, Status: protocol.StatusWaiting, Reason: protocol.ReasonTurnEnd, At: next()}
+		return stamped(Message{Thread: thread, Status: protocol.StatusWaiting, Reason: protocol.ReasonTurnEnd})
 	}
 	// An unknown thread is dropped, with a code only.
 	send(stop("019a-unknown"))

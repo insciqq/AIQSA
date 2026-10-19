@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/insciqq/AIQSA/connect/internal/monoclock"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
 
@@ -147,7 +148,7 @@ func TestGateIgnoresBellsRightAfterAHookStatus(t *testing.T) {
 	if !gate.AcceptBell("ac-a") {
 		t.Fatal("a bell without any hook status is ignored")
 	}
-	if !gate.AcceptHook("ac-a", time.Time{}) {
+	if !gate.AcceptHook("ac-a", monoclock.Stamp{}) {
 		t.Fatal("first hook refused")
 	}
 	now = now.Add(BellQuietWindow - time.Millisecond)
@@ -163,16 +164,79 @@ func TestGateIgnoresBellsRightAfterAHookStatus(t *testing.T) {
 	}
 }
 
+// monoGate is a gate whose own monotonic clock reads at.
+func monoGate(now *time.Time, at int64) *Gate {
+	gate := NewGate(func() time.Time { return *now })
+	gate.clock = func() monoclock.Stamp { return mono(at) }
+	return gate
+}
+
+func mono(at int64) monoclock.Stamp { return monoclock.Stamp{Kind: monoclock.Mono, At: at} }
+func wall(at int64) monoclock.Stamp { return monoclock.Stamp{Kind: monoclock.Wall, At: at} }
+
 func TestGateDropsAHookThatStartedBeforeTheLastApplied(t *testing.T) {
 	now := time.Unix(1_000, 0)
-	gate := NewGate(func() time.Time { return now })
-	stop, end := now.Add(-20*time.Millisecond), now.Add(-10*time.Millisecond)
+	gate := monoGate(&now, 1_000_000)
+	stop, end := mono(500_000), mono(600_000)
 	// SessionEnd's hook arrives before the earlier Stop's background hook.
 	if !gate.AcceptHook("ac-a", end) || gate.AcceptHook("ac-a", stop) {
 		t.Fatal("a stale hook was accepted")
 	}
-	if !gate.AcceptHook("ac-a", end) || !gate.AcceptHook("ac-b", stop) || !gate.AcceptHook("ac-a", now) {
+	if !gate.AcceptHook("ac-a", end) || !gate.AcceptHook("ac-b", stop) || !gate.AcceptHook("ac-a", mono(700_000)) {
 		t.Fatal("an in-order hook was refused")
+	}
+	// The same holds on a computer without a monotonic clock.
+	if !gate.AcceptHook("ac-c", wall(2_000)) || gate.AcceptHook("ac-c", wall(1_000)) {
+		t.Fatal("a stale wall-clock hook was accepted")
+	}
+}
+
+// A hook that starts right after another while the wall clock steps back
+// (as WSL's time sync does) has the earlier wall-clock time but the later
+// monotonic one: it is applied.
+func TestGateOrdersHooksByTheMonotonicClockWhenTheWallClockStepsBack(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	gate := monoGate(&now, 10_000_000_000)
+	type started struct{ wall, mono int64 }
+	postToolUse := started{wall: 5_000_000_000, mono: 9_000_000_000}
+	stop := started{wall: postToolUse.wall - 1_050_000_000, mono: postToolUse.mono + 200_000_000}
+	if !gate.AcceptHook("ac-a", mono(postToolUse.mono)) || !gate.AcceptHook("ac-a", mono(stop.mono)) {
+		t.Fatal("the later-started Stop was dropped")
+	}
+	// What the wall clock alone does.
+	if !gate.AcceptHook("ac-b", wall(postToolUse.wall)) || gate.AcceptHook("ac-b", wall(stop.wall)) {
+		t.Fatal("the wall-clock stamps did not reproduce the step back")
+	}
+}
+
+// Stamps of different clocks, missing ones and monotonic ones the daemon's
+// own clock has not reached are applied in arrival order; a later stamp of
+// one clock is still compared with the last accepted one of that clock.
+func TestGateAppliesUnorderableHooksInArrivalOrder(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	gate := monoGate(&now, 1_000_000)
+	arrivals := []struct {
+		started monoclock.Stamp
+		want    bool
+	}{
+		{mono(900_000), true},
+		{wall(5), true},
+		{monoclock.Stamp{}, true},
+		{mono(2_000_000), true}, // not reached by the daemon's clock: unordered
+		{wall(1), false},
+		{monoclock.Stamp{Kind: "boot", At: 1}, true},
+		{mono(900_000), true},
+		{mono(800_000), false},
+	}
+	for i, a := range arrivals {
+		if got := gate.AcceptHook("ac-a", a.started); got != a.want {
+			t.Fatalf("hook %d (%+v): accepted %v, want %v", i, a.started, got, a.want)
+		}
+	}
+	// A daemon without a monotonic clock orders no monotonic stamp.
+	gate.clock = func() monoclock.Stamp { return wall(1) }
+	if !gate.AcceptHook("ac-a", mono(1)) {
+		t.Fatal("a monotonic stamp was compared without the daemon's own")
 	}
 }
 
@@ -180,7 +244,7 @@ func TestGateStaysBounded(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	gate := NewGate(func() time.Time { return now })
 	for i := range 3 * maxTrackedSessions {
-		gate.AcceptHook("ac-"+time.Duration(i).String(), time.Time{})
+		gate.AcceptHook("ac-"+time.Duration(i).String(), monoclock.Stamp{})
 		now = now.Add(time.Millisecond)
 	}
 	if len(gate.last) > maxTrackedSessions {
