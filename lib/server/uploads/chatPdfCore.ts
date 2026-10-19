@@ -17,6 +17,7 @@ import {
 } from "../parsing/pdfOcrPipeline";
 import type { ParsedBoundingBox, ParsedDocument } from "../parsing/types";
 import type { ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
+import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
 import { type ChatPdfAttachmentAdmission, chatPdfFingerprint } from "./chatPdfAdmission";
 import { getPdfExtractionConfig } from "./pdfConfig";
@@ -51,11 +52,35 @@ export function chatPdfImageLimits(
     payloadBytes: Math.min(declared?.payloadBytes ?? Infinity, LEGACY_CHAT_PDF_IMAGE_LIMITS.payloadBytes) };
 }
 
+/** Output caps of one reader page request when the model declares no output
+ * default: a reasoning reader shares its budget between reasoning and text. */
+export const CHAT_PDF_READER_OUTPUT_TOKENS = 16_384;
+export const CHAT_PDF_REASONING_READER_OUTPUT_TOKENS = 32_768;
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Whether the frozen reader binding reasons: a reasoning model whose admitted
+ * parameters neither disable reasoning nor select `none`. */
+export function chatPdfReaderReasons(snapshot: ProviderExecutionSnapshot): boolean {
+  if (snapshot.model.capabilities.reasoning !== true) return false;
+  const params = snapshot.model.defaultParams;
+  const reasoning = record(params.reasoning) ? params.reasoning : null;
+  if (reasoning?.enabled === false || record(params.thinking) && params.thinking.enabled === false) return false;
+  const effort = typeof reasoning?.effort === "string" ? reasoning.effort : snapshot.model.capabilities.defaultReasoningEffort;
+  return effort !== "none";
+}
+
+export function chatPdfReaderUndeclaredOutputTokens(snapshot: ProviderExecutionSnapshot): number {
+  return chatPdfReaderReasons(snapshot) ? CHAT_PDF_REASONING_READER_OUTPUT_TOKENS : CHAT_PDF_READER_OUTPUT_TOKENS;
+}
+
 export class ChatPdfPreparationError extends Error {
   constructor(readonly code: "pdf_preparation_failed" | "pdf_preparation_ambiguous" |
     "pdf_preparation_unavailable" | "pdf_preparation_invalid" | "pdf_local_text_unusable" |
     "pdf_page_limit_exceeded" | "pdf_preparation_context_limit" | "pdf_transcription_failed" |
-    "context_compaction_policy_retired", readonly retryable = false) {
+    "pdf_reader_output_limit" | "context_compaction_policy_retired", readonly retryable = false) {
     super(code);
     this.name = "ChatPdfPreparationError";
   }
@@ -262,7 +287,8 @@ export function createChatPdfCore(options: Readonly<{
           pageStart: input.page, pageEnd: input.page, promptVersion });
         const specification = { batch, mode: "system_model_direct_pdf" as const, prompt, snapshot,
           supplement: null, visionDetail: "original" as const };
-        const request = modelPdfProviderRequest(specification);
+        const request = modelPdfProviderRequest({ ...specification,
+          undeclaredMaxOutputTokens: chatPdfReaderUndeclaredOutputTokens(snapshot) });
         request.chatId = "chat-pdf-transcription";
         if (!applyProviderRequestContextBudget({ request }).ok) {
           throw new ChatPdfPreparationError("pdf_preparation_context_limit");
@@ -273,7 +299,8 @@ export function createChatPdfCore(options: Readonly<{
         const prepared = await preparePdfOcrPage({ bytes: input.bytes,
           local: { ...input.local, plan: input.plan.adaptive }, maxPages: PDF_PROCESSING_MAX_PAGES,
           page: input.page, parserVersion: input.plan.parserVersion,
-          signal: input.signal, snapshot }, prepare).catch(error => {
+          signal: input.signal, snapshot, undeclaredMaxOutputTokens: chatPdfReaderUndeclaredOutputTokens(snapshot) },
+        prepare).catch(error => {
           aborted(input.signal);
           if (error instanceof Error && error.message === "parser_output_too_large") {
             throw new ChatPdfPreparationError("pdf_preparation_invalid");
@@ -304,7 +331,8 @@ export function createChatPdfCore(options: Readonly<{
         pageStart: input.page, pageEnd: input.page, promptVersion: 6 });
       const prompt = supplement ? adaptivePdfVisionPrompt(base, supplement) : base;
       const request = modelPdfProviderRequest({ batch, mode: "system_model_vision",
-        prompt, snapshot, supplement, visionDetail: "original" });
+        prompt, snapshot, supplement, undeclaredMaxOutputTokens: chatPdfReaderUndeclaredOutputTokens(snapshot),
+        visionDetail: "original" });
       request.chatId = "chat-pdf-transcription";
       if (request.attachments.length > input.plan.limits.imageCount ||
         request.attachments.some((image) => image.byteSize > input.plan.limits.imageBytes) ||

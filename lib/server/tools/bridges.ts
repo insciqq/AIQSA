@@ -55,6 +55,29 @@ function suppliedProviderMessages(value: unknown): unknown[] | null {
   return value === undefined ? null : [value];
 }
 
+/**
+ * The name the round kept for each of its calls, by call id: the declared
+ * tool an exact alias stands for, or the bounded name of an unknown tool. A
+ * round's assistant items carry these names, never the provider's own
+ * malformed or aliased one, while every other protocol field (ids, arguments,
+ * signatures, reasoning) stays as the provider sent it.
+ */
+function roundCallNames(calls: readonly ModelToolCall[]): ReadonlyMap<string, string> {
+  return new Map(calls.map((call) => [call.id, call.name]));
+}
+
+/** The item with the round's name for its call; the same item when it already has it. */
+function withCallName<T extends Record<string, unknown>>(item: T, name: string | undefined): T {
+  return name !== undefined && item.name !== name ? { ...item, name } : item;
+}
+
+/** A Chat Completions tool call with the round's name for its call. */
+function withChatToolCallName(toolCall: unknown, name: string | undefined): unknown {
+  return isRecord(toolCall) && isRecord(toolCall.function) && name !== undefined && toolCall.function.name !== name
+    ? { ...toolCall, function: { ...toolCall.function, name } }
+    : toolCall;
+}
+
 function usesHostedSearchRoute(
   request: ProviderRunRequest,
   protocol: "anthropic_web_search" | "deepseek_responses_web_search" | "gemini_google_search" | "openai_responses_web_search"
@@ -206,7 +229,7 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
   },
   provider: "openai",
   serializeAssistantToolCalls({ calls, providerMessage }) {
-    const namesByCallId = new Map(calls.map((call) => [call.id, call.name]));
+    const names = roundCallNames(calls);
     const messages = suppliedProviderMessages(providerMessage);
     if (messages) {
       return messages.map((message) => {
@@ -214,14 +237,11 @@ export const openAIResponsesToolBridge: ProviderToolBridge = {
         const callId = typeof message.call_id === "string"
           ? message.call_id
           : typeof message.id === "string" ? message.id : undefined;
-        const name = callId ? namesByCallId.get(callId) : undefined;
-        return name && message.name !== name ? { ...message, name } : message;
+        return withCallName(message, callId ? names.get(callId) : undefined);
       });
     }
     return calls.map((call) => {
-      if (isRecord(call.raw)) {
-        return call.raw.name === call.name ? call.raw : { ...call.raw, name: call.name };
-      }
+      if (isRecord(call.raw)) return withCallName(call.raw, call.name);
       return {
         arguments: JSON.stringify(call.arguments),
         call_id: call.id,
@@ -303,10 +323,18 @@ export const openRouterChatToolBridge: ProviderToolBridge = {
   },
   provider: "openrouter",
   serializeAssistantToolCalls({ calls, providerMessage }) {
-    return suppliedProviderMessages(providerMessage) ?? [{
+    const names = roundCallNames(calls);
+    const messages = suppliedProviderMessages(providerMessage);
+    if (messages) {
+      return messages.map((message) => isRecord(message) && Array.isArray(message.tool_calls)
+        ? { ...message, tool_calls: message.tool_calls.map((toolCall) => withChatToolCallName(toolCall,
+          isRecord(toolCall) && typeof toolCall.id === "string" ? names.get(toolCall.id) : undefined)) }
+        : message);
+    }
+    return [{
       content: null,
       role: "assistant",
-      tool_calls: calls.map((call) => isRecord(call.raw) ? call.raw : {
+      tool_calls: calls.map((call) => isRecord(call.raw) ? withChatToolCallName(call.raw, call.name) : {
         function: { arguments: JSON.stringify(call.arguments), name: call.name },
         id: call.id,
         type: "function"
@@ -387,8 +415,16 @@ export const geminiInteractionsToolBridge: ProviderToolBridge = {
   },
   provider: "gemini",
   serializeAssistantToolCalls({ calls, providerMessage }) {
-    return suppliedProviderMessages(providerMessage) ?? calls.map((call) =>
-      isRecord(call.raw) ? call.raw : {
+    const names = roundCallNames(calls);
+    const steps = suppliedProviderMessages(providerMessage);
+    if (steps) {
+      // Only function-call steps are renamed; thought, output and Search steps
+      // (with their signatures and transient fields) pass through unchanged.
+      return steps.map((step) => isRecord(step) && step.type === "function_call" && typeof step.id === "string"
+        ? withCallName(step, names.get(step.id)) : step);
+    }
+    return calls.map((call) =>
+      isRecord(call.raw) ? withCallName(call.raw, call.name) : {
         arguments: call.arguments,
         id: call.id,
         name: call.name,
@@ -451,8 +487,19 @@ export const anthropicMessagesToolBridge: ProviderToolBridge = {
   },
   provider: "anthropic",
   serializeAssistantToolCalls({ calls, providerMessage }) {
-    return suppliedProviderMessages(providerMessage) ?? [{
-      content: calls.map((call) => isRecord(call.raw) ? call.raw : {
+    const names = roundCallNames(calls);
+    const messages = suppliedProviderMessages(providerMessage);
+    if (messages) {
+      // Only `tool_use` blocks are renamed; thinking blocks keep their
+      // signatures, and hosted `server_tool_use` blocks are no round calls.
+      return messages.map((message) => isRecord(message) && Array.isArray(message.content)
+        ? { ...message, content: message.content.map((block) =>
+          isRecord(block) && block.type === "tool_use" && typeof block.id === "string"
+            ? withCallName(block, names.get(block.id)) : block) }
+        : message);
+    }
+    return [{
+      content: calls.map((call) => isRecord(call.raw) ? withCallName(call.raw, call.name) : {
         id: call.id,
         input: call.arguments,
         name: call.name,

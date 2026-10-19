@@ -16,11 +16,22 @@ import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW, sleepWithSignal } from "../provide
 import { providerHttpFailureMessage } from "../providers/providerObservability";
 import { providerStreamDrop } from "../providers/streamDrop";
 import { anthropicMessagesToolBridge, geminiInteractionsToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
-import { runProviderToolLoop, toolSynthesisDecision } from "./providerToolLoop";
+import {
+  providerRoundToolCalls,
+  providerToolLoopContinuationAfterResult,
+  roundToolCalls,
+  runProviderToolLoop,
+  stalledToolRound,
+  toolSynthesisDecision,
+  unknownToolCorrectionSpent,
+  type ToolRoundCall
+} from "./providerToolLoop";
+import { normalizeProviderToolCallName, TOOL_CALL_UNKNOWN, unknownToolCallResult } from "./unknownToolCall";
+import { namespacedMcpToolName, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
-import { openRouterChatToolBridge } from "../tools/bridges";
+import { openAICompatibleChatToolBridge, openRouterChatToolBridge } from "../tools/bridges";
 import { createOpenRouterChatAdapter } from "../providers/openRouterChat";
-import type { RunTool, ToolExecutionResult } from "../tools/types";
+import type { ProviderToolBridge, RunTool, ToolExecutionResult } from "../tools/types";
 import { executeReadToolResult, READ_TOOL_RESULT_NAME, readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import { captureMcpObservation, observationReadBudget, observationWholeDeliveryBatches, wholeDeliveryAllowance } from "../toolObservations/sourceAdapters";
@@ -201,7 +212,7 @@ describe("provider tool loop", () => {
       .toEqual(["first", "second"]);
   });
 
-  it.each(["undiscovered", "duplicate"] as const)("rejects an adversarial %s batch before discovery or other side effects", async (mode) => {
+  it("rejects an adversarial duplicate batch before discovery or other side effects", async () => {
     const executeTool = vi.fn();
     const persistToolBatch = vi.fn();
     const tools: RunTool[] = openRouterMixedTools();
@@ -211,25 +222,41 @@ describe("provider tool loop", () => {
         return { finalText: "", finalProviderResponsePreview: {}, usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 },
           toolCalls: [
             { id: "discover", name: "find_tools", arguments: { query: "Read the synthetic service" } },
-            { id: mode === "duplicate" ? "discover" : "future", name: mode === "duplicate" ? "find_tools" : "mcp_future_tool", arguments: {} }
+            { id: "discover", name: "find_tools", arguments: {} }
           ] };
       }
     };
     const outcome = await runProviderToolLoop({ adapter, bridge: openRouterChatToolBridge,
       budgets: { maxConcurrency: 2, maxToolCalls: 3, maxToolRounds: 2 }, executeTool, persistToolBatch,
       initialRequest: request({ provider: "openrouter" }), parallelToolCalls: false, tools });
-    expect(outcome).toMatchObject({ status: "failed", toolCalls: 0,
-      failure: { code: mode === "duplicate" ? "provider_tool_call_id_duplicate" : "unsupported_tool_call" } });
-    if (mode === "undiscovered") {
-      expect(outcome).toMatchObject({
-        failure: {
-          message: expect.stringContaining("mcp_future_tool"),
-          toolName: "mcp_future_tool"
-        }
-      });
-    }
+    expect(outcome).toMatchObject({ status: "failed", toolCalls: 0, failure: { code: "provider_tool_call_id_duplicate" } });
     expect(executeTool).not.toHaveBeenCalled();
     expect(persistToolBatch).not.toHaveBeenCalled();
+  });
+
+  it("marks an undiscovered call of a discovery batch undeclared, so discovery in that batch cannot authorize it", async () => {
+    const persisted: Array<{ id: string; name: string; undeclared?: unknown }> = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        return roundRequest.providerToolMessages?.length
+          ? { finalText: "done", finalProviderResponsePreview: {}, usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 } }
+          : { finalText: "", finalProviderResponsePreview: {}, usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 },
+            toolCalls: [
+              { id: "discover", name: "find_tools", arguments: { query: "Read the synthetic service" } },
+              { id: "future", name: "mcp_future_tool", arguments: {} }
+            ] };
+      }
+    };
+    const outcome = await runProviderToolLoop({ adapter, bridge: openRouterChatToolBridge,
+      budgets: { maxConcurrency: 2, maxToolCalls: 3, maxToolRounds: 2 },
+      executeTool: async (call) => ({ status: "complete", value: { callId: call.id, name: call.name, status: "complete",
+        content: [{ type: "text", text: "settled by the owner" }] } }),
+      persistToolBatch: ({ calls }) => { persisted.push(...calls.map(({ id, name, undeclared }) => ({ id, name, undeclared }))); },
+      initialRequest: request({ provider: "openrouter" }), parallelToolCalls: false, tools: openRouterMixedTools() });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 2 });
+    expect(persisted).toEqual([{ id: "discover", name: "find_tools", undeclared: undefined },
+      { id: "future", name: "mcp_future_tool", undeclared: { requested: "mcp_future_tool" } }]);
   });
 
   it("normalizes an original Workspace name to the advertised provider alias", async () => {
@@ -2369,5 +2396,265 @@ describe("dropped Codex LB round retry", () => {
         "The model provider kept failing before the response was complete. Try again in a moment, or choose another model.");
       expect(providerHttpFailureMessage(loop.observe.mock.calls.at(-1)![0].error)).toBe(failure?.message);
     });
+  });
+});
+
+describe("calls of tools their round did not declare", () => {
+  const declared = "mcp_notes_read_note_0123456789";
+  const tools: RunTool[] = [{ capability: "mcp", description: "Read a note", inputSchema: { type: "object" }, name: declared }];
+  const usage = { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 };
+  const dsml = `${declared}</｜｜DSML｜｜ parameter><｜｜DSML｜｜ parameter name=`;
+
+  /** Scripted rounds of call names (an empty list answers). */
+  function scripted(rounds: ReadonlyArray<readonly string[]>) {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        requests.push(roundRequest);
+        const names = rounds[requests.length - 1] ?? [];
+        const calls = names.map((name, index) => ({ arguments: { id: "note-1" }, id: `call-${requests.length}-${index}`, name }));
+        return { finalProviderResponsePreview: {}, finalText: names.length ? "" : "answer", usage, toolCalls: calls,
+          ...(calls.length ? { providerToolCallMessage: calls.map(call => ({ arguments: "{\"id\":\"note-1\"}", call_id: call.id,
+            name: call.name, type: "function_call" })) } : {}) };
+      }
+    };
+    return { adapter, requests };
+  }
+
+  /** The owner's rows: an undeclared call is persisted already settled as an
+   * unknown tool and only read back; every other one runs. */
+  function owner() {
+    const rows: Array<{ id: string; name: string; round: number; undeclared?: { requested: string } }> = [];
+    const executed: string[] = [];
+    return {
+      executed,
+      rows,
+      input: {
+        persistToolBatch: ({ calls, round }: { calls: readonly { id: string; name: string; undeclared?: { requested: string } }[]; round: number }) => {
+          rows.push(...calls.map(({ id, name, undeclared }) => ({ id, name, round, ...(undeclared ? { undeclared } : {}) })));
+        },
+        executeTool: async (call: { id: string; name: string }) => {
+          const row = rows.find(entry => entry.id === call.id)!;
+          if (row.undeclared) {
+            return { status: "complete" as const, value: unknownToolCallResult({ providerCallId: call.id, requested: row.undeclared.requested,
+              toolName: call.name }) as unknown as ToolExecutionResult };
+          }
+          executed.push(call.name);
+          return { status: "complete" as const, value: { callId: call.id, name: call.name, status: "complete" as const,
+            content: [{ type: "text" as const, text: "note-1: open" }] } };
+        },
+        isUnknownToolCall: (call: { id: string }) => rows.find(entry => entry.id === call.id)?.undeclared !== undefined,
+        unknownToolCorrectionSpent: (round: number) => unknownToolCorrectionSpent(rows.map(entry => ({
+          call: (entry.undeclared ? "unknown_tool" : "executed") as ToolRoundCall, round: entry.round })), round)
+      }
+    };
+  }
+  const outputs = (requestValue: ProviderRunRequest | undefined) => (requestValue?.providerToolMessages ?? [])
+    .filter(message => (message as { type?: string }).type === "function_call_output") as Array<{ call_id: string; output: string }>;
+
+  it("returns an unknown name to the model as an error, then runs its corrected call", async () => {
+    const { adapter, requests } = scripted([["read_note"], [declared], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer" }, toolCalls: 2, toolRounds: 2 });
+    expect(store.rows[0]).toEqual({ id: "call-1-0", name: "read_note", round: 1, undeclared: { requested: "read_note" } });
+    expect(store.executed).toEqual([declared]);
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "auto", "auto"]);
+    // Every call id receives its output; the unknown one says what to do.
+    expect(outputs(requests[1]).map(output => output.call_id)).toEqual(["call-1-0"]);
+    expect(JSON.parse(outputs(requests[1])[0]!.output)).toMatchObject({ error: TOOL_CALL_UNKNOWN, requested: "read_note",
+      message: expect.stringContaining("Call one of the declared tools by its exact name") });
+  });
+
+  it("names a call whose name no provider accepts by a valid name in its transcript and bounds what it requested", async () => {
+    const { adapter, requests } = scripted([[dsml], []]);
+    const store = owner();
+    await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input });
+    expect(store.rows[0]).toEqual({ id: "call-1-0", name: "invalid_tool_name", round: 1,
+      undeclared: { requested: `${declared}?DSML?parameter?DSML?parameter?name?` } });
+    expect(store.executed).toEqual([]);
+    expect(requests[1]!.providerToolMessages).toContainEqual(expect.objectContaining({ call_id: "call-1-0", name: "invalid_tool_name",
+      type: "function_call" }));
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).not.toContain("DSML｜");
+  });
+
+  it("runs the declared calls of a mixed batch and keeps the loop going", async () => {
+    const { adapter, requests } = scripted([[declared, "read_notes"], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 2, toolRounds: 1 });
+    expect(store.executed).toEqual([declared]);
+    expect(outputs(requests[1]).map(output => output.call_id)).toEqual(["call-1-0", "call-1-1"]);
+    expect(requests[1]!.toolChoice).toBe("auto");
+  });
+
+  it("corrects once: a later round of only unknown names ends in tool-free synthesis that names them", async () => {
+    const { adapter, requests } = scripted([["read_note"], ["read_note_v2"], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer" }, toolCalls: 2, toolRounds: 2 });
+    expect(store.executed).toEqual([]);
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "auto", "none"]);
+    expect(requests[2]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content:
+      "Tool use is now disabled for this run: tool calls again named tools that do not exist. Some planned tool calls were not executed. " +
+      "Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed." });
+    // Both unknown calls still received their outputs.
+    expect(outputs(requests[2]).map(output => output.call_id)).toEqual(["call-1-0", "call-2-0"]);
+  });
+
+  it("keeps the correction after a mixed round and spends it on the first round of only unknown names", async () => {
+    const { adapter, requests } = scripted([[declared, "read_notes"], ["read_notes"], [declared], ["read_notes"], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer" } });
+    // Round 2 used the correction; round 4 ran nothing again, so round 5 answers without tools.
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "auto", "auto", "auto", "none"]);
+    expect(store.executed).toEqual([declared, declared]);
+  });
+
+  it("fails a required round whose only call names an unknown tool before any effect", async () => {
+    const { adapter } = scripted([["read_note"]]);
+    const store = owner();
+    const persist = vi.spyOn(store.input, "persistToolBatch");
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 },
+      initialRequest: request({ forcedToolName: declared, toolChoice: "required" }), parallelToolCalls: true, tools, ...store.input });
+    expect(outcome).toMatchObject({ status: "failed", failure: { code: "required_tool_call_missing" } });
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("stops for the user's approval before any name correction when a gated call shares the round", async () => {
+    const { adapter, requests } = scripted([[declared, "read_notes"], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input,
+      // The declared call may change data: its owner settled it gated, undispatched.
+      executeTool: async (call) => call.name === declared
+        ? { status: "complete" as const, value: { callId: call.id, name: call.name, status: "error" as const,
+          content: [{ type: "json" as const, value: { error: "mcp_approval_required" } }] } }
+        : store.input.executeTool(call),
+      isApprovalGatedCall: (call) => call.name === declared });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer" } });
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content:
+      "Tool use is now disabled for this run: a tool call waits for the user's approval in the chat. Some planned tool calls were not executed. " +
+      "Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed." });
+  });
+
+  it.each(["", "  "])("settles a call without a name (%j) as an unknown tool the model can correct", async (blank) => {
+    const { adapter, requests } = scripted([[blank], [declared], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer" } });
+    expect(store.rows[0]).toEqual({ id: "call-1-0", name: "invalid_tool_name", round: 1,
+      undeclared: { requested: blank ? "?" : "" } });
+    expect(requests[1]!.providerToolMessages).toContainEqual(expect.objectContaining({ call_id: "call-1-0", name: "invalid_tool_name" }));
+    expect(store.executed).toEqual([declared]);
+  });
+
+  it.each([
+    [["unknown_tool"], false, null],
+    [["unknown_tool", "repeat_blocked"], false, null],
+    [["unknown_tool", "approval_gated"], false, "approval_required"],
+    [["unknown_tool", "approval_gated", "repeat_blocked"], false, "approval_required"],
+    [["unknown_tool"], true, "unknown_tool"],
+    [["unknown_tool", "repeat_blocked"], true, "unknown_tool"],
+    [["unknown_tool", "approval_gated"], true, "approval_required"],
+    [["unknown_tool", "executed"], true, null],
+    [["repeat_blocked"], false, "no_progress"],
+    [["approval_gated", "repeat_blocked"], false, "approval_required"],
+    [["executed", "approval_gated"], false, null],
+    [[], true, null]
+  ] as const)("decides %j (correction spent: %s) as %s", (calls, spent, expected) => {
+    expect(stalledToolRound(calls, spent)).toBe(expected);
+  });
+
+  it("spends the correction only on an earlier round that ran nothing and named an unknown tool", () => {
+    const entries = (rounds: ReadonlyArray<readonly ToolRoundCall[]>) =>
+      rounds.flatMap((calls, index) => calls.map(call => ({ call, round: index + 1 })));
+    expect(unknownToolCorrectionSpent(entries([["unknown_tool"], ["unknown_tool"]]), 2)).toBe(true);
+    expect(unknownToolCorrectionSpent(entries([["unknown_tool"], ["unknown_tool"]]), 1)).toBe(false);
+    expect(unknownToolCorrectionSpent(entries([["unknown_tool", "executed"], ["unknown_tool"]]), 2)).toBe(false);
+    expect(unknownToolCorrectionSpent(entries([["repeat_blocked"], ["unknown_tool"]]), 2)).toBe(false);
+    // A round with a gated call stopped for approval; it was no correction.
+    expect(unknownToolCorrectionSpent(entries([["unknown_tool", "approval_gated"], ["unknown_tool"]]), 2)).toBe(false);
+    // Automatic Knowledge calls before the loop (round 0) never count.
+    expect(unknownToolCorrectionSpent([{ call: "unknown_tool", round: 0 }], 5)).toBe(false);
+  });
+});
+
+describe("a round's transcript carries the names the round kept, on every bridge", () => {
+  const readNote = namespacedMcpToolName("notes", "read_note");
+  const snapshot: McpRunPlanSnapshot = { version: 1,
+    servers: [{ fingerprint: "f".repeat(64), revisionId: "notes-revision", serverId: "notes", serverName: "Notes" }],
+    tools: [{ definitionHash: "a".repeat(64), description: null, inputSchema: { type: "object" }, name: "read_note",
+      namespacedName: readNote, originalName: "read_note", serverId: "notes", serverName: "Notes" }] };
+  const normalize = (name: string, declared: ReadonlySet<string>) =>
+    normalizeProviderToolCallName(name, declared, { mcp: snapshot, workspace: false });
+  // A name with leaked markup, a name Gemini rejects, and the bare original name of the declared tool.
+  const malformed = "read_note</｜DSML｜>";
+  const digitFirst = "9read_note";
+  const kept = ["invalid_tool_name", "invalid_tool_name", readNote];
+
+  /** The continuation after one round of these calls, as the loop builds it. */
+  function transcript(bridge: ProviderToolBridge, response: unknown, providerToolCallMessage?: unknown) {
+    const calls = roundToolCalls(bridge.parseToolCalls(response), new Set([readNote]), normalize);
+    expect(calls.map(call => call.name)).toEqual(kept);
+    return providerToolLoopContinuationAfterResult(bridge, { providerResponseId: null, providerToolMessages: [] }, {
+      finalProviderResponsePreview: {}, finalText: "", toolCalls: providerRoundToolCalls(calls), usage: {},
+      ...(providerToolCallMessage !== undefined ? { providerToolCallMessage } : {}) }).providerToolMessages;
+  }
+
+  it.each([["openrouter", openRouterChatToolBridge], ["openai_compatible", openAICompatibleChatToolBridge]] as const)(
+    "renames Chat Completions tool calls by id and keeps every other field (%s)", (_family, bridge) => {
+      const toolCall = (id: string, name: string, args: string) => ({ function: { arguments: args, name }, id, type: "function" });
+      const message = { content: null, reasoning_details: [{ data: "private-signature", type: "reasoning.encrypted" }], role: "assistant",
+        tool_calls: [toolCall("c1", malformed, "{}"), toolCall("c2", digitFirst, "{}"), toolCall("c3", "read_note", "{\"id\":\"n1\"}")] };
+      const renamed = [toolCall("c1", kept[0]!, "{}"), toolCall("c2", kept[1]!, "{}"), toolCall("c3", readNote, "{\"id\":\"n1\"}")];
+      expect(transcript(bridge, { choices: [{ message }] }, message)).toEqual([{ ...message, tool_calls: renamed }]);
+      // Without the provider's message, its raw calls carry the same names.
+      expect(transcript(bridge, { choices: [{ message }] })).toEqual([{ content: null, role: "assistant", tool_calls: renamed }]);
+    });
+
+  it("renames Gemini function-call steps by id and keeps thought and call signatures", () => {
+    const step = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+      ({ arguments: { id: "n1" }, id, name, type: "function_call", ...extra });
+    const steps = [{ signature: "thought-signature", type: "thought" }, step("c1", malformed, { signature: "call-signature" }),
+      step("c2", digitFirst), step("c3", "read_note")];
+    const renamed = [steps[0], step("c1", kept[0]!, { signature: "call-signature" }), step("c2", kept[1]!), step("c3", readNote)];
+    expect(transcript(geminiInteractionsToolBridge, steps, steps)).toEqual(renamed);
+    expect(transcript(geminiInteractionsToolBridge, steps)).toEqual(renamed.slice(1));
+  });
+
+  it("renames Anthropic tool_use blocks by id and keeps thinking signatures", () => {
+    const block = (id: string, name: string) => ({ id, input: { id: "n1" }, name, type: "tool_use" });
+    const thinking = { signature: "thinking-signature", thinking: "private reasoning", type: "thinking" };
+    const message = { content: [thinking, block("c1", malformed), block("c2", digitFirst), block("c3", "read_note")], role: "assistant" };
+    const renamed = [block("c1", kept[0]!), block("c2", kept[1]!), block("c3", readNote)];
+    expect(transcript(anthropicMessagesToolBridge, message, message)).toEqual([{ ...message, content: [thinking, ...renamed] }]);
+    expect(transcript(anthropicMessagesToolBridge, message)).toEqual([{ content: renamed, role: "assistant" }]);
+  });
+
+  it("renames Responses function_call items by call id and keeps reasoning items", () => {
+    const item = (callId: string, name: string) => ({ arguments: "{}", call_id: callId, id: `fc_${callId}`, name, type: "function_call" });
+    const reasoning = { encrypted_content: "private", id: "rs_1", summary: [], type: "reasoning" };
+    const output = [reasoning, item("c1", malformed), item("c2", digitFirst), item("c3", "read_note")];
+    const renamed = [item("c1", kept[0]!), item("c2", kept[1]!), item("c3", readNote)];
+    expect(transcript(openAIResponsesToolBridge, { output }, output)).toEqual([reasoning, ...renamed]);
+    expect(transcript(openAIResponsesToolBridge, { output })).toEqual(renamed);
   });
 });

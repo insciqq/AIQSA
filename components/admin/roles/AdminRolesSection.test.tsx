@@ -619,6 +619,31 @@ describe("AdminRolesSection", () => {
     ]);
   });
 
+  it.each([
+    [["none", "low", "medium"], "none"],
+    [["low", "medium", "high"], "low"],
+    [[], null]
+  ])("names the reader's resolved default reasoning for %j", async (reasoningEfforts, expected) => {
+    const roles = rolesCatalog();
+    const native = { ...luna, id: "native-pdf", displayName: "Native PDF model", pdfInput: "verified" as const,
+      reasoningEfforts, defaultReasoningEffort: reasoningEfforts.length ? "medium" : null };
+    roles.documentCandidates = [native];
+    roles.policy.chatPdfProcessingMode = "use_pdf_reader";
+    roles.policy.chatPdfNativeModel = { ...native, available: true };
+    roles.policy.chatPdfNativeReasoningEffort = null;
+    server(roles);
+    renderSection();
+    await screen.findByRole("button", { name: "PDF reader deployment" });
+    fireEvent.click(within(screen.getByTestId("admin-role-chat-pdf")).getByText("Advanced"));
+    const reasoning = screen.getByRole("combobox", { name: "PDF reader reasoning" });
+    expect(reasoning).toHaveValue("");
+    expect(within(reasoning).getByRole("option", { name: expected ? `Reasoning: Default (${expected})` : "Reasoning: Default" }))
+      .toHaveValue("");
+    fireEvent.click(within(screen.getByTestId("admin-role-system")).getByText("Advanced"));
+    expect(within(screen.getByRole("combobox", { name: "System model reasoning" }))
+      .getByRole("option", { name: "Reasoning: Default (medium)" })).toHaveValue("");
+  });
+
   it("clears and undoes only the selected PDF reader while retaining the other reader", async () => {
     const roles = rolesCatalog();
     const native = { ...luna, id: "native-pdf", displayName: "Native PDF model", pdfInput: "verified" as const };
