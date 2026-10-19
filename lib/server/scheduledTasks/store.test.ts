@@ -23,7 +23,7 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }),
     id: "task-1", title: "Morning brief", prompt: "Synthetic prompt", timeZone: "Europe/Moscow", modelId: "model-1",
-    provider: "connection-1", searchEnabled: false, emailNotify: true, toolsEnabled: true, workspaceEnabled: false,
+    provider: "connection-1", searchEnabled: false, emailNotify: true, telegramNotify: true, toolsEnabled: true, workspaceEnabled: false,
     memoryEnabled: true, pinnedSkillIds: [], chatMode: "NEW", historyRetentionDays: 90, historyDeletedChats: 0,
     kind: "STANDARD", status: "ACTIVE", pauseReason: null, completionReason: null,
     nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
@@ -52,9 +52,10 @@ describe("scheduled task storage mapping", () => {
     expect(task).toMatchObject({
       chatId: "chat-1", chatMode: "new", nextRunAt: "2026-10-05T06:00:00.000Z", running: true, status: "active", unseenResult: true,
       schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, toolsEnabled: true, workspaceEnabled: false,
-      memoryEnabled: true
+      memoryEnabled: true, emailNotify: true, telegramNotify: true
     });
     expect(toScheduledTask(row({ memoryEnabled: false }), { lastRun: null, running: false, unseen: false }).memoryEnabled).toBe(false);
+    expect(toScheduledTask(row({ telegramNotify: false }), { lastRun: null, running: false, unseen: false }).telegramNotify).toBe(false);
     expect(toScheduledTask(row({ chat: { permanentDeletionAt: new Date() } }), { lastRun: null, running: false, unseen: false }).chatId)
       .toBeNull();
     expect(toScheduledTask(row({ chat: null, chatId: null, nextRunAt: null, status: "PAUSED" }),

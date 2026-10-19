@@ -28,8 +28,8 @@ function task(overrides: Partial<ScheduledTask>): ScheduledTask {
   return {
     id: "task", title: "Task", prompt: "Synthetic scheduled instructions.",
     schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
-    workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: "standard", status: "active", pauseReason: null,
+    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
+    toolsEnabled: false, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: "standard", status: "active", pauseReason: null,
     historyRetentionDays: 90, historyDeletedChats: 0, historyNextDeletionAt: null, completionReason: null,
     nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
     chatId: null, unseenResult: false, revision: 1,
@@ -130,7 +130,7 @@ async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]
     if (method !== "GET") state.writes.push({ method, path, body: request.postData() ? request.postDataJSON() : null });
     if (!path && method === "GET") {
       return route.fulfill({ json: { tasks: state.tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 },
-        emailAvailable: true } });
+        emailAvailable: true, telegramAvailable: false } });
     }
     if (!path && method === "POST") {
       const created = task({ ...request.postDataJSON() as Partial<ScheduledTask>, id: "created", nextRunAt: "2026-10-05T16:00:00.000Z" });
@@ -349,8 +349,9 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   expect(api.writes).toEqual([{ method: "POST", path: "", body: {
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, timeZone: "Europe/London",
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90, pinnedSkillIds: []
+    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", historyRetentionDays: 90,
+    pinnedSkillIds: []
   } }]);
   await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
   await expect(panel.getByText("“Weekly planning” is scheduled.")).toBeVisible();

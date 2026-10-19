@@ -46,6 +46,43 @@ export type ScheduledTaskCallCreator = NonNullable<RunRepository["createSchedule
 
 const SETTINGS_KEYS = ["modelId", "provider", "searchEnabled", "toolsEnabled", "workspaceEnabled", "memoryEnabled"];
 const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule", "skills", "historyRetentionDays"];
+
+/**
+ * Whether the creating run came from a Telegram message (it has a
+ * `TelegramRunLink`): its task then sends results to Telegram. The tool
+ * receives the run's id from its execution context (`context.runId`, the
+ * persisted run the call belongs to) and asks this lookup about it.
+ */
+export type ScheduledTaskTelegramOrigin = (run: Readonly<{ runId: string; userId: string }>) => Promise<boolean>;
+
+const TELEGRAM_ORIGIN = Symbol.for("aiqsa.scheduled-task-telegram-origin.v1");
+const originSlot = globalThis as typeof globalThis & { [TELEGRAM_ORIGIN]?: ScheduledTaskTelegramOrigin };
+
+/**
+ * Set when the scheduled task runner starts; the slot is process-global,
+ * shared by every route bundle, so the tool never loads Telegram itself.
+ * Without it every created task starts with Telegram delivery off.
+ */
+export function registerScheduledTaskTelegramOrigin(origin: ScheduledTaskTelegramOrigin | undefined): void {
+  originSlot[TELEGRAM_ORIGIN] = origin;
+}
+
+/** A failed lookup creates the task as the web would, with Telegram delivery off. */
+async function createdFromTelegram(
+  origin: ScheduledTaskTelegramOrigin | undefined,
+  run: Readonly<{ runId: string; userId: string }>
+): Promise<boolean> {
+  if (!origin) return false;
+  try {
+    return await origin(run) === true;
+  } catch (error) {
+    logEvent("service_operation", {
+      error, subsystem: "telegram", stage: "read", outcome: "degraded", action: "degrade", prisma_code: databaseFailureCode(error)
+    });
+    return false;
+  }
+}
+
 /** The tools' spelling of "keep old chats forever" (the owner contract's null). */
 export const SCHEDULED_TASK_TOOL_HISTORY_FOREVER = 0;
 
@@ -247,6 +284,8 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       tools: task.toolsEnabled,
       workspace: task.workspaceEnabled,
       memory: task.memoryEnabled,
+      // Results also go to the user's Telegram (a task created from a Telegram message).
+      telegram: task.telegramNotify,
       skills: scheduledTaskModelSkills(task),
       note: "The answer shows this task with Edit and Delete; the user manages tasks in Studio > Scheduled."
     } }],
@@ -290,8 +329,9 @@ function refused(call: Pick<ModelToolCall, "id" | "name">, code: ScheduledTaskCa
 
 /**
  * Creates the task one call asks for, with the run's frozen settings (Memory
- * only when the run itself was admitted to read it) and time zone and the
- * owner's email notifications off (the editor's default). A
+ * only when the run itself was admitted to read it) and time zone, the
+ * owner's email notifications off (the editor's default) and Telegram
+ * delivery on only when the creating run came from Telegram. A
  * refusal is a tool error the model explains; nothing is created then. A
  * recovered call returns the result it settled with when it had created its
  * task, and creates it only when it had not.
@@ -299,7 +339,9 @@ function refused(call: Pick<ModelToolCall, "id" | "name">, code: ScheduledTaskCa
 export async function executeCreateScheduledTask(
   call: ModelToolCall,
   context: Readonly<{ persistedToolCallId?: string; request: ScheduledTaskToolRequest; runId?: string; userId?: string }>,
-  create: ScheduledTaskCallCreator | undefined
+  create: ScheduledTaskCallCreator | undefined,
+  /** Whether the run came from Telegram; the lookup the runner registered by default. */
+  telegramOrigin: ScheduledTaskTelegramOrigin | undefined = originSlot[TELEGRAM_ORIGIN]
 ): Promise<ToolExecutionResult> {
   const settings = context.request.scheduledTaskTool;
   if (!settings || !create || !context.persistedToolCallId || !context.runId || !context.userId) {
@@ -311,12 +353,13 @@ export async function executeCreateScheduledTask(
   const skills = resolveScheduledTaskSkillReferences(context.request, decoded.skills);
   if (!skills.ok) return refused(call, "scheduled_task_arguments_invalid", skills.message);
   const zone = runTimeZone(context.request);
+  const telegramNotify = await createdFromTelegram(telegramOrigin, { runId: context.runId, userId: context.userId });
   try {
     const outcome = await create({
       body: {
         title: decoded.title, prompt: decoded.prompt, schedule: decoded.schedule, timeZone: zone.timeZone,
         modelId: settings.modelId, provider: settings.provider, searchEnabled: settings.searchEnabled, emailNotify: false,
-        toolsEnabled: settings.toolsEnabled, workspaceEnabled: settings.workspaceEnabled,
+        telegramNotify, toolsEnabled: settings.toolsEnabled, workspaceEnabled: settings.workspaceEnabled,
         memoryEnabled: settings.memoryEnabled === true, pinnedSkillIds: skills.skillIds,
         chatMode: decoded.chatMode ?? defaultChatMode(decoded), kind: decoded.kind,
         historyRetentionDays: decoded.historyRetentionDays

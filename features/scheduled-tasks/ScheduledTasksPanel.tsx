@@ -148,6 +148,7 @@ export function ScheduledTasksPanel({
   const loadState = useScheduledTasksStore((state) => state.loadState);
   const limits = useScheduledTasksStore((state) => state.limits);
   const emailAvailable = useScheduledTasksStore((state) => state.emailAvailable);
+  const telegramAvailable = useScheduledTasksStore((state) => state.telegramAvailable);
   const [viewerTimeZone] = useState(browserTimeZone);
   const [editorState, setEditor] = useState<Editor | null>(null);
   const editor = withLateDefaults(editorState, catalog, workspace);
@@ -415,6 +416,7 @@ export function ScheduledTasksPanel({
           catalog={catalog}
           draft={editor.draft}
           emailAvailable={emailAvailable || Boolean(editor.original?.emailNotify)}
+          telegramAvailable={telegramAvailable || Boolean(editor.original?.telegramNotify)}
           errors={editor.errors}
           initialDraft={editor.initialDraft}
           memory={memory}

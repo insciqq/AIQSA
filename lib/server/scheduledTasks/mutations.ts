@@ -68,6 +68,7 @@ export function planScheduledTaskUpdate(
     provider: patch.provider ?? current.provider,
     searchEnabled: patch.searchEnabled ?? current.searchEnabled,
     emailNotify: patch.emailNotify ?? current.emailNotify,
+    telegramNotify: patch.telegramNotify ?? current.telegramNotify,
     toolsEnabled: patch.toolsEnabled ?? current.toolsEnabled,
     workspaceEnabled: patch.workspaceEnabled ?? current.workspaceEnabled,
     memoryEnabled: patch.memoryEnabled ?? current.memoryEnabled,

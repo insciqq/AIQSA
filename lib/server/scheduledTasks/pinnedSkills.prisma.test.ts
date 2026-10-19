@@ -23,7 +23,8 @@ const due = new Date("2026-10-05T06:00:00.000Z");
 const draft: ScheduledTaskDraft = {
   title: "Synthetic digest", prompt: "Run the synthetic digest", schedule: { kind: "daily", time: "09:00" },
   timeZone: "Europe/Moscow", modelId: providerTemplateIds.fakeModel, provider: providerTemplateIds.fakeConnection, searchEnabled: false,
-  emailNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], chatMode: "same",
+  emailNotify: false, telegramNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [],
+  chatMode: "same",
   kind: "standard", historyRetentionDays: 90
 };
 
