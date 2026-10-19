@@ -67,6 +67,7 @@ describe("persisted AIQSA Connect pairing", () => {
     const [first, second] = await Promise.all(tokenHashes.map((tokenHash) => repository.consumePairing({ id, now: new Date(), tokenHash })));
     const consumed = [first, second].filter((result) => result?.kind === "consumed");
     expect(consumed).toHaveLength(1);
+    expect(consumed[0]).toMatchObject({ account: { displayName: "Synthetic Connect owner", email: `${userId}@example.test` } });
     expect([first, second].filter((result) => result?.kind === "unavailable")).toHaveLength(1);
     const devices = await prisma.connectDevice.findMany({ where: { userId } });
     expect(devices).toHaveLength(1);

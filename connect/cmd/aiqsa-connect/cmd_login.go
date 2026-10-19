@@ -139,7 +139,8 @@ func runLogin(inv *invocation) int {
 		fmt.Fprintf(inv.stderr, "aiqsa-connect login: cannot save credentials: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(inv.stdout, "This computer is connected to %s as %q.\nStart the client with: aiqsa-connect up\n", origin, name)
+	// The approving account, so a code someone else approved first does not go unnoticed.
+	fmt.Fprintf(inv.stdout, "This computer is connected to %s as %q for the account %s.\nIf that is not your account, run: aiqsa-connect logout\nStart the client with: aiqsa-connect up\n", origin, name, approved.Account)
 	return 0
 }
 

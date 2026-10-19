@@ -21,6 +21,7 @@
     "maxSnapshotSessions": 50,
     "maxDeviceNameLength": 64,
     "maxHostnameLength": 255,
+    "maxAccountLabelLength": 160,
     "maxSessionOptions": 9,
     "maxOptionLabelLength": 80,
     "maxAttachedClients": 1000,

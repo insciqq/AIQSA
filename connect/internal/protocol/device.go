@@ -134,11 +134,13 @@ func (m *PairingPollRequest) Validate() error {
 }
 
 // PairingPollResponse is `{status: "pending"|"denied"|"expired"}` or
-// `{status: "approved", deviceId, deviceToken}`.
+// `{status: "approved", deviceId, deviceToken, account}`; account names who
+// approved the computer.
 type PairingPollResponse struct {
 	Status      PairingStatus `json:"status"`
 	DeviceID    *string       `json:"deviceId,omitempty"`
 	DeviceToken *string       `json:"deviceToken,omitempty"`
+	Account     *string       `json:"account,omitempty"`
 }
 
 func (m *PairingPollResponse) UnmarshalJSON(data []byte) error {
@@ -151,17 +153,18 @@ func (m *PairingPollResponse) Validate() error {
 		return err
 	}
 	if m.Status != PairingApproved {
-		if m.DeviceID != nil || m.DeviceToken != nil {
-			return errors.New("deviceId and deviceToken: only for approved")
+		if m.DeviceID != nil || m.DeviceToken != nil || m.Account != nil {
+			return errors.New("deviceId, deviceToken and account: only for approved")
 		}
 		return nil
 	}
-	if m.DeviceID == nil || m.DeviceToken == nil {
-		return errors.New("deviceId and deviceToken: required when approved")
+	if m.DeviceID == nil || m.DeviceToken == nil || m.Account == nil {
+		return errors.New("deviceId, deviceToken and account: required when approved")
 	}
 	return firstError(
 		checkPattern("deviceId", *m.DeviceID, IDRegexp),
 		checkPattern("deviceToken", *m.DeviceToken, DeviceTokenRegexp),
+		checkText("account", *m.Account, MaxAccountLabelLength),
 	)
 }
 
