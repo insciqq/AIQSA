@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,19 +72,24 @@ func TestFindAncestorIsBounded(t *testing.T) {
 	}
 }
 
-func TestParseStatParentReadsAfterTheLastParenthesis(t *testing.T) {
-	cases := map[string]int{
-		"1234 (codex) S 1200 1234 1200 0 -1":            1200,
-		"1234 (a) (b) c) R 77 1 1 0":                    77,
-		"1234 (we ird) ) (x) S 4321 1234 1 34816 1234 ": 4321,
+func TestParseStatReadsTheNameAndTheParent(t *testing.T) {
+	cases := map[string]struct {
+		ppid int
+		name string
+	}{
+		"1234 (codex) S 1200 1234 1200 0 -1":            {1200, "codex"},
+		"1234 (a) (b) c) R 77 1 1 0":                    {77, "a) (b) c"},
+		"1234 (we ird) ) (x) S 4321 1234 1 34816 1234 ": {4321, "we ird) ) (x"},
+		"1234 () S 5 1 1":                               {5, ""},
 	}
 	for stat, want := range cases {
-		if got, err := ParseStatParent([]byte(stat)); err != nil || got != want {
-			t.Errorf("%q: %d %v, want %d", stat, got, err, want)
+		ppid, name, err := ParseStat([]byte(stat))
+		if err != nil || ppid != want.ppid || name != want.name {
+			t.Errorf("%q: %d %q %v, want %+v", stat, ppid, name, err, want)
 		}
 	}
-	for _, bad := range []string{"", "1234 codex S 1", "1234 (codex)", "1234 (codex) S", "1234 (codex) S x", "1 (a) S -3"} {
-		if _, err := ParseStatParent([]byte(bad)); err == nil {
+	for _, bad := range []string{"", "1234 codex S 1", "1234 (codex)", "1234 (codex) S", "1234 (codex) S x", "1 (a) S -3", "1 )a( S 1"} {
+		if _, _, err := ParseStat([]byte(bad)); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}
@@ -91,35 +97,113 @@ func TestParseStatParentReadsAfterTheLastParenthesis(t *testing.T) {
 
 func TestProcFSReadsAFakeProcTree(t *testing.T) {
 	root := t.TempDir()
-	for pid, stat := range map[string]string{"42": "42 (sh) S 7 42 42 0", "7": "7 (tmux: server) S 1 7 7 0"} {
+	for pid, stat := range map[string]string{
+		"42": "42 (sh) S 7 42 42 0", "7": "7 (tmux: server) S 1 7 7 0", "50": "50 (codex) S 42 50 42 0", "60": "garbage",
+	} {
 		os.MkdirAll(filepath.Join(root, pid), 0o700)
 		os.WriteFile(filepath.Join(root, pid, "stat"), []byte(stat), 0o600)
 	}
-	table := ProcFS{Root: root}
-	if got, err := table.Parent(42); err != nil || got != 7 {
+	os.MkdirAll(filepath.Join(root, "self"), 0o700)
+	os.WriteFile(filepath.Join(root, "uptime"), []byte("1 1"), 0o600)
+	snap, err := ProcFS{Root: root}.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := snap.Parent(42); err != nil || got != 7 {
 		t.Fatalf("42: %d %v", got, err)
 	}
-	if _, err := table.Parent(5); err == nil {
-		t.Fatal("missing process has a parent")
+	for _, missing := range []int{5, 60} {
+		if _, err := snap.Parent(missing); err == nil {
+			t.Fatalf("process %d has a parent", missing)
+		}
+	}
+	isCodex := func(name string) bool { return name == "codex" }
+	if !snap.HasDescendant(7, isCodex) || !snap.HasDescendant(50, isCodex) || snap.HasDescendant(5, isCodex) {
+		t.Fatal("descendants")
+	}
+	if _, err := (ProcFS{Root: t.TempDir()}).Snapshot(context.Background()); err == nil {
+		t.Fatal("an empty proc tree is a snapshot")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (ProcFS{Root: root}).Snapshot(ctx); err == nil {
+		t.Fatal("a cancelled snapshot succeeded")
 	}
 }
 
-func TestParsePSSkipsWhatIsNotAPair(t *testing.T) {
-	got, err := ParsePS([]byte("  PID  PPID\n    1     0\n  501     1\n garbage\n 600 501 extra\n 700 501\n"))
-	if err != nil || len(got) != 3 || got[501] != 1 || got[700] != 501 {
-		t.Fatalf("%v %v", got, err)
+func TestHasDescendantIsBoundedAndSafeOnCycles(t *testing.T) {
+	codex := func(name string) bool { return name == "codex" }
+	// 10 -> 11 -> 12 (codex); 20 <-> 21 cycle; a chain deeper than MaxDepth.
+	list := []Process{{10, 1, "sh"}, {11, 10, "node"}, {12, 11, "codex"}, {20, 21, "sh"}, {21, 20, "sh"}, {100, 1, "sh"}}
+	for pid := 100; pid < 100+MaxDepth+5; pid++ {
+		list = append(list, Process{pid + 1, pid, "sh"})
+	}
+	list = append(list, Process{100 + MaxDepth + 10, 100 + MaxDepth + 5, "codex"})
+	snap := NewSnapshot(list)
+	if !snap.HasDescendant(10, codex) || !snap.HasDescendant(12, codex) || snap.HasDescendant(11, func(string) bool { return false }) {
+		t.Fatal("chain")
+	}
+	if snap.HasDescendant(20, codex) {
+		t.Fatal("cycle")
+	}
+	if snap.HasDescendant(100, codex) {
+		t.Fatal("looked past MaxDepth")
+	}
+	if snap.HasDescendant(1, func(string) bool { return true }) || snap.HasDescendant(0, func(string) bool { return true }) {
+		t.Fatal("pid 1 or 0 is a root")
+	}
+	// A pane with a huge process tree under it stops after maxDescendants.
+	wide := []Process{{2, 1, "sh"}}
+	for pid := 3; pid < 3+2*maxDescendants; pid++ {
+		wide = append(wide, Process{pid, 2, "sh"})
+	}
+	looked := 0
+	NewSnapshot(wide).HasDescendant(2, func(string) bool { looked++; return false })
+	if looked > maxDescendants {
+		t.Fatalf("looked at %d processes", looked)
+	}
+}
+
+func TestParsePSKeepsTheBaseNameOfTheCommand(t *testing.T) {
+	snap, err := ParsePS([]byte("  PID  PPID COMM\n    1     0 /sbin/launchd\n  501     1 /Applications/My App.app/Contents/MacOS/My App\n garbage\n 600 501 codex\n 700 501\n 800\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pid, want := range map[int]Process{1: {1, 0, "launchd"}, 501: {501, 1, "My App"}, 600: {600, 501, "codex"}, 700: {700, 501, ""}} {
+		if got := snap.procs[pid]; got != want {
+			t.Errorf("%d: %+v, want %+v", pid, got, want)
+		}
+	}
+	if len(snap.procs) != 4 {
+		t.Fatalf("%d processes", len(snap.procs))
 	}
 	if _, err := ParsePS([]byte("\n")); err == nil {
 		t.Fatal("empty list accepted")
 	}
 }
 
-// The real tables know this test's own parent.
-func TestSystemFindsThisProcessesParent(t *testing.T) {
-	tables := map[string]Table{"system": System(context.Background()), "ps": &psTable{ctx: context.Background()}}
-	for name, table := range tables {
-		if got, err := table.Parent(os.Getpid()); err != nil || got != os.Getppid() {
+// The real tables know this test's own parent and its name.
+func TestTakeFindsThisProcess(t *testing.T) {
+	ps, err := snapshotPS(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken, err := Take(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Linux cuts command names to 15 bytes.
+	base := filepath.Base(self)
+	for name, snap := range map[string]*Snapshot{"take": taken, "ps": ps} {
+		if got, err := snap.Parent(os.Getpid()); err != nil || got != os.Getppid() {
 			t.Errorf("%s: %d %v, want %d", name, got, err, os.Getppid())
+		}
+		if got := snap.procs[os.Getpid()].Name; got == "" || !strings.HasPrefix(base, got) {
+			t.Errorf("%s: name %q, executable %q", name, got, base)
 		}
 	}
 }
