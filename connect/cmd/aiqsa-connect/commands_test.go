@@ -117,7 +117,7 @@ func TestLoginPairsAndStoresPrivateCredentials(t *testing.T) {
 func TestLoginRefusesBadArguments(t *testing.T) {
 	isolate(t)
 	for _, args := range [][]string{
-		{"login"}, {"login", "http://ai.example.com"}, {"login", "https://ai.example.com/path"},
+		{"login"}, {"login", "http://8.8.8.8"}, {"login", "https://ai.example.com/path"},
 		{"login", "https://a", "https://b"}, {"login", "https://a", "--name"}, {"login", "https://a", "--name", "bad\nname"},
 		{"login", "https://a", "--name", strings.Repeat("n", 65)}, {"login", "https://a", "--bogus"},
 	} {

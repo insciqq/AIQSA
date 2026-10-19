@@ -86,6 +86,29 @@ func TestRequestsCarryVersionHeaderWithoutOriginOrCookies(t *testing.T) {
 	}
 }
 
+func TestPlainHTTPGoesOnlyDirectlyToLocalAddresses(t *testing.T) {
+	// 192.0.2.1 (TEST-NET-1) is outside the local network: refused before a
+	// packet is sent.
+	err := New("http://192.0.2.1:9", "tok", "1.2.3").PostEvents(context.Background(), []byte(`{}`))
+	if err != ErrPlainHTTPNotLocal {
+		t.Fatalf("public address: %v", err)
+	}
+	for address, local := range map[string]bool{
+		"127.0.0.1:80": true, "[::1]:80": true, "10.0.0.1:80": true, "172.31.255.1:80": true,
+		"192.168.1.10:3000": true, "100.101.102.103:80": true, "169.254.1.1:80": true,
+		"[fd12::1]:80": true, "[fe80::1%eth0]:80": true, "[::ffff:192.168.1.10]:80": true,
+		"192.0.2.1:80": false, "8.8.8.8:53": false, "172.32.0.1:80": false, "100.128.0.1:80": false,
+		"0.0.0.0:80": false, "[2001:4860::8888]:80": false, "[ff02::1]:80": false,
+	} {
+		if got := refuseNonLocal("tcp", address, nil) == nil; got != local {
+			t.Errorf("%s: allowed %v, want %v", address, got, local)
+		}
+	}
+	if transport := NewHTTPClient().Transport.(schemeTransport); transport.plain.Proxy != nil || transport.secure.Proxy == nil {
+		t.Fatal("plain http must not use a proxy; https keeps the environment's")
+	}
+}
+
 func TestRetryAfter(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	if parseRetryAfter("5", now) != 5*time.Second || parseRetryAfter("", now) != 0 || parseRetryAfter("x", now) != 0 {
