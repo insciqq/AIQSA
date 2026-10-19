@@ -22,7 +22,7 @@ npx vitest run <files>                              # focused tests
 node node_modules/eslint/bin/eslint.js --max-warnings=0 --no-cache <files>   # lint changed files
 npx tsc --noEmit
 npm run check:hermetic   # full deterministic gate: prisma generate, typegen, docs, lint, types, vitest
-npm run docs:check       # links and size budgets of agent docs
+npm run docs:check       # agent docs: links, rule globs and symlinks, cited paths, budgets
 npm run task:check       # after any task ledger change
 ```
 
