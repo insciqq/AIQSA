@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/insciqq/AIQSA/connect/internal/monoclock"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
 
@@ -226,40 +227,61 @@ func Bell() Update { return Update{protocol.StatusWaiting, protocol.ReasonBell} 
 const maxTrackedSessions = 1024
 
 type lastHook struct {
-	started  time.Time
+	// mono and wall are the start stamps of the last accepted hooks of each
+	// clock, zero when none; only stamps of one clock are compared.
+	mono, wall int64
+	// received is when the daemon accepted the last hook status, on its own
+	// clock (time.Now carries a monotonic reading).
 	received time.Time
+}
+
+func (h *lastHook) slot(kind monoclock.Kind) *int64 {
+	if kind == monoclock.Mono {
+		return &h.mono
+	}
+	return &h.wall
 }
 
 // Gate orders the reports of each session. Agents run hooks in the
 // background, so a later event's hook can reach the daemon first; a hook
-// that started before the last applied one is stale. A bell right after a
-// hook status does not replace it.
+// that started before the last applied one of its clock is stale. A hook
+// without a stamp, or with one that cannot have come from this computer's
+// monotonic clock, is applied in arrival order. A bell right after a hook
+// status does not replace it.
 type Gate struct {
 	mu   sync.Mutex
 	last map[string]lastHook
 	now  func() time.Time
+	// clock is the daemon's own reading of the hooks' clock.
+	clock func() monoclock.Stamp
 }
 
-// NewGate returns a gate on the given clock (time.Now when nil).
+// NewGate returns a gate on the given clock (time.Now when nil) for receipt
+// times.
 func NewGate(now func() time.Time) *Gate {
 	if now == nil {
 		now = time.Now
 	}
-	return &Gate{last: map[string]lastHook{}, now: now}
+	return &Gate{last: map[string]lastHook{}, now: now, clock: monoclock.Now}
 }
 
-// AcceptHook reports whether a hook status of the session that started at
-// started (zero: unknown, taken as now) is not older than the last
-// accepted one, and records it when it is accepted.
-func (g *Gate) AcceptHook(session string, started time.Time) bool {
+// AcceptHook reports whether a hook status of the session whose hook
+// started at started is not older than the last accepted one of the same
+// clock, and records it when it is accepted; stamps of different clocks
+// are never compared. An invalid stamp, or a monotonic one the daemon's own
+// monotonic reading has not reached (another boot or clock domain), is
+// never stale and orders nothing.
+func (g *Gate) AcceptHook(session string, started monoclock.Stamp) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
-	if started.IsZero() {
-		started = now
+	ordered := started.Valid()
+	if ordered && started.Kind == monoclock.Mono {
+		own := g.clock()
+		ordered = own.Comparable(started) && started.At <= own.At
 	}
 	prev, seen := g.last[session]
-	if seen && started.Before(prev.started) {
+	if seen && ordered && started.At < *prev.slot(started.Kind) {
 		return false
 	}
 	if !seen && len(g.last) >= maxTrackedSessions {
@@ -276,7 +298,11 @@ func (g *Gate) AcceptHook(session string, started time.Time) bool {
 			}
 		}
 	}
-	g.last[session] = lastHook{started: started, received: now}
+	if ordered {
+		*prev.slot(started.Kind) = started.At
+	}
+	prev.received = now
+	g.last[session] = prev
 	return true
 }
 
