@@ -20,7 +20,7 @@ Personal Memory: what it may learn, who may change it, how it is retrieved and f
 - Memory is global per user. Temporary and Project chats neither create nor receive any Memory state. Public shares strip all of it. Legacy non-global or Project data is never widened into Personal Memory.
 - Imported chats, their continuations and branch copies are Excluded and cannot be resumed (operator decision 2026-10-04); a database check in `prisma/migrations/20261005121500_chat_import_source/` enforces this for every writer.
 - Preferences default to on, and upgrades preserve choices and pauses. Pausing stops new use and work but deletes nothing. Resume admits only messages after its cutoff; there is never an automatic historical backfill.
-- Memory has its own Utility Model role; editing the System Model never changes it. Verified Knowledge embeddings may seed the Memory embedding selection once, only if no settings change ever set or cleared it. Recommendations never overwrite an explicit choice or clear.
+- Memory has its own Utility Model role; editing the System Model never changes it. A verified Memory Utility Model assignment authorizes Memory generation without a separate egress consent. Verified Knowledge embeddings may seed the Memory embedding selection once, only if no settings change ever set or cleared it. Recommendations never overwrite an explicit choice or clear.
 
 ## What Memory keeps
 
@@ -42,7 +42,7 @@ Memory must behave the same in every language, fallbacks and unused paths includ
 
 ## Background maintenance
 
-Maintenance runs whenever Memory and automatic learning are on (`lib/server/memory/maintenance/`). Explicit, owner-edited, pinned and remember-requested lineages are never removed. Removal needs verified review and forgets a whole automatic lineage; age, confidence or usage alone never justify it, and contradictory review labels resolve to keep. Of two contradicting facts, one goes only when review and verification agree and the other outranks it at settlement; otherwise both stay. Failed reviews are never replayed.
+Maintenance runs whenever Memory and automatic learning are on (`lib/server/memory/maintenance/`). Explicit, owner-edited, pinned and remember-requested lineages are never removed. Removal needs verified review and forgets a whole automatic lineage; age, confidence or usage alone never justify it, and contradictory review labels resolve to keep. Of two contradicting facts, one goes only when review and verification agree and the other outranks it at settlement; otherwise both stay. A failed review is never replayed in place; a bounded new job retries it in a later cycle, and transient provider failures only delay that retry.
 
 ## Retrieval
 

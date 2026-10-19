@@ -20,7 +20,7 @@ How an accepted message becomes an answer: admission, context, tools, Knowledge 
 
 - Admission freezes every non-secret binding the run will use: model, credential, tools, Search sources, Knowledge scope, budgets, Workspace runtime. Recovery and retries use these frozen bindings, never current settings or browser claims.
 - An Assistant run takes its fixed settings only from the Assistant definition; a chat bound to an Assistant rejects request fields that would override them. Implicit Project defaults apply only to a first message that names no Assistant and no composer settings, and never make that message fail. Project runs keep rechecking Project authority, credentials and revocation.
-- Editing a message branches the message tree; regeneration is an ordinary run through the same pipeline.
+- Regeneration is an ordinary run through the same pipeline.
 - Context follows the active branch's ancestors, never siblings. A reviewed answer is read as its question plus latest version. User turns stay in context after an error or a partial answer.
 - Earlier attempts of the same user message contribute their tool calls only as provider-only history. That history carries no authority, and its compact record is irreducible: the request is refused rather than dropping it.
 - Context compaction never silently drops history. A turn or tool round leaves the request only after notes the run committed cover it; if the request still does not fit, the run is refused explicitly. Summaries never contain provider reasoning, signatures or attachment identifiers. Mechanics live in `lib/server/runs/contextCompaction*.ts`.
@@ -30,11 +30,11 @@ How an accepted message becomes an answer: admission, context, tools, Knowledge 
 
 ## Model-initiated changes
 
-Models change user data only through these operator exceptions, always for the chat's owner, under the owner's own rules and limits, and never in scheduled, temporary, Project, Assistant or Knowledge runs:
+Models change user data only through these operator exceptions, always for the chat's owner and under the owner's own rules and limits. The first two exist only in personal chats, never in scheduled, temporary, Project, Assistant or Knowledge runs:
 
-- In an ordinary personal chat the model may create one scheduled task per answer, and change, pause or resume the owner's tasks. Deleting a task only proposes it; the owner's click deletes. Each change commits with its tool call's settlement and shows a card. A scheduled task's own turns and Agent runs never create tasks.
+- In an ordinary personal chat the model may create one scheduled task per answer, and change, pause or resume the owner's tasks. It may choose a new task's history retention, but only the owner changes it later, because retention deletes chats. Deleting a task only proposes it; the owner's click deletes. Each change commits with its tool call's settlement and shows a card. A scheduled task's own turns and Agent runs never create tasks.
 - In an interactive personal chat the model may create a personal Skill or save a new version of the owner's Skill, one per answer, with an after-the-fact card and Undo (`save_skill`, operator decision 2026-10-07). The Skill store rules are in `agent_docs/BACKEND.md`.
-- MCP tools that may change data are not an exception (operator decision 2026-10-08). Interactive runs send them only after the initiator approves; an Allow once is consumed by the claim of exactly that call. The server-written turn that continues after an Allow is never user speech and never Memory evidence. Approval mechanics are in `agent_docs/SECURITY.md`.
+- MCP tools that may change data are not an exception (operator decision 2026-10-08). Every interactive run, Project, Assistant and Knowledge chats included, sends them only after the initiator approves; an Allow once is consumed by the claim of exactly that call. The server-written turn that continues after an Allow is never user speech and never Memory evidence. Approval mechanics are in `agent_docs/SECURITY.md`.
 
 ## Scheduled tasks
 
@@ -42,7 +42,7 @@ Code: `lib/server/scheduledTasks/`.
 
 - A scheduled task is its owner's standing authority for one saved prompt. Every occurrence is re-admitted through the ordinary send handler as the owner, under the current catalog, entitlements and active-run rules. Saved models and Search sources are never substituted; lost authority (pinned Skills included) fails the occurrence and pauses the task visibly.
 - An occurrence's context is flat and frozen at admission: the prompt, plus the previous shown result in same-chat mode. Owner turns, branch notes, other tool history and chat artifacts stay out.
-- With tools on, a task uses the owner's MCP servers and Skills in Auto mode (never Load all) plus its pinned Skills. Knowledge and Agent stay off. Scheduled runs are standing authority for MCP write tools and saved Workspace secrets without per-run approval (operator decision 2026-10-04; see `agent_docs/SECURITY.md`).
+- With tools on, a task uses the owner's MCP servers and Skills in Auto mode (never Load all) plus its pinned Skills. Knowledge and Agent stay off. Scheduled runs need no per-run approval (operator decision 2026-10-04, `agent_docs/SECURITY.md`).
 - Same-chat tasks start a new chat each calendar month, carrying a reauthorized copy of the previous result and the Workspace files across; the rotation epoch fences late writes to the old chat.
 - A run that could not use a source its previous result relied on is complete but unhealthy; repeated unhealthy runs pause the task.
 - Monitoring tasks are checks. The model reports `update`, `no_update` or `goal_reached` through a reserved built-in tool. Verdicts are model-reported and fail open: only a healthy `no_update` is hidden (no unread mark, email, push or Telegram). A check missing a source it relied on shows as `could_not_check` and never counts as a comparison basis or a reached goal.
@@ -93,7 +93,7 @@ Code: `lib/server/telegram/`.
 
 - Workspace admission freezes the runtime, image, tool catalog, network policy, authority and secret revisions. The server controls sandbox identity and VM lifecycle; execution and export are exclusive per chat. Guests receive verified originals and the owner's personal secrets under `agent_docs/SECURITY.md`.
 - Every terminal path retires guest execution authority: it stops registered processes, or stops the VM (disk intact) when execution state is unknown. Stop keeps the environment; a successful turn leaves no background processes. Completion requires closed output obligations; an export failure keeps the answer. Path escapes fail closed and links or special files are skipped visibly.
-- Models without vision see images only through System Vision, whose results are untrusted.
+- Vision-capable models read images natively. Workspace files, and chat images for tool-calling models without vision, reach a model only through admitted System Vision, whose results are untrusted. A Knowledge answer gets the current images as one frozen description: untrusted request context, never evidence.
 - The Agent (Codex) needs a personal chat with manual Workspace, administrator-enabled internet and an eligible model. Codex owns planning, tools, compaction and completion; AIQSA owns authority, accounting and settlement, without an evaluator. Unsettled effects forbid interruption and Stop is terminal. Knowledge and Memory are unavailable to the Agent.
 - Administrator Agent limits default to Off. Off removes the time, call, token and output caps, never accounting, leases, Stop or model constraints.
 
