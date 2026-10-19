@@ -54,6 +54,15 @@ export async function register(): Promise<void> {
       reportSubsystemFailure({ error, subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" });
     }
     try {
+      const { startDefaultTelegram } = await import("./lib/server/telegram/defaultTelegram");
+      startDefaultTelegram();
+      reportSubsystemHealthy("telegram", "startup");
+    } catch (error) {
+      // Telegram is feature-local: the bot stays silent (updates wait at Telegram) and
+      // every product path, the admin section included, works without it.
+      reportSubsystemFailure({ error, subsystem: "telegram", stage: "startup", code: "telegram_startup_failed", action: "degrade" });
+    }
+    try {
       const { startDefaultAnswerReviewDriver } = await import("./lib/server/answerReviews/defaultAutoDriver");
       startDefaultAnswerReviewDriver();
       reportSubsystemHealthy("answer_review", "startup");

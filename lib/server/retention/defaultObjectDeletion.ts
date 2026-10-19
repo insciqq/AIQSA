@@ -4,6 +4,7 @@ import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { prisma } from "../prisma";
 import { RunRecoveryScheduler } from "../runs/recoveryScheduler";
+import { deleteExpiredTelegramRecords } from "../telegram/store/retention";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createPrismaRetentionRepository, runObjectDeletionPass } from "./prune";
 
@@ -14,9 +15,10 @@ type RecordPrune = Readonly<{ failureCode: string; prune(now: Date): Promise<num
 
 /**
  * Small records past their retention, at most hourly and in bounded batches:
- * answer problem reports after 90 days, refused sign-ins after 30. A failure
- * is reported and retried on a later pass; it never stops the other prune or
- * object deletion.
+ * answer problem reports after 90 days, refused sign-ins after 30, and the
+ * content-free Telegram records on their own schedules. A failure is reported
+ * and retried on a later pass; it never stops the other prunes or object
+ * deletion.
  */
 function createRecordPrune(prunes: readonly RecordPrune[], now: () => number = Date.now): () => Promise<void> {
   let nextAt = 0;
@@ -53,7 +55,8 @@ export function getDefaultObjectDeletionWorker(): RunRecoveryScheduler {
     const storage = createS3StorageAdapter();
     const pruneRecords = createRecordPrune([
       { failureCode: "answer_problem_report_prune_failed", prune: (now) => deleteExpiredAnswerProblemReports(prisma, now) },
-      { failureCode: "sign_in_refusal_prune_failed", prune: (now) => deleteExpiredSignInRefusals(prisma, now) }
+      { failureCode: "sign_in_refusal_prune_failed", prune: (now) => deleteExpiredSignInRefusals(prisma, now) },
+      { failureCode: "telegram_record_prune_failed", prune: (now) => deleteExpiredTelegramRecords(prisma, now) }
     ]);
     globalForObjectDeletion.__aiqsaObjectDeletionWorker = new RunRecoveryScheduler({
       intervalMs: PASS_INTERVAL_MS,
