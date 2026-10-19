@@ -90,8 +90,9 @@ func serveHookSocket(ctx context.Context, d *daemon.Daemon) error {
 		return err
 	}
 	// `up` has created the private state directory; the runtime directory
-	// is the user's own (0700) by definition.
-	server, err := localsock.Listen(localsock.Path(paths), d, d.Log(), nil)
+	// is the user's own (0700) by definition. Both sockets are served: the
+	// sessions' environment comes from whichever `up` started tmux.
+	server, err := localsock.Listen(localsock.Candidates(paths), d, d.Log(), nil)
 	if err != nil {
 		return err
 	}

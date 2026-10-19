@@ -3,6 +3,7 @@ package hooks
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -404,5 +405,115 @@ func TestASymlinkedSettingsFileIsEditedThroughTheLink(t *testing.T) {
 	}
 	if !strings.Contains(readFile(t, target), "hook claude") || plan.Backup() != target+BackupSuffix {
 		t.Fatal("target not edited")
+	}
+}
+
+// The user can take minutes to confirm setup; a file rewritten meanwhile
+// (Claude Code's /config, the user) keeps what it holds now.
+func TestReviewPreserveConcurrentSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeFile(t, path, `{"model":"old"}`)
+	plan, err := PlanInstall(path, exe, status.AgentClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, `{"permissions":{"deny":["Bash(rm *)"]}}`)
+	if err := plan.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, path)
+	if !strings.Contains(got, `"Bash(rm *)"`) || strings.Contains(got, `"old"`) || len(decodeHooks(t, got)) != len(claudeEntries) {
+		t.Fatalf("file: %s", got)
+	}
+	if backup := readFile(t, plan.Backup()); !strings.Contains(backup, `"Bash(rm *)"`) {
+		t.Fatalf("backup: %s", backup)
+	}
+}
+
+func TestReviewPreserveConcurrentSettingsOnRemove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	mustInstall(t, path, status.AgentClaude)
+	plan, err := PlanRemove(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Delete {
+		t.Fatalf("plan: %+v", plan)
+	}
+	writeFile(t, path, `{"description":"new user data"}`)
+	if err := plan.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, path); got != `{"description":"new user data"}` {
+		t.Fatalf("file: %q", got)
+	}
+}
+
+func TestAFileCreatedOrBrokenBeforeApplyIsRespected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".codex", "hooks.json")
+	plan, err := PlanInstall(path, exe, status.AgentCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, `{"note": "mine"}`)
+	if err := plan.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, path); !strings.Contains(got, `"mine"`) || len(decodeHooks(t, got)) != len(codexEntries) {
+		t.Fatalf("file: %s", got)
+	}
+	if backup := readFile(t, plan.Backup()); backup != `{"note": "mine"}` {
+		t.Fatalf("backup: %q", backup)
+	}
+
+	other := filepath.Join(dir, "settings.json")
+	writeFile(t, other, `{"model":"old"}`)
+	plan, err = PlanInstall(other, exe, status.AgentClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, other, `{"model":`)
+	var unreadable *ErrUnreadable
+	if err := plan.Apply(); !errors.As(err, &unreadable) {
+		t.Fatalf("broken file: %v", err)
+	}
+	if got := readFile(t, other); got != `{"model":` {
+		t.Fatalf("broken file written: %q", got)
+	}
+	if _, err := os.Stat(plan.Backup()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backup of a broken file: %v", err)
+	}
+	for _, d := range []string{dir, filepath.Dir(path)} {
+		entries, _ := os.ReadDir(d)
+		for _, e := range entries {
+			if strings.Contains(e.Name(), ".tmp-") {
+				t.Fatalf("temporary file left: %s", e.Name())
+			}
+		}
+	}
+}
+
+// Apply never writes over a change that lands between its check and the
+// rename: it plans again, and gives up on a file that keeps changing.
+func TestAFileThatKeepsChangingIsLeftAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeFile(t, path, `{"n": 0}`)
+	plan, err := PlanInstall(path, exe, status.AgentClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	beforeReplace = func() {
+		n++
+		writeFile(t, path, fmt.Sprintf(`{"n": %d}`, n))
+	}
+	t.Cleanup(func() { beforeReplace = func() {} })
+	err = plan.Apply()
+	if err == nil || !strings.Contains(err.Error(), "changed since it was read; run aiqsa-connect setup again") {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := readFile(t, path); got != fmt.Sprintf(`{"n": %d}`, n) || n != applyAttempts {
+		t.Fatalf("file %q after %d changes", got, n)
 	}
 }

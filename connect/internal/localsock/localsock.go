@@ -81,9 +81,11 @@ func private(info os.FileInfo) bool {
 	return !ok || int(st.Uid) == os.Getuid()
 }
 
-// Candidates are the paths a hook tries, in order: Path, then the state
-// directory's socket. A session's environment can lack the runtime
-// directory the daemon saw (its tmux server started from another login).
+// Candidates are the sockets of these paths: Path, then the state
+// directory's socket. The daemon listens on all of them and a hook tries
+// them in order, so the two meet even when a session's environment lacks
+// the runtime directory the daemon saw, or has one it did not (the tmux
+// server keeps the environment of whichever `up` started it).
 func Candidates(paths config.Paths) []string {
 	primary := Path(paths)
 	fallback := filepath.Join(paths.StateDir, "daemon.sock")
@@ -98,26 +100,46 @@ type Reporter interface {
 	ReportStatus(sessionID string, status protocol.SessionStatus, reason protocol.StatusReason) error
 }
 
-// Server listens on the socket until its context ends.
+// Server listens on its sockets until its context ends.
 type Server struct {
-	listener *net.UnixListener
-	reporter Reporter
-	log      *logx.Logger
-	gate     *status.Gate
+	listeners []*net.UnixListener
+	reporter  Reporter
+	log       *logx.Logger
+	gate      *status.Gate
 	// applyMu makes the order check and the report one step per message.
 	applyMu sync.Mutex
 	slots   chan struct{}
 	wg      sync.WaitGroup
 }
 
-// Listen creates the socket at path with mode 0600. A socket file left by a
-// process that is gone is removed first; a live one means another daemon
-// and is an error. Any other file at path is never touched. gate is
+// Listen creates a socket with mode 0600 at each of paths (duplicates
+// once). A socket file left by a process that is gone is removed first; a
+// live one means another daemon and is an error. Any other file at a path
+// is never touched. On an error no socket stays open. gate is
 // status.NewGate(nil) when nil.
-func Listen(path string, reporter Reporter, log *logx.Logger, gate *status.Gate) (*Server, error) {
+func Listen(paths []string, reporter Reporter, log *logx.Logger, gate *status.Gate) (*Server, error) {
 	if gate == nil {
 		gate = status.NewGate(nil)
 	}
+	if len(paths) == 0 {
+		return nil, errors.New("cannot listen for agent hooks: no socket path")
+	}
+	s := &Server{reporter: reporter, log: log, gate: gate, slots: make(chan struct{}, maxConns)}
+	for i, path := range paths {
+		if slices.Contains(paths[:i], path) {
+			continue
+		}
+		listener, err := listenOne(path)
+		if err != nil {
+			s.Close()
+			return nil, err
+		}
+		s.listeners = append(s.listeners, listener)
+	}
+	return s, nil
+}
+
+func listenOne(path string) (*net.UnixListener, error) {
 	if err := removeStale(path); err != nil {
 		return nil, err
 	}
@@ -130,7 +152,7 @@ func Listen(path string, reporter Reporter, log *logx.Logger, gate *status.Gate)
 		listener.Close()
 		return nil, fmt.Errorf("cannot listen for agent hooks: %w", err)
 	}
-	return &Server{listener: listener, reporter: reporter, log: log, gate: gate, slots: make(chan struct{}, maxConns)}, nil
+	return listener, nil
 }
 
 func removeStale(path string) error {
@@ -154,16 +176,26 @@ func removeStale(path string) error {
 	return nil
 }
 
-// Serve accepts connections until ctx ends, then closes the socket (which
-// removes its file) and waits for open connections.
+// Serve accepts connections until ctx ends, then closes the sockets (which
+// removes their files) and waits for open connections.
 func (s *Server) Serve(ctx context.Context) {
-	stop := context.AfterFunc(ctx, func() { s.listener.Close() })
+	stop := context.AfterFunc(ctx, func() { s.Close() })
 	defer stop()
+	var accepting sync.WaitGroup
+	for _, listener := range s.listeners {
+		accepting.Go(func() { s.accept(ctx, listener) })
+	}
+	accepting.Wait()
+	s.Close()
+	s.wg.Wait()
+}
+
+func (s *Server) accept(ctx context.Context, listener *net.UnixListener) {
 	for {
-		conn, err := s.listener.AcceptUnix()
+		conn, err := listener.AcceptUnix()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				break
+				return
 			}
 			s.log.Event("hook_socket_accept_failed", "err", err)
 			select {
@@ -180,19 +212,23 @@ func (s *Server) Serve(ctx context.Context) {
 			conn.Close()
 			continue
 		}
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		s.wg.Go(func() {
 			defer func() { <-s.slots }()
 			s.handle(conn)
-		}()
+		})
 	}
-	s.listener.Close()
-	s.wg.Wait()
 }
 
 // Close stops listening; Serve returns once open connections end.
-func (s *Server) Close() error { return s.listener.Close() }
+func (s *Server) Close() error {
+	var errs []error
+	for _, listener := range s.listeners {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
 
 func (s *Server) handle(conn *net.UnixConn) {
 	defer conn.Close()
