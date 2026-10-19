@@ -31,8 +31,11 @@ export type ConnectPairingRecord = ConnectMachineFacts & Readonly<{
 }>;
 
 export type ConnectPairingApproval = "approved" | "device_limit" | "expired" | "unauthorized";
+/** The approving account, for the label the computer's `login` prints. */
+export type ConnectPairingAccount = Readonly<{ displayName: string; email: string | null }>;
+
 export type ConnectPairingConsumption =
-  | Readonly<{ deviceId: string; kind: "consumed"; userId: string }>
+  | Readonly<{ account: ConnectPairingAccount; deviceId: string; kind: "consumed"; userId: string }>
   | Readonly<{ kind: "device_limit" }>
   | Readonly<{ kind: "unavailable" }>;
 
@@ -201,10 +204,11 @@ export function createPrismaConnectRepository(prisma: PrismaClient): ConnectRepo
         await lockAccountDevices(tx, userId);
         // The account row first, as account revocations lock it: a revocation
         // in flight commits before this reads the account and the pairing.
-        const accounts = await tx.$queryRaw<Array<{ status: string }>>`
-          SELECT "status"::text AS "status" FROM "User" WHERE "id" = ${userId} FOR SHARE
+        const accounts = await tx.$queryRaw<Array<{ displayName: string; email: string | null; status: string }>>`
+          SELECT "status"::text AS "status", "displayName", "email" FROM "User" WHERE "id" = ${userId} FOR SHARE
         `;
-        if (accounts[0]?.status !== "active") return { kind: "unavailable" as const };
+        const account = accounts[0];
+        if (account?.status !== "active") return { kind: "unavailable" as const };
         if (await tx.connectDevice.count({ where: { userId } }) >= CONNECT_MAX_DEVICES_PER_USER) {
           return { kind: "device_limit" as const };
         }
@@ -226,7 +230,12 @@ export function createPrismaConnectRepository(prisma: PrismaClient): ConnectRepo
           },
           select: { id: true }
         });
-        return { deviceId: device.id, kind: "consumed" as const, userId };
+        return {
+          account: { displayName: account.displayName, email: account.email },
+          deviceId: device.id,
+          kind: "consumed" as const,
+          userId
+        };
       });
     },
 

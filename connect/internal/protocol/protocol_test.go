@@ -203,6 +203,7 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 			"maxSnapshotSessions":           MaxSnapshotSessions,
 			"maxDeviceNameLength":           MaxDeviceNameLength,
 			"maxHostnameLength":             MaxHostnameLength,
+			"maxAccountLabelLength":         MaxAccountLabelLength,
 			"maxSessionOptions":             MaxSessionOptions,
 			"maxOptionLabelLength":          MaxOptionLabelLength,
 			"maxAttachedClients":            MaxAttachedClients,

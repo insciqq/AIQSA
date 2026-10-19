@@ -1,4 +1,6 @@
 import {
+  CONNECT_CONTROL_CHARACTER_PATTERN,
+  CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
   CONNECT_PAIRING_POLL_INTERVAL_SECONDS,
   CONNECT_PAIRING_TTL_SECONDS,
   connectPairPagePath,
@@ -13,7 +15,7 @@ import {
 import { verifyTokenHash } from "../auth/token";
 import { logConnect } from "./observability";
 import type { ConnectRelay } from "./relay";
-import type { ConnectPairingApproval, ConnectPairingRecord, ConnectRepository } from "./repository";
+import type { ConnectPairingAccount, ConnectPairingApproval, ConnectPairingRecord, ConnectRepository } from "./repository";
 import {
   generateConnectUserCode,
   hashConnectUserCode,
@@ -22,6 +24,19 @@ import {
 } from "./tokens";
 
 const CODE_ATTEMPTS = 4;
+const CONTROL_CHARACTERS = new RegExp(CONNECT_CONTROL_CHARACTER_PATTERN.source, "gu");
+
+/**
+ * Who approved a pairing, as the computer's `login` prints it: the display name and the email with
+ * its local part masked ("Ann (a•••@example.com)"), so the owner notices a code someone else approved.
+ */
+export function connectAccountLabel(account: ConnectPairingAccount): string {
+  const name = account.displayName.replace(CONTROL_CHARACTERS, "").trim() || "AIQSA account";
+  const email = account.email?.replace(CONTROL_CHARACTERS, "") ?? "";
+  const at = email.lastIndexOf("@");
+  const label = at > 0 ? `${name} (${Array.from(email)[0]}•••${email.slice(at)})` : name;
+  return Array.from(label).slice(0, CONNECT_MAX_ACCOUNT_LABEL_LENGTH).join("");
+}
 
 export type ConnectPairingService = ReturnType<typeof createConnectPairingService>;
 
@@ -100,7 +115,12 @@ export function createConnectPairingService(deps: Readonly<{
       if (consumed.kind === "unavailable") return { status: "expired" };
       logConnect({ code: "connect_device_paired", outcome: "completed", stage: "write" });
       deps.relay.notifyDevicesChanged(consumed.userId);
-      return { deviceId: consumed.deviceId, deviceToken: token.value, status: "approved" };
+      return {
+        account: connectAccountLabel(consumed.account),
+        deviceId: consumed.deviceId,
+        deviceToken: token.value,
+        status: "approved"
+      };
     },
 
     /** The computer behind a pending code, for the approval page; null for every other code. */

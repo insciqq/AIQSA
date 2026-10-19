@@ -36,8 +36,12 @@ export const CONNECT_MIN_CLIENT_VERSION = "0.3.20";
 /** `lastSeenAt` moves at most this often, so an online device does not rewrite its row per heartbeat. */
 export const CONNECT_LAST_SEEN_INTERVAL_MS = 60_000;
 const STREAM_ATTACH_ATTEMPTS = 3;
-/** When the client's address cannot be resolved behind a proxy, pairing waits instead of sharing one budget. */
-const UNRESOLVED_CLIENT_RETRY_SECONDS = 60;
+/**
+ * Clients whose address cannot be resolved (behind a proxy AIQSA is not told to trust) share one
+ * pairing budget, as sign-in goes on without a per-address limit there: refusing them would make
+ * pairing impossible on such an installation.
+ */
+const UNRESOLVED_CLIENT_KEY = "unresolved";
 
 export type ConnectDeviceHandlerDeps = Readonly<{
   /** The client's rate-limit identity; null when a configured proxy hides it. */
@@ -96,8 +100,7 @@ export function createConnectDeviceHandlers(deps: ConnectDeviceHandlerDeps) {
   }
 
   async function rateLimitRefusal(request: Request, limiter: LoginRateLimiter, scope: string): Promise<Response | null> {
-    const client = deps.clientKey(request);
-    if (!client) return connectRateLimited(headers, UNRESOLVED_CLIENT_RETRY_SECONDS);
+    const client = deps.clientKey(request) ?? UNRESOLVED_CLIENT_KEY;
     let decision: Awaited<ReturnType<LoginRateLimiter["check"]>>;
     try {
       decision = await limiter.check(`connect:${scope}:${client}`);

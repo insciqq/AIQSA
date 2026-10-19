@@ -41,6 +41,8 @@ func (c *Client) PollPairing(ctx context.Context, req protocol.PairingPollReques
 type Approved struct {
 	DeviceID    string
 	DeviceToken string
+	// Account names the AIQSA account that approved the computer.
+	Account string
 }
 
 // PairOptions customize WaitForApproval; zero values use real time.
@@ -108,7 +110,7 @@ func (c *Client) WaitForApproval(ctx context.Context, pairing *protocol.PairingC
 		}
 		switch resp.Status {
 		case protocol.PairingApproved:
-			return Approved{DeviceID: *resp.DeviceID, DeviceToken: *resp.DeviceToken}, nil
+			return Approved{DeviceID: *resp.DeviceID, DeviceToken: *resp.DeviceToken, Account: *resp.Account}, nil
 		case protocol.PairingDenied:
 			return Approved{}, ErrPairingDenied
 		case protocol.PairingExpired:

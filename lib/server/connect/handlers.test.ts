@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CONNECT_CLIENT_VERSION_HEADER,
+  CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
   CONNECT_MAX_DEVICES_PER_USER,
   CONNECT_MAX_EVENTS_BODY_BYTES,
   CONNECT_MAX_INPUT_BYTES,
@@ -22,7 +23,7 @@ import { hashToken } from "../auth/token";
 import { createConnectAdminPolicyHandlers } from "./adminHandlers";
 import { CONNECT_DEVICES_CHANGED_REREAD_MS, createConnectBrowserHandlers } from "./browserHandlers";
 import { createConnectDeviceHandlers } from "./deviceHandlers";
-import { createConnectPairingService } from "./pairingService";
+import { connectAccountLabel, createConnectPairingService } from "./pairingService";
 import {
   CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER,
   createConnectRelay,
@@ -94,7 +95,7 @@ function memoryStore() {
         tokenHash: input.tokenHash,
         userId
       });
-      return { deviceId: id, kind: "consumed", userId };
+      return { account: { displayName: `${userId} owner`, email: `${userId}@example.test` }, deviceId: id, kind: "consumed", userId };
     },
     async createPairing(input) {
       if ([...pairings.values()].some((pairing) => pairing.userCodeHash === input.userCodeHash)) return null;
@@ -377,6 +378,7 @@ describe("AIQSA Connect pairing", () => {
 
     const first = connectPairingPollResponseSchema.parse(await (await poll()).json());
     if (first.status !== "approved") throw new Error("not approved");
+    expect(first.account).toBe("alice owner (a•••@example.test)");
     const stored = context.store.devices.get(first.deviceId)!;
     expect(stored).toMatchObject({ hostname: "studio.local", name: "Studio", tokenHash: hashToken(first.deviceToken), userId: "alice" });
     await expect((await poll()).json()).resolves.toEqual({ status: "expired" });
@@ -444,10 +446,11 @@ describe("AIQSA Connect pairing", () => {
     expect(polled.headers.get("retry-after")).toBe("3");
     expect(context.limits.poll.check).toHaveBeenCalledWith("connect:pairing-poll:ip:203.0.113.5");
 
+    // An address AIQSA cannot resolve behind its proxy shares one budget instead of being refused.
     context.clientKey.mockReturnValueOnce(null);
     const unresolved = await context.device.createPairing(deviceRequest("/connect-api/v1/pairings", { body: machine }));
-    expect(unresolved.status).toBe(429);
-    expect(unresolved.headers.get("retry-after")).toBe("60");
+    expect(unresolved.status).not.toBe(429);
+    expect(context.limits.create.check).toHaveBeenLastCalledWith("connect:pairing-create:unresolved");
 
     context.limits.code.check.mockResolvedValueOnce({ allowed: false, retryAfterSeconds: 120 });
     const code = await context.browser.lookupPairing(
@@ -1134,5 +1137,15 @@ describe("AIQSA Connect logging", () => {
       expect(fields).toMatchObject({ subsystem: "connect" });
       expect(String((fields as { code: string }).code)).toMatch(/^connect_[a-z_]+$/u);
     }
+  });
+});
+
+describe("connectAccountLabel", () => {
+  it("names the approving account with a masked email", () => {
+    expect(connectAccountLabel({ displayName: "Ann Lee", email: "ann.lee@example.com" })).toBe("Ann Lee (a•••@example.com)");
+    expect(connectAccountLabel({ displayName: "Ann", email: null })).toBe("Ann");
+    expect(connectAccountLabel({ displayName: " \u0007 ", email: "ёж@пример.рф" })).toBe("AIQSA account (ё•••@пример.рф)");
+    expect(connectAccountLabel({ displayName: "Ann", email: "@broken" })).toBe("Ann");
+    expect(Array.from(connectAccountLabel({ displayName: "я".repeat(300), email: "a@b.c" }))).toHaveLength(CONNECT_MAX_ACCOUNT_LABEL_LENGTH);
   });
 });

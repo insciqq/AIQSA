@@ -42,8 +42,10 @@ aiqsa-connect login https://ai.example.com
 ```
 
 It prints a code and a link. Open the link in AIQSA (you are already signed
-in), check the code and approve this computer. The device token is stored in
-`~/.config/aiqsa-connect/credentials.json`, readable only by you.
+in), check the code and approve this computer. `login` then names the account
+that approved it; if that is not yours, run `aiqsa-connect logout`. The device
+token is stored in `~/.config/aiqsa-connect/credentials.json`, readable only by
+you.
 
 Use `https://`. Plain `http://` works only on your local network: the address
 (or every address its name resolves to) must be loopback, private (`10.x`,

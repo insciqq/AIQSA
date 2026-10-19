@@ -79,7 +79,7 @@ func TestLoginPairsAndStoresPrivateCredentials(t *testing.T) {
 				io.WriteString(w, `{"status":"pending"}`)
 				return
 			}
-			fmt.Fprintf(w, `{"status":"approved","deviceId":%q,"deviceToken":%q}`, testDeviceID, testToken)
+			fmt.Fprintf(w, `{"status":"approved","deviceId":%q,"deviceToken":%q,"account":"Owner (o•••@example.test)"}`, testDeviceID, testToken)
 		}
 	}))
 	defer srv.Close()
@@ -87,7 +87,8 @@ func TestLoginPairsAndStoresPrivateCredentials(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("login: %d %q %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "Open "+srv.URL+"/connect/pair?code=ABCD-EFGH and approve this computer. Code: ABCD-EFGH") {
+	if !strings.Contains(stdout, "Open "+srv.URL+"/connect/pair?code=ABCD-EFGH and approve this computer. Code: ABCD-EFGH") ||
+		!strings.Contains(stdout, `as "Work laptop" for the account Owner (o•••@example.test).`) {
 		t.Fatalf("stdout: %q", stdout)
 	}
 	if created.Name != "Work laptop" || created.Hostname == "" || created.ClientVersion != version {
