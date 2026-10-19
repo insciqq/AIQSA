@@ -1,19 +1,4 @@
-export const NESTED_AGENT_INSTRUCTIONS = Object.freeze([
-  "components/AGENTS.md",
-  "lib/server/AGENTS.md",
-  "ops/AGENTS.md",
-  "prisma/AGENTS.md"
-]);
-
-export const NESTED_CLAUDE_INSTRUCTIONS = Object.freeze(
-  NESTED_AGENT_INSTRUCTIONS.map((filename) => filename.replace(/AGENTS\.md$/u, "CLAUDE.md"))
-);
-
 export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
-  "agent_docs/INDEX.md",
-  "agent_docs/PRODUCT_PRINCIPLES.md",
-  "agent_docs/DECISION_DEFAULTS.md",
-  "agent_docs/CRITICAL_INVARIANTS.md",
   "agent_docs/ARCHITECTURE.md",
   "agent_docs/BACKEND.md",
   "agent_docs/PERSISTENCE.md",
@@ -25,28 +10,31 @@ export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
   "agent_docs/SIGN_IN.md",
   "agent_docs/ENV_VARIABLES.md",
   "agent_docs/TESTING.md",
-  "agent_docs/AUTONOMOUS_WORKFLOW.md",
   "agent_docs/tasks/README.md",
   "agent_docs/tasks/archive/README.md",
   "agent_docs/tasks/drafts/README.md",
   "agent_docs/tasks/queue/README.md"
 ]);
 
+// Claude Code loads `.claude/rules/*.md` when a file matching their `paths:` frontmatter is read
+// or edited. Each rule there is a symlink to the agent document that carries the frontmatter.
+export const AGENT_RULES_DIRECTORY = ".claude/rules";
+
+// Budgets leave little headroom on purpose: when a document outgrows them, delete what the code
+// already says instead of compressing the prose.
 export const AGENT_DOC_BUDGETS = Object.freeze({
-  files: 20,
-  nonEmptyLines: 1000,
-  nonEmptyLinesPerFile: 200,
-  words: 24250,
-  wordsPerFile: 3200
+  files: 16,
+  nonEmptyLines: 900,
+  nonEmptyLinesPerFile: 120,
+  words: 17500,
+  wordsPerFile: 2500
 });
 
-const ROOT_MARKDOWN = ["AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md"];
-const COLOCATED_MARKDOWN = [];
-
-export const REQUIRED_DOCS = Object.freeze([
-  ...ROOT_MARKDOWN,
-  ...NESTED_AGENT_INSTRUCTIONS,
-  ...NESTED_CLAUDE_INSTRUCTIONS,
-  ...COLOCATED_MARKDOWN,
-  ...HANDWRITTEN_AGENT_DOCS
+export const INSTRUCTION_BUDGETS = Object.freeze([
+  Object.freeze({ filename: "AGENTS.md", lines: 120, words: 1700 }),
+  Object.freeze({ filename: "CLAUDE.md", lines: 80, words: 100 })
 ]);
+
+const ROOT_MARKDOWN = ["AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md"];
+
+export const REQUIRED_DOCS = Object.freeze([...ROOT_MARKDOWN, ...HANDWRITTEN_AGENT_DOCS]);

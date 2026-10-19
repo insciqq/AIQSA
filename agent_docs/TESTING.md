@@ -1,35 +1,50 @@
-# TESTING
+---
+paths:
+  - "tests/**"
+  - "playwright*.config.ts"
+  - "vitest*.config.ts"
+  - "vitest*.setup.ts"
+  - "scripts/vitest-project-config.ts"
+  - "scripts/smoke-*"
+  - "scripts/*-smoke-support.ts"
+  - "scripts/production-smoke.mjs"
+  - ".github/workflows/**"
+  - "benchmarks/**"
+---
+# Testing
 
-Owns verification selection, target safety, external-call permission, and test authoring. Run the cheapest deterministic check that proves the increment, then the completion lane proportional to the changed boundary. Unrelated expensive lanes are not cumulative release requirements.
+How to choose checks, where to run them, which external calls are allowed, and how to write tests. Run the cheapest deterministic check that proves the change, then the completion check that matches the boundary you touched. Expensive lanes unrelated to the change are not required.
 
-## Core Lanes
+## Choosing checks
 
-Install dependencies when needed with `npm ci`. During a task, run focused regressions and lint changed files. Select tests by affected behavior and consumers, not merely by changed test filenames. Cosmetic changes can use an existing browser check; do not create tests that only mirror an implementation.
-
-| Change | Completion evidence |
+| Change | Evidence for completion |
 | --- | --- |
 | Documentation only | `npm run docs:check` |
-| Deterministic task | Focused tests and changed-file lint |
-| Integrated product-code slice | One `npm run check:hermetic` on the chosen local, remote, or CI executor; includes Prisma generation, docs, lint, types and deterministic tests |
-| Verification/docs tooling | Focused tooling regressions and docs check; application tests only when their behavior is affected |
-| Database, concurrency, process/service boundary | Affected disposable stateful/integration tests below |
-| Browser/server routing, auth/session, streaming, geometry/input/focus | Focused components plus affected Playwright states |
+| A single deterministic change | Focused tests and lint of the changed files |
+| An integrated product-code slice | One `npm run check:hermetic` (Prisma generation, typegen, docs, lint, types, deterministic tests) |
+| Verification or docs tooling | Its focused tests and `docs:check`; application tests only if their behavior changed |
+| Database, concurrency, process or service boundary | The affected stateful tests on a disposable target (below) |
+| Browser and server routing, auth and sessions, streaming, layout, input or focus | Focused component tests plus the affected Playwright states |
+| Task ledger | `npm run task:check` and the ledger's focused tests |
 
-The integrating agent owns the combined check; workers run focused checks only. Do not repeat a passing full suite on another executor or after a narrow correction: rerun the affected checks. Reuse evidence only while its source, dependencies, configuration and relevant generated inputs remain valid. Expand coverage for shared-boundary changes or a diagnosed failure, not for extra reassurance. Record a check's scope and result once in the task.
+- Pick tests by the behavior and consumers you changed, not by which test files you edited. Do not write tests that only mirror the implementation.
+- When workers run in parallel, they run focused checks; the integrating agent runs the one combined check for the slice.
+- Do not rerun a passing full suite on another machine or after a narrow fix; rerun what the fix affects. Evidence stays valid while its sources, dependencies, configuration and generated inputs are unchanged. Widen coverage for a shared boundary or a diagnosed failure, not for reassurance.
+- Run `npx tsc --noEmit` once per slice when `check:hermetic` or an imminent build does not already cover types. Stale `.next` route types need regenerated types (`npx next typegen`) or a clean checkout, never source edits that satisfy deleted routes.
+- CI (`.github/workflows/ci.yml`) runs Hermetic for pull requests and on explicit dispatch, not on every push to main.
+- A request to "verify" ordinary work means its affected scope. Run the whole browser catalog or a broad theme and viewport matrix only when the change needs it or a full regression was asked for. Record unrelated failures separately; they do not widen the current work.
 
-Run standalone types once at slice integration when the selected full check or imminent build does not already cover them. Preserve valid incremental caches. Stale generated `.next` types require fresh route types or a clean snapshot, not source changes to satisfy deleted routes. Full Hermetic remains available locally; [CI](../.github/workflows/ci.yml) runs it for PRs, explicit dispatch and full verification callers, without repeating it on every main push.
+## Where to run heavy checks
 
-## Execution Target And Resources
+- Read the root `DEV_SERVER.md` first if it exists. It is private machine configuration with a remote executor and its limits. Use that server after a short non-interactive SSH and capacity check. If the file is absent or the server is unreachable or lacks capacity, say why in one line and run locally within the limits below; no approval is needed for the fallback.
+- A failing test is not an unavailable executor. If an SSH session drops mid-run, check the job you started before retrying anywhere; never run a second copy of a check that may still be running.
+- Send only an inspected Git commit or tree to another machine (`git archive`), including reviewed uncommitted changes when needed. Never copy the working directory, `.env`, SSH keys, `DEV_SERVER.md`, task files, local profiles or production data.
+- Locally, run one heavy process at a time. On the measured 16 GiB workstation that means a 6 GiB Node heap, an 8 GiB cap for the process group or container, four CPUs and no swap; stop if free memory drops below 3 GiB. A heap flag alone does not cap total memory. Keep builds, browser runs and full suites sequential with one browser or stateful worker.
+- Reuse one prepared disposable browser stand per slice. After the same infrastructure failure repeats, stop rerunning, keep the diagnostics and narrow the investigation. A broken stand is not a passing check.
 
-Before heavy work, read root `DEV_SERVER.md` if it exists. It contains private operator-provided connection details and limits, never a public dependency. Prefer its server after a short noninteractive SSH/capacity preflight using the specified identity and verified host key. If absent, unreachable or missing required capacity/tools, report the reason briefly and use bounded local execution without another approval request.
+## Stateful and container checks
 
-A test failure is not executor unavailability. If an SSH connection is lost after work starts, check its owned job/status before retrying elsewhere; never duplicate an ambiguously running check. Export only an inspected Git commit/tree, including reviewed pending changes when applicable. Never copy the working directory, `.env`, SSH keys, `DEV_SERVER.md`, private tasks, profiles or production data. Use owned workspaces, unique disposable projects and synthetic state. Retain dependencies and valid compiler/build caches between slices; clean disposable test state and obsolete owned outputs, not reusable workspaces.
-
-Run one heavy local process at a time. On the measured 16 GiB workstation, use a 6 GiB Node heap, 8 GiB process-group/container cap, four CPUs and no swap; require headroom for the host and stop if available RAM falls below 3 GiB. A Node heap flag alone is not a total memory limit. Keep build/browser/full-test work sequential and use one browser/stateful worker. Remote limits come from its private file; increasing resources never broadens verification scope.
-
-Reuse one prepared disposable browser stand for the slice. After a repeated identical infrastructure failure, stop broad reruns, retain diagnostics and narrow the investigation. Unavailable required evidence remains explicit; a failed stand is not a passing check.
-
-Read [Environment](ENV_VARIABLES.md) first. Preserve the checkout's configuration and operator profile; use a unique acknowledged disposable project for stateful work. Never target the persistent installation. Commands for the disposable topology:
+Read `agent_docs/ENV_VARIABLES.md` first, keep the checkout's configuration, and never target the persistent installation. The disposable topology:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d --build
@@ -37,64 +52,46 @@ npm run check:container
 docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 ```
 
-Full container parity deploys migrations and repeats deterministic plus stateful tests; reserve it for a full parity/release run or a change requiring that scope. Inside an already prepared acknowledged disposable app container, `npm run test:full:inner -- --project stateful <test-files>` selects only stateful tests; omit files for the complete stateful set. This avoids repeating Hermetic. `*.prisma.test.*` and `*.integration.test.*` are excluded from ordinary Hermetic.
+- `*.prisma.test.*` and `*.integration.test.*` files are excluded from Hermetic (`scripts/vitest-project-config.ts`). Inside an already prepared disposable app container, `npm run test:full:inner -- --project stateful <files>` runs only the stateful tests you name (omit files for all of them) without repeating Hermetic.
+- Full container parity (`check:container`) deploys migrations and repeats deterministic and stateful tests; use it for a full parity or release run, or when the change needs that scope.
+- Serialize stateful, container and browser-reset checks. Specs that reuse a server may overlap only if they reset nothing global. Put task-owned browser output in a fresh temporary directory and never delete another process's artifacts.
+- Database, migration, prune, backup, reset and installation checks validate their exact target before mutating it and clean up only what they created.
 
-Serialize stateful/container/browser-reset checks. Reusable-server specs may overlap only when they own no reset/global mutation. Use a fresh `/tmp` directory for task-owned browser output when necessary; never delete another process's artifacts.
-
-## Boundary Evidence
+## Extra evidence by boundary
 
 | Changed boundary | Additional evidence |
 | --- | --- |
-| Schema, migration, bootstrap | `npm run db:migration:smoke`; `npm run db:baseline:contract` for baseline/custom PostgreSQL DDL/adoption. Only acknowledged disposable databases. |
-| Compose, image, installation | Focused config tests; image builds under the criteria below, disposable startup/bootstrap only for changed behavior. Preserve non-root roles and isolated identities. |
-| Backup/restore, destructive retention | Dry run first; real backup/empty-target restore/deletion only with explicit authority over disposable/intended targets. The CLI's single-host backup/restore is verified on disposable targets; off-site, scheduled and multi-host procedures stay with infrastructure. |
-| UI | Affected browser states, themes, viewports, focus transitions, containment and overflow; see [Frontend](FRONTEND.md). |
-| Provider | Deterministic request/stream/parser/fake checks first; real calls require the permission below. |
-| Dependencies/security | Focused threat checks and `npm run security:deps`; review manifest, lockfile, lifecycle scripts, overrides and upstream compatibility. |
-| MCP/OAuth | Deterministic protocol/security tests, then relevant disposable runtime. Hosted consent and upstream OAuth require their own authority. |
-| Workspace/KVM | Policy/protocol/output tests, disposable database race checks, release/runner/guest image builds and reproducible guest identity, isolated browser flows, then opt-in real KVM evidence. Cover execution loss, Stop without delayed side effects, runner restart, export/recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
-| Upload/parser sidecars | Deterministic routing/bounds/decoders, then disposable parser smoke; stopped parsers degrade locally without breaking core readiness. |
-| Memory/Knowledge/recovery | Focused policy/handler tests, then disposable PostgreSQL/pgvector for persistence/concurrency and isolated OpenSearch for retrieval/projection changes. Integrity/rebuild output is content-free. |
-| Source publication (push/PR) | `npm run release:privacy:check` and root final review; reuse applicable verification. Publication still needs explicit authority. |
+| Schema, migrations, bootstrap | `npm run db:migration:smoke`; `npm run db:baseline:contract` for the baseline or custom PostgreSQL DDL. Disposable databases only. |
+| Compose, images, installation | Focused config tests; disposable startup or bootstrap only when that behavior changed. Keep non-root roles and separate identities. |
+| Backup, restore, destructive retention | Dry run first; real backup, empty-target restore or deletion only with explicit authority over a disposable or intended target. |
+| UI | The affected states, themes, viewports, focus transitions and overflow (`agent_docs/FRONTEND.md`). Assert behavior and geometry, not screenshots or component structure. |
+| Providers | Deterministic request, stream and parser tests with fakes first; real calls only as allowed below. |
+| Dependencies | Focused hostile-input checks and `npm run security:deps` (plus `npm run security:deps:go` for `connect/`); review the manifest, lockfile, lifecycle scripts and overrides (`agent_docs/SECURITY.md`). |
+| MCP and OAuth | Deterministic protocol and security tests, then the relevant disposable runtime. Hosted consent and upstream OAuth need their own authority. |
+| Workspace and KVM | Policy, protocol and output tests, disposable database race checks, image builds, isolated browser flows, then opt-in real KVM evidence covering execution loss, Stop, runner restart, export and recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
+| Upload parsers | Deterministic routing, bounds and decoders, then the disposable parser smoke; a stopped parser must degrade locally without breaking readiness. |
+| Memory, Knowledge, recovery | Focused policy and handler tests, then disposable PostgreSQL with pgvector for persistence and concurrency, and an isolated OpenSearch for retrieval or index changes. Integrity and rebuild output stays content-free. |
+| Publishing (push, PR) | `npm run release:privacy:check` and the root final review; reuse existing verification. Publishing still needs an explicit request. |
 
-Commits/pushes require no additional builds/tests. Fresh readiness means existing evidence covers the final diff. Ordinary app/UI/docs changes and version bumps need no production image.
+## Images and releases
 
-Build a production image from an inspected Git export only when image assembly or container startup changes: Dockerfile/base image, build-context/COPY rules, runtime installation/pruning/native dependencies, standalone bundling or entrypoints; also for concrete image-only failures or explicit requests. Inspect changed contracts and private-file exclusion. Manifest/lockfile edits alone do not qualify. Compose-only changes need affected config/startup checks, no image rebuild.
+- Commits and pushes need no extra builds. "Fresh readiness" means existing evidence covers the final diff.
+- Build a production image (from an inspected Git export) only when image assembly or container startup changed: the Dockerfile or base image, build context or COPY rules, runtime installation, pruning or native dependencies, standalone bundling, entrypoints. Also for an image-only failure or an explicit request. Manifest or lockfile edits alone do not qualify; Compose-only changes need config and startup checks, not a rebuild.
+- The manual Release full workflow (`.github/workflows/release-full.yml`) owns full verification, image builds and the production smoke (`scripts/production-smoke.mjs`) on fresh synthetic state. It never targets an existing installation and never creates tags or GitHub Releases. Use it only when full verification is explicitly requested.
+- An ordinary release uses `.github/workflows/release.yml`. Reuse slice evidence plus privacy, version and publication checks; do not rerun image builds, Hermetic, container suites or installation smokes before tagging. A green release workflow proves build and publication, not regression.
 
-Manual [Release full](../.github/workflows/release-full.yml) owns full verification and [image builds](../.github/workflows/release-build.yml), followed by [production smoke](../scripts/production-smoke.mjs) on fresh synthetic state: bootstrap, upgrade/restart, and failed-migration fencing. Never target an existing installation. It may publish digests/caches, never release tags or GitHub Releases. Select it only for explicitly requested full verification; workflow-only changes use focused tooling checks.
+## Real providers and opt-in checks
 
-An ordinary release uses [Release](../.github/workflows/release.yml), which owns image build/publication. Reuse applicable slice evidence plus privacy, version and publication-integrity checks; do not duplicate image builds, Hermetic, container/E2E suites or installation smokes before tagging. A successful workflow proves build/publication, not full regression. Unchanged infrastructure may reuse stable digests.
+- Tests use fake providers. Never print keys, prompts, answers, source text or URLs, private identifiers, raw tool payloads or paths that carry capabilities. Evidence is limited to versions, stable codes, booleans, counts, latency, limits, hashes and cleanup results.
+- Real provider calls (Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek, hosted Search, OAuth registries) need explicit permission for that provider and the smallest useful call. `smoke:custom-openai-compatible` is local and credential-free. `smoke:memory-semantic` may run against a loopback disposable app with credentials already stored through Admin.
+- Read an opt-in script and its guards before running it; flags, fixtures, limits, cleanup and assertions belong to the script.
+- Paid and live Workspace smokes (`smoke:workspace-live`, `smoke:workspace-user-paid`) need explicit disposable opt-in, real KVM and synthetic data; `smoke:memory-browser-paid` and `smoke:memory-mcp-codex` need explicit permission and their own disposable target. Diagnose a failure before any paid retry.
+- An unexplained Personal Memory `DEGRADED` result fails a provider smoke, benchmark or qualification even when the answer is right. Find and fix the shared cause, or show that the scenario injected that fallback on purpose.
+- Benchmarks are opt-in and outside product lint, types and tests. Knowledge benchmarks (`benchmarks/knowledge/README.md`) need isolated disposable infrastructure, provider permission, frozen public datasets and content-free output.
 
-A request to verify ordinary work means its affected scope. Run the complete browser catalog or a broad theme/viewport matrix only for a change requiring that coverage or an explicitly selected full regression. Unrelated failures are recorded separately and do not silently expand the current slice.
+## Writing tests
 
-Knowledge tests prove the changed scope, evidence-delivery, citation, egress, degradation or immutability contract with tiny fixtures. Keep ordinary co-located tests free of scored corpora, relevance labels, expected-answer collections and large question sets. Optional manual document inspection is not an implementation gate.
-
-`docs:check` owns required documents, orphan/link checks, and text budgets through [docs-manifest](../scripts/docs-manifest.mjs). It neither inventories implementation nor validates task state. Task-ledger changes separately run `npm run task:check` and focused ledger/privacy tests.
-
-## External And Opt-In Checks
-
-Fake providers are the default. Never print keys, prompts, answers, source text/URLs, private identifiers, raw tool payloads, or capability-bearing paths. Evidence is limited to versions, stable codes, booleans, counts, latency, limits, hashes and cleanup results.
-
-- `smoke:custom-openai-compatible` is credential-free and local.
-- `smoke:gemini` may use a current operator-provided key for a bounded request with sanitized output; a missing key skips.
-- Anthropic, OpenAI, OpenRouter, hosted Search, OAuth/registry and other real-provider calls require explicit provider-specific authorization and the smallest useful call.
-- `smoke:memory-semantic` has standing permission only for the bounded loopback disposable app using credentials already stored through Admin and sanitized aggregate output. No persistent/non-loopback authority is implied.
-- `security:deps` is the approved external npm advisory check during dependency work under [Security](SECURITY.md). Network failure may be retried with required sandbox escalation; audit suggestions do not authorize breaking upgrades.
-
-Read an opt-in script and its guards before running it. Exact flags, fixtures, limits, cleanup and assertions belong to that script, not this document.
-
-Workspace receiver/export/file-integrity browser fixtures run alone in isolated Compose. Live operation-fence evidence runs as the sole command in a disposable KVM runner with one receiver/guest; database lease-expiry evidence remains separate. `smoke:workspace-live` requires explicit disposable opt-in, real KVM, and synthetic owned sessions/objects. `smoke:workspace-user-paid` is optional and outside default/release gates: it additionally requires explicit paid codex-lb permission, a fresh isolated topology satisfying [its guards](../scripts/workspace-user-paid-support.ts), sequential guests and independent artifact oracles. Diagnose a failure before a paid retry; clean only its resources.
-
-`smoke:memory-browser-paid` and `smoke:memory-mcp-codex` have no standing paid permission. Both require their explicit disposable target and sanitized evidence. The inbound MCP smoke owns a fresh database, app origin, synthetic account, isolated client configuration and real browser OAuth; it must prove native fact parity, revocation, lexical/semantic retrieval and absence of chat artifacts independently of the generated answer.
-
-Any unexplained Personal Memory `DEGRADED` result blocks a provider smoke, benchmark or qualification even if the answer is correct. Diagnose and fix the shared path or prove that the scenario deliberately injected that fallback. A clean qualification has zero unexplained degradation.
-
-Benchmark suites are opt-in and excluded from product lint/types/tests. [Knowledge benchmarks](../benchmarks/knowledge/README.md) require isolated disposable infrastructure, paid-work/provider permission, frozen public datasets, conservative canary-first concurrency and content-free outputs. Corpora and run state remain ignored. LongMemEval contracts run through `npm run test:benchmark:longmemeval`; a frozen historical revision must not block unrelated work.
-
-## Test Authoring And Completion
-
-Test observable contracts with the cheapest meaningful deterministic regression. Keep fixtures small, isolated, content-safe and order-independent. Do not use `.only`, broad snapshots, permanent environment skips, real paid calls in ordinary suites, or unowned global cleanup. Cover affected loading/error/empty and lifecycle terminals.
-
-Database, migration, prune, backup, reset and installation checks validate exact targets before mutation and clean only owned resources. Required live/runtime evidence cannot be replaced with a fake or prose assertion.
-
-Before completion, perform root [final review](../AGENTS.md#before-final-response) and report exact passed checks and reasons for relevant omissions. Required-but-unavailable evidence leaves the affected work blocked.
+- Test observable behavior with the cheapest meaningful deterministic regression. Keep fixtures small, isolated, free of real content and independent of order. Cover the affected loading, error, empty and terminal states.
+- No `.only`, broad snapshots, permanent environment skips, real paid calls in ordinary suites or cleanup of resources the test did not create.
+- Knowledge tests prove the changed scope, evidence, citation, egress, degradation or immutability rule with tiny fixtures. Keep scored corpora, relevance labels and large question sets out of co-located tests.
+- Required live or runtime evidence cannot be replaced by a fake or by a written claim. If it cannot be obtained, the work stays blocked.

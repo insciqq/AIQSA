@@ -1,67 +1,65 @@
-# PROVIDERS
+---
+paths:
+  - "lib/server/providers/**"
+  - "lib/server/providerRuntime/**"
+  - "lib/server/admin/providers/**"
+  - "lib/server/search/**"
+  - "lib/server/speechToText/**"
+  - "lib/server/vision/**"
+---
+# Providers
 
-Owner: Provider integration maintainers
-Scope: Execution authority, capability evidence, transport and disclosure boundaries.
+Model providers, roles, capability evidence, transports, Search, embeddings, reranking and prices. Adapters: `lib/server/providers/`; role resolution and execution: `lib/server/providerRuntime/`; administrator setup and capability checks: `lib/server/admin/providers/`. Run behavior is in `agent_docs/RUN_CONTRACTS.md`, endpoint security in `agent_docs/SECURITY.md`.
 
-Adapters: [code](../lib/server/providers/); execution: [Run contracts](RUN_CONTRACTS.md); credentials/endpoints: [Security](SECURITY.md).
+## Authority and roles
 
-## Authority And Capability
+- Catalog discovery shows availability; it never authorizes execution. Admission binds the exact tested connection, model revision, credential and role, and revocation is rechecked before every outbound request.
+- Personal credentials resolve as: the user's direct grant, then an identical group grant, then an explicitly configured installation default. Project runs use only Project resources and shared authority.
+- Answer, embedding, rerank, Vision, Decisions and other internal roles are independent. Internal roles run on installation credentials, grant users nothing, and never borrow another role's assignment.
+- Image generation is a published resource: administrators publish verified models and keep one default, without which image generation is off for everyone. Users may pick a published model; Project runs use only the default. An unusable published model is marked, never substituted.
+- Optional Decisions need their own disclosure, qualification and verified availability; adopting them preserves explicit choices, and a failed adoption needs explicit repair, never an automatic replay or a startup block.
+- Speech to text binds a connection and an upstream model id; only a passing Test with the bundled synthetic sample saves it, bound to the tested key version. Dictation audio and transcripts exist only within the request.
 
-Catalog discovery is availability evidence, never execution authority. Admission binds the exact tested connection/model/revision/credential and role, then rechecks revocation before outbound requests. Personal credential precedence is direct user, identical group grant, then an explicitly configured installation default. Project runs use canonical Project resources and shared authority only. Missing authority never selects another tier, model, endpoint or provider.
+## Capability evidence
 
-Answer, embedding, rerank and Decisions roles are distinct. Internal roles use selected installation credentials, grant no user entitlement and ignore selector visibility. Image generation is instead a published resource on installation credentials: administrators publish verified models with their own parameters and keep one default, without which image generation is off for everyone; each user may choose one published model, otherwise following the default, and Project runs use only the default. An unusable published model is marked, never substituted; only withdrawal or clearing the role resets choices. Unavailable Chat titles preserve heuristic naming; qualification requires structured output. Vision independently requires verified image input, never borrowing another role's assignment; qualification differs from analysis-tool availability. Failed capabilities preserve unrelated roles. [Memory](MEMORY.md) owns independent reads, action authority and ranking.
+- A capability counts only after a successful probe on the exact active connection, model, credential and route; names and metadata prove nothing. Structured output, strict Memory actions, image input and PDF input are proven independently.
+- Add provider, Add model and Test & Save run every implemented probe for the model class (direct PDF included) and publish each success with its enabled flag on the exact tested revision. A partial failure keeps usable models and proofs.
+- On a connection with a single enabled key, every later check of the live model revision turns on each capability it verifies and never turns one off because a probe failed or was skipped (operator decision 2026-10-15). So a recheck can re-enable what an administrator switched off; only the check right after the administrator's own model save keeps the saved flags, and discovery never re-enables anything.
+- Only a deterministic rejection or a static adapter restriction proves incompatibility. Authentication, rate-limit, network, timeout and upstream failures keep the previous evidence. Native PDF proof must read image content through the native route; intermediary OCR text, refusals and generic HTTP errors are inconclusive.
+- Changing an endpoint requires fresh secrets for every retained key, disabled ones included, before contacting the new destination. A stored secret is never sent to a changed endpoint, so editing a URL cannot leak a saved key.
+- Gemini structured-output schemas omit upper bounds on nested arrays for compatibility; consumers enforce the canonical bounds after decoding.
 
-Optional Decisions require independent disclosure, consumer-specific qualification and verified availability. Adoption, including one-time OpenRouter upgrades, preserves explicit choices; absence preserves ordinary functions. Executions pin served model/provider identities without granting truth, ownership or mutation authority. Claim before upgrade I/O; failures require explicit repair, never automatic replay or startup blocking.
+## Transport
 
-Key replacement tests the active connection and publishes evidence atomically under exact version fences. Endpoint changes require fresh explicit secrets for every retained key, including disabled ones, before contacting the new destination. Stored secrets are never reused to discover or test changed endpoints. Search Save & Check publishes validated configuration/evidence; diagnostic run checks never publish configuration.
+- Every transport bounds input and output, supports cancellation, requires exact terminal proof and reports failures without values. Raw requests, responses, reasoning, tool arguments and provider errors are never kept for diagnosis.
+- Retry only explicitly admitted replay-safe work, under the adapter's failure classification and deadline, with the same authority and destination. Native background creation, accepted streams and crash-ambiguous dispatches are never replayed. Every physical request, retries included, is accounted.
+- Codex LB exception (operator decisions 2026-10-08, 2026-10-15, 2026-10-18): a live tool-loop answer round, compaction summary or Vision analysis on a Codex LB connection whose Responses request failed with HTTP 502, or whose stream dropped before completion without a deterministic classification, is re-sent unchanged to the same destination under Stop and the run deadlines, unless it already accepted non-text output. Users used to repeat these rounds by hand, and a round's tools run only after its result. A request that failed before any output gets a longer window because minute-long 502 bursts used to fail whole answers. Limits are in `lib/server/providers/providerRetry.ts`. Recovery never re-sends, and no other failure or route gains replay. Accepted cost: duplicate gateway quota.
+- Custom endpoints need an explicit protocol and the canonical base URL; never guess `/v1`. Public endpoints need HTTPS and bearer authentication; private HTTP and no-auth endpoints need their reviewed flags and pinned DNS and redirect checks.
+- Native and compatible protocols are different runtimes with no fallback between them; compatible Responses inherits no store, background or cache lifecycle. DeepSeek and Gemini use native paths only. Gemini thought signatures stay private continuation state.
+- Gateway routing keys only isolate physical requests: they are opaque and are not idempotency keys.
+- OpenRouter routes to a discovered native provider without outside fallback unless the operator chose otherwise. Data collection defaults to `deny`; `allow` is a per-model administrator choice, rechecked at admission and dispatch.
+- Agent usage comes from gateway receipts bound to the run, never from counters inside the guest.
 
-Capabilities need successful probes on the exact active connection/model/credential/route, never names, metadata or ordinary access. Structured output, strict Memory actions, image and PDF proofs are independent. PDF also requires runtime opt-in; image proof grants no payload limit. Reverify stale evidence.
+## Search
 
-Required results may use automatic choice, preserving reasoning and validating calls before effects. Native and automatic modes need independent proofs; Memory checks its effective reasoning mode. Gemini structured-output projections omit descendant-array upper bounds for compatibility; consumers enforce canonical bounds.
+- A Search engine receives only a bounded generated query and server-owned controls, never the conversation, prompts, attachment identity, file names or extracted text. Raw result bodies and recursively discovered URLs are not kept, and no unselected engine runs as a fallback.
+- The DeepSeek Search API is built in (operator decision 2026-10-18): a Search source beside a DeepSeek connection's hosted Search, offered to every tool-calling answer model and enabled by provider setup after one result-bearing probe. DeepSeek reports no cost, so a result-bearing request is billed at the published per-request price, an empty or rejected one costs nothing, and an unreadable one stays unknown (`lib/server/providers/deepSeekSearchApi.ts`).
 
-Initial Add provider/model and Test & Save authorize all implemented capability probes for that model class, including direct PDF without catalog hints. Publish each successful capability and its enabled flag together on the exact tested model/key revision. Preserve usable models and independent proofs on partial failure; setup retries reuse only current matching proofs and never recreate the saved graph. On a connection with a single enabled key, every later check of the live model revision turns on each capability it verifies and never turns one off on a failed or skipped probe (operator decision 2026-10-15), so a recheck can reactivate an administrator disable; only the check right after an administrator's own model save keeps the saved flags, and discovery never reactivates. Setup is complete only after its checks and publications settle; cancellation preserves committed results and fences late writes.
+## Documents, embeddings and reranking
 
-Only deterministic rejection or static adapter restrictions prove incompatibility. Authentication, rate-limit, network, timeout, safety-limit and upstream failures preserve prior evidence. Cancellation neither erases support nor grants capabilities. Discard raw probe content/errors.
+- Chat PDF and Knowledge document work freeze their own admitted destinations and evidence. A failed model route never switches silently to local extraction or another provider.
+- Knowledge Profiles authorize exact embedding destinations through tested installation credentials; request fields cannot choose them. Vector spaces never mix, an invalid vector rejects the whole batch, and reusing an older generation needs proof of the same canonical vector space, not a matching model name.
+- A reranker receives a sanitized query and documents behind opaque handles and returns scores only. Coverage must be complete and one-to-one, and a broken selected reranker never falls through to an unselected one or the System Model.
+- Knowledge reasoning overrides may change only the answer deployment's reasoning effort, never its destination or credential.
 
-Native PDF qualification must read image content through the selected native route; intermediary OCR text is no proof. A refused, incorrect or truncated answer and a generic HTTP error are inconclusive; only explicit unsupported input/route evidence establishes PDF incompatibility.
+## Prices and usage
 
-## Transport And Disclosure
+- Forward migrations never overwrite an administrator's token price: they update only `catalog` rows or unknown prices, matched by `providerModelCatalogKey` (`lib/server/admin/providers/providerModelPricing.ts`), and prices never synchronize at startup.
+- A paid call takes the provider-reported cost (OpenRouter BYOK adds the upstream cost), else the model's class prices, else stays unknown. Every paid call that returned usage is recorded once with its purpose, failed calls and administrator checks included.
 
-Every accepted transport has bounded input/output, cancellation, exact terminal proof and value-free failures. Retry only explicitly admitted replay-safe work under its adapter/stage-owned failure classification and deadline policy, without changing accepted authority or destinations. Native/background create, accepted streams and crash-ambiguous dispatched work are never blindly replayed. Every physical utility request contributes content-free accounting, including admitted retries or delayed selected-provider attempts. Never retain raw requests, responses, reasoning, tool arguments or provider errors for diagnosis.
+## Upstream references
 
-Operator exception (2026-10-08; users repeated such rounds by hand, and a round's tools run only after its result): on a Codex LB connection (the accepted snapshot's codex-lb catalog evidence, else a legacy `/backend-api/codex` root), a live tool-loop answer round whose Responses request failed with HTTP 502, or whose stream ended before completion (truncated, error event, `response.failed`, reset), without a deterministic classification, is sent again at most twice: the request it dispatched, same destination, credential and model, after the shared backoff (jitter, Retry-After), under Stop and run deadlines, unless it accepted output other than text. Each request is one operation (a lost one of unknown usage); the retry replaces the round's text; recovery never re-sends. The same holds (2026-10-15) for a live compaction summary request, each request its own summary attempt claimed after the dropped one settled, and for a Vision analysis request inside its live attempt before any of its output, every request's usage merged into that attempt. Since 2026-10-18 (minute-long upstream 502 bursts failed whole answers), a request of these that failed before any output, text included, may be sent until six requests in all, with jittered waits growing from about 2 s to 30 s, each wait, Retry-After included, ending within 90 s of the first request's start; one that streamed text keeps the shared backoff and three requests. No other failure, route or transport gains replay from this window. Accepted cost: duplicate gateway quota.
-
-Agent uses admitted Responses without guaranteeing model compatibility. Gateway receipts bind each Search continuation to its model; source budgets survive requests. Guest counters/reservations never justify billing. Unknown usage and late receipts retain their attempt identity.
-
-Custom roots require explicit protocol and canonical base URL; do not guess `/v1`. Public endpoints require HTTPS and bearer authentication. Private/local HTTP and no-auth require their reviewed flags, pinned resolution/redirect checks and immutable tested evidence. No-auth emits no Authorization header.
-
-Gateway routing isolation is compatibility behavior, never identity or retry authority. Automatic detection belongs to validated catalog evidence bound to the tested endpoint and credential; explicit overrides and accepted snapshots remain authoritative. Opaque routing keys isolate physical requests without exposing private identity or acting as idempotency keys. Preserve concurrency; fixed delays cannot guarantee isolation.
-
-Native and compatible protocols have distinct runtime identities; wire similarity grants no fallback authority. Native OpenAI background work requires stored provider state; compatible Responses inherits no store/background/cache lifecycle. DeepSeek and Gemini use native paths without compatible fallback. Gemini thought signatures remain private continuation state; combining hosted Search and application tools requires stable protocol support. Forced Gemini rounds narrow `allowed_tools` to their named tool; `any` compiles every advertised schema. OpenRouter defaults to a discovered native provider without outside fallback; operator Automatic/custom choices remain authoritative. A changed provider restriction on a deployment an installation role pins is refused before activation when the catalog shows no selected endpoint listing a parameter set that role sends with `require_parameters`, or cannot be read; catalog parameters cannot prove image or PDF input, so those roles rely on their checks. One-time adoption preserves routing until fresh capability proofs for all usable keys publish together. Unresolved or crash-ambiguous checks require explicit Test & Save. Data collection defaults to `deny`; per-model `allow` requires administrator choice, revalidated at admission and dispatch. Fakes are verification-only.
-
-Client Search receives only a bounded generated query and server-owned controls, never conversation, prompts, attachment identity, filenames, bytes or extracted text. Findings are bounded safe URL/text projections; raw bodies and recursively discovered URLs are not retained. Partial fan-out is explicit and no unselected fallback runs. Only the dedicated native DeepSeek Responses Search path may publish explicit `provider_unavailable` attribution with an empty source list.
-
-The DeepSeek Search API is its own Search source beside a DeepSeek connection's hosted Search: a client route for every tool-calling answer model, whose technical DeepSeek model only resolves the connection credential and is never called. It receives the generated query (at most 128 characters, no `ori_question`); summaries become findings and each linked result one cited source. An empty list is an ordinary complete result without sources, worded by the server. Requests share a per-credential limit of 5 per second and retry only 408, 429 and 5xx inside the Search deadline. DeepSeek reports no cost, so a result-bearing answer costs the published per-request price as one billed search; empty or rejected requests cost nothing, unreadable ones stay unknown. It is built in: provider setup publishes it beside the connection's own Search after one result-bearing probe, so adding a DeepSeek key turns it on (operator decision 2026-10-18).
-
-## Documents, Embeddings And Reranking
-
-Chat PDF and Knowledge document work freeze their separately admitted destinations and capability evidence. Transcription has no tools or Search, cannot mutate Memory and needs no structured output. A model-route failure never silently selects local extraction or another provider. The versioned native-text augmentation boundary is in [Run contracts](RUN_CONTRACTS.md); it is not an alternate provider route.
-
-Knowledge Profiles authorize exact document/query embedding destinations through tested installation credentials. Ordinary request fields cannot choose that authority. Legacy Profile revisions retain their accepted user-authority identity until explicitly reprocessed; new profiles do not inherit compatibility authority. Embedding eligibility requires both document and query protocol proof at the target dimension. Requests pin vector-space identity and mode; invalid count/model/dimension or non-finite output rejects the batch. Vector spaces never mix and failures do not substitute a deployment.
-
-Memory standing admission performs no external reads. Model-invoked search retains exact accepted embedding/reranking destinations and bounded cancellation. Memory owns its versioned query transform independently of provider query templates. Routing order, deadline or credential changes alone do not redefine document-vector identity. Reusing an older generation requires immutable successful execution proof of the same canonical vector space, not a model-name match.
-
-A reranker receives a sanitized query and bounded opaque-handle documents, returning scores only. Complete one-to-one handle coverage and governed model/provider identity are mandatory; one malformed or missing result invalidates the batch. Scores confer no ownership, lifecycle, safety, currentness or mutation authority. A selected-but-broken deployment never falls through to an unselected deployment or the generative System Model. Any configured Memory route fallback remains subject to [Memory](MEMORY.md)'s whole-pool atomicity. Internal Knowledge reasoning overrides may change only the admitted answer deployment's supported reasoning effort, never its destination or credential.
-
-Speech to text is an installation role on a connection and upstream model id, without a ProviderModel row or model class. Discovery only offers candidates; a passing Test with the bundled synthetic sample saves the role and binds the tested default-key version, so a replaced key needs a new Test, and nothing falls back to another connection or model. OpenRouter receives its JSON form, which alone carries `data_collection: deny`. Dictation audio and transcripts exist only within the request.
-
-Forward migrations never replace an administrator's token price: they update `catalog` rows, or unknown prices no administrator could have set, matched by `providerModelCatalogKey` (a tariff of the row's own model class: template key, else codex-lb or Quick Setup upstream); never synchronize at startup.
-
-Every paid call, answers included, takes the provider-reported cost (OpenRouter BYOK adds the upstream cost), else its model's class prices, else stays unknown; reported search counts add a per-search price only when one is set. A run's rewrites and recovery keep a reported answer cost. Every paid call that returned usage is recorded once with its purpose, failed and administrator check calls included.
-
-## Upstream References
-
-Reverify primary documentation when changing provider behavior. Adapter tests own exact wire support.
+Recheck primary documentation when changing provider behavior; adapter tests own the exact wire support.
 
 - OpenAI: [Responses](https://platform.openai.com/docs/api-reference/responses), [background mode](https://platform.openai.com/docs/guides/background), [SDK retries](https://github.com/openai/openai-node/blob/main/docs/configuration.md#retries-and-timeouts).
 - Anthropic: [Messages](https://docs.anthropic.com/en/api/messages), [streaming and terminals](https://platform.claude.com/docs/en/build-with-claude/streaming).
