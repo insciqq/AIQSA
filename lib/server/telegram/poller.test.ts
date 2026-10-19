@@ -114,6 +114,38 @@ describe("Telegram poller", () => {
     expect(poller.state()).toBe("polling");
   });
 
+  it("halves its batch while a backlog's response is over the transport bound, drains it and serves later updates", async () => {
+    const fake = createFakeTelegramBotApi();
+    const sessions = createTelegramSessionProvider({
+      control: async () => control(fake),
+      createApi: (token) => {
+        const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => {}, token, transport: fake.transport });
+        // A response bound that only batches of at most 12 updates fit under.
+        return { ...api, getUpdates: async (params) => (params.limit ?? 100) > 12 ? { ok: false, kind: "too_large", status: 200 } : api.getUpdates(params) } satisfies TelegramBotApi;
+      },
+      createOutbound: () => ({}) as TelegramOutbound
+    });
+    const receipts = memoryReceipts();
+    const dispatched: TelegramUpdate[] = [];
+    const delays: number[] = [];
+    const poller = createTelegramPoller({
+      dispatcher: { dispatch: (update) => { dispatched.push(update); return { settled: Promise.resolve() }; } },
+      health: { recordPollHealth: vi.fn(async () => {}) }, receipts: receipts.store, sessions, sleep: async (ms) => { delays.push(ms); }
+    });
+    stops.push(async () => { const stopping = poller.stop(); await fake.close(); await stopping; });
+    const backlogUser = fake.inject.addUser();
+    for (let index = 0; index < 40; index += 1) fake.inject.text(backlogUser, `backlog ${index}`);
+    poller.reevaluate();
+    await until(() => dispatched.length === 40);
+    const later = fake.inject.text(fake.inject.addUser(), "later");
+    await until(() => dispatched.some((update) => update.update_id === later.update_id));
+    // Only batches under the bound reached Telegram, and no failure backoff was taken.
+    const limits = fake.calls("getUpdates").map((call) => Number(call.params.limit));
+    expect(Math.max(...limits)).toBeLessThanOrEqual(12);
+    expect(delays).toEqual([]);
+    expect(poller.state()).toBe("polling");
+  });
+
   it("neither confirms nor loses a batch whose claim failed", async () => {
     const { delays, dispatched, fake, poller, receipts } = setup({ failClaims: 1 });
     const user = fake.inject.addUser();
