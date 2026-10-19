@@ -44,7 +44,7 @@
   max-height: 100dvh;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
-  border-right: 1px solid var(--v2-color-border);
+  border-right: 1px solid var(--v2-color-pane-divider);
   color: var(--v2-color-text);
   background: var(--v2-color-sidebar);
   transition:
@@ -106,7 +106,7 @@
 .v2-navigation-column-title {
   color: var(--v2-color-text);
   font-size: 0.8125rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .v2-navigation-wordmark {
@@ -127,13 +127,13 @@
   display: none;
 }
 
-/* Bubble-Q brand mark: the chat bubble drawn as a Q, always in the accent. */
+/* Bubble-Q brand mark: the chat bubble drawn as a Q, in the text colour. */
 .v2-navigation-mark {
   display: grid;
   width: 1.375rem;
   height: 1.375rem;
   place-items: center;
-  color: var(--v2-color-accent);
+  color: var(--v2-color-text);
 }
 
 .v2-navigation-mark > .v2-icon {
@@ -147,7 +147,7 @@
  * hover wash only, with the mode chevron kept as the split affordance.
  */
 /* New chat (PRD §4.2): one bordered split control on the surface — the
-   accent plus on the left, the mode chevron behind a hairline on the right. */
+   plus on the left, the mode chevron behind a hairline on the right. */
 .v2-new-chat-wrap {
   position: relative;
   display: grid;
@@ -184,12 +184,12 @@
   padding: 0.25rem 0.625rem;
   font: inherit;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
   text-align: left;
 }
 
 .v2-new-chat-main > .v2-icon {
-  color: var(--v2-color-accent);
+  color: var(--v2-color-text2);
   stroke-width: 2;
 }
 
@@ -249,8 +249,11 @@
   opacity: 0.8;
 }
 
+/* Field focus: the border steps to text3 under a soft 2px ring. */
 .v2-navigation-filter input:focus-visible {
-  border-color: var(--v2-color-accent);
+  border-color: var(--v2-color-text3);
+  outline: 2px solid color-mix(in srgb, var(--v2-color-text) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .v2-navigation-filter-clear {
@@ -593,8 +596,8 @@
   min-width: 0;
 }
 
-/* Chat rows (PRD §4.2): 34px, 13.5px/400; the active row is 500 on the
-   `active` wash with a 3px accent bar at the column's edge. */
+/* Chat rows (PRD §4.2): 34px, 13.5px/400; the selected row is 500 on the
+   `active` fill, with no stripe. */
 .v2-chat-row {
   position: relative;
   display: grid;
@@ -630,17 +633,6 @@
   background: var(--v2-color-active);
 }
 
-.v2-chat-row[data-selected="true"]::before {
-  position: absolute;
-  top: 0.4375rem;
-  bottom: 0.4375rem;
-  left: -0.5rem;
-  width: 0.1875rem;
-  border-radius: 0 2px 2px 0;
-  background: var(--v2-color-accent);
-  content: "";
-}
-
 /* A chat with an Assistant leads with its 16px avatar, after the live dot;
    the row keeps its height and the title keeps the flexible column. */
 .v2-chat-lead {
@@ -661,16 +653,12 @@
   white-space: nowrap;
 }
 
-/* Live chat: the accent dot glows (the only glow in the sidebar). */
+/* Live chat: a still ink dot before the title; no glow, no pulse. */
 .v2-chat-pulse {
   width: 0.4375rem;
   height: 0.4375rem;
   border-radius: 50%;
   background: var(--v2-color-accent);
-  box-shadow:
-    0 0 0.375rem var(--v2-color-accent),
-    0 0 0 0 var(--v2-color-accent-dim);
-  animation: v2-navigation-pulse 1.8s ease-out infinite;
 }
 
 .v2-chat-menu-trigger {
@@ -869,15 +857,6 @@
   right: 1rem;
   bottom: max(1rem, env(safe-area-inset-bottom));
   z-index: 90;
-}
-
-@keyframes v2-navigation-pulse {
-  70%,
-  100% {
-    box-shadow:
-      0 0 0.375rem var(--v2-color-accent),
-      0 0 0 0.375rem transparent;
-  }
 }
 
 @media (min-width: 768px) and (max-width: 1023px) {
@@ -1091,8 +1070,7 @@
 html[data-motion="off"] .v2-workspace-shell,
 html[data-motion="off"] .v2-navigation,
 html[data-motion="off"] .v2-navigation-scrim,
-html[data-motion="off"] .v2-sidebar-floats,
-html[data-motion="off"] .v2-chat-pulse {
+html[data-motion="off"] .v2-sidebar-floats {
   animation: none;
   transition: none;
 }
@@ -1101,8 +1079,7 @@ html[data-motion="off"] .v2-chat-pulse {
   .v2-workspace-shell,
   .v2-navigation,
   .v2-navigation-scrim,
-  .v2-sidebar-floats,
-  .v2-chat-pulse {
+  .v2-sidebar-floats {
     animation: none;
     transition: none;
   }
@@ -1122,7 +1099,7 @@ html[data-motion="off"] .v2-chat-pulse {
   align-items: center;
   gap: 0.25rem;
   padding: 0.75rem 0 max(0.75rem, env(safe-area-inset-bottom));
-  border-right: 1px solid var(--v2-color-border);
+  border-right: 1px solid var(--v2-color-pane-divider);
   color: var(--v2-color-text2);
   background: var(--v2-color-rail);
 }
@@ -1133,7 +1110,7 @@ html[data-motion="off"] .v2-chat-pulse {
   height: 2.5rem;
   place-items: center;
   margin-bottom: 0.5rem;
-  color: var(--v2-color-accent);
+  color: var(--v2-color-text);
 }
 
 .v2-rail-button.v2-rail-brand > .v2-icon {
@@ -1181,8 +1158,8 @@ html[data-motion="off"] .v2-chat-pulse {
 }
 
 .v2-rail-button[aria-current="page"] {
-  color: var(--v2-color-accent);
-  background: var(--v2-color-accent-dim);
+  color: var(--v2-color-text);
+  background: var(--v2-color-active);
 }
 
 /* The rail's account entry is the avatar only; its menu opens upward. */
@@ -1362,7 +1339,7 @@ html[data-motion="off"] .v2-chat-pulse {
   cursor: not-allowed;
 }
 
-/* An unopened scheduled-task result: a still accent dot, never animated. */
+/* An unopened scheduled-task result: a still ink dot after the title. */
 .v2-chat-unread {
   width: 0.4375rem;
   height: 0.4375rem;

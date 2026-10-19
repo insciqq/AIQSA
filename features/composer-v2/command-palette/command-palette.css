@@ -58,7 +58,7 @@
 
 .v2-composer-palette-option[data-active] {
   background: var(--v2-color-hover);
-  box-shadow: inset 2px 0 0 var(--v2-color-accent);
+  box-shadow: inset 2px 0 0 var(--v2-color-text2);
 }
 
 .v2-composer-palette-option[aria-disabled="true"] {
