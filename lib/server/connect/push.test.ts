@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserPushMessage } from "@/lib/contracts/browserPush";
 import { CONNECT_DEFAULT_HELLO_LIMITS, type ConnectDeviceEvent, type ConnectSessionStatus } from "@/lib/contracts/connect";
-import { CONNECT_PUSH_INTERVAL_MS, createConnectPush } from "./push";
+import {
+  CONNECT_PUSH_ACCOUNT_LIMIT,
+  CONNECT_PUSH_ACCOUNT_WINDOW_MS,
+  CONNECT_PUSH_INTERVAL_MS,
+  CONNECT_PUSH_MAX_IN_FLIGHT,
+  CONNECT_PUSH_MAX_QUEUED,
+  createConnectPush,
+  type ConnectPushDeps
+} from "./push";
 import { createConnectRelay, type ConnectDeviceRecord, type ConnectRelayEvent, type ConnectRelayListener } from "./relay";
 
 const logs = vi.hoisted(() => ({ logEvent: vi.fn() }));
@@ -10,7 +18,7 @@ vi.mock("../push/defaultBrowserPush", () => ({ getDefaultBrowserPush: vi.fn() })
 
 const DEVICE = "0b5e8c1e-7f43-4c55-9a43-7d1f5c0e2a11";
 
-function setup(options: Readonly<{ fail?: boolean }> = {}) {
+function setup(options: Readonly<{ fail?: boolean; send?: ConnectPushDeps["send"] }> = {}) {
   let listener: ConnectRelayListener | null = null;
   const clock = { now: 1_000_000 };
   const visible = new Set<string>();
@@ -32,11 +40,11 @@ function setup(options: Readonly<{ fail?: boolean }> = {}) {
         };
       }
     },
-    send: async (userId, message, jobId) => {
+    send: options.send ?? (async (userId, message, jobId) => {
       if (options.fail) throw new Error("push service down: secret detail");
       sent.push({ jobId, message, userId });
       return 1;
-    }
+    })
   });
   function status(status: ConnectSessionStatus, previousStatus: ConnectSessionStatus, extra: Partial<Readonly<{
     sessionId: string; title: string; userId: string;
@@ -113,6 +121,54 @@ describe("AIQSA Connect push", () => {
       ["owner-2", `aiqsa-connect-${DEVICE}-ac-abc123`, "Needs approval"],
       ["owner-1", `aiqsa-connect-${DEVICE}-ac-abc123`, "Waiting for you"]
     ]);
+  });
+
+  it("sends at most 6 notices per account a minute, whatever session ids its devices report", async () => {
+    logs.logEvent.mockClear();
+    const t = setup();
+    for (let n = 0; n < 10; n += 1) t.status("waiting", "running", { sessionId: `ac-rot${String(n).padStart(3, "0")}` });
+    t.status("waiting", "running", { userId: "owner-2" });
+    await t.push.idle();
+    expect(t.sent.filter((s) => s.userId === "owner-1")).toHaveLength(CONNECT_PUSH_ACCOUNT_LIMIT);
+    expect(t.sent.filter((s) => s.userId === "owner-2")).toHaveLength(1);
+    const refusals = logs.logEvent.mock.calls.filter(([, fields]) => (fields as { code?: string }).code === "push_rate_limited");
+    expect(refusals).toHaveLength(1);
+    t.clock.now += CONNECT_PUSH_ACCOUNT_WINDOW_MS;
+    t.status("waiting", "running", { sessionId: "ac-later1" });
+    await t.push.idle();
+    expect(t.sent.filter((s) => s.userId === "owner-1")).toHaveLength(CONNECT_PUSH_ACCOUNT_LIMIT + 1);
+  });
+
+  it("sends at most 8 notices at once, keeps 32 waiting and drops the rest", async () => {
+    logs.logEvent.mockClear();
+    const releases: Array<() => void> = [];
+    let started = 0;
+    let active = 0;
+    let most = 0;
+    const t = setup({
+      send: () => {
+        started += 1;
+        active += 1;
+        most = Math.max(most, active);
+        return new Promise((resolve) => releases.push(() => {
+          active -= 1;
+          resolve(1);
+        }));
+      }
+    });
+    const total = CONNECT_PUSH_MAX_IN_FLIGHT + CONNECT_PUSH_MAX_QUEUED + 5;
+    for (let n = 0; n < total; n += 1) t.status("needs_approval", "running", { userId: `owner-${n}` });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toBe(CONNECT_PUSH_MAX_IN_FLIGHT);
+    const dropped = logs.logEvent.mock.calls.filter(([, fields]) => (fields as { code?: string }).code === "push_queue_full");
+    expect(dropped).toHaveLength(5);
+    for (let round = 0; round < 100 && releases.length > 0; round += 1) {
+      for (const release of releases.splice(0)) release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await t.push.idle();
+    expect(started).toBe(CONNECT_PUSH_MAX_IN_FLIGHT + CONNECT_PUSH_MAX_QUEUED);
+    expect(most).toBe(CONNECT_PUSH_MAX_IN_FLIGHT);
   });
 
   it("skips a session the owner has open and visible, without spending its interval", async () => {
