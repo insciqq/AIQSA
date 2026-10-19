@@ -345,7 +345,8 @@ test.describe("with a real chat model", () => {
     await send();
     const run = await settledRun((await newRun(before)).id);
     expect(run.status).toBe("complete");
-    expect(run.modelId).toBe(model.modelId);
+    // A run records the upstream model id; the catalog id names the deployment.
+    expect(run.modelId).toBe(model.upstreamModelId);
     await expectDelivered(run.id);
     expect((await answerRefs(run)).length).toBeGreaterThan(0);
     await expectHealthy();
@@ -572,7 +573,8 @@ test.describe("with a real chat model", () => {
     await expect.poll(async () => (await prisma.telegramScheduledDelivery.findUnique({ where: { occurrenceId: occurrence.id } }))?.state ?? null,
       { intervals: [1_000], timeout: PAID_TURN_TIMEOUT_MS }).toBe("sent");
     const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: occurrence.runId! } });
-    expect(run.modelId).toBe(model.modelId);
+    // A run records the upstream model id; the catalog id names the deployment.
+    expect(run.modelId).toBe(model.upstreamModelId);
     expect(await prisma.telegramMessageRef.count({ where: { chatId: occurrence.chatId!, linkId, messageId: run.assistantMessageId } }))
       .toBeGreaterThan(0);
     await expectHealthy();
