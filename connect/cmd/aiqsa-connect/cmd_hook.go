@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/insciqq/AIQSA/connect/internal/config"
@@ -37,13 +39,21 @@ const drainWait = 500 * time.Millisecond
 
 // runHook reports one status and always exits 0 without output: agents run
 // it from their hooks, and nothing it does may change what they do.
+//
+// A Codex hook also reports its Codex thread (the input's session_id).
+// When it finds its session (from the environment, its pane ancestry, or
+// for a submitted prompt the one Codex session whose screen shows it), the
+// daemon binds the thread to that session; otherwise the daemon applies the
+// report to the session the thread is bound to, or drops it. A Codex
+// thread elsewhere in the same folder (another terminal, another tmux
+// server) is never bound, so it never changes a session's status.
 func runHook(inv *invocation) int {
 	// The agent starts its hooks in event order; the daemon orders reports by it.
 	started := time.Now()
 	if len(inv.args) == 0 || len(inv.args) > 2 {
 		return 0
 	}
-	var session string
+	var session, thread string
 	var update status.Update
 	switch agent := status.Agent(inv.args[0]); agent {
 	case status.AgentClaude, status.AgentCodex:
@@ -67,14 +77,14 @@ func runHook(inv *invocation) int {
 		if update, ok = status.FromHook(agent, in); !ok {
 			return 0
 		}
+		if agent == status.AgentCodex {
+			thread = in.Thread
+		}
 		if session == "" {
 			// Codex runs its hooks with a scrubbed environment, possibly
 			// from a background process outside the session's pane.
-			cwd := ""
-			if agent == status.AgentCodex {
-				cwd = in.Cwd
-			}
-			if session = sessionOfHookProcess(inv.ctx, cwd); session == "" {
+			session = sessionOfHook(inv.ctx, agent, in)
+			if session == "" && thread == "" {
 				return 0
 			}
 		}
@@ -93,7 +103,7 @@ func runHook(inv *invocation) int {
 	}
 	// The daemon may be down; the agent goes on either way.
 	localsock.Send(inv.ctx, localsock.Candidates(paths), localsock.Message{
-		Session: session, Status: update.Status, Reason: update.Reason, At: started.UnixNano(),
+		Session: session, Thread: thread, Status: update.Status, Reason: update.Reason, At: started.UnixNano(),
 	})
 	return 0
 }
@@ -115,46 +125,72 @@ func hookPaths() (config.Paths, error) {
 	return config.ResolvePaths()
 }
 
-// sessionSearchWait bounds the search for a hook's session: one tmux call
+// sessionSearchWait bounds the look at the client's panes: one tmux call
 // and one process snapshot.
 const sessionSearchWait = time.Second
 
-// sessionOfHookProcess finds the session of a hook whose environment lacks
-// AIQSA_CONNECT_SESSION among the panes of the client's own tmux server;
-// panes of any other tmux server never count. First the nearest ancestor
-// process that is a pane; failing that, for a non-empty cwd, the one Codex
-// session whose pane runs codex in that directory. Empty when there is
-// none, or more than one.
-func sessionOfHookProcess(ctx context.Context, cwd string) string {
+// hookScene is the client's tmux server and this computer's processes as
+// a hook saw them.
+type hookScene struct {
+	bin, socket string
+	panes       []tmux.Pane
+	snapshot    *procs.Snapshot
+}
+
+// lookAround lists the panes of the client's own tmux server, the only
+// panes that ever count, and takes one process snapshot. Nil when there are
+// none or either cannot be read.
+func lookAround(ctx context.Context) *hookScene {
 	ctx, cancel := context.WithTimeout(ctx, sessionSearchWait)
 	defer cancel()
 	paths, err := hookPaths()
 	if err != nil {
-		return ""
+		return nil
 	}
 	bin, err := tmux.FindBinary()
 	if err != nil {
-		return ""
+		return nil
 	}
 	panes, err := tmux.ListPanes(ctx, bin, paths.TmuxSocket)
 	if err != nil || len(panes) == 0 {
-		return ""
+		return nil
 	}
 	snapshot, err := procs.Take(ctx)
 	if err != nil {
+		return nil
+	}
+	return &hookScene{bin: bin, socket: paths.TmuxSocket, panes: panes, snapshot: snapshot}
+}
+
+// sessionOfHook finds the session of a hook whose environment lacks
+// AIQSA_CONNECT_SESSION: the session of the nearest ancestor process that
+// is a pane; failing that, for a prompt a Codex user submitted, the one
+// Codex session in the hook's directory whose pane runs codex and whose
+// screen shows the prompt. Empty when there is none, or more than one: a
+// Codex thread is never bound by guessing.
+func sessionOfHook(ctx context.Context, agent status.Agent, in status.HookInput) string {
+	scene := lookAround(ctx)
+	if scene == nil {
 		return ""
 	}
-	sessions := make(map[int]string, len(panes))
-	for _, pane := range panes {
+	sessions := make(map[int]string, len(scene.panes))
+	for _, pane := range scene.panes {
 		sessions[pane.PID] = pane.Session
 	}
-	if session := sessionOfAncestors(snapshot, os.Getppid(), sessions); session != "" {
+	if session := sessionOfAncestors(scene.snapshot, os.Getppid(), sessions); session != "" {
 		return session
 	}
-	if cwd == "" {
+	if agent != status.AgentCodex || in.Event != "UserPromptSubmit" || in.Cwd == "" || in.PromptKey == "" {
 		return ""
 	}
-	return codexSessionOfCwd(snapshot, panes, cwd)
+	candidates := codexSessionsOfCwd(scene.snapshot, scene.panes, in.Cwd)
+	if len(candidates) == 0 {
+		return ""
+	}
+	capture := func(ctx context.Context, session string) (string, error) {
+		return tmux.CapturePane(ctx, scene.bin, scene.socket, session, promptHistoryLines)
+	}
+	return sessionShowingPrompt(ctx, candidates, in.PromptKey, capture)
 }
 
 // sessionOfAncestors returns the session of the nearest of pid and its
@@ -171,27 +207,21 @@ func sessionOfAncestors(table procs.Table, pid int, panes map[int]string) string
 	return ""
 }
 
-// codexSessionOfCwd returns the only one of the client's Codex sessions
-// whose pane is in cwd and still runs a process named codex. Paths compare
-// cleaned and, where they resolve, with symlinks resolved. Two Codex
-// sessions in one directory are never told apart by guessing: neither is
-// returned.
-func codexSessionOfCwd(snapshot *procs.Snapshot, panes []tmux.Pane, cwd string) string {
+// codexSessionsOfCwd returns, once each, the client's Codex sessions whose
+// pane is in cwd and still runs a process named codex. Paths compare
+// cleaned and, where they resolve, with symlinks resolved.
+func codexSessionsOfCwd(snapshot *procs.Snapshot, panes []tmux.Pane, cwd string) []string {
 	want := canonicalPath(cwd)
 	isCodex := func(name string) bool { return name == string(protocol.ProgramCodex) }
-	found := ""
+	var found []string
 	for _, pane := range panes {
 		if pane.Program != string(protocol.ProgramCodex) || !protocol.SessionIDRegexp.MatchString(pane.Session) ||
-			!filepath.IsAbs(pane.Cwd) || pane.Session == found {
+			!filepath.IsAbs(pane.Cwd) || slices.Contains(found, pane.Session) {
 			continue
 		}
-		if canonicalPath(pane.Cwd) != want || !snapshot.HasDescendant(pane.PID, isCodex) {
-			continue
+		if canonicalPath(pane.Cwd) == want && snapshot.HasDescendant(pane.PID, isCodex) {
+			found = append(found, pane.Session)
 		}
-		if found != "" {
-			return ""
-		}
-		found = pane.Session
 	}
 	return found
 }
@@ -203,6 +233,58 @@ func canonicalPath(path string) string {
 		return resolved
 	}
 	return path
+}
+
+// promptHistoryLines is how far above a pane's screen a submitted prompt is
+// looked for: Codex may already have moved it into the scrollback.
+const promptHistoryLines = 60
+
+// promptLookAt is when, after a prompt hook starts, the candidate screens
+// are read: the TUI may draw the submitted prompt after its hook started.
+var promptLookAt = []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond, 600 * time.Millisecond}
+
+// promptSearchWait bounds the whole prompt search.
+const promptSearchWait = time.Second
+
+// sessionShowingPrompt returns the only one of candidates whose screen
+// shows the prompt key, looking again a few times while none does. Empty
+// when none ever does, when more than one does, or when a screen cannot be
+// read. The screens are compared in memory only.
+func sessionShowingPrompt(ctx context.Context, candidates []string, key string, capture func(context.Context, string) (string, error)) string {
+	ctx, cancel := context.WithTimeout(ctx, promptSearchWait)
+	defer cancel()
+	start := time.Now()
+	for _, at := range promptLookAt {
+		if wait := time.Until(start.Add(at)); wait > 0 {
+			select {
+			case <-ctx.Done():
+				return ""
+			case <-time.After(wait):
+			}
+		}
+		found := ""
+		for _, session := range candidates {
+			screen, err := capture(ctx, session)
+			if errors.Is(err, tmux.ErrSessionNotFound) {
+				continue
+			}
+			if err != nil {
+				return ""
+			}
+			if !status.ScreenShows(screen, key) {
+				continue
+			}
+			if found != "" {
+				// The same prompt in two sessions: neither is chosen.
+				return ""
+			}
+			found = session
+		}
+		if found != "" {
+			return found
+		}
+	}
+	return ""
 }
 
 // serveHookSocket runs the local socket for as long as `up` runs.

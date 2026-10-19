@@ -151,10 +151,13 @@ end with `tmux -L aiqsa-connect kill-server`.
 - **A Codex session never shows running or waiting.** Codex runs hooks
   without the session's environment, often from a background process outside
   the session, so the hook finds its session from the tmux pane it runs
-  under or else from the Codex session's folder; trust the hook in `codex`
-  with `/hooks`, and keep `aiqsa-connect up` running with its default
-  directories and tmux socket. Two Codex sessions in the same folder cannot
-  be told apart: start them in different folders.
+  under or else by finding the prompt you submitted on the screen of the
+  Codex session in that folder; trust the hook in `codex` with `/hooks`, and
+  keep `aiqsa-connect up` running with its default directories and tmux
+  socket. Statuses therefore start after the first prompt of at least 8
+  characters submitted in the session (again after `up` restarts), and Codex
+  threads elsewhere never change them. Two Codex sessions in the same folder
+  whose prompts have identical first lines cannot be told apart.
 
 ## What the AIQSA server can see
 

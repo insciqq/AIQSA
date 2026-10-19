@@ -47,11 +47,19 @@ func TestHookEventsMapToStatuses(t *testing.T) {
 }
 
 func TestReadHookInputReadsOnlyTheEventFields(t *testing.T) {
-	in := ReadHookInput(strings.NewReader(`{"session_id":"x","prompt":"secret \"quoted\" {not json}",
+	in := ReadHookInput(strings.NewReader(`{"session_id":"x","prompt":"  secret \"quoted\"\t {not json}\nsecond line",
 		"tool_input":{"command":"rm -rf /","nested":[1,{"a":[]}]},"hook_event_name":"Notification",
 		"message":"Claude needs your permission","notification_type":"permission_prompt","title":"t"}`))
-	if in != (HookInput{Event: "Notification", NotificationType: "permission_prompt"}) {
+	if in != (HookInput{Event: "Notification", NotificationType: "permission_prompt", Thread: "x", PromptKey: `secret "quoted" {not json}`}) {
 		t.Fatalf("got %+v", in)
+	}
+	// A session id that is not a thread id, a nested one, a non-string
+	// prompt and a prompt too short to tell sessions apart are dropped.
+	for _, input := range []string{`{"session_id":"a b"}`, `{"session_id":"` + strings.Repeat("a", 129) + `"}`,
+		`{"tool_input":{"session_id":"x","prompt":"a long nested prompt"}}`, `{"prompt":["a long array prompt"]}`, `{"prompt":"yes go"}`} {
+		if got := ReadHookInput(strings.NewReader(input)); got != (HookInput{}) {
+			t.Errorf("%.40q: got %+v", input, got)
+		}
 	}
 	for _, input := range []string{"", "not json", "[]", `{"hook_event_name":42}`, `"Stop"`} {
 		if got := ReadHookInput(strings.NewReader(input)); got != (HookInput{}) {
@@ -62,7 +70,7 @@ func TestReadHookInputReadsOnlyTheEventFields(t *testing.T) {
 
 func TestReadHookInputReadsTheWorkingDirectoryOfCodexPayloads(t *testing.T) {
 	cases := map[string]HookInput{
-		`{"session_id":"s","turn_id":"t","transcript_path":"/tmp/t.jsonl","cwd":"/home/u/project","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"deploy it"}`: {Event: "UserPromptSubmit", Cwd: "/home/u/project"},
+		`{"session_id":"s","turn_id":"t","transcript_path":"/tmp/t.jsonl","cwd":"/home/u/project","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"deploy it"}`: {Event: "UserPromptSubmit", Cwd: "/home/u/project", Thread: "s", PromptKey: "deploy it"},
 		`{"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"done","cwd":"/srv/a b"}`:                                                                                        {Event: "Stop", Cwd: "/srv/a b"},
 		`{"hook_event_name":"PermissionRequest","tool_name":"shell","tool_input":{"cwd":"/elsewhere","command":["ls"]},"cwd":"/work"}`:                                                                {Event: "PermissionRequest", Cwd: "/work"},
 		// Only the top-level cwd counts.
@@ -104,6 +112,32 @@ func TestReadHookInputIsBounded(t *testing.T) {
 	in = ReadHookInput(strings.NewReader(`{"tool_response":"` + big + `","hook_event_name":"Stop"}`))
 	if in.Event != "" {
 		t.Fatalf("read past the bound: %+v", in)
+	}
+}
+
+func TestAPromptKeyIsItsFirstLineAsAScreenShowsIt(t *testing.T) {
+	long := strings.Repeat("word ", 30)
+	cases := map[string]string{
+		"fix the flaky test":                      "fix the flaky test",
+		"\n  \r\n  fix   the\tflaky test  \nmore": "fix the flaky test",
+		"short\nfix the flaky test":               "",
+		"   ":                                     "",
+		"":                                        "",
+		"ёжик в тумане":                           "ёжик в тумане",
+		long:                                      strings.TrimSpace(long[:60]),
+		strings.Repeat("я", 70):                   strings.Repeat("я", 60),
+	}
+	for prompt, want := range cases {
+		if got := PromptKey(prompt); got != want {
+			t.Errorf("%.30q: %q, want %q", prompt, got, want)
+		}
+	}
+	screen := "  › fix the flaky\n    test in login\n\n• Working (3s)\n"
+	if !ScreenShows(screen, PromptKey("fix the flaky test in login\nthen rerun it")) {
+		t.Fatal("a wrapped prompt line was not found")
+	}
+	if ScreenShows(screen, "fix the flakytest") || ScreenShows(screen, "") || ScreenShows("", "fix the flaky") {
+		t.Fatal("matched what the screen does not show")
 	}
 }
 
