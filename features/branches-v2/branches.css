@@ -262,7 +262,7 @@
 
 .v2-branch-current {
   padding: 0 0.5rem;
-  color: var(--v2-color-accent);
+  color: var(--v2-color-text2);
   font-size: 0.75rem;
   font-weight: 500;
 }
