@@ -135,15 +135,16 @@ export function createTelegramChatBridge(deps: TelegramChatBridgeDeps): Telegram
           return true;
       }
     }
-    // Voice, audio, photos and documents belong to the media handler; other kinds to the fallback.
-    if (message.text === undefined || message.has_other_content || message.voice || message.audio || message.document || message.photo) {
-      return false;
-    }
+    const media = Boolean(message.voice || message.audio || message.document || message.photo);
+    // Other kinds (stickers, videos, …) belong to the fallback.
+    if (message.has_other_content || (message.text === undefined && !media)) return false;
     // Kept by Telegram while the bot was off: running it now would cost what nobody asked for.
     if (isStaleTelegramMessage(message, now())) {
       await noticeStale(context);
       return true;
     }
+    // Voice, audio, photos and documents belong to the media handler.
+    if (media || message.text === undefined) return false;
     if (message.text.trim()) conversation.queue(context, [{ text: message.text, type: "text" }]);
     return true;
   };

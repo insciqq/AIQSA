@@ -204,6 +204,35 @@ export function telegramScheduledFilesInAiqsaText(count: number): string {
   return count === 1 ? "1 more file is in AIQSA." : `${count} more files are in AIQSA.`;
 }
 
+/** Texts of voice messages, audio files, photos and documents sent to the bot. */
+export const TELEGRAM_MEDIA_COPY = {
+  voiceTooLarge: "Voice messages and audio files up to 10 MB are supported.",
+  voiceUnreadable: "This voice message couldn't be read. Send it again or type your message.",
+  voiceFailed: "This voice message couldn't be transcribed. Try again or type your message.",
+  voiceEmpty: "No speech was recognized in this voice message.",
+  fileUnreadable: "This file couldn't be downloaded from Telegram. Send it again.",
+  fileFailed: "This file couldn't be added. Try again, or upload it in AIQSA.",
+  fileProcessingFailed: "This file couldn't be processed. Upload it in AIQSA to see why.",
+  fileStillProcessing: "This file is taking too long to process. Send it again in a few minutes.",
+  pdfInvalid: "This PDF can't be read: it may be damaged or encrypted.",
+  pdfTooManyPages: "This PDF has too many pages to read here. Upload it in AIQSA.",
+  uploadBusy: "AIQSA is busy with other uploads. Send the file again in a minute."
+} as const;
+
+/** Too many voice messages in the dictation window; `retryAfterSeconds` from the limiter. */
+export function telegramVoiceRateLimitedText(retryAfterSeconds: number | null | undefined): string {
+  return `Too many voice messages in a short time. Send the next one ${waitText(retryAfterSeconds)}.`;
+}
+
+/**
+ * A file whose type AIQSA does not accept, naming the accepted types. Without
+ * Workspace only attachment types go; with it on, other files can too.
+ */
+export function telegramUnsupportedFileText(acceptedTypes: readonly string[], workspaceHint: boolean): string {
+  const accepted = `This file type isn't supported. Send ${acceptedTypes.join(", ")}.`;
+  return workspaceHint ? `${accepted} Other files work with Workspace on: turn it on in /settings.` : accepted;
+}
+
 /** What the user sees for each reason the bot itself answers; `undefined` for log- or settings-only reasons. */
 const REASON_TEXT: Partial<Record<TelegramReasonCode, string>> = {
   telegram_not_linked: TELEGRAM_COPY.notLinked,

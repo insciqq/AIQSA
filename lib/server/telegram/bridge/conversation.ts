@@ -47,10 +47,17 @@ export type TelegramMessageSource = Readonly<{
   updateId: number;
 }>;
 
+/**
+ * One message's content in the merge window: its blocks, or blocks a media
+ * handler is still preparing (a download, upload or transcription). A part
+ * that was refused resolves to nothing; its handler already said why.
+ */
+export type TelegramQueuedContent = readonly ContentBlock[] | Promise<readonly ContentBlock[]>;
+
 type Batch = {
   bot: TelegramBotSession;
   telegramChatId: number;
-  parts: ContentBlock[][];
+  parts: TelegramQueuedContent[];
   firstMessageId: number;
   firstUpdateId: number;
   replyTo: number | null;
@@ -97,8 +104,11 @@ type Slot = {
 };
 
 export type TelegramConversation = Readonly<{
-  /** Adds a message's content (its text, or blocks a media handler prepared) to the merge window. */
-  queue(source: TelegramMessageSource, blocks: readonly ContentBlock[]): void;
+  /**
+   * Adds a message's content (its text, or blocks a media handler prepares) to the merge window. The
+   * window closes as usual; the request waits until every pending part settled, in the link's order.
+   */
+  queue(source: TelegramMessageSource, content: TelegramQueuedContent): void;
   /** Runs a routing change after everything queued before it (`/new`, a chat or assistant choice). */
   enqueue(link: TelegramLinkRecord, bot: TelegramBotSession, job: (link: TelegramLinkRecord) => Promise<void>): void;
   /**
@@ -258,14 +268,22 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
     };
   }
 
-  function batchText(batch: Batch): string | null {
-    const merged = mergeTelegramContent(batch.parts);
-    return merged.length === 1 && merged[0]!.type === "text" ? merged[0]!.text.trim() : null;
+  /** The batch's merged content once every pending part settled; refused parts add nothing. */
+  async function batchContent(batch: Batch): Promise<ContentBlock[]> {
+    const parts = await Promise.all(batch.parts.map((part) => Promise.resolve(part).catch((error: unknown) => {
+      log({ code: "telegram_update_failed", error, outcome: "failed" });
+      return [];
+    })));
+    return mergeTelegramContent(parts);
+  }
+
+  function batchText(blocks: readonly ContentBlock[]): string | null {
+    return blocks.length === 1 && blocks[0]!.type === "text" ? blocks[0]!.text.trim() : null;
   }
 
   /** Adds text to the active run; false when the run no longer takes it and it must run on its own. */
-  async function followUp(link: TelegramLinkRecord, batch: Batch, active: ActiveRun): Promise<boolean> {
-    const text = batchText(batch);
+  async function followUp(link: TelegramLinkRecord, batch: Batch, blocks: readonly ContentBlock[], active: ActiveRun): Promise<boolean> {
+    const text = batchText(blocks);
     if (!text || text.length > RUN_FOLLOWUP_MAX_CHARS || !active.assistantMessageId) return false;
     const input = {
       assistantMessageId: active.assistantMessageId, chatId: active.chatId, nonce: `tg-${batch.firstUpdateId}`, runId: active.runId, text,
@@ -365,20 +383,20 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
   }
 
   async function runBatch(slot: Slot, batch: Batch): Promise<void> {
+    const blocks = await batchContent(batch);
+    if (blocks.length === 0) return;
     for (let round = 0; round < 3; round += 1) {
       const link = await currentLink(slot);
       if (!link) return;
       const { notice, target } = await route(link, batch);
       const active = slot.active;
       if (active) {
-        if (target.kind === "existing" && target.chatId === active.chatId && await followUp(link, batch, active)) return;
+        if (target.kind === "existing" && target.chatId === active.chatId && await followUp(link, batch, blocks, active)) return;
         await waitFor(slot, active);
         continue;
       }
       if (notice) await say(batch.bot, link.telegramChatId, notice);
-      await admit(slot, link, {
-        blocks: mergeTelegramContent(batch.parts), bot: batch.bot, replyTo: batch.firstMessageId, updateId: batch.firstUpdateId
-      }, target);
+      await admit(slot, link, { blocks, bot: batch.bot, replyTo: batch.firstMessageId, updateId: batch.firstUpdateId }, target);
       return;
     }
   }
@@ -410,7 +428,7 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
   }
 
   const conversation: TelegramConversation = Object.freeze({
-    queue(source: TelegramMessageSource, blocks: readonly ContentBlock[]) {
+    queue(source: TelegramMessageSource, content: TelegramQueuedContent) {
       const slot = slotFor(source.link);
       const replyTo = source.message.reply_to_message?.message_id ?? null;
       const buffered = slot.buffer;
@@ -420,7 +438,13 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
         bot: source.bot, firstMessageId: source.message.message_id, firstUpdateId: source.updateId, parts: [], replyTo, startedAt: now(),
         telegramChatId: source.link.telegramChatId
       };
-      slot.buffer.parts.push([...blocks]);
+      if ("then" in content) {
+        // Settled (and a failure logged) when the request runs; never an unhandled rejection meanwhile.
+        void content.catch(() => undefined);
+        slot.buffer.parts.push(content);
+      } else {
+        slot.buffer.parts.push([...content]);
+      }
       if (slot.timer) clearTimeout(slot.timer);
       slot.timer = setTimeout(() => flushSlot(slot), mergeWindowMs);
       slot.timer.unref?.();
