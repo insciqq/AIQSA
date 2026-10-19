@@ -1181,6 +1181,12 @@ describe("Image generation role", () => {
       { action: "test_and_save", connectionId: "openrouter", expectedConfiguredAt: null, modelId: "openai/gpt-4o-transcribe" },
       { action: "test_and_save", connectionId: "openrouter", expectedConfiguredAt: null, modelId: "openai/whisper-1" }
     ]);
+    // The saved model is ready: nothing to test until the model changes.
+    expect(within(row).queryByRole("button", { name: "Test & save" })).toBeNull();
+    fireEvent.change(model, { target: { value: "openai/gpt-4o-transcribe" } });
+    expect(within(row).getByRole("button", { name: "Test & save" })).toBeEnabled();
+    fireEvent.change(model, { target: { value: "openai/whisper-1" } });
+    expect(within(row).queryByRole("button", { name: "Test & save" })).toBeNull();
     fireEvent.click(within(row).getByRole("button", { name: "Speech to text actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Clear role" }));
     const confirmation = requestConfirmation.mock.calls.at(-1)![0];
