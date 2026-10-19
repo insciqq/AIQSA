@@ -5,6 +5,7 @@ import { useVisualViewportInset, visualViewportInset } from "./useVisualViewport
 class FakeVisualViewport extends EventTarget {
   height: number;
   offsetTop = 0;
+  scale = 1;
   constructor(height: number) {
     super();
     this.height = height;
@@ -58,5 +59,33 @@ describe("useVisualViewportInset", () => {
       window.dispatchEvent(new Event("orientationchange"));
     });
     expect(screen.getByTestId("inset")).toHaveTextContent("0");
+  });
+
+  it("reads a pinch-zoomed page as no keyboard, wherever the zoom is panned, and a keyboard again at scale 1", () => {
+    const viewport = install(844);
+    render(<Probe />);
+
+    act(() => {
+      // Zoomed 2x: the visual viewport shows half the layout, panned to its top.
+      viewport.scale = 2;
+      viewport.height = 422;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(screen.getByTestId("inset")).toHaveTextContent("0");
+
+    act(() => {
+      viewport.offsetTop = 200;
+      viewport.dispatchEvent(new Event("scroll"));
+    });
+    expect(screen.getByTestId("inset")).toHaveTextContent("0");
+
+    act(() => {
+      // Back at scale 1 with the keyboard open.
+      viewport.scale = 1;
+      viewport.offsetTop = 0;
+      viewport.height = 508;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(screen.getByTestId("inset")).toHaveTextContent("336");
   });
 });
