@@ -1,52 +1,52 @@
-# BACKEND
+---
+paths:
+  - "app/api/**"
+  - "lib/server/http/**"
+  - "lib/server/admin/**"
+  - "lib/server/assistants/**"
+  - "lib/server/skills/**"
+  - "lib/server/skillsMcp/**"
+  - "lib/server/shares/**"
+  - "lib/server/chats/**"
+  - "lib/server/projects/**"
+  - "lib/server/uploads/**"
+---
+# Backend
 
-Owner: Backend maintainers
-Scope: HTTP/API and control-plane boundaries.
+HTTP routes in `app/api/`, server modules in `lib/server/`, and the control planes for Projects, Assistants, Skills and MCP servers. Schema work also follows `agent_docs/PERSISTENCE.md`; sign-in and SCIM follow `agent_docs/SIGN_IN.md`.
 
-## API Boundary
+## Routes
 
-[`app/api/`](../app/api/) owns routes and methods; [`lib/contracts/`](../lib/contracts/) owns client-safe wire shapes. Authenticate, bound/decode input, invoke the server owner, and serialize an explicit projection. Recheck ownership, entitlement, and lifecycle at the operation. Browser mutations use the shared same-origin and bounded-body boundary. Stable errors omit raw exceptions and resource-existence clues.
+- A route authenticates, bounds and decodes input, calls its owner in `lib/server/`, and serializes an explicit projection. Reusable behavior lives below the route.
+- `lib/contracts/` (client-safe wire shapes) and `lib/domain/` (pure shared rules) are dependency leaves; never import server code into them.
+- Browser mutations pass the shared same-origin guard (`proxy.ts`, `lib/server/auth/csrf.ts`) and bounded body reading (`lib/server/http/requestBody.ts`).
+- Errors are stable codes without raw exceptions or hints that a resource exists.
+- Project event streams recheck membership while delivering; cursors only order invalidations, and losing access closes the stream.
 
-Project SSE authenticates sessions and reauthorizes membership during delivery. Cursors order invalidations, never grant authority; expired history requires canonical resync, and access loss closes delivery. Mutations stay bounded. Skill lists expose metadata; instructions/files require authorized reads. Discovery/pagination stay server-side.
+## Control planes
 
-HTTP correlation starts at the Node listener with a server-generated trace/response header; client headers cannot select it. Production route labels come only from the build manifest, never proving handler execution; unknown/dev routes omit raw URLs. Run/job identities correlate requests/recovery without new authority or persistence. Coordinators/timers start outside request context; claimed operations own theirs.
+- Configuration changes use optimistic concurrency and validate atomically. Never silently clamp, substitute or partially apply a change that spans several resources.
+- The Control Center attention list (`lib/server/admin/attention/`) only aggregates administrator projections that are already authorized. An unavailable source is named without failing the list, and entries carry human copy and links, never raw failures or private identifiers.
+- Using an installation MCP server lets a member fill in its required personal values. Overriding a shared value replaces an installation credential and needs a direct per-user permission.
+- Inbound MCP clients act as the current active account and cannot choose another owner. Memory calls and Hub dispatch create no synthetic chat, run or history.
 
-Diagnostics validate fields at runtime. HTTP completion, operation outcome and persistence remain distinct. Output failures cannot replace outcomes; bounded loss reporting and synchronous emergency writes provide best-effort evidence. Observation preserves exit policy; third-party output stays outside the writer's control.
+## Projects and Assistants
 
-## Control Planes
+- Project authority is scoped to that Project and its current roles. Every Project keeps a direct active Owner. Membership alone adds nothing to a member's personal catalogs.
+- Publishing an Assistant grants live future use, not entitlement to its dependencies. Fixed rows and Skill links are dependencies; adjustable rows are starting values a chat may replace. Accepted runs keep the definition, effective rows and a snapshot of name and avatar. Ordinary chats use the server-owned baseline, which the browser cannot replace.
+- Publication requires that every linked Skill has an approved revision and is directly available to the Assistant's audience. Publishing to a Project, or a manager's explicit refresh, applies the whole dependency plan atomically; later Assistant edits never silently change Project grants. Unlinking or unpublishing clears dependent defaults, plans and authorities in one transaction.
+- Non-administrators list an Assistant installation-wide only through an approved request, which covers the requested version only. Administrators read a private definition only through a pending request for its current version.
 
-Configuration transitions use optimistic concurrency and atomic validation. Never silently clamp, substitute, or partially apply a multi-resource change.
+## Skills
 
-All external sign-in methods share one identity settlement and one sign-in completion seam; [Sign-in](SIGN_IN.md) owns their rules.
+- A write grant to the Skill store permits changes only, never sharing or execution. A package missing from a client's listing does not mean it was deleted.
+- Every Skill write goes through `lib/server/skills/revisionWriteCore.ts`. Revisions are append-only: restoring makes an earlier revision current as a new revision, and the published revision never changes.
+- Chat Skill saves (`save_skill`, operator decision 2026-10-07) exist only in interactive personal chats with Workspace and in personal Agent runs. Files must be text, and a save is refused if any file contains a delivered secret value. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. The save commits with its tool call and card, and Undo restores the previous state as a new version. Code: `lib/server/skills/skillSave.ts`, `lib/server/agents/skillSaveCommit.ts`.
 
-SCIM provisioning (`/scim/v2`) is an admin-level integration surface outside `/api`: its bearer token is the only gate, and it changes accounts and memberships only through the commands the administrator paths use.
+## Files, jobs and shares
 
-Assistant publication must preserve direct Skill audience coverage and require approved revisions for all linked Skills. Project publication or explicit manager refresh applies the complete eligible dependency plan atomically; later Assistant edits never silently change Project grants. Missing dependencies make it unavailable until authorized refresh. Unlink/unpublish clears affected defaults/plans/dependent authorities atomically and reports safe consequences. Non-administrators list installation-wide only through approved requests; approval checks the requested version, and later edits stay unreviewed. Administrators read private definitions only through pending requests for the current version.
-
-Answer recommendations and purpose-specific System Model assignments are independent and grant no entitlement. Each system role uses its configured deployment and installation credential without substitution. Consolidated administration does not merge domain ownership: Knowledge activation creates an immutable profile with explicit reprocessing/reindexing, while Personal Memory retains owner-scoped entitlement and generation rules.
-
-Installation MCP server use, direct or through a group, lets a member fill the server's required personal values; overriding a shared value replaces an installation credential and needs a direct per-user permission.
-
-Inbound MCP grants resolve the current active account; clients cannot select another owner. Memory calls and Hub discovery/dispatch create no synthetic chat/run/history state. Hub uses existing outbound MCP configuration and runtime authority. Utility execution evidence is content-free.
-
-The Skill store exposes owned packages independently of chat enablement; write grants permit mutations, never sharing/execution. Mutations hold authority through commit. Clients install complete bundles locally; missing packages imply no deletion. Public agent instructions exclude repository instructions/private catalogs.
-
-Chat Skill saves (`save_skill`, operator exception 2026-10-07) exist only in interactive personal chats with Workspace and personal Agent runs; other runs lack the tool. One save per answer, 20 per hour: the folder's regular files captured coherently from `/workspace/project` or the run's output directory, never `/workspace/.aiqsa`; UTF-8 text only; refused if any file holds a delivered secret value. `new` creates a personal Skill; the owner's Skill gets a current version guarded by the revision the run staged (or the version an earlier result returned), and a conflict writes nothing and returns the current files to rebuild on; another user's visible Skill becomes a personal copy with provenance; the published revision never changes. Saves use the Skill store's guarded write core and commit with the call's settlement and card. Undo archives a created Skill or makes the replaced content current as a new version, guarded by the version the save left; any later change is a visible conflict.
-
-Restoring a Skill version makes an earlier ready revision of the owner's Skill current again as a new revision with the same content and stored objects, through the same guarded core; history is never rewritten and the published revision never changes. The library restores after a confirmation naming the version, guarded by the version it listed. `save_skill` restores directly as a save (same admission, limits, receipt, card and Undo). Other users' Skills are never restored.
-
-The Control Center attention list is read-only aggregation of already-authorized administrator projections. Unavailable sources are named without failing the whole list; entries contain human copy and navigation only, never raw failures, secrets, or private identifiers.
-
-## Files, Jobs, And Shares
-
-Authenticate before consuming uploads. Usability requires bounded type/content validation and server settlement of private-object integrity. Long-running work belongs to durable claimed jobs; deletion belongs to idempotent obligations, not request-local best effort.
-
-Upload status follows the exact ingestion artifact created for that upload, independently of another ready artifact or later reindexing. Reused content is immediately terminal; historical unbound uploads resolve their exact version's earliest artifact deterministically.
-
-Workspace upload admission is chat-scoped and requires installation/runtime capability. An opaque file can enter execution only through a workspace-enabled admitted run. Original-object settlement permits sandbox staging independently of extraction readiness; the application verifies and streams originals and stores outputs before exposing attachments. File reads reauthorize current personal or Project access. Storage authority never crosses into browser or guest contracts.
-
-Direct PDF execution may read a settled original before extraction completes, with bounded size/checksum validation. Local-extraction execution consumes ready text only. Original availability does not depend on extraction success.
-
-Chat exports (`aiqsa.chat` documents and the `aiqsa.chat-archive` manifest in [`chatExport.ts`](../lib/contracts/chatExport.ts)) are a user-held external contract. A published version never changes: a new shape bumps `version`, and import keeps accepting every published version. Documents use export-local message ids and readable text, never database ids, provider internals, usage or tool payloads; single-chat export authorizes exactly like opening the chat.
-
-Anonymous sharing uses a hashed high-entropy bearer token and one positive public schema for creation and reads of a sanitized immutable snapshot. Unknown fields, private attachments, Memory/Knowledge/tool evidence, recovery state, and private identifiers are dropped.
+- An upload becomes usable only after bounded type and content validation and server-side settlement of the stored object's integrity. Its status follows the exact ingestion artifact created for it, not another ready artifact.
+- Long-running work runs as durable claimed jobs, and deletion as idempotent obligations, never as best effort inside a request.
+- An opaque Workspace upload reaches execution only through an admitted run with Workspace on. File reads recheck current personal or Project access, and storage authority never reaches browser or guest contracts. A PDF original stays available whether or not its extraction succeeds.
+- Chat exports (`aiqsa.chat` and `aiqsa.chat-archive`, `lib/contracts/chatExport.ts`) are held by users outside the installation. A published version never changes: a new shape bumps `version`, and import keeps accepting every published version. Exports contain export-local ids and readable text, never database ids, provider internals, usage or tool payloads.
+- Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, Memory, Knowledge and tool evidence, recovery state and private identifiers are dropped. A share is never live access to the chat.

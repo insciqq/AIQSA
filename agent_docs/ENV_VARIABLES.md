@@ -1,42 +1,35 @@
-# ENVIRONMENT
+---
+paths:
+  - ".env.example"
+  - "compose.yaml"
+  - "compose.json-file-logging.yaml"
+  - "docker-compose.dev.yml"
+  - "aiqsa.sh"
+---
+# Environment
 
-Owner: Configuration and deployment maintainers
-Scope: Environment ownership, secret rotation, and Compose selection.
+Environment variables, secrets and key rotation, and Compose topology selection. `.env.example`, the Compose files and the parsers with their tests define keys, defaults, validation and ceilings; change them together. Operator-facing explanations belong in `SELF_HOSTING.md`.
 
-## Canonical Sources
+## Where configuration lives
 
-[Examples](../.env.example), [production](../compose.yaml)/[development Compose](../docker-compose.dev.yml), and parsers/tests own keys, defaults, validation and ceilings; update together. [`aiqsa.sh configure`](../aiqsa.sh) creates secrets once, preserving `.env`. Prose owns operator/security contracts; malformed security settings fail closed. Infrastructure owns provisioning.
+- `./aiqsa.sh configure` creates secrets once and never rewrites existing `.env` bytes. Malformed security settings fail closed, and missing optional configuration (SMTP, OAuth, parsers, Memory) never weakens authentication or readiness.
+- Provider and Search credentials and other mutable configuration live in encrypted database records, not in the environment. Sign-in methods are configured in the admin panel; `AIQSA_GOOGLE_OAUTH_*` and `AIQSA_YANDEX_OAUTH_*` only apply while no admin configuration of that provider is active. Bootstrap, session, proxy and base URL settings are environment-only.
+- Each container role gets only the authority it uses: parsers have no data or provider credentials, the runner only its internal token and runtime policy, maintenance no object or provider credentials, restore review no provider credentials. Keep it that way when editing Compose files.
+- Test authentication, fake providers, demo credentials and the deterministic runtime turn on only when every disposable, non-production gate is set, and never against persistent data. Telegram's test update route and the loopback-only `AIQSA_TELEGRAM_API_ORIGIN` are such fakes.
+- Accepted risk: each host added to `AIQSA_ARTIFACT_LIBRARY_HOSTS` or `AIQSA_ARTIFACT_IMAGE_HOSTS` widens model-controlled URL egress (`lib/server/artifacts/resourcePolicy.ts`); the operator accepts that disclosure.
 
-Mutable provider/Search credentials/configuration belong in encrypted database records. Sign-in methods are configured in the admin panel; `AIQSA_GOOGLE_OAUTH_*` and `AIQSA_YANDEX_OAUTH_*` are only a fallback while no admin configuration of that provider is active, and an active one overrides them ([Sign-in](SIGN_IN.md)). Bootstrap, session, proxy and base URL settings stay environment-only; proxy trust also gates [trusted-header sign-in](SIGN_IN.md#trusted-header). Administrator-owned Agent limits default Off, independent of Workspace networking. Environment supplies installation wiring and bounded policy/recovery inputs. Roles receive only consumed authority: parsers no data/provider credentials; runner only its internal token/runtime policy; maintenance database/runner access without object/provider credentials; restore review no provider credentials or ordinary execution.
+## Secrets and rotation
 
-Artifact resource policy lives in [resourcePolicy](../lib/server/artifacts/resourcePolicy.ts). `AIQSA_ARTIFACT_EXTERNAL_RESOURCES=off` stops new downloads, preserving saved resources/local capabilities. `AIQSA_ARTIFACT_LIBRARY_HOSTS` and `AIQSA_ARTIFACT_IMAGE_HOSTS` replace defaults; empty means none. Adding npm mirrors or image hosts widens model-controlled URL egress, including bounded image queries; operators accept that disclosure risk.
+- Keep `.env` out of Git, images, logs, transcripts and support bundles. Production provisioning and rotation belong to the infrastructure operator.
+- Session and flow signing, `AIQSA_ENCRYPTION_KEY`, the Memory fingerprint and routing keys and the Workspace token are independent; never derive one from another. The encryption and Memory keys are backed up separately from data.
+- Replacing `AIQSA_ENCRYPTION_KEY` without a migration makes every encrypted provider, SMTP, MCP, OAuth, TOTP and sign-in secret unreadable.
+- Memory fingerprint rotation is additive, and a missing historical key version blocks the affected state. Rotating the routing key requires a full rebuild of the derived lexical index before readiness; mixed keys are never a fallback.
+- The trusted base URL decides callback and email origins, cookie defaults and same-origin policy; request Host and forwarding headers never select it. Changing it is an identity and security migration.
 
-Test auth/fakes/demo credentials/deterministic runtime require every disposable non-production gate, never persistent data. Telegram's test update route and loopback-only `AIQSA_TELEGRAM_API_ORIGIN` are such fakes. Optional SMTP/OAuth/parser/Memory absence cannot weaken auth/readiness. Emergency switches are temporary and externally auditable; ownership, egress, migration and retention guards remain mandatory.
+## Running Compose
 
-## Secrets And Rotation
-
-Keep `.env` restricted and outside Git, images, logs, transcripts, and support bundles. Local development uses explicit disposable defaults or the ignored local profile. Production provisioning/rotation belongs to the infrastructure operator.
-
-Session/flow signing, `AIQSA_ENCRYPTION_KEY`, Memory fingerprint/routing keys and Workspace token are cryptographically independent; never derive one from another. Back up encryption/Memory keys separately from data.
-
-Replacing `AIQSA_ENCRYPTION_KEY` without migration loses encrypted provider/SMTP/MCP/OAuth/TOTP/sign-in readability. Fingerprint rotation is additive; missing historical versions block affected state, and backup preflight records required IDs without keys. Routing-key or ID rotation requires a full derived lexical rebuild before readiness; canonical PostgreSQL survives but mixed-key fallback is forbidden. Missing key history or destination authority never weakens suppression or selects another destination.
-
-The trusted base URL determines callback/email origins, cookie/HSTS defaults, and same-origin policy; request Host/forwarding never selects it. Changing it is an identity/security migration. Direct non-loopback HTTP gives no confidentiality; [Security](SECURITY.md) owns exposure rules.
-
-A browser-reachable S3 endpoint is an explicit optional boundary for the same private bucket, requiring application-origin CORS and multipart ETag exposure. Runner URL/token are required together; absent wiring leaves Workspace undeployed. Runtime/image/MCP identities are exact compatibility pins and configurable resource bounds cannot exceed parser-owned ceilings.
-
-## Operations
-
-Each checkout owns ignored `.env` and private Compose overrides. Preserve project identity, ports, keys and resource bindings during synchronization.
-
-`AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES` defaults to 8388608; explicit overrides win. Update the configuration source and recreate consumers: restarting retains old environment. It bounds one delivered tool result: the transport accepts up to twice the value (within the 16 MiB ceiling), so a larger complete result reaches the model cut to the value with a marker instead of failing; a response beyond the transport bound fails only that call, telling the model to request less data, while its session and parallel calls continue. An oversized initialize, tool list or event on the server's standalone stream still closes the session. Persistence/context limits stay separate; bounded end-to-end retrieval belongs to observation storage.
-
-`AIQSA_SCHEDULED_WORKSPACE_MAX_CONCURRENT` (default 1) caps scheduled runs with Workspace on, installation-wide; over it occurrences wait visibly for a slot. Interactive Workspace runs never count and keep the runner's remaining capacity, so size the cap below what the runner's memory/CPU limits hold.
-
-Production containers log to the host journal (journald driver) so history survives the recreation of every deploy; `aiqsa.sh logs --since/--until` reads it with `.env` masking. The driver fails container start without systemd-journald and Docker rejects json-file options for it, so env interpolation cannot switch drivers: such hosts select [`compose.json-file-logging.yaml`](../compose.json-file-logging.yaml) through `COMPOSE_FILE`, written once by `configure`, and `AIQSA_LOG_MAX_*` apply only there. Journal storage and size are host-wide, so the CLI checks and documents a size-capped budget without an age limit and never writes host configuration. Logging adds no volume or service.
-
-When `.env` defines `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, use that checkout's ordinary `docker compose`. Explicit `-f` (including package scripts) replaces this selection: reserve it for deliberately selected topologies. `-p` cannot isolate external volumes. Inspect selectors without private values; use disposable state for destructive checks. Stable volume names do not prove isolation.
-
-Memory lexical rollout/rollback/recovery belongs to infrastructure. PostgreSQL is the rollback default; shadow observes only. Canary/primary retain canonical checks and bounded PostgreSQL fallback. Backend/percentage changes require app recreation; projection workers are independent. The coordinator lease governs replay safety, not provider timeout: shorter leases can falsely mark healthy calls outcome-unknown; longer leases delay crash recovery.
-
-Never print resolved environments. Report presence/validity booleans and stable codes only. [Testing](TESTING.md) owns disposable overrides; [Persistence](PERSISTENCE.md) owns recovery.
+- Each checkout owns its ignored `.env` and private Compose overrides. Preserve its project name, ports, keys and volumes.
+- When `.env` defines `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, use plain `docker compose`. An explicit `-f`, including inside npm scripts, replaces that selection, so use it only for a deliberately chosen topology. `-p` cannot isolate external volumes, and stable volume names prove nothing about isolation.
+- Environment changes apply only when containers are recreated (`docker compose up -d`); a restart keeps the old environment.
+- Production logs go to the host journal. Hosts without journald select `compose.json-file-logging.yaml` through `COMPOSE_FILE`; the log driver cannot be switched by variable interpolation because Docker rejects json-file options for journald.
+- The Memory lexical backend rollout belongs to infrastructure; PostgreSQL is the default and rollback target. The coordinator lease governs replay safety, not provider timeouts: a shorter lease can wrongly mark healthy calls outcome-unknown, a longer one delays crash recovery.

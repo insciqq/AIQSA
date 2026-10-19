@@ -121,7 +121,7 @@ function KnowledgeStateV2({ state }: Readonly<{ state: ThreadKnowledgeAnswerStat
 
 /* Knowledge rows carry the violet handle mark and a book glyph; the only
    action is "Open document ›" because the citation projection exposes no
-   private base/document name (CRITICAL_INVARIANTS §9). */
+   private base/document name (AGENTS.md, "Private by default"). */
 function KnowledgeSourceV2({
   citation,
   reference
