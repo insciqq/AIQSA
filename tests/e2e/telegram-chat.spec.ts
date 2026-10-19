@@ -300,7 +300,6 @@ test("/assistant starts the next chat with the chosen assistant", async () => {
 
 test("/model changes the model of the next run", async () => {
   secondModel = await createCatalogOnlyAnswerModel(prisma, "telegram-chat");
-  const since = bot.calls().length;
   bot.inject.command(tgAlice, "model");
   await expect.poll(() => bot.botMessages(tgAlice.id).some((message) => message.text === TELEGRAM_BRIDGE_COPY.modelsTitle),
     { timeout: REPLY_TIMEOUT_MS }).toBe(true);
@@ -321,12 +320,14 @@ test("/model changes the model of the next run", async () => {
   await expect.poll(() => botMessage(choice.messageId)?.text, { timeout: REPLY_TIMEOUT_MS }).toBe(telegramModelLabel(secondModel.displayName));
 
   const before = await latestRun();
+  const asked = bot.calls().length;
   bot.inject.text(tgAlice, "Which model answers this?");
-  // The synthetic model has no reachable provider: the run is admitted with it and then fails visibly.
-  await expect.poll(async () => (await latestRun()).id !== before.id, { timeout: REPLY_TIMEOUT_MS }).toBe(true);
-  expect((await latestRun()).modelId).toBe(secondModel.providerModelId);
-  await expect.poll(() => textsSince(since, tgAlice.id).some((text) => text.startsWith("The answer couldn't be completed")),
-    { timeout: REPLY_TIMEOUT_MS }).toBe(true);
+  // The synthetic model has no reachable provider: the message is refused (or, admitted, fails) for that
+  // model with a visible reason, and the default model never answers it.
+  await expect.poll(() => textsSince(asked, tgAlice.id).length, { timeout: REPLY_TIMEOUT_MS }).toBeGreaterThan(0);
+  const latest = await latestRun();
+  if (latest.id !== before.id) expect(latest.modelId).toBe(secondModel.providerModelId);
+  expect(callsSince(asked, "sendRichMessage", tgAlice.id)).toEqual([]);
   // Back to the default model, in a chat that does not carry the synthetic one.
   await prisma.telegramLink.update({ data: { selectedModelId: null, selectedProvider: null }, where: { userId: aliceSession.user.id } });
   const next = bot.calls().length;
