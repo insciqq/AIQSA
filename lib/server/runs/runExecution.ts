@@ -3428,7 +3428,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 : {})
             });
             if (persisted.kind === "cancelled") throw abortError();
-            if (persisted.kind !== "persisted" && persisted.kind !== "reused") {
+            // Only its settled unknown row keeps an undeclared call from running.
+            if (persisted.kind !== "persisted" && persisted.kind !== "reused" || calls.some(call => call.undeclared &&
+              !persisted.calls.some(row => row.providerCallId === call.id && unknownToolCall(row) !== null))) {
               throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool batch could not persist");
             }
             for (const call of persisted.calls) {

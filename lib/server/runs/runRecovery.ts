@@ -3412,7 +3412,9 @@ async function recoverCheckpointedToolLoop(
           : {})
       });
       if (persisted.kind === "cancelled") throw new ToolLoopRecoveryStopped();
-      if (persisted.kind !== "persisted" && persisted.kind !== "reused") {
+      // Only its settled unknown row keeps an undeclared call from running.
+      if (persisted.kind !== "persisted" && persisted.kind !== "reused" || calls.some(call => call.undeclared &&
+        !persisted.calls.some(row => row.providerCallId === call.id && unknownToolCall(row) !== null))) {
         throw new ToolLoopRecoveryError(
           "tool_loop_checkpoint_conflict",
           "The recovered tool batch could not be persisted."
