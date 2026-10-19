@@ -132,7 +132,8 @@ func FromHook(agent Agent, in HookInput) (Update, bool) {
 	return Update{}, false
 }
 
-// Bell is the status a terminal bell reports, subject to Gate.AcceptBell.
+// Bell is the status a terminal bell reports, subject to Gate.AcceptBell;
+// the daemon applies it to agent sessions only.
 func Bell() Update { return Update{protocol.StatusWaiting, protocol.ReasonBell} }
 
 // maxTrackedSessions bounds Gate; entries past BellQuietWindow go first.

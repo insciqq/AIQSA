@@ -38,6 +38,9 @@ type view struct {
 	done  chan struct{}
 	// closing is set once the client closes the view or it exited.
 	closing atomic.Bool
+	// replies tells typing from the browser terminal's own replies; only
+	// viewInput, on the stream goroutine, uses it.
+	replies replyFilter
 
 	mu      sync.Mutex
 	pending []byte
@@ -49,6 +52,8 @@ type view struct {
 	// clientName is the tmux name of the attach client once found; only
 	// claimLoop uses it.
 	clientName string
+	// claimed counts the claims done, so tests can order input after them.
+	claimed atomic.Uint64
 }
 
 func (c *connection) viewByID(id string) *view {
@@ -126,14 +131,18 @@ func (c *connection) viewInput(m *protocol.ViewInput) {
 	if v == nil || v.closing.Load() {
 		return
 	}
+	data := []byte(m.Data)
 	select {
-	case v.input <- []byte(m.Data):
+	case v.input <- data:
 	default:
 		c.d.log.Event("view_input_overflow")
 		c.closeView(v, protocol.ViewClosedError)
 		return
 	}
-	if v.agent {
+	// Every byte goes to tmux, which asked for the replies; only typing
+	// starts an agent turn. An answer strip shown while the agent waits for
+	// approval must survive the view attaching or the mouse moving.
+	if v.agent && v.replies.userInput(data) {
 		c.d.reportInput(v.sessionID)
 	}
 }
@@ -166,9 +175,14 @@ func (v *view) claimWindowSize() {
 	}
 }
 
-// claimRetry is how often claimLoop looks again for an attach client that
-// has not reached the tmux server yet.
-const claimRetry = 50 * time.Millisecond
+const (
+	// claimRetry is how often claimLoop looks again for an attach client
+	// that has not reached the tmux server yet.
+	claimRetry = 50 * time.Millisecond
+	// claimTimeout bounds one claim, the wait for the client included: on
+	// a busy computer a new attach client can take seconds to appear.
+	claimTimeout = 15 * time.Second
+)
 
 func (v *view) claimLoop() {
 	for {
@@ -177,10 +191,12 @@ func (v *view) claimLoop() {
 			return
 		case <-v.claim:
 		}
-		ctx, cancel := context.WithTimeout(v.c.ctx, 3*time.Second)
+		ctx, cancel := context.WithTimeout(v.c.ctx, claimTimeout)
 		err := v.claimOnce(ctx)
 		cancel()
-		if err != nil && !v.closing.Load() && v.c.ctx.Err() == nil {
+		if err == nil {
+			v.claimed.Add(1)
+		} else if !v.closing.Load() && v.c.ctx.Err() == nil {
 			v.c.d.log.Event("view_claim_failed", "err", err)
 		}
 	}

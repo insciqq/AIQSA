@@ -321,6 +321,44 @@ func TestReportStatusWithRealTmux(t *testing.T) {
 	h.stop(t)
 }
 
+// A bell in a shell (an ambiguous Tab) is no agent waiting: nothing would
+// ever clear the status it set. In an agent session it still counts.
+func TestBellSetsStatusOnlyInAgentSessionsWithRealTmux(t *testing.T) {
+	ts := tmuxtest.New(t)
+	server := newFakeServer(t)
+	h := newHarness(t, server, ts.Manager, fastTiming())
+	ctx := context.Background()
+	shell, err := ts.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: t.TempDir(), Title: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Labeled codex: the test never starts a real agent.
+	agent, err := ts.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: t.TempDir(), Title: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Manager.SetOptions(ctx, agent, tmux.OptionProgram, string(protocol.ProgramCodex)); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{shell, agent} {
+		if err := h.daemon.ReportStatus(id, protocol.StatusWaiting, protocol.ReasonBell); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v, _ := ts.Manager.Option(ctx, shell, tmux.OptionStatus); v != string(protocol.StatusIdle) {
+		t.Fatalf("shell status after a bell: %q", v)
+	}
+	if v, _ := ts.Manager.Option(ctx, agent, tmux.OptionStatus); v != string(protocol.StatusWaiting) {
+		t.Fatalf("agent status after a bell: %q", v)
+	}
+	if !strings.Contains(h.log.String(), "bell_ignored") {
+		t.Fatal("ignored bell not logged")
+	}
+	if err := h.daemon.ReportStatus("ac-missing0", protocol.StatusWaiting, protocol.ReasonBell); err == nil {
+		t.Fatal("bell of an unknown session accepted")
+	}
+}
+
 func waitFor(t *testing.T, what string, done func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

@@ -14,6 +14,7 @@ package hooks
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/status"
 )
 
@@ -136,6 +136,8 @@ type Plan struct {
 	before []byte
 	after  []byte
 	perm   os.FileMode
+	// edit plans the change again when the file changed before Apply.
+	edit func(hooks *object) (bool, error)
 }
 
 // Backup is the path of the file's backup copy.
@@ -165,7 +167,7 @@ func PlanRemove(path string) (*Plan, error) {
 }
 
 func plan(path string, edit func(hooks *object) (bool, error)) (*Plan, error) {
-	p := &Plan{Path: path, Target: path, perm: 0o600}
+	p := &Plan{Path: path, Target: path, perm: 0o600, edit: edit}
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		p.Target = resolved
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -268,15 +270,84 @@ func readBounded(path string) ([]byte, os.FileInfo, error) {
 	return data, info, nil
 }
 
+// applyAttempts bounds how often Apply plans again for a file that keeps
+// changing under it.
+const applyAttempts = 3
+
+// errChanged reports that the file is no longer what the plan read.
+var errChanged = errors.New("the file changed")
+
+// beforeReplace runs between writing the new file aside and the last check
+// before it replaces the old one; tests change the file there.
+var beforeReplace = func() {}
+
 // Apply writes the plan: the first time the client changes an existing
 // file it keeps a copy at Backup() (never overwritten later), then the file
 // is replaced atomically with its previous mode.
+//
+// The user can take minutes to confirm, and meanwhile the file can be
+// rewritten (by the user, or by the agent itself, as Claude Code's /config
+// does). So Apply first checks that the file still is what the plan read;
+// if it is not, the same change is planned again on what it holds now, and
+// the plan takes that state. Nothing the newer file holds is lost, and the
+// backup always holds bytes the file really had.
 func (p *Plan) Apply() error {
-	if !p.Changed {
-		return nil
+	for range applyAttempts {
+		current, err := p.stillCurrent()
+		if err != nil {
+			return err
+		}
+		if !current {
+			next, err := plan(p.Path, p.edit)
+			if err != nil {
+				return err
+			}
+			*p = *next
+		}
+		if !p.Changed {
+			return nil
+		}
+		if err := p.write(); !errors.Is(err, errChanged) {
+			return err
+		}
 	}
+	return fmt.Errorf("%s changed since it was read; run aiqsa-connect setup again", p.Path)
+}
+
+// stillCurrent reports whether the file still resolves to the same target
+// and holds the bytes, or the absence, the plan was made from.
+func (p *Plan) stillCurrent() (bool, error) {
+	target := p.Path
+	if resolved, err := filepath.EvalSymlinks(p.Path); err == nil {
+		target = resolved
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if target != p.Target {
+		return false, nil
+	}
+	data, info, err := readBounded(target)
+	var unreadable *ErrUnreadable
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return !p.Exists, nil
+	case errors.As(err, &unreadable):
+		// Planning again reports it.
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return p.Exists && info.Mode().IsRegular() && info.Mode().Perm() == p.perm && bytes.Equal(data, p.before), nil
+}
+
+// write carries out a plan that was current a moment ago, checking again
+// right before the file is replaced or removed.
+func (p *Plan) write() error {
 	if p.Delete {
 		// The file holds nothing but what the client once created.
+		if current, err := p.stillCurrent(); err != nil || !current {
+			return cmp.Or(err, errChanged)
+		}
 		return os.Remove(p.Target)
 	}
 	if p.Exists {
@@ -286,7 +357,42 @@ func (p *Plan) Apply() error {
 	} else if err := os.MkdirAll(filepath.Dir(p.Target), 0o700); err != nil {
 		return err
 	}
-	return config.WriteFileAtomic(p.Target, p.after, p.perm)
+	dir := filepath.Dir(p.Target)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(p.Target)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	err = tmp.Chmod(p.perm)
+	if err == nil {
+		_, err = tmp.Write(p.after)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	beforeReplace()
+	if current, err := p.stillCurrent(); err != nil || !current {
+		return cmp.Or(err, errChanged)
+	}
+	if !p.Exists {
+		// A hard link never replaces a file created in the meantime; a
+		// filesystem without hard links gets the rename below.
+		err := os.Link(tmpName, p.Target)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, os.ErrExist) {
+			return errChanged
+		}
+	}
+	return os.Rename(tmpName, p.Target)
 }
 
 func writeBackupOnce(path string, data []byte, perm os.FileMode) error {

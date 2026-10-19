@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/insciqq/AIQSA/connect/internal/config"
+	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/hooks"
 	"github.com/insciqq/AIQSA/connect/internal/status"
 	"github.com/insciqq/AIQSA/connect/internal/tmux"
@@ -90,10 +91,33 @@ func runSetup(inv *invocation) int {
 		fmt.Fprintln(inv.stderr, "aiqsa-connect setup: cannot determine the home directory")
 		return 1
 	}
+	release, err := lockSetup()
+	if err != nil {
+		fmt.Fprintf(inv.stderr, "aiqsa-connect setup: %v\n", err)
+		return 1
+	}
+	defer release()
 	if *remove {
 		return setupRemove(inv, home, *yes)
 	}
 	return setupInstall(inv, home, *yes)
+}
+
+// lockSetup keeps a second setup from editing the same files while the
+// first one waits for its answer.
+func lockSetup() (release func(), err error) {
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return nil, err
+	}
+	if err := paths.EnsureStateDir(); err != nil {
+		return nil, err
+	}
+	release, err = daemon.AcquireLock(filepath.Join(paths.StateDir, "setup.lock"))
+	if errors.Is(err, daemon.ErrAlreadyRunning) {
+		return nil, errors.New("another aiqsa-connect setup is running; finish it first")
+	}
+	return release, err
 }
 
 func setupInstall(inv *invocation, home string, yes bool) int {
