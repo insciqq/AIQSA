@@ -10,6 +10,7 @@ import type { TelegramLinkPreferences, TelegramLinkRecord, TelegramLinkStore } f
 import type { TelegramMessageRefStore } from "../store/messageRefs";
 import type { TelegramRunLinkStore } from "../store/runLinks";
 import type { TelegramAdmitted, TelegramChatTarget, TelegramSendMessage } from "./admission";
+import type { TelegramSystemTurn } from "./body";
 import type { TelegramRunGateway } from "./gateway";
 import { telegramRefusalReply, type TelegramSendRefusal } from "./refusals";
 import type { TelegramRunObservation } from "./runObserver";
@@ -56,6 +57,25 @@ type Batch = {
   startedAt: number;
 };
 
+/** What one admission sends: merged message content, or a request the server prepared. */
+type Request = Readonly<{
+  bot: TelegramBotSession;
+  blocks: readonly ContentBlock[];
+  /** The Telegram message a refusal answers; null for a request no message asked for. */
+  replyTo: number | null;
+  systemTurn?: TelegramSystemTurn;
+  updateId: number;
+}>;
+
+/** A request the server prepared for a chat, such as the continuation after an MCP approval. */
+export type TelegramSubmission = Readonly<{
+  chatId: string;
+  contentBlocks: readonly ContentBlock[];
+  systemTurn?: TelegramSystemTurn;
+  /** The update that asked for it (the approval's press); it names the admission. */
+  updateId: number;
+}>;
+
 type ActiveRun = Readonly<{
   runId: string;
   chatId: string;
@@ -81,6 +101,11 @@ export type TelegramConversation = Readonly<{
   queue(source: TelegramMessageSource, blocks: readonly ContentBlock[]): void;
   /** Runs a routing change after everything queued before it (`/new`, a chat or assistant choice). */
   enqueue(link: TelegramLinkRecord, bot: TelegramBotSession, job: (link: TelegramLinkRecord) => Promise<void>): void;
+  /**
+   * Runs a request the server prepared in order with the link's messages: once the active run
+   * settled, it is admitted in its chat, streamed and delivered like a message.
+   */
+  submit(link: TelegramLinkRecord, bot: TelegramBotSession, submission: TelegramSubmission): void;
   /** `/stop`: the link's active run, or the one being admitted. */
   stop(link: TelegramLinkRecord, bot: TelegramBotSession): Promise<void>;
   /** The draft's own Stop (`stopped_message_generation`). */
@@ -278,7 +303,7 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
     if (slot.active === active) slot.active = null;
   }
 
-  async function refuse(link: TelegramLinkRecord, batch: Batch, target: TelegramChatTarget, refusal: TelegramSendRefusal): Promise<void> {
+  async function refuse(link: TelegramLinkRecord, request: Request, target: TelegramChatTarget, refusal: TelegramSendRefusal): Promise<void> {
     log({ code: "telegram_run_refused", httpStatus: refusal.status, outcome: "skipped" });
     const reply = telegramRefusalReply(refusal);
     const chatId = target.kind === "existing" ? target.chatId : null;
@@ -286,27 +311,30 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
     const keyboard: TelegramKeyboard | undefined = reply.action === "model"
       ? [[{ callback: { kind: "model_page", payload: { page: 0 } }, text: TELEGRAM_BRIDGE_COPY.chooseModel }]]
       : reply.action === "settings" ? [[{ callback: { kind: "open_settings" }, text: TELEGRAM_COPY.openSettings }]] : undefined;
-    await say(batch.bot, link.telegramChatId, reply.text, {
-      ...(keyboard ? { keyboard } : {}), linkId: link.id, replyTo: batch.firstMessageId,
+    await say(request.bot, link.telegramChatId, reply.text, {
+      ...(keyboard ? { keyboard } : {}), linkId: link.id, ...(request.replyTo === null ? {} : { replyTo: request.replyTo }),
       ...(reply.action === "open" && chatId && !reply.chatGone ? { chatId, openInAiqsa: true, userId: link.userId } : {})
     });
   }
 
-  async function admit(slot: Slot, link: TelegramLinkRecord, batch: Batch, target: TelegramChatTarget): Promise<void> {
+  async function admit(slot: Slot, link: TelegramLinkRecord, request: Request, target: TelegramChatTarget): Promise<void> {
     const admitting = { stopRequested: false };
     slot.admitting = admitting;
     let admission;
     try {
-      admission = await deps.admit({ chatTarget: target, contentBlocks: mergeTelegramContent(batch.parts), link, updateId: batch.firstUpdateId });
+      admission = await deps.admit({
+        chatTarget: target, contentBlocks: request.blocks, link, ...(request.systemTurn ? { systemTurn: request.systemTurn } : {}),
+        updateId: request.updateId
+      });
     } catch (error) {
       log({ code: "telegram_run_admission_failed", error, outcome: "failed" });
-      await refuse(link, batch, target, { code: "internal_error", status: 500 });
+      await refuse(link, request, target, { code: "internal_error", status: 500 });
       return;
     } finally {
       slot.admitting = null;
     }
     if (admission.kind === "refused") {
-      await refuse(link, batch, target, admission.refusal);
+      await refuse(link, request, target, admission.refusal);
       return;
     }
     const preferences: TelegramLinkPreferences = {
@@ -314,7 +342,7 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
       ...(target.kind === "new" && target.assistantId ? { pendingAssistantId: null } : {})
     };
     if (Object.keys(preferences).length > 0) await updateLink(link, preferences);
-    start(slot, link, batch.bot, admission);
+    start(slot, link, request.bot, admission);
     if (admitting.stopRequested) await stopActive(slot, link);
   }
 
@@ -348,7 +376,9 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
         continue;
       }
       if (notice) await say(batch.bot, link.telegramChatId, notice);
-      await admit(slot, link, batch, target);
+      await admit(slot, link, {
+        blocks: mergeTelegramContent(batch.parts), bot: batch.bot, replyTo: batch.firstMessageId, updateId: batch.firstUpdateId
+      }, target);
       return;
     }
   }
@@ -403,6 +433,27 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
       enqueueJob(slot, bot, link.telegramChatId, async () => {
         const current = await currentLink(slot);
         if (current) await job(current);
+      });
+    },
+
+    submit(link, bot, submission) {
+      const slot = slotFor(link);
+      flushSlot(slot);
+      enqueueJob(slot, bot, link.telegramChatId, async () => {
+        for (let round = 0; round < 2; round += 1) {
+          const current = await currentLink(slot);
+          if (!current) return;
+          const active = slot.active;
+          if (active) {
+            await waitFor(slot, active);
+            continue;
+          }
+          await admit(slot, current, {
+            blocks: submission.contentBlocks, bot, replyTo: null, ...(submission.systemTurn ? { systemTurn: submission.systemTurn } : {}),
+            updateId: submission.updateId
+          }, { chatId: submission.chatId, kind: "existing" });
+          return;
+        }
       });
     },
 

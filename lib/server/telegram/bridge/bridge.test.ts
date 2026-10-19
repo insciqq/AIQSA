@@ -204,6 +204,30 @@ describe("Telegram chat bridge: a run in progress", () => {
     expect(h.fake.botMessages(h.user.id).filter((message) => message.kind === "rich")).toHaveLength(2);
   });
 
+  it("runs a server-prepared continuation after the active run, in its chat, observed and delivered like a message", async () => {
+    const gateway = createFakeGateway({ autoAnswer: null });
+    const h = harness({ gateway });
+    await say(h, h.fake.inject.text(h.user, "create the issue"));
+    const run = await runStarted(gateway, 1);
+    h.bridge.conversation.submit(h.links.records.get("user-1")!, h.session, {
+      chatId: run.chatId, contentBlocks: [], systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" }, updateId: 9_001
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(gateway.sent).toHaveLength(1);
+    gateway.setAutoAnswer(() => "Issue created.");
+    run.token("Waiting for your approval.");
+    run.complete();
+    await h.settle();
+    expect(gateway.sent[1]).toMatchObject({
+      body: {
+        admissionId: `tg-${h.fake.bot.id}-9001`, expectedActiveLeafId: run.assistantMessageId,
+        systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" }
+      },
+      chatId: run.chatId
+    });
+    expect(h.fake.botMessages(h.user.id).at(-1)).toMatchObject({ rich_message: renderTelegramAnswer("Issue created.").messages[0] });
+  });
+
   it("lets a request for another chat wait behind a run at most the wait bound, never holding the chat's lane", async () => {
     const gateway = createFakeGateway({ autoAnswer: null });
     const h = harness({ bridge: { runWaitMs: 300 }, gateway });
