@@ -40,6 +40,15 @@ jobs:
       - name: Check dependency advisories
         run: npm run security:deps
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: connect/go.mod
+          cache-dependency-path: connect/go.sum
+
+      - name: Check Go client advisories
+        run: npm run security:deps:go
+
   migration-and-container:
     name: Migration and disposable container contracts
     runs-on: ubuntu-24.04
