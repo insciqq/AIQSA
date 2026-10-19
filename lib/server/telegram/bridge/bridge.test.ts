@@ -114,6 +114,27 @@ describe("Telegram chat bridge: a message becomes an ordinary chat", () => {
     expect(h.links.records.get("user-1")!.currentChatId).toBe(chatA);
   });
 
+  it("carries the time zone the user's browser last reported, and sends none when it is unknown or unreadable", async () => {
+    const h = harness();
+    h.aiqsa.setTimeZone("Europe/Moscow");
+    await say(h, h.fake.inject.text(h.user, "Remind me every day at 9"));
+    await h.settle();
+    expect(h.aiqsa.sent[0]!.body.timeZone).toBe("Europe/Moscow");
+
+    h.aiqsa.setTimeZone(null);
+    await say(h, h.fake.inject.text(h.user, "And what time is it?"));
+    await h.settle();
+    expect(h.aiqsa.sent[1]!.body).not.toHaveProperty("timeZone");
+
+    // A failed read is only a missing hint: the message still runs, on the UTC fallback.
+    const read = vi.spyOn(h.aiqsa.gateway, "timeZone").mockRejectedValueOnce(new Error("database unavailable"));
+    await say(h, h.fake.inject.text(h.user, "Still there?"));
+    await h.settle();
+    expect(read).toHaveBeenCalledWith("user-1");
+    expect(h.aiqsa.sent).toHaveLength(3);
+    expect(h.aiqsa.sent[2]!.body).not.toHaveProperty("timeZone");
+  });
+
   it("merges messages sent within 1.5 s of each other into one request", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-10-19T08:00:00.000Z") });
     const h = harness();

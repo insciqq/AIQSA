@@ -57,6 +57,8 @@ export type TelegramRunGateway = Readonly<{
   recentChats(userId: string): Promise<readonly TelegramRecentChat[]>;
   /** Assistants the user can start a chat with now: pinned, then recent, then the rest; at most 20. */
   assistants(userId: string): Promise<readonly TelegramAssistantChoice[]>;
+  /** The IANA zone the user's browser last reported on a run; null when none is known. */
+  timeZone(userId: string): Promise<string | null>;
 }>;
 
 export const TELEGRAM_TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(["complete", "error", "cancelled"]);
@@ -78,7 +80,8 @@ export function lazyTelegramRunGateway(load: () => Promise<TelegramRunGateway>):
     recentChats: async (userId) => (await gateway()).recentChats(userId),
     runState: async (input) => (await gateway()).runState(input),
     send: async (input) => (await gateway()).send(input),
-    stop: async (input) => (await gateway()).stop(input)
+    stop: async (input) => (await gateway()).stop(input),
+    timeZone: async (userId) => (await gateway()).timeZone(userId)
   };
   return Object.freeze(lazy);
 }

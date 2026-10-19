@@ -15,6 +15,8 @@ import {
  * saved controls as params, Workspace and Agent from the link — plus the
  * expected leaf and, for a first message, the personal draft. In an
  * Assistant chat the Assistant governs those rows, so none of them is sent.
+ * Both kinds carry the zone the user's browser last reported, as a browser
+ * send carries its own; without one the run keeps the recorded UTC fallback.
  * Catalog, entitlement and every value are checked again by the send handler.
  */
 
@@ -138,6 +140,8 @@ export function buildTelegramSendBody(input: Readonly<{
   settings: TelegramSendSettings;
   systemTurn?: TelegramSystemTurn;
   target: TelegramSendTarget;
+  /** The IANA zone the user's browser last reported; null or absent omits it. */
+  timeZone?: string | null;
 }>): Record<string, unknown> {
   const { settings, target } = input;
   const common: Record<string, unknown> = {
@@ -145,11 +149,12 @@ export function buildTelegramSendBody(input: Readonly<{
     content: { blocks: input.content.map((block) => ({ ...block })) },
     expectedActiveLeafId: target.kind === "existing" ? target.activeLeafMessageId : null,
     ...(target.kind === "new" ? { personalDraft: { folderId: null, memoryMode: "NORMAL" } } : {}),
-    ...(input.systemTurn ? { systemTurn: { approvalId: input.systemTurn.approvalId, kind: input.systemTurn.kind } } : {})
+    ...(input.systemTurn ? { systemTurn: { approvalId: input.systemTurn.approvalId, kind: input.systemTurn.kind } } : {}),
+    ...(input.timeZone ? { timeZone: input.timeZone } : {})
   };
   const assistantChat = target.kind === "existing" ? target.assistantBound : target.assistantId !== null;
   if (assistantChat || !input.model) {
-    // The Assistant's rows govern; only the Workspace switch and its binding travel.
+    // The Assistant's rows govern; only the Workspace switch, its binding and the time zone travel.
     return {
       ...common,
       ...(target.kind === "new" && target.assistantId ? { assistantId: target.assistantId } : {}),
