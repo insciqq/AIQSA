@@ -86,6 +86,8 @@ async function injectStart(request: APIRequestContext, chatId: number, code: str
 }
 
 test.beforeAll(async ({ browser }) => {
+  // Cold `next dev` sign-ins compile the login and chat pages first.
+  test.setTimeout(180_000);
   const [admin, user] = await Promise.all([people.admin("Telegram live admin"), people.user("Telegram live user")]);
   adminSession = await people.signIn(browser, admin!);
   userSession = await people.signIn(browser, user!);

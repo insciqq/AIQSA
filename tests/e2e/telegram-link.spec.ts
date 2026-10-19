@@ -166,6 +166,8 @@ async function testAndSave(section: Locator, token: string, username: string): P
 }
 
 test.beforeAll(async ({ browser }) => {
+  // Four cold `next dev` sign-ins compile the login and chat pages first.
+  test.setTimeout(180_000);
   await bot.start({ port });
   tgAlice = telegramUser(bot, 1, "Alice");
   tgMallory = telegramUser(bot, 2, "Mallory");
