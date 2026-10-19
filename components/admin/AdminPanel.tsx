@@ -21,6 +21,7 @@ import { AdminRetrievalSection } from "@/components/admin/retrieval/AdminRetriev
 import { AdminRolesSection } from "@/components/admin/roles/AdminRolesSection";
 import { AdminSearchSection } from "@/components/admin/search/AdminSearchSection";
 import { AdminSignInSection } from "@/components/admin/signIn/AdminSignInSection";
+import { AdminTelegramSection } from "@/components/admin/telegram/AdminTelegramSection";
 import {
   AdminReleaseUpdatePill,
   AdminSectionTopbarProvider,
@@ -248,6 +249,8 @@ function AdminSectionContent({
           requestConfirmation={requestConfirmation}
         />
       );
+    case "telegram":
+      return <AdminTelegramSection feedback={feedback} groups={dashboard.groups} />;
     case "usage":
       return (
         <AdminUsageSection

@@ -63,6 +63,8 @@ export type ShellSessionView = {
   activeChatId: string | null;
   activeChatTitle: string;
   adminEntryVisible: boolean;
+  /** Settings → Connections shows the Telegram block. */
+  telegramAvailable?: boolean;
   copyProjectChatLink(): Promise<void> | void;
   dismissNotice(): void;
   notice: Notice | null;

@@ -6,12 +6,15 @@ import { prisma } from "@/lib/server/prisma";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
+import { loadViewerTelegramAvailable } from "./telegramAvailability";
 
 export type ChatViewer = Readonly<{
   accountDisplayName: string;
   accountEmail: string | null;
   accountId: string;
   adminEntryVisible: boolean;
+  /** Settings shows the Telegram block; false while the feature is off or closed to this user. */
+  telegramAvailable: boolean;
 }>;
 
 export type ChatPageSearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -29,11 +32,14 @@ export const loadChatViewer = cache(async (): Promise<ChatViewer | null> => {
     where: { id: session.userId }
   });
   if (!user || user.status !== "active") return null;
+  // An unreadable Telegram state hides the block; it never blocks the chat.
+  const telegramAvailable = await loadViewerTelegramAvailable(session.userId).catch(() => false);
   return {
     accountDisplayName: user.displayName,
     accountEmail: user.email,
     accountId: session.userId,
-    adminEntryVisible: user.role === "admin"
+    adminEntryVisible: user.role === "admin",
+    telegramAvailable
   };
 });
 
