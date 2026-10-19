@@ -147,6 +147,7 @@ import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
 import { conversationContextPolicy } from "./contextCompactionContract";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import { mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
+import { TOOL_CALL_UNKNOWN, unknownToolCallResult } from "./unknownToolCall";
 import { MCP_APPROVAL_REQUIRED_MESSAGE, mcpApprovalArgumentsDigest, type McpApprovalRequest } from "../mcp/writeApproval";
 import { decodeContextCompactionStatus, type ContextSummary } from "../../contracts/contextCompaction";
 
@@ -1172,7 +1173,7 @@ function createRepository(options: RepositoryOptions = {}) {
         if (available >= 0) counted.splice(available, 1);
         const persisted: PersistedToolLoopCall = {
           arguments: call.arguments,
-          completedAt: call.repeatBlocked ? new Date().toISOString() : null,
+          completedAt: call.repeatBlocked || call.unknownTool ? new Date().toISOString() : null,
           id,
           mcpBinding: call.runtimeGenerationFingerprint ? {
             id: `binding-${id}`,
@@ -1181,12 +1182,15 @@ function createRepository(options: RepositoryOptions = {}) {
           } : null,
           ordinal: call.ordinal,
           providerCallId: call.providerCallId,
-          // Like the durable repository, a blocked repeat settles with its batch.
+          // Like the durable repository, a blocked repeat or a call of an
+          // undeclared tool settles with its batch.
           result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
-            repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName }) : null,
+            repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName })
+            : call.unknownTool ? unknownToolCallResult({ providerCallId: call.providerCallId, requested: call.unknownTool.requested,
+              toolName: call.toolName }) : null,
           roundIndex: input.roundIndex,
           startedAt: null,
-          state: call.repeatBlocked ? "error" : "pending",
+          state: call.repeatBlocked || call.unknownTool ? "error" : "pending",
           toolName: call.toolName,
           workspaceBindingId: call.workspace ? input.runId : null
         };
@@ -8837,6 +8841,161 @@ describe("tool-free synthesis and repeated calls in live execution", () => {
     expect(requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
   });
 
+  describe("calls of tools their round did not declare", () => {
+    // Exact aliases of real namespaced names: two servers both offer read_note.
+    const readNote = namespacedMcpToolName("notes", "read_note");
+    const editNote = namespacedMcpToolName("notes", "edit_note");
+    const journalRead = namespacedMcpToolName("journal", "read_note");
+    const notesTool = (namespacedName: string, originalName: string, serverId: string, definitionHash: string, readOnly: boolean) => ({
+      ...(readOnly ? { annotations: { readOnlyHint: true } } : {}), definitionHash, description: originalName,
+      inputSchema: { type: "object" }, name: originalName, namespacedName, originalName, serverId,
+      serverName: serverId === "notes" ? "Notes" : "Journal" });
+    const notesMcp = (withJournal = false): McpRunPlanSnapshot => ({ version: 1,
+      servers: [{ fingerprint: "a".repeat(64), revisionId: "notes-revision", serverId: "notes", serverName: "Notes" },
+        ...(withJournal ? [{ fingerprint: "e".repeat(64), revisionId: "journal-revision", serverId: "journal", serverName: "Journal" }] : [])],
+      tools: [notesTool(readNote, "read_note", "notes", "1".repeat(64), true), notesTool(editNote, "edit_note", "notes", "2".repeat(64), false),
+        ...(withJournal ? [notesTool(journalRead, "read_note", "journal", "3".repeat(64), true)] : [])] });
+    const notesPrepared = (snapshot = notesMcp(), mcpApproval?: { consentedServerIds: string[]; version: 1 }) => {
+      const base = preparedData({ mcp: snapshot, modelId: "synthetic-model", provider: "openai",
+        toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } });
+      return mcpApproval ? { ...base, normalizedRequest: { ...base.normalizedRequest, mcpApproval },
+        providerRequest: { ...base.providerRequest, mcpApproval } } : base;
+    };
+    const notesRuntime = () => {
+      const callTool = vi.fn(async (_input: { definitionHash: string; name: string }) =>
+        ({ isError: false, structuredContent: null, text: ["note-1: open"], unsupportedContentTypes: [] }));
+      return { callTool, ensureAcceptedGeneration: async () => true };
+    };
+    /** Scripted rounds of requested names; an empty round answers. */
+    const scripted = (rounds: ReadonlyArray<readonly string[]>, requests: ProviderRunRequest[]) => createAdapter(async function* (request) {
+      requests.push(request);
+      const names = rounds[requests.length - 1] ?? [];
+      return names.length
+        ? providerResult({ finalText: "", toolCalls: names.map((toolName, index) => ({ id: `call-${requests.length}-${index}`,
+          name: toolName, arguments: { id: "note-1" } })) })
+        : providerResult({ finalText: "note-1 is open." });
+    });
+    const unknownRow = (providerCallId: string, toolName: string, requested = toolName) => expect.objectContaining({ arguments: {},
+      mcpBinding: null, providerCallId, startedAt: null, state: "error", toolName,
+      result: unknownToolCallResult({ providerCallId, requested, toolName }) });
+    const toolCards = (events: ModelRunSseEvent[]) => events.flatMap(event =>
+      event.type === "artifact" && event.data.artifactType === "tool_call" ? [event.data.payload as Record<string, unknown>] : []);
+    const outputs = (request: ProviderRunRequest | undefined) => (request?.providerToolMessages ?? [])
+      .filter(message => (message as { type?: string }).type === "function_call_output") as Array<{ call_id: string; output: string }>;
+
+    it("returns an unknown name to the model as an error and completes after its corrected call", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      const events = parseSse(await createRunExecutionResponse(executionInput({ adapter: scripted([["read_notes"], [readNote], []], requests),
+        mcpRuntime, prepared: notesPrepared(), repository: repository.repository })).text());
+
+      expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+      expect(mcpRuntime.callTool.mock.calls[0]![0]).toMatchObject({ name: "read_note", definitionHash: "1".repeat(64) });
+      expect([...repository.toolCalls.values()]).toEqual([unknownRow("call-1-0", "read_notes"),
+        expect.objectContaining({ providerCallId: "call-2-0", state: "complete", toolName: readNote })]);
+      expect(JSON.parse(outputs(requests[1]).find(output => output.call_id === "call-1-0")!.output)).toMatchObject({
+        error: TOOL_CALL_UNKNOWN, requested: "read_notes" });
+      expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto", "auto"]);
+      // No step ever ran for the unknown call.
+      expect(toolCards(events).map(card => card.name)).toEqual(["read_note"]);
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns[0]?.finalText).toBe("note-1 is open.");
+    });
+
+    it("runs the declared call of a mixed batch beside the unknown one", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      await createRunExecutionResponse(executionInput({ adapter: scripted([[readNote, "read_notes"], []], requests),
+        mcpRuntime, prepared: notesPrepared(), repository: repository.repository })).text();
+      expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+      expect([...repository.toolCalls.values()].map(row => [row.providerCallId, row.state]))
+        .toEqual([["call-1-0", "complete"], ["call-1-1", "error"]]);
+      expect(outputs(requests[1]).map(output => output.call_id)).toEqual(["call-1-0", "call-1-1"]);
+      expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto"]);
+      expect(repository.completeRuns).toHaveLength(1);
+    });
+
+    it("ends a second round of only unknown names in tool-free synthesis and completes", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      const events = parseSse(await createRunExecutionResponse(executionInput({
+        adapter: scripted([["read_notes"], ["notes_read"], []], requests), mcpRuntime, prepared: notesPrepared(),
+        repository: repository.repository })).text());
+      expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+      expect([...repository.toolCalls.values()]).toEqual([unknownRow("call-1-0", "read_notes"), unknownRow("call-2-0", "notes_read")]);
+      expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto", "none"]);
+      expect(requests[2]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+        content: expect.stringContaining("tool calls again named tools that do not exist. Some planned tool calls were not executed.") });
+      expect(events.some(event => event.type === "artifact" && event.data.artifactType === "tool_budget")).toBe(false);
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns[0]?.finalText).toBe("note-1 is open.");
+    });
+
+    it("runs a bare original name of exactly one declared tool under its canonical name", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      await createRunExecutionResponse(executionInput({ adapter: scripted([["read_note"], []], requests),
+        mcpRuntime, prepared: notesPrepared(), repository: repository.repository })).text();
+      expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+      expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ providerCallId: "call-1-0", state: "complete",
+        toolName: readNote, mcpBinding: expect.objectContaining({ runtimeGenerationFingerprint: "a".repeat(64) }) })]);
+      // The provider transcript names the call as the declared tool it ran.
+      expect(requests[1]!.providerToolMessages).toContainEqual(expect.objectContaining({ call_id: "call-1-0", name: readNote,
+        type: "function_call" }));
+    });
+
+    it("keeps a name two servers share unknown and runs the one its hash suffix names", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      await createRunExecutionResponse(executionInput({
+        adapter: scripted([["read_note"], [`read_note_${journalRead.slice(-10)}`], []], requests), mcpRuntime,
+        prepared: notesPrepared(notesMcp(true)), repository: repository.repository })).text();
+      expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+      expect(mcpRuntime.callTool.mock.calls[0]![0]).toMatchObject({ name: "read_note", definitionHash: "3".repeat(64) });
+      expect([...repository.toolCalls.values()]).toEqual([unknownRow("call-1-0", "read_note"),
+        expect.objectContaining({ providerCallId: "call-2-0", state: "complete", toolName: journalRead })]);
+      expect(repository.completeRuns).toHaveLength(1);
+    });
+
+    it("keeps a corrupted id and a name with native markup unknown and never shows the markup", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      const corrupted = `${editNote.slice(0, -1)}${editNote.endsWith("0") ? "1" : "0"}`;
+      const markup = `${editNote}</｜｜DSML｜｜ parameter><｜｜DSML｜｜ parameter name=`;
+      const events = parseSse(await createRunExecutionResponse(executionInput({ adapter: scripted([[corrupted, markup], []], requests),
+        mcpRuntime, prepared: notesPrepared(), repository: repository.repository })).text());
+      expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+      expect([...repository.toolCalls.values()]).toEqual([unknownRow("call-1-0", corrupted),
+        unknownRow("call-1-1", "invalid_tool_name", `${editNote}?DSML?parameter?DSML?parameter?name?`)]);
+      expect(repository.approvalRequests).toEqual([]);
+      // The first round of only unknown names is the model's one correction.
+      expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto"]);
+      expect(JSON.stringify(events)).not.toContain("DSML");
+      expect(JSON.stringify(repository.persistedEvents)).not.toContain("DSML");
+      expect(repository.completeRuns).toHaveLength(1);
+    });
+
+    it("asks the initiator's approval for a normalized tool that may change data, exactly like a direct call", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      await createRunExecutionResponse(executionInput({ adapter: scripted([["edit_note"], []], requests), mcpRuntime,
+        prepared: notesPrepared(notesMcp(), { consentedServerIds: [], version: 1 }), repository: repository.repository })).text();
+      expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+      expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ startedAt: null, state: "error", toolName: editNote,
+        result: mcpApprovalRequiredToolCallResult({ providerCallId: "call-1-0", toolName: editNote }) })]);
+      expect(repository.approvalRequests).toEqual([expect.objectContaining({ definitionHash: "2".repeat(64), serverId: "notes",
+        toolName: editNote })]);
+      expect(requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+    });
+  });
+
   it.each(["evidence", "none"] as const)("grounds a client-tool Knowledge run after a refused batch (%s)", async (settled) => {
     const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1].") });
     const finalize = vi.spyOn(repository.repository, "groundKnowledgeEvidenceAnswer");
@@ -9192,13 +9351,19 @@ describe("monitoring verdict execution", () => {
     const requests: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
       requests.push(request);
-      return providerResult({ finalText: "", toolCalls: [report("goal_reached")] });
+      return requests.length === 1 ? providerResult({ finalText: "", toolCalls: [report("goal_reached")] })
+        : providerResult({ finalText: "Nothing to report." });
     });
     await createRunExecutionResponse(executionInput({ adapter, prepared: monitoringPrepared(undefined, false),
       repository: repository.repository })).text();
     expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
     expect(recordMonitoringVerdict).not.toHaveBeenCalled();
-    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
+    // The undeclared tool is settled unknown before dispatch; the model reads why.
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ startedAt: null, state: "error",
+      result: unknownToolCallResult({ providerCallId: "report-call", requested: "report_monitoring_result",
+        toolName: "report_monitoring_result" }) })]);
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain(TOOL_CALL_UNKNOWN);
+    expect(repository.failedRuns).toEqual([]);
   });
 
   it("keeps the verdict callable after the business tool budget is used up, then synthesizes", async () => {
@@ -9313,13 +9478,19 @@ describe("scheduled task creation execution", () => {
     const repository = createRepository();
     const createScheduledTaskForCall = creator();
     repository.repository.createScheduledTaskForCall = createScheduledTaskForCall;
+    let round = 0;
     const adapter = createAdapter(async function* () {
-      return providerResult({ finalText: "", toolCalls: [create()] });
+      round += 1;
+      return round === 1 ? providerResult({ finalText: "", toolCalls: [create()] })
+        : providerResult({ finalText: "I cannot create the task here." });
     });
     await createRunExecutionResponse(executionInput({ adapter, prepared: creationPrepared(false),
       repository: repository.repository })).text();
     expect(createScheduledTaskForCall).not.toHaveBeenCalled();
-    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ startedAt: null, state: "error",
+      result: unknownToolCallResult({ providerCallId: "create-call", requested: "create_scheduled_task",
+        toolName: "create_scheduled_task" }) })]);
+    expect(repository.failedRuns).toEqual([]);
   });
 
   it("returns the repository's refusal of a second creation in one answer as a tool error", async () => {
@@ -9435,13 +9606,18 @@ describe("page reader execution", () => {
   it("never dispatches a read for a run admitted without the frozen marker", async () => {
     const repository = createRepository();
     const pages = fetchPage();
+    let round = 0;
     const adapter = createAdapter(async function* () {
-      return providerResult({ finalText: "", toolCalls: [read(userUrl)] });
+      round += 1;
+      return round === 1 ? providerResult({ finalText: "", toolCalls: [read(userUrl)] })
+        : providerResult({ finalText: "I cannot read the page here." });
     });
     await createRunExecutionResponse({ ...executionInput({ adapter, prepared: readerPrepared(false),
       repository: repository.repository }), fetchPage: pages, extractPage }).text();
     expect(pages).not.toHaveBeenCalled();
-    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ startedAt: null, state: "error",
+      result: unknownToolCallResult({ providerCallId: "read-call", requested: "fetch_url", toolName: "fetch_url" }) })]);
+    expect(repository.failedRuns).toEqual([]);
   });
 
   it("keeps a link a page injected into a model-written scheduled task out of the scheduled run", async () => {
@@ -9606,13 +9782,19 @@ describe("scheduled task management execution", () => {
     const repository = createRepository();
     const manageScheduledTaskForCall = manager();
     repository.repository.manageScheduledTaskForCall = manageScheduledTaskForCall;
+    let round = 0;
     const adapter = createAdapter(async function* () {
-      return providerResult({ finalText: "", toolCalls: [pause()] });
+      round += 1;
+      return round === 1 ? providerResult({ finalText: "", toolCalls: [pause()] })
+        : providerResult({ finalText: "I cannot pause the task here." });
     });
     await createRunExecutionResponse(executionInput({ adapter, prepared: managementPrepared(false),
       repository: repository.repository })).text();
     expect(manageScheduledTaskForCall).not.toHaveBeenCalled();
-    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ startedAt: null, state: "error",
+      result: unknownToolCallResult({ providerCallId: "manage-call", requested: "manage_scheduled_task",
+        toolName: "manage_scheduled_task" }) })]);
+    expect(repository.failedRuns).toEqual([]);
   });
 
   it("runs an interrupted call again through the repository that settles it atomically, never as an unknown outcome", async () => {

@@ -5,6 +5,7 @@ import {
   summarizeMessageRunWorkspaceActivity
 } from "./prismaRepository";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { unknownToolCallResult } from "../runs/unknownToolCall";
 import { summarizeThreadArtifacts } from "../../../components/app-shell/threadContent";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
@@ -626,6 +627,24 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(activity?.calls[0]).toEqual({ details: { roundIndex: 2, ordinal: 3 }, origin: "mcp", round: 2,
       serverName: "Repository Tools", status: state, toolName: "search" });
     expect(JSON.stringify(activity)).not.toMatch(/private|fingerprint|revision|server-fixture|mcp_search/);
+  });
+
+  it("shows a call of an undeclared tool as a plain failed step, never as a call of a server's tool", () => {
+    const unknown = (toolName: string, providerCallId = "provider-unknown") => ({ toolName, providerCallId, ordinal: 0, roundIndex: 2,
+      state: "error", startedAt: null, completedAt: new Date("2026-10-19T10:00:00.000Z"),
+      mcpRunBinding: { runtimeGenerationFingerprint: "fingerprint-fixture" }, arguments: {},
+      result: unknownToolCallResult({ providerCallId, requested: `${toolName}?DSML?`, toolName }) });
+    // Even under an accepted MCP tool's exact name, bound or not, it never ran: no server, details or MCP origin.
+    for (const call of [unknown("mcp_search_fixture"), unknown("read_note"), unknown("invalid_tool_name")]) {
+      const activity = summarizeMessageRunToolActivity({ userId: "initiator", errorPayload: null,
+        normalizedRequest: acceptedMcpRequest, status: "complete", toolCalls: [call] }, "initiator");
+      expect(activity?.calls).toEqual([{ origin: "tool", round: 2, status: "error", toolName: call.toolName }]);
+      expect(JSON.stringify(activity)).not.toMatch(/DSML|Repository Tools/u);
+    }
+    // The same body from a dispatched call is an ordinary step of its tool.
+    expect(summarizeMessageRunToolActivity({ userId: "initiator", errorPayload: null, normalizedRequest: acceptedMcpRequest,
+      status: "complete", toolCalls: [{ ...unknown("mcp_search_fixture"), startedAt: new Date("2026-10-19T09:59:59.000Z") }] },
+    "initiator")?.calls[0]).toMatchObject({ origin: "mcp", serverName: "Repository Tools" });
   });
 
   it.each(["complete", "cancelled", "error"])("shows calls left open by a %s run as stopped steps", runStatus => {

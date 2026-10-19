@@ -24,6 +24,7 @@ import { answerReviewStepModelName, loadAnswerReviewProjection } from "../answer
 import { decodeAnswerReviewAutoConfig, type AnswerReviewAutoConfig } from "../../contracts/answerReviews";
 import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
 import { mcpApprovalGated } from "../runs/mcpApprovalGate";
+import { unknownToolCall } from "../runs/unknownToolCall";
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
 import { scheduledTaskRowSelect, toScheduledTask } from "../scheduledTasks/store";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
@@ -1223,6 +1224,15 @@ export function summarizeMessageRunToolActivity(
   if (isRecord(run.normalizedRequest) && isRecord(run.normalizedRequest.agent)) return null;
   const descriptors = toolActivityDescriptors(run.normalizedRequest);
   const calls = run.toolCalls.map((call) => {
+    // A call of a tool its round did not declare never ran: a plain failed
+    // step under its bounded name, never a server, details or other facts.
+    if (call.providerCallId !== undefined && unknownToolCall({ providerCallId: call.providerCallId,
+      result: (call.result ?? null) as Parameters<typeof unknownToolCall>[0]["result"],
+      startedAt: call.startedAt?.toISOString() ?? null, state: call.state as Parameters<typeof unknownToolCall>[0]["state"],
+      toolName: call.toolName })) {
+      return { origin: "tool" as const, round: call.roundIndex === 0 ? 1 : call.roundIndex, status: "error" as const,
+        toolName: activityName(call.toolName, "Tool") } satisfies ThreadToolActivity["calls"][number];
+    }
     const descriptor = descriptors.get(call.toolName) ?? {
       origin: call.toolName.startsWith("mcp_") ? "mcp" as const : "tool" as const,
       toolName: call.toolName.startsWith("mcp_")

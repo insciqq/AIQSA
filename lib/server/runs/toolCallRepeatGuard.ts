@@ -5,7 +5,9 @@ import { readToolCallReceipt, readToolCallReceiptHash } from "../tools/readToolC
 import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
 import { contextDigest } from "./contextCompactionContract";
 import { mcpApprovalGated } from "./mcpApprovalGate";
+import type { ToolRoundCall } from "./providerToolLoop";
 import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
+import { unknownToolCall } from "./unknownToolCall";
 import {
   toolLoopPersistenceLimits,
   type PersistedToolLoopCall,
@@ -25,7 +27,8 @@ import type { ToolLoopSettledCall } from "./toolLoop";
  *   equal and no call that may change state ran since the older one (nor
  *   runs beside it in its batch), a further call is persisted already settled
  *   as an undispatched `tool_call_repeat_blocked` error.
- * - No progress: a round of only blocked calls ends in tool-free synthesis.
+ * - No progress: a round of only calls that did not run (`toolRoundCall`)
+ *   ends in tool-free synthesis (`stalledToolRound`).
  */
 export const TOOL_CALL_REPEAT_BLOCKED = "tool_call_repeat_blocked";
 const WORKSPACE_EXEC_POLL = namespacedWorkspaceToolName("sandbox_exec_poll");
@@ -177,10 +180,11 @@ export class ToolCallRepeatHistory {
     if (successes.get(older) !== successes.get(newer)) return null;
     const mayChangeState = (entry: Readonly<{ arguments: unknown; toolName: string }>) =>
       !context.readOnly(entry.toolName) && toolCallRepeatKey(entry) !== key;
-    // A blocked repeat or a call gated for the user's approval never ran.
+    // A blocked repeat, a call gated for the user's approval and a call of an
+    // unknown tool never ran.
     const changedSince = [...this.rows.values()].some(row => row.roundIndex >= older && row.roundIndex < roundIndex &&
-      row.state !== "pending" && !repeatBlockedRounds(row) && !mcpApprovalGated(row) && row.key !== key &&
-      !context.readOnly(row.toolName));
+      row.state !== "pending" && !repeatBlockedRounds(row) && !mcpApprovalGated(row) && !unknownToolCall(row) &&
+      row.key !== key && !context.readOnly(row.toolName));
     return changedSince || context.batch.some(mayChangeState) ? null : [older, newer];
   }
 
@@ -213,20 +217,16 @@ export function repeatBlockedNote(rounds: ToolCallRepeatRounds): string {
   return `Not executed: this call already returned the same data twice (rounds ${rounds[0]}, ${rounds[1]}). Use those results.`;
 }
 
-/** A round whose every persisted call is a block made no progress. */
-export function roundMadeNoProgress(rows: readonly Pick<ToolCallRepeatRow,
-  "providerCallId" | "result" | "roundIndex" | "startedAt" | "state" | "toolName">[]): boolean {
-  return rows.length > 0 && rows.every(row => repeatBlockedRounds(row) !== null);
-}
-
 /**
- * A round of only calls gated for the user's approval and blocked repeats,
- * at least one gated, waits for that approval: it ends in tool-free synthesis.
+ * How a persisted call counts for its round's progress (`stalledToolRound`):
+ * a blocked repeat, an unknown tool and a call gated for the user's approval
+ * did not run. `gated`: its claim gated it after this row was read.
  */
-export function roundAwaitsApproval(rows: readonly Pick<ToolCallRepeatRow,
-  "providerCallId" | "result" | "roundIndex" | "startedAt" | "state" | "toolName">[]): boolean {
-  return rows.length > 0 && rows.some(mcpApprovalGated) &&
-    rows.every(row => mcpApprovalGated(row) || repeatBlockedRounds(row) !== null);
+export function toolRoundCall(row: Pick<ToolCallRepeatRow,
+  "providerCallId" | "result" | "roundIndex" | "startedAt" | "state" | "toolName">, gated = false): ToolRoundCall {
+  if (repeatBlockedRounds(row)) return "repeat_blocked";
+  if (unknownToolCall(row)) return "unknown_tool";
+  return gated || mcpApprovalGated(row) ? "approval_gated" : "executed";
 }
 
 /** The persisted form of an outcome this process settled: what its row now holds. */

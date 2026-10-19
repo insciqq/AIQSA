@@ -65,6 +65,7 @@ import { CONTEXT_COMPACTION_LIMITS, decodeConversationContextPolicy, type Branch
 import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer";
 import { repeatBlockedRounds, repeatBlockedToolCallResult, validRepeatRounds } from "./toolCallRepeatGuard";
 import { mcpApprovalGated, mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
+import { unknownToolCall, unknownToolCallName, unknownToolCallResult, validRequestedToolName } from "./unknownToolCall";
 import { isMcpApprovalAdmission, isMcpApprovalRequest, type McpApprovalRequest } from "../mcp/writeApproval";
 import { isAnswerReviewStepMarker } from "../tools/answerReview";
 import { consumeMcpApproval, countAvailableMcpApprovals, requestMcpApproval } from "../mcp/writeApprovalRepository";
@@ -2097,6 +2098,8 @@ export function createPrismaRunToolLoopOperations(
         repeatOf: readonly [number, number] | null;
         runtimeGenerationFingerprint: string | null;
         toolName: string;
+        /** The bounded requested name of a call of an undeclared tool. */
+        unknownRequested: string | null;
         workspace: boolean;
       }> = [];
       for (const [index, call] of input.calls.entries()) {
@@ -2112,7 +2115,11 @@ export function createPrismaRunToolLoopOperations(
           call.repeatBlocked !== undefined && !validRepeatRounds(call.repeatBlocked.repeatOf, input.roundIndex) ||
           // Only an MCP call (with its runtime binding) is gated, never also a blocked repeat.
           call.mcpApproval !== undefined && (!isMcpApprovalRequest(call.mcpApproval) || call.mcpApproval.toolName !== call.toolName ||
-            runtimeFingerprint === null || call.repeatBlocked !== undefined)) {
+            runtimeFingerprint === null || call.repeatBlocked !== undefined) ||
+          // A call of an undeclared tool has no route: never bound, gated or blocked.
+          call.unknownTool !== undefined && (!validRequestedToolName(call.unknownTool.requested) ||
+            unknownToolCallName(call.toolName) !== call.toolName || runtimeFingerprint !== null || call.workspace !== undefined ||
+            call.repeatBlocked !== undefined || call.mcpApproval !== undefined)) {
           return { kind: "conflict" as const };
         }
         providerCallIds.add(call.providerCallId);
@@ -2124,6 +2131,7 @@ export function createPrismaRunToolLoopOperations(
           repeatOf: call.repeatBlocked ? [call.repeatBlocked.repeatOf[0], call.repeatBlocked.repeatOf[1]] : null,
           runtimeGenerationFingerprint: runtimeFingerprint,
           toolName: call.toolName,
+          unknownRequested: call.unknownTool?.requested ?? null,
           workspace: call.workspace === true
         });
       }
@@ -2167,6 +2175,7 @@ export function createPrismaRunToolLoopOperations(
                 expected.runtimeGenerationFingerprint &&
               (call.workspaceRunBindingId === input.runId) === expected.workspace &&
               JSON.stringify(repeatBlockedRounds(persistedToolLoopCall(call))) === JSON.stringify(expected.repeatOf) &&
+              (unknownToolCall(persistedToolLoopCall(call))?.requested ?? null) === expected.unknownRequested &&
               // Approval availability may differ since the first persist; a
               // gated row only needs the replay to still require approval.
               (!mcpApprovalGated(persistedToolLoopCall(call)) || expected.approval !== null) &&
@@ -2246,12 +2255,17 @@ export function createPrismaRunToolLoopOperations(
               ordinal: call.ordinal,
               providerCallId: call.providerCallId,
               roundIndex: input.roundIndex,
-              // A blocked repeat or a call gated for the user's approval is
-              // settled with its batch and never claimed for dispatch: no
-              // start, no egress receipt, no observation.
+              // A blocked repeat, a call of an undeclared tool or a call gated
+              // for the user's approval is settled with its batch and never
+              // claimed for dispatch: no start, no egress receipt, no observation.
               ...(call.repeatOf ? {
                 completedAt: settledAt,
                 result: json(repeatBlockedToolCallResult({ providerCallId: call.providerCallId, repeatOf: call.repeatOf, toolName: call.toolName })),
+                state: "error" as const
+              } : call.unknownRequested !== null ? {
+                completedAt: settledAt,
+                result: json(unknownToolCallResult({ providerCallId: call.providerCallId, requested: call.unknownRequested,
+                  toolName: call.toolName })),
                 state: "error" as const
               } : gated.has(call.ordinal) ? {
                 completedAt: settledAt,

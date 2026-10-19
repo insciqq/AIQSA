@@ -177,6 +177,7 @@ import { projectObservationForProvider } from "../toolObservations/projection";
 import { contextCompactionCheckpoint, contextCompactionPolicyRetired, conversationContextPolicy } from "./contextCompactionContract";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import { mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
+import { TOOL_CALL_UNKNOWN, unknownToolCallResult } from "./unknownToolCall";
 import { MCP_APPROVAL_REQUIRED_MESSAGE } from "../mcp/writeApproval";
 import { measureSessionContext } from "./runContextBudget";
 import { readToolCallReceipt, readToolCallReceiptHash } from "../tools/readToolCall";
@@ -1575,17 +1576,20 @@ function installCheckpointState(
         : null,
       ordinal: call.ordinal,
       providerCallId: call.providerCallId,
-      // Like the durable repository, a blocked repeat or a call without an
-      // approval left settles with its batch.
+      // Like the durable repository, a blocked repeat, a call of an undeclared
+      // tool or a call without an approval left settles with its batch.
       result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
         repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName })
+        : call.unknownTool ? unknownToolCallResult({ providerCallId: call.providerCallId, requested: call.unknownTool.requested,
+          toolName: call.toolName })
         : call.mcpApproval && approvalsLeft === 0
           ? mcpApprovalRequiredToolCallResult({ providerCallId: call.providerCallId, toolName: call.toolName }) : null,
       roundIndex: input.roundIndex,
       startedAt: null,
-      state: call.repeatBlocked || call.mcpApproval && approvalsLeft === 0 ? "error" : "pending",
+      state: call.repeatBlocked || call.unknownTool || call.mcpApproval && approvalsLeft === 0 ? "error" : "pending",
       toolName: call.toolName,
-      ...(call.repeatBlocked || call.mcpApproval && approvalsLeft === 0 ? { completedAt: "2026-07-12T09:00:20.000Z" } : {})
+      ...(call.repeatBlocked || call.unknownTool || call.mcpApproval && approvalsLeft === 0
+        ? { completedAt: "2026-07-12T09:00:20.000Z" } : {})
     }));
     calls = [...calls, ...created];
     currentCheckpoint = checkpoint(
@@ -11303,6 +11307,101 @@ describe("recovered tool-free synthesis and repeated calls", () => {
       expect(installed.approvalClaims()).toEqual([]);
       expect(runtimeCall).toHaveBeenCalledOnce();
     }
+  });
+
+  describe("calls of tools their round did not declare", () => {
+    const unknownRow = (providerCallId: string, roundIndex: number, toolName = "remember_value"): PersistedToolLoopCall => ({
+      ...persistedRecoveryCall("error"), arguments: {}, id: `stored-${providerCallId}`, mcpBinding: null, providerCallId, roundIndex,
+      startedAt: null, toolName, result: unknownToolCallResult({ providerCallId, requested: toolName, toolName }) });
+    const functionCall = (callId: string, name: string): ToolLoopJsonValue => ({ arguments: "{}", call_id: callId, name, type: "function_call" });
+    const unknownInstruction = "Tool use is now disabled for this run: tool calls again named tools that do not exist. " +
+      `Some planned tool calls were not executed. ${instructionTail}`;
+    const outputs = (request: ProviderRunRequest | undefined) => (request?.providerToolMessages ?? [])
+      .filter(message => (message as { type?: string }).type === "function_call_output") as Array<{ call_id: string; output: string }>;
+
+    it("replays a saved round of only unknown calls without dispatching them and keeps the model's one correction", async () => {
+      const { adapter, requests } = synthesisAdapter();
+      const runtimeCall = vi.fn();
+      const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      // The run's write tool by its exact name, in a round that did not declare it.
+      installCheckpointState(harness, {
+        ...checkpointedRun({ answerRoundUsage: [terminal(1)], calls: [unknownRow("unknown-1", 1, recoveryToolName)],
+          phase: "tools_pending", providerToolMessages: [functionCall("unknown-1", recoveryToolName)], roundIndex: 1 }),
+        normalizedRequest: interactiveRequest()
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+      const claim = vi.spyOn(harness.repository, "claimToolLoopCall");
+
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+      expect(runtimeCall).not.toHaveBeenCalled();
+      // Read back settled, never with an approval request.
+      expect(claim).toHaveBeenCalledOnce();
+      expect(claim.mock.calls[0]![0]).not.toHaveProperty("mcpApproval");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.toolChoice).toBe("auto");
+      expect(JSON.parse(outputs(requests[0]).find(output => output.call_id === "unknown-1")!.output))
+        .toMatchObject({ error: TOOL_CALL_UNKNOWN, requested: recoveryToolName });
+      expect(harness.state.completed).toMatchObject({ finalText: "Checked part answered; the rest was not verified." });
+    });
+
+    it("ends a saved second round of only unknown calls in the same tool-free synthesis as live execution", async () => {
+      const { adapter, requests } = synthesisAdapter();
+      const runtimeCall = vi.fn();
+      const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      installCheckpointState(harness, {
+        ...checkpointedRun({ answerRoundUsage: [terminal(1), terminal(2)], calls: [unknownRow("unknown-1", 1), unknownRow("unknown-2", 2)],
+          phase: "tools_pending", providerToolMessages: [functionCall("unknown-1", "remember_value"),
+            { call_id: "unknown-1", output: "{}", type: "function_call_output" }, functionCall("unknown-2", "remember_value")], roundIndex: 2 }),
+        normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+      expect(runtimeCall).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.toolChoice).toBe("none");
+      expect(requests[0]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content: unknownInstruction });
+      expect(harness.state.completed).not.toBeNull();
+    });
+
+    it("recovers a refreshed round like live execution: an exact alias runs canonically, a name with markup stays unknown", async () => {
+      const markup = `${recoveryToolName}</｜｜DSML｜｜ parameter>`;
+      const { adapter, requests } = synthesisAdapter({ events: [], providerResponseId: "round-1", status: "completed", terminal: true,
+        result: { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+          toolCalls: [{ id: "bare-1", name: "remember", arguments: { value: "alpha" } },
+            { id: "markup-1", name: markup, arguments: { value: "alpha" } }] } });
+      const runtimeCall = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["remembered"], unsupportedContentTypes: [] }));
+      const harness = createHarness({ controls: [control({ providerResponseId: "round-1" })], providers: { openai: adapter },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      const installed = installCheckpointState(harness, {
+        ...checkpointedRun({ answerRoundUsage: [], calls: [], phase: "provider_running", providerResponseId: "round-1",
+          providerToolMessages: [], roundIndex: 1 }),
+        normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+      expect(runtimeCall).toHaveBeenCalledOnce();
+      expect(installed.calls()).toEqual([
+        expect.objectContaining({ providerCallId: "bare-1", state: "complete", toolName: recoveryToolName,
+          mcpBinding: expect.objectContaining({ runtimeGenerationFingerprint: recoveryFingerprint }) }),
+        expect.objectContaining({ arguments: {}, mcpBinding: null, providerCallId: "markup-1", startedAt: null, state: "error",
+          toolName: "invalid_tool_name", result: unknownToolCallResult({ providerCallId: "markup-1",
+            requested: `${recoveryToolName}?DSML?parameter?`, toolName: "invalid_tool_name" }) })]);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.toolChoice).toBe("auto");
+      expect(requests[0]!.providerToolMessages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ call_id: "bare-1", name: recoveryToolName, type: "function_call" }),
+        expect.objectContaining({ call_id: "markup-1", name: "invalid_tool_name", type: "function_call" })]));
+      expect(outputs(requests[0]).map(output => output.call_id)).toEqual(["bare-1", "markup-1"]);
+      expect(JSON.stringify(requests[0]!.providerToolMessages)).not.toContain("DSML｜");
+      expect(harness.state.completed).not.toBeNull();
+    });
   });
 });
 
