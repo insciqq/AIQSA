@@ -192,6 +192,7 @@ const KNOWLEDGE_OUTAGE_EVIDENCE_SHAPE_MIGRATION =
   "20260903234500_knowledge_search_outage_evidence_shape";
 const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
+const TELEGRAM_CONNECT_MIGRATION = "20261019120000_telegram_connect";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
   "20260824014100_memory_vnext_retrieval_cutover";
 const POSTGRES_USER = "aiqsa";
@@ -7780,6 +7781,28 @@ function main(
     deepSeekFlash1017FixtureSql, deepSeekFlash1017ProofSql, deepSeekFlash1017ProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, TELEMETRY_DURATION_BUCKETS_MIGRATION,
     telemetryDurationBucketsFixtureSql, telemetryDurationBucketsProofSql, telemetryDurationBucketsProofSql);
+  // Expand only: tasks saved before Telegram, and by a previous-release writer during the upgrade,
+  // keep their switches and never send to Telegram; the bot starts off without a token.
+  runForwardAdoptionProof(shadowDatabase, migrations, TELEGRAM_CONNECT_MIGRATION,
+    `INSERT INTO "User" (id, "displayName", status, "updatedAt") VALUES ('telegram-adoption-owner', 'Synthetic owner', 'active', now());
+     INSERT INTO "ScheduledTask" (id, "userId", title, prompt, "scheduleKind", "timeOfDayMinutes", "timeZone", "modelId", provider,
+       "emailNotify", "nextRunAt", "updatedAt")
+     VALUES ('telegram-adoption-task', 'telegram-adoption-owner', 'Synthetic brief', 'Synthetic scheduled prompt', 'DAILY', 540,
+       'Europe/Moscow', 'synthetic-model', 'synthetic-provider', true, now(), now());`,
+    `DO $$ BEGIN
+       IF NOT EXISTS (SELECT 1 FROM "ScheduledTask" WHERE id = 'telegram-adoption-task' AND "emailNotify" AND NOT "telegramNotify")
+         THEN RAISE EXCEPTION 'telegram_connect_existing_task_changed'; END IF;
+       INSERT INTO "ScheduledTask" (id, "userId", title, prompt, "scheduleKind", "timeOfDayMinutes", "timeZone", "modelId", provider,
+         "nextRunAt", "updatedAt")
+       VALUES ('telegram-adoption-previous-writer', 'telegram-adoption-owner', 'Synthetic note', 'Synthetic scheduled prompt', 'DAILY', 600,
+         'Europe/Moscow', 'synthetic-model', 'synthetic-provider', now(), now());
+       IF NOT EXISTS (SELECT 1 FROM "ScheduledTask" WHERE id = 'telegram-adoption-previous-writer' AND NOT "telegramNotify")
+         THEN RAISE EXCEPTION 'telegram_connect_default_on'; END IF;
+       IF NOT EXISTS (SELECT 1 FROM "TelegramBotControl" WHERE id = 'installation' AND NOT enabled AND NOT restricted
+           AND "tokenEnvelope" IS NULL AND "tokenGeneration" = 0 AND "botId" IS NULL AND version = 1)
+         THEN RAISE EXCEPTION 'telegram_connect_control_not_off'; END IF;
+       IF (SELECT count(*) FROM "TelegramBotControl") <> 1 THEN RAISE EXCEPTION 'telegram_connect_control_not_singleton'; END IF;
+     END $$;`);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
