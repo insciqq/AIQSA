@@ -12,8 +12,10 @@ import type { TelegramOutcome } from "../transport";
  * `draft_id` and offers Telegram's own Stop (`can_stop`, the draft goes away
  * on Stop). One send at a time; newer text replaces text still waiting. A
  * refused rich draft switches the run to plain-text drafts. Every draft first
- * asks, after its wait, whether the chat may still receive the answer; once it
- * may not, the draft ends for good and the answer stays in AIQSA.
+ * asks, after its wait, whether the chat may still receive the answer, and
+ * asks again right before it leaves (after the Bot API's pacing or a 429's
+ * wait, and before a plain fallback); once it may not, the draft ends for good
+ * and the answer stays in AIQSA.
  */
 
 export const TELEGRAM_DRAFT_THROTTLE_MS = 1_100;
@@ -67,21 +69,17 @@ export function createTelegramDraftStreamer(deps: Readonly<{
     });
   }
 
-  async function send(api: TelegramDraftApi, text: string): Promise<void> {
-    if (!text) {
-      report(await api.sendMessageDraft({ ...options, text: "" }));
-      return;
-    }
+  /** The draft's last outcome; `unreachable` when the chat could no longer receive it. */
+  async function send(api: TelegramDraftApi, text: string): Promise<TelegramOutcome<true>> {
+    const sendOptions = { authorize: async () => (await deps.reach()) !== null };
+    if (!text) return api.sendMessageDraft({ ...options, text: "" }, sendOptions);
     if (!plain) {
-      const outcome = await api.sendRichMessageDraft({ ...options, rich_message: render(text) });
-      if (outcome.ok || outcome.kind !== "telegram" || outcome.errorCode !== 400) {
-        report(outcome);
-        return;
-      }
+      const outcome = await api.sendRichMessageDraft({ ...options, rich_message: render(text) }, sendOptions);
+      if (outcome.ok || outcome.kind !== "telegram" || outcome.errorCode !== 400) return outcome;
       plain = true;
     }
     const tail = plainTelegramMessage(render(text)).join("\n").slice(-DRAFT_TEXT_MAX_LENGTH);
-    report(await api.sendMessageDraft({ ...options, text: tail }));
+    return api.sendMessageDraft({ ...options, text: tail }, sendOptions);
   }
 
   function clear(): void {
@@ -93,12 +91,13 @@ export function createTelegramDraftStreamer(deps: Readonly<{
   async function deliver(text: string): Promise<void> {
     try {
       const api = await deps.reach();
-      if (!api) {
+      const outcome = api ? await send(api, text) : null;
+      if (!outcome || !outcome.ok && outcome.kind === "unreachable") {
         stopped = true;
         clear();
         return;
       }
-      await send(api, text);
+      report(outcome);
     } catch {
       // A draft whose check or send failed is skipped; the next one asks again.
     }

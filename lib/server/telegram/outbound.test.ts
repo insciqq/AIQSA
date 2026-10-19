@@ -64,6 +64,19 @@ describe("Telegram outbound content", () => {
     ]);
   });
 
+  it("asks its authority before every message, the plain fallback included, and ends at the first refusal", async () => {
+    const { fake, outbound, user } = setup();
+    fake.failNext("sendRichMessage", { description: "Bad Request: RICH_MESSAGE_INVALID", status: 400 }, 1);
+    // Allowed for the first part's rich form only: neither its plain fallback nor the next part goes.
+    const authorize = vi.fn(async () => authorize.mock.calls.length <= 1);
+    const result = await outbound.sendContent({ authorize, chatId: user.id, messages: [rich(SENTINEL), rich("Second part")], owner: OWNER });
+    expect(result).toEqual({ failure: { kind: "unreachable", ok: false }, messageIds: [], ok: false });
+    expect(authorize).toHaveBeenCalledTimes(2);
+    expect(fake.calls("sendRichMessage")).toHaveLength(1);
+    expect(fake.calls("sendMessage")).toHaveLength(0);
+    expect(fake.botMessages(user.id)).toHaveLength(0);
+  });
+
   it("links to AIQSA only from an https installation", async () => {
     const { fake, outbound, user } = setup({ appBaseUrl: "http://localhost:3000" });
     expect(outbound.openInAiqsaUrl("chat-1")).toBeNull();
