@@ -22,6 +22,7 @@ export default async function ChatLayout({ children }: Readonly<{ children: Reac
         accountEmail={viewer.accountEmail}
         accountId={viewer.accountId}
         adminEntryVisible={viewer.adminEntryVisible}
+        telegramAvailable={viewer.telegramAvailable}
       />
       {children}
     </>

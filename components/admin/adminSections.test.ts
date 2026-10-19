@@ -31,6 +31,7 @@ describe("adminSections", () => {
       { group: "platform", id: "assistants", label: "Assistants" },
       { group: "platform", id: "workspace", label: "Workspace" },
       { group: "platform", id: "email", label: "Email" },
+      { group: "platform", id: "telegram", label: "Telegram" },
       { group: "platform", id: "usage", label: "Usage" }
     ]);
     expect(adminSectionGroups.map((group) => group.label)).toEqual(["Models", "People", "Platform"]);

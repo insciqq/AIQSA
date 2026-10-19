@@ -24,6 +24,7 @@ import {
   AdminUserSignInSection,
   useAdminUserSignIn
 } from "@/components/admin/signIn/AdminUserSignIn";
+import { AdminUserTelegram } from "@/components/admin/telegram/AdminUserTelegram";
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminDashboard, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
@@ -244,6 +245,8 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
       </div>
 
       <AdminUserSignInSection signIn={signIn} />
+
+      <AdminUserTelegram userId={user.id} />
 
       <section aria-labelledby="admin-user-account-heading" className="flex flex-col gap-3" data-testid="admin-user-account">
         <h3 className={sectionHeadingClass} id="admin-user-account-heading">Account</h3>
