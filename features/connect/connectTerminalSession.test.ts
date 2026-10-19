@@ -120,6 +120,26 @@ describe("ConnectTerminalSession", () => {
     session.dispose();
   });
 
+  it("sends its size again, even unchanged, each time the view comes back on screen", async () => {
+    const { currentSize, session, streams, transport } = setup();
+    session.setVisible(true);
+    session.start();
+    await flush();
+    streams[0]!.open();
+    expect(transport.resize).not.toHaveBeenCalled();
+    session.setVisible(false);
+    session.setVisible(true);
+    expect(transport.resize).toHaveBeenCalledTimes(1);
+    expect(transport.resize).toHaveBeenLastCalledWith(expect.any(String), 120, 40);
+    session.setVisible(true);
+    expect(transport.resize).toHaveBeenCalledTimes(1);
+    currentSize.cols = 90;
+    session.setVisible(false);
+    session.setVisible(true);
+    expect(transport.resize).toHaveBeenLastCalledWith(expect.any(String), 90, 40);
+    session.dispose();
+  });
+
   it("reports visibility changes and repeats it while the view is watched", async () => {
     const { session, streams, transport } = setup();
     session.setVisible(true);

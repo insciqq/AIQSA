@@ -12,7 +12,7 @@ import {
   staticConnectViewTransport
 } from "./connectFixtureApi";
 
-export type ConnectGalleryStateV2 = "empty" | "list" | "pair" | "pair-expired" | "session";
+export type ConnectGalleryStateV2 = "empty" | "list" | "pair" | "pair-expired" | "session" | "session-running";
 
 const noop = () => undefined;
 
@@ -23,7 +23,8 @@ export function ConnectV2Gallery({ state }: Readonly<{ state: ConnectGalleryStat
   // Before the pages' own effects read the synthetic API.
   installConnectFixtureApi();
   const devices = source.getSnapshot().devices ?? [];
-  const sessionDevice = devices[0];
+  // `session` waits for an approval; `session-running` is an agent at work.
+  const sessionDevice = state === "session-running" ? devices[1] : devices[0];
   return (
     <ConnectShell
       accountId="fixture-account"
@@ -34,7 +35,7 @@ export function ConnectV2Gallery({ state }: Readonly<{ state: ConnectGalleryStat
       onLeave={noop}
       source={source}
     >
-      {state === "session" && sessionDevice?.sessions[0] ? (
+      {(state === "session" || state === "session-running") && sessionDevice?.sessions[0] ? (
         <ConnectSessionView
           deviceId={sessionDevice.id}
           sessionId={sessionDevice.sessions[0].id}
