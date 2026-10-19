@@ -79,6 +79,16 @@ export function renderTelegramAnswer(markdown: string, options: TelegramAnswerOp
   };
 }
 
+/**
+ * One rendered message as plain text, links written out, in chunks a plain
+ * message takes: what replaces exactly that part when Telegram refuses its
+ * rich form. Empty when the part shows no text.
+ */
+export function plainTelegramMessage(message: TelegramInputRichMessage): string[] {
+  return splitText(message.blocks.map(block => plainBlock(block, true)).join("\n\n"), TEXT_LIMIT)
+    .filter(chunk => chunk.trim().length > 0);
+}
+
 function nonempty(blocks: TelegramInputRichBlock[]): TelegramInputRichBlock[] {
   return blocks.length ? blocks : [{ type: "paragraph", text: "" }];
 }
