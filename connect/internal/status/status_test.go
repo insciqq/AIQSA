@@ -54,10 +54,14 @@ func TestReadHookInputReadsOnlyTheEventFields(t *testing.T) {
 	if in != (HookInput{Event: "Notification", NotificationType: "permission_prompt", Thread: "x", PromptKey: `secret "quoted" {not json}`}) {
 		t.Fatalf("got %+v", in)
 	}
-	// A session id that is not a thread id, a nested one, a non-string
-	// prompt and a prompt too short to tell sessions apart are dropped.
+	// A short prompt keeps its key; ScreenShows matches it only as a prompt line.
+	if got := ReadHookInput(strings.NewReader(`{"prompt":"yes go"}`)); got != (HookInput{PromptKey: "yes go"}) {
+		t.Errorf("short prompt: got %+v", got)
+	}
+	// A session id that is not a thread id, a nested one and a non-string
+	// prompt are dropped.
 	for _, input := range []string{`{"session_id":"a b"}`, `{"session_id":"` + strings.Repeat("a", 129) + `"}`,
-		`{"tool_input":{"session_id":"x","prompt":"a long nested prompt"}}`, `{"prompt":["a long array prompt"]}`, `{"prompt":"yes go"}`} {
+		`{"tool_input":{"session_id":"x","prompt":"a long nested prompt"}}`, `{"prompt":["a long array prompt"]}`} {
 		if got := ReadHookInput(strings.NewReader(input)); got != (HookInput{}) {
 			t.Errorf("%.40q: got %+v", input, got)
 		}
@@ -121,7 +125,9 @@ func TestAPromptKeyIsItsFirstLineAsAScreenShowsIt(t *testing.T) {
 	cases := map[string]string{
 		"fix the flaky test":                      "fix the flaky test",
 		"\n  \r\n  fix   the\tflaky test  \nmore": "fix the flaky test",
-		"short\nfix the flaky test":               "",
+		"short\nfix the flaky test":               "short",
+		"hi":                                      "hi",
+		"  привет \n":                             "привет",
 		"   ":                                     "",
 		"":                                        "",
 		"ёжик в тумане":                           "ёжик в тумане",
@@ -139,6 +145,15 @@ func TestAPromptKeyIsItsFirstLineAsAScreenShowsIt(t *testing.T) {
 	}
 	if ScreenShows(screen, "fix the flakytest") || ScreenShows(screen, "") || ScreenShows("", "fix the flaky") {
 		t.Fatal("matched what the screen does not show")
+	}
+	// A short key counts only as a whole submitted-prompt line.
+	codex := "› hi\n\n• Hi! What would you like to work on?\n\n  ›  привет \n› Ask Codex to do anything\n"
+	for key, want := range map[string]bool{
+		"hi": true, "привет": true, "Hi!": false, "What": false, "› hi": false, "h": false, "Ask": false,
+	} {
+		if got := ScreenShows(codex, key); got != want {
+			t.Errorf("short key %q: %v, want %v", key, got, want)
+		}
 	}
 }
 
