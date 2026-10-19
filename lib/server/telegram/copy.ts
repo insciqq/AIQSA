@@ -116,3 +116,9 @@ const REASON_TEXT: Partial<Record<TelegramReasonCode, string>> = {
 export function telegramReasonText(code: TelegramReasonCode): string | undefined {
   return REASON_TEXT[code];
 }
+
+/** Replies of the core bot until the chat bridge answers messages itself. */
+export const TELEGRAM_CORE_COPY = {
+  comingSoon: "Chats from Telegram aren't available on this AIQSA yet. /help lists commands.",
+  notConnected: "This Telegram account is not connected to AIQSA."
+} as const;
