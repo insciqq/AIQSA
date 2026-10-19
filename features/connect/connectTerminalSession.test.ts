@@ -279,6 +279,130 @@ describe("ConnectTerminalSession", () => {
     session.dispose();
   });
 
+  it("review: failed input stops further typing", async () => {
+    const { session, streams, transport } = setup();
+    session.start(); await flush(); streams[0]!.open();
+    session.input("echo "); await flush();
+    transport.sendInput.mockResolvedValueOnce({ code: "network_error", ok: false });
+    session.input("safe"); await flush();
+    const sent = transport.sendInput.mock.calls.length;
+    session.input("\r"); await flush();
+    const state = session.getState(); session.dispose();
+    expect(state.kind).not.toBe("live");
+    expect(transport.sendInput).toHaveBeenCalledTimes(sent);
+  });
+
+  it("stops typing on a server failure and drops what was queued behind it", async () => {
+    for (const failure of [
+      { code: "response_invalid", ok: false },
+      { code: "connect_device_error", ok: false },
+      { code: "connect_device_timeout", ok: false }
+    ] as const) {
+      const { session, states, streams, transport } = setup();
+      const pending = deferred<ConnectApiResult<void>>();
+      transport.sendInput.mockImplementationOnce(() => pending.promise);
+      session.start();
+      await flush();
+      streams[0]!.open();
+      session.input("rm -rf /tmp/demo");
+      session.input("/cache");
+      pending.resolve(failure);
+      await flush();
+      expect(states.at(-1)).toMatchObject({ cause: "input_lost", kind: "reconnecting" });
+      session.input("\r");
+      await flush();
+      vi.advanceTimersByTime(CONNECT_VIEW_RETRY_DELAYS_MS[0]!);
+      await flush();
+      expect(transport.sendInput.mock.calls.map(([, data]) => data)).toEqual(["rm -rf /tmp/demo"]);
+      session.dispose();
+    }
+  });
+
+  it("recovers from lost input on a fresh view that says so and accepts typing again", async () => {
+    const { session, states, streams, terminal, transport } = setup();
+    transport.sendInput.mockResolvedValueOnce({ code: "network_error", ok: false });
+    session.start();
+    await flush();
+    streams[0]!.open();
+    session.input("x");
+    await flush();
+    expect(streams[0]!.closed).toBe(true);
+    expect(transport.closeView).toHaveBeenCalledOnce();
+
+    session.retryNow();
+    await flush();
+    expect(transport.createView).toHaveBeenCalledTimes(2);
+    streams[1]!.open();
+    expect(states.at(-1)).toEqual({ inputLost: true, kind: "live" });
+    expect(terminal.reset).toHaveBeenCalledTimes(2);
+    session.input("y");
+    await flush();
+    expect(transport.sendInput).toHaveBeenLastCalledWith(transport.openStream.mock.calls[1]![0], "y");
+
+    session.dismissInputNotice();
+    expect(states.at(-1)).toEqual({ kind: "live" });
+    // Reconnecting for another reason later does not bring the notice back.
+    streams[1]!.fail();
+    vi.advanceTimersByTime(CONNECT_VIEW_RETRY_DELAYS_MS[0]!);
+    await flush();
+    streams[2]!.open();
+    expect(states.at(-1)).toEqual({ kind: "live" });
+    session.dispose();
+  });
+
+  it("reopens on its own after lost input with the usual backoff", async () => {
+    const { session, states, streams, transport } = setup();
+    transport.sendInput.mockResolvedValueOnce({ code: "network_error", ok: false });
+    session.start();
+    await flush();
+    streams[0]!.open();
+    session.input("x");
+    await flush();
+    vi.advanceTimersByTime(CONNECT_VIEW_RETRY_DELAYS_MS[0]! - 1);
+    expect(transport.createView).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    await flush();
+    expect(transport.createView).toHaveBeenCalledTimes(2);
+    streams[1]!.open();
+    expect(states.at(-1)).toEqual({ inputLost: true, kind: "live" });
+    session.dispose();
+  });
+
+  it("shows a refused input and stops typing until the user reopens the terminal", async () => {
+    for (const code of ["connect_input_too_large", "connect_request_invalid"] as const) {
+      const { session, states, streams, transport } = setup();
+      transport.sendInput.mockResolvedValueOnce({ code, ok: false });
+      session.start();
+      await flush();
+      streams[0]!.open();
+      session.input("x");
+      await flush();
+      expect(states.at(-1)).toEqual({ code, inputLost: true, kind: "failed" });
+      session.input("\r");
+      vi.advanceTimersByTime(60_000);
+      await flush();
+      expect(transport.sendInput).toHaveBeenCalledTimes(1);
+      expect(transport.createView).toHaveBeenCalledTimes(1);
+      session.dispose();
+    }
+  });
+
+  it("repeats a rate-limited chunk after retry-after, in order", async () => {
+    const { session, streams, transport } = setup();
+    transport.sendInput.mockResolvedValueOnce({ code: "connect_rate_limited", ok: false, retryAfterSeconds: 2 });
+    session.start();
+    await flush();
+    streams[0]!.open();
+    session.input("ab");
+    await flush();
+    session.input("c");
+    vi.advanceTimersByTime(2_000);
+    await flush();
+    expect(transport.sendInput.mock.calls.map(([, data]) => data)).toEqual(["ab", "abc"]);
+    expect(session.getState()).toEqual({ kind: "live" });
+    session.dispose();
+  });
+
   it("reopens the view when an input answers that the view is gone", async () => {
     const { session, streams, transport } = setup();
     transport.sendInput.mockResolvedValueOnce({ code: "connect_not_found", ok: false });

@@ -217,6 +217,27 @@ describe("ConnectSessionView", () => {
     await waitFor(() => expect(transport.createView).toHaveBeenCalledTimes(2));
   });
 
+  it("pauses typing when a keystroke may be lost and warns on the reopened terminal", async () => {
+    const { streams, transport } = renderSession();
+    const term = await terminal();
+    await waitFor(() => expect(streams).toHaveLength(1));
+    transport.sendInput.mockResolvedValueOnce({ code: "network_error", ok: false });
+    act(() => streams[0]!.open());
+    await act(async () => term.type("x"));
+    expect(screen.getByTestId("connect-terminal-state")).toHaveTextContent("may not have reached the computer");
+    expect(term.options.disableStdin).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect now" }));
+    await waitFor(() => expect(streams).toHaveLength(2));
+    act(() => streams[1]!.open());
+    expect(screen.queryByTestId("connect-terminal-state")).toBeNull();
+    const notice = screen.getByTestId("connect-terminal-input-lost");
+    expect(notice).toHaveTextContent("Check the command line before you press Enter.");
+    expect(term.options.disableStdin).toBe(false);
+    fireEvent.click(within(notice).getByRole("button", { name: "Got it" }));
+    expect(screen.queryByTestId("connect-terminal-input-lost")).toBeNull();
+  });
+
   it("leaves the mode when the feature is turned off", async () => {
     const { streams, value } = renderSession();
     await terminal();
