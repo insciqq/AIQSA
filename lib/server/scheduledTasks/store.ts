@@ -137,8 +137,8 @@ const KIND_COLUMN = {
 export const scheduledTaskRowSelect = {
   id: true, title: true, prompt: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
   onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
-  searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true, pinnedSkillIds: true,
-  chatMode: true, kind: true, historyRetentionDays: true, historyDeletedChats: true, status: true, pauseReason: true,
+  searchEnabled: true, emailNotify: true, telegramNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true,
+  pinnedSkillIds: true, chatMode: true, kind: true, historyRetentionDays: true, historyDeletedChats: true, status: true, pauseReason: true,
   completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true, promptUrlDigests: true,
   chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
@@ -209,7 +209,8 @@ export function toScheduledTask(
   return {
     id: row.id, title: row.title, prompt: row.prompt, schedule: scheduledTaskScheduleFromColumns(row), timeZone: row.timeZone,
     modelId: row.modelId, provider: row.provider, searchEnabled: row.searchEnabled, emailNotify: row.emailNotify,
-    toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled, memoryEnabled: row.memoryEnabled,
+    telegramNotify: row.telegramNotify, toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled,
+    memoryEnabled: row.memoryEnabled,
     pinnedSkillIds: [...row.pinnedSkillIds],
     ...(skills ? { pinnedSkills: scheduledTaskPinnedSkillsFrom(skills, row.pinnedSkillIds) } : {}),
     chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind],
@@ -321,7 +322,8 @@ function draftColumns(draft: ScheduledTaskDraft) {
   return {
     title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule), timeZone: draft.timeZone,
     modelId: draft.modelId, provider: draft.provider, searchEnabled: draft.searchEnabled, emailNotify: draft.emailNotify,
-    toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled, memoryEnabled: draft.memoryEnabled,
+    telegramNotify: draft.telegramNotify, toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled,
+    memoryEnabled: draft.memoryEnabled,
     pinnedSkillIds: [...draft.pinnedSkillIds], chatMode: CHAT_MODE_COLUMN[draft.chatMode], kind: TASK_KIND_COLUMN[draft.kind],
     historyRetentionDays: draft.historyRetentionDays
   };
@@ -452,10 +454,27 @@ export async function updateScheduledTask(
   return project(tx, userId, row);
 }
 
-export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledTaskStore {
+export type ScheduledTaskStoreOptions = Readonly<{
+  /**
+   * Whether the owner's results can go to Telegram now: a link that Telegram
+   * access allows. Read outside the list's transaction; a failed read says
+   * false. Without it the list says false.
+   */
+  telegramAvailable?: (userId: string) => Promise<boolean>;
+}>;
+
+export function createPrismaScheduledTaskStore(prisma: PrismaClient, options: ScheduledTaskStoreOptions = {}): ScheduledTaskStore {
+  const telegramAvailable = async (userId: string) => {
+    try {
+      return options.telegramAvailable ? await options.telegramAvailable(userId) : false;
+    } catch {
+      return false;
+    }
+  };
   return {
     async list(userId) {
-      return prisma.$transaction(async (tx) => {
+      const telegram = telegramAvailable(userId);
+      const list = await prisma.$transaction(async (tx) => {
         const rows = await tx.scheduledTask.findMany({
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           select: scheduledTaskRowSelect,
@@ -471,6 +490,7 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
           emailAvailable: await readScheduledTaskEmailAvailability(tx, userId)
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+      return { ...list, telegramAvailable: await telegram };
     },
     async get(userId, taskId) {
       const row = await prisma.scheduledTask.findFirst({ select: scheduledTaskRowSelect, where: visibleTask(userId, taskId) });

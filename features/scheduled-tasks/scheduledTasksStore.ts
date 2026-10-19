@@ -31,6 +31,8 @@ export type ScheduledTasksState = Readonly<{
    */
   newResults: Readonly<{ sequence: number; tasks: readonly ScheduledTask[] }>;
   tasks: readonly ScheduledTask[];
+  /** The owner's results can go to Telegram now: a link that Telegram access allows. */
+  telegramAvailable: boolean;
 }>;
 
 const initial: ScheduledTasksState = {
@@ -41,7 +43,8 @@ const initial: ScheduledTasksState = {
   limits: { maxActive: SCHEDULED_TASK_MAX_ACTIVE, maxActiveHourly: SCHEDULED_TASK_MAX_ACTIVE_HOURLY, maxTotal: SCHEDULED_TASK_MAX_TOTAL },
   loadState: "idle",
   newResults: { sequence: 0, tasks: [] },
-  tasks: []
+  tasks: [],
+  telegramAvailable: false
 };
 
 export const useScheduledTasksStore = create<ScheduledTasksState>(() => initial);
@@ -89,6 +92,7 @@ export function refreshScheduledTasks(): Promise<boolean> {
       ? newlyFinishedScheduledTasks(current.tasks, response.tasks) : [];
     useScheduledTasksStore.setState({
       emailAvailable: response.emailAvailable,
+      telegramAvailable: response.telegramAvailable,
       error: null,
       limits: response.limits,
       loadState: "ready",

@@ -80,6 +80,9 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
   const inactiveUsers = new Set<string>();
   const emails: SmtpProductMessage[] = [];
   const pushes: string[] = [];
+  /** Occurrences whose Telegram delivery the runner recorded; one that throws never holds a settlement. */
+  const telegram: string[] = [];
+  let telegramFails = false;
   const sent: Array<{ body: Record<string, unknown>; chatId: string; occurrence: ScheduledOccurrenceAdmission }> = [];
   const catalog: ScheduledTaskRunCatalog = {
     models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
@@ -381,6 +384,10 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
     send,
     sendEmail: async (message) => { emails.push(message); },
     sendPush: (occurrenceId) => { pushes.push(occurrenceId); },
+    queueTelegram: (occurrenceId) => {
+      if (telegramFails) throw new Error("outbox unavailable");
+      telegram.push(occurrenceId);
+    },
     // The Stop path: an active run becomes cancelled with the given cause.
     stopRun: async ({ code, runId, userId }) => {
       stops.push({ code, runId, userId });
@@ -423,7 +430,8 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
   }
   return {
     addOccurrence, addTask, answers, availableSkills, carried, chats, emails, inactiveUsers, kick, occurrences, pushes, runs, seeds,
-    sent, settled, stops, store, sweeps, tasks, tick,
+    sent, settled, stops, store, sweeps, tasks, telegram, tick,
+    failTelegram() { telegramFails = true; },
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
     now: () => clock,
     setCarry(next: typeof carry) { carry = next; },
@@ -935,6 +943,24 @@ describe("scheduled task runner", () => {
     expect(h.pushes).toHaveLength(1);
   });
 
+  it("records one Telegram delivery per notifying settlement beside the push, and a failing outbox holds nothing", async () => {
+    const h = harness();
+    const task = h.addTask({ nextRunAt: new Date("2026-10-02T06:00:00.000Z") });
+    h.advance(2 * 60 * MINUTE);
+    await h.tick();
+    const [missed, completed] = h.forTask(task);
+    expect(missed).toMatchObject({ reasonCode: "missed", state: "SKIPPED" });
+    // The outbox decides by the task's switch; the runner only applies the owner's notification rule.
+    expect(h.telegram).toEqual([completed!.id]);
+    expect(h.telegram).toEqual(h.pushes);
+    h.failTelegram();
+    const manual = h.addOccurrence(task);
+    await h.tick();
+    expect(manual).toMatchObject({ state: "COMPLETED" });
+    expect(h.pushes).toEqual([completed!.id, manual.id]);
+    expect(h.telegram).toEqual([completed!.id]);
+  });
+
   it("tolerates a task deleted while its occurrence is pending", async () => {
     const h = harness();
     const task = h.addTask();
@@ -1365,6 +1391,8 @@ describe("scheduled monitoring checks and source health", () => {
     const notified = [baseline!, alert!, pausing!].map((row) => row.id);
     expect(h.forTask(task).filter((row) => row.unseenAt !== null).map((row) => row.id)).toEqual(notified);
     expect(h.pushes).toEqual(notified);
+    // A hidden check without news never reaches Telegram either.
+    expect(h.telegram).toEqual(notified);
     expect(quiet!.unseenAt).toBeNull();
     expect(h.emails.map((email) => email.subject)).toEqual(["Scheduled task finished", "Scheduled task finished", "Scheduled task paused"]);
     expect(h.emails[1]!.text).toContain("Could not check: a source was unavailable.\nTracker is unavailable.");

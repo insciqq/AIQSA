@@ -65,7 +65,8 @@ function task(source: ScheduledTaskCard): ScheduledTask {
   return {
     id: source.taskId, title: source.title, prompt: "Synthetic scheduled instructions.",
     schedule: source.schedule, timeZone: source.timeZone,
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: source.toolsEnabled,
+    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, telegramNotify: false,
+    toolsEnabled: source.toolsEnabled,
     workspaceEnabled: source.workspaceEnabled, memoryEnabled: true, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: source.kind, status: source.status,
     pauseReason: null, historyRetentionDays: 90, historyDeletedChats: 0, historyNextDeletionAt: null,
     completionReason: null, nextRunAt: source.nextRunAt, lastRun: null, running: false,
@@ -86,7 +87,7 @@ async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]
     if (method !== "GET") state.writes.push({ method, path, body: request.postData() ? request.postDataJSON() : null });
     if (!path && method === "GET") {
       return route.fulfill({ json: { tasks: state.tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 },
-        emailAvailable: true } });
+        emailAvailable: true, telegramAvailable: false } });
     }
     const [, id, action] = path.split("/");
     const index = state.tasks.findIndex((entry) => entry.id === id);

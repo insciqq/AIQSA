@@ -87,6 +87,8 @@ export type ScheduledTaskSheetProps = Readonly<{
   workspace?: ScheduledTaskWorkspaceAvailability;
   /** Whether the owner's Memory lets runs read anything; the task keeps its own switch. */
   memory?: ScheduledTaskMemoryAvailability;
+  /** Shows the Telegram switch: the owner's results can go to Telegram, or the task already sends them. */
+  telegramAvailable?: boolean;
   /** Reads the Skills the owner may pin; a stable function, the library by default. */
   loadSkillOptions?: () => Promise<readonly ScheduledTaskSkillOption[]>;
 }>;
@@ -125,13 +127,13 @@ function toggled(days: readonly ScheduledTaskWeekday[], day: ScheduledTaskWeekda
 /** Create and edit sheet: one form, a live next-run preview and the task's recent runs. */
 export function ScheduledTaskSheet({
   busy, catalog, draft, emailAvailable, errors, initialDraft, loadSkillOptions, memory = "unknown", notice, onChange, onClose,
-  onOpenRunChat, onRunsShown, onSubmit, original, recentRuns, viewerTimeZone, workspace = "unknown"
+  onOpenRunChat, onRunsShown, onSubmit, original, recentRuns, telegramAvailable = false, viewerTimeZone, workspace = "unknown"
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
     title: useId(), prompt: useId(), promptCount: useId(), promptLinks: useId(), repeat: useId(), time: useId(), schedule: useId(),
     days: useId(), dayOfMonth: useId(), date: useId(), timeZone: useId(), model: useId(), search: useId(),
-    searchHelp: useId(), email: useId(), emailHelp: useId(), form: useId(), monthHint: useId(),
+    searchHelp: useId(), email: useId(), emailHelp: useId(), telegram: useId(), telegramHelp: useId(), form: useId(), monthHint: useId(),
     scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
     chatMode: useId(), chatModeHint: useId(), chatMonthHint: useId(), kind: useId(), kindHint: useId(), tools: useId(),
     toolsHelp: useId(), workspace: useId(), workspaceHelp: useId(), memory: useId(), memoryHelp: useId(), history: useId(),
@@ -583,6 +585,21 @@ export function ScheduledTaskSheet({
                   label="Email me when it runs"
                   aria-describedby={ids.emailHelp}
                   onChange={(emailNotify) => onChange({ emailNotify })}
+                />
+              </div>
+            ) : null}
+            {telegramAvailable ? (
+              <div className="v2-scheduled-toggle">
+                <span className="v2-scheduled-toggle-copy">
+                  <span id={ids.telegram} className="v2-scheduled-label">Send results to Telegram</span>
+                  <span id={ids.telegramHelp} className="v2-scheduled-hint">Telegram receives the result itself.</span>
+                </span>
+                <UiV2Switch
+                  checked={draft.telegramNotify}
+                  disabled={busy}
+                  label="Send results to Telegram"
+                  aria-describedby={ids.telegramHelp}
+                  onChange={(telegramNotify) => onChange({ telegramNotify })}
                 />
               </div>
             ) : null}

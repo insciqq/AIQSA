@@ -55,6 +55,12 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   /** Queues the occurrence's browser push; the sender claims it at most once and never blocks the tick. */
   sendPush?: (occurrenceId: string) => void;
   /**
+   * Records the occurrence's Telegram delivery when its task has Telegram
+   * delivery on (a durable outbox row, one per occurrence); the Telegram
+   * sender delivers it outside the tick, which this never blocks.
+   */
+  queueTelegram?: (occurrenceId: string) => void;
+  /**
    * Stops an active run through the ordinary Stop path, keeping the given
    * terminal cause; the run deadline uses it.
    */
@@ -229,6 +235,11 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         deps.sendPush?.(settlement.occurrenceId);
       } catch {
         // Browser push is best effort and never holds a settlement.
+      }
+      try {
+        deps.queueTelegram?.(settlement.occurrenceId);
+      } catch {
+        // The Telegram outbox reports its own failures and never holds a settlement.
       }
       if (!deps.sendEmail) continue;
       if (emailQueue.length >= EMAIL_QUEUE_LIMIT) {
