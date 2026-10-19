@@ -92,6 +92,27 @@ describe("Telegram outbound content", () => {
     expect(JSON.stringify(records)).not.toContain(SENTINEL);
   });
 
+  it("reports a refused rich answer that has no plain form, and keeps a delivered message when its reference fails", async () => {
+    const refused = setup();
+    refused.fake.failNext("sendRichMessage", { status: 400 });
+    await expect(refused.outbound.sendContent({ chatId: refused.user.id, messages: [rich("A")], owner: OWNER, plainFallback: ["  "] }))
+      .resolves.toMatchObject({ failure: { errorCode: 400 }, messageIds: [], ok: false });
+    expect(refused.fake.calls("sendMessage")).toHaveLength(0);
+
+    const capture = await captureRunObservation();
+    const fake = createFakeTelegramBotApi();
+    closers.push(() => fake.close());
+    const user = fake.inject.addUser();
+    const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => {}, token: fake.token, transport: fake.transport });
+    const outbound = createTelegramOutbound({
+      api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks: { create: async () => [] },
+      messageRefs: { record: async () => { throw new Error("database unavailable"); } }
+    });
+    await expect(outbound.sendContent({ chatId: user.id, messages: [rich("A")], owner: OWNER, plainFallback: ["A"] }))
+      .resolves.toEqual({ fallback: false, messageIds: [1], ok: true });
+    expect(capture.records()).toContainEqual(expect.objectContaining({ code: "telegram_message_ref_failed", subsystem: "telegram" }));
+  });
+
   it("never resends an ambiguous send, and repeats one that never reached Telegram", async () => {
     const ambiguous = setup();
     ambiguous.fake.failNext("sendRichMessage", { drop: true });

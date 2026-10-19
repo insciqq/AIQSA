@@ -229,7 +229,7 @@ describe("Telegram poll failures", () => {
     for (const code of [
       "telegram_activation_hook_failed", "telegram_button_refused", "telegram_control_action_failed", "telegram_control_unavailable",
       "telegram_encryption_unavailable", "telegram_group_left", "telegram_health_write_failed", "telegram_link_action_failed",
-      "telegram_link_code_rate_limited", "telegram_notice_failed", "telegram_poll_failed", "telegram_receipt_failed",
+      "telegram_link_code_rate_limited", "telegram_message_ref_failed", "telegram_notice_failed", "telegram_poll_failed", "telegram_receipt_failed",
       "telegram_record_prune_failed", "telegram_startup_failed", "telegram_token_unreadable", "telegram_update_claim_failed",
       "telegram_update_failed"
     ]) {
