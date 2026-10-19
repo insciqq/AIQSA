@@ -192,6 +192,27 @@ describe.each<Mode>(["fetch", "loopback"])("fake Bot API over %s", (mode) => {
   });
 });
 
+it("serves a second bot identity on the port the first one left", async () => {
+  const first = createFakeTelegramBotApi();
+  closers.push(() => first.close());
+  const { origin } = await first.start();
+  const port = Number(new URL(origin).port);
+  const transport = createTelegramTransport({ origin, env: TEST_ENV });
+  await expect(createTelegramBotApi({ token: first.token, transport }).getMe())
+    .resolves.toMatchObject({ ok: true, result: { id: 100000001, username: "aiqsa_test_bot" } });
+  await first.close();
+
+  const token = "100000002:AAFakeTelegramSecondBotTokenForTests_00";
+  const second = createFakeTelegramBotApi({ token, username: "aiqsa_second_test_bot", firstUpdateId: 5_000 });
+  closers.push(() => second.close());
+  await expect(second.start({ port })).resolves.toMatchObject({ origin });
+  const api = createTelegramBotApi({ token, transport, pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => {} });
+  await expect(api.getMe()).resolves.toMatchObject({ ok: true, result: { id: 100000002, username: "aiqsa_second_test_bot" } });
+  await expect(createTelegramBotApi({ token: first.token, transport }).getMe()).resolves.toMatchObject({ ok: false, errorCode: 401 });
+  const update = second.inject.text(second.inject.addUser(), "hi");
+  expect(update.update_id).toBe(5_000);
+});
+
 it("uses a valid Bot API token shape", () => {
   expect(FAKE_TELEGRAM_TOKEN).toMatch(/^\d+:[A-Za-z0-9_-]{20,}$/u);
 });
