@@ -40,7 +40,9 @@ async function run(
   await prisma.modelRun.create({ data: {
     chatId: account.chatId, createdAt: new Date(NOW - minutesAgo * 60_000), modelId: "fixture",
     normalizedRequest: baseline ? { prompt: { baseline } } : {}, provider: "fake", status: "complete",
-    ...(scheduledTaskId ? { scheduledTaskId } : {}), userId: account.userId, userMessageId: question.id
+    // A scheduled origin names its task, occurrence and generation together (ModelRun_scheduled_origin_check).
+    ...(scheduledTaskId ? { scheduledOccurrenceId: `synthetic-occurrence-${randomUUID()}`, scheduledTaskGeneration: 1, scheduledTaskId } : {}),
+    userId: account.userId, userMessageId: question.id
   } });
 }
 

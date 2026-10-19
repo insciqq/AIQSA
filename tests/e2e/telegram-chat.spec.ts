@@ -61,8 +61,15 @@ function textsSince(since: number, chatId: number): string[] {
 }
 
 async function expectText(since: number, text: string | RegExp): Promise<string> {
-  await expect.poll(() => textsSince(since, tgAlice.id).some((sent) => typeof text === "string" ? sent === text : text.test(sent)),
-    { timeout: REPLY_TIMEOUT_MS }).toBe(true);
+  try {
+    await expect.poll(() => textsSince(since, tgAlice.id).some((sent) => typeof text === "string" ? sent === text : text.test(sent)),
+      { timeout: REPLY_TIMEOUT_MS }).toBe(true);
+  } catch (error) {
+    // Name what the bot did instead, so a missing reply is diagnosable from the report.
+    const seen = bot.calls().slice(since).filter((call) => call.method !== "getUpdates")
+      .map((call) => `${call.method}:${call.status}${call.method === "sendMessage" ? ` ${JSON.stringify(String(call.params.text).slice(0, 160))}` : ""}`);
+    throw new Error(`no ${String(text)}; the bot sent: ${seen.join(", ") || "nothing"}`, { cause: error });
+  }
   return textsSince(since, tgAlice.id).find((sent) => typeof text === "string" ? sent === text : text.test(sent))!;
 }
 
