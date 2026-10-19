@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { revokeConnectDevicesForUser } from "../connect/revocation";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
+import { revokeTelegramLinksForUser } from "../telegram/linking/revocation";
 import type { AccountProfileRepository, PasswordChangeRepository } from "./accountHandlers";
 import type { SafeUserWithGroups } from "./handlers";
 import { lockAuthIdentity } from "./transactionLocks";
@@ -144,8 +145,8 @@ export function createPrismaPasswordChangeRepository(
             userId: identity.userId
           }
         });
-        // Like the other sessions, an inbound MCP grant may have been minted by whoever held the
-        // old password; the kept session can consent again.
+        // Like the other sessions, an inbound MCP grant or a Telegram link may have been made by
+        // whoever held the old password; the kept session can consent or link again.
         await revokeInboundMcpGrantsForUser(tx, {
           now: input.now,
           reason: "password_change",
@@ -153,6 +154,11 @@ export function createPrismaPasswordChangeRepository(
         });
         // Whoever held the old password may also have paired a computer.
         await revokeConnectDevicesForUser(tx, { userId: identity.userId });
+        await revokeTelegramLinksForUser(tx, {
+          now: input.now,
+          reason: "password_change",
+          userId: identity.userId
+        });
         return true;
       });
     }

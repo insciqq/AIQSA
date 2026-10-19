@@ -14,7 +14,8 @@ const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
   timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, toolsEnabled: false,
-  workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90
+  telegramNotify: false, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard",
+  historyRetentionDays: 90
 };
 const hourlyDraft: ScheduledTaskDraft = {
   ...draft, chatMode: "same",
@@ -217,6 +218,23 @@ describe("persisted scheduled tasks", () => {
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ consecutiveMissingVerdicts: 0 });
     const resumed = await store.update(userId, task.id, { promptUrls: "keep", draft: monitoring, expectedRevision: 3, nextRunAt: due, status: "active" });
     expect(resumed).toMatchObject({ completionReason: null, nextRunAt: due.toISOString(), status: "active" });
+  });
+
+  it("stores and projects the Telegram switch, and lists whether results can go to Telegram now", async () => {
+    const userId = await owner();
+    const task = await store.create(userId, { ...draft, telegramNotify: true }, due, noUrls);
+    expect(task.telegramNotify).toBe(true);
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ emailNotify: false, telegramNotify: true });
+    const off = await store.update(userId, task.id, { draft: { ...draft, telegramNotify: false }, expectedRevision: task.revision,
+      nextRunAt: undefined, promptUrls: "keep", status: "active" });
+    expect(off.telegramNotify).toBe(false);
+    expect((await store.list(userId)).telegramAvailable).toBe(false);
+    const asked: string[] = [];
+    const linked = createPrismaScheduledTaskStore(prisma, { telegramAvailable: async (id) => { asked.push(id); return true; } });
+    expect(await linked.list(userId)).toMatchObject({ tasks: [{ id: task.id, telegramNotify: false }], telegramAvailable: true });
+    expect(asked).toEqual([userId]);
+    const failing = createPrismaScheduledTaskStore(prisma, { telegramAvailable: async () => { throw new Error("telegram unavailable"); } });
+    expect((await failing.list(userId)).telegramAvailable).toBe(false);
   });
 
   it("projects the newest settled run, open runs, unread results and owner-scoped history", async () => {

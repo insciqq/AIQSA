@@ -78,6 +78,15 @@ export interface BrowserPushStore {
   recordDelivery(target: Pick<BrowserPushTarget, "endpoint" | "id">, outcome: BrowserPushDeliveryOutcome, now: Date): Promise<void>;
 }
 
+/**
+ * A run a Telegram message started answers in Telegram (`TelegramRunLink`,
+ * recorded when the run starts), so it never also notifies the browser.
+ * The enclosing query names the `ModelRun` row `run`.
+ */
+function notTelegramRunSql(): Prisma.Sql {
+  return Prisma.sql`NOT EXISTS (SELECT 1 FROM "TelegramRunLink" AS telegram_run WHERE telegram_run."runId" = run."id")`;
+}
+
 /** The account is active, has notifications on and at least one subscription of a live session. */
 function ownerAcceptsSql(userId: Prisma.Sql, now: Date): Prisma.Sql {
   return Prisma.sql`EXISTS (
@@ -177,6 +186,7 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
             AND chat."permanentDeletionAt" IS NULL
             AND ${notScheduledRunSql()}
             AND ${notAutoReviewRunSql()}
+            AND ${notTelegramRunSql()}
             AND ${ownerAcceptsSql(Prisma.sql`run."userId"`, now)}
         ), claimed AS (
           INSERT INTO "BrowserPushDelivery" ("id", "runId", "claimedAt")

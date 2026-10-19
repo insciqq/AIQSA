@@ -163,6 +163,8 @@ export type ScheduledTask = {
   provider: string;
   searchEnabled: boolean;
   emailNotify: boolean;
+  /** See `ScheduledTaskDraft.telegramNotify`. */
+  telegramNotify: boolean;
   /** See `ScheduledTaskDraft.toolsEnabled`. */
   toolsEnabled: boolean;
   /** See `ScheduledTaskDraft.workspaceEnabled`. */
@@ -285,8 +287,14 @@ export function scheduledTaskSourceMessage(source: Readonly<ScheduledTaskUnavail
 }
 
 export type ScheduledTaskLimits = { maxActive: number; maxTotal: number; maxActiveHourly: number };
-/** `GET /api/me/scheduled-tasks`, newest first. `emailAvailable`: installation SMTP is configured and the account has an address. */
-export type ScheduledTaskListResponse = { tasks: ScheduledTask[]; limits: ScheduledTaskLimits; emailAvailable: boolean };
+/**
+ * `GET /api/me/scheduled-tasks`, newest first. `emailAvailable`: installation
+ * SMTP is configured and the account has an address. `telegramAvailable`: the
+ * account has a Telegram link and Telegram access allows it now.
+ */
+export type ScheduledTaskListResponse = {
+  tasks: ScheduledTask[]; limits: ScheduledTaskLimits; emailAvailable: boolean; telegramAvailable: boolean;
+};
 /** `GET /api/me/scheduled-tasks/[taskId]`; `recentRuns` holds the newest occurrences first. */
 export type ScheduledTaskDetailResponse = { task: ScheduledTask; recentRuns: ScheduledTaskRun[] };
 /**
@@ -314,6 +322,14 @@ export type ScheduledTaskDraft = {
   provider: string;
   searchEnabled: boolean;
   emailNotify: boolean;
+  /**
+   * Each result that notifies the owner also goes to the owner's linked
+   * Telegram with its content: the outcome, the result text and its files,
+   * and a reply there continues the run's chat. Delivery rechecks the link
+   * and Telegram access first and skips without them. Optional in a create
+   * body: false; a task a chat answer creates from Telegram starts with it on.
+   */
+  telegramNotify: boolean;
   /**
    * Runs use the owner's MCP tools and Skills, both in Auto mode, as an
    * ordinary message does. Needs a model with tool calling.
@@ -543,8 +559,8 @@ export function scheduledTaskChatModeAllowed(
 }
 
 const TASK_KEYS = [
-  "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
-  "workspaceEnabled", "memoryEnabled", "pinnedSkillIds", "chatMode", "kind", "historyRetentionDays", "historyDeletedChats",
+  "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "telegramNotify",
+  "toolsEnabled", "workspaceEnabled", "memoryEnabled", "pinnedSkillIds", "chatMode", "kind", "historyRetentionDays", "historyDeletedChats",
   "historyNextDeletionAt", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun", "running", "chatId",
   "unseenResult", "revision", "createdAt", "updatedAt"
 ] as const;
@@ -601,7 +617,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   if (!schedule || !id(value.id) || !title || title !== value.title || !isScheduledTaskPrompt(prompt) ||
     !isScheduledTaskTimeZoneShape(value.timeZone) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
-    typeof value.emailNotify !== "boolean" || typeof value.toolsEnabled !== "boolean" ||
+    typeof value.emailNotify !== "boolean" || typeof value.telegramNotify !== "boolean" ||
+    typeof value.toolsEnabled !== "boolean" ||
     typeof value.workspaceEnabled !== "boolean" || typeof value.memoryEnabled !== "boolean" ||
     !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
     !scheduledTaskChatModeAllowed({ kind: value.kind as ScheduledTaskKind, schedule }, value.chatMode as ScheduledTaskChatMode) ||
@@ -616,8 +633,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   const run = value.lastRun as ScheduledTaskLastRun | null;
   return {
     id: value.id, title, prompt, schedule, timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
-    searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, toolsEnabled: value.toolsEnabled,
-    workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, pinnedSkillIds,
+    searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, telegramNotify: value.telegramNotify,
+    toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, pinnedSkillIds,
     ...(skills ? { pinnedSkills: skills } : {}), chatMode: value.chatMode as ScheduledTaskChatMode,
     kind: value.kind as ScheduledTaskKind, historyRetentionDays: value.historyRetentionDays,
     historyDeletedChats: value.historyDeletedChats, historyNextDeletionAt: value.historyNextDeletionAt,
@@ -680,8 +697,9 @@ export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null 
 }
 
 export function decodeScheduledTaskListResponse(value: unknown): ScheduledTaskListResponse | null {
-  if (!record(value) || !keys(value, ["tasks", "limits", "emailAvailable"]) || !Array.isArray(value.tasks) ||
+  if (!record(value) || !keys(value, ["tasks", "limits", "emailAvailable", "telegramAvailable"]) || !Array.isArray(value.tasks) ||
     value.tasks.length > SCHEDULED_TASK_MAX_TOTAL || typeof value.emailAvailable !== "boolean" ||
+    typeof value.telegramAvailable !== "boolean" ||
     !record(value.limits) || !keys(value.limits, ["maxActive", "maxTotal", "maxActiveHourly"]) ||
     !count(value.limits.maxActive, 0) || !count(value.limits.maxTotal, 0) || !count(value.limits.maxActiveHourly, 0)) return null;
   const tasks = value.tasks.map(decodeScheduledTask);
@@ -689,7 +707,8 @@ export function decodeScheduledTaskListResponse(value: unknown): ScheduledTaskLi
   return {
     tasks: tasks as ScheduledTask[],
     limits: { maxActive: value.limits.maxActive, maxTotal: value.limits.maxTotal, maxActiveHourly: value.limits.maxActiveHourly },
-    emailAvailable: value.emailAvailable
+    emailAvailable: value.emailAvailable,
+    telegramAvailable: value.telegramAvailable
   };
 }
 

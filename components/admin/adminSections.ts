@@ -11,6 +11,7 @@ import {
   Megaphone,
   MonitorSmartphone,
   Search,
+  Send,
   ShieldCheck,
   Sparkles,
   SquareTerminal,
@@ -37,6 +38,7 @@ export type AdminSectionId =
   | "search"
   | "sign-in"
   | "skills"
+  | "telegram"
   | "usage"
   | "users"
   | "workspace";
@@ -77,6 +79,7 @@ export const adminSections = [
   { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
   { Icon: MonitorSmartphone, group: "platform", id: "connect", label: "AIQSA Connect" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },
+  { Icon: Send, group: "platform", id: "telegram", label: "Telegram" },
   { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }
 ] as const satisfies readonly AdminSection[];
 

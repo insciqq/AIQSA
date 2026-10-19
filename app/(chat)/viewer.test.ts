@@ -7,7 +7,8 @@ const mocks = vi.hoisted(() => ({
   redirect: vi.fn((location: string): never => {
     throw new Error(`NEXT_REDIRECT ${location}`);
   }),
-  resolveAuthToken: vi.fn()
+  resolveAuthToken: vi.fn(),
+  telegramAvailable: vi.fn(async (_userId: string) => false)
 }));
 
 vi.mock("@/lib/server/auth/config", () => ({ getAuthConfig: () => ({ configured: mocks.configured }) }));
@@ -17,6 +18,7 @@ vi.mock("@/lib/server/prisma", () => ({ prisma: { user: { findUnique: mocks.find
 vi.mock("@/lib/server/connect/policy", () => ({ isConnectEnabled: async () => mocks.connectEnabled }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "session-token" }) }) }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect }));
+vi.mock("@/lib/server/telegram/defaultTelegram", () => ({ isTelegramAvailableForUser: mocks.telegramAvailable }));
 
 import NewChatPage from "./page";
 import AssistantEntryPage from "./assistant/[assistantId]/page";
@@ -49,8 +51,19 @@ describe("chat pages", () => {
       accountEmail: "owner@example.test",
       accountId: "user-1",
       adminEntryVisible: true,
-      connectEnabled: false
+      connectEnabled: false,
+      telegramAvailable: false
     });
+  });
+
+  it("passes the Telegram availability of the signed-in user and hides the block when it cannot be read", async () => {
+    signedIn();
+    mocks.telegramAvailable.mockResolvedValueOnce(true);
+    await expect(loadChatViewer()).resolves.toMatchObject({ telegramAvailable: true });
+    expect(mocks.telegramAvailable).toHaveBeenCalledWith("user-1");
+
+    mocks.telegramAvailable.mockRejectedValueOnce(new Error("telegram state unreadable"));
+    await expect(loadChatViewer()).resolves.toMatchObject({ accountId: "user-1", telegramAvailable: false });
   });
 
   it("returns a stale session to the exact chat address after sign-in", async () => {

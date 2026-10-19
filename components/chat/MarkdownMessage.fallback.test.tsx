@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // Failure injection only: the hostile-input suite exercises the real parser.
 afterEach(() => {
   vi.doUnmock("markdown-it");
-  vi.doUnmock("./markdownParser");
+  vi.doUnmock("@/lib/domain/markdown/parser");
   vi.resetModules();
 });
 
@@ -19,7 +19,7 @@ describe("MarkdownMessage failure fallback", () => {
         }
       }
     }));
-    const { parseMarkdown } = await import("./markdownParser");
+    const { parseMarkdown } = await import("@/lib/domain/markdown/parser");
     expect(parseMarkdown(content)).toBeNull();
     const { MarkdownMessage } = await import("./MarkdownMessage");
     const { container } = render(<MarkdownMessage content={content} />);
@@ -30,7 +30,7 @@ describe("MarkdownMessage failure fallback", () => {
   });
 
   it("renders plain text when tree conversion throws", async () => {
-    vi.doMock("./markdownParser", () => ({
+    vi.doMock("@/lib/domain/markdown/parser", () => ({
       parseMarkdown: () => ({ blocks: [{ children: null, level: 2, type: "heading" }], overflow: null })
     }));
     const { MarkdownMessage } = await import("./MarkdownMessage");

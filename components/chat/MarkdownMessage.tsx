@@ -4,7 +4,7 @@ import { safeExternalHref } from "@/lib/domain/links";
 import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { CodeCopyButton } from "./CodeCopyButton";
 import { highlightCodeBlock, resolveCodeLanguage } from "./codeHighlighting";
-import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "./markdownParser";
+import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "@/lib/domain/markdown/parser";
 import { renderMathExpression } from "./mathRendering";
 import { MermaidBlock } from "./MermaidBlock";
 import { isMermaidLanguage } from "./mermaidRendering";
