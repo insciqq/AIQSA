@@ -77,15 +77,22 @@ describe("normalizing a provider-requested tool name", () => {
 describe("the unknown-call form", () => {
   it("keeps a valid name and bounds any other one", () => {
     expect(unknownToolCallName("read_note")).toBe("read_note");
+    expect(unknownToolCallName("_read_note")).toBe("_read_note");
     expect(unknownToolCallName(readNote.slice(0, 20))).toBe(readNote.slice(0, 20));
     expect(unknownToolCallName(`${editNote}</｜｜DSML｜｜ parameter>`)).toBe(INVALID_TOOL_NAME);
     expect(unknownToolCallName("default_api.read_note")).toBe(INVALID_TOOL_NAME);
     expect(unknownToolCallName("x".repeat(65))).toBe(INVALID_TOOL_NAME);
-    // A call without a name stays a protocol failure.
-    expect(unknownToolCallName(" ")).toBe(" ");
+    // Gemini requires a leading letter or underscore in history too.
+    expect(unknownToolCallName("9read_note")).toBe(INVALID_TOOL_NAME);
+    expect(unknownToolCallName("-read_note")).toBe(INVALID_TOOL_NAME);
+    // A call without a name is settled like any other unknown call.
+    expect(unknownToolCallName(" ")).toBe(INVALID_TOOL_NAME);
+    expect(unknownToolCallName("")).toBe(INVALID_TOOL_NAME);
   });
 
   it("shows the model a bounded excerpt of the requested name without markup", () => {
+    expect(requestedToolNameExcerpt("")).toBe("");
+    expect(requestedToolNameExcerpt(" ")).toBe("?");
     expect(requestedToolNameExcerpt("read_note")).toBe("read_note");
     expect(requestedToolNameExcerpt(`${editNote}</｜｜DSML｜｜ parameter><｜｜DSML｜｜ parameter name=`))
       .toBe(`${editNote}?DSML?parameter?DSML?parameter?name?`);
@@ -102,6 +109,9 @@ describe("the unknown-call form", () => {
     const row: Pick<PersistedToolLoopCall, "providerCallId" | "result" | "startedAt" | "state" | "toolName"> = {
       providerCallId: "call-1", result, startedAt: null, state: "error", toolName: "read_note" };
     expect(unknownToolCall(row)).toEqual({ requested: "read_note" });
+    // Every excerpt is accepted, the empty one of a call without a name included.
+    const blank = unknownToolCallResult({ providerCallId: "call-1", requested: requestedToolNameExcerpt(""), toolName: INVALID_TOOL_NAME });
+    expect(unknownToolCall({ ...row, result: blank, toolName: INVALID_TOOL_NAME })).toEqual({ requested: "" });
     // A started call, another call's result, another name or tool content naming the code is no unknown call.
     expect(unknownToolCall({ ...row, startedAt: "2026-10-19T10:00:00.000Z" })).toBeNull();
     expect(unknownToolCall({ ...row, providerCallId: "call-2" })).toBeNull();

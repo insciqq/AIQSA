@@ -8997,6 +8997,35 @@ describe("tool-free synthesis and repeated calls in live execution", () => {
         code: "tool_loop_checkpoint_failed" }) })]);
     });
 
+    it("stops for the initiator's approval, not a name correction, when a gated call shares the round with an unknown name", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      await createRunExecutionResponse(executionInput({ adapter: scripted([["edit_note", "read_notes"], []], requests), mcpRuntime,
+        prepared: notesPrepared(notesMcp(), { consentedServerIds: [], version: 1 }), repository: repository.repository })).text();
+      expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+      expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ providerCallId: "call-1-0", toolName: editNote,
+        result: mcpApprovalRequiredToolCallResult({ providerCallId: "call-1-0", toolName: editNote }) }), unknownRow("call-1-1", "read_notes")]);
+      expect(repository.approvalRequests).toHaveLength(1);
+      expect(requests.map(request => request.toolChoice)).toEqual(["auto", "none"]);
+      expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+        content: expect.stringContaining("a tool call waits for the user's approval in the chat.") });
+      expect(repository.completeRuns).toHaveLength(1);
+    });
+
+    it("settles a call without a name as an unknown tool and completes after the corrected call", async () => {
+      const repository = createRepository();
+      const requests: ProviderRunRequest[] = [];
+      const mcpRuntime = notesRuntime();
+      await createRunExecutionResponse(executionInput({ adapter: scripted([[""], [readNote], []], requests), mcpRuntime,
+        prepared: notesPrepared(), repository: repository.repository })).text();
+      expect([...repository.toolCalls.values()]).toEqual([unknownRow("call-1-0", "invalid_tool_name", ""),
+        expect.objectContaining({ providerCallId: "call-2-0", state: "complete", toolName: readNote })]);
+      expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns).toHaveLength(1);
+    });
+
     it("asks the initiator's approval for a normalized tool that may change data, exactly like a direct call", async () => {
       const repository = createRepository();
       const requests: ProviderRunRequest[] = [];

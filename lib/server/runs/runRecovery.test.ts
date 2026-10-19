@@ -11403,6 +11403,57 @@ describe("recovered tool-free synthesis and repeated calls", () => {
       expect(harness.state.completed).not.toBeNull();
     });
 
+    it("stops a saved round of a gated and an unknown call for the user's approval, not a name correction", async () => {
+      const gated: PersistedToolLoopCall = { ...persistedRecoveryCall("error"), arguments: { value: "x" }, id: "gated-1",
+        providerCallId: "write-1", roundIndex: 1, startedAt: null, completedAt: "2026-07-12T09:00:20.000Z",
+        result: mcpApprovalRequiredToolCallResult({ providerCallId: "write-1", toolName: recoveryToolName }) };
+      const { adapter, requests } = synthesisAdapter();
+      const runtimeCall = vi.fn();
+      const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      installCheckpointState(harness, {
+        ...checkpointedRun({ answerRoundUsage: [terminal(1)], calls: [gated, { ...unknownRow("unknown-1", 1), ordinal: 1 }],
+          phase: "tools_pending", providerToolMessages: [functionCall("write-1", recoveryToolName), functionCall("unknown-1", "remember_value")],
+          roundIndex: 1 }),
+        normalizedRequest: interactiveRequest()
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+      expect(runtimeCall).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.toolChoice).toBe("none");
+      expect(requests[0]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content:
+        `Tool use is now disabled for this run: a tool call waits for the user's approval in the chat. Some planned tool calls were not executed. ${instructionTail}` });
+      expect(harness.state.completed).not.toBeNull();
+    });
+
+    it("recovers a refreshed call without a name as an unknown tool, never as a persistence conflict", async () => {
+      const { adapter, requests } = synthesisAdapter({ events: [], providerResponseId: "round-1", status: "completed", terminal: true,
+        result: { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+          toolCalls: [{ id: "blank-1", name: "", arguments: {} }] } });
+      const runtimeCall = vi.fn();
+      const harness = createHarness({ controls: [control({ providerResponseId: "round-1" })], providers: { openai: adapter },
+        mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+      const installed = installCheckpointState(harness, {
+        ...checkpointedRun({ answerRoundUsage: [], calls: [], phase: "provider_running", providerResponseId: "round-1",
+          providerToolMessages: [], roundIndex: 1 }),
+        normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
+      });
+      harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+      expect(runtimeCall).not.toHaveBeenCalled();
+      expect(installed.calls()).toEqual([expect.objectContaining({ providerCallId: "blank-1", startedAt: null, state: "error",
+        toolName: "invalid_tool_name", result: unknownToolCallResult({ providerCallId: "blank-1", requested: "", toolName: "invalid_tool_name" }) })]);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.toolChoice).toBe("auto");
+      expect(harness.state.completed).not.toBeNull();
+    });
+
     it("refuses a refreshed batch before any call runs when an undeclared call was not kept settled", async () => {
       const { adapter, requests } = synthesisAdapter({ events: [], providerResponseId: "round-1", status: "completed", terminal: true,
         result: { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
