@@ -38,6 +38,7 @@ export const TELEGRAM_COPY = {
   editsNotApplied: "Edits aren't applied. Send a new message.",
   stopped: "Stopped",
   buttonExpired: "This button has expired",
+  buttonFailed: "Something went wrong. Try again.",
   openInAiqsa: "Open in AIQSA",
   allowOnce: "Allow once",
   deny: "Deny",

@@ -329,7 +329,7 @@ describe("Telegram dispatcher: buttons", () => {
     const failing = fake.inject.callback(owner, messageId, data);
     await deliver(failing);
     const failingId = (failing.callback_query as { id: string }).id;
-    expect(fake.callbackAnswer(failingId)).toEqual({ answered: true, show_alert: undefined, text: undefined });
+    expect(fake.callbackAnswer(failingId)).toEqual({ answered: true, show_alert: undefined, text: TELEGRAM_COPY.buttonFailed });
     expect([...shared.states.values()]).toContain("failed");
   });
 
