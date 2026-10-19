@@ -128,11 +128,11 @@ async function runNow(taskId: string) {
 }
 
 /** The task's first occurrence not in `before`, once it settled. */
-async function settled(taskId: string, before: readonly string[] = []) {
+async function settled(taskId: string, before: readonly string[] = [], timeout = DELIVERY_TIMEOUT_MS) {
   const next = () => prisma.scheduledTaskOccurrence.findFirst({
     orderBy: { createdAt: "desc" }, where: { id: { notIn: [...before] }, taskId }
   });
-  await expect.poll(async () => (await next())?.state ?? null, { intervals: [1_000], timeout: DELIVERY_TIMEOUT_MS })
+  await expect.poll(async () => (await next())?.state ?? null, { intervals: [1_000], timeout })
     .toMatch(/^(COMPLETED|FAILED|SKIPPED)$/u);
   return (await next())!;
 }
@@ -266,7 +266,9 @@ test("a scheduled run that pauses its task sends the heading and the reason only
     modelId: `telegram-e2e-gone-${people.suffix}`, nextRunAt: new Date(Math.floor(Date.now() / 60_000) * 60_000)
   } });
   const since = bot.calls().length;
-  const occurrence = await settled(taskId);
+  // A due task starts within the scheduler's dispatch spread (up to three minutes), not at once.
+  test.setTimeout(420_000);
+  const occurrence = await settled(taskId, [], 240_000);
   expect(occurrence).toMatchObject({ reasonCode: "model_unavailable", state: "FAILED", trigger: "schedule" });
   try {
     await expect.poll(() => textsSince(since), { timeout: DELIVERY_TIMEOUT_MS }).toHaveLength(1);
