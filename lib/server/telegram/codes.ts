@@ -11,7 +11,8 @@ export const TELEGRAM_TRANSPORT_FAILURE_CODES = {
   network_before_send: "telegram_network_before_send",
   network_after_send: "telegram_network_after_send",
   timeout: "telegram_request_timeout",
-  too_large: "telegram_response_too_large"
+  too_large: "telegram_response_too_large",
+  unreachable: "telegram_chat_unreachable"
 } as const satisfies Record<TelegramFailureKind, string>;
 
 export const TELEGRAM_RATE_LIMITED_CODE = "telegram_rate_limited";

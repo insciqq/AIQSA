@@ -33,7 +33,11 @@ function setup() {
   const fake = createFakeTelegramBotApi();
   closers.push(() => fake.close());
   const user = fake.inject.addUser();
-  const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => {}, token: fake.token, transport: fake.transport });
+  /** Called on every Bot API wait (pacing or a 429's retry_after). */
+  const hooks: { onSleep?: (ms: number) => void } = {};
+  const api = createTelegramBotApi({
+    pacer: createTelegramPacer({ now: () => 0 }), sleep: async (ms) => hooks.onSleep?.(ms), token: fake.token, transport: fake.transport
+  });
   const refs: TelegramMessageRef[] = [];
   const outbound = createTelegramOutbound({
     api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks: { create: async () => [] },
@@ -46,7 +50,7 @@ function setup() {
     reads.push(input);
     return bytes.get(input.attachmentId) ?? null;
   });
-  return { bytes, fake, outbound, read, reads, refs, session, user };
+  return { bytes, fake, hooks, outbound, read, reads, refs, session, user };
 }
 
 describe("Telegram answer files: which go and how", () => {
@@ -201,14 +205,15 @@ describe("Telegram answer files: sending", () => {
     h.bytes.set("wide", telegramPhotoFixture());
     h.bytes.set("doc", Buffer.from("%PDF-1.7 synthetic"));
     h.fake.failNext("sendPhoto", { description: "Bad Request: PHOTO_INVALID_DIMENSIONS", status: 400 });
-    // Allowed for the photo's first upload only: neither its document form nor the next file goes.
-    const authorize = vi.fn(async () => authorize.mock.calls.length <= 1);
+    // Allowed for the photo's first upload only (after its read, then right before it leaves):
+    // neither its document form nor the next file goes.
+    const authorize = vi.fn(async () => authorize.mock.calls.length <= 2);
     const result = await deliverTelegramFiles({
       authorize, chatId: h.user.id, files: [file("wide", "wide.png", "image/png", 305), file("doc", "doc.pdf", "application/pdf", 18)],
       outbound: h.outbound, owner: OWNER, read: h.read, userId: "user-1"
     });
     expect(result).toEqual({ failed: 2, left: 0, sent: 0 });
-    expect(authorize).toHaveBeenCalledTimes(2);
+    expect(authorize).toHaveBeenCalledTimes(3);
     expect(h.fake.calls("sendPhoto")).toHaveLength(1);
     expect(h.fake.calls("sendDocument")).toHaveLength(0);
     expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
@@ -314,6 +319,22 @@ describe("Telegram answer files: after a run's final message", () => {
     h.files.listener({ artifactSummary: two, messageIds: [1], sent: true, status: "complete", type: "delivered" }, h.context);
     await h.files.idle();
     expect(h.fake.calls("sendDocument")).toHaveLength(0);
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
+  });
+
+  it("asks again after a 429's wait and uploads nothing once its link stops reaching the chat", async () => {
+    const h = harness();
+    let linked = true;
+    h.access.resolveTelegramAccess.mockImplementation(async () => linked
+      ? { allowed: true, control: {} as never, link: link(h.user.id, h.fake.bot.id) }
+      : { allowed: false, link: null, reasonCode: "telegram_not_linked" });
+    h.bytes.set("out-1", Buffer.from("done"));
+    // The user unlinks while the client waits out Telegram's retry_after for the upload.
+    h.fake.failNext("sendDocument", { retryAfter: 60, status: 429 });
+    h.hooks.onSleep = (ms) => { if (ms === 60_000) linked = false; };
+    h.files.listener({ artifactSummary: summary, messageIds: [1], sent: true, status: "complete", type: "delivered" }, h.context);
+    await h.files.idle();
+    expect(h.fake.calls("sendDocument")).toHaveLength(1);
     expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
   });
 

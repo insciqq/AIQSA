@@ -96,6 +96,41 @@ describe("Telegram 429 handling", () => {
   });
 });
 
+describe("Telegram send authority", () => {
+  /** A client whose waits end the chat's authority (an unlink, revoked sessions, the bot switched off meanwhile). */
+  function guarded(endsOn: (ms: number) => boolean) {
+    const fake = createFakeTelegramBotApi();
+    const user = fake.inject.addUser({ firstName: "Alex" });
+    const authority = { allowed: true, asked: 0 };
+    const api = createTelegramBotApi({
+      pacer: createTelegramPacer({ now: () => 0 }), token: fake.token, transport: fake.transport,
+      sleep: async (ms) => { if (endsOn(ms)) authority.allowed = false; }
+    });
+    const options = { authorize: async () => { authority.asked += 1; return authority.allowed; } };
+    return { api, authority, fake, options, user };
+  }
+
+  it("asks again after a 429's wait and dispatches nothing once the chat may no longer receive it", async () => {
+    const { api, authority, fake, options, user } = guarded((ms) => ms === 60_000);
+    fake.failNext("sendRichMessageDraft", { retryAfter: 60, status: 429 });
+    const outcome = await api.sendRichMessageDraft({
+      chat_id: user.id, draft_id: 7, rich_message: { blocks: [{ text: "PRIVATE", type: "paragraph" }] }
+    }, options);
+    expect(outcome).toEqual({ kind: "unreachable", ok: false });
+    expect(authority.asked).toBe(2);
+    expect(fake.calls("sendRichMessageDraft")).toHaveLength(1);
+  });
+
+  it("asks after the chat's pacing wait, before an upload leaves", async () => {
+    const { api, authority, fake, options, user } = guarded((ms) => ms > 0);
+    await expect(api.sendMessage({ chat_id: user.id, text: "earlier" }, options)).resolves.toMatchObject({ ok: true });
+    const outcome = await api.sendDocument({ chat_id: user.id }, { contentType: "text/plain", data: Buffer.from("PRIVATE"), filename: "a.txt" }, options);
+    expect(outcome).toEqual({ kind: "unreachable", ok: false });
+    expect(authority.asked).toBe(2);
+    expect(fake.calls("sendDocument")).toHaveLength(0);
+  });
+});
+
 describe("Telegram Bot API client against the fake", () => {
   it("covers bot setup: getMe, webhook, commands", async () => {
     const { api, fake } = setup();

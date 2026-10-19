@@ -31,7 +31,8 @@ export const TELEGRAM_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const DESCRIPTION_MAX_LENGTH = 512;
 const RETRY_AFTER_MAX_SECONDS = 24 * 60 * 60;
 
-export type TelegramFailureKind = "http" | "telegram" | "network_before_send" | "network_after_send" | "timeout" | "too_large";
+export type TelegramFailureKind =
+  | "http" | "telegram" | "network_before_send" | "network_after_send" | "timeout" | "too_large" | "unreachable";
 /** Content-free detail of a failure; safe to log. */
 export type TelegramFailureCategory =
   | "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "forbidden_address"
@@ -42,7 +43,9 @@ export type TelegramFailureCategory =
  * reached Telegram. `timeout` and `network_after_send` are ambiguous.
  * `too_large` without `status` is a request refused before sending; with a
  * status it is a response over its bound. `telegram` is Telegram's own
- * refusal (`errorCode`, and `retryAfter` seconds for 429).
+ * refusal (`errorCode`, and `retryAfter` seconds for 429). `unreachable` is a
+ * send its own authority stopped before dispatch: nothing reached Telegram,
+ * and the chat may no longer receive it.
  */
 export type TelegramFailure = Readonly<{
   ok: false;

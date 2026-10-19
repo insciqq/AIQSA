@@ -2,7 +2,7 @@ import { decodeThreadWorkspaceActivityEntry, type ThreadWorkspaceActivityEntry }
 import { isWorkspaceActivityActive, mergeWorkspaceActivityEntry } from "../../domain/workspaceActivity";
 import { logEvent, runInBackground } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
-import type { TelegramInlineKeyboardMarkup, TelegramSentMessage } from "./botApi";
+import type { TelegramInlineKeyboardMarkup, TelegramSendOptions, TelegramSentMessage } from "./botApi";
 import {
   onTelegramRunEvent, type TelegramRunDeliveredEvent, type TelegramRunEventContext, type TelegramRunListener
 } from "./bridge/events";
@@ -29,8 +29,9 @@ import type { TelegramFailure, TelegramOutcome } from "./transport";
  * separate message. The message is recorded on the run's link, so a restart's
  * recovery still ends it. Activity comes already redacted and bounded by the
  * run's own projection; logs carry ids and codes only. Every send and edit
- * first checks that the run's link still reaches its chat (D-04); once it does
- * not, the status stops for good while the run goes on in AIQSA.
+ * first checks that the run's link still reaches its chat (D-04), and checks
+ * again right before it leaves the Bot API (after its pacing or a 429's wait);
+ * once it does not, the status stops for good while the run goes on in AIQSA.
  */
 
 export const TELEGRAM_STATUS_EDIT_INTERVAL_MS = 5_000;
@@ -202,6 +203,11 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     return null;
   }
 
+  /** The same check, asked by the Bot API after its waits right before the status leaves. */
+  function authority(status: RunStatus): TelegramSendOptions {
+    return { authorize: async () => (await reach(status)) !== null };
+  }
+
   function working(status: RunStatus): string {
     return telegramWorkStatusText({ activity: status.activity, elapsedMs: now() - status.startedAt, mode: status.mode });
   }
@@ -213,7 +219,7 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     const edited = await bot.api.editMessageText({
       chat_id: context.telegramChatId, link_preview_options: { is_disabled: true }, message_id: status.messageId!, text,
       ...(markup ? { reply_markup: markup } : {})
-    });
+    }, authority(status));
     if (edited.ok || unchanged(edited)) return true;
     logFailure(edited, context.runId);
     // Telegram refuses to edit it at all (deleted, too old): the status stops here.
@@ -257,7 +263,7 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     });
     const sent = await once(() => bot.api.sendMessage({
       chat_id: context.telegramChatId, link_preview_options: { is_disabled: true }, text, ...(markup ? { reply_markup: markup } : {})
-    }));
+    }, authority(status)));
     if (!sent.ok) {
       logFailure(sent, context.runId);
       status.broken = true;
@@ -353,7 +359,7 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
       const edited = await bot.api.editMessageText({
         chat_id: context.telegramChatId, link_preview_options: { is_disabled: true }, message_id: link.statusMessageId,
         text: telegramWorkEndingText(event.status, now() - link.createdAt.getTime())
-      });
+      }, { authorize: async () => (await reachRun(context)) !== null });
       if (!edited.ok && !unchanged(edited)) logFailure(edited, context.runId);
     }).catch((error: unknown) => log({ code: "telegram_status_failed", error, outcome: "failed", runId: context.runId })));
   }
