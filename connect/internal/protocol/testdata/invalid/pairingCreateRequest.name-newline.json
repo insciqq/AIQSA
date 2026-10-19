@@ -1,0 +1,7 @@
+{
+  "name": "a\nb",
+  "hostname": "laptop.local",
+  "os": "linux",
+  "arch": "amd64",
+  "clientVersion": "0.3.20"
+}

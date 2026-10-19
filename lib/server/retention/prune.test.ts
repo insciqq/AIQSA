@@ -10,6 +10,7 @@ function fakeRepository(input: {
   authFlowTokenIds?: string[];
   authSessionIds?: string[];
   claims?: AttachmentDeletionClaim[];
+  connectPairingIds?: string[];
   deletionJobIds?: string[];
   eventIds?: string[];
   exemptEventCount?: number;
@@ -48,6 +49,10 @@ function fakeRepository(input: {
       mutations.push(`delete-sessions:${ids.join(",")}`);
       return ids.length;
     },
+    async deleteConnectPairings({ ids }) {
+      mutations.push(`delete-connect-pairings:${ids.join(",")}`);
+      return ids.length;
+    },
     async deletePrunableInboundMcpOAuth({ candidates }) {
       mutations.push("delete-inbound-mcp-oauth");
       return {
@@ -69,6 +74,9 @@ function fakeRepository(input: {
     },
     async findPrunableAuthSessionIds() {
       return input.authSessionIds ?? [];
+    },
+    async findPrunableConnectPairingIds() {
+      return input.connectPairingIds ?? [];
     },
     async findPrunableInboundMcpOAuth() {
       return {
@@ -162,6 +170,7 @@ describe("retention prune rules", () => {
     const state = fakeRepository({
       authFlowTokenIds: ["flow-1"],
       authSessionIds: ["session-1"],
+      connectPairingIds: ["pairing-1", "pairing-2"],
       deletionJobIds: ["job-1"],
       eventIds: ["event-1", "event-2"],
       exemptEventCount: 5,
@@ -193,6 +202,7 @@ describe("retention prune rules", () => {
       attachmentDeletionJobs: { claimed: 0, completed: 0, matched: 1, objectsDeleted: 0 },
       authFlowTokens: { deleted: 0, matched: 1 },
       authSessions: { deleted: 0, matched: 1 },
+      connectPairings: { deleted: 0, matched: 2 },
       dryRun: true,
       knowledgePayloads: {
         jobsStaged: 0,
@@ -225,6 +235,7 @@ describe("retention prune rules", () => {
     const state = fakeRepository({
       authFlowTokenIds: ["flow-1"],
       authSessionIds: ["session-1"],
+      connectPairingIds: ["pairing-1"],
       claims: [
         {
           claimToken: "claim",
@@ -293,6 +304,7 @@ describe("retention prune rules", () => {
       },
       authFlowTokens: { deleted: 1, matched: 1 },
       authSessions: { deleted: 1, matched: 1 },
+      connectPairings: { deleted: 1, matched: 1 },
       inboundMcpOAuth: {
         authorizationCodes: { deleted: 1, matched: 1 },
         clients: { deleted: 1, matched: 1 },
@@ -320,6 +332,7 @@ describe("retention prune rules", () => {
     expect(JSON.stringify(summary)).not.toContain("storage failed");
     expect(state.mutations).toContain("complete-job:job-ok");
     expect(state.mutations).toContain("release-job:job-fail");
+    expect(state.mutations).toContain("delete-connect-pairings:pairing-1");
     expect(abortedUploads).toEqual([{
       storageKey: "private/user/object-ok",
       uploadId: "multipart-1"

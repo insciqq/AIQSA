@@ -49,6 +49,8 @@ export async function register(): Promise<void> {
     try {
       const { startDefaultBrowserPush } = await import("./lib/server/push/defaultBrowserPush");
       startDefaultBrowserPush();
+      const { startConnectPush } = await import("./lib/server/connect/push");
+      startConnectPush();
     } catch (error) {
       // Browser push is best effort; runs and scheduled tasks settle without it.
       reportSubsystemFailure({ error, subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" });

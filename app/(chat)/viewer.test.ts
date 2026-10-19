@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   configured: true,
+  connectEnabled: false,
   findUser: vi.fn(),
   redirect: vi.fn((location: string): never => {
     throw new Error(`NEXT_REDIRECT ${location}`);
@@ -13,6 +14,7 @@ vi.mock("@/lib/server/auth/config", () => ({ getAuthConfig: () => ({ configured:
 vi.mock("@/lib/server/auth/defaultAuth", () => ({ authSessionStore: {} }));
 vi.mock("@/lib/server/auth/requestAuth", () => ({ resolveAuthToken: mocks.resolveAuthToken }));
 vi.mock("@/lib/server/prisma", () => ({ prisma: { user: { findUnique: mocks.findUser } } }));
+vi.mock("@/lib/server/connect/policy", () => ({ isConnectEnabled: async () => mocks.connectEnabled }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "session-token" }) }) }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect }));
 
@@ -31,6 +33,7 @@ const search = (value: Record<string, string | string[]>) => Promise.resolve(val
 
 afterEach(() => {
   mocks.configured = true;
+  mocks.connectEnabled = false;
   vi.clearAllMocks();
 });
 
@@ -45,7 +48,8 @@ describe("chat pages", () => {
       accountDisplayName: "Owner",
       accountEmail: "owner@example.test",
       accountId: "user-1",
-      adminEntryVisible: true
+      adminEntryVisible: true,
+      connectEnabled: false
     });
   });
 

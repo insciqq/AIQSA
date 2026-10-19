@@ -431,6 +431,18 @@ describe("Prisma-backed admin repository", () => {
             userId: revoked!.id
           }
         });
+        // AIQSA Connect devices end with the same revocations.
+        await prisma.connectDevice.createMany({
+          data: [revoked!.id, disabled!.id, bystander!.id].map((userId) => ({
+            arch: "amd64",
+            clientVersion: "0.3.20",
+            hostname: "synthetic.local",
+            name: "Synthetic",
+            os: "linux",
+            tokenHash: hashToken(`connect-${userId}`),
+            userId
+          }))
+        });
 
         await expect(repository.revokeUserSessions({
           revokedByUserId: adminId,
@@ -441,6 +453,10 @@ describe("Prisma-backed admin repository", () => {
           revokedByUserId: adminId,
           userId: disabled!.id
         })).resolves.toBe("disabled");
+        await expect(prisma.connectDevice.findMany({
+          select: { userId: true },
+          where: { userId: { in: [revoked!.id, disabled!.id, bystander!.id] } }
+        })).resolves.toEqual([{ userId: bystander!.id }]);
 
         for (const connection of [...revokedConnections, ...disabledConnections]) {
           await expect(mcp.access(connection)).resolves.toBe(false);
@@ -2055,6 +2071,8 @@ describe("Prisma-backed admin repository", () => {
       const recordingClient = prisma.$extends({
         query: {
           authSession: { updateMany: record("authSession", "updateMany", 7) },
+          connectDevice: { deleteMany: record("connectDevice", "deleteMany", 0) },
+          connectPairing: { deleteMany: record("connectPairing", "deleteMany", 0) },
           inboundMcpOAuthAuthorizationCode: {
             deleteMany: record("inboundMcpOAuthAuthorizationCode", "deleteMany", 1)
           },
@@ -2108,7 +2126,14 @@ describe("Prisma-backed admin repository", () => {
           },
           model: "inboundMcpOAuthGrant",
           operation: "updateMany"
-        }
+        },
+        // AIQSA Connect: unconsumed approvals, then every paired device.
+        {
+          args: { where: { approvedUserId: { not: null }, consumedAt: null } },
+          model: "connectPairing",
+          operation: "deleteMany"
+        },
+        { args: {}, model: "connectDevice", operation: "deleteMany" }
       ]);
     });
   });

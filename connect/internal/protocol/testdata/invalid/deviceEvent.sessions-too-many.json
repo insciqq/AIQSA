@@ -1,0 +1,515 @@
+{
+  "type": "sessions",
+  "sessions": [
+    {
+      "id": "ac-000000",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000001",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000002",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000003",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000004",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000005",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000006",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000007",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000008",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000009",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000010",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000011",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000012",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000013",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000014",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000015",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000016",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000017",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000018",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000019",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000020",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000021",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000022",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000023",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000024",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000025",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000026",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000027",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000028",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000029",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000030",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000031",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000032",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000033",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000034",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000035",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000036",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000037",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000038",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000039",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000040",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000041",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000042",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000043",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000044",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000045",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000046",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000047",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000048",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000049",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    },
+    {
+      "id": "ac-000050",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    }
+  ]
+}

@@ -69,8 +69,25 @@ const publicPrefixes = [
   "/saml/metadata",
   "/mcp",
   // SCIM provisioning: the bearer token is the only credential, checked by the route.
-  "/scim/v2"
+  "/scim/v2",
+  // AIQSA Connect device API: pairing and the device's Bearer token only, never cookies; the
+  // routes refuse any request carrying `Origin`. The `/connect` pages stay behind sign-in.
+  "/connect-api"
 ];
+
+/**
+ * The AIQSA Connect client distribution, exact paths only: the installer, the
+ * checksums and one download per target. Every other `/connect` path stays
+ * behind sign-in; the routes answer 404 while AIQSA Connect is off.
+ */
+export const CONNECT_PUBLIC_DISTRIBUTION_PATHS: readonly string[] = Object.freeze([
+  "/connect/install.sh",
+  "/connect/checksums.txt",
+  "/connect/download/aiqsa-connect-darwin-amd64",
+  "/connect/download/aiqsa-connect-darwin-arm64",
+  "/connect/download/aiqsa-connect-linux-amd64",
+  "/connect/download/aiqsa-connect-linux-arm64"
+]);
 
 function isPublicPath(
   pathname: string,
@@ -78,6 +95,7 @@ function isPublicPath(
 ): boolean {
   if (pathname === "/robots.txt") return true;
   if (["/AGENTS", "/AGENTS.md", "/agents/guide", "/agents/metadata", "/agents/skills-client.mjs"].includes(pathname)) return true;
+  if (CONNECT_PUBLIC_DISTRIBUTION_PATHS.includes(pathname)) return true;
   if (pathname === "/ui-v2-fixture" && isTestAuthAllowedEnv(env)) {
     return true;
   }

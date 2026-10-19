@@ -31,6 +31,7 @@ import { AdminUsageSection } from "@/components/admin/AdminUsageSection";
 import { AdminUsersSection } from "@/components/admin/users/AdminUsersSection";
 import { AdminSignupRulesSection } from "@/components/admin/users/AdminSignupRulesSection";
 import { AdminWorkspaceSection } from "@/components/admin/AdminWorkspaceSection";
+import { AdminConnectSection } from "@/components/admin/AdminConnectSection";
 import type { AdminSectionId } from "@/components/admin/adminSections";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import { useAdminActionRunner } from "@/components/admin/useAdminActionRunner";
@@ -238,6 +239,8 @@ function AdminSectionContent({
         onMutationCommitted={onMutationCommitted} />;
     case "workspace":
       return <AdminWorkspaceSection reportNotice={reportNotice} />;
+    case "connect":
+      return <AdminConnectSection reportNotice={reportNotice} />;
     case "email":
       return (
         <AdminEmailSection
