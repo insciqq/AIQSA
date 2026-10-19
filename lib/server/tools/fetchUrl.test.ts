@@ -113,6 +113,17 @@ describe("fetch_url provenance", () => {
     expect(s.fetchPage).toHaveBeenCalledTimes(1);
   });
 
+  it("sends a run with web search to find a guessed page through it instead of asking the user", async () => {
+    const searchUrl = "https://shop.example/offers?plan=fibre";
+    const s = session({ loadSearchUrls: async () => [searchUrl], searchAvailable: true });
+    const guessed = await s.execute(call("https://shop.example/tariffs/fibre"), { persistedToolCallId: "c1", signal });
+    expect(json(guessed)).toMatchObject({ error: "fetch_url_not_in_conversation" });
+    expect(String(json(guessed).message)).toContain("find it with web search and read a link from its results");
+    expect(String(json(guessed).message)).not.toContain("If the page is needed, ask the user");
+    expect(s.fetchPage).not.toHaveBeenCalled();
+    expect((await s.execute(call(searchUrl), { persistedToolCallId: "c2", signal })).status).toBe("complete");
+  });
+
   it("tells a scheduled run's owner to save the task's instructions, and reads the task's frozen snapshot", async () => {
     const taskUrl = "https://daily.example/report";
     const s = session({ plan: { taskUrlDigests: [fetchUrlDigest(taskUrl)], userUrlDigests: [], version: 1 }, scheduled: true });

@@ -2799,6 +2799,7 @@ async function recoverCheckpointedToolLoop(
       fetchSession: fetchPlan ? createFetchUrlSession({
         plan: fetchPlan,
         scheduled: fetchPlan.taskUrlDigests !== undefined,
+        searchAvailable: run.normalizedRequest.searchPlan.options.length > 0,
         ...(deps.fetchPage ? { fetchPage: deps.fetchPage } : {}),
         ...(deps.extractPage ? { extractPage: deps.extractPage } : {}),
         ...(loadSearchUrls ? { loadSearchUrls: () => loadSearchUrls({ runId: run.id, userId: run.userId }) } : {}),

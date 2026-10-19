@@ -50,8 +50,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 type FailureCode = Exclude<FetchUrlActivityOutcome, "read">;
 
-/** What the model is told for a link its run may not read, by where the user can allow it. */
-function notInConversationMessage(scope: FetchUrlRefusalScope | undefined): string {
+/**
+ * What the model is told for a link its run may not read, by where the user
+ * can allow it. A guessed link in a run with web search is found through it,
+ * so the user is not asked for a page the run can find itself.
+ */
+function notInConversationMessage(scope: FetchUrlRefusalScope | undefined, searchAvailable: boolean): string {
   switch (scope) {
     case "scheduled_run":
       return "This scheduled run reads only the links its owner allowed by saving the task's instructions, and this one is " +
@@ -63,7 +67,10 @@ function notInConversationMessage(scope: FetchUrlRefusalScope | undefined): stri
         "the link in the chat.";
     default:
       return "fetch_url reads only links the user wrote in this chat or that web search returned in this answer; this one is " +
-        "neither, so it was not read. Do not try variations of it. If the page is needed, ask the user to send the link.";
+        "neither, so it was not read. Do not try variations of it. " + (searchAvailable
+        ? "If the page is needed, find it with web search and read a link from its results; ask the user to send the " +
+          "link only if search does not find it."
+        : "If the page is needed, ask the user to send the link.");
   }
 }
 
@@ -71,13 +78,15 @@ function megabytes(bytes: number): string {
   return String(Number((bytes / (1024 * 1024)).toFixed(1)));
 }
 
-type FailureContext = Readonly<{ pdf: boolean; pdfMaxBytes: number; scope?: FetchUrlRefusalScope; httpStatus?: number }>;
+type FailureContext = Readonly<{
+  pdf: boolean; pdfMaxBytes: number; scope?: FetchUrlRefusalScope; httpStatus?: number; searchAvailable?: boolean;
+}>;
 
 /** What the model is told for each refusal or failure. */
 function failureMessage(code: FailureCode, context: FailureContext): string {
   const { httpStatus, scope } = context;
   switch (code) {
-    case "fetch_url_not_in_conversation": return notInConversationMessage(scope);
+    case "fetch_url_not_in_conversation": return notInConversationMessage(scope, context.searchAvailable === true);
     case "fetch_url_invalid": return "This is not a valid http(s) web address.";
     case "fetch_url_credentials": return "Links that contain a user name or password are never read.";
     case "fetch_port_not_allowed": return "Only the standard web ports 80 and 443 are read.";
@@ -127,7 +136,7 @@ type Outcome =
   | Readonly<{ kind: "read"; value: ReadValue }>
   | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true }>;
 
-type FailedOptions = Readonly<{ pdfMaxBytes: number; refusalScope?: FetchUrlRefusalScope }>;
+type FailedOptions = Readonly<{ pdfMaxBytes: number; refusalScope?: FetchUrlRefusalScope; searchAvailable?: boolean }>;
 
 function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outcome, { kind: "failed" }>, url: string | null,
   options: FailedOptions): ToolExecutionResult {
@@ -138,7 +147,8 @@ function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outco
     content: [{ type: "json", value: {
       error: outcome.code,
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
-      message: failureMessage(outcome.code, { httpStatus: outcome.httpStatus, pdf, pdfMaxBytes: options.pdfMaxBytes, scope })
+      message: failureMessage(outcome.code, { httpStatus: outcome.httpStatus, pdf, pdfMaxBytes: options.pdfMaxBytes, scope,
+        searchAvailable: options.searchAvailable })
     } }],
     name: call.name,
     rawPreview: { fetchUrl: {
@@ -232,6 +242,8 @@ export type FetchUrlSessionDeps = Readonly<{
   plan: FetchUrlPlan;
   /** The run answers a scheduled occurrence: a refused link is allowed by its owner saving the task's instructions. */
   scheduled: boolean;
+  /** The run offers web search, so a refused page is found through it before the user is asked. */
+  searchAvailable?: boolean;
   /** Delivered follow-ups of this run: user-authored text received mid-run. */
   followupTexts?: () => readonly string[];
   /** Source and citation URLs the run's own Search persisted so far. */
@@ -351,7 +363,8 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
         return result;
       };
       const refuse = (code: FailureCode, url: string | null) => unsent(failed(call, { code, dispatched: false, kind: "failed" },
-        url, { pdfMaxBytes, ...(url && code === "fetch_url_not_in_conversation" ? { refusalScope: refusalScope(url) } : {}) }));
+        url, { pdfMaxBytes, searchAvailable: deps.searchAvailable,
+          ...(url && code === "fetch_url_not_in_conversation" ? { refusalScope: refusalScope(url) } : {}) }));
       if (hasInvalidProviderToolArguments(call.arguments) || Object.keys(call.arguments).some((key) => key !== "url")) {
         return refuse("fetch_url_invalid", null);
       }
