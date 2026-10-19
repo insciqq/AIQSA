@@ -1143,10 +1143,10 @@ describe("connectAccountLabel", () => {
   it("leads with the account's email, which a display name cannot fake", () => {
     expect(connectAccountLabel({ displayName: "Ann Lee", email: "ann.lee@example.com" })).toBe('ann.lee@example.com ("Ann Lee")');
     // A display name made to look like another account still follows the approver's own email.
-    expect(connectAccountLabel({ displayName: 'ann.lee@example.com ("Ann Lee")', email: "bob@evil.example" }))
-      .toBe('bob@evil.example ("ann.lee@example.com ("Ann Lee")")');
+    expect(connectAccountLabel({ displayName: 'Bob") ann.lee@example.com ("Ann Lee', email: "bob@evil.example" }))
+      .toBe(`bob@evil.example ("Bob') ann.lee@example.com ('Ann Lee")`);
     expect(connectAccountLabel({ displayName: 'ann.lee@example.com ("Ann Lee")', email: null }))
-      .toBe('"ann.lee@example.com ("Ann Lee")" (no email address)');
+      .toBe(`"ann.lee@example.com ('Ann Lee')" (no email address)`);
     expect(connectAccountLabel({ displayName: " \u0007 ", email: null })).toBe("(no email address)");
     expect(connectAccountLabel({ displayName: "Ann\u202e eeL", email: "ёж@\u200bпример.рф" })).toBe('ёж@пример.рф ("Ann eeL")');
     const long = connectAccountLabel({ displayName: "я".repeat(600), email: `${"a".repeat(64)}@example.com` });
