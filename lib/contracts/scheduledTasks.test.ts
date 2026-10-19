@@ -38,8 +38,8 @@ import {
 const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
-  modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
-  memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 2,
+  modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, telegramNotify: true, toolsEnabled: true,
+  workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 2,
   historyNextDeletionAt: "2026-11-01T06:00:00.000Z", status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z",
   lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z",
@@ -159,8 +159,16 @@ describe("scheduled task wire contract", () => {
   });
 
   it("decodes list and detail responses", () => {
-    const list = { tasks: [task], limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 }, emailAvailable: false };
+    const list = { tasks: [task], limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 }, emailAvailable: false,
+      telegramAvailable: true };
     expect(decodeScheduledTaskListResponse(list)).toEqual(list);
+    // Both channel flags are required booleans, and so is the task's Telegram switch.
+    const { telegramAvailable: _available, ...withoutTelegram } = list;
+    expect(decodeScheduledTaskListResponse(withoutTelegram)).toBeNull();
+    expect(decodeScheduledTaskListResponse({ ...list, telegramAvailable: "yes" })).toBeNull();
+    const { telegramNotify: _notify, ...taskWithoutTelegram } = task;
+    expect(decodeScheduledTaskListResponse({ ...list, tasks: [taskWithoutTelegram] })).toBeNull();
+    expect(decodeScheduledTaskListResponse({ ...list, tasks: [{ ...task, telegramNotify: 1 }] })).toBeNull();
     expect(decodeScheduledTaskListResponse({ ...list, tasks: [task, task] })).toBeNull();
     expect(decodeScheduledTaskListResponse({ ...list, limits: { maxActive: 10, maxTotal: 50 } })).toBeNull();
     const run = { id: "run-1", scheduledFor: "2026-10-02T06:00:00.000Z", trigger: "schedule", state: "skipped",
