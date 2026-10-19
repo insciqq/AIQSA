@@ -269,7 +269,9 @@ export async function deliverTelegramFiles(input: Readonly<{
   }
   if (failed > 0) log({ code: "telegram_file_failed", count: failed, outcome: "failed", stage: "dispatch" });
   const summary = telegramFilesSummaryText({ failed, left: plan.left, ...(input.outputs ? { outputs: input.outputs } : {}) });
-  if (summary) await input.outbound.sendText({ chatId: input.chatId, openInAiqsa: true, owner: input.owner, text: summary });
+  if (summary && (!input.authorize || await input.authorize())) {
+    await input.outbound.sendText({ chatId: input.chatId, openInAiqsa: true, owner: input.owner, text: summary });
+  }
   return { failed, left: plan.left, sent };
 }
 
@@ -295,8 +297,10 @@ function defaultSleep(ms: number): Promise<void> {
 
 /**
  * The generated files of every Telegram run, sent once its final message
- * reached Telegram (live or after a restart), after access is checked again.
- * Files a Workspace run still exports are waited for (bounded) and read anew.
+ * reached Telegram (live or after a restart), while the run's link still
+ * reaches its chat with access allowed: checked before the files and again
+ * after every file's read. Files a Workspace run still exports are waited for
+ * (bounded) and read anew.
  */
 export function createTelegramRunFiles(deps: Readonly<{
   access: Pick<TelegramAccessResolver, "resolveTelegramAccess">;
@@ -334,10 +338,17 @@ export function createTelegramRunFiles(deps: Readonly<{
   async function send(summaryFiles: readonly TelegramAnswerFile[], context: TelegramRunEventContext): Promise<void> {
     const settled = await settledFiles(summaryFiles, { runId: context.runId, userId: context.userId });
     if (settled.files.length === 0 && !settled.outputs) return;
-    const access = await deps.access.resolveTelegramAccess(context.userId);
-    if (!access.allowed || access.link.id !== context.linkId || access.link.botId !== context.bot.botId) return;
+    // The run's link still reaches its chat (the same link, bot and chat) with Telegram access allowed.
+    const reaches = async (): Promise<boolean> => {
+      const access = await deps.access.resolveTelegramAccess(context.userId);
+      return access.allowed && access.link.id === context.linkId && access.link.botId === context.bot.botId &&
+        access.link.telegramChatId === context.telegramChatId;
+    };
+    if (!(await reaches())) return;
     await deliverTelegramFiles({
-      chatId: access.link.telegramChatId, files: settled.files, outbound: context.bot.outbound,
+      // Asked again after every file's read and before its upload, and before the files line.
+      authorize: reaches,
+      chatId: context.telegramChatId, files: settled.files, outbound: context.bot.outbound,
       owner: { chatId: context.chatId, linkId: context.linkId, userId: context.userId }, read: deps.read, userId: context.userId,
       ...(settled.outputs ? { outputs: settled.outputs } : {})
     });

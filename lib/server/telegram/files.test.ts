@@ -292,6 +292,31 @@ describe("Telegram answer files: after a run's final message", () => {
     expect(off.fake.calls("sendDocument")).toHaveLength(0);
   });
 
+  it("sends none of a run's files once its link stops reaching the chat while one is read, and names none there", async () => {
+    const h = harness();
+    let linked = true;
+    h.access.resolveTelegramAccess.mockImplementation(async () => linked
+      ? { allowed: true, control: {} as never, link: link(h.user.id, h.fake.bot.id) }
+      : { allowed: false, link: null, reasonCode: "telegram_not_linked" });
+    h.bytes.set("out-1", Buffer.from("done"));
+    h.bytes.set("out-2", Buffer.from("more"));
+    // The user unlinks while the first file's bytes are read.
+    h.read.mockImplementationOnce(async (input) => {
+      linked = false;
+      return h.bytes.get(input.attachmentId) ?? null;
+    });
+    const two: ThreadArtifactSummary = {
+      ...summary,
+      generatedFiles: [...summary.generatedFiles!, {
+        attachmentId: "out-2", byteSize: 4, fileName: "more.txt", mimeType: "text/plain", relativePath: "outputs/more.txt"
+      }]
+    };
+    h.files.listener({ artifactSummary: two, messageIds: [1], sent: true, status: "complete", type: "delivered" }, h.context);
+    await h.files.idle();
+    expect(h.fake.calls("sendDocument")).toHaveLength(0);
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
+  });
+
   it("reads the export state of the user's own run: none without Workspace, pending until complete or failed", async () => {
     const rows = new Map([["run-ws", "EXPORTING"], ["run-new", "PENDING"], ["run-done", "COMPLETE"], ["run-bad", "FAILED"]]);
     const findFirst = vi.fn(async ({ where }: { where: { modelRunId: string; modelRun: { userId: string } } }) => {
