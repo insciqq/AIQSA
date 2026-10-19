@@ -17,6 +17,7 @@ import { telegramAttachmentTypeNames } from "../../lib/server/telegram/media/pla
 import { createFakeTelegramBotApi, type FakeTelegramCall, type FakeTelegramUser } from "../support/fakeTelegramBotApi";
 import { createPeopleFixture, type E2ESession } from "./support/people";
 import { telegramE2eApiPort } from "./support/telegramApiOrigin";
+import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 
 /**
  * Voice messages, photos, albums and documents from Telegram end to end: the
@@ -207,6 +208,8 @@ async function samplePdf(): Promise<Buffer> {
   return Buffer.from(await document.save());
 }
 
+let restoreFakeContext: (() => Promise<void>) | null = null;
+
 test.beforeAll(async ({ browser }) => {
   // Two cold `next dev` sign-ins compile the login and chat pages first.
   test.setTimeout(180_000);
@@ -216,6 +219,8 @@ test.beforeAll(async ({ browser }) => {
   adminSession = await people.signIn(browser, adminUser!);
   aliceSession = await people.signIn(browser, alice!);
   speech = await installSpeechToTextFixture();
+  // An album's three images need the larger fake context the Workspace specs use.
+  restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
   await enableMediaBot(adminSession.page.request);
 
   const code = await aliceSession.page.request.post("/api/me/telegram/link-code");
@@ -235,6 +240,7 @@ test.afterAll(async () => {
     }
   } finally {
     try {
+      await restoreFakeContext?.();
       await speech?.cleanup();
       await people.cleanup();
     } finally {
