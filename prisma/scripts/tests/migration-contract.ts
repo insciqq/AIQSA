@@ -620,6 +620,15 @@ function bootstrapFoundationDigest(database: string): string {
         SELECT jsonb_agg(jsonb_build_array(id, "monthlyCapMicros", "monthlyBudgetMicros", "messagesPerHour",
           "messagesPerDay", version, "updatedByUserId") ORDER BY id)
         FROM "UsageLimitPolicy"
+      ), '[]'::jsonb),
+      'telegram_control', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, enabled, restricted, "tokenEnvelope" IS NOT NULL, "tokenGeneration",
+          "botId", "botUsername", version, "updatedByUserId") ORDER BY id)
+        FROM "TelegramBotControl"
+      ), '[]'::jsonb),
+      'telegram_groups', COALESCE((
+        SELECT jsonb_agg("groupId" ORDER BY "groupId")
+        FROM "TelegramBotGroup"
       ), '[]'::jsonb)
     )::text);`,
   );
@@ -641,6 +650,13 @@ function runBootstrapProof(database: string): void {
     psqlScalar(database, `SELECT CASE WHEN "personalLocalNetworkEnabled" THEN 'on' ELSE 'off' END || ':' || version::text FROM "McpPolicy" WHERE id = 'installation';`),
     "on:1",
     "fresh migration history must allow personal MCP local network access before bootstrap",
+  );
+  assert.equal(
+    psqlScalar(database, `SELECT CASE WHEN enabled THEN 'on' ELSE 'off' END || ':' || CASE WHEN restricted THEN 'groups' ELSE 'everyone' END
+      || ':' || ("tokenEnvelope" IS NULL)::text || ':' || "tokenGeneration"::text || ':' || version::text
+      FROM "TelegramBotControl" WHERE id = 'installation';`),
+    "off:everyone:true:0:1",
+    "fresh migration history must leave the Telegram bot off and unconfigured before bootstrap",
   );
   const bootstrapEnvironment = {
     AIQSA_INITIAL_ADMIN_DISPLAY_NAME: "Baseline Administrator",
@@ -668,8 +684,8 @@ function runBootstrapProof(database: string): void {
       AND s."decayPolicyVersion" = 'memory-decay-v1';`), "1", "initial administrator Memory defaults");
   psqlScalar(database, `UPDATE "UserMemorySettings" SET "learnAutomatically" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);
-  // Adoption recreates a missing usage limits singleton exactly as the migration inserted it.
-  psqlScalar(database, `DELETE FROM "UsageLimitPolicy";`);
+  // Adoption recreates missing usage limits and Telegram singletons exactly as the migrations inserted them.
+  psqlScalar(database, `DELETE FROM "UsageLimitPolicy"; DELETE FROM "TelegramBotControl";`);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /"code":"installation_already_adopted"/u);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "learnAutomatically" OR "decayEnabled";`), "0",
@@ -684,13 +700,15 @@ function runBootstrapProof(database: string): void {
   psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
     UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';
     UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';
-    UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';`);
+    UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';
+    UPDATE "TelegramBotControl" SET restricted = true, version = version + 1 WHERE id = 'installation';
+    INSERT INTO "TelegramBotGroup" ("groupId") SELECT id FROM "Group" ORDER BY id LIMIT 1;`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(
     bootstrapFoundationDigest(database),
     disabledDigest,
-    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off and usage limits",
+    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off, usage limits and Telegram access",
   );
   assert.equal(
     psqlScalar(

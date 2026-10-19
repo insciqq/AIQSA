@@ -140,6 +140,7 @@ function createBootstrapTransaction(input: {
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     mcpPolicyUpsert: record("mcpPolicy.upsert", { id: "installation" }),
     usageLimitPolicyUpsert: record("usageLimitPolicy.upsert", { id: "installation" }),
+    telegramBotControlUpsert: record("telegramBotControl.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
@@ -232,6 +233,7 @@ function createBootstrapTransaction(input: {
     },
     mcpPolicy: { upsert: spies.mcpPolicyUpsert },
     usageLimitPolicy: { upsert: spies.usageLimitPolicyUpsert },
+    telegramBotControl: { upsert: spies.telegramBotControlUpsert },
     user: {
       create: spies.userCreate,
       findUnique: spies.userFindUnique
@@ -511,6 +513,12 @@ describe("installation bootstrap", () => {
     });
     // Usage limits start unset; the singleton reads the same with or without its row.
     expect(fixture.spies.usageLimitPolicyUpsert).toHaveBeenCalledWith({
+      create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
+    // Telegram starts off without a bot; adoption never touches a saved token, switch or access.
+    expect(fixture.spies.telegramBotControlUpsert).toHaveBeenCalledWith({
       create: { id: "installation" },
       update: {},
       where: { id: "installation" }
