@@ -21,6 +21,10 @@ export type ToolLoopCall = Readonly<{
   arguments: unknown;
   id: string;
   name: string;
+  /** Its round did not declare this tool (`requested`: the bounded requested
+   * name): the owner persists the call already settled as an undispatched
+   * `tool_call_unknown` error, so it never executes. */
+  undeclared?: Readonly<{ requested: string }>;
 }>;
 
 export type ToolLoopIssue = Readonly<{

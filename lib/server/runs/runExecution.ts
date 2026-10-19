@@ -232,6 +232,7 @@ import {
   answerDispatchStarted,
   beforeAnswerDispatch,
   runProviderToolLoop as continueProviderToolLoop,
+  unknownToolCorrectionSpent,
   unpaidContextRejection
 } from "./providerToolLoop";
 import {
@@ -249,8 +250,9 @@ import {
 } from "./toolLoopPersistence";
 import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
 import { readOnlyRunTool } from "./toolReadOnly";
-import { repeatBlockedRounds, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
+import { repeatBlockedRounds, settledRepeatOutcome, ToolCallRepeatHistory, toolRoundCall } from "./toolCallRepeatGuard";
 import { mcpApprovalGated, mcpApprovalRequestForCall } from "./mcpApprovalGate";
+import { normalizeProviderToolCallName, unknownToolCall } from "./unknownToolCall";
 import { executeCodexTurn } from "../agents/executor";
 import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
@@ -284,10 +286,7 @@ import {
   prepareCompactedProviderRequest
 } from "./contextCompactionConsumer";
 import type { ContextSummaryReceipts } from "./contextCompactionSummarizer";
-import {
-  normalizeWorkspaceProviderToolName,
-  workspaceToolNameFromNamespaced
-} from "../workspace/toolCatalog";
+import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 
 import { activeRunControllers, runSettlements } from "./activeRunControllerRegistry";
 import { toolCallKind, toolExecutionKind, type ToolCallRoutes } from "./toolCallKind";
@@ -2605,9 +2604,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 };
               }
               // A call the run's admission gates dispatches only by consuming
-              // a one-shot approval in its claim; the claim settles it gated otherwise.
-              const mcpApproval = mcpApprovalRequestForCall({ admission: normalizedRequest.mcpApproval, call,
-                snapshot: activeMcpSnapshot });
+              // a one-shot approval in its claim; the claim settles it gated
+              // otherwise. A call of an undeclared tool never asks for one.
+              const mcpApproval = unknownToolCall(persisted) ? undefined : mcpApprovalRequestForCall({
+                admission: normalizedRequest.mcpApproval, call, snapshot: activeMcpSnapshot });
               const claim = await input.repository.claimToolLoopCall({
                 callId: persisted.id,
                 ...(followups ? { followupRevision: followups.revision } : {}),
@@ -2619,9 +2619,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 persistedCalls.set(call.id, claim.call);
                 repeatHistory.record(claim.call);
               }
-              if (claim.kind === "settled" && (repeatBlockedRounds(claim.call) || mcpApprovalGated(claim.call))) {
-                // A blocked repeat or a call gated for the user's approval was
-                // settled undispatched: nothing runs.
+              if (claim.kind === "settled" && (repeatBlockedRounds(claim.call) || mcpApprovalGated(claim.call) ||
+                unknownToolCall(claim.call))) {
+                // A blocked repeat, a call gated for the user's approval or a
+                // call of an undeclared tool was settled undispatched: nothing runs.
                 const blocked = parsePersistedToolExecutionResult(call, claim.call.result);
                 return blocked ? { status: "complete", value: blocked } : {
                   error: { code: "tool_call_result_invalid", fatal: true, message: "Persisted tool result is invalid." },
@@ -3295,6 +3296,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             const persisted = persistedCalls.get(call.id);
             return persisted !== undefined && mcpApprovalGated(persisted);
           },
+          isUnknownToolCall: (call) => {
+            const persisted = persistedCalls.get(call.id);
+            return persisted !== undefined && unknownToolCall(persisted) !== null;
+          },
+          unknownToolCorrectionSpent: (round) => unknownToolCorrectionSpent([...persistedCalls.values()]
+            .map(row => ({ call: toolRoundCall(row), round: row.roundIndex })), round),
           toolResultNoteForProvider: (entry) => {
             const persisted = persistedCalls.get(entry.call.id);
             return persisted ? repeatHistory.noteFor(persisted.id) : undefined;
@@ -3349,9 +3356,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           },
           projectToolResultForProvider: projectObservationForProvider,
           parallelToolCalls: normalizedRequest.modelCapabilities.parallelToolCalls === true,
-          normalizeToolCallName: workspaceTools.length > 0
-            ? normalizeWorkspaceProviderToolName
-            : undefined,
+          normalizeToolCallName: (name, advertisedToolNames) => normalizeProviderToolCallName(name, advertisedToolNames,
+            { mcp: activeMcpSnapshot, workspace: workspaceTools.length > 0 }),
           persistToolBatch: async ({ calls, continuation, round }) => {
             toolRoundsBeforeOutput = true;
             skillResultBudget.begin({ calls, bridge: toolBridge, observations: runObservations(), request: {
@@ -3361,10 +3367,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             observationBatches.begin(round, observationBatchShare({ bridge: toolBridge, calls, observations: runObservations(),
               request: { ...sessionRequest, providerToolMessages: [...continuation.providerToolMessages] } }));
             if (normalizedRequest.artifactTool === true) await artifactGeneration.requested(round, calls.map(modelToolCall));
-            const repeatContext = { batch: calls.map(call => ({ arguments: call.arguments, toolName: call.name })),
+            // A call of an undeclared tool never runs, so it changes nothing.
+            const repeatContext = { batch: calls.filter(call => !call.undeclared)
+              .map(call => ({ arguments: call.arguments, toolName: call.name })),
               readOnly: readOnlyRunTool({ mcp: activeMcpSnapshot, tools }) };
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
+                // Its round did not declare it: kept already settled as an
+                // unknown tool, without route, binding, approval or arguments.
+                if (call.undeclared) {
+                  return { arguments: {}, ordinal, providerCallId: call.id, toolName: call.name, unknownTool: call.undeclared };
+                }
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isMemoryCall(call.name) && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
@@ -3437,16 +3450,20 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               if (changed) await searchActivitySnapshot();
             }
             await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
-            if (hasMcpTools) {
+            // Only declared calls run: a batch of unknown tools shows no tool phase.
+            const declaredCount = calls.filter(call => !call.undeclared).length;
+            if (hasMcpTools && declaredCount > 0) {
               await emit(
                 controller,
                 encoder,
                 input.repository,
                 runId,
-                liveToolLoopStatus({ count: calls.length, phase: "tools" })
+                liveToolLoopStatus({ count: declaredCount, phase: "tools" })
               );
             }
             for (const call of calls) {
+              // A call of an undeclared tool shows no running step: it never runs.
+              if (call.undeclared) continue;
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const registeredTool = tools.find((tool) => tool.name === call.name);
               const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : isMonitoringCall(call.name) ? "Monitoring" : isSkillSave(call.name) ? "Skills" : isScheduledTaskCall(call.name) ? "Scheduled tasks" : isFetchCall(call.name) ? "Web" : call.name === "find_tools"

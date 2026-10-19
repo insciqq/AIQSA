@@ -16,6 +16,7 @@ import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { canonicalJsonText } from "./contextCompactionContract";
 import { repeatBlockedRounds } from "./toolCallRepeatGuard";
 import { mcpApprovalGated } from "./mcpApprovalGate";
+import { unknownToolCall } from "./unknownToolCall";
 import { MCP_APPROVAL_REFUSAL } from "../mcp/writeApproval";
 import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
 import type { ToolHistoryBlock, ToolHistoryEntry, ToolHistoryProjection } from "./toolHistory";
@@ -127,7 +128,7 @@ export type ToolCallOutcome = Readonly<{
   status: "succeeded" | "tool_error" | "failed" | "not_executed" | "unknown";
   /** Whether the call crossed its dispatch boundary; null when not proven. */
   dispatched: boolean | null;
-  reason?: "approval_required" | "repeat_blocked" | "cancelled" | "refused" | "superseded" | "invalid_arguments";
+  reason?: "approval_required" | "repeat_blocked" | "unknown_tool" | "cancelled" | "refused" | "superseded" | "invalid_arguments";
 }>;
 
 export type ToolHistoryArguments =
@@ -169,6 +170,15 @@ function repeatBlocked(facts: ToolCallFacts): boolean {
   return facts.receipts.length === 0 && facts.observation === null && repeatBlockedRounds({
     providerCallId: facts.providerCallId, result: snapshotToolLoopJson(facts.result, toolLoopPersistenceLimits.resultBytes),
     roundIndex: facts.roundIndex, startedAt: facts.startedAt, state: facts.state, toolName: facts.toolName
+  }) !== null;
+}
+
+/** Only the server's own unknown-tool form, with no receipt and no
+ * observation, named a tool its round did not declare. */
+function undeclaredTool(facts: ToolCallFacts): boolean {
+  return facts.receipts.length === 0 && facts.observation === null && unknownToolCall({
+    providerCallId: facts.providerCallId, result: snapshotToolLoopJson(facts.result, toolLoopPersistenceLimits.resultBytes),
+    startedAt: facts.startedAt, state: facts.state, toolName: facts.toolName
   }) !== null;
 }
 
@@ -223,6 +233,7 @@ export function toolCallOutcome(facts: ToolCallFacts): ToolCallOutcome {
   const open = facts.receipts.some(receipt => receipt.dispatchState === "DISPATCHED");
   const failedReceipt = facts.receipts.some(receipt => receipt.dispatchState === "FAILED");
   if (repeatBlocked(facts)) return { status: "not_executed", dispatched: false, reason: "repeat_blocked" };
+  if (undeclaredTool(facts)) return { status: "not_executed", dispatched: false, reason: "unknown_tool" };
   if (approvalGated(facts)) return { status: "not_executed", dispatched: false, reason: "approval_required" };
   if (hasInvalidProviderToolArguments(facts.arguments) && facts.state === "error") {
     return { status: "not_executed", dispatched: false, reason: "invalid_arguments" };
@@ -374,6 +385,7 @@ export function toolCallOutcomeText(outcome: ToolCallOutcome): string {
     case "unknown": return "outcome unknown: it may have taken effect; do not assume it failed";
     case "not_executed":
       return outcome.reason === "repeat_blocked" ? "not executed: repeated call without new data, blocked by AIQSA"
+        : outcome.reason === "unknown_tool" ? "not executed: no tool of that name was declared in that step"
         : outcome.reason === "approval_required" ? "not executed: it waited for the user's approval; nothing was sent"
         : outcome.reason === "cancelled" ? "not executed: cancelled before dispatch"
         : outcome.reason === "superseded" ? "not executed: superseded by a user clarification"

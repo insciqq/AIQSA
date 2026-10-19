@@ -150,6 +150,10 @@ export type PersistToolLoopCallBatchInput = Readonly<{
     mcpApproval?: import("../mcp/writeApproval").McpApprovalRequest;
     runtimeGenerationFingerprint?: string | null;
     toolName: string;
+    /** Persist the call already settled as an undispatched call of a tool its
+     * round did not declare (`tool_call_unknown`), under its bounded name
+     * (`unknownToolCallName`) with the bounded name it requested. */
+    unknownTool?: Readonly<{ requested: string }>;
     workspace?: true;
   }>[];
   providerContinuation: ToolLoopJsonValue | null;

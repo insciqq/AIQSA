@@ -1308,6 +1308,7 @@
   "answer_review_step_waiting",
   "answer_review_time_limit",
   "tool_call_repeat_blocked",
+  "tool_call_unknown",
   "mcp_tool_reported_error",
   "fetch_url_not_in_conversation",
   "fetch_url_invalid",

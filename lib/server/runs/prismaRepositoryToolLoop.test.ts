@@ -15,7 +15,12 @@ import { summarizeMessageRunWorkspaceActivity } from "../chats/prismaRepository"
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { freezeSkillManifest } from "../skills/runManifest";
 import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt } from "../../contracts/contextCompaction";
-import { INITIAL_PROVIDER_CONTINUATION, parseToolLoopCheckpoint, toolLoopCheckpoint } from "./toolLoopPersistence";
+import {
+  INITIAL_PROVIDER_CONTINUATION,
+  parseToolLoopCheckpoint,
+  toolLoopCheckpoint,
+  type PersistToolLoopCallBatchInput
+} from "./toolLoopPersistence";
 import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "../workspace/config";
 import { analyzeImageTools } from "../tools/analyzeImage";
@@ -1836,6 +1841,37 @@ describe("Prisma tool-free synthesis and blocked repeats", () => {
     invalid.run.toolLoopState = store.run.toolLoopState;
     expect(await invalid.operations.persistToolLoopCallBatch({ ...batch,
       calls: [{ ...batch.calls[0]!, repeatBlocked: { repeatOf: [2, 3] as const } }] })).toEqual({ kind: "conflict" });
+  });
+
+  it("persists a call of an undeclared tool already settled with its batch, never bound, and reuses the same batch", async () => {
+    const store = harness();
+    store.run.toolLoopState = toolLoopCheckpoint({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage }],
+      phase: "provider_running", providerContinuation: { providerResponseId: null, providerToolMessages: [] }, roundIndex: 1 });
+    const batch: PersistToolLoopCallBatchInput = { providerContinuation: { providerResponseId: null, providerToolMessages: ["calls"] },
+      roundIndex: 1, runId: "run-1", userId: "user-1", calls: [
+        { arguments: {}, ordinal: 0, providerCallId: "unknown", toolName: "invalid_tool_name",
+          unknownTool: { requested: "mcp_notes_read_note_0123456789?DSML?" } },
+        { arguments: { id: "rec-2" }, ordinal: 1, providerCallId: "other", toolName: "alpha" }] };
+    const persisted = await store.operations.persistToolLoopCallBatch(batch);
+    expect(persisted).toMatchObject({ kind: "persisted", calls: [
+      { providerCallId: "unknown", state: "error", startedAt: null, completedAt: expect.any(String), mcpBinding: null,
+        result: { callId: "unknown", name: "invalid_tool_name", status: "error", content: [{ type: "json", value: {
+          error: "tool_call_unknown", message: expect.stringContaining("exact name"), requested: "mcp_notes_read_note_0123456789?DSML?" } }] } },
+      { providerCallId: "other", state: "pending", result: null, completedAt: null }] });
+    expect(await store.operations.persistToolLoopCallBatch(batch)).toMatchObject({ kind: "reused" });
+    // A different decision for the same batch is a conflict.
+    expect(await store.operations.persistToolLoopCallBatch({ ...batch, calls: batch.calls.map(({ unknownTool: _unknown, ...call }) => call) }))
+      .toEqual({ kind: "conflict" });
+    // An unknown call keeps its bounded name and has no route, binding or approval.
+    for (const call of [{ toolName: "mcp_notes</read>" }, { runtimeGenerationFingerprint: "a".repeat(64) }, { workspace: true as const },
+      { repeatBlocked: { repeatOf: [1, 2] as const } }, { unknownTool: { requested: "" } }]) {
+      const invalid = harness();
+      invalid.run.toolLoopState = toolLoopCheckpoint({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 3, usage }],
+        phase: "provider_running", providerContinuation: { providerResponseId: null, providerToolMessages: [] }, roundIndex: 3 });
+      expect(await invalid.operations.persistToolLoopCallBatch({ ...batch, roundIndex: 3, calls: [{ ...batch.calls[0]!, ...call }] }))
+        .toEqual({ kind: "conflict" });
+      expect(invalid.rows).toEqual([]);
+    }
   });
 });
 

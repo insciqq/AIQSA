@@ -188,7 +188,6 @@ import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
-import { normalizeWorkspaceProviderToolName } from "../workspace/toolCatalog";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import {
   finalizeRunCompletion,
@@ -199,20 +198,25 @@ import {
 } from "./runFinalization";
 import {
   beforeAnswerDispatch,
+  providerRoundToolCalls,
   providerToolLoopContinuationAfterResult,
   missingRequiredToolCall,
   requiredToolCorrectionContinuation,
   REQUIRED_TOOL_CALL_FAILURE,
   reservedCallRound,
+  roundToolCalls,
   runProviderToolLoop,
+  stalledToolRound,
   toolSynthesisDecision,
+  unknownToolCorrectionSpent,
   withProviderNote,
   withRoundForcedTool,
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
 import { readOnlyRunTool } from "./toolReadOnly";
-import { repeatBlockedRounds, roundAwaitsApproval, roundMadeNoProgress, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
+import { repeatBlockedRounds, settledRepeatOutcome, ToolCallRepeatHistory, toolRoundCall } from "./toolCallRepeatGuard";
 import { mcpApprovalGated, mcpApprovalRequestForCall } from "./mcpApprovalGate";
+import { normalizeProviderToolCallName, unknownToolCall } from "./unknownToolCall";
 import { applyProviderRequestContextBudget, measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import {
@@ -1703,9 +1707,10 @@ async function executePersistedToolCallInContext(
     };
   }
   // The live rule: a call the run's frozen admission gates dispatches only by
-  // consuming a one-shot approval in its claim, which settles it gated otherwise.
-  const mcpApproval = mcpApprovalRequestForCall({ admission: context.run.normalizedRequest.mcpApproval, call,
-    snapshot: context.activeMcpSnapshot });
+  // consuming a one-shot approval in its claim, which settles it gated
+  // otherwise. A call of an undeclared tool never asks for one.
+  const mcpApproval = unknownToolCall(persisted) ? undefined : mcpApprovalRequestForCall({
+    admission: context.run.normalizedRequest.mcpApproval, call, snapshot: context.activeMcpSnapshot });
   const claim = await claimCall({
     callId: persisted.id,
     ...(mcpApproval ? { mcpApproval } : {}),
@@ -1713,9 +1718,10 @@ async function executePersistedToolCallInContext(
     userId: context.run.userId
   });
   if (claim.kind === "settled" && mcpApprovalGated(claim.call)) context.approvalGatedCallIds.add(persisted.providerCallId);
-  if (claim.kind === "settled" && (repeatBlockedRounds(claim.call) || mcpApprovalGated(claim.call))) {
-    // A blocked repeat or a call gated for the user's approval was settled
-    // undispatched: nothing runs or replays.
+  if (claim.kind === "settled" && (repeatBlockedRounds(claim.call) || mcpApprovalGated(claim.call) ||
+    unknownToolCall(claim.call))) {
+    // A blocked repeat, a call gated for the user's approval or a call of an
+    // undeclared tool was settled undispatched: nothing runs or replays.
     const blocked = parsePersistedToolExecutionResult(call, claim.call.result);
     if (!blocked) {
       throw new ToolLoopRecoveryError("tool_call_result_invalid", "A persisted tool result is invalid and cannot be replayed safely.");
@@ -3192,6 +3198,12 @@ async function recoverCheckpointedToolLoop(
     );
     // Repeat decisions read the run's persisted calls, as live execution does.
     const repeatHistory = new ToolCallRepeatHistory(run.calls);
+    /** How a persisted call counts for its round's progress, with the calls
+     * this pass's claims gated for approval. */
+    const recoveredRoundCall = (row: PersistedToolLoopCall) =>
+      toolRoundCall(row, context.approvalGatedCallIds.has(row.providerCallId));
+    const normalizeToolCallName = (name: string, advertisedToolNames: ReadonlySet<string>) =>
+      normalizeProviderToolCallName(name, advertisedToolNames, { mcp: context.activeMcpSnapshot, workspace: workspaceTools.length > 0 });
 
     function recoveredKnowledgeDispatchDraft(): KnowledgeEvidenceDispatchManifestDraft | null {
       const calls = [...persistedCalls.values()]
@@ -3311,7 +3323,7 @@ async function recoverCheckpointedToolLoop(
     }
 
     async function persistToolBatch(
-      calls: readonly Readonly<{ arguments: unknown; id: string; name: string }>[],
+      calls: readonly Readonly<{ arguments: unknown; id: string; name: string; undeclared?: Readonly<{ requested: string }> }>[],
       continuation: ProviderToolLoopContinuation,
       round: number
     ): Promise<readonly PersistedToolLoopCall[]> {
@@ -3320,10 +3332,17 @@ async function recoverCheckpointedToolLoop(
         observations: recoveredContextObservations(context) });
       context.wholeDelivery.begin(round, observationBatchShare({ bridge, calls, request: context.sessionRequest,
         observations: recoveredContextObservations(context) }));
-      const repeatContext = { batch: calls.map(call => ({ arguments: call.arguments, toolName: call.name })),
+      // As live: a call of an undeclared tool never runs, so it changes nothing.
+      const repeatContext = { batch: calls.filter(call => !call.undeclared)
+        .map(call => ({ arguments: call.arguments, toolName: call.name })),
         readOnly: readOnlyRunTool({ mcp: context.activeMcpSnapshot, tools }) };
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
+          // The live rule: kept already settled as an unknown tool, without
+          // route, binding, approval or arguments.
+          if (call.undeclared) {
+            return { arguments: {}, ordinal, providerCallId: call.id, toolName: call.name, unknownTool: call.undeclared };
+          }
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
           if (!route && !(run.normalizedRequest.memorySearch && call.name === MEMORY_SEARCH_TOOL_NAME) &&
             !isRecoveredKnowledgeCall(context, call.name) &&
@@ -3440,15 +3459,18 @@ async function recoverCheckpointedToolLoop(
         .map(call => call.roundIndex)).size;
       const priorToolCalls = budgetedRecoveredCalls(run, run.calls).length;
       // The live rule: a checkpointed synthesis marker, a previous round of
-      // only blocked repeats, or an exactly reached budget, which first offers
-      // an outstanding reserved verdict.
+      // only calls that did not run (`stalledToolRound`), or an exactly
+      // reached budget, which first offers an outstanding reserved verdict.
+      const stalled = stalledToolRound(priorCalls.map(recoveredRoundCall),
+        unknownToolCorrectionSpent(run.calls.map(row => ({ call: recoveredRoundCall(row), round: row.roundIndex })), round - 1));
       const decision = toolSynthesisDecision({
-        approvalRequired: roundAwaitsApproval(priorCalls),
+        approvalRequired: stalled === "approval_required",
         budgets: toolBudgets,
         continuation: savedContinuation,
         initialToolChoice: providerRequest.toolChoice,
-        noProgress: roundMadeNoProgress(priorCalls),
-        progress: { toolCalls: priorToolCalls, toolRounds: completedToolRounds }
+        noProgress: stalled === "no_progress",
+        progress: { toolCalls: priorToolCalls, toolRounds: completedToolRounds },
+        unknownTool: stalled === "unknown_tool"
       });
       const synthesis = reservedCallRound(decision, recoveredReservedCall(run, round)) ? null : decision;
       const toolChoice = synthesis || providerRequest.toolChoice === "none"
@@ -3625,12 +3647,11 @@ async function recoverCheckpointedToolLoop(
         }
         throw new ToolLoopRecoveryError(TOOL_SYNTHESIS_FAILURE.code, TOOL_SYNTHESIS_FAILURE.message);
       }
+      // The live batch rule: names normalized against the round's own
+      // declarations, a call they do not declare kept as an unknown tool.
       const advertisedToolNames = new Set(roundRequest.tools?.map(tool => tool.name));
-      const refreshedCalls = (refreshed.result.toolCalls ?? []).map(call => ({
-        ...call,
-        name: workspaceTools.length > 0 ? normalizeWorkspaceProviderToolName(call.name, advertisedToolNames) : call.name
-      }));
-      refreshed.result = { ...refreshed.result, toolCalls: refreshedCalls };
+      const refreshedCalls = roundToolCalls(refreshed.result.toolCalls ?? [], advertisedToolNames, normalizeToolCallName);
+      refreshed.result = { ...refreshed.result, toolCalls: providerRoundToolCalls(refreshedCalls) };
       // Progress as the live loop counts it: only the run's first verdict is
       // exempt, so this batch's first one is exempt only if none was persisted.
       const budgetedPersisted = budgetedRecoveredCalls(run, run.calls);
@@ -3638,7 +3659,7 @@ async function recoverCheckpointedToolLoop(
         refreshedCalls.some((call) => isMonitoringVerdictCall(run.normalizedRequest, call.name));
       const budgetedRefreshed = refreshedCalls.length - (refreshedExempt ? 1 : 0);
       const required = budgetedPersisted.length === 0 &&
-        missingRequiredToolCall(providerRequest, refreshedCalls);
+        missingRequiredToolCall(providerRequest, refreshedCalls.filter(call => !call.undeclared));
       if (required) {
         if (refreshedCalls.length > 0 || continuation.requiredToolCorrection || roundRequest.toolChoice === "none") {
           throw new ToolLoopRecoveryError(REQUIRED_TOOL_CALL_FAILURE.code, REQUIRED_TOOL_CALL_FAILURE.message);
@@ -3880,6 +3901,12 @@ async function recoverCheckpointedToolLoop(
         const persisted = persistedCalls.get(call.id);
         return context.approvalGatedCallIds.has(call.id) || persisted !== undefined && mcpApprovalGated(persisted);
       },
+      isUnknownToolCall: (call) => {
+        const persisted = persistedCalls.get(call.id);
+        return persisted !== undefined && unknownToolCall(persisted) !== null;
+      },
+      unknownToolCorrectionSpent: (round) => unknownToolCorrectionSpent([...persistedCalls.values()]
+        .map(row => ({ call: recoveredRoundCall(row), round: row.roundIndex })), round),
       toolResultNoteForProvider: (entry) => {
         const persisted = persistedCalls.get(entry.call.id);
         return persisted ? repeatHistory.noteFor(persisted.id) : undefined;
@@ -3918,9 +3945,7 @@ async function recoverCheckpointedToolLoop(
         );
       },
       parallelToolCalls: run.normalizedRequest.modelCapabilities.parallelToolCalls === true,
-      normalizeToolCallName: workspaceTools.length > 0
-        ? normalizeWorkspaceProviderToolName
-        : undefined,
+      normalizeToolCallName,
       projectToolResultForProvider: projectObservationForProvider,
       persistToolBatch: async ({ calls, continuation: nextContinuation, round }) => {
         await persistToolBatch(calls, nextContinuation, round);

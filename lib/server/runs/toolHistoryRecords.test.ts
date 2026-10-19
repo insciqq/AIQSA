@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { invalidProviderToolArguments } from "../tools/types";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
+import { unknownToolCallResult } from "./unknownToolCall";
 import { toolCallRef } from "./toolHistoryContract";
 import {
   toolCallOutcome,
@@ -84,6 +85,16 @@ describe("tool call outcomes keep request, dispatch and result distinct", () => 
     expect(toolCallOutcome({ ...blocked, receipts: [{ dispatchState: "COMPLETED", errorCode: null }] }).reason).not.toBe("repeat_blocked");
     expect(toolCallOutcome({ ...blocked, observation: { handle: null, executionOutcome: "complete", preview: null } }).reason)
       .not.toBe("repeat_blocked");
+  });
+
+  it("names a call of an undeclared tool as not executed, only by the server's own form", () => {
+    const unknown = facts({ toolName: "read_note", state: "error", startedAt: null, receipts: [], arguments: {},
+      result: unknownToolCallResult({ providerCallId: "call_1", requested: "read_note", toolName: "read_note" }) });
+    expect(toolCallOutcome(unknown)).toEqual({ status: "not_executed", dispatched: false, reason: "unknown_tool" });
+    expect(toolHistoryEntry(toolHistoryRecord(unknown, false), both).compact)
+      .toContain("not executed: no tool of that name was declared in that step");
+    // With an egress receipt it crossed its dispatch boundary: not an unknown call.
+    expect(toolCallOutcome({ ...unknown, receipts: [{ dispatchState: "COMPLETED", errorCode: null }] }).reason).not.toBe("unknown_tool");
   });
 
   it("names invalid arguments and clarification supersession as not executed", () => {
