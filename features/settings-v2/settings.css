@@ -490,9 +490,9 @@
   background: var(--v2-color-canvas);
 }
 
+/* The chosen theme reads by a text-colour edge, without a ring or glow. */
 .v2-theme-preview-card[data-selected="true"] .v2-theme-preview {
-  border-color: var(--v2-color-accent);
-  box-shadow: 0 0 0 2px var(--v2-color-accent-dim);
+  border-color: var(--v2-color-text);
 }
 
 .v2-theme-preview-rail {
@@ -609,12 +609,10 @@
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--v2-color-accent);
-  box-shadow: 0 0 0.375rem var(--v2-color-accent);
 }
 
 .v2-settings-status-card[data-state="off"] .v2-settings-status-dot {
   background: var(--v2-color-text3);
-  box-shadow: none;
 }
 
 .v2-settings-status-card strong {

@@ -1,5 +1,5 @@
 /* Composer dictation: the microphone sits inside the run action beside Send.
-   Its buttons are quiet controls, never the accent Send circle. */
+   Its buttons are quiet controls, never the ink Send circle. */
 .v2-composer-run-action .v2-composer-dictation {
   display: inline-flex;
   align-items: center;
@@ -32,7 +32,7 @@
   color: var(--v2-color-danger);
 }
 
-/* Outranks the run action's dimmed accent Stop, which is the answer's Stop. */
+/* Outranks the run action's dimmed ink Stop, which is the answer's Stop. */
 .v2-composer-run-action .v2-composer-dictation .v2-composer-dictation-stop.v2-icon-button:disabled:has(.v2-icon) {
   color: var(--v2-color-text3);
   background: transparent;
