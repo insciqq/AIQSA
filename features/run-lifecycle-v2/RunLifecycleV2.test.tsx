@@ -316,7 +316,7 @@ describe("Run lifecycle v2", () => {
     );
   });
 
-  it("restores the semantic shimmering tool status from persisted running activity", () => {
+  it("restores the semantic tool status from persisted running activity", () => {
     render(
       <RunAnswerV2
         content=""
@@ -330,8 +330,7 @@ describe("Run lifecycle v2", () => {
       />
     );
 
-    const status = screen.getByText("Finding relevant tools…");
-    expect(status).toHaveClass("v2-run-shimmer");
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Finding relevant tools…");
     expect(screen.queryByText("Thinking…")).toBeNull();
   });
 

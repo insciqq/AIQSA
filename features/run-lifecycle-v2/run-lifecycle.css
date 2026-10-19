@@ -11,21 +11,6 @@
   line-height: 1.45;
 }
 
-.v2-run-shimmer {
-  color: transparent;
-  background: linear-gradient(
-    100deg,
-    var(--v2-color-text2) 20%,
-    var(--v2-color-text) 42%,
-    var(--v2-color-text2) 64%
-  );
-  background-position: 130% 0;
-  background-size: 240% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: v2-run-shimmer 1.8s ease-in-out infinite;
-}
-
 /* Process line (answer anatomy): the one disclosure above the text. Live it
    is the status ("Thinking…", "Searching the web…") with a 12px spinner in a
    14px slot; settled, the same 28px row is a native disclosure whose label
@@ -107,12 +92,13 @@ div.v2-answer-process[data-live],
   transform: rotate(45deg) translate(-0.0625rem, -0.0625rem);
 }
 
-/* The live spinner is the answer phase's violet; nothing else here is. */
+/* The live spinner is the only motion on the row: real activity, in the
+   label's neutral tone. The label itself never shimmers. */
 .v2-answer-process-spinner {
   width: 0.75rem;
   height: 0.75rem;
   border-width: 1.5px;
-  color: var(--v2-color-accent2);
+  color: var(--v2-color-text2);
 }
 
 /* Fold body: Thinking → Steps → Memory hang from one hairline. */
@@ -197,7 +183,7 @@ div.v2-answer-process[data-live],
   width: 0.75rem;
   height: 0.75rem;
   border-width: 1.5px;
-  color: var(--v2-color-accent2);
+  color: var(--v2-color-text2);
 }
 
 .v2-answer-process-mark[data-status="cancelled"]::before {
@@ -274,20 +260,20 @@ div.v2-answer-process[data-live],
   line-height: 1.45;
 }
 
-/* Streaming caret: a 2px violet bar — the answer phase's only color. */
+/* Streaming caret: a 2px bar in the text colour; it blinks in place and
+   never moves layout. */
 .v2-run-answer-streaming .v2-conversation-markdown > div > :last-child::after {
   display: inline-block;
   width: 0.125rem;
   height: 1.0625rem;
   margin-left: 0.1875rem;
   border-radius: 1px;
-  background: var(--v2-color-accent2);
+  background: var(--v2-color-text);
   content: "";
   vertical-align: -0.1875rem;
   animation: v2-run-caret 1s steps(1) infinite;
 }
 
-/* "● Answering…" under the live text: 13px/500 accent2 with a glowing dot. */
 /* Terminal and connection-loss strips are semantic statuses: text2 floor. */
 .v2-run-connection,
 .v2-run-terminal-strip {
@@ -430,38 +416,21 @@ div.v2-answer-process[data-live],
   border: 0;
 }
 
-@keyframes v2-run-shimmer {
-  0% { background-position: 130% 0; }
-  100% { background-position: -80% 0; }
-}
-
 @keyframes v2-run-caret {
   50% {
     opacity: 0;
   }
 }
 
-html[data-motion="off"] .v2-run-shimmer,
 html[data-motion="off"] .v2-answer-process-mark[data-status="running"],
 html[data-motion="off"] .v2-answer-process-spinner,
 html[data-motion="off"] .v2-run-answer-streaming .v2-conversation-markdown > div > :last-child::after {
   animation: none;
 }
 
-html[data-motion="off"] .v2-run-shimmer {
-  color: var(--v2-color-text2);
-  background: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .v2-run-shimmer,
   .v2-run-answer-streaming .v2-conversation-markdown > div > :last-child::after {
     animation: none;
-  }
-
-  .v2-run-shimmer {
-    color: var(--v2-color-text2);
-    background: none;
   }
 
   .v2-answer-process-chevron {

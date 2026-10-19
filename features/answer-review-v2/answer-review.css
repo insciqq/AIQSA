@@ -14,7 +14,7 @@
   line-height: 1.45;
 }
 .v2-answer-review-status > svg { flex: none; width: 0.875rem; height: 0.875rem; color: var(--v2-color-text3); }
-.v2-answer-review-status[data-state="running"] > svg { color: var(--v2-color-accent2); }
+.v2-answer-review-status[data-state="running"] > svg { color: var(--v2-color-text2); }
 .v2-answer-review-status[data-state="finished"] > svg { color: var(--v2-color-ok); }
 .v2-answer-review-status[data-state="stopped"] > svg { color: var(--v2-color-warn); }
 .v2-answer-review-status > span { min-width: 0; flex: 1 1 12rem; overflow-wrap: anywhere; }
