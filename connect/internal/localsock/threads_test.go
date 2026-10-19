@@ -2,8 +2,10 @@ package localsock
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +164,10 @@ func TestTheDaemonRejectsInvalidThreadMessages(t *testing.T) {
 		`{"session":"ac-abc123","thread":"../x","status":"idle"}`,
 		`{"thread":"t1","status":"waiting","reason":"bell"}`,
 		`{"thread":["t1"],"status":"idle"}`,
+		`{"candidate":"ac-abc123","status":"idle"}`,
+		`{"session":"ac-abc123","thread":"t1","candidate":"ac-xyz789","status":"idle"}`,
+		`{"thread":"t1","candidate":"../x","status":"idle"}`,
+		`{"session":"ac-abc123","thread":"t1","status":"waiting","reason":"bell"}`,
 	} {
 		conn, err := net.Dial("unix", s.path)
 		if err != nil {
@@ -189,4 +195,208 @@ func TestTheDaemonRejectsInvalidThreadMessages(t *testing.T) {
 	if !strings.Contains(s.logText(), "hook_message_rejected") {
 		t.Fatalf("log: %s", s.logText())
 	}
+}
+
+// applier is a server whose messages the test applies itself, one at a
+// time and in order, without connections.
+func applier(t *testing.T) (*Server, *fakeReporter) {
+	t.Helper()
+	reporter := newFakeReporter()
+	server, err := Listen([]string{shortDir(t) + "/daemon.sock"}, reporter, logx.Discard(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { server.Close() })
+	return server, reporter
+}
+
+func (s *Server) applyMessage(t *testing.T, m Message) {
+	t.Helper()
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.apply(data)
+}
+
+// hookStarts stamps messages with hook starts in event order, before the
+// daemon reads its own clock: the i-th millisecond of them.
+func hookStarts() func(i int, m Message) Message {
+	clock := monoclock.Now()
+	base := clock.At - int64(time.Second)
+	return func(i int, m Message) Message {
+		m.At, m.Clock = base+int64(i)*int64(time.Millisecond), clock.Kind
+		return m
+	}
+}
+
+func expectReports(t *testing.T, reporter *fakeReporter, want ...report) {
+	t.Helper()
+	if got := reporter.list(); !slices.Equal(got, want) {
+		t.Fatalf("reports %+v, want %+v", got, want)
+	}
+}
+
+const (
+	sessionA = "ac-aaaa1111"
+	sessionB = "ac-bbbb2222"
+)
+
+var (
+	running  = Message{Status: protocol.StatusRunning, Reason: protocol.ReasonInput}
+	stopped  = Message{Status: protocol.StatusWaiting, Reason: protocol.ReasonTurnEnd}
+	approval = Message{Status: protocol.StatusNeedsApproval, Reason: protocol.ReasonPermission}
+	ended    = Message{Status: protocol.StatusIdle}
+)
+
+func of(m Message, session, thread, candidate string) Message {
+	m.Session, m.Thread, m.Candidate = session, thread, candidate
+	return m
+}
+
+// A thread bound to session A submits a prompt that session B's screen
+// also shows: the hook's candidate B never moves the binding.
+func TestAPromptShownOnAnotherScreenNeverMovesABoundThread(t *testing.T) {
+	s, r := applier(t)
+	at := hookStarts()
+	s.applyMessage(t, at(1, of(running, sessionA, "t-a", "")))
+	s.applyMessage(t, at(2, of(running, "", "t-a", sessionB)))
+	s.applyMessage(t, at(3, of(stopped, "", "t-a", "")))
+	// A thread that is not bound is bound by its candidate.
+	s.applyMessage(t, at(4, of(running, "", "t-u", sessionB)))
+	s.applyMessage(t, at(5, of(stopped, "", "t-u", "")))
+	expectReports(t, r,
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionA, protocol.StatusWaiting, protocol.ReasonTurnEnd},
+		report{sessionB, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionB, protocol.StatusWaiting, protocol.ReasonTurnEnd},
+	)
+}
+
+// The thread moved from A to B; a hook that started before the move and
+// names A arrives late. It changes neither A's status nor the binding.
+func TestAStaleReportNeverMovesABinding(t *testing.T) {
+	s, r := applier(t)
+	at := hookStarts()
+	s.applyMessage(t, at(1, of(running, sessionA, "t", "")))
+	s.applyMessage(t, at(3, of(running, sessionB, "t", "")))
+	s.applyMessage(t, at(2, of(stopped, sessionA, "t", "")))
+	if session, _ := s.threads.session("t"); session != sessionB {
+		t.Fatalf("bound to %q", session)
+	}
+	s.applyMessage(t, at(4, of(stopped, "", "t", "")))
+	expectReports(t, r,
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionB, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionB, protocol.StatusWaiting, protocol.ReasonTurnEnd},
+	)
+}
+
+// SessionEnd drops the thread's binding: resumed in another terminal, the
+// conversation no longer changes the session, and a hook of it that started
+// before the end and arrives late binds nothing again.
+func TestASessionEndUnbindsItsThread(t *testing.T) {
+	s, r := applier(t)
+	at := hookStarts()
+	s.applyMessage(t, at(1, of(running, sessionA, "t", "")))
+	s.applyMessage(t, at(3, of(ended, "", "t", "")))
+	s.applyMessage(t, at(2, of(stopped, sessionA, "t", "")))
+	if _, bound := s.threads.session("t"); bound {
+		t.Fatal("the thread of an ended session is bound")
+	}
+	// `codex resume` in an unrelated terminal.
+	s.applyMessage(t, at(4, of(running, "", "t", "")))
+	s.applyMessage(t, at(5, of(stopped, "", "t", "")))
+	expectReports(t, r,
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionA, protocol.StatusIdle, ""},
+	)
+	// Resumed later in a session, its prompt binds it there; what it held
+	// is older and changes nothing.
+	s.applyMessage(t, at(6, of(running, "", "t", sessionB)))
+	expectReports(t, r,
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionA, protocol.StatusIdle, ""},
+		report{sessionB, protocol.StatusRunning, protocol.ReasonInput},
+	)
+}
+
+// The first prompt's hook looks at the screens for a while; the turn's
+// later events reach the daemon first. They are held and applied once the
+// prompt binds the thread, so the newest event decides the status.
+func TestALateBindingAppliesTheEventsHeldForItsThread(t *testing.T) {
+	for _, final := range []Message{stopped, approval} {
+		s, r := applier(t)
+		at := hookStarts()
+		s.applyMessage(t, at(3, of(final, "", "t", "")))
+		s.applyMessage(t, at(2, of(running, "", "t", "")))
+		// The previous turn's Stop, older than the binding prompt.
+		s.applyMessage(t, at(0, of(stopped, "", "t", "")))
+		expectReports(t, r)
+		s.applyMessage(t, at(1, of(running, "", "t", sessionA)))
+		expectReports(t, r,
+			report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+			report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+			report{sessionA, final.Status, final.Reason},
+		)
+		if held := s.threads.take("t"); len(held) != 0 {
+			t.Fatalf("still held: %+v", held)
+		}
+	}
+}
+
+func TestHeldReportsAreBoundedAndExpire(t *testing.T) {
+	m := newThreads()
+	now := time.Unix(1_000, 0)
+	m.now = func() time.Time { return now }
+	for i := range maxHeldThreads + 6 {
+		m.hold(Message{Thread: fmt.Sprintf("t%d", i), Status: protocol.StatusIdle})
+		now = now.Add(time.Millisecond)
+	}
+	if len(m.held) != maxHeldThreads {
+		t.Fatalf("held for %d threads", len(m.held))
+	}
+	if got := m.take("t0"); len(got) != 0 {
+		t.Fatalf("the least recently heard thread was kept: %+v", got)
+	}
+	// Each thread keeps its newest reports, returned in the order they started.
+	for i := range maxHeldPerThread + 2 {
+		m.hold(Message{Thread: "many", Status: protocol.StatusWaiting, At: int64(100 - i), Clock: monoclock.Wall})
+	}
+	got := m.take("many")
+	if len(got) != maxHeldPerThread || got[0].At != 100-maxHeldPerThread-1 || got[len(got)-1].At != 98 {
+		t.Fatalf("held %+v", got)
+	}
+	m.hold(Message{Thread: "late", Status: protocol.StatusWaiting})
+	now = now.Add(heldFor)
+	m.hold(Message{Thread: "other", Status: protocol.StatusWaiting})
+	if got := m.take("late"); len(got) != 0 {
+		t.Fatalf("an expired report was kept: %+v", got)
+	}
+	if len(m.held) != 1 {
+		t.Fatalf("expired threads kept: %d", len(m.held))
+	}
+}
+
+// During an update the previous version's hooks still run: they stamp
+// their start in Unix nanoseconds without naming the clock.
+func TestAHookOfThePreviousVersionWithoutAClockIsApplied(t *testing.T) {
+	s, r := applier(t)
+	now := time.Now().UnixNano()
+	for _, line := range []string{
+		`{"session":"ac-aaaa1111","status":"running","reason":"input","at":` + fmt.Sprint(now) + `}`,
+		// Started earlier: stale on the wall clock.
+		`{"session":"ac-aaaa1111","status":"idle","at":` + fmt.Sprint(now-1) + `}`,
+		`{"session":"ac-aaaa1111","status":"waiting","reason":"turn_end","at":` + fmt.Sprint(now+1) + `}`,
+		// Still invalid: a negative stamp, an unknown clock.
+		`{"session":"ac-aaaa1111","status":"idle","at":-5}`,
+		`{"session":"ac-aaaa1111","status":"idle","at":` + fmt.Sprint(now+2) + `,"clock":"boot"}`,
+	} {
+		s.apply([]byte(line))
+	}
+	expectReports(t, r,
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionA, protocol.StatusWaiting, protocol.ReasonTurnEnd},
+	)
 }

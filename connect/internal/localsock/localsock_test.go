@@ -322,7 +322,6 @@ func TestTheDaemonRejectsInvalidAndOversizedMessages(t *testing.T) {
 		`{"session":"ac-abc123","status":"waiting","reason":"bell","prompt":"secret"}`,
 		`{"session":"ac-abc123","status":"idle","at":-1}`,
 		`{"session":"ac-abc123","status":"idle","at":-1,"clock":"mono"}`,
-		`{"session":"ac-abc123","status":"idle","at":5}`,
 		`{"session":"ac-abc123","status":"idle","clock":"mono"}`,
 		`{"session":"ac-abc123","status":"idle","at":5,"clock":"boot"}`,
 		`not json`,

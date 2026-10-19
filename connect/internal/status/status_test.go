@@ -240,14 +240,35 @@ func TestGateAppliesUnorderableHooksInArrivalOrder(t *testing.T) {
 	}
 }
 
+// A thread's reports are ordered whichever session they go to; a stale one
+// records nothing for its session either.
+func TestGateOrdersAThreadAcrossSessions(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	gate := monoGate(&now, 1_000_000)
+	if !gate.AcceptThreadHook("ac-a", "t", mono(100)) || !gate.AcceptThreadHook("ac-b", "t", mono(300)) {
+		t.Fatal("an in-order report was refused")
+	}
+	if gate.AcceptThreadHook("ac-a", "t", mono(200)) {
+		t.Fatal("a report older than the thread's last was accepted")
+	}
+	// The refused report left ac-a's order alone.
+	if !gate.AcceptHook("ac-a", mono(150)) {
+		t.Fatal("a refused report recorded its stamp")
+	}
+	// Unorderable stamps never are stale.
+	if !gate.AcceptThreadHook("ac-a", "t", monoclock.Stamp{}) || !gate.AcceptThreadHook("ac-a", "t", wall(1)) {
+		t.Fatal("an unorderable report was refused")
+	}
+}
+
 func TestGateStaysBounded(t *testing.T) {
 	now := time.Unix(1_000, 0)
 	gate := NewGate(func() time.Time { return now })
 	for i := range 3 * maxTrackedSessions {
-		gate.AcceptHook("ac-"+time.Duration(i).String(), monoclock.Stamp{})
+		gate.AcceptThreadHook("ac-"+time.Duration(i).String(), "t"+time.Duration(i).String(), monoclock.Stamp{})
 		now = now.Add(time.Millisecond)
 	}
-	if len(gate.last) > maxTrackedSessions {
-		t.Fatalf("tracked %d sessions", len(gate.last))
+	if len(gate.last) > maxTrackedSessions || len(gate.threads) > maxTrackedSessions {
+		t.Fatalf("tracked %d sessions, %d threads", len(gate.last), len(gate.threads))
 	}
 }

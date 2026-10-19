@@ -223,7 +223,8 @@ func FromHook(agent Agent, in HookInput) (Update, bool) {
 // the daemon applies it to agent sessions only.
 func Bell() Update { return Update{protocol.StatusWaiting, protocol.ReasonBell} }
 
-// maxTrackedSessions bounds Gate; entries past BellQuietWindow go first.
+// maxTrackedSessions bounds the sessions, and separately the agent threads,
+// Gate orders; entries past BellQuietWindow go first.
 const maxTrackedSessions = 1024
 
 type lastHook struct {
@@ -242,16 +243,18 @@ func (h *lastHook) slot(kind monoclock.Kind) *int64 {
 	return &h.wall
 }
 
-// Gate orders the reports of each session. Agents run hooks in the
-// background, so a later event's hook can reach the daemon first; a hook
-// that started before the last applied one of its clock is stale. A hook
-// without a stamp, or with one that cannot have come from this computer's
-// monotonic clock, is applied in arrival order. A bell right after a hook
-// status does not replace it.
+// Gate orders the reports of each session, and of each agent thread
+// whichever session its reports go to. Agents run hooks in the background,
+// so a later event's hook can reach the daemon first; a hook that started
+// before the last applied one of its clock is stale. A hook without a
+// stamp, or with one that cannot have come from this computer's monotonic
+// clock, is applied in arrival order. A bell right after a hook status does
+// not replace it.
 type Gate struct {
-	mu   sync.Mutex
-	last map[string]lastHook
-	now  func() time.Time
+	mu      sync.Mutex
+	last    map[string]lastHook
+	threads map[string]lastHook
+	now     func() time.Time
 	// clock is the daemon's own reading of the hooks' clock.
 	clock func() monoclock.Stamp
 }
@@ -262,7 +265,7 @@ func NewGate(now func() time.Time) *Gate {
 	if now == nil {
 		now = time.Now
 	}
-	return &Gate{last: map[string]lastHook{}, now: now, clock: monoclock.Now}
+	return &Gate{last: map[string]lastHook{}, threads: map[string]lastHook{}, now: now, clock: monoclock.Now}
 }
 
 // AcceptHook reports whether a hook status of the session whose hook
@@ -272,6 +275,15 @@ func NewGate(now func() time.Time) *Gate {
 // monotonic reading has not reached (another boot or clock domain), is
 // never stale and orders nothing.
 func (g *Gate) AcceptHook(session string, started monoclock.Stamp) bool {
+	return g.AcceptThreadHook(session, "", started)
+}
+
+// AcceptThreadHook is AcceptHook for a report of an agent thread (none when
+// thread is empty): it is also stale when it started before the last
+// accepted report of the thread, whichever session that went to. An
+// accepted report is recorded for both in one step; a stale one changes
+// nothing.
+func (g *Gate) AcceptThreadHook(session, thread string, started monoclock.Stamp) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
@@ -280,30 +292,49 @@ func (g *Gate) AcceptHook(session string, started monoclock.Stamp) bool {
 		own := g.clock()
 		ordered = own.Comparable(started) && started.At <= own.At
 	}
-	prev, seen := g.last[session]
-	if seen && ordered && started.At < *prev.slot(started.Kind) {
+	stale := func(entries map[string]lastHook, id string) bool {
+		h, seen := entries[id]
+		return seen && ordered && started.At < *h.slot(started.Kind)
+	}
+	if stale(g.last, session) || thread != "" && stale(g.threads, thread) {
 		return false
 	}
-	if !seen && len(g.last) >= maxTrackedSessions {
-		for id, h := range g.last {
-			if now.Sub(h.received) >= BellQuietWindow {
-				delete(g.last, id)
-			}
+	record := func(entries map[string]lastHook, id string) {
+		h, seen := entries[id]
+		if !seen {
+			makeRoom(entries, now)
 		}
-		if len(g.last) >= maxTrackedSessions {
-			// Every entry is recent: a flood. Forgetting one only loosens its order.
-			for id := range g.last {
-				delete(g.last, id)
-				break
-			}
+		if ordered {
+			*h.slot(started.Kind) = started.At
 		}
+		h.received = now
+		entries[id] = h
 	}
-	if ordered {
-		*prev.slot(started.Kind) = started.At
+	record(g.last, session)
+	if thread != "" {
+		record(g.threads, thread)
 	}
-	prev.received = now
-	g.last[session] = prev
 	return true
+}
+
+// makeRoom keeps entries below maxTrackedSessions before one more is added:
+// entries past BellQuietWindow go first.
+func makeRoom(entries map[string]lastHook, now time.Time) {
+	if len(entries) < maxTrackedSessions {
+		return
+	}
+	for id, h := range entries {
+		if now.Sub(h.received) >= BellQuietWindow {
+			delete(entries, id)
+		}
+	}
+	if len(entries) >= maxTrackedSessions {
+		// Every entry is recent: a flood. Forgetting one only loosens its order.
+		for id := range entries {
+			delete(entries, id)
+			break
+		}
+	}
 }
 
 // AcceptBell reports whether a bell of the session may set its status: no

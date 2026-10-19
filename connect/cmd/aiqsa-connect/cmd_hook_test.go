@@ -668,3 +668,43 @@ func TestTwoCodexSessionsInOneFolderAreToldApartByTheirScreens(t *testing.T) {
 	runHookArgs(strings.NewReader(`{"session_id":"t-a","hook_event_name":"Stop"}`), "codex")
 	reports.expect(t, hookReport{a, protocol.StatusWaiting, protocol.ReasonTurnEnd})
 }
+
+// A bound thread's prompt that only another session's screen shows (the
+// user pasted the same text there) leaves the thread where it is bound.
+func TestABoundCodexThreadIsNotMovedByAPromptShownOnAnotherScreen(t *testing.T) {
+	server := tmuxtest.New(t)
+	stateDir := shortStateDir(t)
+	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	fake := fakeCodex(t, stateDir)
+	a := startCodexSession(t, server, fake, server.Home, "alpha: rename the config loader")
+	startCodexSession(t, server, fake, server.Home, "beta: rename the config writer")
+	hook := func(thread, event string) {
+		t.Helper()
+		runHookArgs(strings.NewReader(`{"session_id":"`+thread+`","cwd":`+strconv.Quote(server.Home)+`,`+event+`}`), "codex")
+	}
+	hook("t-a", `"hook_event_name":"UserPromptSubmit","prompt":"rename the config loader"`)
+	reports.expect(t, hookReport{a, protocol.StatusRunning, protocol.ReasonInput})
+	hook("t-a", `"hook_event_name":"UserPromptSubmit","prompt":"rename the config writer"`)
+	reports.expect(t, hookReport{a, protocol.StatusRunning, protocol.ReasonInput})
+	hook("t-a", `"hook_event_name":"Stop"`)
+	reports.expect(t, hookReport{a, protocol.StatusWaiting, protocol.ReasonTurnEnd})
+}
+
+// A known limitation, documented in the README: a Codex thread outside the
+// client's sessions whose prompt's first line a Codex session in its folder
+// already shows, before any thread is bound to that session, binds to it.
+func TestAForeignPromptAlreadyShownOnACodexScreenBindsToThatSession(t *testing.T) {
+	server := tmuxtest.New(t)
+	stateDir := shortStateDir(t)
+	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	id := startCodexSession(t, server, fakeCodex(t, stateDir), server.Home, "summarize the release notes")
+	runHookArgs(strings.NewReader(`{"session_id":"foreign","cwd":`+strconv.Quote(server.Home)+`,"hook_event_name":"UserPromptSubmit","prompt":"summarize the release notes"}`), "codex")
+	reports.expect(t, hookReport{id, protocol.StatusRunning, protocol.ReasonInput})
+	// Its session's end unbinds it.
+	runHookArgs(strings.NewReader(`{"session_id":"foreign","hook_event_name":"SessionEnd"}`), "codex")
+	reports.expect(t, hookReport{id, protocol.StatusIdle, ""})
+	runHookArgs(strings.NewReader(`{"session_id":"foreign","hook_event_name":"Stop"}`), "codex")
+	reports.expectNone(t)
+}
