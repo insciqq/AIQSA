@@ -2045,7 +2045,7 @@ describe("Prisma-backed admin repository", () => {
       });
 
       // The installation-wide writes are recorded instead of executed so the shared test database
-      // keeps every session and inbound MCP grant that this test does not own.
+      // keeps every session, inbound MCP grant and Telegram link that this test does not own.
       const recorded: Readonly<{ args: unknown; model: string; operation: string }>[] = [];
       const record = (model: string, operation: string, count: number) =>
         ({ args }: Readonly<{ args: unknown }>) => {
@@ -2061,7 +2061,9 @@ describe("Prisma-backed admin repository", () => {
           inboundMcpOAuthGrant: { updateMany: record("inboundMcpOAuthGrant", "updateMany", 2) },
           inboundMcpOAuthTokenFamily: {
             updateMany: record("inboundMcpOAuthTokenFamily", "updateMany", 3)
-          }
+          },
+          telegramLink: { deleteMany: record("telegramLink", "deleteMany", 4) },
+          telegramLinkCode: { deleteMany: record("telegramLinkCode", "deleteMany", 5) }
         }
       });
 
@@ -2108,7 +2110,9 @@ describe("Prisma-backed admin repository", () => {
           },
           model: "inboundMcpOAuthGrant",
           operation: "updateMany"
-        }
+        },
+        { args: {}, model: "telegramLinkCode", operation: "deleteMany" },
+        { args: {}, model: "telegramLink", operation: "deleteMany" }
       ]);
     });
   });
