@@ -51,6 +51,8 @@ const publicPrefixes = [
   "/api/auth/verify-email",
   "/api/auth/logout",
   "/api/test/auth-mails",
+  // Test mode only (404 otherwise): an update injected as if Telegram's poll returned it.
+  "/api/test/telegram",
   "/api/public-shares",
   "/api/artifact-public",
   // Session-free for the Workspace runner relay only: the route refuses any
