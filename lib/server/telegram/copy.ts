@@ -101,6 +101,18 @@ export function telegramVoiceTranscriptText(transcript: string): string {
   return `🎤 ${transcript}`;
 }
 
+const SCHEDULED_TITLE_MAX_LENGTH = 200;
+
+/** A scheduled task's title as its Telegram delivery heads it: one line, bounded, never empty. */
+export function telegramScheduledTitle(title: string): string {
+  return bounded(title.replace(/[\u0000-\u001f\u007f]+/gu, " "), SCHEDULED_TITLE_MAX_LENGTH) || "Scheduled task";
+}
+
+/** The files of a scheduled result that stay in AIQSA (too many or too large for Telegram). */
+export function telegramScheduledFilesInAiqsaText(count: number): string {
+  return count === 1 ? "1 more file is in AIQSA." : `${count} more files are in AIQSA.`;
+}
+
 /** What the user sees for each reason the bot itself answers; `undefined` for log- or settings-only reasons. */
 const REASON_TEXT: Partial<Record<TelegramReasonCode, string>> = {
   telegram_not_linked: TELEGRAM_COPY.notLinked,
