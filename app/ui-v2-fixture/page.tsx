@@ -226,7 +226,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
     return <ProjectsV2Gallery state={state} />;
   }
   if (query.fixture === "connect") {
-    const state = fixtureState(query.state, ["empty", "list", "pair", "pair-expired", "session"] as const, "list");
+    const state = fixtureState(query.state, ["empty", "list", "pair", "pair-expired", "session", "session-running"] as const, "list");
     const { ConnectV2Gallery } = await import("./_fixtures/ConnectV2Gallery");
     return <ConnectV2Gallery state={state} />;
   }

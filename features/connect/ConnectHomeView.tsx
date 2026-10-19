@@ -8,7 +8,7 @@ import { CONNECT_PRODUCT_NAME } from "./connectText";
 
 export function ConnectPageHeader({ children, title }: Readonly<{ children?: React.ReactNode; title: React.ReactNode }>) {
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-trace-subtle px-3 sm:px-4" data-testid="connect-page-header">
+    <header className="v2-connect-page-header flex h-12 shrink-0 items-center gap-2 border-b border-trace-subtle px-3 sm:px-4" data-testid="connect-page-header">
       <ConnectDrawerButton />
       <h1 className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">{title}</h1>
       {children}

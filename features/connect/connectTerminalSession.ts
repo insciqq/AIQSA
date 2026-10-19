@@ -179,8 +179,19 @@ export class ConnectTerminalSession {
   }
 
   setVisible(visible: boolean): void {
+    const shown = visible && !this.visible;
     this.visible = visible;
     this.sendVisibility(false);
+    // tmux sizes the window for the client used last: a view shown again
+    // sends its size, even unchanged, so the window fits this screen.
+    if (shown) this.resendSize();
+  }
+
+  private resendSize(): void {
+    if (this.disposed || !this.viewId || this.state.kind !== "live") return;
+    this.sentSize = null;
+    const size = this.options.size();
+    this.resize(size.cols, size.rows);
   }
 
   /** The device list's online flag; a computer coming back online reopens an offline view. */

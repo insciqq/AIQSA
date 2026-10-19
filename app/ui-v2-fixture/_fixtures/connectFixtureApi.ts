@@ -143,6 +143,8 @@ export const CONNECT_FIXTURE_SCREEN = [
   `     ${dim("43")} ${green("+")}   if (limited) return tooManyAttempts(limited.retryAfterSeconds);`,
   `     ${dim("44")} ${green("+")}   const body = await readJsonBody(request);`,
   "",
+  `  ${dim("Glyphs: ⎿ ╭─╮ │ ╰─╯ ❯ › ✻ ●")}`,
+  "",
   `${cyan("●")} ${bold("Bash")}(npx vitest run lib/server/auth/login.test.ts)`,
   "",
   `${dim("╭──────────────────────────────────────────────────────────────╮")}`,
@@ -155,6 +157,23 @@ export const CONNECT_FIXTURE_SCREEN = [
   `${dim("│")}   3. No, and tell the agent what to do differently           ${dim("│")}`,
   `${dim("╰──────────────────────────────────────────────────────────────╯")}`
 ].join("\r\n");
+
+/** The choices of the approval on the fixture screen. */
+export const CONNECT_FIXTURE_OPTIONS = [
+  { key: "1", label: "Yes" },
+  { key: "2", label: "Yes, and don't ask again for vitest commands" },
+  { key: "3", label: "No, and tell the agent what to do differently" }
+];
+
+/** Plain text, as the history endpoint answers: earlier work, then the current screen. */
+export function connectFixtureHistory(): string {
+  const earlier = Array.from({ length: 160 }, (_, index) =>
+    index % 8 === 0
+      ? `● Bash(npm run test -- shard ${index / 8 + 1})`
+      : `  ⎿  ✓ lib/server/auth/case-${String(index).padStart(3, "0")}.test.ts (${(index * 7) % 23 + 2} tests) ${(index * 13) % 90 + 10}ms`);
+  const screen = CONNECT_FIXTURE_SCREEN.replace(new RegExp(`${ESC}\\[[0-9;]*m`, "gu"), "").split("\r\n");
+  return [...earlier, "", ...screen].join("\n");
+}
 
 function base64Utf8(text: string): string {
   const bytes = new TextEncoder().encode(text);
@@ -238,6 +257,9 @@ export function installConnectFixtureApi(): void {
         home: "/Users/dana"
       });
     }
+    if (path.endsWith("/options") && method === "GET") return json({ options: CONNECT_FIXTURE_OPTIONS });
+    if (path.endsWith("/history") && method === "GET") return json({ text: connectFixtureHistory() });
+    if (path === "/api/me/catalog") return json({ catalog: { dictation: { available: true, unavailableReason: null } } });
     if (path.endsWith("/sessions") && method === "POST") return json({ sessionId: "ac-new001" }, 201);
     if (path.startsWith("/api/connect/") && method === "DELETE") return new Response(null, { status: 204 });
     return original(input, init);

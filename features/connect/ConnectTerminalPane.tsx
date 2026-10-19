@@ -4,6 +4,7 @@ import { UiV2Button } from "@/components/ui-v2";
 import { CONNECT_PAGE_PATH } from "@/lib/contracts/connect";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { ConnectTerminalInput } from "./connectKeys";
 import {
   ConnectTerminalSession,
   type ConnectViewState,
@@ -20,10 +21,37 @@ const TERMINAL_SCROLLBACK = 5_000;
 /**
  * System monospace fonts carry the box-drawing and block glyphs agents draw
  * with; the bundled code font is subset to Latin and Cyrillic, and glyphs
- * falling back to another font break the terminal grid.
+ * falling back to another font break the terminal grid. The symbols font of
+ * the terminal module comes last, for the technical symbols (`⎿`) and
+ * dingbats (`❯`) that a system without them would show as empty boxes.
  */
 const TERMINAL_FONT_FAMILY =
-  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace";
+  "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'DejaVu Sans Mono', 'Liberation Mono'";
+/** Glyphs the symbols font is loaded for before the terminal measures its cells. */
+const TERMINAL_SYMBOL_SAMPLE = "⎿❯";
+const FONT_LOAD_WAIT_MS = 1_500;
+/** Phones, also in landscape, get the smaller terminal font. */
+const SMALL_TERMINAL_QUERY = "(max-width: 639px), (max-height: 500px)";
+
+function terminalFontFamily(symbols: string | undefined): string {
+  return `${TERMINAL_FONT_FAMILY}, ${symbols ? `${symbols}, ` : ""}monospace`;
+}
+
+/** Waits briefly for the symbols font, so the first screen measures with it; a slow network does not hold the terminal. */
+async function loadSymbolsFont(family: string | undefined, fontSize: number): Promise<void> {
+  if (!family || typeof document === "undefined" || !document.fonts?.load) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    document.fonts.load(`${fontSize}px ${family}`, TERMINAL_SYMBOL_SAMPLE).catch(() => undefined),
+    new Promise<void>((resolve) => { timer = setTimeout(resolve, FONT_LOAD_WAIT_MS); })
+  ]);
+  clearTimeout(timer);
+}
+
+/** What the touch controls of a live terminal use: its input. */
+export type ConnectTerminalHandle = Readonly<{
+  input: ConnectTerminalInput;
+}>;
 
 function cssValue(name: string, fallback: string): string {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -159,6 +187,9 @@ export function ConnectTerminalPane({
   deviceName,
   deviceOnline,
   lastSeenAt,
+  onCtrlChange,
+  onHandle,
+  onViewState,
   sessionId,
   transport
 }: Readonly<{
@@ -167,6 +198,11 @@ export function ConnectTerminalPane({
   /** From the device list; null while it loads. */
   deviceOnline: boolean | null;
   lastSeenAt: string | null;
+  /** The key bar's sticky Ctrl was armed or used up. */
+  onCtrlChange?(armed: boolean): void;
+  /** The terminal's input for the touch controls, once it exists; null when it is gone. */
+  onHandle?(handle: ConnectTerminalHandle | null): void;
+  onViewState?(state: ConnectViewState): void;
   sessionId: string;
   transport?: ConnectViewTransport;
 }>) {
@@ -176,27 +212,30 @@ export function ConnectTerminalPane({
   const focusRef = useRef<(() => void) | null>(null);
   const deviceOnlineRef = useRef(deviceOnline);
   const leaveRef = useRef(leave);
+  const callbacksRef = useRef({ onCtrlChange, onHandle, onViewState });
   const [state, setState] = useState<ConnectViewState>({ kind: "connecting" });
   const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     deviceOnlineRef.current = deviceOnline;
     leaveRef.current = leave;
+    callbacksRef.current = { onCtrlChange, onHandle, onViewState };
     if (deviceOnline !== null) sessionRef.current?.setDeviceOnline(deviceOnline);
   });
 
   useEffect(() => {
     let disposed = false;
     let teardown: (() => void) | null = null;
-    void loadConnectXterm().then(async ({ FitAddon, Terminal }) => {
-      const fontSize = window.matchMedia?.("(max-width: 639px)").matches ? 13 : 14;
+    void loadConnectXterm().then(async ({ CONNECT_TERMINAL_SYMBOLS_FONT_FAMILY: symbols, FitAddon, Terminal }) => {
+      const fontSize = window.matchMedia?.(SMALL_TERMINAL_QUERY).matches ? 13 : 14;
+      await loadSymbolsFont(symbols, fontSize);
       const host = hostRef.current;
       if (disposed || !host) return;
       const terminal = new Terminal({
         allowProposedApi: false,
         cursorBlink: true,
         disableStdin: true,
-        fontFamily: TERMINAL_FONT_FAMILY,
+        fontFamily: terminalFontFamily(symbols),
         fontSize,
         linkHandler,
         scrollback: TERMINAL_SCROLLBACK,
@@ -217,6 +256,7 @@ export function ConnectTerminalPane({
         onState: (next) => {
           terminal.options.disableStdin = next.kind !== "live";
           setState(next);
+          callbacksRef.current.onViewState?.(next);
           if (next.kind === "live") terminal.focus();
           if (next.kind === "left") leaveRef.current(next.reason);
         },
@@ -230,12 +270,21 @@ export function ConnectTerminalPane({
       });
       sessionRef.current = session;
       focusRef.current = () => terminal.focus();
+      const input = new ConnectTerminalInput({
+        modes: () => ({
+          applicationCursorKeys: terminal.modes.applicationCursorKeysMode,
+          bracketedPaste: terminal.modes.bracketedPasteMode
+        }),
+        onCtrlChange: (armed) => callbacksRef.current.onCtrlChange?.(armed),
+        send: (data) => session.input(data)
+      });
       const subscriptions = [
-        terminal.onData((data) => session.input(data)),
+        // Typed keys pass the sticky Ctrl of the key bar.
+        terminal.onData((data) => input.typed(data)),
         terminal.onResize(({ cols, rows }) => session.resize(cols, rows))
       ];
       let resizeTimer: ReturnType<typeof setTimeout> | undefined;
-      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      const refit = () => {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
           try {
@@ -244,8 +293,14 @@ export function ConnectTerminalPane({
             // A detached or zero-sized box keeps the previous size.
           }
         }, CONNECT_RESIZE_DEBOUNCE_MS);
-      });
+      };
+      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(refit);
       observer?.observe(host);
+      // A keyboard over the page or a turned phone changes the box without
+      // always resizing it in a way the observer sees first.
+      const viewport = window.visualViewport;
+      viewport?.addEventListener("resize", refit);
+      window.addEventListener("orientationchange", refit);
       const visibility = () => session.setVisible(pageVisible());
       document.addEventListener("visibilitychange", visibility);
       window.addEventListener("focus", visibility);
@@ -253,9 +308,13 @@ export function ConnectTerminalPane({
       session.setVisible(pageVisible());
       if (deviceOnlineRef.current !== null) session.setDeviceOnline(deviceOnlineRef.current);
       session.start();
+      callbacksRef.current.onHandle?.({ input });
       teardown = () => {
+        callbacksRef.current.onHandle?.(null);
         clearTimeout(resizeTimer);
         observer?.disconnect();
+        viewport?.removeEventListener("resize", refit);
+        window.removeEventListener("orientationchange", refit);
         document.removeEventListener("visibilitychange", visibility);
         window.removeEventListener("focus", visibility);
         window.removeEventListener("blur", visibility);
