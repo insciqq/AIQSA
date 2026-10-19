@@ -32,6 +32,10 @@
   --v2-dark-color-warn: #dfbb71;
   --v2-dark-color-ok: #8dcb9c;
   --v2-dark-color-scrim: rgb(0 0 0 / 0.55);
+  /* Dark separates rail, list and canvas by tonal steps, so pane dividers
+     vanish; an off switch shows a light thumb (3:1 on the grey track). */
+  --v2-dark-color-pane-divider: transparent;
+  --v2-dark-color-switch-thumb-off: var(--v2-dark-color-text2);
   /* Categorical chart series in fixed order (validated for colour-vision
    * separation per theme surface); never status and never controls. */
   --v2-dark-color-chart-1: #3987e5;
@@ -73,6 +77,8 @@
   --v2-light-color-warn: #866319;
   --v2-light-color-ok: #2d7446;
   --v2-light-color-scrim: rgb(0 0 0 / 0.32);
+  --v2-light-color-pane-divider: var(--v2-light-color-border);
+  --v2-light-color-switch-thumb-off: var(--v2-light-color-surface);
   --v2-light-color-chart-1: #2a78d6;
   --v2-light-color-chart-2: #eb6834;
   --v2-light-color-chart-3: #1baf7a;
@@ -169,6 +175,8 @@
   --v2-color-warn: var(--v2-light-color-warn);
   --v2-color-ok: var(--v2-light-color-ok);
   --v2-color-scrim: var(--v2-light-color-scrim);
+  --v2-color-pane-divider: var(--v2-light-color-pane-divider);
+  --v2-color-switch-thumb-off: var(--v2-light-color-switch-thumb-off);
   --v2-color-chart-1: var(--v2-light-color-chart-1);
   --v2-color-chart-2: var(--v2-light-color-chart-2);
   --v2-color-chart-3: var(--v2-light-color-chart-3);
@@ -214,6 +222,8 @@
   --v2-color-warn: var(--v2-dark-color-warn);
   --v2-color-ok: var(--v2-dark-color-ok);
   --v2-color-scrim: var(--v2-dark-color-scrim);
+  --v2-color-pane-divider: var(--v2-dark-color-pane-divider);
+  --v2-color-switch-thumb-off: var(--v2-dark-color-switch-thumb-off);
   --v2-color-chart-1: var(--v2-dark-color-chart-1);
   --v2-color-chart-2: var(--v2-dark-color-chart-2);
   --v2-color-chart-3: var(--v2-dark-color-chart-3);
@@ -260,6 +270,8 @@
     --v2-color-warn: var(--v2-dark-color-warn);
     --v2-color-ok: var(--v2-dark-color-ok);
     --v2-color-scrim: var(--v2-dark-color-scrim);
+    --v2-color-pane-divider: var(--v2-dark-color-pane-divider);
+    --v2-color-switch-thumb-off: var(--v2-dark-color-switch-thumb-off);
     --v2-color-chart-1: var(--v2-dark-color-chart-1);
     --v2-color-chart-2: var(--v2-dark-color-chart-2);
     --v2-color-chart-3: var(--v2-dark-color-chart-3);

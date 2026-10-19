@@ -277,8 +277,8 @@
 
 /*
  * Header model selector (operator decision 2026-09-02): 34px, radius 10,
- * border2 on surface; hover fills; open/focus takes the accent border and
- * ring like the composer field. The name ellipsizes after 220px. Locked by an
+ * border2 on surface; hover fills; open takes the ink border, with no ring
+ * or glow. The name ellipsizes after 220px. Locked by an
  * Assistant it reads in text2 with a lock instead of the chevron.
  */
 .v2-live-model {
@@ -311,7 +311,6 @@
 
 .v2-live-model[aria-expanded="true"] {
   border-color: var(--v2-color-accent);
-  box-shadow: 0 0 0 3px var(--v2-color-accent-dim);
 }
 
 .v2-live-model:disabled {
@@ -329,6 +328,7 @@
 .v2-live-model-name {
   min-width: 0;
   max-width: 13.75rem;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -430,7 +430,7 @@
   background: var(--v2-color-surface);
   font: inherit;
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.2;
   white-space: nowrap;
   cursor: pointer;
@@ -446,7 +446,6 @@
 
 .v2-live-assistant[aria-expanded="true"] {
   border-color: var(--v2-color-accent);
-  box-shadow: 0 0 0 3px var(--v2-color-accent-dim);
 }
 
 /* A blocking binding's label ("Assistant archived") or state word is never
@@ -668,6 +667,7 @@
 
 .v2-live-title-text {
   min-width: 0;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1228,9 +1228,11 @@
   font: inherit;
 }
 
+/* Field focus: the border steps to text3 under a soft 2px ring. */
 .v2-run-setup-body :is(input, select):focus {
-  border-color: var(--v2-color-accent);
-  box-shadow: 0 0 0 2px var(--v2-color-accent-dim);
+  border-color: var(--v2-color-text3);
+  outline: 2px solid color-mix(in srgb, var(--v2-color-text) 45%, transparent);
+  outline-offset: 2px;
 }
 
 /* Parameters fixed by the Assistant stay readable, not editable. */
@@ -1297,7 +1299,7 @@
   width: 0.75rem;
   height: 0.75rem;
   border-radius: 50%;
-  background: var(--v2-color-surface);
+  background: var(--v2-color-switch-thumb-off);
   transition: transform var(--v2-motion-fast);
 }
 
@@ -1306,6 +1308,7 @@
 }
 
 .v2-run-setup-switches button[aria-checked="true"] .v2-run-setup-switch-track::after {
+  background: var(--v2-color-accent-ink);
   transform: translateX(0.75rem);
 }
 
