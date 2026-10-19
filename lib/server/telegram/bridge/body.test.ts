@@ -112,6 +112,23 @@ describe("Telegram send body", () => {
   });
 });
 
+describe("Telegram send body time zone", () => {
+  it("sends the user's browser zone in ordinary and Assistant chats, and omits it when none is known", () => {
+    const catalog = fakeCatalog();
+    const ordinary = { admissionId: "tg-1-90", catalog, content: TEXT, model: catalog.models[0]!, settings: SETTINGS,
+      target: { assistantId: null, kind: "new" } } as const;
+    expect(buildTelegramSendBody({ ...ordinary, timeZone: "Europe/Moscow" })).toMatchObject({ timeZone: "Europe/Moscow" });
+    expect(buildTelegramSendBody({ ...ordinary, timeZone: null })).not.toHaveProperty("timeZone");
+    expect(buildTelegramSendBody(ordinary)).not.toHaveProperty("timeZone");
+
+    const assistant = { ...ordinary, model: null, target: { activeLeafMessageId: "answer-3", assistantBound: true, kind: "existing" } } as const;
+    const bound = buildTelegramSendBody({ ...assistant, timeZone: "Asia/Tokyo" });
+    expect(Object.keys(bound).sort()).toEqual(["admissionId", "content", "expectedActiveLeafId", "timeZone", "workspace"]);
+    expect(bound.timeZone).toBe("Asia/Tokyo");
+    expect(buildTelegramSendBody(assistant)).not.toHaveProperty("timeZone");
+  });
+});
+
 describe("Telegram model choice", () => {
   const second = fakeCatalogModel({ displayName: "Second", modelId: "model-second", provider: "connection-second" });
   const catalog = fakeCatalog({ models: [fakeCatalogModel(), second] });

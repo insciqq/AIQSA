@@ -153,7 +153,7 @@ function log(fields: Readonly<{ code: string; error?: unknown; outcome: "failed"
 }
 
 export function createTelegramAdmission(deps: Readonly<{
-  gateway: Pick<TelegramRunGateway, "findChat" | "loadCatalog" | "runState" | "send">;
+  gateway: Pick<TelegramRunGateway, "findChat" | "loadCatalog" | "runState" | "send" | "timeZone">;
   runLinks: Pick<TelegramRunLinkStore, "create">;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -170,7 +170,9 @@ export function createTelegramAdmission(deps: Readonly<{
 
   type Prepared = Readonly<{ body: Record<string, unknown>; chatId: string }> | Readonly<{ refusal: TelegramSendRefusal }>;
 
-  async function prepare(input: TelegramSendInput, catalog: TelegramRunCatalog, admissionId: string, newChat: string): Promise<Prepared> {
+  async function prepare(
+    input: TelegramSendInput, catalog: TelegramRunCatalog, timeZone: string | null, admissionId: string, newChat: string
+  ): Promise<Prepared> {
     const { link } = input;
     let target: TelegramSendTarget;
     let chatId: string;
@@ -200,7 +202,7 @@ export function createTelegramAdmission(deps: Readonly<{
         admissionId, catalog, content: input.contentBlocks, model,
         settings: { agentEnabled: link.agentEnabled, searchEnabled: link.searchEnabled, workspaceEnabled: link.workspaceEnabled },
         ...(input.systemTurn ? { systemTurn: input.systemTurn } : {}),
-        target
+        target, timeZone
       }),
       chatId
     };
@@ -311,13 +313,20 @@ export function createTelegramAdmission(deps: Readonly<{
   }
 
   return async function sendTelegramMessage(input) {
-    const catalog = await deps.gateway.loadCatalog(input.link.userId);
+    const [catalog, timeZone] = await Promise.all([
+      deps.gateway.loadCatalog(input.link.userId),
+      // Only a hint: an unreadable zone leaves the run on the UTC fallback, never refuses it.
+      deps.gateway.timeZone(input.link.userId).catch((error: unknown) => {
+        log({ code: "telegram_time_zone_unavailable", error, outcome: "skipped" });
+        return null;
+      })
+    ]);
     if (!catalog) return { kind: "refused", refusal: { code: "unauthorized", status: 401 } };
     const admissionId = `tg-${input.link.botId}-${input.updateId}`;
     const draftId = newDraftId();
     const newChat = newChatId();
     for (let attempt = 0; ; attempt += 1) {
-      const prepared = await prepare(input, catalog, admissionId, newChat);
+      const prepared = await prepare(input, catalog, timeZone, admissionId, newChat);
       if ("refusal" in prepared) return { kind: "refused", refusal: prepared.refusal };
       const response = await deps.gateway.send({ body: prepared.body, chatId: prepared.chatId, userId: input.link.userId });
       const admission = await classify(response, input, prepared.chatId, draftId);
