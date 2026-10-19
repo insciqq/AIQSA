@@ -2,6 +2,7 @@ import { getAuthConfig } from "@/lib/server/auth/config";
 import { authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
 import { SESSION_COOKIE_NAME } from "@/lib/server/auth/session";
+import { isConnectEnabled } from "@/lib/server/connect/policy";
 import { prisma } from "@/lib/server/prisma";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -12,6 +13,8 @@ export type ChatViewer = Readonly<{
   accountEmail: string | null;
   accountId: string;
   adminEntryVisible: boolean;
+  /** The installation allows AIQSA Connect: the mode's entry shows and `/connect` opens. */
+  connectEnabled: boolean;
 }>;
 
 export type ChatPageSearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -33,7 +36,8 @@ export const loadChatViewer = cache(async (): Promise<ChatViewer | null> => {
     accountDisplayName: user.displayName,
     accountEmail: user.email,
     accountId: session.userId,
-    adminEntryVisible: user.role === "admin"
+    adminEntryVisible: user.role === "admin",
+    connectEnabled: await isConnectEnabled()
   };
 });
 

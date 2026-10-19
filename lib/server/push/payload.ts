@@ -1,5 +1,6 @@
 import { answerReviewStopCopy } from "../../contracts/answerReviews";
 import type { BrowserPushMessage } from "../../contracts/browserPush";
+import { connectSessionPath, type ConnectSessionStatus } from "../../contracts/connect";
 import { scheduledTaskOutcomeCopy, scheduledTaskSourceLines } from "../scheduledTasks/notifications";
 import type { BrowserPushEvent } from "./store";
 
@@ -55,6 +56,30 @@ export function browserPushMessage(event: BrowserPushEvent): BrowserPushMessage 
     tag: event.chatId ? `aiqsa-chat-${event.chatId}` : "aiqsa-scheduled",
     title: cleanTitle(event.title, "Scheduled task"),
     url: event.chatId ? chatPath(event.chatId) : "/scheduled",
+    v: 1
+  };
+}
+
+/** The AIQSA Connect session statuses that ask for the owner's attention. */
+export type ConnectAttentionStatus = Extract<ConnectSessionStatus, "needs_approval" | "waiting">;
+
+/**
+ * The content-free notification that an agent in an AIQSA Connect session
+ * needs its owner: the session title and fixed copy, never terminal
+ * content, commands or prompts. A newer notice of the session replaces the
+ * previous one.
+ */
+export function connectPushMessage(input: Readonly<{
+  deviceId: string;
+  sessionId: string;
+  sessionTitle: string;
+  status: ConnectAttentionStatus;
+}>): BrowserPushMessage {
+  return {
+    body: input.status === "needs_approval" ? "Needs approval" : "Waiting for you",
+    tag: `aiqsa-connect-${input.deviceId}-${input.sessionId}`,
+    title: cleanTitle(input.sessionTitle, "AIQSA Connect"),
+    url: connectSessionPath(input.deviceId, input.sessionId),
     v: 1
   };
 }

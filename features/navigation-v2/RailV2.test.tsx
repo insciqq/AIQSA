@@ -93,6 +93,30 @@ describe("Control Center entries", () => {
   });
 });
 
+describe("AIQSA Connect entry", () => {
+  it("opens the mode after Studio only while the installation allows it", () => {
+    const { rerender } = render(
+      <RailV2 accountLabel="viewer@example.test" active="chats" onChats={vi.fn()} onLibrary={vi.fn()} onNewChat={vi.fn()} />
+    );
+    const rail = screen.getByTestId("workspace-rail");
+    expect(within(rail).queryByRole("link", { name: "AIQSA Connect" })).toBeNull();
+    rerender(
+      <RailV2
+        accountLabel="viewer@example.test"
+        active="chats"
+        connectEntryVisible
+        onChats={vi.fn()}
+        onLibrary={vi.fn()}
+        onNewChat={vi.fn()}
+      />
+    );
+    const entry = within(rail).getByRole("link", { name: "AIQSA Connect" });
+    expect(entry).toHaveAttribute("href", "/connect");
+    expect(entry).toHaveAttribute("data-tooltip", "AIQSA Connect");
+    expect(within(rail).getByRole("button", { name: "Studio" }).nextElementSibling).toBe(entry);
+  });
+});
+
 describe("Account menu sign-out", () => {
   it("names the viewer's account so its browser drafts are cleared", async () => {
     render(<RailV2 accountId="viewer-1" accountLabel="viewer@example.test" active="chats" onChats={vi.fn()} onNewChat={vi.fn()} />);

@@ -1,0 +1,8 @@
+{
+  "pairingId": "8F14E45F-CEEA-4672-9B5E-0F3A2D1C4B33",
+  "userCode": "BCDF-2345",
+  "verificationUri": "https://ai.example.com/connect/pair?code=BCDF-2345",
+  "pollSecret": "Zx9_-Zx9_-Zx9_-Zx9_-Zx9_-Zx9_-Zx9_-Zx9_-Zx9",
+  "expiresAt": "2026-10-19T10:25:30.000Z",
+  "intervalSeconds": 2
+}

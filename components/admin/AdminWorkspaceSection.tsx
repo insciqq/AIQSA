@@ -28,7 +28,8 @@ function runtimeDetail(policy: WorkspacePolicyWire): string {
   return "The runner, pinned image, and virtualization checks are ready.";
 }
 
-function PolicyToggle({
+/** One installation policy switch with its consequence line. */
+export function PolicyToggle({
   checked,
   description,
   disabled,

@@ -1,0 +1,6 @@
+{
+  "name": "Work laptop",
+  "hostname": "laptop.local",
+  "os": "linux",
+  "arch": "amd64"
+}

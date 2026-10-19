@@ -1,0 +1,615 @@
+/* AIQSA Connect: machine list, install steps, pairing and the session terminal. */
+
+.v2-connect-device {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.v2-connect-online-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 9999px;
+  background: var(--v2-color-text3);
+  opacity: 0.6;
+}
+
+.v2-connect-online-dot[data-online] {
+  background: var(--v2-color-ok);
+  opacity: 1;
+}
+
+.v2-connect-session-row {
+  display: flex;
+  min-width: 0;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem 0.375rem 1.5rem;
+  border-radius: var(--v2-radius-s);
+  color: inherit;
+  text-decoration: none;
+}
+
+.v2-connect-session-row:hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-connect-session-row[aria-current="page"] {
+  background: var(--v2-color-active);
+}
+
+.v2-connect-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 0.0625rem 0.4375rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: 9999px;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+  white-space: nowrap;
+}
+
+.v2-connect-status[data-status="running"] {
+  color: var(--v2-color-text2);
+}
+
+.v2-connect-status[data-status="waiting"] {
+  border-color: var(--v2-color-border2);
+  color: var(--v2-color-text);
+}
+
+.v2-connect-status[data-status="needs_approval"] {
+  border-color: transparent;
+  background: var(--v2-color-accent-dim);
+  color: var(--v2-color-accent-text);
+  font-weight: 600;
+}
+
+.v2-connect-alert {
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid var(--v2-color-danger);
+  border-radius: 0 var(--v2-radius-s) var(--v2-radius-s) 0;
+  background: color-mix(in srgb, var(--v2-color-danger) 10%, transparent);
+  color: var(--v2-color-danger);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+.v2-connect-link {
+  color: var(--v2-color-accent-text);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.v2-connect-empty {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.v2-connect-step {
+  display: flex;
+  min-width: 0;
+  gap: 0.875rem;
+}
+
+.v2-connect-step-number {
+  display: grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: 9999px;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-connect-command {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+}
+
+.v2-connect-command > pre {
+  min-width: 0;
+  flex: 1 1 18rem;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  overflow-x: auto;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-code-bg);
+  color: var(--v2-color-text);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.375rem;
+  user-select: text;
+}
+
+.v2-connect-command > p {
+  flex-basis: 100%;
+}
+
+.v2-connect-field {
+  display: grid;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.v2-connect-field-label {
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-connect-input {
+  min-height: 2.5rem;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  font-size: 0.875rem;
+  user-select: text;
+}
+
+.v2-connect-input:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 1px;
+}
+
+.v2-connect-input[aria-invalid="true"] {
+  border-color: var(--v2-color-danger);
+}
+
+.v2-connect-recent {
+  display: flex;
+  max-height: 9.5rem;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  overflow-y: auto;
+}
+
+.v2-connect-recent-item {
+  max-width: 100%;
+  padding: 0.25rem 0.625rem;
+  overflow: hidden;
+  border: 1px solid var(--v2-color-border);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--v2-color-text2);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-connect-recent-item:hover {
+  background: var(--v2-color-hover);
+  color: var(--v2-color-text);
+}
+
+.v2-connect-recent-item[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--v2-color-accent-dim);
+  color: var(--v2-color-accent-text);
+}
+
+.v2-connect-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface2);
+}
+
+.v2-connect-segmented > button {
+  min-height: 2.25rem;
+  padding: 0 0.5rem;
+  border: 0;
+  border-radius: calc(var(--v2-radius-s) - 0.125rem);
+  background: transparent;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.v2-connect-segmented > button[aria-checked="true"] {
+  background: var(--v2-color-surface);
+  box-shadow: 0 0 0 1px var(--v2-color-border2);
+  color: var(--v2-color-text);
+  font-weight: 600;
+}
+
+.v2-connect-facts {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface);
+}
+
+.v2-connect-facts > div {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 9rem) minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.875rem;
+}
+
+.v2-connect-facts > div + div {
+  border-top: 1px solid var(--v2-color-border);
+}
+
+.v2-connect-facts dt {
+  color: var(--v2-color-text3);
+}
+
+.v2-connect-facts dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text);
+}
+
+/* The terminal surface stays dark in every theme: agents and shells pick
+   their colors for a dark background. */
+.v2-connect-terminal {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  background: var(--v2-dark-color-code-bg);
+}
+
+.v2-connect-terminal-host {
+  position: absolute;
+  inset: 0.5rem max(0.25rem, env(safe-area-inset-right)) 0.25rem max(0.75rem, env(safe-area-inset-left));
+}
+
+@media (max-width: 639px), (max-height: 500px) {
+  .v2-connect-terminal-host {
+    inset: 0.25rem max(0.125rem, env(safe-area-inset-right)) 0.125rem max(0.375rem, env(safe-area-inset-left));
+  }
+}
+
+.v2-connect-terminal-host .xterm {
+  height: 100%;
+}
+
+/* xterm.css paints the viewport black; the rows below the last full one show it. */
+.v2-connect-terminal-host .xterm .xterm-viewport {
+  background-color: var(--v2-dark-color-code-bg);
+}
+
+.v2-connect-terminal-overlay {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  display: grid;
+  padding: 1rem;
+  place-items: center;
+  background: rgb(8 11 17 / 0.55);
+}
+
+.v2-connect-terminal-overlay[data-state="connecting"] {
+  background: transparent;
+}
+
+.v2-connect-terminal-overlay-card {
+  display: grid;
+  max-width: 28rem;
+  justify-items: start;
+  gap: 0.75rem;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--v2-dark-color-border2);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-dark-color-surface);
+  box-shadow: var(--v2-dark-shadow-overlay);
+  color: var(--v2-dark-color-text);
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+}
+
+.v2-connect-terminal-overlay-card .v2-connect-link {
+  color: var(--v2-dark-color-accent-text);
+}
+
+/* Over the top rows of a live terminal: the user reads the line below it before typing on. */
+.v2-connect-terminal-notice {
+  position: absolute;
+  z-index: 5;
+  top: 0.5rem;
+  right: 0.75rem;
+  left: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--v2-dark-color-warn);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-dark-color-surface);
+  box-shadow: var(--v2-dark-shadow-overlay);
+  color: var(--v2-dark-color-text);
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+}
+
+.v2-connect-terminal-notice p {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+/* Notch and home indicator: the mode's own shell sits inside the safe area. */
+.v2-connect-shell {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-left: env(safe-area-inset-left);
+}
+
+/* Under the terminal: answer buttons, the text field and the key bar. */
+.v2-connect-session-controls {
+  display: grid;
+  flex: none;
+  gap: 0.375rem;
+  padding: 0.375rem max(0.5rem, env(safe-area-inset-right)) max(0.375rem, env(safe-area-inset-bottom))
+    max(0.5rem, env(safe-area-inset-left));
+  border-top: 1px solid var(--v2-color-border);
+  background: var(--v2-color-canvas);
+}
+
+.v2-connect-session-controls:empty {
+  display: none;
+}
+
+/* The keyboard covers the home indicator: no extra bottom space then. */
+.v2-connect-session[data-keyboard] .v2-connect-session-controls {
+  padding-bottom: 0.375rem;
+}
+
+/* Ten keys share the row by their labels' widths, so ⇧Tab and Ctrl fit a phone. */
+.v2-connect-keybar {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.v2-connect-keybar > .v2-connect-key {
+  flex: 1 0 auto;
+  padding: 0 0.3125rem;
+}
+
+.v2-connect-key,
+.v2-connect-answer {
+  min-width: 0;
+  min-height: 2.75rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.v2-connect-key {
+  padding: 0;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.v2-connect-key:not(:disabled):hover,
+.v2-connect-answer:not(:disabled):hover {
+  background: var(--v2-color-hover);
+}
+
+.v2-connect-key:not(:disabled):active,
+.v2-connect-answer:not(:disabled):active {
+  background: var(--v2-color-active);
+}
+
+.v2-connect-key[aria-pressed="true"] {
+  border-color: var(--v2-color-accent);
+  background: var(--v2-color-accent-dim);
+  color: var(--v2-color-accent-text);
+  font-weight: 600;
+}
+
+.v2-connect-key:disabled,
+.v2-connect-answer:disabled {
+  color: var(--v2-color-text3);
+  cursor: not-allowed;
+}
+
+.v2-connect-answers {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.v2-connect-answer {
+  display: inline-flex;
+  max-width: 100%;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.875rem;
+  border-color: var(--v2-color-accent);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.v2-connect-answer-key {
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  place-items: center;
+  border-radius: 9999px;
+  background: var(--v2-color-accent-dim);
+  color: var(--v2-color-accent-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-connect-answer-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-connect-answers-status {
+  padding: 0.625rem 0.25rem;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+}
+
+.v2-connect-compose {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+}
+
+.v2-connect-compose-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  gap: 0.375rem;
+}
+
+/* 16px text: iOS zooms the page into smaller fields. */
+.v2-connect-compose-field {
+  min-width: 0;
+  min-height: 2.75rem;
+  max-height: 7.5rem;
+  flex: 1 1 auto;
+  padding: 0.625rem 0.75rem;
+  resize: none;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface);
+  color: var(--v2-color-text);
+  font-size: 1rem;
+  line-height: 1.375rem;
+  user-select: text;
+}
+
+.v2-connect-compose-field:focus-visible {
+  outline: 2px solid var(--v2-color-accent);
+  outline-offset: 1px;
+}
+
+.v2-connect-compose-field::placeholder {
+  color: var(--v2-color-text3);
+}
+
+.v2-connect-compose .v2-icon-button {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: none;
+}
+
+.v2-connect-compose-send.v2-icon-button:not(:disabled) {
+  background: var(--v2-color-accent);
+  color: var(--v2-color-accent-ink);
+}
+
+.v2-connect-compose-send.v2-icon-button:disabled {
+  color: var(--v2-color-text3);
+}
+
+.v2-connect-compose .v2-composer-dictation {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.v2-connect-compose .v2-composer-dictation .v2-icon-button:disabled {
+  color: var(--v2-color-text3);
+  cursor: not-allowed;
+}
+
+.v2-connect-compose .v2-composer-dictation-stop:not(:disabled) {
+  color: var(--v2-color-danger);
+}
+
+.v2-connect-compose .v2-composer-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+  color: var(--v2-color-danger);
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+.v2-connect-compose .v2-composer-status button {
+  min-height: 2rem;
+  color: var(--v2-color-text2);
+  text-decoration: underline;
+}
+
+/* A phone on its side: the answers take one row, the text field and the key
+   bar share the next, and while the keyboard is up the header steps aside so
+   the terminal keeps some rows. */
+@media (max-height: 500px) and (min-width: 600px) {
+  .v2-connect-session-controls {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 0.375rem 0.5rem;
+    padding-top: 0.3125rem;
+  }
+
+  .v2-connect-session-controls > .v2-connect-answers {
+    grid-column: 1 / -1;
+    flex-wrap: nowrap;
+  }
+
+  .v2-connect-answer {
+    min-height: 2.5rem;
+    flex: 1 1 0;
+  }
+
+  .v2-connect-keybar > .v2-connect-key {
+    min-width: 2.375rem;
+  }
+
+  .v2-connect-session[data-keyboard] .v2-connect-page-header {
+    display: none;
+  }
+}
+
+.v2-connect-history {
+  min-height: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  border-radius: var(--v2-radius-s);
+  background: var(--v2-dark-color-code-bg);
+  color: var(--v2-dark-color-text);
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  user-select: text;
+  white-space: pre-wrap;
+}

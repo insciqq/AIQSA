@@ -2,6 +2,7 @@
 
 import { useControlCenterHref } from "@/components/app-shell/chatRoute";
 import { UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
+import { CONNECT_PAGE_PATH } from "@/lib/contracts/connect";
 import { AccountMenuV2 } from "./AccountMenuV2";
 import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
 import { AdminAttentionDot } from "./AdminAttentionDot";
@@ -57,6 +58,7 @@ export function RailV2({
   accountLabel,
   active,
   adminEntryVisible = false,
+  connectEntryVisible = false,
   navigationBusy = false,
   onChats,
   onLibrary,
@@ -69,6 +71,8 @@ export function RailV2({
   accountLabel?: string | null;
   active: RailSectionV2;
   adminEntryVisible?: boolean;
+  /** AIQSA Connect is on for this installation: its mode opens as its own page. */
+  connectEntryVisible?: boolean;
   navigationBusy?: boolean;
   onChats(): void;
   onLibrary?(): void;
@@ -91,6 +95,17 @@ export function RailV2({
         ) : null}
         {onLibrary ? (
           <RailButton disabled={navigationBusy} active={active === "library"} icon="studio" label="Studio" onClick={onLibrary} />
+        ) : null}
+        {connectEntryVisible ? (
+          <a
+            className="v2-rail-button v2-focusable"
+            href={CONNECT_PAGE_PATH}
+            aria-label="AIQSA Connect"
+            data-tooltip="AIQSA Connect"
+            data-tooltip-side="right"
+          >
+            <UiV2Icon name="terminal" />
+          </a>
         ) : null}
       </div>
       <div className="v2-rail-group v2-rail-bottom">
