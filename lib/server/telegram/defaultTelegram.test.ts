@@ -17,6 +17,9 @@ import { getDefaultTelegram, isTelegramAvailableForUser, startDefaultTelegram } 
 
 afterEach(async () => {
   await getDefaultTelegram().poller.stop();
+  // The chat bridge's handlers and recovery sweeps leave with the services.
+  (globalThis as { __aiqsaTelegramChatBridge?: { unregister(): void } }).__aiqsaTelegramChatBridge?.unregister();
+  delete (globalThis as { __aiqsaTelegramChatBridge?: unknown }).__aiqsaTelegramChatBridge;
   delete (globalThis as { __aiqsaTelegram?: unknown }).__aiqsaTelegram;
   delete (globalThis as { __aiqsaTelegramStarted?: unknown }).__aiqsaTelegramStarted;
 });

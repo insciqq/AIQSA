@@ -8,18 +8,25 @@ import type { TelegramRunEvent, TelegramRunEventContext } from "./events";
 import { publishTelegramDelivery } from "./runObserver";
 
 /**
- * Deliveries a restart interrupted (D-08). Runs linked to Telegram before
- * this process started are found by their `TelegramRunLink`: a claim that
- * never settled may already have reached Telegram and settles `unknown`,
- * never resent; a pending one is followed (bounded) until its run settles,
- * then delivered once through the same claim the live path uses. A link too
- * old to matter settles `failed` without a message.
+ * Deliveries a restart interrupted, or that this process stopped following
+ * (D-08), swept at start, once a minute and when the bot is switched on, one
+ * sweep at a time. They are found by their `TelegramRunLink`: the claim of a
+ * run linked before this process started that never settled may already have
+ * reached Telegram and settles `unknown`, never resent; a pending one is followed for
+ * at most a minute per sweep and, once its run settled, delivered once through
+ * the same claim the live path uses. A run this process still follows (or has
+ * just admitted) is its observer's alone. A link too old to matter settles
+ * `failed` without a message.
  */
 
 export const TELEGRAM_RECOVERY_BATCH = 500;
 export const TELEGRAM_RECOVERY_CONCURRENCY = 4;
-/** A run is followed this long after the restart before recovery leaves it to the next one. */
-export const TELEGRAM_RECOVERY_FOLLOW_MS = 30 * 60_000;
+/** How often the deliveries left pending are swept again. */
+export const TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS = 60_000;
+/** A sweep follows runs still going this long, then leaves them to the next sweep. */
+export const TELEGRAM_RECOVERY_FOLLOW_MS = TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS;
+/** A run this process linked stays its observer's at least this long, while its admission still hands it over. */
+export const TELEGRAM_RECOVERY_GRACE_MS = TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS;
 /** An answer older than this is not sent to Telegram anymore; it stays in AIQSA. */
 export const TELEGRAM_RECOVERY_MAX_AGE_MS = 24 * 3_600_000;
 
@@ -45,11 +52,17 @@ function log(fields: Readonly<{
   });
 }
 
+/** One sweep; the caller runs one at a time, so no claim of a delivery in progress here is taken for an interrupted one. */
 export async function recoverTelegramDeliveries(deps: TelegramRecoveryDeps, input: Readonly<{ startedAt: Date }>): Promise<void> {
   const now = deps.now ?? Date.now;
-  // Nothing can be sent while the bot is off; the links wait for the next start.
+  // Nothing can be sent while the bot is off; the links wait for the sweep after it is back.
   if (!(await deps.sessions.current())) return;
-  const before = (row: TelegramRunLinkRecord) => row.createdAt.getTime() < input.startedAt.getTime() && !deps.isLive(row.runId);
+  const startedAt = input.startedAt.getTime();
+  const sweptAt = now();
+  const before = (row: TelegramRunLinkRecord) => row.createdAt.getTime() < startedAt && !deps.isLive(row.runId);
+  // Linked here too: no longer followed by this process's observer (left pending, e.g. while the bot was off).
+  const left = (row: TelegramRunLinkRecord) => !deps.isLive(row.runId) &&
+    (row.createdAt.getTime() < startedAt || sweptAt - row.createdAt.getTime() >= TELEGRAM_RECOVERY_GRACE_MS);
 
   const claimed = (await deps.runLinks.listByState({ limit: TELEGRAM_RECOVERY_BATCH, state: "claimed" })).filter(before);
   for (const row of claimed) {
@@ -57,7 +70,7 @@ export async function recoverTelegramDeliveries(deps: TelegramRecoveryDeps, inpu
     log({ code: "telegram_delivery_unknown", outcome: "skipped", runId: row.runId });
   }
 
-  const pending = (await deps.runLinks.listByState({ limit: TELEGRAM_RECOVERY_BATCH, state: "pending" })).filter(before);
+  const pending = (await deps.runLinks.listByState({ limit: TELEGRAM_RECOVERY_BATCH, state: "pending" })).filter(left);
   if (pending.length > 0) log({ count: pending.length, outcome: "waiting" });
   const deadline = now() + TELEGRAM_RECOVERY_FOLLOW_MS;
   let next = 0;

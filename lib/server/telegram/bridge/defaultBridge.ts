@@ -1,7 +1,6 @@
-import { logEvent, runInBackground } from "../../observability";
-import { databaseFailureCode } from "../../observability/databaseFailure";
 import { registerTelegramAgentStatus } from "../agentStatus";
 import { registerTelegramApprovals } from "../approvals";
+import { telegramControlHooks } from "../control/hooks";
 import type { TelegramDefaults } from "../defaultTelegram";
 import { telegramHandlerRegistry } from "../dispatcher";
 import { registerTelegramRunFiles } from "../files";
@@ -14,7 +13,9 @@ import { createTelegramChatBridge, type TelegramChatBridge } from "./index";
  * bundles through `globalThis` like the handler registry it fills. Its AIQSA
  * side (run admission, follow-ups, Stop, reads) loads on the first message,
  * so starting the bot never loads the run stack. Deliveries a restart
- * interrupted are recovered once, right after start.
+ * interrupted, or this process stopped following, are swept right after
+ * start, once a minute and after every administrator change of the bot (so
+ * as soon as it is switched on).
  */
 
 type TelegramBridgeDefaults = Pick<TelegramDefaults, "access" | "links" | "messageRefs" | "runLinks" | "sessions">;
@@ -59,10 +60,8 @@ export function startTelegramChatBridge(telegram: TelegramBridgeDefaults): Teleg
   };
   globalForBridge.__aiqsaTelegramChatBridge = { bridge, owner: telegram, unregister };
   const startedAt = new Date();
-  void runInBackground(() => bridge.recover(startedAt)).catch((error: unknown) => logEvent("service_operation", {
-    code: "telegram_run_recovery_failed", error, outcome: "failed", prisma_code: databaseFailureCode(error), stage: "recovery",
-    subsystem: "telegram"
-  }));
+  // The sweeps leave with the handlers too.
+  removers.push(bridge.startRecovery(startedAt), telegramControlHooks().onChange(() => { void bridge.recover(startedAt); }));
   return bridge;
 }
 
