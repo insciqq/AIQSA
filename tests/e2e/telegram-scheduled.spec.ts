@@ -259,13 +259,11 @@ test("a task with Telegram delivery off sends nothing and records nothing", asyn
 });
 
 test("a scheduled run that pauses its task sends the heading and the reason only", async () => {
-  const tomorrow = new Date(Date.now() + 24 * 3_600_000).toISOString().slice(0, 10);
-  const taskId = await createTask("Telegram pause check", true, { kind: "once", date: tomorrow, time: "09:00" });
-  // Due now with a model the owner no longer has: the run fails before any answer and pauses the task.
-  const instant = new Date(Math.floor(Date.now() / 60_000) * 60_000);
+  const taskId = await createTask("Telegram pause check", true);
+  // Due now with a model the owner no longer has: the run fails before any answer and pauses the
+  // recurring task (a once task is already complete when it runs, so its failure pauses nothing).
   await prisma.scheduledTask.update({ where: { id: taskId }, data: {
-    modelId: `telegram-e2e-gone-${people.suffix}`, nextRunAt: instant, onceLocalDate: instant.toISOString().slice(0, 10),
-    timeOfDayMinutes: instant.getUTCHours() * 60 + instant.getUTCMinutes()
+    modelId: `telegram-e2e-gone-${people.suffix}`, nextRunAt: new Date(Math.floor(Date.now() / 60_000) * 60_000)
   } });
   const since = bot.calls().length;
   const occurrence = await settled(taskId);
