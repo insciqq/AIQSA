@@ -409,9 +409,15 @@ test("a reply already running from the web blocks a Telegram message with its ow
   expect(status).toBe(200);
   try {
     let since = bot.calls().length;
+    const menus = bot.botMessages(tgAlice.id).filter((message) => message.text === TELEGRAM_BRIDGE_COPY.chatsTitle).length;
     bot.inject.command(tgAlice, "chats");
-    await expect.poll(() => bot.botMessages(tgAlice.id).filter((message) => message.text === TELEGRAM_BRIDGE_COPY.chatsTitle).length,
-      { timeout: REPLY_TIMEOUT_MS }).toBeGreaterThan(1);
+    try {
+      await expect.poll(() => bot.botMessages(tgAlice.id).filter((message) => message.text === TELEGRAM_BRIDGE_COPY.chatsTitle).length,
+        { timeout: REPLY_TIMEOUT_MS }).toBeGreaterThan(menus);
+    } catch (error) {
+      const seen = bot.calls().slice(since).filter((call) => call.method !== "getUpdates").map((call) => `${call.method}:${call.status}`);
+      throw new Error(`no /chats menu; the bot sent: ${seen.join(", ") || "nothing"}`, { cause: error });
+    }
     const choice = menuButton(TELEGRAM_BRIDGE_COPY.chatsTitle, title);
     bot.inject.callback(tgAlice, choice.messageId, choice.data);
     await expect.poll(() => botMessage(choice.messageId)?.text, { timeout: REPLY_TIMEOUT_MS }).toBe(telegramCurrentChatText(title));
