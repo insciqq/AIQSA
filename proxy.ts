@@ -69,7 +69,10 @@ const publicPrefixes = [
   "/saml/metadata",
   "/mcp",
   // SCIM provisioning: the bearer token is the only credential, checked by the route.
-  "/scim/v2"
+  "/scim/v2",
+  // AIQSA Connect device API: pairing and the device's Bearer token only, never cookies; the
+  // routes refuse any request carrying `Origin`. The `/connect` pages stay behind sign-in.
+  "/connect-api"
 ];
 
 function isPublicPath(

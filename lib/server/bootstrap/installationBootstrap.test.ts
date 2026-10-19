@@ -140,6 +140,7 @@ function createBootstrapTransaction(input: {
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     mcpPolicyUpsert: record("mcpPolicy.upsert", { id: "installation" }),
     usageLimitPolicyUpsert: record("usageLimitPolicy.upsert", { id: "installation" }),
+    connectPolicyUpsert: record("connectPolicy.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
@@ -232,6 +233,7 @@ function createBootstrapTransaction(input: {
     },
     mcpPolicy: { upsert: spies.mcpPolicyUpsert },
     usageLimitPolicy: { upsert: spies.usageLimitPolicyUpsert },
+    connectPolicy: { upsert: spies.connectPolicyUpsert },
     user: {
       create: spies.userCreate,
       findUnique: spies.userFindUnique
@@ -515,6 +517,12 @@ describe("installation bootstrap", () => {
       update: {},
       where: { id: "installation" }
     });
+    // AIQSA Connect starts off and adoption keeps an administrator's saved choice.
+    expect(fixture.spies.connectPolicyUpsert).toHaveBeenCalledWith({
+      create: { enabled: false, id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
     expect(fixture.spies.searchOptionUpsert).toHaveBeenCalledTimes(
       bootstrapSearchOptionCount
     );
@@ -699,6 +707,11 @@ describe("installation bootstrap", () => {
     // A rerun repairs a missing limits singleton and never touches saved limits.
     expect(fixture.spies.usageLimitPolicyUpsert).toHaveBeenCalledWith({
       create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
+    expect(fixture.spies.connectPolicyUpsert).toHaveBeenCalledWith({
+      create: { enabled: false, id: "installation" },
       update: {},
       where: { id: "installation" }
     });

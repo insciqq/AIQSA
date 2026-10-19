@@ -194,6 +194,75 @@ const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
   "20260824014100_memory_vnext_retrieval_cutover";
+const AIQSA_CONNECT_MIGRATION = "20261019020000_aiqsa_connect";
+// A previous-release account keeps its row and the switch starts off. The
+// checks refuse malformed hashes, a pairing expiring at its creation and
+// contradictory pairing states; devices and approvals leave with their account.
+const aiqsaConnectFixtureSql = `INSERT INTO "User" (id, "displayName", status, "updatedAt")
+  VALUES ('connect-adoption-owner', 'Synthetic owner', 'active', now());`;
+const aiqsaConnectPolicyProofSql = `DO $$ BEGIN
+  IF (SELECT count(*) FROM "ConnectPolicy") <> 1 OR NOT EXISTS (SELECT 1 FROM "ConnectPolicy"
+      WHERE id = 'installation' AND NOT enabled AND version = 1 AND "updatedByUserId" IS NULL) THEN
+    RAISE EXCEPTION 'aiqsa connect: the switch did not start off';
+  END IF;
+END $$;`;
+const connectPairingColumns = `id, "userCodeHash", "pollSecretHash", name, hostname, os, arch, "clientVersion"`;
+const aiqsaConnectProofSql = `${aiqsaConnectPolicyProofSql}
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM "User" WHERE id = 'connect-adoption-owner' AND status = 'active') THEN
+    RAISE EXCEPTION 'aiqsa connect: a previous-release account changed';
+  END IF;
+  INSERT INTO "ConnectDevice" (id, "userId", name, hostname, os, arch, "clientVersion", "tokenHash")
+    VALUES ('connect-adoption-device', 'connect-adoption-owner', 'Synthetic laptop', 'laptop.example', 'linux', 'amd64',
+      '0.3.20', repeat('a', 64));
+  INSERT INTO "ConnectPairing" (${connectPairingColumns}, "approvedUserId", "consumedAt", "createdAt", "expiresAt")
+    VALUES ('connect-adoption-pairing', repeat('b', 64), repeat('c', 64), 'Synthetic laptop', 'laptop.example', 'linux',
+      'amd64', '0.3.20', 'connect-adoption-owner', now(), now(), now() + interval '10 minutes');
+  BEGIN
+    INSERT INTO "ConnectDevice" (id, "userId", name, hostname, os, arch, "clientVersion", "tokenHash")
+      VALUES ('connect-adoption-token', 'connect-adoption-owner', 'Synthetic', 'host', 'linux', 'amd64', '0.3.20', repeat('A', 64));
+    RAISE EXCEPTION 'aiqsa connect: a malformed token hash was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO "ConnectPairing" (${connectPairingColumns}, "createdAt", "expiresAt")
+      VALUES ('connect-adoption-secret', repeat('d', 64), 'not-a-hash', 'Synthetic', 'host', 'linux', 'amd64', '0.3.20',
+        now(), now() + interval '10 minutes');
+    RAISE EXCEPTION 'aiqsa connect: a malformed poll secret hash was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO "ConnectPairing" (${connectPairingColumns}, "createdAt", "expiresAt")
+      VALUES ('connect-adoption-expiry', repeat('e', 64), repeat('c', 64), 'Synthetic', 'host', 'linux', 'amd64', '0.3.20',
+        now(), now());
+    RAISE EXCEPTION 'aiqsa connect: a pairing expiring at its creation was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO "ConnectPairing" (${connectPairingColumns}, "approvedUserId", "deniedAt", "createdAt", "expiresAt")
+      VALUES ('connect-adoption-decided', repeat('f', 64), repeat('c', 64), 'Synthetic', 'host', 'linux', 'amd64', '0.3.20',
+        'connect-adoption-owner', now(), now(), now() + interval '10 minutes');
+    RAISE EXCEPTION 'aiqsa connect: an approved and denied pairing was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO "ConnectPairing" (${connectPairingColumns}, "consumedAt", "createdAt", "expiresAt")
+      VALUES ('connect-adoption-unapproved', repeat('1', 64), repeat('c', 64), 'Synthetic', 'host', 'linux', 'amd64',
+        '0.3.20', now(), now(), now() + interval '10 minutes');
+    RAISE EXCEPTION 'aiqsa connect: a consumed pairing without an approval was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO "ConnectPolicy" (id, enabled, version, "updatedAt") VALUES ('other', true, 1, now());
+    RAISE EXCEPTION 'aiqsa connect: a second policy was admitted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  DELETE FROM "User" WHERE id = 'connect-adoption-owner';
+  IF EXISTS (SELECT 1 FROM "ConnectDevice" WHERE id = 'connect-adoption-device')
+      OR EXISTS (SELECT 1 FROM "ConnectPairing" WHERE id = 'connect-adoption-pairing') THEN
+    RAISE EXCEPTION 'aiqsa connect: a device or an approval outlived its account';
+  END IF;
+END $$;`;
 const POSTGRES_USER = "aiqsa";
 const POSTGRES_SERVICE = "postgres";
 const APP_SERVICE = "app";
@@ -620,6 +689,10 @@ function bootstrapFoundationDigest(database: string): string {
         SELECT jsonb_agg(jsonb_build_array(id, "monthlyCapMicros", "monthlyBudgetMicros", "messagesPerHour",
           "messagesPerDay", version, "updatedByUserId") ORDER BY id)
         FROM "UsageLimitPolicy"
+      ), '[]'::jsonb),
+      'connect_policy', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, enabled, version, "updatedByUserId") ORDER BY id)
+        FROM "ConnectPolicy"
       ), '[]'::jsonb)
     )::text);`,
   );
@@ -641,6 +714,11 @@ function runBootstrapProof(database: string): void {
     psqlScalar(database, `SELECT CASE WHEN "personalLocalNetworkEnabled" THEN 'on' ELSE 'off' END || ':' || version::text FROM "McpPolicy" WHERE id = 'installation';`),
     "on:1",
     "fresh migration history must allow personal MCP local network access before bootstrap",
+  );
+  assert.equal(
+    psqlScalar(database, `SELECT CASE WHEN enabled THEN 'on' ELSE 'off' END || ':' || version::text FROM "ConnectPolicy" WHERE id = 'installation';`),
+    "off:1",
+    "fresh migration history must keep AIQSA Connect off before bootstrap",
   );
   const bootstrapEnvironment = {
     AIQSA_INITIAL_ADMIN_DISPLAY_NAME: "Baseline Administrator",
@@ -667,9 +745,14 @@ function runBootstrapProof(database: string): void {
       AND s."learnAutomatically" AND s."decayEnabled"
       AND s."decayPolicyVersion" = 'memory-decay-v1';`), "1", "initial administrator Memory defaults");
   psqlScalar(database, `UPDATE "UserMemorySettings" SET "learnAutomatically" = false, "decayEnabled" = false;`);
+  assert.equal(
+    psqlScalar(database, `SELECT CASE WHEN enabled THEN 'on' ELSE 'off' END || ':' || version::text FROM "ConnectPolicy" WHERE id = 'installation';`),
+    "off:1",
+    "fresh bootstrap must keep AIQSA Connect off",
+  );
   const freshDigest = bootstrapFoundationDigest(database);
-  // Adoption recreates a missing usage limits singleton exactly as the migration inserted it.
-  psqlScalar(database, `DELETE FROM "UsageLimitPolicy";`);
+  // Adoption recreates missing usage limits and AIQSA Connect singletons exactly as the migration inserted them.
+  psqlScalar(database, `DELETE FROM "UsageLimitPolicy"; DELETE FROM "ConnectPolicy";`);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /"code":"installation_already_adopted"/u);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "learnAutomatically" OR "decayEnabled";`), "0",
@@ -684,13 +767,14 @@ function runBootstrapProof(database: string): void {
   psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
     UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';
     UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';
-    UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';`);
+    UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';
+    UPDATE "ConnectPolicy" SET enabled = true, version = version + 1 WHERE id = 'installation';`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(
     bootstrapFoundationDigest(database),
     disabledDigest,
-    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off and usage limits",
+    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off, usage limits and AIQSA Connect On",
   );
   assert.equal(
     psqlScalar(
@@ -7762,6 +7846,8 @@ function main(
     deepSeekFlash1017FixtureSql, deepSeekFlash1017ProofSql, deepSeekFlash1017ProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, TELEMETRY_DURATION_BUCKETS_MIGRATION,
     telemetryDurationBucketsFixtureSql, telemetryDurationBucketsProofSql, telemetryDurationBucketsProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, AIQSA_CONNECT_MIGRATION,
+    aiqsaConnectFixtureSql, aiqsaConnectProofSql, aiqsaConnectPolicyProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
