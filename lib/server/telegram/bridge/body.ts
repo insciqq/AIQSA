@@ -50,8 +50,10 @@ export function findTelegramModel(catalog: TelegramRunCatalog, ref: TelegramMode
 
 /**
  * The model of an ordinary chat's next run: the link's choice (`/model`),
- * else the chat's model, else the catalog default. A choice that is no longer
- * in the catalog is refused, never replaced by another model.
+ * else the chat's model, else the catalog default, else the model a new web
+ * chat starts with when no default is set (the first non-test model, then
+ * the first). A choice that is no longer in the catalog is refused, never
+ * replaced by another model.
  */
 export function resolveTelegramModel(catalog: TelegramRunCatalog, input: Readonly<{
   selected: TelegramModelRef | null; chatModel: TelegramModelRef | null;
@@ -61,7 +63,8 @@ export function resolveTelegramModel(catalog: TelegramRunCatalog, input: Readonl
     const model = findTelegramModel(catalog, explicit);
     return model ? { model, ok: true } : { code: "model_unavailable", ok: false };
   }
-  const fallback = findTelegramModel(catalog, { modelId: catalog.defaults.modelId, provider: catalog.defaults.provider });
+  const fallback = findTelegramModel(catalog, { modelId: catalog.defaults.modelId, provider: catalog.defaults.provider }) ??
+    catalog.models.find((model) => model.provider !== "fake") ?? catalog.models[0];
   return fallback ? { model: fallback, ok: true } : { code: "no_model", ok: false };
 }
 
