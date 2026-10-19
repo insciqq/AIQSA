@@ -4,6 +4,7 @@ import { logEvent } from "../observability";
 import { prisma } from "../prisma";
 import { getSecretEncryptionKey } from "../secrets/envelope";
 import { createTelegramBotApi } from "./botApi";
+import { startTelegramChatBridge } from "./bridge/defaultBridge";
 import {
   createPrismaTelegramAccessUserSource, createTelegramAccessResolver, type TelegramAccessResolver
 } from "./control/access";
@@ -112,11 +113,16 @@ export function getDefaultTelegram(): TelegramDefaults {
   return globalForTelegram.__aiqsaTelegram;
 }
 
-/** Starts polling when the bot is on and re-evaluates after every administrator change. */
+/**
+ * Starts the chat bridge (its handlers before the first poll, and the recovery
+ * of interrupted deliveries), then polling when the bot is on, re-evaluated
+ * after every administrator change.
+ */
 export function startDefaultTelegram(): void {
   const telegram = getDefaultTelegram();
   if (!globalForTelegram.__aiqsaTelegramStarted) {
     globalForTelegram.__aiqsaTelegramStarted = true;
+    startTelegramChatBridge(telegram);
     telegramControlHooks().onChange(() => telegram.poller.reevaluate());
   }
   telegram.poller.reevaluate();
