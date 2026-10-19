@@ -161,9 +161,9 @@ end with `tmux -L aiqsa-connect kill-server`.
   under or else by finding the prompt you submitted on the screen of the
   Codex session in that folder; trust the hook in `codex` with `/hooks`, and
   keep `aiqsa-connect up` running with its default directories and tmux
-  socket. Statuses therefore start after the first prompt of at least 8
-  characters submitted in the session (again after `up` restarts, and after
-  Codex ends and is resumed), and Codex threads elsewhere do not change them.
+  socket. Statuses therefore start after the first prompt submitted in the
+  session (again after `up` restarts, and after Codex ends and is resumed),
+  and Codex threads elsewhere do not change them.
   Once found, a session keeps its Codex conversation until Codex ends there,
   whatever other screens show. Two Codex sessions in the same folder whose
   prompts have identical first lines cannot be told apart, and a Codex

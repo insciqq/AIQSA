@@ -68,17 +68,19 @@ var threadRegexp = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 func ValidThread(id string) bool { return threadRegexp.MatchString(id) }
 
 const (
-	// minPromptKeyRunes is the shortest prompt line that can tell a session
-	// apart; a shorter one ("yes", "go on") could be on any screen.
+	// minPromptKeyRunes is the shortest prompt line found anywhere on a
+	// screen; a shorter one ("yes", "go on") could be on any screen, so it
+	// counts only as a whole submitted-prompt line (see ScreenShows).
 	minPromptKeyRunes = 8
 	// maxPromptKeyRunes keeps a long line short enough to be found on the
 	// screen however the agent wraps the rest.
 	maxPromptKeyRunes = 60
+	// promptMarker starts the line of a submitted prompt in Codex's history.
+	promptMarker = "›"
 )
 
 // PromptKey is what identifies a prompt on a screen: its first non-empty
-// line with whitespace collapsed, cut to its first 60 characters. Empty
-// when that is shorter than 8 characters.
+// line with whitespace collapsed, cut to its first 60 characters.
 func PromptKey(prompt string) string {
 	for line := range strings.Lines(prompt) {
 		key := collapseSpace(line)
@@ -88,19 +90,30 @@ func PromptKey(prompt string) string {
 		if utf8.RuneCountInString(key) > maxPromptKeyRunes {
 			key = strings.TrimRight(string([]rune(key)[:maxPromptKeyRunes]), " ")
 		}
-		if utf8.RuneCountInString(key) < minPromptKeyRunes {
-			return ""
-		}
 		return key
 	}
 	return ""
 }
 
-// ScreenShows reports whether a screen's text holds a prompt key, with the
-// screen's whitespace (line breaks included) collapsed as the key's is: an
-// agent wraps a long prompt line onto several screen lines.
+// ScreenShows reports whether a screen's text holds a prompt key. A key of
+// at least 8 characters may be anywhere, with the screen's whitespace (line
+// breaks included) collapsed as the key's is: an agent wraps a long prompt
+// line onto several screen lines. A shorter key ("hi") counts only as a
+// whole line "› hi", the way Codex shows a submitted prompt.
 func ScreenShows(screen, key string) bool {
-	return key != "" && strings.Contains(collapseSpace(screen), key)
+	if key == "" {
+		return false
+	}
+	if utf8.RuneCountInString(key) >= minPromptKeyRunes {
+		return strings.Contains(collapseSpace(screen), key)
+	}
+	want := promptMarker + " " + key
+	for line := range strings.Lines(screen) {
+		if collapseSpace(line) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }

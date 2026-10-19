@@ -507,6 +507,20 @@ func TestOnlyTheOneSessionShowingThePromptIsChosen(t *testing.T) {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
+	// A first prompt as short as "hi" binds too, by its own prompt line only.
+	short := status.PromptKey("hi")
+	hi := "› hi\n\n• Hi! What would you like to work on?\n"
+	for name, c := range map[string]struct {
+		screens map[string]string
+		want    string
+	}{
+		"its prompt line":         {map[string]string{"ac-aaaa1111": "› high five\n• hi there", "ac-bbbb2222": hi}, "ac-bbbb2222"},
+		"both show the same line": {map[string]string{"ac-aaaa1111": hi, "ac-bbbb2222": hi}, ""},
+	} {
+		if got := sessionShowingPrompt(context.Background(), both, short, screens(c.screens)); got != c.want {
+			t.Errorf("short prompt, %s: %q, want %q", name, got, c.want)
+		}
+	}
 	// The search gives up within its bound.
 	start := time.Now()
 	slow := func(ctx context.Context, _ string) (string, error) {
