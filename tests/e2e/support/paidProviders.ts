@@ -121,19 +121,23 @@ type QuickSetupResult = Readonly<{
  * Setup also turns on the family's Search source and may make an OpenRouter
  * model the installation's default chat model.
  */
-export async function openRouterConnection(request: APIRequestContext, secret: string): Promise<string> {
-  return quickSetupConnection(request, "openrouter", secret, /flash/iu);
+export async function openRouterConnection(
+  request: APIRequestContext, secret: string, options: Readonly<{ reuse?: boolean }> = {}
+): Promise<string> {
+  return quickSetupConnection(request, "openrouter", secret, /flash/iu, options);
 }
 
 /**
  * The family's canonical connection through Quick Setup with `secret`, reusing
- * an enabled, checked one; `prefer` picks the cheapest offered answer model
- * when Quick Setup asks for a choice.
+ * an enabled, checked one unless `reuse` is false (a seeded stand's connection
+ * may hold a placeholder credential); `prefer` picks the cheapest offered
+ * answer model when Quick Setup asks for a choice.
  */
 export async function quickSetupConnection(
-  request: APIRequestContext, provider: "deepseek" | "openai" | "openrouter", secret: string, prefer: RegExp
+  request: APIRequestContext, provider: "deepseek" | "openai" | "openrouter", secret: string, prefer: RegExp,
+  options: Readonly<{ reuse?: boolean }> = {}
 ): Promise<string> {
-  const existing = readConnections(await (await request.get("/api/admin/providers")).json())
+  const existing = options.reuse === false ? undefined : readConnections(await (await request.get("/api/admin/providers")).json())
     ?.find((connection) => connection.family === provider && connection.enabled && connection.active &&
       connection.defaultCredentialVersionId !== null && !connection.checkRunning);
   if (existing) return existing.id;

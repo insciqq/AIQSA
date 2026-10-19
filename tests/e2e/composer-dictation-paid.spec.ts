@@ -80,7 +80,8 @@ test("an administrator's paid Test enables dictation; a real recording lands in 
       speechToTextConfiguredAt: true, speechToTextConnectionId: true, speechToTextCredentialVersionId: true, speechToTextModelId: true } });
 
     const before = await openRouterConnectionIds(request);
-    const connectionId = await openRouterConnection(request, secret!);
+    // Quick Setup with the real key: a seeded stand's OpenRouter connection may hold a placeholder credential.
+    const connectionId = await openRouterConnection(request, secret!, { reuse: false });
     if (!before.has(connectionId)) createdConnectionId = connectionId;
     summary.connectionReused = createdConnectionId === null;
 
