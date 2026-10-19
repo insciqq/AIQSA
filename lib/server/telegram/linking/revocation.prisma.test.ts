@@ -29,6 +29,8 @@ afterEach(async () => {
     const ids = users.map((user) => user.id);
     await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
     await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
+    // Sessions the fixture administrator revoked restrict deleting that administrator.
+    await prisma.authSession.deleteMany({ where: { userId: { in: ids } } });
     await prisma.user.deleteMany({ where: { id: { in: ids } } });
   }
 });

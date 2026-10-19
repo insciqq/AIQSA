@@ -18,6 +18,7 @@ const repository = createPrismaTelegramLinkingRepository(prisma);
 const domains: string[] = [];
 const NOW = new Date("2026-10-19T08:00:00.000Z");
 const LATER = new Date("2026-10-19T08:05:00.000Z");
+const RELINK = new Date("2026-10-19T08:07:00.000Z");
 const EXPIRES = new Date("2026-10-19T08:10:00.000Z");
 
 afterEach(async () => {
@@ -59,7 +60,7 @@ function fixture() {
     async session(userId: string, input: Readonly<{ revokedAt?: Date; expiresAt?: Date }> = {}) {
       const session = await prisma.authSession.create({
         data: { expiresAt: input.expiresAt ?? new Date("2099-01-01T00:00:00.000Z"), revokedAt: input.revokedAt ?? null,
-          tokenHash: randomBytes(32).toString("hex"), userId }
+          revokedReason: input.revokedAt ? "logout" : null, tokenHash: randomBytes(32).toString("hex"), userId }
       });
       return session.id;
     },
@@ -187,7 +188,7 @@ describe("Telegram link codes and links (stateful)", () => {
     const chat = await prisma.chat.create({ data: { title: "Synthetic chat", userId } });
     await prisma.telegramLink.update({ data: { currentChatId: chat.id, searchEnabled: false }, where: { id: first.link.id } });
     const again = await repository.consumeCodeAndLink({
-      codeHash: await code(userId, await session(userId)), control: control(), now: EXPIRES, target: target(account, "alex_renamed")
+      codeHash: await code(userId, await session(userId)), control: control(), now: RELINK, target: target(account, "alex_renamed")
     });
     expect(again).toMatchObject({ kind: "linked", link: { id: first.link.id, telegramUsername: "alex_renamed" }, replaced: null });
     await expect(prisma.telegramLink.findUniqueOrThrow({ where: { id: first.link.id } }))
