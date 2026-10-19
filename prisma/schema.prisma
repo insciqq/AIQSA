@@ -958,6 +958,9 @@ model User {
   authSignInPolicyUpdates             AuthSignInPolicy[]                 @relation("AuthSignInPolicyUpdater")
   authTotpFactor                      AuthTotpFactor?
   browserPushSubscriptions            BrowserPushSubscription[]
+  connectDevices                      ConnectDevice[]
+  connectPairingApprovals             ConnectPairing[]                   @relation("ConnectPairingApprover")
+  connectPolicyUpdates                ConnectPolicy[]                    @relation("ConnectPolicyUpdater")
   assistantDefinitions                AssistantDefinition[]              @relation("AssistantDefinitionOwner")
   assistantListingRequests            AssistantListingRequest[]          @relation("AssistantListingRequester")
   assistantListingReviews             AssistantListingRequest[]          @relation("AssistantListingReviewer")
@@ -7968,6 +7971,62 @@ model BrowserPushDelivery {
   claimedAt    DateTime                 @default(now())
   run          ModelRun?                @relation(fields: [runId], references: [id], onDelete: Cascade)
   occurrence   ScheduledTaskOccurrence? @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
+}
+
+/// The installation switch for AIQSA Connect, off until an administrator turns it on.
+model ConnectPolicy {
+  id              String   @id
+  enabled         Boolean  @default(false)
+  version         Int      @default(1)
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  updatedBy       User?    @relation("ConnectPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+/// A computer paired with its owner's account for AIQSA Connect. Only the
+/// SHA-256 of its bearer token is stored; deleting the row revokes it.
+/// Terminal sessions and their output never reach the database.
+model ConnectDevice {
+  id            String    @id @default(uuid())
+  userId        String
+  name          String    @db.VarChar(64)
+  hostname      String    @db.VarChar(255)
+  os            String    @db.VarChar(16)
+  arch          String    @db.VarChar(16)
+  clientVersion String    @db.VarChar(64)
+  tokenHash     String    @unique @db.Char(64)
+  createdAt     DateTime  @default(now())
+  lastSeenAt    DateTime?
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+/// A pending device pairing: the computer polls with its secret until the
+/// signed-in owner approves or denies the code it shows. Only hashes of the
+/// code and the poll secret are stored; the first poll after approval creates
+/// the device and consumes the pairing.
+model ConnectPairing {
+  id             String    @id @default(uuid())
+  userCodeHash   String    @unique @db.Char(64)
+  pollSecretHash String    @db.Char(64)
+  name           String    @db.VarChar(64)
+  hostname       String    @db.VarChar(255)
+  os             String    @db.VarChar(16)
+  arch           String    @db.VarChar(16)
+  clientVersion  String    @db.VarChar(64)
+  approvedUserId String?
+  deniedAt       DateTime?
+  consumedAt     DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+  approvedUser   User?     @relation("ConnectPairingApprover", fields: [approvedUserId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt, consumedAt])
+  @@index([approvedUserId])
 }
 
 /// Operator health telemetry: hourly totals of this installation's validated,
