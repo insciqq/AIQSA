@@ -10,6 +10,7 @@ import {
 import {
   CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER,
   CONNECT_RELAY_MAX_PENDING_REPLIES,
+  CONNECT_RELAY_REMEMBERED_DEVICES,
   createConnectRelay,
   type ConnectDeviceRecord,
   type ConnectRelay,
@@ -534,6 +535,131 @@ describe("AIQSA Connect relay: listeners", () => {
     unsubscribe();
     relay.notifyDevicesChanged(alice.userId);
     expect(events).toHaveLength(3);
+  });
+
+  it("reports a transition carried only by a snapshot as one status event, also across a reconnect", () => {
+    const relay = createConnectRelay();
+    const laptop = record(alice.userId);
+    const events: ConnectRelayEvent[] = [];
+    relay.onEvent((event) => events.push(event));
+    const statusEvents = () => events.filter((event) => event.type === "status");
+    const first = attach(relay, laptop);
+    relay.acceptEvents(first.tokenHash, [
+      { sessions: [session("ac-session1", "Fix the build"), session("ac-session2", "Shell", "idle")], type: "sessions" }
+    ]);
+    // The first snapshot this process sees has nothing to compare with.
+    expect(statusEvents()).toEqual([]);
+
+    // Online: a later snapshot that changed a status reports it; a new session reports nothing.
+    relay.acceptEvents(first.tokenHash, [{
+      sessions: [
+        { ...session("ac-session1", "Fix the build", "waiting"), statusAt: "2026-10-19T10:00:05.000Z" },
+        session("ac-session2", "Shell", "idle"),
+        session("ac-session3", "New one", "needs_approval")
+      ],
+      type: "sessions"
+    }]);
+    expect(events.map((event) => event.type)).toEqual(["device_online", "sessions", "sessions", "status"]);
+    expect(events[3]).toMatchObject({
+      deviceId: laptop.id,
+      previousStatus: "running",
+      reason: null,
+      sessionId: "ac-session1",
+      status: "waiting",
+      statusAt: "2026-10-19T10:00:05.000Z",
+      title: "Fix the build",
+      userId: alice.userId
+    });
+    if (events[3] && "device" in events[3]) connectDeviceSchema.parse(events[3].device);
+
+    // The device's explicit status for the same transition changes nothing new.
+    relay.acceptEvents(first.tokenHash, [{ sessionId: "ac-session1", status: "waiting", statusAt: "2026-10-19T10:00:05.000Z", type: "status" }]);
+    expect(statusEvents().at(-1)).toMatchObject({ previousStatus: "waiting", status: "waiting" });
+    // A status the device already reported is not repeated by the next snapshot.
+    relay.acceptEvents(first.tokenHash, [{ sessionId: "ac-session2", status: "running", statusAt: "2026-10-19T10:00:06.000Z", type: "status" }]);
+    const before = statusEvents().length;
+    relay.acceptEvents(first.tokenHash, [{
+      sessions: [session("ac-session1", "Fix the build", "waiting"), session("ac-session2", "Shell", "running"), session("ac-session3", "New one", "needs_approval")],
+      type: "sessions"
+    }]);
+    expect(statusEvents()).toHaveLength(before);
+
+    // The stream drops, the agent asks for approval meanwhile, and the next stream's first snapshot carries it.
+    relay.detachDevice(laptop.id, first.streamId);
+    const second = attach(relay, laptop);
+    events.length = 0;
+    relay.acceptEvents(second.tokenHash, [{
+      sessions: [session("ac-session1", "Fix the build", "waiting"), session("ac-session2", "Shell", "needs_approval")],
+      type: "sessions"
+    }]);
+    expect(events.map((event) => event.type)).toEqual(["sessions", "status"]);
+    expect(events[1]).toMatchObject({ previousStatus: "running", sessionId: "ac-session2", status: "needs_approval", title: "Shell" });
+
+    // A newer stream replacing a live one compares with the replaced stream's list too.
+    const third = attach(relay, laptop);
+    events.length = 0;
+    relay.acceptEvents(third.tokenHash, [{ sessions: [session("ac-session1", "Fix the build", "running"), session("ac-session2", "Shell", "needs_approval")], type: "sessions" }]);
+    expect(statusEvents()).toEqual([expect.objectContaining({ previousStatus: "waiting", sessionId: "ac-session1", status: "running" })]);
+  });
+
+  it("forgets a device's statuses when it is revoked, its account loses its devices or the feature turns off", () => {
+    const seen = (relay: ConnectRelay, laptop: ConnectDeviceRecord) => {
+      const stream = attach(relay, laptop);
+      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "running")], type: "sessions" }]);
+      return stream;
+    };
+    const reconnectWithApproval = (relay: ConnectRelay, laptop: ConnectDeviceRecord) => {
+      const events: ConnectRelayEvent[] = [];
+      const unsubscribe = relay.onEvent((event) => events.push(event));
+      const stream = attach(relay, laptop);
+      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "needs_approval")], type: "sessions" }]);
+      unsubscribe();
+      return events.filter((event) => event.type === "status");
+    };
+
+    const revoked = createConnectRelay();
+    const laptop = record(alice.userId);
+    seen(revoked, laptop);
+    revoked.disconnectDevice(laptop.id, "connect_unauthorized");
+    expect(reconnectWithApproval(revoked, laptop)).toEqual([]);
+
+    const account = createConnectRelay();
+    const aliceLaptop = record(alice.userId);
+    const bobLaptop = record(bob.userId);
+    seen(account, aliceLaptop);
+    const bobStream = seen(account, bobLaptop);
+    account.disconnectUser(alice.userId, { activeAuthSessionIds: [] });
+    account.detachDevice(bobLaptop.id, bobStream.streamId);
+    expect(reconnectWithApproval(account, aliceLaptop)).toEqual([]);
+    expect(reconnectWithApproval(account, bobLaptop)).toHaveLength(1);
+
+    const disabled = createConnectRelay();
+    seen(disabled, laptop);
+    disabled.disable();
+    expect(reconnectWithApproval(disabled, laptop)).toEqual([]);
+  });
+
+  it("remembers the statuses of a bounded number of offline devices, forgetting the oldest first", () => {
+    const relay = createConnectRelay();
+    const offline = (laptop: ConnectDeviceRecord) => {
+      const stream = attach(relay, laptop);
+      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "running")], type: "sessions" }]);
+      relay.detachDevice(laptop.id, stream.streamId);
+    };
+    const oldest = record(alice.userId);
+    const kept = record(alice.userId);
+    offline(oldest);
+    offline(kept);
+    for (let index = 0; index < CONNECT_RELAY_REMEMBERED_DEVICES - 1; index += 1) offline(record(bob.userId));
+    const statusDevices: string[] = [];
+    relay.onEvent((event) => {
+      if (event.type === "status") statusDevices.push(event.deviceId);
+    });
+    for (const laptop of [kept, oldest]) {
+      const stream = attach(relay, laptop);
+      relay.acceptEvents(stream.tokenHash, [{ sessions: [session("ac-session1", "Build", "waiting")], type: "sessions" }]);
+    }
+    expect(statusDevices).toEqual([kept.id]);
   });
 
   it("bounds the device-list streams of one account", () => {

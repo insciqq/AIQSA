@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserPushMessage } from "@/lib/contracts/browserPush";
-import type { ConnectSessionStatus } from "@/lib/contracts/connect";
+import { CONNECT_DEFAULT_HELLO_LIMITS, type ConnectDeviceEvent, type ConnectSessionStatus } from "@/lib/contracts/connect";
 import { CONNECT_PUSH_INTERVAL_MS, createConnectPush } from "./push";
-import type { ConnectRelayEvent, ConnectRelayListener } from "./relay";
+import { createConnectRelay, type ConnectDeviceRecord, type ConnectRelayEvent, type ConnectRelayListener } from "./relay";
 
 const logs = vi.hoisted(() => ({ logEvent: vi.fn() }));
 vi.mock("../observability", () => logs);
@@ -127,6 +127,55 @@ describe("AIQSA Connect push", () => {
     t.status("waiting", "running");
     await t.push.idle();
     expect(t.sent.map((s) => s.message.body)).toEqual(["Waiting for you"]);
+  });
+
+  it("notifies once when the relay learns of an approval request only from the snapshot after a reconnect", async () => {
+    const relay = createConnectRelay();
+    const sent: BrowserPushMessage[] = [];
+    const push = createConnectPush({
+      relay,
+      send: async (_userId, message) => {
+        sent.push(message);
+        return 1;
+      }
+    });
+    const laptop = {
+      arch: "arm64", clientVersion: "0.3.20", createdAt: new Date("2026-10-19T08:00:00.000Z"), hostname: "synthetic-host.local",
+      id: DEVICE, lastSeenAt: null, name: "Synthetic laptop", os: "darwin", userId: "owner-1"
+    } satisfies ConnectDeviceRecord;
+    const snapshot = (status: ConnectSessionStatus): ConnectDeviceEvent => ({
+      sessions: [{
+        attachedClients: 0, createdAt: "2026-10-19T09:00:00.000Z", cwd: "/home/synthetic/project", id: "ac-abc123",
+        program: "claude", status, statusAt: "2026-10-19T09:00:00.000Z", title: "Deploy fix"
+      }],
+      type: "sessions"
+    });
+    const connect = (tokenHash: string) => {
+      const attached = relay.attachDevice({
+        epoch: relay.epoch(),
+        hello: { deviceId: DEVICE, limits: CONNECT_DEFAULT_HELLO_LIMITS, minClientVersion: "0.3.20", protocol: 1, serverVersion: "0.3.20" },
+        record: laptop,
+        tokenHash,
+        writer: { close: () => undefined, send: () => true }
+      });
+      if (attached.kind !== "attached") throw new Error("not attached");
+      return attached.streamId;
+    };
+
+    const first = connect("token-1");
+    relay.acceptEvents("token-1", [snapshot("running")]);
+    relay.detachDevice(DEVICE, first);
+    connect("token-1");
+    relay.acceptEvents("token-1", [
+      snapshot("needs_approval"),
+      // The client's own report of the same transition arrives after the snapshot.
+      { reason: "permission", sessionId: "ac-abc123", status: "needs_approval", statusAt: "2026-10-19T09:00:00.000Z", type: "status" }
+    ]);
+    await push.idle();
+    expect(sent).toEqual([
+      { body: "Needs approval", tag: `aiqsa-connect-${DEVICE}-ac-abc123`, title: "Deploy fix", url: `/connect/${DEVICE}/ac-abc123`, v: 1 }
+    ]);
+    push.stop();
   });
 
   it("logs a failed send by code only and stops listening on stop", async () => {
