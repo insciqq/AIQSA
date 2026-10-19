@@ -1,7 +1,10 @@
 import { logEvent, runInBackground } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
+import { registerTelegramAgentStatus } from "../agentStatus";
+import { registerTelegramApprovals } from "../approvals";
 import type { TelegramDefaults } from "../defaultTelegram";
 import { telegramHandlerRegistry } from "../dispatcher";
+import { registerTelegramRunFiles } from "../files";
 import { createTelegramMediaHandler, lazyTelegramMediaServices } from "../media";
 import { lazyTelegramRunGateway } from "./gateway";
 import { createTelegramChatBridge, type TelegramChatBridge } from "./index";
@@ -24,9 +27,10 @@ export function startTelegramChatBridge(telegram: TelegramBridgeDefaults): Teleg
   if (running?.owner === telegram) return running.bridge;
   // Services rebuilt in this process (a reload): the old bridge's handlers leave with them.
   running?.unregister();
+  const gateway = lazyTelegramRunGateway(async () => (await import("./defaultGateway")).createDefaultTelegramRunGateway({ access: telegram.access }));
   const bridge = createTelegramChatBridge({
     access: telegram.access,
-    gateway: lazyTelegramRunGateway(async () => (await import("./defaultGateway")).createDefaultTelegramRunGateway({ access: telegram.access })),
+    gateway,
     links: telegram.links,
     messageRefs: telegram.messageRefs,
     runLinks: telegram.runLinks,
@@ -40,10 +44,18 @@ export function startTelegramChatBridge(telegram: TelegramBridgeDefaults): Teleg
     }))
   });
   const registry = telegramHandlerRegistry();
-  const removers = [bridge.register(registry), registry.registerMessage(media)];
-  globalForBridge.__aiqsaTelegramChatBridge = {
-    bridge, owner: telegram, unregister: () => { for (const remove of removers) remove(); }
+  // Approvals, the Agent/Workspace status and answer files follow the bridge's runs and leave with its handlers.
+  const removers = [
+    bridge.register(registry),
+    registry.registerMessage(media),
+    registerTelegramApprovals({ access: telegram.access, conversation: bridge.conversation, registry, sessions: telegram.sessions }),
+    registerTelegramAgentStatus({ messageRefs: telegram.messageRefs, runLinks: telegram.runLinks }),
+    registerTelegramRunFiles({ access: telegram.access, answer: (input) => gateway.answer(input) })
+  ];
+  const unregister = () => {
+    for (const remove of removers) remove();
   };
+  globalForBridge.__aiqsaTelegramChatBridge = { bridge, owner: telegram, unregister };
   const startedAt = new Date();
   void runInBackground(() => bridge.recover(startedAt)).catch((error: unknown) => logEvent("service_operation", {
     code: "telegram_run_recovery_failed", error, outcome: "failed", prisma_code: databaseFailureCode(error), stage: "recovery",

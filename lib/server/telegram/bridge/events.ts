@@ -1,3 +1,4 @@
+import type { ThreadArtifactSummary } from "../../../contracts/chats";
 import { logEvent } from "../../observability";
 import type { TelegramBotSession } from "../dispatcher";
 
@@ -32,6 +33,8 @@ export type TelegramRunDeliveredEvent = Readonly<{
   /** Whether the final message reached Telegram (false when it failed or its outcome is unknown). */
   sent: boolean;
   messageIds: readonly number[];
+  /** The settled answer's summary (generated files, approval cards), when it has one. */
+  artifactSummary?: ThreadArtifactSummary;
 }>;
 
 export type TelegramRunEvent = TelegramRunStreamEvent | TelegramRunDeliveredEvent;

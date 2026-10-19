@@ -1,4 +1,5 @@
 import type { TelegramReasonCode } from "../../contracts/telegram";
+import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { TelegramBotCommand } from "./botApi";
 
 /**
@@ -176,6 +177,80 @@ export function telegramAgentFinishedText(elapsedMs: number): string {
   return `Finished in ${minutes(elapsedMs)} min`;
 }
 
+/** The status of a run that works in Workspace without Agent. */
+export function telegramWorkspaceWorkingText(elapsedMs: number, activity?: string): string {
+  const head = `Working in Workspace · ${minutes(elapsedMs)} min`;
+  const detail = activity ? bounded(activity, ACTIVITY_MAX_LENGTH) : "";
+  return detail ? `${head} — ${detail}` : head;
+}
+
+/** The status of an Agent or Workspace run that ended with an error; the answer message says why. */
+export function telegramWorkFailedText(elapsedMs: number): string {
+  return `Failed after ${minutes(elapsedMs)} min`;
+}
+
+const ACTIVITY_TARGET_MAX_LENGTH = 120;
+
+function plural(count: number, noun: string): string {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`;
+}
+
+/**
+ * One Workspace or Agent step as the status names it, from the activity the
+ * run already projected (redacted, bounded): what runs, is read or written,
+ * or which tool is called. Null for lifecycle steps not worth a status line.
+ */
+export function telegramWorkActivityText(entry: ThreadWorkspaceActivityEntry): string | null {
+  const active = entry.phase === "requested" || entry.phase === "running";
+  const failed = entry.phase === "failed";
+  const pick = (running: string, done: string, failure: string) => active ? running : failed ? failure : done;
+  const target = (value: string | undefined, fallback: string) => bounded(value || fallback, ACTIVITY_TARGET_MAX_LENGTH) || fallback;
+  const path = target(entry.file?.displayPath, "a file");
+  switch (entry.kind) {
+    case "command": {
+      const command = target(entry.command?.preview, "a command");
+      return pick(`Running ${command}`, `Ran ${command}`, `${command} failed`);
+    }
+    case "file_read": return pick(`Reading ${path}`, `Read ${path}`, `Couldn't read ${path}`);
+    case "file_write": return pick(`Writing ${path}`, `Wrote ${path}`, `Couldn't write ${path}`);
+    case "file_list": return pick(`Listing ${path}`, `Listed ${path}`, `Couldn't list ${path}`);
+    case "file_copy": return pick(`Copying ${path}`, `Copied ${path}`, `Couldn't copy ${path}`);
+    case "file_move": return pick(`Moving ${path}`, `Moved ${path}`, `Couldn't move ${path}`);
+    case "file_remove": return pick(`Removing ${path}`, `Removed ${path}`, `Couldn't remove ${path}`);
+    case "folder_create": return pick(`Creating folder ${path}`, `Created folder ${path}`, `Couldn't create folder ${path}`);
+    case "file_check": return pick(`Checking ${path}`, `Checked ${path}`, `Couldn't check ${path}`);
+    case "file_change": {
+      const count = entry.count ?? entry.changes?.length ?? 0;
+      const single = count === 1 ? entry.changes?.[0]?.displayPath : undefined;
+      const files = single ? target(single, "a file") : plural(count, "file");
+      return pick(`Editing ${files}`, `Edited ${files}`, `Couldn't edit ${files}`);
+    }
+    case "mcp_call": {
+      if (entry.mcp?.discovery) return pick("Finding tools", "Found tools", "Tool discovery failed");
+      const tool = target(`${entry.mcp?.serverName ? `${entry.mcp.serverName}: ` : ""}${entry.mcp?.toolName ?? ""}`, "a tool");
+      return pick(`Calling ${tool}`, `Called ${tool}`, `${tool} failed`);
+    }
+    case "search": {
+      const query = entry.search?.query ? target(entry.search.query, "the web") : "the web";
+      return pick(`Searching ${query}`, `Searched ${query}`, "Search failed");
+    }
+    case "agent_note":
+      return entry.text?.trim() ? entry.text : null;
+    case "plan": {
+      const items = entry.items ?? [];
+      return items.length > 0 ? `Plan · ${items.filter((item) => item.completed).length} of ${items.length} done` : null;
+    }
+    case "workspace_start":
+      return active ? "Starting the workspace" : failed ? "The workspace couldn't start" : null;
+    case "attachments_prepare":
+      return active ? `Preparing ${plural(entry.count ?? 0, "attachment")}` : null;
+    case "outputs_export":
+      return active ? `Exporting ${plural(entry.count ?? 0, "file")}` : null;
+    default:
+      return null;
+  }
+}
+
 export function telegramApprovalTitle(serverName: string, toolName: string): string {
   return `${bounded(serverName)} · ${bounded(toolName)}`;
 }
@@ -187,6 +262,16 @@ export function telegramAlwaysAllowLabel(serverName: string): string {
 export function telegramAlwaysAllowedText(serverName: string): string {
   return `Always allowed for ${bounded(serverName)}`;
 }
+
+/** An MCP approval in Telegram (D-15) while it waits for a decision, and when a decision could not be made. */
+export const TELEGRAM_APPROVAL_COPY = {
+  pendingModel: "This tool may change data, so nothing was sent. If you allow it, the answer continues.",
+  pendingCode: "Code in the Workspace called this tool, which may change data. Nothing was sent. If you allow it, the next run repeats the script.",
+  pendingAgent: "Agent called this tool, which may change data. Nothing was sent. If you allow it, Agent continues.",
+  stillRunning: "The answer is still finishing. Try again in a moment.",
+  notSaved: "Your decision couldn't be saved. Try again.",
+  unavailable: "This approval is no longer available."
+} as const;
 
 export function telegramVoiceTranscriptText(transcript: string): string {
   return `🎤 ${transcript}`;
@@ -231,6 +316,22 @@ export function telegramVoiceRateLimitedText(retryAfterSeconds: number | null | 
 export function telegramUnsupportedFileText(acceptedTypes: readonly string[], workspaceHint: boolean): string {
   const accepted = `This file type isn't supported. Send ${acceptedTypes.join(", ")}.`;
   return workspaceHint ? `${accepted} Other files work with Workspace on: turn it on in /settings.` : accepted;
+}
+
+/**
+ * The one line under an answer's files: how many stayed in AIQSA (too many or
+ * too large for Telegram), how many could not be sent, and Workspace files
+ * still being prepared or that could not be prepared; null when all went.
+ */
+export function telegramFilesSummaryText(input: Readonly<{ left: number; failed: number; outputs?: "pending" | "failed" }>): string | null {
+  const failed = input.failed === 1 ? "1 file couldn't be sent here" : `${input.failed} files couldn't be sent here`;
+  const parts = [
+    ...(input.left > 0 ? [telegramScheduledFilesInAiqsaText(input.left)] : []),
+    ...(input.failed > 0 ? [input.left > 0 ? `${failed}.` : `${failed}; ${input.failed === 1 ? "it's" : "they're"} in AIQSA.`] : []),
+    ...(input.outputs === "pending" ? ["More files are still being prepared in AIQSA."] : []),
+    ...(input.outputs === "failed" ? ["Some files couldn't be prepared; AIQSA shows why."] : [])
+  ];
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 /** What the user sees for each reason the bot itself answers; `undefined` for log- or settings-only reasons. */
