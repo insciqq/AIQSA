@@ -1062,7 +1062,8 @@
 }
 
 .v2-memory-row-form textarea:focus-visible {
-  box-shadow: 0 0 0 2px var(--v2-color-accent-dim);
+  outline: 2px solid color-mix(in srgb, var(--v2-color-text) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .v2-memory-row-form-actions {
