@@ -400,6 +400,25 @@ describe("answer outputs v2", () => {
     expect(document.body.textContent).not.toContain("search_knowledge");
   });
 
+  it("keeps a page read the run skipped by its rules neutral, and a page that could not be read a failure", () => {
+    render(<AnswerProcessV2 toolActivity={{ calls: [
+      { durationMs: 94, fetchOutcome: "fetch_url_not_in_conversation", fetchTarget: "www.shop.example/tariffs",
+        origin: "web_fetch", round: 3, status: "error", toolName: "fetch_url" },
+      { durationMs: 1200, fetchOutcome: "fetch_network_error", fetchTarget: "down.example/page",
+        origin: "web_fetch", round: 3, status: "error", toolName: "fetch_url" }
+    ] }} />);
+    openProcess();
+
+    const [skipped, failed] = screen.getAllByRole("listitem");
+    expect(skipped).toHaveTextContent("Skipped www.shop.example/tariffs: only links from this chat or web search are read");
+    expect(skipped).toHaveTextContent("94 ms · round 3");
+    expect(skipped).not.toHaveTextContent("Failed");
+    expect(skipped!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "cancelled");
+    expect(failed).toHaveTextContent("Couldn't read down.example/page: the site is unreachable");
+    expect(failed).toHaveTextContent("Failed · 1.2 s · round 3");
+    expect(failed!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "error");
+  });
+
   it("shows successful search calls per engine with other outcomes and rounds separately", () => {
     render(<AnswerProcessV2 toolActivity={{ calls: [
       { origin: "web_search", round: 2, status: "complete", toolName: "search" }

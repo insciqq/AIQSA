@@ -96,14 +96,14 @@ test("shows the page read's host/path with plain-language refusal copy", async (
   await expect(blocked).toHaveText(["Blocked 127.0.0.1/e2e-page: this address is not allowed"]);
   await expect(page.getByTestId("tool-activity-disclosure").last()).not.toContainText("token=private");
 
-  // A link the chat never contained is refused, and the model is told to ask for it.
+  // A link the chat never contained is skipped, and the model is told to ask for it.
   await ask(page, `${titlePrefix}: summarize the private page [AIQSA_FETCH_URL_E2E:unlisted]`,
     "Page reading finished: fetch_url_not_in_conversation.");
   const refused = await latestSteps(page);
-  await expect(refused).toHaveText(["Didn't read unlisted.example/private: the link wasn't shared in this chat"]);
+  await expect(refused).toHaveText(["Skipped unlisted.example/private: only links from this chat or web search are read"]);
 
   // The persisted projection shows the same rows after a reload.
   await page.reload();
   await expect(page.getByTestId("conversation-thread")).toContainText("Page reading finished: fetch_url_not_in_conversation.");
-  await expect(await latestSteps(page)).toHaveText(["Didn't read unlisted.example/private: the link wasn't shared in this chat"]);
+  await expect(await latestSteps(page)).toHaveText(["Skipped unlisted.example/private: only links from this chat or web search are read"]);
 });

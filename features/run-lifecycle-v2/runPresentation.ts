@@ -267,8 +267,17 @@ function notInConversationCopy(target: string, scope: unknown): string {
   switch (scope) {
     case "scheduled_run": return `Didn't read ${target}: open the task and save its instructions to allow this link`;
     case "task_instructions": return `Didn't read ${target}: links in a task's instructions are read only by its scheduled runs`;
-    default: return `Didn't read ${target}: the link wasn't shared in this chat`;
+    default: return `Skipped ${target}: only links from this chat or web search are read`;
   }
+}
+
+/**
+ * A page read the run skipped by its own rules (a link it may not read, or
+ * its page limit): nothing was sent and nothing failed, so the step stays
+ * neutral instead of reading as an error.
+ */
+export function fetchCallSkippedV2(call: ToolActivityIdentity): boolean {
+  return call.fetchOutcome === "fetch_url_not_in_conversation" || call.fetchOutcome === "fetch_url_limit_reached";
 }
 
 /** A page read's row: "Reading <host/path>", then its outcome in plain words. */

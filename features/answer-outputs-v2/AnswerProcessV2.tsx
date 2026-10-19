@@ -15,6 +15,7 @@ import {
   answerProcessLabelV2,
   contextCompactionCopyV2,
   describeToolCallV2,
+  fetchCallSkippedV2,
   memorySearchCallHiddenV2,
   toolActivityOriginV2
 } from "@/features/run-lifecycle-v2/runPresentation";
@@ -38,12 +39,13 @@ function toolDuration(durationMs: number | undefined): string | null {
     : `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
 }
 
-/* Meta reads "0.8 s · round 2"; only a non-complete state adds a word. */
+/* Meta reads "0.8 s · round 2"; only a non-complete state adds a word. A
+   skipped page read already says so in its label. */
 function toolMeta(call: ToolCallV2): string {
   const parts: string[] = [];
   const duration = toolDuration(call.durationMs);
   if (call.approvalRequired) parts.push("Not sent · needs approval");
-  else if (call.status === "error") parts.push("Failed");
+  else if (call.status === "error" && !fetchCallSkippedV2(call)) parts.push("Failed");
   else if (call.status === "cancelled") parts.push("Stopped");
   if (duration) parts.push(duration);
   parts.push(`round ${call.round}`);
@@ -298,8 +300,8 @@ export function AnswerProcessV2({
                 {calls.map((call, index) => (
                   <li key={call.origin === "mcp" && call.details && runId ? `${runId}:${call.details.roundIndex}:${call.details.ordinal}` : `${call.round}:${index}:${call.toolName}`}
                     className={call.origin === "mcp" && call.details && runId ? "v2-mcp-call-row" : undefined} data-status={call.status}>
-                    {/* A call waiting for approval did not fail: it was never sent. */}
-                    <ToolCallMarkV2 status={call.approvalRequired ? "cancelled" : call.status} />
+                    {/* A call waiting for approval or a skipped page read did not fail: it was never sent. */}
+                    <ToolCallMarkV2 status={call.approvalRequired || fetchCallSkippedV2(call) ? "cancelled" : call.status} />
                     {call.origin === "mcp" && call.details && runId ? (
                       <McpCallDetailsV2 runId={runId} reference={call.details} status={call.status}
                         label={describeToolCallV2(call, call.status === "running" ? "running"

@@ -345,7 +345,8 @@ async function speechToTextAdminScreen(page: Page, testInfo: TestInfo, viewport:
     await expect(row.getByTestId("admin-speech-to-text-assignment")).toBeVisible();
     await row.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await shot(page, testInfo, "stt-admin-row", viewport);
-    await expectContained(page, viewport, "stt-admin-row", [status, row.getByTestId("admin-speech-to-text-save")]);
+    await expect(row.getByTestId("admin-speech-to-text-save")).toHaveCount(0);
+    await expectContained(page, viewport, "stt-admin-row", [status, row.getByRole("button", { name: "Find models" })]);
   } finally {
     await page.goto("about:blank").catch(() => undefined);
     await fixture.cleanup();

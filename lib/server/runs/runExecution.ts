@@ -2343,6 +2343,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const fetchSession = fetchPlan ? createFetchUrlSession({
           plan: fetchPlan,
           scheduled: fetchPlan.taskUrlDigests !== undefined,
+          searchAvailable: normalizedRequest.searchPlan.options.length > 0,
           followupTexts: () => followups?.entries.map((entry) => entry.text) ?? [],
           ...(input.fetchPage ? { fetchPage: input.fetchPage } : {}),
           ...(input.extractPage ? { extractPage: input.extractPage } : {}),
