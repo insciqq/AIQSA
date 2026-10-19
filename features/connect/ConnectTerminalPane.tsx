@@ -54,6 +54,18 @@ function useCountdown(retryAt: number | null): number {
   return retryAt === null ? 0 : Math.max(0, Math.ceil((retryAt - now) / 1000));
 }
 
+const INPUT_LOST_MESSAGE = "Your last keystrokes may not have reached the computer.";
+
+/** Stays over a live terminal until dismissed: the line on screen may miss part of what was typed. */
+function InputLostNotice({ onDismiss }: Readonly<{ onDismiss(): void }>) {
+  return (
+    <div className="v2-connect-terminal-notice" data-testid="connect-terminal-input-lost" role="alert">
+      <p>{INPUT_LOST_MESSAGE} Check the command line before you press Enter.</p>
+      <UiV2Button onClick={onDismiss}>Got it</UiV2Button>
+    </div>
+  );
+}
+
 function StateOverlay({
   deviceName,
   lastSeenAt,
@@ -79,8 +91,12 @@ function StateOverlay({
     case "reconnecting":
       content = (
         <>
-          <p role="status">
-            {state.cause === "connect_view_limit" ? `${connectErrorMessage("connect_view_limit")} ` : "The connection was interrupted. "}
+          <p role={state.cause === "input_lost" ? "alert" : "status"}>
+            {state.cause === "connect_view_limit"
+              ? `${connectErrorMessage("connect_view_limit")} `
+              : state.cause === "input_lost"
+                ? `${INPUT_LOST_MESSAGE} Typing is paused until the terminal shows the real screen again. `
+                : "The connection was interrupted. "}
             {seconds > 0 ? `Reconnecting in ${seconds} s…` : "Reconnecting…"}
           </p>
           <UiV2Button onClick={onRetry}>Reconnect now</UiV2Button>
@@ -117,7 +133,10 @@ function StateOverlay({
     case "failed":
       content = (
         <>
-          <p role="alert">{connectErrorMessage(state.code)}</p>
+          <p role="alert">
+            {connectErrorMessage(state.code)}
+            {state.inputLost ? " Some of what you typed was not sent; check the command line before you continue." : null}
+          </p>
           <UiV2Button onClick={onRetry}>Try again</UiV2Button>
         </>
       );
@@ -269,6 +288,13 @@ export function ConnectTerminalPane({
             <p role="alert">The terminal could not be loaded. Reload the page to try again.</p>
           </div>
         </div>
+      ) : state.kind === "live" && state.inputLost ? (
+        <InputLostNotice
+          onDismiss={() => {
+            sessionRef.current?.dismissInputNotice();
+            focusRef.current?.();
+          }}
+        />
       ) : (
         <StateOverlay
           deviceName={deviceName}
