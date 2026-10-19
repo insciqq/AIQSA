@@ -89,7 +89,7 @@ describe("persisted AIQSA Connect pairing", () => {
     await expect(repository.denyPairing({ now: new Date(), userCodeHash: old.userCodeHash })).resolves.toBe("expired");
 
     const pending = await pairing();
-    await prisma.authSession.update({ data: { revokedAt: new Date() }, where: { id: session.id } });
+    await prisma.authSession.update({ data: { revokedAt: new Date(), revokedReason: "logout" }, where: { id: session.id } });
     await expect(repository.approvePairing({ authSessionId: session.id, now: new Date(), userCodeHash: pending.userCodeHash, userId }))
       .resolves.toBe("unauthorized");
 
@@ -204,7 +204,7 @@ describe("persisted AIQSA Connect devices", () => {
 
     await expect(repository.isAuthSessionActive({ now: new Date(), sessionId: session.id, userId })).resolves.toBe(true);
     await expect(repository.isAuthSessionActive({ now: new Date(), sessionId: session.id, userId: other })).resolves.toBe(false);
-    await prisma.authSession.update({ data: { revokedAt: new Date() }, where: { id: session.id } });
+    await prisma.authSession.update({ data: { revokedAt: new Date(), revokedReason: "logout" }, where: { id: session.id } });
     await expect(repository.isAuthSessionActive({ now: new Date(), sessionId: session.id, userId })).resolves.toBe(false);
   });
 
@@ -223,7 +223,7 @@ describe("persisted AIQSA Connect devices", () => {
     expect(await prisma.connectDevice.count({ where: { userId } })).toBe(0);
     await expect(repository.findPairing(approved.id)).resolves.toBeNull();
     await expect(repository.deviceExists({ id: kept.id, userId: other })).resolves.toBe(true);
-    expect(relay.disconnectUser).toHaveBeenCalledWith(userId, "connect_unauthorized");
+    expect(relay.disconnectUser).toHaveBeenCalledWith(userId, { activeAuthSessionIds: [session.id] });
   });
 });
 

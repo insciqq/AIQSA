@@ -5,6 +5,12 @@ import { revokeAllConnectDevices, revokeConnectDevicesForUser } from "./revocati
 function transaction() {
   const calls: string[] = [];
   const tx = {
+    authSession: {
+      findMany: vi.fn(async (args: { where: { expiresAt: { gt: Date }; revokedAt: null; userId: string } }) => {
+        calls.push(`sessions:${args.where.userId}:${args.where.revokedAt}:${args.where.expiresAt.gt instanceof Date}`);
+        return [{ id: "kept-session" }];
+      })
+    },
     connectDevice: {
       deleteMany: vi.fn(async (args: unknown) => {
         calls.push(`devices:${JSON.stringify(args)}`);
@@ -22,7 +28,7 @@ function transaction() {
 }
 
 describe("AIQSA Connect account revocation", () => {
-  it("deletes unconsumed approvals before the devices, then drops the account's streams", async () => {
+  it("deletes unconsumed approvals before the devices, then drops the account's streams and names its active sessions", async () => {
     const { calls, tx } = transaction();
     const relay = { disconnectUser: vi.fn(() => calls.push("relay")) };
 
@@ -31,9 +37,11 @@ describe("AIQSA Connect account revocation", () => {
     expect(calls).toEqual([
       `pairings:${JSON.stringify({ where: { approvedUserId: "user-1", consumedAt: null } })}`,
       `devices:${JSON.stringify({ where: { userId: "user-1" } })}`,
+      "sessions:user-1:null:true",
       "relay"
     ]);
-    expect(relay.disconnectUser).toHaveBeenCalledWith("user-1", "connect_unauthorized");
+    // The sessions the caller kept active stay signed in to Connect.
+    expect(relay.disconnectUser).toHaveBeenCalledWith("user-1", { activeAuthSessionIds: ["kept-session"] });
   });
 
   it("revokes every device and approval of the installation and ends every stream", async () => {

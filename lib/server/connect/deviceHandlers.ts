@@ -239,6 +239,8 @@ export function createConnectDeviceHandlers(deps: ConnectDeviceHandlerDeps) {
           return connectRefusal("connect_unauthorized", headers);
         }
         const stream = createConnectSseStream({ maxQueuedBytes: CONNECT_DEVICE_STREAM_QUEUE_BYTES, signal: request.signal });
+        // A client already gone never replaces the device's current stream.
+        if (stream.isClosed()) return stream.response;
         const attached = deps.relay.attachDevice({ epoch, hello: hello(device.id), record: device, tokenHash, writer: stream });
         if (attached.kind === "stale") {
           stream.close();
