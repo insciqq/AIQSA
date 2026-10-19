@@ -48,7 +48,7 @@ export function createConnectPush(deps: ConnectPushDeps): ConnectPush {
   const now = deps.now ?? Date.now;
   const jobId = deps.jobId ?? randomUUID;
   const lastSent = new Map<string, number>();
-  const accounts = new Map<string, { refusalLogged: boolean; sentAt: number[] }>();
+  const accounts = new Map<string, { refusalLoggedAt: number | null; sentAt: number[] }>();
   const inFlight = new Set<Promise<void>>();
   const queued: Array<() => Promise<void>> = [];
   let running = 0;
@@ -64,17 +64,16 @@ export function createConnectPush(deps: ConnectPushDeps): ConnectPush {
     lastSent.set(key, at);
   }
 
-  /** Spends one of the account's notices in the window; false, logged once per window, when none is left. */
+  /** Spends one of the account's notices in the window; false, logged at most once a window, when none is left. */
   function spendAccountNotice(userId: string, at: number): boolean {
-    const account = accounts.get(userId) ?? { refusalLogged: false, sentAt: [] };
+    const account = accounts.get(userId) ?? { refusalLoggedAt: null, sentAt: [] };
     account.sentAt = account.sentAt.filter((sentAt) => at - sentAt < CONNECT_PUSH_ACCOUNT_WINDOW_MS);
-    if (account.sentAt.length === 0) account.refusalLogged = false;
     accounts.delete(userId);
     if (accounts.size >= REMEMBERED_ACCOUNTS) accounts.delete(accounts.keys().next().value!);
     accounts.set(userId, account);
     if (account.sentAt.length >= CONNECT_PUSH_ACCOUNT_LIMIT) {
-      if (!account.refusalLogged) {
-        account.refusalLogged = true;
+      if (account.refusalLoggedAt === null || at - account.refusalLoggedAt >= CONNECT_PUSH_ACCOUNT_WINDOW_MS) {
+        account.refusalLoggedAt = at;
         logEvent("job_attempt", { action: "skip", code: "push_rate_limited", outcome: "skipped", stage: "claim", subsystem: "push" });
       }
       return false;
