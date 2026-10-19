@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import failureCodes from "../../observability/failureCodes.json";
-import { TELEGRAM_RUN_REFUSAL_COPY as COPY, telegramReasonText, telegramUsageLimitText } from "../copy";
+import { TELEGRAM_COPY, TELEGRAM_RUN_REFUSAL_COPY as COPY, telegramReasonText, telegramUsageLimitText } from "../copy";
 import { TELEGRAM_BRIDGE_LOG_CODES } from "./index";
 import { telegramRefusalReply } from "./refusals";
 
@@ -25,6 +25,7 @@ describe("refusals of the send handler in Telegram", () => {
     ["agent_unavailable", COPY.agentUnavailable, "settings"],
     ["agent_context_too_large", COPY.contextTooLarge, "none"],
     ["context_too_large", COPY.contextTooLarge, "none"],
+    ["mcp_approval_continuation_unavailable", TELEGRAM_COPY.approvalExpired, "none"],
     ["mcp_not_ready", COPY.toolsUnavailable, "open"],
     ["mcp_tool_access_denied", COPY.toolsUnavailable, "open"],
     ["skill_not_available", COPY.skillUnavailable, "open"],
