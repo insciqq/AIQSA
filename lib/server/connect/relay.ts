@@ -47,7 +47,8 @@ export type ConnectViewOwner = Readonly<{ authSessionId: string; userId: string 
 /**
  * What the relay tells in-process listeners. Device events carry the full
  * browser projection of the device; `status` also names the session title
- * and its previous status for notification consumers. `closed` ends every
+ * and its previous status for notification consumers, also for a change that
+ * only a snapshot carried (`reason` is null then). `closed` ends every
  * browser device-list stream; `devices_changed` asks one account's lists to
  * reload, after a device was added or removed.
  */
@@ -94,6 +95,8 @@ export const CONNECT_RELAY_MAX_EVENTS_STREAMS_PER_USER = 16;
 export const CONNECT_RELAY_VIEW_BUFFER_BYTES = 1_048_576;
 /** A view counts as on screen this long after its browser last reported it visible. */
 export const CONNECT_VIEW_VISIBLE_WINDOW_MS = 30_000;
+/** Devices whose last session statuses the process remembers across their offline periods; the oldest are forgotten first. */
+export const CONNECT_RELAY_REMEMBERED_DEVICES = 1_024;
 const REPLY_TIMEOUT_MS = CONNECT_REPLY_TIMEOUT_SECONDS * 1000;
 const VIEW_ORPHAN_TIMEOUT_MS = CONNECT_VIEW_ORPHAN_TIMEOUT_SECONDS * 1000;
 
@@ -114,6 +117,9 @@ type OnlineDevice = {
 };
 
 type OutputFrame = Readonly<{ data: string; seq: number }>;
+
+/** The last session statuses a device reported: session identifiers and statuses only, never titles or paths. */
+type KnownStatuses = Readonly<{ statuses: ReadonlyMap<string, ConnectSessionStatus>; userId: string }>;
 
 type ViewState = {
   readonly authSessionId: string;
@@ -174,6 +180,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
   const views = new Map<string, ViewState>();
   const listeners = new Set<ConnectRelayListener>();
   const eventsStreams = new Map<string, number>();
+  const knownStatuses = new Map<string, KnownStatuses>();
   let epoch = 0;
 
   function emit(event: ConnectRelayEvent): void {
@@ -192,6 +199,28 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
 
   function current(device: OnlineDevice): boolean {
     return devices.get(device.record.id) === device;
+  }
+
+  /** Keeps the device's session statuses for its next snapshot, also after its stream ends. */
+  function rememberStatuses(device: OnlineDevice): void {
+    const deviceId = device.record.id;
+    knownStatuses.delete(deviceId);
+    if (knownStatuses.size >= CONNECT_RELAY_REMEMBERED_DEVICES) knownStatuses.delete(knownStatuses.keys().next().value!);
+    knownStatuses.set(deviceId, {
+      statuses: new Map((device.sessions ?? []).map((session) => [session.id, session.status])),
+      userId: device.record.userId
+    });
+  }
+
+  /**
+   * What a new snapshot is compared with: the current stream's list, or the
+   * statuses the device last reported before it reconnected. Null when the
+   * process never saw the device's sessions (it restarted): nothing to compare.
+   */
+  function previousStatuses(device: OnlineDevice): ReadonlyMap<string, ConnectSessionStatus> | null {
+    if (device.sessions) return new Map(device.sessions.map((session) => [session.id, session.status]));
+    const known = knownStatuses.get(device.record.id);
+    return known && known.userId === device.record.userId ? known.statuses : null;
   }
 
   /** Enqueues a command; a device that stopped reading loses its stream and reconnects. */
@@ -286,14 +315,33 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
   function applyEvent(device: OnlineDevice, event: ConnectDeviceEvent): void {
     switch (event.type) {
       case "sessions": {
-        device.sessions = [...event.sessions];
-        emit({
-          device: wire(device),
-          deviceId: device.record.id,
-          sessions: device.sessions,
-          type: "sessions",
-          userId: device.record.userId
-        });
+        const previous = previousStatuses(device);
+        const sessions = [...event.sessions];
+        device.sessions = sessions;
+        rememberStatuses(device);
+        const projection = wire(device);
+        emit({ device: projection, deviceId: device.record.id, sessions, type: "sessions", userId: device.record.userId });
+        if (!previous) return;
+        // A transition that reached the server only inside a snapshot (the device made it while its
+        // stream was down) is still a transition for notification consumers. A session new to the
+        // list emits nothing; an explicit status for the same transition then compares equal.
+        for (const session of sessions) {
+          const previousStatus = previous.get(session.id);
+          if (previousStatus === undefined || previousStatus === session.status) continue;
+          if (!current(device)) return;
+          emit({
+            device: projection,
+            deviceId: device.record.id,
+            previousStatus,
+            reason: null,
+            sessionId: session.id,
+            status: session.status,
+            statusAt: session.statusAt,
+            title: session.title,
+            type: "status",
+            userId: device.record.userId
+          });
+        }
         return;
       }
       case "status": {
@@ -303,6 +351,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
         const previous = sessions[index]!;
         device.sessions = sessions.map((session, position) =>
           position === index ? { ...session, status: event.status, statusAt: event.statusAt } : session);
+        rememberStatuses(device);
         emit({
           device: wire(device),
           deviceId: device.record.id,
@@ -648,6 +697,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     /** The device was revoked: its stream gets `closed {code}` and ends at once. */
     disconnectDevice(deviceId: string, code: ConnectDeviceStreamClosedCode): void {
       epoch += 1;
+      knownStatuses.delete(deviceId);
       const device = devices.get(deviceId);
       if (!device) return;
       endDevice(device, {
@@ -667,6 +717,9 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     disconnectUser(userId: string, input: Readonly<{ activeAuthSessionIds: Iterable<string> }>): void {
       epoch += 1;
       const active = new Set(input.activeAuthSessionIds);
+      for (const [deviceId, known] of [...knownStatuses]) {
+        if (known.userId === userId) knownStatuses.delete(deviceId);
+      }
       const userViews = () => [...views.values()].filter((view) => view.userId === userId);
       // The device streams end below, so the devices are not told about these views.
       closeViews(userViews().filter((view) => !active.has(view.authSessionId)).map((view) => view.id), "connect_unauthorized", false);
@@ -697,6 +750,7 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
     /** The administrator turned AIQSA Connect off: everything ends with `connect_disabled`. */
     disable(): void {
       epoch += 1;
+      knownStatuses.clear();
       endAll({
         final: { data: { code: "connect_disabled" }, event: "closed" },
         pendingCode: "connect_disabled",
