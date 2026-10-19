@@ -1,82 +1,74 @@
-# PERSISTENCE
+---
+paths:
+  - "prisma/**"
+  - "lib/server/retention/**"
+  - "lib/server/bootstrap/**"
+  - "lib/server/storageMigration/**"
+  - "aiqsa.sh"
+---
+# Persistence
 
-Owner: Persistence maintainers
-Scope: Durable ownership, migrations, retention, backup, restore, and deletion.
+Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `prisma/migrations/`), bootstrap (`prisma/bootstrap.ts`, `lib/server/bootstrap/`), object storage, recovery state, retention, deletion, and single-host backup and restore (`aiqsa.sh`). The schema and committed migrations are the exact inventory of what is stored; do not describe tables in prose.
 
-## Authority And Shape
+## Authority
 
-PostgreSQL is the coordination authority; private object bytes retain relational ownership/lifecycle references. OpenSearch and guest disks are not backup authorities.
+- PostgreSQL is the authority for ownership, control state, accepted bindings, recovery and outputs. Object storage holds bytes, but relational rows decide who may read them and how long they live. OpenSearch indexes and Workspace guest disks are derived or operational state: they are not backed up, and rebuilds never repair canonical rows from them.
+- Enforce tenant consistency in the database (composite keys that carry the owner) wherever it can be expressed. Keep the custom checks and deferred triggers that guard what relations cannot express, because raw SQL workers and destructive handlers bypass application code; simplify them only in forward migrations that tests prove.
+- The Memory history and round source guards validate each chat once per batch of deferred events. Every table their asserts read must carry the statement-level trigger that forgets checked keys, or a later write in the same batch escapes validation (`prisma/migrations/20261005180000_memory_source_guard_once_per_batch/migration.sql`).
+- Accepted revisions, bindings, generations and recovery evidence are immutable and protected by restrictive references while referenced. Skill revisions and bundle objects are append-only.
+- To retire stored data: remove the projections that read it, prove recovery no longer needs it, stop writes, then drop it in a forward migration. Retired values stay readable only where history or recovery needs them; new work never writes them.
 
-Enforce tenant-consistent parents/children in the database wherever representable. Accepted revisions, bindings, generations, and recovery evidence stay immutable and restrictive while referenced. Null, explicit Off, and a concrete choice remain distinct.
+## Ownership rules that are easy to get wrong
 
-Persist run/tool data only for execution, recovery, side-effect prevention, security, deletion, citations/outputs, retention or accounting. Before dropping storage, remove projections, prove recovery consumers, stop writes, then migrate forward. Retired shapes serve required historical read/recovery only; current admission never writes them.
+- Personal and Project principals are disjoint. Deleting an account removes its memberships, not shared content; nullable actors keep history readable.
+- Publishing a Skill grants future use only; accepted revisions survive unpublication and deletion. Deleting an Assistant clears run and chat references but keeps their snapshots.
+- Removing a personal saved file keeps copies already admitted into chats. Project and Temporary chat attachments never become personal files implicitly. Artifact deduplication is scoped to one owner.
+- The protected `Full access` group gives its explicit members every current and future active provider connection, answer model and Search source; its name and lifecycle cannot change. MCP servers are never included implicitly and the group never confers personal identity or secrets.
 
-Personal and Project principals are disjoint. Account deletion removes membership, not shared content; nullable actors and bounded attribution preserve history. Unrecoverable historical authority fails closed before external I/O; terminal records remain readable. Skill publication grants future use; accepted revisions survive unpublication/deletion. Assistant deletion nulls run/chat references, keeping snapshots. Revisions and bundle objects are append-only, including private incomplete imports. Removing a personal saved file preserves admitted chat copies; Project/Temporary attachments never implicitly become personal files.
+## Recovery and derived state
 
-The protected `Full access` group's explicit members receive all current/future active provider connections, answer models, and Search sources. Its name/lifecycle are immutable. MCP remains explicitly materialized per installation server and grants no personal identity or secret authority.
-
-### Recovery And Derived State
-
-External side effects need durable dispatch identity before I/O. Unknown outcomes are never replayed; usage settles once and unknown usage stays unknown. Past its recovery window an unknown outcome is final; like settled evidence it may release its provider references, never its state, receipt or replay fence. Compatible checksum-verified settled PDF work may be reused by an admitted retry; restore preserves ambiguity. Transient decoded/transcribed content is cleared atomically once its durable result is recoverable or by cleanup. Infrastructure failure cannot produce false success or provider replay.
-
-Claims and terminal writers require status/version/lease guards. Release database locks before guest/file I/O. Memory/history/Knowledge derivatives reprove owner, source, lifecycle, safety and generation authority at use, including during purge. Rebuilds cannot repair canonical state from derived indexes. Rejected replacement preflight leaves serving indexes intact; readiness/alias activation follows full integrity proof. Projection/deletion obligations survive source deletion so stale retries cannot resurrect content.
-
-Checkpoints retain bounded branch/source/pin/revision/refs; stale writers are fenced. MCP calls from Workspace code persist only content-free receipts (server, tool, argument digest, outcome, size, duration) before dispatch, never arguments or results: guest code is never replayed. A new guest initialization or a terminal path marks unsettled receipts and their command invocations unknown, never retried. Non-Agent runs add notes and receipts (binding/source digests/usage) claimed pre-dispatch and settled with usage, never prompts/transcript/guest bytes; outside the tool loop they form a notes-only checkpoint (round 0, no continuation or calls) that never makes a run a tool-loop run. Retired `legacy-compatible-v1`, `legacy_compatible` and `legacyFallback` values are read only for compatibility. Notes are reused from their checkpoint and by later turns of their branch; unreadable sources fail closed, transient store errors fail visibly; undispatched claims are not unknown. Knowledge purge scrubs retained previews, reader copies and notes. Store admission bounds storage phases, not business calls: exhausted run/branch budgets (externalized/in-flight bytes) degrade to Off-parity delivery.
-
-Knowledge Source identity is independent of Base membership; equal checksums never merge Sources. Reprocessing preserves attempts; replacement becomes current only after guarded settlement, leaving the prior ready version on failure. Normalized artifacts support reindexing without originals/parser services; citations resolve exact stored versions/artifacts. Embedding reuse requires exact text hash and vector space/dimension, creating no usage. Memory cutover/rollback uses one immutable generation and fresh eligibility/authority checks, never a partial pointer repair. Operational evidence stays bounded and content-free.
-
-Workspace originals/outputs survive runtime loss. Execution/export/settlement require current session ownership. Expiry/cancellation cannot prove cleanup; uncertainty blocks the session. Handover fences stale requests across restarts. Export captures quiescent bytes; recovery requires capture without guest enumeration/provider replay. Capacity may reject export, never evict another answer or block chat.
-
-Outputs settle atomically after size/checksum verification. Isolated writes retain cleanup obligations. Downloads cannot claim pre-header digest verification; completed exports never downgrade. Disk loss/reset/restore retires unfinished obligations before recreation, preserving messages, completed attachments and verified retained captures.
-
-References/readers protect immutable captures. Checkpoints settle independently of final export; recovery publishes the declared retained version under current access, without mutable paths or guest reexecution. Same-path versions retain distinct identities; deletion/retention applies.
-
-System Vision claims unknown usage before dispatch; analysis settles once. Ambiguous attempts never rebill. Stop/access loss suppresses success, preserving usage separately. Recovery reuses settled analysis without pixels/provider I/O.
-
-Artifact deduplication is owner-scoped; publication membership never changes author bytes. Renderer caches preserve identity/revocation. Cleanup reservations and references protect concurrent writes/reuse/deletion.
+- Release database locks before guest or file I/O.
+- An unknown outcome past its recovery window becomes final. It may then release provider references, never its state, receipt or replay fence. A restore keeps unknown outcomes unknown.
+- Derived Memory, history and Knowledge data re-proves owner, source, lifecycle and generation authority when used, including during purge. Projection and deletion obligations outlive their source, so a stale retry cannot resurrect deleted content.
+- Index replacement keeps the serving index until the new one passes a full integrity proof. Memory cutover and rollback switch one immutable generation, never repair pointers piecemeal.
+- A Knowledge Source's identity is independent of Base membership, and equal checksums never merge Sources. A reprocessed version becomes current only after it settles; on failure the previous ready version stays current.
+- Workspace originals and outputs survive runtime loss. Expiry or cancellation does not prove cleanup, so uncertainty blocks the session. Completed exports never downgrade, and lack of capacity may reject an export but never evicts another answer's files.
 
 ## Migrations And Bootstrap
 
-v0.2.0 starts supported persistent upgrades; earlier development databases need no bridge. Installations on v0.2.0–v0.2.30 (bundled MinIO) back up PostgreSQL, then upgrade through v0.2.34 and its `UPGRADING_FROM_MINIO.md` before any later release: a later release applies its migrations before `storage-init` refuses the unmigrated store. Forward migrations preserve operator data, credentials and configuration, tolerating previous-release writers during Compose replacement. Destructive/incompatible upgrades require a separate operator procedure, never ordinary `pull`/`up`.
+- Production installations exist. Supported persistent upgrades start at v0.2.0, and an ordinary update is `docker compose pull && docker compose up -d` (or `./aiqsa.sh upgrade`). Forward migrations preserve operator data, credentials and configuration, and tolerate the previous release's writers while Compose replaces containers. A destructive or incompatible change needs an explicit operator decision and its own documented procedure. Development databases and fixtures need no bridges.
+- Installations on v0.2.0–v0.2.30 (bundled MinIO) must back up PostgreSQL and upgrade through v0.2.34 and its UPGRADING_FROM_MINIO guide first: later releases migrate before `storage-init` refuses the unmigrated store (`lib/server/storageMigration/`).
+- `prisma/migrations/20260815000000_baseline` is the immutable first migration and holds custom PostgreSQL DDL that Prisma cannot reconstruct. Every change is a new migration; never edit a committed one. Installations use `prisma migrate deploy`, never `prisma db push`.
+- Every schema change ships a forward migration and updates bootstrap, seed and integrity checks when their assumptions change.
+- Build an index on a large live table with `CREATE INDEX CONCURRENTLY` as the only statement in its migration file, so writers keep working during the upgrade. Prisma sends a file as one simple query, and PostgreSQL refuses `CONCURRENTLY` inside the implicit transaction of a multi-statement query. A failed concurrent build leaves an invalid index and a failed migration; the operator drops the index and marks the migration rolled back before deploying again.
+- Bootstrap accepts only an empty schema or the exact adopted administrator identity and refuses any other non-empty database before changing it. It creates no demo content or real provider deployments; reruns repair code-owned foundations but keep operator identity, credentials, settings, grants and content.
+- Upgrade adoptions of earlier configuration run once; later administrator edits stay independent of them.
+- Never run migrate, seed, prune or reset against the persistent installation during development. Verify with `npm run db:migration:smoke` (plus `npm run db:baseline:contract` for baseline or custom DDL) on disposable databases (`agent_docs/TESTING.md`).
 
-`20260815000000_baseline` is the immutable first migration anchor, including custom PostgreSQL DDL that Prisma cannot reconstruct. Changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
+## Deletion
 
-An index on a large live table is built by `CREATE INDEX CONCURRENTLY` as the only statement of its migration file, so writers continue during an upgrade: Prisma sends a file as one simple query, and PostgreSQL refuses CONCURRENTLY inside the implicit transaction of a multi-statement query. A failed concurrent build leaves an invalid index and a failed migration; the operator drops that index and resolves the migration as rolled back before deploying again.
+- Deletion first fences future admission, recall and sharing and records a durable obligation, then acknowledges. Handlers reauthorize the exact aggregate, settle active work and retry idempotently; an obligation an administrator blocked waits, it is never abandoned.
+- Object deletion rechecks every reference before removing bytes; the application drains due deletions itself.
+- `npm run prune -- --dry-run` is read-only and comes before any explicitly authorized `--execute`. Pruning never touches active sessions or runs, evidence still visible to retrieval, or referenced objects.
+- Knowledge permanent deletion starts only from Trash. Purging a Source removes its versions, artifacts and private evidence; purging a Base removes its scope but not the canonical Sources. Answer text stays, and deleted citations keep only generic handles.
+- Account deletion drains personal MCP servers and owned Knowledge and Memory dependencies before deleting their parents, and stays pending until then. Disconnecting a personal MCP server wipes its saved values immediately. Revoking an inbound Memory OAuth grant keeps the facts.
+- Deleting a Project is an explicit action of its Owner; account deletion and Project archival never substitute for it, and unlinking personal resources from a Project does not delete them.
+- A missing Workspace disk is recreated from canonical originals and the UI never claims the old files survived.
+- Data already sent to external providers or tools, and their own retention and backups, are outside the application's erasure claims.
 
-Upgrade adopts Vision from page-image configuration once; later edits/clears stay independent.
+## Retention decisions
 
-Keep custom checks and deferred triggers for row, tenant/source, history, deletion, and concurrent-writer invariants that relations cannot express, especially with raw SQL workers and destructive handlers. Simplify them only through behavior-proven forward migrations. Memory history and round source guards validate each chat once per batch of deferred events; every table their asserts read must carry the statement-level trigger that forgets passed keys, or a later write escapes validation.
+Cutoffs and batch sizes live in code; these are the product decisions behind them.
 
-Bootstrap accepts an empty schema or the exact adopted administrator identity under serializable/advisory-lock protection. It refuses other nonempty targets before mutation and creates minimal foundations without demo content or real provider deployments. Adopted reruns may repair code-owned foundations, preserving operator identity, credentials, settings, grants, policy, and content.
+- Deleting chats never resets spend: chat deletion and Temporary chat expiry keep usage and only detach run and Memory links. Usage limits gate admission, not spend; accepted runs finish and system work is never blocked.
+- A scheduled task's history retention deletes only chats its runs created and the owner never touched or kept, through the ordinary permanent-deletion path (`lib/server/scheduledTasks/historyRetention.ts`). Deleting the task makes its chats ordinary.
+- Operator telemetry has no foreign key to users; deleting an account clears its id from incidents in the same transaction.
+- An answer problem report stores a reason and an optional comment, never the question or answer, and disappears with the answer, chat or reporting account.
 
-The Knowledge V1 bridge backfill (`npm run knowledge:sources:backfill`) remains bounded, resumable, idempotent, and content-free. It preserves explicit document/version identities and never deduplicates by checksum.
+## Backup and restore
 
-## Retention And Deletion
+`./aiqsa.sh backup` and `./aiqsa.sh restore` provide single-host cold backup and empty-target restore. Off-site copies, schedules and multi-host recovery belong to infrastructure.
 
-Keep every run’s final context measurement for its lifetime; earlier measurements may expire.
-
-The application prunes operator telemetry in bounded batches: hourly counters and incidents after 30 days, then per UTC day and incident key (event, code, subsystem, connection, error fingerprint) all but its first and latest 100 incidents, and last any incidents beyond the newest 50,000. Every recording process adds its own totals; concurrent writers sum per key. Telemetry keeps no foreign key on users: deleting an account clears its id from incidents in the same transaction, and pruning clears any written later.
-
-`npm run prune -- --dry-run` is read-only and precedes any explicitly authorized `--execute`. Never prune active sessions/runs, retrieval-visible evidence without a proven cutoff, or referenced objects.
-
-Deletion first fences future admission/recall/sharing and creates a durable obligation before acknowledgment. Handlers reauthorize the exact aggregate, settle active work, and retry idempotently; administrator-blocked obligations are not abandoned. Object staging locks/rechecks every reference, deletion uses leased per-key jobs, and concurrent attachment linking has one transactional winner. The application drains due object-deletion jobs in small batches, so deleted bytes never wait for an operator prune. Failures retain value-free retry evidence.
-
-A scheduled task's history retention (30, 90 or 365 days, or forever; tasks older than the choice keep forever) permanently deletes the chats its runs created (`Chat.scheduledTaskId`) once their last run settled longer ago, in bounded application sweeps through the owner's permanent deletion service and obligations, whose admission rechecks eligibility under the chat lock. It never deletes the task's current chat, a chat with an owner-written message or follow-up or a run the owner started, pinned, in a folder or with an active share, one the owner renamed or restored (`Chat.ownerKeptAt`), one a rotation still carries from, or one with an open run. Deleting the task makes its chats ordinary. A rotation's carried result is owner-keyed and leaves with its task, source chat or answer; tasks keep only a content-free count of deleted chats.
-
-Knowledge Trash fences future use while membership/publication remains recoverable. Permanent deletion starts only from Trash. Source purge removes its versions/artifacts/private evidence; Base purge removes scope/evidence without deleting canonical Sources. Answer text remains, but deleted citations retain only generic handles without private provenance. Completion waits for every object to be deleted or proven live elsewhere, then drops object-path manifests. Retention cutoffs and batches are owned by code.
-
-Account deletion archives personal MCP servers and drains them with owned Knowledge/Memory dependencies/staging before protected parents, staying pending until then. Personal MCP disconnect immediately wipes saved values, observed inventory and draft evidence; tokens follow revocation. Project deletion is an explicit Owner-authorized aggregate action; unlinking personal resources does not delete them. Account deletion and Project archival cannot substitute for that action. Inbound Memory OAuth revocation retains facts; account deletion removes grants/issued secrets without deleting independently registered public-client metadata. Accounting retention may preserve content-free usage without retaining grants/users indefinitely. Chat deletion and Temporary expiry keep the chat's usage, detaching its run and Memory links, so deleting chats never resets spend. Usage limits gate admission, not spend: accepted runs finish; user budgets count personal purposes, the pooled cap every purpose; system work is never blocked.
-
-Workspace idle stop preserves disk; expiry/reset/deletion first records exact-session cleanup. Only an existing disk pins a session's guest image; runner startup evicts cached guest versions other than the current and previous ones that no sandbox record uses, never forcing one a disk pins. Continuation archives are private checksum-bound seeds, owned by the claim (or a scheduled rotation, whose seed every destination run must restore before using Workspace) then destination chat. Fence capture/restore leases. Successful restore consumes the seed even after reset or disk loss; interrupted restore retries only after cleanup. Abandoned/failed/reset/deleted seeds enqueue reference-checked object cleanup. Missing disks visibly recreate canonical originals, never claim survival. External provider/tool retention, backups and sent data remain outside application-erasure claims.
-
-Agent threads remain outside exported `project/`, without independent retention/backup/continuation seeds. Ordinary resume requires a compatible completed active-branch predecessor in the surviving session; otherwise use branch context. Follow-up requires the live run's exact settled predecessor/runtime; loss prohibits recreation/replay. Stored identifiers/hashes cannot override disk loss/revocation.
-
-An answer problem report holds a reason and an optional comment administrators read in Health, never the question or answer. Deleting the answer, its chat or the reporting account removes it; deleting its run clears only that reference. The application prunes reports 90 days after their last change.
-
-## Backup And Restore
-
-[`aiqsa.sh`](../aiqsa.sh) `backup`/`restore` own single-host cold backup and empty-target restore under this procedure; off-site copies, schedules, retention and multi-host recovery belong to infrastructure. Verify migrated schema, stop all writers, release/fence claimed Memory, Knowledge, and object-deletion work, then copy PostgreSQL and private objects together. Record format/schema and required non-secret Memory key IDs; restore exactly the prior writer set afterward. Preserve chat PDF artifacts and dispatch ambiguity. Back up required secrets separately under [Environment](ENV_VARIABLES.md).
-
-Restore targets only an empty installation through an internal `aiqsa-restore-*` project with no published ports or application writer. Preflight format, schema, identities, keys, and objects first. Credential-free Memory/Knowledge deletion reconciliation must pass before any application role starts; it blocks promotion while deletion/account/barrier duties, leases, uncertain executions, missing keys, or object failures remain. `aiqsa.sh restore` starts the empty target only after it passes; nothing cuts over a running production installation automatically.
-
-OpenSearch is excluded: reset restored obligations to pending, rebuild from PostgreSQL, and pass strict aggregate integrity gates before enabling each retrieval mode. Guest disks/runtime identities are excluded: clear them, retire restored process/export obligations, and reset sessions to pending before new runs restage originals.
+- Backup stops every writer, fences claimed Memory, Knowledge and object-deletion work, copies PostgreSQL and private objects together, records the schema and the non-secret Memory key ids restore needs, and restarts exactly the writers it stopped. Keys from `.env` are backed up separately (`agent_docs/ENV_VARIABLES.md`).
+- Restore fills only an empty installation of the same version, through an isolated `aiqsa-restore-*` project with no published ports and no application writer, after preflighting format, schema, identities, keys and objects. Memory and Knowledge deletion reconciliation (`npm run memory:restore:reconcile`, `npm run knowledge:restore:reconcile`) must pass before any application role starts. Nothing cuts over a running installation automatically.
+- Restore rebuilds OpenSearch from PostgreSQL and passes integrity gates before enabling each retrieval mode. It clears guest disks and runtime identities and resets Workspace sessions so new runs restage originals.

@@ -1,51 +1,55 @@
-# ARCHITECTURE
+---
+paths:
+  - "Dockerfile"
+  - "ops/**"
+  - "eslint.config.mjs"
+  - "scripts/eslint/**"
+  - "lib/server/observability/**"
+  - "lib/server/telemetry/**"
+  - "lib/server/push/**"
+  - "instrumentation.ts"
+---
+# Architecture
 
-Owner: System architecture maintainers
-Scope: Dependency direction, deployment shape, and data/egress ownership.
+Process and deployment shape, dependency direction, and every place data leaves the installation. Build inputs live in `Dockerfile`, `ops/` and `compose.yaml`; `eslint.config.mjs` and `scripts/eslint/architecture-boundaries.mjs` enforce import boundaries.
 
-## Architectural Stance
+## Shape
 
-AIQSA is an operator-managed Next.js modular monolith with authenticated users and hardened single-host, single-replica Compose deployment. Process-local cancellation/external sessions preclude replica handover. Revisit admission, scheduling, recovery and isolation before adding replicas, untrusted tenancy or spend/latency guarantees.
+- AIQSA is a Next.js modular monolith on one host with one application replica. Cancellation, external sessions, the AIQSA Connect relay, pending SAML requests and the sign-in method snapshot live in process memory, so replicas, untrusted tenancy or spend and latency guarantees first need a new design for admission, scheduling, recovery and isolation.
+- Splitting out a service or adding remote control needs a measured blocker and an explicit design for auth, ownership, network, deployment, recovery and observability.
+- Dependency direction: browser UI → client-safe contracts (`lib/contracts/`, a leaf) → authenticated routes → provider-neutral server orchestration → repositories and adapters. Routes only compose; repositories own durable access; adapters own external wire formats. Lower layers never import their consumers.
 
-Splitting services or adding remote control requires a measured blocker and explicit auth, ownership, network, deployment, recovery and observability design.
+## Deployment
 
-## Dependency Direction
+- Production runs prebuilt images from `compose.yaml` with data in persistent volumes; migrations and bootstrap gate every role that depends on them. An update is `docker compose pull && docker compose up -d` and never replaces secrets or data.
+- Workspace requires KVM, and `aiqsa.sh install` refuses hosts without it. The CLI never changes host settings, never rewrites existing `.env` bytes and never runs `down` on the installation.
+- Site-specific proxies, deployment automation, schedules, off-site backups and multi-host recovery belong to infrastructure and stay out of this repository, as do real installation targets and credentials.
+- `docker-compose.dev.yml` is disposable and never shares state with a persistent installation.
+- Only the application is public; data services, parsers and the Workspace runner stay on private networks.
+- Sidecars are bounded helpers, never tenancy or durable-state authorities, and an optional integration failing stays local to its feature. The Workspace runner owns only guest lifecycle and tool transport; the application keeps admission, storage, recovery and presentation.
+- Companion images under `ops/` build reproducibly with pins compatible with the application runtime; validate image changes on disposable targets.
 
-Browser UI → client-safe contracts/API clients → authenticated routes → provider-neutral domain/server orchestration → repositories and bounded adapters.
+## Data stores
 
-Browser code cannot import server modules, Prisma, credentials, Node-only APIs, or provider transports. Contracts are a dependency leaf. Routes compose boundaries; reusable behavior belongs below them. Repositories own durable access and adapters contain external wire formats. Lower layers never import their UI, route, or runtime consumers.
+PostgreSQL is canonical. Object storage is private, never a public file host. OpenSearch is a rebuildable candidate index: PostgreSQL reauthorizes every hit, and Knowledge retrieval has no alternative lexical backend. Browsers receive explicit allowlisted projections, never storage objects or upstream formats. See `agent_docs/PERSISTENCE.md`.
 
-Enforcement: [ESLint](../eslint.config.mjs), [boundary checker](../scripts/eslint/architecture-boundaries.mjs), and imports in [`lib/`](../lib/), [`app/`](../app/), and [`components/`](../components/).
+## Where data leaves the installation
 
-## Supported Deployment Shape
+Every external destination is listed here with its privacy decision. A new destination, credential audience, public projection or durable store starts with an entry here: what is sent, to whom, what happens on failure, and how long it is kept.
 
-Application code, published images, production [Compose](../compose.yaml), committed migrations, and installation bootstrap belong here. The production stack uses prebuilt images and keeps data in persistent volumes; migrations/bootstrap gate every dependent application role. Ordinary stable updates must work with `docker compose pull && docker compose up -d` without replacing installation secrets or data. Supported installations require KVM for Workspace. [`aiqsa.sh`](../aiqsa.sh) wraps installation, updates and single-host backup/restore; `install` refuses hosts without usable KVM, and the CLI never changes host settings, rewrites existing `.env` bytes or runs `down` on the installation. Site-specific proxies, deployment automation, schedules, off-site backups and multi-host recovery remain infrastructure concerns.
+- **Model providers.** Content goes only to the destination an admitted run bound (`agent_docs/PROVIDERS.md`). Knowledge embedding and indexing use a separately disclosed installation-profile destination; choosing an answer model does not authorize it.
+- **Artifact CDNs.** Model-chosen library and image URLs are fetched from operator-allowlisted public CDNs when a version is created, and frozen with it. Accepted risk: a URL can itself carry data. Offline viewers disclose nothing to CDNs.
+- **Artifact contents** (operator decision 2026-10-08). An artifact holds only what its page shows: data sources become JSON extracted in Workspace, office documents are converted for viewing, and originals enter only on the user's explicit request, because a published artifact gives every viewer all of its files.
+- **Artifact downloads** (operator decision 2026-10-11) leave only through the viewer, never by weakening its CSP or sandbox.
+- **Browser push.** One encrypted, content-free message per notification (title, fixed outcome text, a link carrying only the chat id) to the device's push service; never retried. Accepted risk: decrypted titles can appear on lock screens.
+- **Telegram** (operator decision 2026-10-19, not disclosed in the product). Answers, files, MCP approval details and scheduled task results of users linked to the installation's bot are sent to Telegram.
+- **Page reading (`fetch_url`).** One GET to the public host of a link the user or the run's own Search supplied, disclosing the installation's address and that URL. There is no administrator switch; rules are in `agent_docs/SECURITY.md`.
+- **Sign-in providers.** OIDC, LDAP and SAML metadata requests go only to administrator-configured endpoints, which may be on the LAN (`agent_docs/SIGN_IN.md`).
+- **AIQSA Connect.** Clients reach only the app origin; terminal traffic is relayed in memory and never stored.
+- **Parsers and Workspace.** Parsers receive bounded documents without credentials. Workspace guests receive an opaque runtime identity and allowlisted tools, never application or data credentials.
+- Operator telemetry never leaves the installation.
 
-[`docker-compose.dev.yml`](../docker-compose.dev.yml) is disposable and must never share persistent-installation state. The application is the public application boundary; data services, parsers and the Workspace runner stay private. Publication and proxy rules belong to [Environment](ENV_VARIABLES.md) and [Security](SECURITY.md).
+## Observability
 
-Sidecars are bounded helpers, never tenancy or durable-state authorities. Optional integration failures remain feature-local unless an explicit contract makes them core readiness dependencies. The Workspace runner owns only guest lifecycle/tool transport; the app retains admission, storage, recovery, and presentation authority. Runtime build owners are [Dockerfile](../Dockerfile) and [`ops/`](../ops/).
-
-## Data And Egress Boundaries
-
-- PostgreSQL is canonical for ownership, control state, accepted bindings, recovery, and output records; [schema and migrations](../prisma/) own exact storage.
-- Private object storage owns originals and exported bytes; relational references govern access and lifetime. It is not a public file host.
-- OpenSearch is a rebuildable candidate projection, never canonical content or authority. PostgreSQL reauthorizes every hit. Knowledge passage retrieval has no alternate lexical backend; Memory fallback/rollout belongs to [Memory](MEMORY.md) and [Environment](ENV_VARIABLES.md).
-- Browsers receive explicit allowlisted projections. Storage objects and upstream formats do not become client contracts by existing.
-- External I/O crosses authorized, bounded server adapters. Knowledge embedding/indexing has an independently disclosed installation-profile destination; answer-model selection does not authorize it.
-- Artifact vendoring sends model-selected URLs to operator-allowlisted public CDNs at version creation. Restricted grammar cannot prevent URL disclosure. Failures return tool errors; frozen bytes share version lifetime. Offline viewers disclose no IP to CDNs.
-- A file an artifact references is the exact checksum-verified bytes of the owner's attachment from that chat or the current run; the reference grants no new rights. An artifact holds only what its page shows: data sources become JSON extracted by code in Workspace, office documents are converted for viewing, and originals enter only on the user's explicit request, because a published artifact gives every viewer all of its files (operator decision 2026-10-08).
-- Downloads leave an artifact only through its viewer, never by weakening the viewer's CSP or sandbox (operator decision 2026-10-11): the viewer takes bytes only from its own frame and saves an `application/octet-stream` copy under a cleaned name, without asking only after user activation in the focused frame and within a per-tab rate, otherwise once the user confirms.
-- Browser push posts to each subscribed device's browser push service: one RFC 8291-encrypted, content-free message per notifying run or scheduled settlement (title, fixed outcome copy, same-origin link carrying only the chat id), signed with an installation VAPID key created on first use and stored as an `AIQSA_ENCRYPTION_KEY` envelope. Endpoints must be public HTTPS; delivery is best effort and never retried. Subscriptions are bound to the registering session and deleted on its revocation, notifications off, a 404/410 from the service or repeated failures. Decrypted titles can appear on lock screens.
-- Telegram receives content (operator decision 2026-10-19, undisclosed in the product): answers, files, MCP approval details and scheduled task results of users linked to the installation's one bot. The app process long-polls Telegram, one poller per token, without webhook or proxy; the token is an `AIQSA_ENCRYPTION_KEY` envelope.
-- Page reading (`fetch_url`) sends one GET with a fixed user agent to the public host of a link the user or the run's own Search supplied, disclosing the installation's address and that URL to the host and its redirects. Failures return tool errors; bounded page text persists only in the run's tool call, deleted with its chat. No administrator switch exists; [Security](SECURITY.md) owns the link and transport rules.
-- OIDC sign-in sends discovery, key, token and userinfo requests to the administrator-configured issuer and the endpoints it advertises, which may be on the LAN; bounded bodies, timeouts and the address rules belong to [Sign-in](SIGN_IN.md#openid-connect). Tokens are never persisted, except the encrypted ID token a session keeps for IdP logout.
-- LDAP sign-in connects to the administrator-configured directory with the configured service account and the person's password, bounded per operation. The host may be private but never link-local, cloud metadata or an AIQSA service; [Sign-in](SIGN_IN.md#ldap) owns the TLS and credential rules.
-- SAML IdP metadata is fetched only when an administrator imports it or tests a configuration with a metadata URL: one bounded GET to that URL with up to three redirects, each hop DNS-pinned and checked, private networks allowed (plain HTTP only there), AIQSA's own services and cloud metadata refused. Sign-in itself makes no server request to the IdP.
-- AIQSA Connect clients run on users' own computers and reach only the app origin (outbound SSE and POST). Terminal traffic passes through an in-memory relay in the single application process and is never stored; several application processes would need a shared broker.
-- Parsers receive bounded documents without data credentials or durable document state. Workspace receives opaque runtime identity, bounded streams, and allowlisted tools, never application/data credentials. Guest disks are operational state outside backup authority.
-
-No new destination, credential audience, public projection, or durable store is implicit: define its privacy, failure, retention, and operator boundary.
-
-Observability is a dependency-free server leaf shared by the CJS launcher and application bundles through a process-global AsyncLocalStorage singleton. It owns bounded stdout records and emergency stderr output, never database/provider clients, payload retention, execution policy or a second lifecycle authority. It hands each validated record to at most one in-process observer, which cannot change or delay that output.
-
-The [telemetry owner](../lib/server/telemetry/) is that observer in the application and in the long-running workers that already hold a database client, never the Workspace runner or one-shot scripts. It aggregates records into PostgreSQL operator health telemetry, best effort and memory-bounded: database failure never reaches the logging path. Telemetry never leaves the installation.
+- `lib/server/observability/` is a dependency-free leaf shared by the CommonJS launcher and the application bundles through a process-global AsyncLocalStorage singleton. It writes bounded stdout records and must never import database or provider clients, retain payloads or decide execution policy.
+- It hands each record to at most one in-process observer that cannot change or delay output: `lib/server/telemetry/`, which runs in the application and long-running workers that already hold a database client, never in the Workspace runner or one-shot scripts. Its aggregation into PostgreSQL is best effort, and a database failure never reaches the logging path.

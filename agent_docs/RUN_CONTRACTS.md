@@ -1,106 +1,104 @@
-# RUN CONTRACTS
+---
+paths:
+  - "lib/server/runs/**"
+  - "lib/server/tools/**"
+  - "lib/server/toolObservations/**"
+  - "lib/server/knowledge/**"
+  - "lib/server/mcp/**"
+  - "lib/server/workspace/**"
+  - "lib/server/agents/**"
+  - "lib/server/scheduledTasks/**"
+  - "lib/server/telegram/**"
+  - "lib/server/answerReviews/**"
+  - "lib/server/webFetch/**"
+---
+# Run Contracts
 
-Owner: Run pipeline maintainers
-Scope: Accepted execution, context, tools, Knowledge, recovery, outputs and usage.
+How an accepted message becomes an answer: admission, context, tools, Knowledge evidence, MCP, Workspace and Agent runs, scheduled tasks, Telegram, recovery and settlement. The pipeline lives in `lib/server/runs/`; tools in `lib/server/tools/`; Knowledge answering in `lib/server/knowledge/`.
 
-## Admission And Context
+## Admission and context
 
-Admission freezes non-secret execution/dependency/credential/budget bindings. Assistants take fixed rows only from definitions, others from chat-authorized values; bound chats reject prompt/Search-preference fields and fixed-row values. Implicit Project defaults bind only first messages lacking `assistantId` and composer fields, never failing them. Projects continually recheck authority/credentials/revocation/configuration.
+- Admission freezes every non-secret binding the run will use: model, credential, tools, Search sources, Knowledge scope, budgets, Workspace runtime. Recovery and retries use these frozen bindings, never current settings or browser claims.
+- An Assistant run takes its fixed settings only from the Assistant definition; a chat bound to an Assistant rejects request fields that would override them. Implicit Project defaults apply only to a first message that names no Assistant and no composer settings, and never make that message fail. Project runs keep rechecking Project authority, credentials and revocation.
+- Regeneration is an ordinary run through the same pipeline.
+- Context follows the active branch's ancestors, never siblings. A reviewed answer is read as its question plus latest version. User turns stay in context after an error or a partial answer.
+- Earlier attempts of the same user message contribute their tool calls only as provider-only history. That history carries no authority, and its compact record is irreducible: the request is refused rather than dropping it.
+- Context compaction never silently drops history. A turn or tool round leaves the request only after notes the run committed cover it; if the request still does not fit, the run is refused explicitly. Summaries never contain provider reasoning, signatures or attachment identifiers. Mechanics live in `lib/server/runs/contextCompaction*.ts`.
+- Personal presets apply only to personal and temporary chats, never to Assistants or Projects. Instructions are never Memory facts.
+- Once accepted, execution belongs to the server: closing the browser does not cancel the run, while Stop, deadlines and authority loss still apply. A Memory preparation failure answers without Memory instead of failing the run.
+- Automatic answer review steps are ordinary server-driven runs of the initiator, each claimed once.
 
-Context follows active ancestors, never siblings, reading answer reviews outside their steps as question and latest version; only tool history carries calls of earlier attempts of a branch user message, completed or ambiguous, marked as provider-only history without authority. Preserve user turns after errors/partial answers; deduplicate identities and reject replay. Prior turns leave context only once committed notes cover them; irreducible overflow is refused explicitly. Runs use server baseline (Assistants only its date/time) plus Project instructions; previews expose only baseline/answer rules.
+## Model-initiated changes
 
-Observation policy defaults to `v1`. Every non-Agent admission (Off, models without tools, Knowledge, Memory search) freezes one notes policy; retired-policy runs end with `context_compaction_policy_retired` before any dispatch. Nothing leaves or is masked until notes the run committed cover it: `needs_summary` buys notes on the admitted binding in oldest-first passes, bounded per request and never dropping history, each pass reading the current message as the task; only then are covered server-recorded observations masked (keeping the newest batch, instructions, current input and follow-ups; unknown windows, `toolChoice:"none"` and Agent history add no masks) and covered turns and tool rounds leave whole, never notes. Compaction triggers, session status and estimate telemetry measure dispatched requests; admission reserves count only toward admission and fit. Tool rounds whose external results lack a server-recorded observation enter notes only via their persisted call's `call_ref`, rechecked like a handle; otherwise they stay exact. Memory search evidence may enter notes, never observations; Knowledge evidence is never masked; pinned evidence never enters notes. Committed failure never trims; a fitting request keeps its shape when a headroom summary fails, never rebought that run; one still not fitting is refused. A provider context-length refusal before any accepted round output permits one checkpointed v1 rebuild per run under a tightened budget; tools never rerun. Summaries exclude provider reasoning/signatures/attachment identifiers. Later turns retain only their branch's newest compatible notes. PDF/OCR remain standalone guards; conversational PDF continuations share the answer consumer.
+Models change user data only through these operator exceptions, always for the chat's owner and under the owner's own rules and limits. The first two exist only in personal chats, never in scheduled, temporary, Project, Assistant or Knowledge runs:
 
-Personal presets supplement personal/temporary chats, never Assistants/Projects. They, like Assistant answer rules, may replace default ones without authority; date/time uses baseline zone. Assistants own hidden user-level reminders after current content/attachments. Presets and Assistant reminders are irreducible, frozen through recovery, and excluded from previews/utility prompts. Knowledge keeps accepted instructions/effective question; instructions are not Memory facts.
+- In an ordinary personal chat the model may create one scheduled task per answer, and change, pause or resume the owner's tasks. It may choose a new task's history retention, but only the owner changes it later, because retention deletes chats. Deleting a task only proposes it; the owner's click deletes. Each change commits with its tool call's settlement and shows a card. A scheduled task's own turns and Agent runs never create tasks.
+- In an interactive personal chat the model may create a personal Skill or save a new version of the owner's Skill, one per answer, with an after-the-fact card and Undo (`save_skill`, operator decision 2026-10-07). The Skill store rules are in `agent_docs/BACKEND.md`.
+- MCP tools that may change data are not an exception (operator decision 2026-10-08). Every interactive run, Project, Assistant and Knowledge chats included, sends them only after the initiator approves; an Allow once is consumed by the claim of exactly that call. The server-written turn that continues after an Allow is never user speech and never Memory evidence. Approval mechanics are in `agent_docs/SECURITY.md`.
 
-Acceptance transfers execution server-side; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery uses live owners without replay; PDF gates eligible Memory and final admission refreezes authority/evidence. Preparation forbids provider/tool I/O. Failed Memory preparation answers without Memory, preserving authority and settled actions; inbound Memory MCP stays independent. Automatic answer review steps are their initiator's server-driven ordinary runs, each claimed once.
+## Scheduled tasks
 
-Scheduled tasks are their owner's standing authority for one saved prompt. Each occurrence re-admits through the ordinary send handler as the owner under current catalog, entitlement and active-run rules, never substituting saved model/Search; lost authority, pinned Skills included, fails it and pauses the task visibly. Run creation links each instant's occurrence once, atomically, under the task revision and chat epoch read before preparation (changes re-admit); runs keep their scheduled origin and execute in-process so Stop reaches them. Only the newest due instant runs, recurring ones up to three minutes late by task; one due while a run is open is skipped (`previous_running`), pending ones at the next instant or after bounded windows, Workspace-cap waits as `workspace_capacity`, never failing. Context is flat, frozen at admission: the prompt plus, in same-chat mode, the previous shown result on the appended-to path; owner turns, branch notes, other tool history and chat artifacts stay out. With tools on, runs use the owner's MCP/Skills in Auto, never Load all, plus pinned Skills at current versions; with Workspace on, the task chat's Workspace, disk-pinned by an active same-chat task until its next run plus retention; Knowledge/Agent stay off; no run changes an existing chat's Workspace switch. Transient tool/Workspace refusals and spent budgets retry (budgets end skipped); permanent ones are lost authority.
- A same-chat task's first run of each calendar month (task zone, Run now included) starts a new chat while none is open, archiving the old unless pinned, filed or shared; the advanced epoch fences the old chat's late links/baselines. A bounded, reauthorized copy of the previous shown result, never old ids, stands in across rotations until a chat shows one. With Workspace on, a seed restores the old `project/` before scheduled runs' first request; capture retries, then fails the occurrence (`workspace_carryover_unavailable`); no run opens an empty project; the old disk stays pinned until restored.
- A relevant personal server the Auto catalog omitted (one the previous result relied on, or any before a first result) or the run's code could not use leaves the run complete but unhealthy: model/owner learn the missing source; three in a row pause the task. Scheduled runs stop thirty minutes after admission (`run_deadline`). Under the [exception](CRITICAL_INVARIANTS.md) a chat answer creates one task with its run's frozen settings and zone, or changes, pauses or resumes tasks, each committed with its call's settlement and card; only the owner changes history retention; never in Agent runs or a scheduled task's turns, nor recreating its message's existing task.
+Code: `lib/server/scheduledTasks/`.
 
-A monitoring run is a check: admission freezes, only from the server-only occurrence, a server-owned instruction and one built-in tool reporting `update`, `no_update` or `goal_reached`, reserved outside tool budgets and recorded on the occurrence (last wins); a model that cannot call it is refused and the task pauses. Verdicts are model-reported and fail open: missing reports, a generation's first check (no previous or carried result) and older generations' results are shown; only a healthy `no_update` is hidden: no unread result, email, push, Telegram or previous-result role. A check missing a source its previous result or own code relied on shows as `could_not_check`, never a comparison basis or reached goal, and runs the health streak, so only its alert and pause are news. A reached goal completes the task only under its run's accepted generation and revision.
+- A scheduled task is its owner's standing authority for one saved prompt. Every occurrence is re-admitted through the ordinary send handler as the owner, under the current catalog, entitlements and active-run rules. Saved models and Search sources are never substituted; lost authority (pinned Skills included) fails the occurrence and pauses the task visibly.
+- An occurrence's context is flat and frozen at admission: the prompt, plus the previous shown result in same-chat mode. Owner turns, branch notes, other tool history and chat artifacts stay out.
+- With tools on, a task uses the owner's MCP servers and Skills in Auto mode (never Load all) plus its pinned Skills. Knowledge and Agent stay off. Scheduled runs need no per-run approval (operator decision 2026-10-04, `agent_docs/SECURITY.md`).
+- Same-chat tasks start a new chat each calendar month, carrying a reauthorized copy of the previous result and the Workspace files across; the rotation epoch fences late writes to the old chat.
+- A run that could not use a source its previous result relied on is complete but unhealthy; repeated unhealthy runs pause the task.
+- Monitoring tasks are checks. The model reports `update`, `no_update` or `goal_reached` through a reserved built-in tool. Verdicts are model-reported and fail open: only a healthy `no_update` is hidden (no unread mark, email, push or Telegram). A check missing a source it relied on shows as `could_not_check` and never counts as a comparison basis or a reached goal.
 
-Telegram messages are the linked user's interactive personal runs via the ordinary send handler with explicit catalog values, rechecking access per message and delivery; session revocation unlinks. Button approvals take the ordinary approval path. `telegramNotify` tasks send shown results and files through a durable outbox, never repeating an ambiguous send.
+## Telegram
 
-Follow-up orders user input within accepted bindings/budgets without repeating preparation. Acceptance races publication; delivery proves receipt, not obedience. Preserve partial text, settle dispatched tools, skip obsolete decisions, fence old generations. Recovery closes admission; executor loss ends clarified tasks. Regeneration re-admits them.
+Code: `lib/server/telegram/`.
 
-Continuation summarizes active-branch text through the admitted System Model, excluding tools/attachments/Workspace inspection. Enabled Workspace may copy project files unread into a private single-use seed. Preserve ownership/retention/source/conversation; never repeat interrupted provider work.
+- A Telegram message is an interactive personal run of the linked user, sent through the ordinary send handler; access is rechecked for each message and each delivery, and revoking the linking session unlinks. Button approvals use the ordinary approval path.
+- Tasks with Telegram notification send their results and files through a durable outbox and never repeat an ambiguous send.
+- Telegram is a content egress destination (operator decision 2026-10-19); see `agent_docs/ARCHITECTURE.md`.
 
-Skills grant no capabilities. Peers/Projects require approved revisions and audience authority. Off preserves pins; Projects ignore personal preferences. Filtering cannot hide required dependencies. Reads reauthorize; settled results replay privately.
+## Follow-ups and continuation
 
-Catalog relevance defaults off and receives only user text/authorized metadata; complete evidence may filter/order Skills. Provider failure preserves the catalog; authority loss/cancellation fails closed. Recovery reuses accepted selection/dispatch evidence.
+- A follow-up adds user input to a running answer within its accepted bindings and budgets; delivery proves receipt, not obedience.
+- Continuation into a new chat summarizes the active branch's text through the admitted System Model, without tools, attachments or Workspace inspection. An enabled Workspace may copy its project files unread into a private single-use seed.
 
-Workspace stages frozen bundles. New runs reset managed Skills; recovery preserves edits or restores pins/settled loads after recreation. Loads replace files after context acceptance. Agent discovers available Skills natively, receives pins as user instructions, and disables bundled Skills. Catalog/mode/profile changes invalidate continuation, excluding reads.
+## Skills
 
-Agent requires personal manual Workspace. Codex owns planning/tools/compaction/completion; AIQSA owns authority/accounting/settlement, without evaluator/truncation. Resumes refresh paths/Skills/instructions and authorize compatible MCP candidates against exact definitions/configuration. Discovery-required failures precede dispatch; discovery never replays business operations. Follow-up preserves files/native session after proven process/transport closure, fences grants and confirms native receipt. Unsettled effects prohibit interruption; Stop is terminal. Knowledge/Memory unavailable; artifacts/images/query-only Search survive MCP Off. Observation Off keeps thread identity.
+- Skills grant no capabilities. Other users' and Project Skills require approved revisions and audience authority. Turning Skills off keeps pins; Projects ignore personal Skill preferences. Filtering never hides a required dependency, and reads reauthorize.
 
-Off removes Agent time/call/token/output caps, preserving accounting/leases/Stop/model constraints. Retries retain results/authority/budgets/receipts. Persist the first terminal cause before revocation; never extend deadlines or buy summaries. MCP exhaustion permits generation; grants stay independent of inbound OAuth.
+## Search and documents
 
-## Search And Documents
+- Search freezes its exact sources and routes at admission and never silently drops or substitutes one. Attachments do not disable selected Search.
+- `fetch_url` reads only links from user-authored text on the branch, delivered follow-ups or the same run's Search results. The rules for links and transport are in `agent_docs/SECURITY.md`.
+- Chat PDF admission picks a verified route and freezes its destination; required document work finishes before any other dispatch, and the preparation model only transcribes. A Workspace run may continue past a classified transcription failure with the verified original and an explicit unread-content notice; access, integrity and cancellation failures stay blocking.
+- Transcription keeps visible text and meaningful visuals and never invents hidden values, causes or intent. Uncertain table rows, units and associations stay uncertain; numbers keep their exact decimals and are never converted.
+- Knowledge ingestion follows its immutable Profile and disclosed destination and never borrows Memory's role. Reprocessing creates a new generation, keeps old attempts and reuses only checksum-verified settled work.
 
-Search freezes exact logical sources and hosted/query-only routes, never silently dropping or substituting one. Attachments do not disable selected Search.
+## Knowledge evidence
 
-Non-Agent tool-calling runs outside external-tools-off Projects freeze `fetch_url`: it reads only links from user-authored branch text, delivered follow-ups or same-run Search ([Security](SECURITY.md)).
+- Knowledge Sources, Versions, ready artifacts and accepted evidence keep their identities. Removing a Source from a Base, replacing it or reprocessing it affects only future snapshots. Equal content never merges Sources.
+- No Knowledge scope means no Knowledge I/O. Admission freezes the authorized Sources, ready Versions, Profile destinations and any exclusions, and discloses exclusions. Capacity never silently narrows scope.
+- Admission delivers the full corpus when it fits; otherwise the model gets `search_knowledge`. Source aliases are run-local disclosures, not grants. Every call rechecks scope, egress and readiness before external work.
+- OpenSearch supplies candidates; PostgreSQL revalidates authority for every hit. A required search backend failure fails visibly and is never reported as empty evidence or replaced by another backend. "No relevant evidence", "retrieval unavailable", cancellation and invalid output stay distinct outcomes.
+- Grounding: composition cannot declare evidence sufficient, and matching citations are not proof. Code checks reference integrity, not semantic truth. Exhaustive requests stay exhaustive; unavailable resources or missing premises prevent claims of completeness or absence. Unchanged drafts get no repeated paid review.
+- Publication is deterministic and provider-free and revalidates every excerpt and citation handle against the accepted manifest. Only persisted, delivered evidence can support a citation. Deleting a Source keeps the generated text but scrubs its private evidence and later citation resolution.
 
-Chat PDF admission selects a verified route and freezes its destination before preparation. Required document work gates answer/Search/Knowledge/MCP dispatch and final context budgeting. The preparation model only transcribes, never answering or creating Knowledge. Local extraction carries a reading-quality caveat. An admitted Workspace run may survive classified transcription failure, including a reader answer that exhausted its output budget, with its verified original and an explicit unread-content notice; access, integrity, cancellation and context-budget failures remain blocking. Explicit retry creates a sibling, revalidates that route and may reuse compatible settled pages.
+## MCP tool loop
 
-Knowledge ingestion follows its immutable Profile, exact document role and private local/original-page/image disclosure route, never borrowing Memory's role or changing destination. Explicit Reprocess creates a new generation, preserving old attempts and reusing only checksum-verified settled work.
+- Auto, Load all and Off are user choices. Auto freezes the authorized catalog; `find_tools` is local, model-free search. Schemas are exposed only after reauthorization and a checkpoint; an unusable server records a stable reason and the answer continues.
+- Tool batches are persisted before any effect. A batch over the remaining call budget is neither persisted nor dispatched; the run forces one tool-free answer that names the unverified work.
+- Repeating an identical, not provably read-only call after identical successes is blocked as `tool_call_repeat_blocked`; a call waiting for approval records `mcp_approval_required`. Recovery derives both from persisted calls and re-searches only unsettled ones.
+- Results too large for the budget arrive as references the model reads in a later round, never silently truncated.
+- Tool history stores only call references and digests. Each request re-projects them under the reading run's current authority; MCP arguments and results appear only with current access and provable redaction. Reading a past call never reruns it. A failed history read degrades to "details unavailable" instead of failing the run.
 
-Transcription preserves visible text and meaningful visuals without inventing hidden values, causes or intent. Native PDF text augments model structure only through the versioned safe alignment policy. Table relationships require structural evidence independent of cell text; uncertain rows, units and associations stay uncertain. Numeric normalization keeps exact decimals, never converting units or deriving facts. Parser/chunk policy changes create immutable profiles; ready artifacts change only by reprocessing.
+## Workspace and Agent runs
 
-## Knowledge Evidence
+- Workspace admission freezes the runtime, image, tool catalog, network policy, authority and secret revisions. The server controls sandbox identity and VM lifecycle; execution and export are exclusive per chat. Guests receive verified originals and the owner's personal secrets under `agent_docs/SECURITY.md`.
+- Every terminal path retires guest execution authority: it stops registered processes, or stops the VM (disk intact) when execution state is unknown. Stop keeps the environment; a successful turn leaves no background processes. Completion requires closed output obligations; an export failure keeps the answer. Path escapes fail closed and links or special files are skipped visibly.
+- Vision-capable models read images natively. Workspace files, and chat images for tool-calling models without vision, reach a model only through admitted System Vision, whose results are untrusted. A Knowledge answer gets the current images as one frozen description: untrusted request context, never evidence.
+- The Agent (Codex) needs a personal chat with manual Workspace, administrator-enabled internet and an eligible model. Codex owns planning, tools, compaction and completion; AIQSA owns authority, accounting and settlement, without an evaluator. Unsettled effects forbid interruption and Stop is terminal. Knowledge and Memory are unavailable to the Agent.
+- Administrator Agent limits default to Off. Off removes the time, call, token and output caps, never accounting, leases, Stop or model constraints.
 
-No scope means no Knowledge I/O. Freeze authorized Sources, immutable ready Versions/artifacts, Profile destinations and exclusions at admission. Ready subsets disclose exclusions; processing-only scopes fail before I/O. Capacity cannot silently narrow scope; equal content never merges Sources.
+## Settlement and outputs
 
-Admission selects full-corpus delivery when it fits the provider envelope, otherwise bounded `search_knowledge({ query, sourceAliases })` in the tool loop. Aliases are run-local disclosures, not scope grants; later narrowing uses only disclosed Sources. Every call rechecks scope, egress, projection readiness and budgets before external work. Internal source-reading/discovery helpers never become answer-model tools.
-
-OpenSearch provides candidate identities and scores within immutable scope; PostgreSQL revalidates authority. Required lexical projection/backend failure fails visibly, never as empty evidence or silent dense-only/PostgreSQL fallback. Classified query-embedding unavailability degrades only that lane. No relevant evidence, unavailable retrieval, cancellation and invalid answer output remain distinct outcomes. Settled unavailability receipts replay without I/O.
-
-Retrieval combines independently eligible signals; weak proximity alone is insufficient. Source/Version/artifact/passage provenance defines occurrence identity, not content or membership. Diversity changes ordering only. Optional same-Source context stays labelled and never displaces primary evidence. Omit over-budget excerpts whole with reasons; oversize top excerpts become marked prefixes. Rewrites retain the original question and constraints; search/packing policies stay frozen.
-
-Optional relevance checks reduce unrelated context without promising speedup or replacing ranking. Only complete cohorts may filter; partial/absent/failed checks preserve baseline. Exact/full-corpus reads bypass them. Freeze destination or absence at acceptance; enforce revocation and reuse settled receipts/usage. Default adoption requires consumer qualification and preserves administrator choices.
-
-Both routes require Source-bound evidence and independent review of the original request, delivered evidence and candidate blocks. Composition cannot declare sufficiency; matching citations are not proof. Code derives coverage from supported requirements and enforces reference integrity, not semantic truth. Useful partial facts and valid derivations survive incomplete coverage. Exhaustive requests remain exhaustive; unavailable resources or missing premises prevent claims of completeness or absence.
-
-Search-driven revision requires new delivered evidence; factual correction requires an explicit bound critique. Further retrieval preserves previously supported content and the delivered premises of a requested correction. Unchanged drafts/evidence get no repeated paid review; failed optional correction keeps the latest verified partial answer and incurred usage. Structural repair uses unchanged authority inputs and a bounded rejection hint, never rejected provider content. Accepted prompts, schemas, reasoning policies and bindings remain frozen. Recovery decodes the accepted protocol and reuses settled operations; focused protocols remain recovery-only.
-
-Publication is deterministic and provider-free, revalidating exact excerpts and citation handles against the accepted manifest. Pending, unknown, failed or undispatched evidence cannot support citations. Grounded token deltas stay private until settlement; internal wrappers and status lines never become answer prose. Source deletion preserves generated text but scrubs private evidence and later citation resolution.
-
-## MCP And Workspace
-
-MCP Auto/Load all/Off require user action. Auto freezes the authorized catalog. `find_tools` is model-free deterministic local lexical search; `select:` loads exact names. Reauthorize/checkpoint before exposing schemas; unrunnable servers checkpoint stable reasons, others load, answers continue; recovery re-searches only unsettled calls. Dependencies are relevant servers and exact Load all/Assistant allowlists. Persist batches before effects, preserving provider order/budgets; exhaustion disables tools for synthesis. A batch exceeding the remaining call budget is neither persisted nor dispatched; the checkpointed synthesis decision forces one tool-free answer that names unverified work, planned from real results, not unreadable references, and recovery re-sends it only while its pre-dispatch mark is absent. After two identical successful results with no call since that is not proven read-only, a further call with the same name and canonical arguments is persisted as an undispatched `tool_call_repeat_blocked` error, and a call awaiting [approval](SECURITY.md) as `mcp_approval_required`; an all-blocked round ends in the same synthesis; recovery derives both from persisted calls.
-
-Required rounds permit one correction after known no-call success. Keep premature text private; persist usage, provider continuation and claim before dispatch. Repeated omissions/wrong-tool-only batches fail before effects. Recovery preserves this limit.
-
-Normalize only proven whole-result duplicates before provider projection; preserve unique content, ambiguity, errors, Hub results and receipts.
-
-V1 retains originals; recall reauthorizes source/branch access and preserves truncation/instruction/citation authority, never proving delivery. A batch's whole results (within the result bound), previews and reads share at most a quarter of the budget, less when the fixed part, the batch's references and pending notes leave less; beyond it results arrive as references and reads wait for a later round. A next request still missing the budget receives the fewest of the newest batch's unseen results as references; only references alone overflowing are refused. V1 Search text equals Off; usage and sources stay in receipts.
-
-Tool history freezes only call references and digests. Every answer request re-projects them under the reading run's current authority into provider-only records before their turn's answer: identity, outcome and `call_ref` always; MCP arguments/results only with current access and provable redaction; other owners' content only through their readers. Records are never pins, previews, Memory control or persisted context; reads, status and tool search are counted. The record of earlier attempts of the current message is irreducible: after the lossless reductions it renders smaller (compact lines, then counting unexecuted calls), never below the compact line of each executed or unknown-outcome call; beyond that the request is refused. Agent resumes add only records their native thread lacks; an Agent prompt keeps that same floor for every record; admission, then execution before arming, refuse (`agent_context_too_large`) when floors and projected records do not fit. Notes cite records by `call_ref` and recheck them. Saved-result recall and `read_tool_call` accept earlier attempts, never other edits. A call read never reruns a call; its row and any persisted continuation keep only a content-free receipt, and recovery reads again. A failed history read degrades to "details unavailable" (at admission, to a frozen "could not be loaded" marker every request states), never failing the run.
-
-Workspace admission freezes ready runtime/image, official catalog, network, paths, authority and secret revisions. Server controls sandbox identity, VM lifecycle, host-copy/networking; execution/export is chat-exclusive. Guests receive verified run-visible originals and restored personal secrets under [Security](SECURITY.md). Relevance follows current-message/branch references independently of staging. Check authorized inbox index before repeat uploads; entries cannot prove surviving guest bytes.
-
-Mid-run capture requires coherent bytes and current authority; unsupported coherence fails closed. Preserve the running executor and final-export quiescence. Shared image validation is model-independent; transformations retain source identity/geometry. Consumers own publication/provider delivery.
-
-Vision-capable models read images natively. Workspace files, and chat images for tool-calling non-vision models, reach models only via admitted System Vision: ordered images, a focused question, untrusted results. Knowledge answers get current images as one frozen prior description, by vision-capable answer models, else System Vision: untrusted request context, never evidence; lacking both, refused outside Workspace.
-
-Exact image edits preserve pixels; generative edits synthesize requested changes. Source/reference/version provenance determines identity. Saving, visual inspection and application validation stay separate claims.
-
-A published answer may accept one successor with frozen intent/configuration. Until handoff it has no Workspace authority or Memory/provider/tool I/O. Bounded, independently cancellable waiting survives browser loss. Revocation permits settlement of rejected work. Recovery completes handoff without changing published text/accounting, replaying answers or duplicating charges.
-
-Every terminal path retires guest execution authority: stop registered processes, or the VM, disk intact, when execution is unproven/crash-ambiguous. Stop preserves the environment; successful turns leave no background processes. Replay settled calls. Completion requires closed durable output obligations and retired guest authority; private-object transfer continues independently/idempotently. Export failure preserves the answer; path escape/bounds violations fail closed; links/special files are visibly skipped unread. Recovery discovers protected outputs without command/provider replay. Browser activity is a bounded safe projection, never raw runtime state.
-
-## Settlement And Outputs
-
-Completion requires provider terminal proof. Failures preserve accepted partial text/reported usage without false success. Cancellation stops later work/writes; stale reconciliation cannot sweep newer runs. Recovery uses accepted checkpoints/bindings, never browser claims or reconstructed prose.
-
-Unknown command exit, confirmed environment stop and durable cleanup are distinct. Local publication/accounting failures preserve reported usage without authorizing replay or proving provider failure. Never infer causes from exception prose.
-
-Client/Project streams expose lifecycle, answers, semantic activity, safe sources/outputs, errors and usage; never raw payloads, provider parameters, private evidence/identifiers or receipts.
-
-Artifact edits never rebase; reads/hints stay private. Agent bundles grant no host-path authority. Context changes invalidate continuation. Atomic settlement respects revocation/resource ceilings. Received images retain accounting after Stop; verified Workspace staging grants no paid replay.
-
-Accounting keeps exact stage/model attribution; missing usage/prices stay null. Gemini answer text survives settlement/sharing; Suggestions, citations and structured artifacts stay private. Never reconstruct discarded legacy answers; fence unfinished work before removing replay provenance.
-
-Optional titles never delay answers. Freeze excerpt/destination. Renames/lifecycle fence results; retain usage when unapplied.
+- Completion requires the provider's terminal proof. Failure keeps accepted partial text and reported usage without claiming success. Cancellation stops later work and writes; stale reconciliation never sweeps newer runs.
+- An unknown command exit, a confirmed environment stop and durable cleanup are different facts. Local publication or accounting failures never authorize replay or prove a provider failure. Never infer a cause from exception text.
+- Optional work such as chat titles never delays an answer.
