@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -250,15 +251,39 @@ func TestHooksWithAScrubbedEnvironmentReportForTheirPane(t *testing.T) {
 	reports.expect(t, hookReport{id, protocol.StatusWaiting, protocol.ReasonTurnEnd})
 
 	// Outside the panes of the client's tmux server: in this process and in
-	// a hook process of its own.
+	// a hook process of its own, for a thread no session bound.
 	if code, stdout, stderr := runHookArgs(strings.NewReader(`{"hook_event_name":"UserPromptSubmit"}`), "codex"); code != 0 || stdout != "" || stderr != "" {
 		t.Fatalf("in process: %d %q %q", code, stdout, stderr)
 	}
-	cmd := exec.Command("sh", script, prompt)
+	foreign := payload("foreign.json", `{"session_id":"foreign","cwd":"/","hook_event_name":"UserPromptSubmit","prompt":"deploy it"}`)
+	cmd := exec.Command("sh", script, foreign)
 	cmd.Env = append(os.Environ(), runCLIEnv+"=1")
 	if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
 		t.Fatalf("outside a pane: %v %q", err, out)
 	}
+	reports.expectNone(t)
+	// The hooks under the pane bound their thread: its hook from anywhere
+	// still reports for the session.
+	runHookArgs(strings.NewReader(`{"session_id":"x","hook_event_name":"PermissionRequest"}`), "codex")
+	reports.expect(t, hookReport{id, protocol.StatusNeedsApproval, protocol.ReasonPermission})
+}
+
+// A hook that knows its session from the environment binds its Codex
+// thread too; Claude hooks never send one.
+func TestACodexHookWithTheSessionEnvironmentBindsItsThread(t *testing.T) {
+	tmuxtest.New(t)
+	shortStateDir(t)
+	reports := listenForReports(t)
+	t.Setenv(sessionEnv, "ac-abc12345")
+	runHookArgs(strings.NewReader(`{"session_id":"019a-env","hook_event_name":"UserPromptSubmit","prompt":"ok"}`), "codex")
+	reports.expect(t, hookReport{"ac-abc12345", protocol.StatusRunning, protocol.ReasonInput})
+	runHookArgs(strings.NewReader(`{"session_id":"019a-claude","hook_event_name":"UserPromptSubmit"}`), "claude")
+	reports.expect(t, hookReport{"ac-abc12345", protocol.StatusRunning, protocol.ReasonInput})
+	t.Setenv(sessionEnv, "")
+	runHookArgs(strings.NewReader(`{"session_id":"019a-env","hook_event_name":"Stop"}`), "codex")
+	reports.expect(t, hookReport{"ac-abc12345", protocol.StatusWaiting, protocol.ReasonTurnEnd})
+	runHookArgs(strings.NewReader(`{"session_id":"019a-claude","hook_event_name":"Stop"}`), "codex")
+	runHookArgs(strings.NewReader(`{"session_id":"019a-env","hook_event_name":"Stop"}`), "claude")
 	reports.expectNone(t)
 }
 
@@ -336,7 +361,7 @@ func sendKeys(t *testing.T, server *tmuxtest.Server, id string, keys ...string) 
 	}
 }
 
-func TestACodexHookFindsTheOnlyCodexSessionRunningInItsDirectory(t *testing.T) {
+func TestCodexSessionsOfCwdAreTheCodexSessionsRunningCodexInIt(t *testing.T) {
 	base := t.TempDir()
 	work := filepath.Join(base, "work")
 	other := filepath.Join(base, "other")
@@ -369,43 +394,78 @@ func TestACodexHookFindsTheOnlyCodexSessionRunningInItsDirectory(t *testing.T) {
 		name  string
 		panes []tmux.Pane
 		cwd   string
-		want  string
+		want  []string
 	}{
-		{"one match", []tmux.Pane{codexA, shell, claude, exited}, work, "ac-aaaa1111"},
-		{"the hook names the directory through a symlink", []tmux.Pane{codexA}, link, "ac-aaaa1111"},
-		{"the pane reports it through a symlink", []tmux.Pane{{PID: 10, Session: "ac-aaaa1111", Cwd: link, Program: "codex"}}, work + "/./", "ac-aaaa1111"},
-		{"two codex sessions in one directory", []tmux.Pane{codexA, codexB}, work, ""},
-		{"two panes of one session", []tmux.Pane{codexA, {PID: 12, Session: "ac-aaaa1111", Cwd: work, Program: "codex"}}, work, "ac-aaaa1111"},
-		{"its agent has exited", []tmux.Pane{exited}, work, ""},
-		{"shell and claude sessions never count", []tmux.Pane{shell, claude}, work, ""},
-		{"a session the client did not create", []tmux.Pane{foreign}, work, ""},
-		{"another directory", []tmux.Pane{elsewhere}, work, ""},
-		{"a relative pane path", []tmux.Pane{{PID: 10, Session: "ac-aaaa1111", Cwd: "work", Program: "codex"}}, work, ""},
-		{"no panes", nil, work, ""},
+		{"one match", []tmux.Pane{codexA, shell, claude, exited}, work, []string{"ac-aaaa1111"}},
+		{"the hook names the directory through a symlink", []tmux.Pane{codexA}, link, []string{"ac-aaaa1111"}},
+		{"the pane reports it through a symlink", []tmux.Pane{{PID: 10, Session: "ac-aaaa1111", Cwd: link, Program: "codex"}}, work + "/./", []string{"ac-aaaa1111"}},
+		{"two codex sessions in one directory", []tmux.Pane{codexA, codexB}, work, []string{"ac-aaaa1111", "ac-bbbb2222"}},
+		{"two panes of one session", []tmux.Pane{codexA, {PID: 12, Session: "ac-aaaa1111", Cwd: work, Program: "codex"}}, work, []string{"ac-aaaa1111"}},
+		{"its agent has exited", []tmux.Pane{exited}, work, nil},
+		{"shell and claude sessions never count", []tmux.Pane{shell, claude}, work, nil},
+		{"a session the client did not create", []tmux.Pane{foreign}, work, nil},
+		{"another directory", []tmux.Pane{elsewhere}, work, nil},
+		{"a relative pane path", []tmux.Pane{{PID: 10, Session: "ac-aaaa1111", Cwd: "work", Program: "codex"}}, work, nil},
+		{"no panes", nil, work, nil},
 	}
 	for _, c := range cases {
-		if got := codexSessionOfCwd(snapshot, c.panes, c.cwd); got != c.want {
+		if got := codexSessionsOfCwd(snapshot, c.panes, c.cwd); !slices.Equal(got, c.want) {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
 }
 
-// Codex 0.163 runs its hooks from a background Codex process outside every
-// tmux pane, without the session's environment. The hook still reports for
-// the one Codex session that runs codex in the hook's directory, and for
-// none once that codex has exited.
-func TestACodexHookFromOutsideThePanesReportsForTheCodexSessionInItsDirectory(t *testing.T) {
-	server := tmuxtest.New(t)
-	stateDir := shortStateDir(t)
-	t.Setenv(sessionEnv, "")
-	reports := listenForReports(t)
-	exe := testExecutable(t)
-	ctx := context.Background()
-	work := filepath.Join(server.Home, "work")
-	if err := os.Mkdir(work, 0o700); err != nil {
-		t.Fatal(err)
+func TestOnlyTheOneSessionShowingThePromptIsChosen(t *testing.T) {
+	key := status.PromptKey("fix the flaky login test")
+	screens := func(byLook ...map[string]string) func(context.Context, string) (string, error) {
+		look := map[string]int{}
+		return func(_ context.Context, session string) (string, error) {
+			n := min(look[session], len(byLook)-1)
+			look[session]++
+			screen, ok := byLook[n][session]
+			if !ok {
+				return "", tmux.ErrSessionNotFound
+			}
+			if screen == "error" {
+				return "", errors.New("tmux failed")
+			}
+			return screen, nil
+		}
 	}
-	// A stand-in for codex: sleep under the name codex. Codex itself never runs.
+	shown := "› fix the flaky\n  login test\n"
+	both := []string{"ac-aaaa1111", "ac-bbbb2222"}
+	cases := []struct {
+		name    string
+		capture func(context.Context, string) (string, error)
+		want    string
+	}{
+		{"one shows it", screens(map[string]string{"ac-aaaa1111": "$ ls", "ac-bbbb2222": shown}), "ac-bbbb2222"},
+		{"both show it", screens(map[string]string{"ac-aaaa1111": shown, "ac-bbbb2222": shown}), ""},
+		{"none shows it", screens(map[string]string{"ac-aaaa1111": "$ ls", "ac-bbbb2222": "fix the flaky"}), ""},
+		{"drawn after the hook started", screens(map[string]string{"ac-aaaa1111": "", "ac-bbbb2222": ""}, map[string]string{"ac-aaaa1111": "", "ac-bbbb2222": ""}, map[string]string{"ac-aaaa1111": shown, "ac-bbbb2222": ""}), "ac-aaaa1111"},
+		{"a session that is gone", screens(map[string]string{"ac-bbbb2222": shown}), "ac-bbbb2222"},
+		{"a screen that cannot be read", screens(map[string]string{"ac-aaaa1111": "error", "ac-bbbb2222": shown}), ""},
+	}
+	for _, c := range cases {
+		if got := sessionShowingPrompt(context.Background(), both, key, c.capture); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+	// The search gives up within its bound.
+	start := time.Now()
+	slow := func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	if got := sessionShowingPrompt(context.Background(), both, key, slow); got != "" || time.Since(start) > promptSearchWait+time.Second {
+		t.Fatalf("slow capture: %q after %v", got, time.Since(start))
+	}
+}
+
+// fakeCodex is a stand-in for codex: sleep under the name codex. Codex
+// itself never runs.
+func fakeCodex(t *testing.T, dir string) string {
+	t.Helper()
 	sleep, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Skip("no sleep")
@@ -414,77 +474,141 @@ func TestACodexHookFromOutsideThePanesReportsForTheCodexSessionInItsDirectory(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake := filepath.Join(stateDir, "bin", "codex")
+	fake := filepath.Join(dir, "bin", "codex")
 	if err := os.MkdirAll(filepath.Dir(fake), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(fake, data, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A Codex session and a shell session, both in work.
-	codexID, err := server.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: work})
+	return fake
+}
+
+// codexCandidates are the Codex sessions a hook in cwd would consider.
+func codexCandidates(ctx context.Context, cwd string) []string {
+	scene := lookAround(ctx)
+	if scene == nil {
+		return nil
+	}
+	return codexSessionsOfCwd(scene.snapshot, scene.panes, cwd)
+}
+
+// startCodexSession creates a Codex session in cwd whose screen shows lines
+// and whose pane runs the fake codex, and waits until a hook sees it.
+func startCodexSession(t *testing.T, server *tmuxtest.Server, fake, cwd string, lines ...string) string {
+	t.Helper()
+	ctx := context.Background()
+	id, err := server.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: cwd})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := server.Manager.SetOptions(ctx, codexID, tmux.OptionProgram, string(protocol.ProgramCodex)); err != nil {
+	if err := server.Manager.SetOptions(ctx, id, tmux.OptionProgram, string(protocol.ProgramCodex)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: work}); err != nil {
-		t.Fatal(err)
+	command := ""
+	for _, line := range lines {
+		command += "echo '" + line + "'; "
 	}
-	panePID, err := server.Manager.Display(ctx, codexID, "#{pane_pid}")
-	if err != nil {
-		t.Fatal(err)
-	}
-	runsCodex := func() bool {
-		pid, err := strconv.Atoi(panePID)
-		if err != nil {
-			t.Fatalf("pane pid %q", panePID)
+	typeInPane(t, server, id, command+"exec '"+fake+"' 600")
+	deadline := time.Now().Add(10 * time.Second)
+	for !slices.Contains(codexCandidates(ctx, cwd), id) {
+		if time.Now().After(deadline) {
+			t.Fatal("the fake codex was not found")
 		}
-		snapshot, err := procs.Take(ctx)
-		return err == nil && snapshot.HasDescendant(pid, func(name string) bool { return name == "codex" })
+		time.Sleep(20 * time.Millisecond)
 	}
-	waitFor := func(what string, cond func() bool) {
-		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for !cond() {
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+	return id
+}
+
+// A Codex thread elsewhere in the folder of a Codex session (a normal
+// terminal, another tmux server, an IDE) calls the same global hook; it
+// never changes the session's status.
+func TestAForeignCodexThreadInTheFolderOfACodexSessionReportsNothing(t *testing.T) {
+	s := tmuxtest.New(t)
+	dir := shortStateDir(t)
+	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	startCodexSession(t, s, fakeCodex(t, dir), s.Home)
+	payload := `{"session_id":"foreign-terminal-thread","cwd":` + strconv.Quote(s.Home) + `,"hook_event_name":"UserPromptSubmit"}`
+	runHookArgs(strings.NewReader(payload), "codex")
+	reports.expectNone(t)
+	// Nor with a prompt the session's screen does not show, nor any later event.
+	for _, event := range []string{
+		`"hook_event_name":"UserPromptSubmit","prompt":"summarize the release notes"`,
+		`"hook_event_name":"PostToolUse"`, `"hook_event_name":"PermissionRequest"`, `"hook_event_name":"Stop"`,
+	} {
+		runHookArgs(strings.NewReader(`{"session_id":"foreign-terminal-thread","cwd":`+strconv.Quote(s.Home)+`,`+event+`}`), "codex")
 	}
-	typeInPane(t, server, codexID, "'"+fake+"' 600")
-	waitFor("the fake codex", runsCodex)
+	reports.expectNone(t)
+}
+
+// Codex 0.163 runs its hooks from a background Codex process outside every
+// tmux pane, without the session's environment. A submitted prompt that
+// the screen of the one Codex session in the hook's directory shows binds
+// the hook's thread to it; later events of that thread report for it, of
+// any other thread for none.
+func TestAPromptOnACodexSessionsScreenBindsTheHooksThread(t *testing.T) {
+	server := tmuxtest.New(t)
+	stateDir := shortStateDir(t)
+	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	exe := testExecutable(t)
+	work := filepath.Join(server.Home, "work")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codexID := startCodexSession(t, server, fakeCodex(t, stateDir), work, "fix the flaky login test")
+	// A shell session in work never counts.
+	if _, err := server.Manager.Create(context.Background(), tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: work}); err != nil {
+		t.Fatal(err)
+	}
 	// The hook is a process of its own, not below any pane, with the
 	// environment Codex gives it.
-	hook := func(stdin string) {
+	hook := func(agent, stdin string) {
 		t.Helper()
-		cmd := exec.Command(exe, "hook", "codex")
+		cmd := exec.Command(exe, "hook", agent)
 		cmd.Env = append(os.Environ(), runCLIEnv+"=1")
 		cmd.Stdin = strings.NewReader(stdin)
 		if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
 			t.Fatalf("hook: %v %q", err, out)
 		}
 	}
-	hook(`{"session_id":"x","turn_id":"y","cwd":"` + work + `","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"deploy it"}`)
+	cwd := strconv.Quote(work)
+	hook("codex", `{"session_id":"019a-t","turn_id":"y","cwd":`+cwd+`,"hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"fix the flaky   login test\nand rerun it"}`)
 	reports.expect(t, hookReport{codexID, protocol.StatusRunning, protocol.ReasonInput})
-	hook(`{"hook_event_name":"Stop","cwd":"` + work + `"}`)
+	hook("codex", `{"session_id":"019a-t","hook_event_name":"Stop"}`)
 	reports.expect(t, hookReport{codexID, protocol.StatusWaiting, protocol.ReasonTurnEnd})
-	// Another directory names no session; a Claude hook never matches by directory.
-	hook(`{"hook_event_name":"Stop","cwd":"` + server.Home + `"}`)
+	hook("codex", `{"session_id":"019a-u","hook_event_name":"Stop","cwd":`+cwd+`}`)
 	reports.expectNone(t)
-	cmd := exec.Command(exe, "hook", "claude")
-	cmd.Env = append(os.Environ(), runCLIEnv+"=1")
-	cmd.Stdin = strings.NewReader(`{"hook_event_name":"Stop","cwd":"` + work + `"}`)
-	if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
-		t.Fatalf("claude hook: %v %q", err, out)
-	}
+	// A Claude hook never binds by its screen.
+	hook("claude", `{"session_id":"019a-c","cwd":`+cwd+`,"hook_event_name":"UserPromptSubmit","prompt":"fix the flaky login test"}`)
 	reports.expectNone(t)
+	// The same prompt from another directory binds nothing.
+	hook("codex", `{"session_id":"019a-v","cwd":`+strconv.Quote(server.Home)+`,"hook_event_name":"UserPromptSubmit","prompt":"fix the flaky login test"}`)
+	hook("codex", `{"session_id":"019a-v","hook_event_name":"Stop"}`)
+	reports.expectNone(t)
+}
 
-	// Once codex has exited, the session in work runs a shell only.
-	sendKeys(t, server, codexID, "C-c")
-	waitFor("the fake codex to exit", func() bool { return !runsCodex() })
-	hook(`{"hook_event_name":"Stop","cwd":"` + work + `"}`)
+func TestTwoCodexSessionsInOneFolderAreToldApartByTheirScreens(t *testing.T) {
+	server := tmuxtest.New(t)
+	stateDir := shortStateDir(t)
+	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	fake := fakeCodex(t, stateDir)
+	a := startCodexSession(t, server, fake, server.Home, "alpha: rename the config loader", "shared: bump the version")
+	b := startCodexSession(t, server, fake, server.Home, "beta: rename the config writer", "shared: bump the version")
+	prompt := func(thread, text string) {
+		t.Helper()
+		runHookArgs(strings.NewReader(`{"session_id":"`+thread+`","cwd":`+strconv.Quote(server.Home)+`,"hook_event_name":"UserPromptSubmit","prompt":`+strconv.Quote(text)+`}`), "codex")
+	}
+	prompt("t-a", "rename the config loader")
+	reports.expect(t, hookReport{a, protocol.StatusRunning, protocol.ReasonInput})
+	prompt("t-b", "rename the config writer")
+	reports.expect(t, hookReport{b, protocol.StatusRunning, protocol.ReasonInput})
+	// Both screens show it: neither is chosen, and the thread stays unbound.
+	prompt("t-both", "bump the version")
+	runHookArgs(strings.NewReader(`{"session_id":"t-both","hook_event_name":"Stop"}`), "codex")
 	reports.expectNone(t)
+	runHookArgs(strings.NewReader(`{"session_id":"t-a","hook_event_name":"Stop"}`), "codex")
+	reports.expect(t, hookReport{a, protocol.StatusWaiting, protocol.ReasonTurnEnd})
 }

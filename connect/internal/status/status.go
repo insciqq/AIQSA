@@ -1,18 +1,21 @@
 // Package status turns agent hook events and terminal bells into session
-// statuses. Only the event name, the notification type and the working
-// directory of a hook's input are read; prompts, commands, messages and tool
-// data are skipped unread into any value and never leave this package. The
-// working directory only finds the hook's session on this computer; it is
-// never logged or sent.
+// statuses. Only the event name, the notification type, the agent's own
+// session (thread) id, the working directory and the first line of a
+// submitted prompt are read from a hook's input; commands, messages and tool
+// data are skipped unread into any value. The working directory and the
+// prompt line only find the hook's session on this computer: they are
+// compared in memory and never logged, stored or sent.
 package status
 
 import (
 	"encoding/json"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
@@ -49,17 +52,71 @@ type HookInput struct {
 	// Cwd is the agent session's absolute working directory, or empty. It
 	// stays on this computer.
 	Cwd string
+	// Thread is the agent's own id of its session (session_id), or empty
+	// when that is not a valid thread id.
+	Thread string
+	// PromptKey is the PromptKey of a submitted prompt, or empty. It stays
+	// in memory on this computer.
+	PromptKey string
 }
 
+// threadRegexp is what an agent's session id must look like to be sent.
+var threadRegexp = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+
+// ValidThread reports whether id can name an agent thread.
+func ValidThread(id string) bool { return threadRegexp.MatchString(id) }
+
+const (
+	// minPromptKeyRunes is the shortest prompt line that can tell a session
+	// apart; a shorter one ("yes", "go on") could be on any screen.
+	minPromptKeyRunes = 8
+	// maxPromptKeyRunes keeps a long line short enough to be found on the
+	// screen however the agent wraps the rest.
+	maxPromptKeyRunes = 60
+)
+
+// PromptKey is what identifies a prompt on a screen: its first non-empty
+// line with whitespace collapsed, cut to its first 60 characters. Empty
+// when that is shorter than 8 characters.
+func PromptKey(prompt string) string {
+	for line := range strings.Lines(prompt) {
+		key := collapseSpace(line)
+		if key == "" {
+			continue
+		}
+		if utf8.RuneCountInString(key) > maxPromptKeyRunes {
+			key = strings.TrimRight(string([]rune(key)[:maxPromptKeyRunes]), " ")
+		}
+		if utf8.RuneCountInString(key) < minPromptKeyRunes {
+			return ""
+		}
+		return key
+	}
+	return ""
+}
+
+// ScreenShows reports whether a screen's text holds a prompt key, with the
+// screen's whitespace (line breaks included) collapsed as the key's is: an
+// agent wraps a long prompt line onto several screen lines.
+func ScreenShows(screen, key string) bool {
+	return key != "" && strings.Contains(collapseSpace(screen), key)
+}
+
+func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // ReadHookInput reads at most MaxHookInputBytes of r as one JSON object and
-// returns its top-level hook_event_name, notification_type and cwd; a cwd
-// that is not an absolute path of at most MaxCwdBytes is dropped. Every
-// other value is skipped. Input that is cut off, malformed or not an object
-// yields whatever was read before the problem.
+// returns its top-level hook_event_name, notification_type, cwd,
+// session_id and the PromptKey of prompt; a cwd that is not an absolute
+// path of at most MaxCwdBytes and a session_id that is not a valid thread
+// id are dropped. Every other value is skipped. Input that is cut off,
+// malformed or not an object yields whatever was read before the problem.
 func ReadHookInput(r io.Reader) HookInput {
 	in := readHookInput(r)
 	if len(in.Cwd) > MaxCwdBytes || !filepath.IsAbs(in.Cwd) || strings.ContainsRune(in.Cwd, 0) {
 		in.Cwd = ""
+	}
+	if !ValidThread(in.Thread) {
+		in.Thread = ""
 	}
 	return in
 }
@@ -77,7 +134,12 @@ func readHookInput(r io.Reader) HookInput {
 		}
 		key, _ := tok.(string)
 		var target *string
+		var prompt string
 		switch key {
+		case "session_id":
+			target = &in.Thread
+		case "prompt":
+			target = &prompt
 		case "hook_event_name":
 			target = &in.Event
 		case "notification_type":
@@ -97,6 +159,9 @@ func readHookInput(r io.Reader) HookInput {
 		}
 		if s, ok := value.(string); ok {
 			*target = s
+		}
+		if target == &prompt {
+			in.PromptKey = PromptKey(prompt)
 		}
 	}
 	return in
