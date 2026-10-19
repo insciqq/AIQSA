@@ -69,12 +69,13 @@ export async function waitForCatalogModel(
  * A codex-lb answer model through custom setup (CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL, the Codex root ending in `/backend-api/codex`, so catalog
  * prices apply). `nativeSearch` also creates the connection's hosted web
- * search source. `preferredModel`, else AIQSA_BUDGETS_CODEX_MODEL, picks the
- * model (default gpt-5.6-luna, else gpt-5.5 when the endpoint does not list it).
+ * search source; `vision` declares image input. `preferredModel`, else
+ * AIQSA_BUDGETS_CODEX_MODEL, picks the model (default gpt-5.6-luna, else
+ * gpt-5.5 when the endpoint does not list it).
  */
 export async function setupCodexLbAnswerModel(
   request: APIRequestContext,
-  options: Readonly<{ label: string; nativeSearch: boolean; preferredModel?: string | null }>
+  options: Readonly<{ label: string; nativeSearch: boolean; preferredModel?: string | null; vision?: boolean }>
 ): Promise<PaidAnswerModel> {
   const apiRoot = paidEnv("CODEX_LB_BASE_URL")?.replace(/\/+$/u, "");
   const secret = paidEnv("CODEX_LB_API_KEY");
@@ -92,7 +93,7 @@ export async function setupCodexLbAnswerModel(
     connectionDisplayName: `${options.label} ${tag}` });
   const setup = await request.post("/api/admin/providers/custom-setup", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
     ...body,
-    capabilities: { ...body.capabilities as Record<string, unknown>, nativeSearch: options.nativeSearch },
+    capabilities: { ...body.capabilities as Record<string, unknown>, nativeSearch: options.nativeSearch, ...(options.vision ? { vision: true } : {}) },
     modelDisplayName: displayName
   } });
   expect(setup.ok(), `codex-lb custom setup is accepted (${setup.status()})`).toBe(true);
