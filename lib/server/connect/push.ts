@@ -7,8 +7,19 @@ import { getConnectRelay, type ConnectRelay, type ConnectRelayEvent } from "./re
 
 /** At most one notice per session in this interval. */
 export const CONNECT_PUSH_INTERVAL_MS = 15_000;
+/**
+ * At most this many notices per account in the window, whatever session ids its devices report: a
+ * device chooses its session ids, so the per-session interval alone does not bound what it sends.
+ */
+export const CONNECT_PUSH_ACCOUNT_LIMIT = 6;
+export const CONNECT_PUSH_ACCOUNT_WINDOW_MS = 60_000;
+/** Sends in flight across the process; more wait in a short queue, and any beyond it are dropped. */
+export const CONNECT_PUSH_MAX_IN_FLIGHT = 8;
+export const CONNECT_PUSH_MAX_QUEUED = 32;
 /** Sessions whose last notice the process remembers; older ones are past the interval or forgotten first. */
 const REMEMBERED_SESSIONS = 4_096;
+/** Accounts whose recent notices the process remembers; the least recent is forgotten first. */
+const REMEMBERED_ACCOUNTS = 4_096;
 
 export type ConnectPushDeps = Readonly<{
   jobId?: () => string;
@@ -28,15 +39,19 @@ export type ConnectPush = Readonly<{
  * Tells the owner when an agent in an AIQSA Connect session needs them: a
  * session entering `needs_approval` or `waiting` from another status sends
  * one content-free Web Push, unless the owner has that session open and
- * visible, and at most once per session every 15 seconds. Each notice is
- * sent once (never retried); the sender applies the account's browser
- * notification setting.
+ * visible, at most once per session every 15 seconds and at most 6 times
+ * per account a minute. At most 8 notices are sent at once, 32 more wait
+ * and the rest are dropped. Each notice is sent once (never retried); the
+ * sender applies the account's browser notification setting.
  */
 export function createConnectPush(deps: ConnectPushDeps): ConnectPush {
   const now = deps.now ?? Date.now;
   const jobId = deps.jobId ?? randomUUID;
   const lastSent = new Map<string, number>();
+  const accounts = new Map<string, { refusalLogged: boolean; sentAt: number[] }>();
   const inFlight = new Set<Promise<void>>();
+  const queued: Array<() => Promise<void>> = [];
+  let running = 0;
 
   function remember(key: string, at: number): void {
     lastSent.delete(key);
@@ -49,6 +64,46 @@ export function createConnectPush(deps: ConnectPushDeps): ConnectPush {
     lastSent.set(key, at);
   }
 
+  /** Spends one of the account's notices in the window; false, logged once per window, when none is left. */
+  function spendAccountNotice(userId: string, at: number): boolean {
+    const account = accounts.get(userId) ?? { refusalLogged: false, sentAt: [] };
+    account.sentAt = account.sentAt.filter((sentAt) => at - sentAt < CONNECT_PUSH_ACCOUNT_WINDOW_MS);
+    if (account.sentAt.length === 0) account.refusalLogged = false;
+    accounts.delete(userId);
+    if (accounts.size >= REMEMBERED_ACCOUNTS) accounts.delete(accounts.keys().next().value!);
+    accounts.set(userId, account);
+    if (account.sentAt.length >= CONNECT_PUSH_ACCOUNT_LIMIT) {
+      if (!account.refusalLogged) {
+        account.refusalLogged = true;
+        logEvent("job_attempt", { action: "skip", code: "push_rate_limited", outcome: "skipped", stage: "claim", subsystem: "push" });
+      }
+      return false;
+    }
+    account.sentAt.push(at);
+    return true;
+  }
+
+  function run(task: () => Promise<void>): void {
+    running += 1;
+    const work: Promise<void> = task().finally(() => {
+      running -= 1;
+      inFlight.delete(work);
+      const next = queued.shift();
+      if (next) run(next);
+    });
+    inFlight.add(work);
+  }
+
+  function dispatch(task: () => Promise<void>, id: string): void {
+    if (running < CONNECT_PUSH_MAX_IN_FLIGHT) {
+      run(task);
+    } else if (queued.length < CONNECT_PUSH_MAX_QUEUED) {
+      queued.push(task);
+    } else {
+      logEvent("job_attempt", { action: "skip", code: "push_queue_full", job_id: id, outcome: "skipped", stage: "claim", subsystem: "push" });
+    }
+  }
+
   function handle(event: ConnectRelayEvent): void {
     if (event.type !== "status") return;
     const { deviceId, sessionId, status, userId } = event;
@@ -58,22 +113,21 @@ export function createConnectPush(deps: ConnectPushDeps): ConnectPush {
     const key = JSON.stringify([userId, deviceId, sessionId]);
     const last = lastSent.get(key);
     if (last !== undefined && at - last < CONNECT_PUSH_INTERVAL_MS) return;
+    if (!spendAccountNotice(userId, at)) return;
     remember(key, at);
     const id = jobId();
     const message = connectPushMessage({ deviceId, sessionId, sessionTitle: event.title, status });
-    const work: Promise<void> = Promise.resolve()
+    dispatch(() => Promise.resolve()
       .then(() => deps.send(userId, message, id))
       .then(() => undefined, (error: unknown) => {
         logEvent("job_attempt", { action: "skip", code: "push_delivery_failed", error, job_id: id, outcome: "failed", stage: "dispatch", subsystem: "push" });
-      })
-      .finally(() => inFlight.delete(work));
-    inFlight.add(work);
+      }), id);
   }
 
   const unsubscribe = deps.relay.onEvent(handle);
   return {
     async idle() {
-      while (inFlight.size > 0) await Promise.all([...inFlight]);
+      while (inFlight.size > 0 || queued.length > 0) await Promise.all([...inFlight]);
     },
     stop() {
       unsubscribe();

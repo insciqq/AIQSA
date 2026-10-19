@@ -968,6 +968,7 @@
   "push_endpoint_forbidden",
   "push_keys_unavailable",
   "push_queue_full",
+  "push_rate_limited",
   "push_repository_failed",
   "push_run_shown_on_device",
   "push_subscription_gone",
