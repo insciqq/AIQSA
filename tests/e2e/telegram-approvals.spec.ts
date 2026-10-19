@@ -236,11 +236,13 @@ test.afterAll(async () => {
       if (aliceSession) {
         const userId = aliceSession.user.id;
         // A stopped run's Workspace session is released shortly after the run settles: retry until it is.
-        // Its cleanup jobs and run bindings restrict the session; the chats then go with the users.
+        // Its cleanup jobs and run bindings restrict the session, and files a run produced restrict the
+        // run; the chats then go with the users.
         await expect.poll(() => prisma.$transaction(async (tx) => {
           await tx.workspaceCleanupJob.deleteMany({ where: { workspaceSession: { chat: { userId } } } });
           await tx.workspaceRunBinding.deleteMany({ where: { workspaceSession: { chat: { userId } } } });
           await tx.workspaceSession.deleteMany({ where: { chat: { userId } } });
+          await tx.attachment.deleteMany({ where: { producerModelRunId: { not: null }, userId } });
         }).then(() => "removed", (error: unknown) => (error instanceof Error ? error.message.slice(-300) : "failed")),
         { intervals: [2_000], timeout: 60_000 }).toBe("removed");
       }
