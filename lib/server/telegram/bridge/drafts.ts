@@ -11,12 +11,16 @@ import type { TelegramOutcome } from "../transport";
  * and back to empty when the stream resets its text. Every draft keeps one
  * `draft_id` and offers Telegram's own Stop (`can_stop`, the draft goes away
  * on Stop). One send at a time; newer text replaces text still waiting. A
- * refused rich draft switches the run to plain-text drafts.
+ * refused rich draft switches the run to plain-text drafts. Every draft first
+ * asks, after its wait, whether the chat may still receive the answer; once it
+ * may not, the draft ends for good and the answer stays in AIQSA.
  */
 
 export const TELEGRAM_DRAFT_THROTTLE_MS = 1_100;
 export const TELEGRAM_DRAFT_REFRESH_MS = 20_000;
 const DRAFT_TEXT_MAX_LENGTH = 4_096;
+
+export type TelegramDraftApi = Pick<TelegramBotApi, "sendMessageDraft" | "sendRichMessageDraft">;
 
 export type TelegramDraftStreamer = Readonly<{
   /** Sends the empty draft now. */
@@ -30,7 +34,11 @@ export type TelegramDraftStreamer = Readonly<{
 }>;
 
 export function createTelegramDraftStreamer(deps: Readonly<{
-  api: Pick<TelegramBotApi, "sendMessageDraft" | "sendRichMessageDraft">;
+  /**
+   * The Bot API the next draft goes through, asked right before it: null once
+   * the chat may no longer receive the run's answer, which ends the draft.
+   */
+  reach: () => Promise<TelegramDraftApi | null>;
   chatId: number;
   draftId: number;
   now?: () => number;
@@ -59,13 +67,13 @@ export function createTelegramDraftStreamer(deps: Readonly<{
     });
   }
 
-  async function send(text: string): Promise<void> {
+  async function send(api: TelegramDraftApi, text: string): Promise<void> {
     if (!text) {
-      report(await deps.api.sendMessageDraft({ ...options, text: "" }));
+      report(await api.sendMessageDraft({ ...options, text: "" }));
       return;
     }
     if (!plain) {
-      const outcome = await deps.api.sendRichMessageDraft({ ...options, rich_message: render(text) });
+      const outcome = await api.sendRichMessageDraft({ ...options, rich_message: render(text) });
       if (outcome.ok || outcome.kind !== "telegram" || outcome.errorCode !== 400) {
         report(outcome);
         return;
@@ -73,7 +81,7 @@ export function createTelegramDraftStreamer(deps: Readonly<{
       plain = true;
     }
     const tail = plainTelegramMessage(render(text)).join("\n").slice(-DRAFT_TEXT_MAX_LENGTH);
-    report(await deps.api.sendMessageDraft({ ...options, text: tail }));
+    report(await api.sendMessageDraft({ ...options, text: tail }));
   }
 
   function clear(): void {
@@ -81,14 +89,29 @@ export function createTelegramDraftStreamer(deps: Readonly<{
     timer = null;
   }
 
+  /** One draft, only while the chat may still receive the answer. */
+  async function deliver(text: string): Promise<void> {
+    try {
+      const api = await deps.reach();
+      if (!api) {
+        stopped = true;
+        clear();
+        return;
+      }
+      await send(api, text);
+    } catch {
+      // A draft whose check or send failed is skipped; the next one asks again.
+    }
+    sent = text;
+  }
+
   function fire(): void {
     timer = null;
     if (stopped || inFlight) return;
     const text = latest;
     lastSentAt = now();
-    inFlight = send(text).catch(() => undefined).finally(() => {
+    inFlight = deliver(text).finally(() => {
       inFlight = null;
-      sent = text;
       schedule();
     });
   }
