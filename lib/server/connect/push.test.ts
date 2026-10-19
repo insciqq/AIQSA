@@ -139,6 +139,20 @@ describe("AIQSA Connect push", () => {
     expect(t.sent.filter((s) => s.userId === "owner-1")).toHaveLength(CONNECT_PUSH_ACCOUNT_LIMIT + 1);
   });
 
+  it("logs a refused account again a minute after its last refusal log, under steady traffic too", async () => {
+    logs.logEvent.mockClear();
+    const t = setup();
+    for (let n = 0; n < 18; n += 1) {
+      t.clock.now = 1_000_000 + n * 10_000;
+      t.status("waiting", "running", { sessionId: `ac-ok${String(n).padStart(4, "0")}` });
+      if (n >= 5) t.status("waiting", "running", { sessionId: `ac-no${String(n).padStart(4, "0")}` });
+      await t.push.idle();
+    }
+    expect(t.sent).toHaveLength(18);
+    const refusals = logs.logEvent.mock.calls.filter(([, fields]) => (fields as { code?: string }).code === "push_rate_limited");
+    expect(refusals).toHaveLength(3);
+  });
+
   it("sends at most 8 notices at once, keeps 32 waiting and drops the rest", async () => {
     logs.logEvent.mockClear();
     const releases: Array<() => void> = [];
