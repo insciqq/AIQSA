@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { revokeConnectDevicesForUser } from "../connect/revocation";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
 import type { AccountProfileRepository, PasswordChangeRepository } from "./accountHandlers";
 import type { SafeUserWithGroups } from "./handlers";
@@ -150,6 +151,8 @@ export function createPrismaPasswordChangeRepository(
           reason: "password_change",
           userId: identity.userId
         });
+        // Whoever held the old password may also have paired a computer.
+        await revokeConnectDevicesForUser(tx, { userId: identity.userId });
         return true;
       });
     }
