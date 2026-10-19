@@ -117,6 +117,7 @@ export type RetentionRepository = {
   completeAttachmentDeletionJob(input: { claimToken: string; id: string }): Promise<boolean>;
   deleteAuthFlowTokens(input: { cutoff: Date; ids: string[] }): Promise<number>;
   deleteAuthSessions(input: { cutoff: Date; ids: string[] }): Promise<number>;
+  deleteConnectPairings(input: { cutoff: Date; ids: string[] }): Promise<number>;
   deletePrunableInboundMcpOAuth(input: {
     candidates: InboundMcpOAuthPruneCandidates;
     cutoff: Date;
@@ -129,6 +130,7 @@ export type RetentionRepository = {
   }): Promise<string[]>;
   findPrunableAuthFlowTokenIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
   findPrunableAuthSessionIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
+  findPrunableConnectPairingIds(input: { cutoff: Date; limit: number }): Promise<string[]>;
   findPrunableInboundMcpOAuth(input: {
     cutoff: Date;
     limit: number;
@@ -230,6 +232,8 @@ export type PruneRetentionSummary = {
   authCutoff: string;
   authFlowTokens: RetentionCount;
   authSessions: RetentionCount;
+  /** Expired AIQSA Connect pairings, whether pending, denied or consumed. */
+  connectPairings: RetentionCount;
   dryRun: boolean;
   eventCutoff: string;
   inboundMcpOAuth: {
@@ -610,6 +614,14 @@ function prunableAuthFlowTokenWhere(cutoff: Date): Prisma.AuthFlowTokenWhereInpu
   };
 }
 
+/**
+ * Every pairing expires minutes after its creation, and approval, denial and
+ * consumption all happen before that; past the cutoff it serves nobody.
+ */
+function prunableConnectPairingWhere(cutoff: Date): Prisma.ConnectPairingWhereInput {
+  return { expiresAt: { lt: cutoff } };
+}
+
 function prunableInboundMcpAuthorizationCodeWhere(
   cutoff: Date
 ): Prisma.InboundMcpOAuthAuthorizationCodeWhereInput {
@@ -842,6 +854,17 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
 
       return deleted.count;
     },
+    async deleteConnectPairings({ cutoff, ids }) {
+      if (ids.length === 0) {
+        return 0;
+      }
+
+      const deleted = await prisma.connectPairing.deleteMany({
+        where: { ...prunableConnectPairingWhere(cutoff), id: { in: ids } }
+      });
+
+      return deleted.count;
+    },
     maintainMcpHub: (input) => createMcpHubOperationStore(prisma).maintain(input),
     deletePrunableInboundMcpOAuth({ candidates, cutoff }) {
       return prisma.$transaction(async (tx) => {
@@ -931,6 +954,16 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
         },
         take: limit,
         where: prunableAuthSessionWhere(cutoff)
+      });
+
+      return rows.map((row) => row.id);
+    },
+    async findPrunableConnectPairingIds({ cutoff, limit }) {
+      const rows = await prisma.connectPairing.findMany({
+        orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+        select: { id: true },
+        take: limit,
+        where: prunableConnectPairingWhere(cutoff)
       });
 
       return rows.map((row) => row.id);
@@ -1541,6 +1574,7 @@ function emptySummary(input: {
   authCutoff: Date;
   authFlowTokenIds: string[];
   authSessionIds: string[];
+  connectPairingIds: string[];
   deletionJobIds: string[];
   dryRun: boolean;
   eventCutoff: Date;
@@ -1573,6 +1607,10 @@ function emptySummary(input: {
     authSessions: {
       deleted: 0,
       matched: input.authSessionIds.length
+    },
+    connectPairings: {
+      deleted: 0,
+      matched: input.connectPairingIds.length
     },
     dryRun: input.dryRun,
     eventCutoff: input.eventCutoff.toISOString(),
@@ -1684,6 +1722,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     knowledgeUploadSessionInspection,
     authSessionIds,
     authFlowTokenIds,
+    connectPairingIds,
     inboundMcpOAuthCandidates,
     initialDeletionJobIds
   ] = await Promise.all([
@@ -1698,6 +1737,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     }),
     options.repository.findPrunableAuthSessionIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableAuthFlowTokenIds({ cutoff: authCutoff, limit: batchSize }),
+    options.repository.findPrunableConnectPairingIds({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findPrunableInboundMcpOAuth({ cutoff: authCutoff, limit: batchSize }),
     options.repository.findClaimableAttachmentDeletionJobIds({ now, claimableBefore, limit: batchSize })
   ]);
@@ -1705,6 +1745,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     authCutoff,
     authFlowTokenIds,
     authSessionIds,
+    connectPairingIds,
     deletionJobIds: initialDeletionJobIds,
     dryRun,
     eventCutoff,
@@ -1726,10 +1767,11 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     return summary;
   }
 
-  const [deletedEvents, deletedSessions, deletedFlowTokens, deletedInboundMcpOAuth] = await Promise.all([
+  const [deletedEvents, deletedSessions, deletedFlowTokens, deletedConnectPairings, deletedInboundMcpOAuth] = await Promise.all([
     options.repository.deleteModelRunEvents(eventIds),
     options.repository.deleteAuthSessions({ cutoff: authCutoff, ids: authSessionIds }),
     options.repository.deleteAuthFlowTokens({ cutoff: authCutoff, ids: authFlowTokenIds }),
+    options.repository.deleteConnectPairings({ cutoff: authCutoff, ids: connectPairingIds }),
     options.repository.deletePrunableInboundMcpOAuth({
       candidates: inboundMcpOAuthCandidates,
       cutoff: authCutoff
@@ -1777,6 +1819,7 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
   summary.modelRunEvents.deleted = deletedEvents;
   summary.authSessions.deleted = deletedSessions;
   summary.authFlowTokens.deleted = deletedFlowTokens;
+  summary.connectPairings.deleted = deletedConnectPairings;
   summary.inboundMcpOAuth.authorizationCodes.deleted = deletedInboundMcpOAuth.authorizationCodes;
   summary.inboundMcpOAuth.clients.deleted = deletedInboundMcpOAuth.clients;
   summary.inboundMcpOAuth.grants.deleted = deletedInboundMcpOAuth.grants;
