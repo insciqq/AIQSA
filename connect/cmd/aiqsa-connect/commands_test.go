@@ -46,7 +46,7 @@ func isolate(t *testing.T) config.Paths {
 
 func TestUsageListsTheClientCommands(t *testing.T) {
 	_, stdout, _ := runArgs("help")
-	for _, name := range []string{"login <origin>", "up", "attach <session-id>", "sessions", "logout", "version"} {
+	for _, name := range []string{"login <origin>", "up", "attach <session-id>", "sessions", "logout", "version", "update", "service install|uninstall|status"} {
 		if !strings.Contains(stdout, name) {
 			t.Errorf("usage lacks %q:\n%s", name, stdout)
 		}
@@ -136,7 +136,8 @@ func writeCredentials(t *testing.T, paths config.Paths, origin string) {
 
 func TestUpRefusesMissingAndReadableCredentials(t *testing.T) {
 	paths := isolate(t)
-	if code, _, stderr := runArgs("up"); code != 1 || !strings.Contains(stderr, "aiqsa-connect login") {
+	// Not logged in is final for a service manager, like a revoked device.
+	if code, _, stderr := runArgs("up"); code != exitRevoked || !strings.Contains(stderr, "not logged in — run aiqsa-connect login") {
 		t.Fatalf("not logged in: %d %q", code, stderr)
 	}
 	writeCredentials(t, paths, "https://ai.example.com")
@@ -159,6 +160,16 @@ func TestUpExitsWithStatus3WhenRevoked(t *testing.T) {
 	code, _, stderr := runArgs("up")
 	if code != exitRevoked || !strings.Contains(stderr, "device revoked — run aiqsa-connect login") {
 		t.Fatalf("revoked: %d %q", code, stderr)
+	}
+	// The revoked token is set aside, so a restart stops without asking the server.
+	if _, err := os.Stat(paths.CredentialsFile()); !os.IsNotExist(err) {
+		t.Fatalf("credentials kept after revocation: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.ConfigDir, "credentials.revoked.json")); err != nil {
+		t.Fatalf("revoked credentials: %v", err)
+	}
+	if code, _, _ := runArgs("up"); code != exitRevoked {
+		t.Fatalf("restart after revocation: %d", code)
 	}
 	if _, err := os.Stat(paths.LogFile()); err != nil {
 		t.Fatalf("log file: %v", err)
