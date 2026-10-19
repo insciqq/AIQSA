@@ -38,7 +38,7 @@ export type TelegramPoller = Readonly<{
 /** Content-free: stages, outcomes, codes, delays and counts only. */
 function log(fields: Readonly<{
   action?: "retry" | "stop"; code?: string; count?: number; delay_ms?: number; error?: unknown; httpStatus?: number;
-  outcome: "completed" | "failed" | "skipped" | "waiting"; prisma_code?: string; stage: "claim" | "reconcile";
+  outcome: "completed" | "degraded" | "failed" | "skipped" | "waiting"; prisma_code?: string; stage: "claim" | "reconcile";
 }>): void {
   logEvent("service_operation", { subsystem: "telegram", ...fields });
 }
@@ -78,6 +78,8 @@ export function createTelegramPoller(deps: Readonly<{
   let waking = new AbortController();
   let lastHealth: Readonly<{ at: number; code: TelegramHealthCode | null; key: string }> | null = null;
   let failing = false;
+  // Halved while a backlog's response exceeds the transport bound, so oversized batches drain instead of repeating.
+  let batchLimit = TELEGRAM_POLL_BATCH_LIMIT;
 
   const generationKey = (session: TelegramBotSession) => `${session.botId}:${session.generation}`;
 
@@ -132,7 +134,7 @@ export function createTelegramPoller(deps: Readonly<{
       }
       const outcome = await session.api.getUpdates({
         allowedUpdates: TELEGRAM_ALLOWED_UPDATES,
-        limit: TELEGRAM_POLL_BATCH_LIMIT,
+        limit: batchLimit,
         timeoutSeconds: TELEGRAM_POLL_TIMEOUT_SECONDS,
         ...(offset === null ? {} : { offset })
       });
@@ -140,6 +142,11 @@ export function createTelegramPoller(deps: Readonly<{
       // The bot changed or went off during the poll: the batch stays unclaimed and unconfirmed.
       const current = await deps.sessions.current().catch(() => null);
       if (!current || generationKey(current) !== generationKey(session)) continue;
+      if (!outcome.ok && outcome.kind === "too_large" && batchLimit > 1) {
+        batchLimit = Math.max(1, Math.floor(batchLimit / 2));
+        log({ action: "retry", code: telegramFailureCode(outcome.kind, outcome.errorCode), count: batchLimit, outcome: "degraded", stage: "reconcile" });
+        continue;
+      }
       if (!outcome.ok) {
         const code = telegramPollFailureCode(outcome);
         const action = code === "telegram_token_rejected" ? "stop" : "retry";
@@ -158,6 +165,7 @@ export function createTelegramPoller(deps: Readonly<{
       if (failing) reportSubsystemHealthy("telegram", "reconcile");
       failing = false;
       delay = 0;
+      batchLimit = Math.min(TELEGRAM_POLL_BATCH_LIMIT, batchLimit * 2);
       await recordHealth(session, null);
       const updates = outcome.result;
       if (updates.length === 0) continue;
