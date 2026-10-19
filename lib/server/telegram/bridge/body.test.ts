@@ -130,7 +130,14 @@ describe("Telegram model choice", () => {
       .toEqual({ code: "model_unavailable", ok: false });
     expect(resolveTelegramModel(catalog, { chatModel: { modelId: "model-gone", provider: "connection-fake" }, selected: null }))
       .toEqual({ code: "model_unavailable", ok: false });
-    expect(resolveTelegramModel(fakeCatalog({ defaults: { modelId: "", provider: "" } }), { chatModel: null, selected: null }))
+    expect(resolveTelegramModel(fakeCatalog({ defaults: { modelId: "", provider: "" }, models: [] }), { chatModel: null, selected: null }))
       .toEqual({ code: "no_model", ok: false });
+  });
+
+  it("without a default starts where a new web chat does: the first non-test model, then the first", () => {
+    const test = fakeCatalogModel({ modelId: "model-test", provider: "fake" });
+    const undefaulted = (models: ReturnType<typeof fakeCatalogModel>[]) => fakeCatalog({ defaults: { modelId: "", provider: "" }, models });
+    expect(resolveTelegramModel(undefaulted([test, second]), { chatModel: null, selected: null })).toEqual({ model: second, ok: true });
+    expect(resolveTelegramModel(undefaulted([test]), { chatModel: null, selected: null })).toEqual({ model: test, ok: true });
   });
 });
