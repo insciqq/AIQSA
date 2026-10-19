@@ -1,0 +1,6 @@
+{
+  "event": "closed",
+  "data": {
+    "reason": "session_ended"
+  }
+}

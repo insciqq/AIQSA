@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   configured: true,
+  connectEnabled: false,
   findUser: vi.fn(),
   redirect: vi.fn((location: string): never => {
     throw new Error(`NEXT_REDIRECT ${location}`);
@@ -14,6 +15,7 @@ vi.mock("@/lib/server/auth/config", () => ({ getAuthConfig: () => ({ configured:
 vi.mock("@/lib/server/auth/defaultAuth", () => ({ authSessionStore: {} }));
 vi.mock("@/lib/server/auth/requestAuth", () => ({ resolveAuthToken: mocks.resolveAuthToken }));
 vi.mock("@/lib/server/prisma", () => ({ prisma: { user: { findUnique: mocks.findUser } } }));
+vi.mock("@/lib/server/connect/policy", () => ({ isConnectEnabled: async () => mocks.connectEnabled }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "session-token" }) }) }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect }));
 vi.mock("@/lib/server/telegram/defaultTelegram", () => ({ isTelegramAvailableForUser: mocks.telegramAvailable }));
@@ -33,6 +35,7 @@ const search = (value: Record<string, string | string[]>) => Promise.resolve(val
 
 afterEach(() => {
   mocks.configured = true;
+  mocks.connectEnabled = false;
   vi.clearAllMocks();
 });
 
@@ -48,6 +51,7 @@ describe("chat pages", () => {
       accountEmail: "owner@example.test",
       accountId: "user-1",
       adminEntryVisible: true,
+      connectEnabled: false,
       telegramAvailable: false
     });
   });

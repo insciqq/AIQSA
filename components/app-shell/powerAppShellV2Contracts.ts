@@ -63,6 +63,8 @@ export type ShellSessionView = {
   activeChatId: string | null;
   activeChatTitle: string;
   adminEntryVisible: boolean;
+  /** AIQSA Connect is on for this installation. */
+  connectEntryVisible?: boolean;
   /** Settings → Connections shows the Telegram block. */
   telegramAvailable?: boolean;
   copyProjectChatLink(): Promise<void> | void;

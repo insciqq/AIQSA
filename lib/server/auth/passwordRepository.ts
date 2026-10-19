@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { revokeConnectDevicesForUser } from "../connect/revocation";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
 import { revokeTelegramLinksForUser } from "../telegram/linking/revocation";
 import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
@@ -206,6 +207,7 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
           reason: "password_reset",
           userId: flowToken.identity.userId
         });
+        await revokeConnectDevicesForUser(tx, { userId: flowToken.identity.userId });
         await revokeTelegramLinksForUser(tx, {
           now: input.now,
           reason: "password_reset",

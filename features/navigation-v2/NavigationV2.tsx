@@ -42,6 +42,7 @@ import {
   type ChatNavigationFolderWire,
   type ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
+import { CONNECT_PAGE_PATH } from "@/lib/contracts/connect";
 import {
   Fragment,
   useEffect,
@@ -78,6 +79,8 @@ export type NavigationSidebarProps = Readonly<{
   activeChatId: string | null;
   /** Shows the Control Center link inside the account menu. */
   adminEntryVisible?: boolean;
+  /** Shows AIQSA Connect among the rail and drawer destinations. */
+  connectEntryVisible?: boolean;
   /**
    * Optional current per-chat state (favourite, retained Memory mode) so the
    * row menu can show what is active; unknown chats simply render stateless.
@@ -1227,8 +1230,9 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           <AnnouncementsBell compact={false} />
           {/* One row of destinations (UX audit 2026-09-02 #15) so the chat
               list keeps the drawer's height; Settings and Control Center live
-              in the account menu, exactly as on the rail. */}
-          <div className="v2-navigation-destinations">
+              in the account menu, exactly as on the rail. Icons share one
+              top line, so the two-line "AIQSA Connect" keeps them aligned. */}
+          <div className="v2-navigation-destinations [&>*]:!justify-start">
             <button
               className="v2-navigation-destination v2-focusable"
               type="button"
@@ -1241,6 +1245,11 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               <button className="v2-navigation-destination v2-focusable" disabled={props.navigationBusy} type="button" onClick={props.onLibrary}>
                 <UiV2Icon name="studio" /><span>Studio</span>
               </button>
+            ) : null}
+            {props.connectEntryVisible ? (
+              <a className="v2-navigation-destination v2-focusable" href={CONNECT_PAGE_PATH}>
+                <UiV2Icon name="terminal" /><span>AIQSA Connect</span>
+              </a>
             ) : null}
             {props.onSettings ? (
               <button
@@ -1859,6 +1868,7 @@ export function ReadingRoomShellV2({
           active={resolvedSection}
           navigationBusy={navigationOwnerProps.navigationBusy}
           adminEntryVisible={navigationOwnerProps.adminEntryVisible}
+          connectEntryVisible={navigationOwnerProps.connectEntryVisible}
           onChats={showChats}
           onLibrary={showLibrary}
           onNewChat={() => createPersonalChat("NORMAL")}

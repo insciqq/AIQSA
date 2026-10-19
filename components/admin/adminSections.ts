@@ -9,6 +9,7 @@ import {
   LogIn,
   Mail,
   Megaphone,
+  MonitorSmartphone,
   Search,
   Send,
   ShieldCheck,
@@ -24,6 +25,7 @@ export type AdminSectionId =
   | "announcements"
   | "assistants"
   | "access-rules"
+  | "connect"
   | "email"
   | "groups"
   | "health"
@@ -75,6 +77,7 @@ export const adminSections = [
   { Icon: BookOpenText, group: "platform", id: "skills", label: "Skills" },
   { Icon: Bot, group: "platform", id: "assistants", label: "Assistants" },
   { Icon: SquareTerminal, group: "platform", id: "workspace", label: "Workspace" },
+  { Icon: MonitorSmartphone, group: "platform", id: "connect", label: "AIQSA Connect" },
   { Icon: Mail, group: "platform", id: "email", label: "Email" },
   { Icon: Send, group: "platform", id: "telegram", label: "Telegram" },
   { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }

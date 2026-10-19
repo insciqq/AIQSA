@@ -109,6 +109,7 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
       onSelectChat={(chat) => setSelected(chat.id)}
       onSettings={state === "destinations" ? () => undefined : undefined}
       onProjects={state === "destinations" ? () => undefined : undefined}
+      connectEntryVisible={state === "destinations"}
       drawerDestinations={state === "destinations"}
       ready={state !== "loading" && state !== "error"}
       searchError={null}
@@ -120,6 +121,7 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
   return (
     <div data-testid="ui-v2-navigation-gallery">
       <ReadingRoomShellV2
+        connectEntryVisible={state === "destinations"}
         onLibrary={() => undefined}
         onNewChat={setMode}
         onSelectChat={(chat) => setSelected(chat.id)}

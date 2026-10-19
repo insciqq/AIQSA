@@ -615,12 +615,14 @@ export function PowerAppShellV2({
   accountDisplayName,
   accountEmail,
   adminEntryVisible = false,
+  connectEntryVisible = false,
   telegramAvailable = false
 }: {
   accountId: string;
   accountDisplayName: string;
   accountEmail: string | null;
   adminEntryVisible?: boolean;
+  connectEntryVisible?: boolean;
   /** Settings → Connections shows the Telegram block. */
   telegramAvailable?: boolean;
 }) {
@@ -2014,6 +2016,7 @@ export function PowerAppShellV2({
     activeChatId,
     activeChatTitle,
     adminEntryVisible,
+    connectEntryVisible,
     telegramAvailable,
     copyProjectChatLink: async () => {
       const workspace = useWorkspaceStore.getState();

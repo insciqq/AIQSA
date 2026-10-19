@@ -1914,6 +1914,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           accountId={session.accountId}
           accountLabel={session.accountDisplayName.trim() || session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
+          connectEntryVisible={session.connectEntryVisible}
           chatActive={Boolean(session.activeChatId)}
           projectsSectionOpen={projectsSurfaceVisible}
           section={libraryOpen && !projectContext ? "library" : "chats"}

@@ -1,5 +1,6 @@
 ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.60.0-noble@sha256:9bd26ad900bb5e0f4dee75839e957a89ae89c2b7ab1e76050e559790e946b948
 ARG NODE_IMAGE=node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
+ARG GO_IMAGE=golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61
 
 FROM ${PLAYWRIGHT_IMAGE} AS dev
 
@@ -106,6 +107,31 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.xlsx=$XLSX_SPEC" \
   && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
+# The AIQSA Connect client, cross-compiled on the build platform for every
+# supported target. Release images are built separately per architecture, so
+# these flags (the same as `npm run build:connect`) keep the binaries and
+# SHA256SUMS byte-identical on every builder.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS connect-build
+
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOAMD64=v1 GOARM64=v8.0
+
+WORKDIR /src/connect
+COPY connect/go.mod connect/go.sum ./
+RUN go mod download && go mod verify
+COPY connect ./
+COPY package.json /src/package.json
+RUN version="$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' /src/package.json)" \
+  && printf '%s\n' "$version" | grep -Eqx '(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})(-[0-9A-Za-z.-]{1,32})?' \
+  && mkdir /out \
+  && for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do \
+    GOOS="${target%/*}" GOARCH="${target#*/}" go build -trimpath -buildvcs=false \
+      -ldflags="-s -w -buildid= -X main.version=$version" \
+      -o "/out/aiqsa-connect-${target%/*}-${target#*/}" ./cmd/aiqsa-connect || exit 1; \
+  done \
+  && cd /out \
+  && sha256sum aiqsa-connect-darwin-amd64 aiqsa-connect-darwin-arm64 \
+    aiqsa-connect-linux-amd64 aiqsa-connect-linux-arm64 > SHA256SUMS
+
 # One published image owns the standalone application, private Memory and PDF
 # workers, and narrowly pruned installation tools. Compose selects the role by
 # command.
@@ -127,11 +153,16 @@ COPY --chown=node:node . .
 COPY --chown=node:node --from=runtime-build /app/.next/standalone ./runtime
 COPY --chown=node:node --from=runtime-build /app/.next/static ./runtime/.next/static
 COPY --chown=node:node --from=runtime-build /app/public ./runtime/public
+# The AIQSA Connect downloads stay root-owned and read-only (their directory
+# too), so the application user cannot replace what installers execute.
+COPY --from=connect-build --chmod=0444 /out/* ./connect/dist/
+RUN chown root:root ./connect && chmod 0755 ./connect ./connect/dist
 
 USER node
 
 RUN node scripts/verify-release-vision.cjs
 RUN node scripts/verify-release-isolated-parser.cjs
+RUN node scripts/verify-release-connect.cjs --release
 
 EXPOSE 3000
 

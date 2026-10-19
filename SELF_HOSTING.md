@@ -127,6 +127,19 @@ Daily journal files let the oldest lines rotate out in small steps. On distribut
 
 The journald driver cannot start containers on a host without systemd-journald. There `./aiqsa.sh configure` and `install` write `COMPOSE_FILE=compose.yaml:compose.json-file-logging.yaml` to `.env`, which switches every service to rotating log files (`AIQSA_LOG_MAX_FILES` × `AIQSA_LOG_MAX_SIZE` per container). Those logs are lost when a container is recreated, for example by `up` or `upgrade`, and `doctor` warns that history is not kept: copy anything you need to keep first. `COMPOSE_FILE` turns off the automatic `compose.override.yaml`; list your own overrides after the fallback.
 
+## AIQSA Connect
+
+AIQSA Connect lets each user open terminal sessions on their own computer from AIQSA, for example to run Claude Code or Codex there and answer them from a phone. It is **off by default**: it is a remote command line on your users' machines. Turn it on in **Admin → AIQSA Connect**. While it is off the mode is hidden, connected computers are disconnected and the client downloads answer "not found".
+
+Nothing else changes on the server: no new service, port, container or environment variable. The client and the browser talk to the app through the same origin with Server-Sent Events and ordinary requests (no WebSocket), and the image already contains the client binaries. The reverse proxy must:
+
+- forward `/connect-api/`, `/connect/install.sh`, `/connect/checksums.txt` and `/connect/download/` like the rest of AIQSA (the client authenticates with its own device token, so these paths have no session cookie);
+- keep event streams open for hours and pass them unbuffered: the app sends a heartbeat every 15 seconds, so an upstream read timeout of 60 seconds or more is enough. The app sends `X-Accel-Buffering: no`, which nginx honors unless `proxy_ignore_headers` drops it; other proxies need buffering and compression of `text/event-stream` turned off.
+
+Users install the client from the command shown in AIQSA Connect (`curl -fsSL https://ai.example.com/connect/install.sh | sh`), then run `aiqsa-connect login https://ai.example.com`. Client requirements: macOS, Linux or WSL on amd64 or arm64 and tmux 3.2 or newer. The client follows the server's version by itself after each AIQSA update. Without HTTPS it works over `http://` on a local network only, unencrypted, and browsers then turn off notifications and dictation. The [client guide](connect/README.md) covers installation, the background service, updates and troubleshooting.
+
+The server relays terminal traffic between a user's computer and their browser in memory and never stores or logs it, but whoever operates the server could technically read it or type into those sessions; the client guide tells users so. Only the computer's owner can open its sessions in AIQSA; administrators cannot.
+
 ## Sign-in methods
 
 Sign-in is configured in **Control Center → People → Sign-in**, without a restart except for the trusted header and the break-glass token. Every method card works the same way: fill in the fields, **Save**, **Test** where offered, then **Activate**; **Disable** keeps the settings. Secrets are stored encrypted and never shown again, and a blank secret field keeps the stored value. Under *Values for the identity provider* each card shows the URLs to copy into the identity provider (IdP), built from `AIQSA_APP_BASE_URL`; the examples below use `https://aiqsa.example.com`. After a failed sign-in the card names the reason, without personal data.

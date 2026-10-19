@@ -1,0 +1,15 @@
+{
+  "event": "session",
+  "data": {
+    "session": {
+      "id": "ac-k3x9q2",
+      "title": "Claude Code · AIQSA",
+      "cwd": "/home/user/src/AIQSA",
+      "program": "claude",
+      "status": "running",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "createdAt": "2026-10-19T09:00:00Z",
+      "attachedClients": 1
+    }
+  }
+}
