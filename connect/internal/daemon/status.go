@@ -17,8 +17,10 @@ var ErrInvalidStatus = errors.New("invalid session status")
 // @aiqsa_status and @aiqsa_status_at, sends a `status` event (with reason,
 // when not empty) and refreshes the snapshot. Nothing happens when the
 // status is unchanged. Without a stream only the tmux options change; the
-// next snapshot carries them. It returns tmux.ErrSessionNotFound for an
-// unknown session.
+// next snapshot carries them. A bell sets a status only in a Claude Code or
+// Codex session: in a shell it is a beep (an ambiguous Tab) that nothing
+// would ever clear. It returns tmux.ErrSessionNotFound for an unknown
+// session.
 func (d *Daemon) ReportStatus(sessionID string, status protocol.SessionStatus, reason protocol.StatusReason) error {
 	if !protocol.SessionIDRegexp.MatchString(sessionID) || !slices.Contains(protocol.SessionStatuses, status) ||
 		reason != "" && !slices.Contains(protocol.StatusReasons, reason) {
@@ -28,6 +30,16 @@ func (d *Daemon) ReportStatus(sessionID string, status protocol.SessionStatus, r
 	defer d.reportMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if reason == protocol.ReasonBell {
+		program, err := d.tmux.Option(ctx, sessionID, tmux.OptionProgram)
+		if err != nil {
+			return err
+		}
+		if !isAgent(protocol.Program(program)) {
+			d.log.Event("bell_ignored", "cause", "not_agent")
+			return nil
+		}
+	}
 	current, known := d.cachedStatus(sessionID)
 	if !known {
 		value, err := d.tmux.Option(ctx, sessionID, tmux.OptionStatus)
