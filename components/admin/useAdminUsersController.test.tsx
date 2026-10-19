@@ -84,6 +84,9 @@ describe("useAdminUsersController", () => {
     ]);
     expect(confirmations[3]?.onSuccess).toBe(onSuccess);
     expect(confirmations.every((config) => config.prompt.includes("pat@example.com") || config.body.action === "revoke_all_sessions")).toBe(true);
+    // Revoking sessions also ends Telegram links: one user's, or every one installation-wide.
+    expect(confirmations[2]?.prompt).toContain("reconnect Telegram");
+    expect(confirmations[4]?.prompt).toContain("every Telegram account is disconnected");
   });
 
   it("confirms a two-factor reset with the sign-out consequence named", () => {

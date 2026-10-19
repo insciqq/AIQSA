@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  DICTATION_AUDIO_MAX_BYTES,
+  DICTATION_MAX_DURATION_MS,
+  DICTATION_RECORDER_BITS_PER_SECOND,
   decodeAdminSpeechToTextModels,
   decodeAdminSpeechToTextResponse,
   decodeCatalogDictation,
@@ -8,6 +11,13 @@ import {
 } from "./speechToText";
 
 describe("speech to text contracts", () => {
+  it("fits a full-length dictation at the recorder bitrate under the upload bound", () => {
+    const audioBytes = DICTATION_RECORDER_BITS_PER_SECOND / 8 * (DICTATION_MAX_DURATION_MS / 1_000);
+    expect(audioBytes).toBe(4_800_000);
+    // Generous container and bitrate-overshoot margin: encoders may exceed the requested bitrate.
+    expect(audioBytes * 1.5).toBeLessThan(DICTATION_AUDIO_MAX_BYTES);
+  });
+
   it("allowlists recorder formats by base type", () => {
     expect(dictationAudioMimeType("audio/webm;codecs=opus")).toBe("audio/webm");
     expect(dictationAudioMimeType("Audio/MP4")).toBe("audio/mp4");

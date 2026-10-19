@@ -22,7 +22,9 @@ import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV
 import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
 import { consumeMcpOAuthReturn } from "@/components/app-shell/mcpSettingsStore";
 import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
+import { TelegramConnectionSection } from "@/components/app-shell/TelegramConnectionSection";
 import { installPersonalMcpFixtureApi, type PersonalMcpFixtureScenario } from "./personalMcpFixtureApi";
+import { installTelegramFixtureApi, type TelegramUserFixtureScenario } from "./telegramFixtureApi";
 
 export type SettingsGalleryStateV2 =
   | "appearance"
@@ -32,14 +34,24 @@ export type SettingsGalleryStateV2 =
   | "connections"
   | "connections-empty"
   | "connections-error"
-  | "connections-rows";
+  | "connections-rows"
+  | "telegram-access-off"
+  | "telegram-bot-changed"
+  | "telegram-linked"
+  | "telegram-not-linked";
 
 /**
  * `connections` reads the real routes (browser tests mock them); the other
  * connection states answer from the in-browser fixture API.
  */
 function connectionsScenario(state: SettingsGalleryStateV2): PersonalMcpFixtureScenario | null {
+  if (state.startsWith("telegram-")) return "empty";
   return state === "connections-empty" ? "empty" : state === "connections-error" ? "error" : state === "connections-rows" ? "rows" : null;
+}
+
+/** `telegram-*` states show the Telegram block above Personal connections, answering from the fixture API. */
+function telegramScenario(state: SettingsGalleryStateV2): TelegramUserFixtureScenario | null {
+  return state.startsWith("telegram-") ? state.slice("telegram-".length) as TelegramUserFixtureScenario : null;
 }
 
 const archiveMemorySettings: MemoryConsumerSettingsResponse = {
@@ -65,11 +77,17 @@ const archiveMemorySettings: MemoryConsumerSettingsResponse = {
 
 export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGalleryStateV2 }) {
   const scenario = connectionsScenario(state);
+  const telegram = telegramScenario(state);
   const [fixtureApiReady, setFixtureApiReady] = useState(scenario === null);
   useEffect(() => {
     if (!scenario) return;
     deactivatePersonalMcp();
-    const restore = installPersonalMcpFixtureApi(scenario);
+    const restorePersonal = installPersonalMcpFixtureApi(scenario);
+    const restoreTelegram = telegram ? installTelegramFixtureApi({ user: telegram }) : () => undefined;
+    const restore = () => {
+      restoreTelegram();
+      restorePersonal();
+    };
     // `?settings=connections&oauth=…&server=…` previews an OAuth return.
     consumeMcpOAuthReturn(new URL(window.location.href));
     const frame = window.requestAnimationFrame(() => setFixtureApiReady(true));
@@ -78,7 +96,7 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
       restore();
       deactivatePersonalMcp();
     };
-  }, [scenario]);
+  }, [scenario, telegram]);
   const [open, setOpen] = useState(true);
   const [dirty, setDirty] = useState(state === "dirty");
   const [dataSubview, setDataSubview] = useState<"archived" | null>(null);
@@ -125,14 +143,19 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
             </div>
           )}
           dirty={dirty}
-          initialSection={state === "appearance" ? "general" : state === "archived" ? "data" : state.startsWith("connections") ? "connections" : "account"}
+          initialSection={state === "appearance" ? "general" : state === "archived" ? "data" : state.startsWith("connections") || telegram ? "connections" : "account"}
           obscured={deletionObscuresSettings}
           onClose={() => setOpen(false)}
           onDiscard={() => setDirty(false)}
           onSectionChange={() => setDataSubview(null)}
           onThemeChange={updateTheme}
           panels={{
-            connections: <PersonalMcpConnectionsSection />,
+            connections: (
+              <>
+                {telegram ? <TelegramConnectionSection /> : null}
+                <PersonalMcpConnectionsSection />
+              </>
+            ),
             data: dataSubview === "archived" ? (
               <ArchivedChatsPanelV2 onRestored={() => undefined} />
             ) : (

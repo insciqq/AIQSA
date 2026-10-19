@@ -929,6 +929,10 @@ model User {
   answerReviewSessions AnswerReviewSession[] @relation("AnswerReviewInitiator")
   answerProblemReports AnswerProblemReport[]
   signInRefusals SignInRefusal[]
+  telegramLink TelegramLink?
+  telegramLinkCodes TelegramLinkCode[]
+  telegramScheduledDeliveries TelegramScheduledDelivery[]
+  telegramBotControlUpdates TelegramBotControl[] @relation("TelegramBotControlUpdater")
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -1352,6 +1356,7 @@ model AuthSession {
   revokedBy          User?     @relation("AuthSessionRevoker", fields: [revokedByUserId], references: [id], onDelete: Restrict)
   user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   browserPushSubscriptions BrowserPushSubscription[]
+  telegramLinkCodes  TelegramLinkCode[]
 
   @@unique([userId, id])
   @@index([expiresAt])
@@ -1541,6 +1546,7 @@ model Group {
   skillPublications             SkillPublication[]
   providerCredentialAssignments ProviderGroupCredentialAssignment[]
   projectGrants                 ProjectGrant[]
+  telegramBotGroup              TelegramBotGroup?
   usageLimit                    UsageLimit?
   users                         UserGroup[]
 
@@ -2057,6 +2063,7 @@ model AssistantDefinition {
   publications       AssistantPublication[]
   skillLinks         AssistantSkill[]
   modelRuns          ModelRun[]
+  telegramLinks      TelegramLink[]
 
   @@unique([ownerUserId, id])
   @@index([ownerUserId, archivedAt])
@@ -3519,6 +3526,8 @@ model Chat {
   scheduledTask                   ScheduledTask?            @relation("ScheduledTaskCreatedChats", fields: [userId, scheduledTaskId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   scheduledTaskCarryovers         ScheduledTaskCarryover[]
   answerReviewSessions            AnswerReviewSession[]
+  telegramLinks                   TelegramLink[]            @relation("TelegramLinkCurrentChat")
+  telegramMessageRefs             TelegramMessageRef[]
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
@@ -3745,6 +3754,7 @@ model Message {
   answerReviewSession      AnswerReviewSession? @relation("AnswerReviewSessionMessages", fields: [chatId, answerReviewSessionId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Message_chatId_answerReviewSessionId_fkey")
   answerReviewSources      AnswerReviewSession[] @relation("AnswerReviewSource")
   problemReports           AnswerProblemReport[]
+  telegramMessageRefs      TelegramMessageRef[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@unique([answerReviewSessionId, answerReviewRound, answerReviewStep])
@@ -4027,6 +4037,7 @@ model ModelRun {
   scheduledTaskOccurrences     ScheduledTaskOccurrence[]
   browserPushDelivery          BrowserPushDelivery?
   problemReports               AnswerProblemReport[]
+  telegramRunLinks             TelegramRunLink[]
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
@@ -7772,6 +7783,8 @@ model ScheduledTask {
   provider                   String                    @db.VarChar(256)
   searchEnabled              Boolean                   @default(false)
   emailNotify                Boolean                   @default(false)
+  /// Results go to the owner's linked Telegram chat with their content (`TelegramScheduledDelivery`).
+  telegramNotify             Boolean                   @default(false)
   /// The owner's MCP tools and Skills, both in Auto mode; needs a tool-calling model.
   toolsEnabled               Boolean                   @default(false)
   /// The task chat's Workspace; needs a tool-calling model. A run never changes an existing chat's switch.
@@ -7892,6 +7905,7 @@ model ScheduledTaskOccurrence {
   userMessage    Message?                     @relation(fields: [userMessageId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   run            ModelRun?                    @relation(fields: [userId, runId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   browserPushDelivery BrowserPushDelivery?
+  telegramDelivery    TelegramScheduledDelivery?
 
   @@unique([taskId, trigger, scheduledFor])
   @@index([taskId, scheduledFor])
@@ -8080,4 +8094,222 @@ model TelemetryIncident {
   @@index([runId])
   @@index([traceId])
   @@index([userId])
+}
+
+enum TelegramUpdateReceiptState {
+  claimed
+  done
+  failed
+}
+
+/// Server-owned kinds of inline buttons (`TELEGRAM_CALLBACK_KINDS`).
+enum TelegramCallbackKind {
+  approval_allow_once
+  approval_allow_server
+  approval_deny
+  select_chat
+  select_assistant
+  select_model
+  model_page
+  toggle_search
+  toggle_workspace
+  toggle_agent
+  stop_run
+  unlink_confirm
+  open_settings
+}
+
+enum TelegramRunDeliveryState {
+  pending
+  claimed
+  delivered
+  failed
+  unknown
+}
+
+enum TelegramScheduledDeliveryState {
+  pending
+  sent
+  failed
+  unknown
+  skipped
+}
+
+/// Telegram Connect: the installation's one bot. The administrator's switch and
+/// access mode, the write-only bot token as an `AIQSA_ENCRYPTION_KEY` envelope
+/// bound to its generation, the bot's identity, the durable long-poll offset and
+/// content-free poll health. Checks keep the row a singleton and the token,
+/// generation and bot identity consistent.
+model TelegramBotControl {
+  id              String    @id
+  enabled         Boolean   @default(false)
+  /// False opens Telegram to every active user; true only to active members of the listed groups.
+  restricted      Boolean   @default(false)
+  tokenEnvelope   String?
+  /// Bumped with every saved token, whose envelope it binds; zero before the first one.
+  tokenGeneration Int       @default(0)
+  botId           BigInt?
+  botUsername     String?   @db.VarChar(64)
+  /// The next `getUpdates` offset of `botId`, advanced only once the updates before it are claimed.
+  updateOffset    BigInt?
+  lastPollAt      DateTime?
+  lastSuccessAt   DateTime?
+  lastFailureAt   DateTime?
+  lastFailureCode String?   @db.VarChar(64)
+  version         Int       @default(1)
+  updatedByUserId String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  updatedBy       User?     @relation("TelegramBotControlUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+/// A group whose active members may use Telegram while the bot is restricted.
+model TelegramBotGroup {
+  groupId   String   @id
+  createdAt DateTime @default(now())
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+}
+
+/// A one-time code linking the Telegram account that opens the bot's deep link to
+/// the account and live session that created it. Only its SHA-256 hash is kept.
+model TelegramLinkCode {
+  id            String      @id @default(uuid())
+  userId        String
+  authSessionId String
+  botId         BigInt
+  codeHash      String      @unique @db.Char(64)
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  createdAt     DateTime    @default(now())
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authSession   AuthSession @relation(fields: [userId, authSessionId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([expiresAt, consumedAt])
+  @@index([userId, authSessionId])
+}
+
+/// A user's Telegram account: one per user, and one user per Telegram account of a
+/// bot. Its username and display name live only here and leave with it.
+model TelegramLink {
+  id                 String               @id @default(uuid())
+  userId             String               @unique
+  botId              BigInt
+  telegramUserId     BigInt
+  /// The private chat with the bot; a check keeps it positive.
+  telegramChatId     BigInt
+  telegramUsername   String?              @db.VarChar(64)
+  displayName        String?              @db.VarChar(128)
+  /// The AIQSA chat the next message continues; deleting that chat clears only this column.
+  currentChatId      String?
+  pendingAssistantId String?
+  selectedModelId    String?              @db.VarChar(256)
+  selectedProvider   String?              @db.VarChar(256)
+  searchEnabled      Boolean              @default(true)
+  workspaceEnabled   Boolean              @default(false)
+  agentEnabled       Boolean              @default(false)
+  linkedAt           DateTime             @default(now())
+  lastSeenAt         DateTime             @default(now())
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The migration uses column-scoped SET NULL so chat deletion never clears userId.
+  currentChat        Chat?                @relation("TelegramLinkCurrentChat", fields: [userId, currentChatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  pendingAssistant   AssistantDefinition? @relation(fields: [pendingAssistantId], references: [id], onDelete: SetNull)
+  callbacks          TelegramCallback[]
+  messageRefs        TelegramMessageRef[]
+  runLinks           TelegramRunLink[]
+
+  @@unique([id, userId])
+  @@unique([botId, telegramUserId])
+  @@index([botId, telegramChatId])
+  @@index([pendingAssistantId])
+}
+
+/// One update the poller claimed before handling it; a claimed update is never
+/// handled again, even after a restart. Content-free.
+model TelegramUpdateReceipt {
+  botId      BigInt
+  updateId   BigInt
+  /// The update type (`message`, `callback_query`, …, `other`, `invalid`).
+  kind       String                     @db.VarChar(32)
+  state      TelegramUpdateReceiptState @default(claimed)
+  receivedAt DateTime                   @default(now())
+
+  @@id([botId, updateId])
+  @@index([receivedAt])
+}
+
+/// One inline button; its callback data is `c:` and this id (128 random bits).
+/// The payload holds identifiers only.
+model TelegramCallback {
+  id         String               @id @db.Char(22)
+  linkId     String
+  kind       TelegramCallbackKind
+  payload    Json
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime             @default(now())
+  link       TelegramLink         @relation(fields: [linkId], references: [id], onDelete: Cascade)
+
+  @@index([linkId])
+  @@index([expiresAt])
+}
+
+/// A bot message carrying an AIQSA chat's content, so a reply to it continues that chat.
+model TelegramMessageRef {
+  botId             BigInt
+  telegramChatId    BigInt
+  telegramMessageId BigInt
+  linkId            String
+  userId            String
+  chatId            String
+  messageId         String?
+  createdAt         DateTime     @default(now())
+  link              TelegramLink @relation(fields: [linkId, userId], references: [id, userId], onDelete: Cascade, onUpdate: Restrict)
+  chat              Chat         @relation(fields: [userId, chatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  message           Message?     @relation(fields: [chatId, messageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([botId, telegramChatId, telegramMessageId])
+  @@index([linkId, userId])
+  @@index([userId, chatId])
+  @@index([chatId, messageId])
+  @@index([createdAt])
+}
+
+/// A run a Telegram message started: the chat its answer goes to and whether it
+/// was delivered. Runs never carry Telegram columns themselves.
+model TelegramRunLink {
+  runId           String                   @id
+  userId          String
+  linkId          String
+  telegramChatId  BigInt
+  draftId         Int
+  statusMessageId BigInt?
+  deliveryState   TelegramRunDeliveryState @default(pending)
+  deliveredAt     DateTime?
+  createdAt       DateTime                 @default(now())
+  run             ModelRun                 @relation(fields: [userId, runId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  link            TelegramLink             @relation(fields: [linkId, userId], references: [id, userId], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([linkId, userId])
+  @@index([deliveryState, createdAt])
+}
+
+/// The durable outbox of scheduled task results bound for Telegram: one row per occurrence.
+model TelegramScheduledDelivery {
+  id              String                         @id @default(uuid())
+  occurrenceId    String                         @unique
+  userId          String
+  state           TelegramScheduledDeliveryState @default(pending)
+  attempts        Int                            @default(0)
+  nextAttemptAt   DateTime                       @default(now())
+  lastFailureCode String?                        @db.VarChar(64)
+  createdAt       DateTime                       @default(now())
+  sentAt          DateTime?
+  occurrence      ScheduledTaskOccurrence        @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
+  user            User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([state, nextAttemptAt])
+  @@index([userId])
+  @@index([createdAt])
 }

@@ -34,8 +34,8 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
     id: "task-1", title: "Report reminder", prompt: "Remind me to send the weekly report.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
-    modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: null,
+    modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false, telegramNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: null,
     historyDeletedChats: 0, historyNextDeletionAt: null, status: "active", pauseReason: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 4,
     createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-01T10:00:00.000Z", ...overrides
@@ -55,7 +55,8 @@ describe("manage_scheduled_task tool", () => {
       properties: {
         action: { enum: ["list", "get", "update", "pause", "resume", "propose_delete"] },
         schedule: { additionalProperties: false },
-        searchEnabled: { type: "boolean" }, emailNotify: { type: "boolean" }, toolsEnabled: { type: "boolean" },
+        searchEnabled: { type: "boolean" }, emailNotify: { type: "boolean" }, telegramNotify: { type: "boolean" },
+        toolsEnabled: { type: "boolean" },
         workspaceEnabled: { type: "boolean" }, memoryEnabled: { type: "boolean" }
       }
     } });
@@ -90,7 +91,8 @@ describe("manage_scheduled_task tool", () => {
     expect(size(manageScheduledTaskTool(marker))).toBeLessThanOrEqual(600);
     const hinted = manageScheduledTaskTool({ chatTask: { taskId: "4f1c2a9e-7b3d-4e8a-9c21-5d6f7a8b9c0d",
       title: "Еженедельный отчёт о продажах и складских остатках для руководства" } });
-    expect(size(hinted)).toBeLessThanOrEqual(660);
+    // The Telegram switch costs about eight tokens of every such request.
+    expect(size(hinted)).toBeLessThanOrEqual(670);
   });
 
   it("leaves the history retention to the owner: a shorter one deletes old chats", async () => {
@@ -197,6 +199,16 @@ describe("executing a management call", () => {
     } } }], artifacts: [{ type: "artifact", data: { artifactType: "scheduled_task", payload: expect.objectContaining({
       taskId: "task-1", action: "changed", timeZoneFallback: false }) } }] });
     expect(JSON.stringify(result.content)).not.toMatch(/deployment-1|connection-1/u);
+  });
+
+  it("switches Telegram delivery through the owner's update body", async () => {
+    const manage = manager({ action: "update", changed: true, task: task({ telegramNotify: true, revision: 5 }) });
+    const result = await executeManageScheduledTask(call({ action: "update", taskId: "task-1", telegramNotify: true }), context(), manage);
+    expect(manage.mock.calls[0]![0].change?.(task())).toEqual({ telegramNotify: true });
+    expect(result).toMatchObject({ status: "complete", content: [{ value: { changed: true, task: { telegramNotify: true } } }] });
+    const refused = await executeManageScheduledTask(call({ action: "pause", taskId: "task-1", telegramNotify: false }), context(),
+      manager({ action: "pause", changed: true, task: task() }));
+    expect(refused).toMatchObject({ status: "error", content: [{ value: { error: "scheduled_task_arguments_invalid" } }] });
   });
 
   it("maps pause and resume to the owner API's status and reads with no change", async () => {
@@ -362,7 +374,8 @@ describe("management results", () => {
     expect(result.content).toEqual([{ type: "json", value: { note: "The ids are for this tool, not for the user.", tasks: [
       { taskId: "task-1", title: "Report reminder", kind: "standard", status: "active",
         schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
-        nextRun: "Mon 2026-10-05 09:00", chatMode: "new", searchEnabled: false, emailNotify: false, toolsEnabled: true,
+        nextRun: "Mon 2026-10-05 09:00", chatMode: "new", searchEnabled: false, emailNotify: false, telegramNotify: false,
+        toolsEnabled: true,
         workspaceEnabled: false, memoryEnabled: true, skills: [], oldChatsKept: "forever" },
       expect.objectContaining({ taskId: "task-2", kind: "monitoring", status: "paused", nextRun: null, oldChatsKept: "forever" })
     ] } }]);

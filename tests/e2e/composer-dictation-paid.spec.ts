@@ -20,7 +20,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type APIRequestContext } from "@playwright/test";
-import { decodeAdminSpeechToTextResponse, type AdminSpeechToTextRole } from "../../lib/contracts/speechToText";
+import { decodeAdminSpeechToTextResponse, DICTATION_MAX_DURATION_MS, type AdminSpeechToTextRole } from "../../lib/contracts/speechToText";
 import { readConnections } from "../../scripts/context-compaction-journey-support";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { openRouterConnection, paidEnv, PAID_SETUP_TIMEOUT_MS, pollUntil } from "./support/paidProviders";
@@ -45,8 +45,9 @@ test.afterAll(() => prisma.$disconnect());
 
 const MODEL = paidEnv("AIQSA_DICTATION_PAID_MODEL") ?? "openai/whisper-1";
 const WARMUP_TIMEOUT_MS = 300_000;
-const RECORDING_MS = 7_000;
-const TRANSCRIPT_TIMEOUT_MS = 180_000;
+// AIQSA_DICTATION_PAID_RECORDING_MS records longer (up to the ten-minute dictation limit) with a looping sample.
+const RECORDING_MS = Math.min(Number(paidEnv("AIQSA_DICTATION_PAID_RECORDING_MS") ?? 7_000), DICTATION_MAX_DURATION_MS - 15_000);
+const TRANSCRIPT_TIMEOUT_MS = 180_000 + RECORDING_MS;
 const ENDPOINT = "/api/admin/providers/speech-to-text";
 
 async function readRole(request: APIRequestContext): Promise<AdminSpeechToTextRole> {
@@ -79,7 +80,8 @@ test("an administrator's paid Test enables dictation; a real recording lands in 
       speechToTextConfiguredAt: true, speechToTextConnectionId: true, speechToTextCredentialVersionId: true, speechToTextModelId: true } });
 
     const before = await openRouterConnectionIds(request);
-    const connectionId = await openRouterConnection(request, secret!);
+    // Quick Setup with the real key: a seeded stand's OpenRouter connection may hold a placeholder credential.
+    const connectionId = await openRouterConnection(request, secret!, { reuse: false });
     if (!before.has(connectionId)) createdConnectionId = connectionId;
     summary.connectionReused = createdConnectionId === null;
 

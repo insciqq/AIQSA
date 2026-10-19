@@ -9,6 +9,7 @@ import {
   executeCreateScheduledTask,
   isScheduledTaskCreateCall,
   isScheduledTaskToolSettings,
+  registerScheduledTaskTelegramOrigin,
   scheduledTaskCreatedResult,
   scheduledTaskToolsForRequest,
   type ScheduledTaskCallCreator,
@@ -39,8 +40,8 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
     id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
-    modelId: "deployment-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90,
+    modelId: "deployment-1", provider: "connection-1", searchEnabled: true, emailNotify: false, telegramNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90,
     historyDeletedChats: 0, historyNextDeletionAt: null, status: "active", pauseReason: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false,
     revision: 1,
@@ -128,12 +129,49 @@ describe("create_scheduled_task tool", () => {
     }
   });
 
+  it("sends results to Telegram only for a task a Telegram conversation created", async () => {
+    const origin = vi.fn(async ({ runId }: Readonly<{ runId: string; userId: string }>) => runId === "run-telegram");
+    const fromTelegram = creator(task({ telegramNotify: true }));
+    const telegramResult = await executeCreateScheduledTask(call(reminder), context({ runId: "run-telegram" }), fromTelegram, origin);
+    // The tool asks about its own run, the one its execution context names.
+    expect(origin).toHaveBeenCalledWith({ runId: "run-telegram", userId: "user-1" });
+    expect(fromTelegram.mock.calls[0]![0].body).toMatchObject({ emailNotify: false, telegramNotify: true });
+    expect(telegramResult.content).toEqual([{ type: "json", value: expect.objectContaining({ telegram: true }) }]);
+    const fromWeb = creator();
+    await executeCreateScheduledTask(call(reminder), context(), fromWeb, origin);
+    expect(fromWeb.mock.calls[0]![0].body).toMatchObject({ telegramNotify: false });
+    // A lookup that fails creates the task as the web does.
+    const failing = creator();
+    await executeCreateScheduledTask(call(reminder), context({ runId: "run-telegram" }), failing, async () => {
+      throw new Error("database unavailable");
+    });
+    expect(failing.mock.calls[0]![0].body).toMatchObject({ telegramNotify: false });
+    expect(vi.mocked(logEvent)).toHaveBeenCalledWith("service_operation", expect.objectContaining({
+      action: "degrade", outcome: "degraded", subsystem: "telegram" }));
+    vi.mocked(logEvent).mockClear();
+  });
+
+  it("uses the lookup the runner registered, and none before it starts", async () => {
+    const unregistered = creator();
+    await executeCreateScheduledTask(call(reminder), context(), unregistered);
+    expect(unregistered.mock.calls[0]![0].body).toMatchObject({ telegramNotify: false });
+    registerScheduledTaskTelegramOrigin(async ({ userId }) => userId === "user-1");
+    try {
+      const registered = creator();
+      await executeCreateScheduledTask(call(reminder), context(), registered);
+      expect(registered.mock.calls[0]![0].body).toMatchObject({ telegramNotify: true });
+    } finally {
+      registerScheduledTaskTelegramOrigin(undefined);
+    }
+  });
+
   it("creates through the owner's rules with the run's frozen settings and zone and returns what to confirm", async () => {
     const create = creator();
     const result = await executeCreateScheduledTask(call(reminder), context(), create);
     expect(create).toHaveBeenCalledOnce();
     expect(create.mock.calls[0]![0]).toMatchObject({ callId: "persisted-call-1", runId: "run-1", userId: "user-1", body: {
       title: "Check mail", prompt: "Remind me to check my mail.", kind: "standard", chatMode: "new", emailNotify: false,
+      telegramNotify: false,
       schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
       modelId: "deployment-1", provider: "connection-1", searchEnabled: true, toolsEnabled: true, workspaceEnabled: false,
       memoryEnabled: true
@@ -141,7 +179,7 @@ describe("create_scheduled_task tool", () => {
     // Only the fields of the schedule's kind reach the owner contract.
     expect(Object.keys(create.mock.calls[0]![0].body as Record<string, Record<string, unknown>>).sort()).toEqual([
       "chatMode", "emailNotify", "historyRetentionDays", "kind", "memoryEnabled", "modelId", "pinnedSkillIds", "prompt", "provider",
-      "schedule", "searchEnabled", "timeZone", "title", "toolsEnabled", "workspaceEnabled"
+      "schedule", "searchEnabled", "telegramNotify", "timeZone", "title", "toolsEnabled", "workspaceEnabled"
     ]);
     // Left open, a new task keeps the default 90 days of old chats.
     expect(create.mock.calls[0]![0].body).toMatchObject({ historyRetentionDays: 90 });
