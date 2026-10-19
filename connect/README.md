@@ -65,14 +65,17 @@ Claude Code and Codex on this computer yourself, as usual (`/login`,
 aiqsa-connect service install
 ```
 
-This installs a user service that runs `aiqsa-connect up` whenever you are
-logged in to the computer: a systemd user unit on Linux and WSL
+This installs a user service that runs `aiqsa-connect up --service` whenever
+you are logged in to the computer: a systemd user unit on Linux and WSL
 (`~/.config/systemd/user/aiqsa-connect.service`), a LaunchAgent on macOS
 (`~/Library/LaunchAgents/io.github.insciqq.aiqsa-connect.plist`). It starts
 with the PATH of the shell you ran it from, so sessions find the same tools
-(nvm, Homebrew) as your terminal; run it again after changing your PATH.
+(nvm, Homebrew) as your terminal; run it again after changing your PATH, after
+logging in again and after reinstalling the client. It then tells whether the
+client is running and, if not, why.
 
-- `aiqsa-connect service status` shows whether it is running.
+- `aiqsa-connect service status` shows whether it is running and, when it
+  is stopped, why.
 - `aiqsa-connect service uninstall` stops and removes it.
 - Restarting, stopping or updating the client never ends your sessions: the
   tmux server keeps them running, and AIQSA reconnects to them.
@@ -86,8 +89,10 @@ Without a service, run `aiqsa-connect up` in a terminal and keep it open.
 The client follows the server: when AIQSA is updated (or rolled back), the
 client downloads the matching version from the same AIQSA installation,
 checks its SHA-256 checksum, replaces its own file and restarts itself. Your
-sessions keep running; an open browser view reconnects. `aiqsa-connect
-update` does the same by hand. If the directory of the binary is not writable
+sessions keep running; an open browser view reconnects. If an update
+fails for a reason that may pass (network, a busy server), the client tries
+again when it next connects, at the earliest after 5 minutes, then after
+pauses doubling up to an hour. `aiqsa-connect update` does the same by hand. If the directory of the binary is not writable
 by you, the client says so and keeps running its current version; reinstall
 it with the install command.
 
@@ -119,10 +124,19 @@ end with `tmux -L aiqsa-connect kill-server`.
   means the installation has no client binaries (a development server without
   `npm run build:connect`).
 - **"not logged in" or "device revoked".** Run `aiqsa-connect login <address>`
-  again, then `aiqsa-connect service install` to restart the service. The
-  service does not restart a client that is logged out or revoked, so it does
-  not keep calling the server; a revoked token is kept aside as
-  `credentials.revoked.json`.
+  again, then `aiqsa-connect service install` to restart the service. A
+  revoked token is kept aside as `credentials.revoked.json`.
+- **The service stays stopped.** `up` stops for good, without contacting the
+  server, when a restart cannot help: the computer is not logged in or was
+  revoked, the credentials file is damaged or readable by others, or another
+  `aiqsa-connect up` already runs (for example in a terminal). In a terminal
+  `up` then exits with status 3; as the service (`up --service`) it exits 0,
+  so neither systemd nor launchd restarts it in a loop, and it writes
+  `up_stop_final reason=<reason>` to its log. Other fatal errors exit 1 and
+  the service restarts the client. Fix the cause, then run
+  `aiqsa-connect service install`; `aiqsa-connect service status` names it.
+- **The installer says the service still runs the previous version.** Run
+  `aiqsa-connect service install` to restart it with the new binary.
 - **"systemd user services are not available".** WSL runs without systemd
   unless `/etc/wsl.conf` contains `[boot]` and `systemd=true` (then run
   `wsl --shutdown` in Windows). Otherwise run `aiqsa-connect up` yourself,
@@ -211,9 +225,16 @@ Without a Go toolchain the development server answers
   history and the answer-option parser.
 - `internal/daemon/` — the `up` main loop: reconnects, the single event
   sender, PTY views, server commands and `ReportStatus`.
+- `internal/status/` — turns agent hook events and terminal bells into
+  session statuses; reads only event names and notification types.
+- `internal/localsock/` — the unix socket on which `up` hears the agent
+  hooks and terminal bells of its sessions.
+- `internal/hooks/` — adds and removes the client's own entries in
+  `~/.claude/settings.json` and `~/.codex/hooks.json` (`setup`).
 - `internal/update/` — self-update: the server's manifest, checksums and
   binary, verified, run once and renamed over the current binary.
-- `internal/service/` — the systemd user unit and the LaunchAgent.
+- `internal/service/` — the systemd user unit and the LaunchAgent, both
+  running `up --service`.
 - `internal/logx/` — the content-free log (event names, codes and counts).
 - `dist/` — locally built binaries (ignored by Git and Docker).
 

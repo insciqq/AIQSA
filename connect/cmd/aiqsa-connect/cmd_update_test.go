@@ -172,10 +172,56 @@ func TestAutoUpdateFailureKeepsRunning(t *testing.T) {
 	if _, restarted := u.restartUpdated(&bytes.Buffer{}); restarted {
 		t.Fatal("restarted without an update")
 	}
-	// One attempt per server version: a reconnect does not retry.
+	// A permanent failure is not retried for this server version, however long it runs.
+	u.mu.Lock()
+	u.now = func() time.Time { return time.Now().Add(48 * time.Hour) }
+	u.mu.Unlock()
 	u.OnServerVersion("1.1.0", "0.3.20")
 	if source.count() != 1 {
 		t.Fatalf("installs = %v", source.installs)
+	}
+}
+
+func TestAutoUpdateRetriesATransientFailureAfterAPause(t *testing.T) {
+	withClientVersion(t, "1.0.0")
+	source := &fakeUpdateSource{
+		manifest: protocol.ClientManifest{Version: "1.1.0"},
+		err:      &update.Refusal{Status: 503},
+		done:     make(chan struct{}, 4),
+	}
+	u, ctx, notices := boundUpdater(t, source)
+	clock := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	u.mu.Lock()
+	u.now = func() time.Time { return clock }
+	u.mu.Unlock()
+	// Reconnects after an outdated refusal announce no version.
+	u.OnServerVersion("", "1.1.0")
+	waitInstall(t, u, source)
+	if !strings.Contains(notices.String(), "tries again in 5 minutes") {
+		t.Fatalf("notices: %q", notices.String())
+	}
+	clock = clock.Add(4 * time.Minute)
+	u.OnServerVersion("", "1.1.0")
+	if source.count() != 1 {
+		t.Fatalf("retried before the pause: %v", source.installs)
+	}
+	clock = clock.Add(time.Minute)
+	u.OnServerVersion("", "1.1.0")
+	waitInstall(t, u, source)
+	if source.count() != 2 || !strings.Contains(notices.String(), "tries again in 10 minutes") {
+		t.Fatalf("second attempt: %v %q", source.installs, notices.String())
+	}
+	clock = clock.Add(10 * time.Minute)
+	source.err = nil
+	u.OnServerVersion("", "1.1.0")
+	waitInstall(t, u, source)
+	if source.count() != 3 || ctx.Err() == nil {
+		t.Fatal("the third attempt did not install the update")
+	}
+	for failures, want := range map[int]time.Duration{1: 5 * time.Minute, 3: 20 * time.Minute, 5: time.Hour, 40: time.Hour} {
+		if got := updateRetryDelay(failures); got != want {
+			t.Errorf("updateRetryDelay(%d) = %s, want %s", failures, got, want)
+		}
 	}
 }
 

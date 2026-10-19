@@ -9,7 +9,11 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"time"
 
+	"github.com/insciqq/AIQSA/connect/internal/api"
+	"github.com/insciqq/AIQSA/connect/internal/config"
+	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/service"
 )
 
@@ -93,6 +97,12 @@ func serviceInstall(inv *invocation, manager service.Manager) int {
 	if path == "" {
 		path = "/usr/local/bin:/usr/bin:/bin"
 	}
+	// Known before the restart: the service would stop at once. A running
+	// service holds the lock itself, so the lock is checked only otherwise.
+	reason := credentialsStopReason()
+	if before, err := manager.Status(inv.ctx); reason == "" && err == nil && !before.Running {
+		reason = lockStopReason()
+	}
 	if err := manager.Install(inv.ctx, service.Spec{Executable: executable, Path: path}); err != nil {
 		if noUserSystemd(inv, err) {
 			return 1
@@ -100,8 +110,27 @@ func serviceInstall(inv *invocation, manager service.Manager) int {
 		fmt.Fprintf(inv.stderr, "aiqsa-connect service install: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(inv.stdout, "Installed and started the aiqsa-connect service (%s).\n", manager.File())
-	fmt.Fprintln(inv.stdout, "It runs aiqsa-connect up whenever you are logged in to this computer; your sessions survive its restarts and updates.")
+	if reason != "" {
+		fmt.Fprintf(inv.stdout, "Installed the aiqsa-connect service (%s), but it stops at once.\n", manager.File())
+		fmt.Fprintln(inv.stderr, reason)
+		return 1
+	}
+	if api.Sleep(inv.ctx, serviceSettle) != nil {
+		return 1
+	}
+	status, err := manager.Status(inv.ctx)
+	if err != nil {
+		fmt.Fprintf(inv.stdout, "Installed the aiqsa-connect service (%s).\n", manager.File())
+		fmt.Fprintf(inv.stderr, "aiqsa-connect service install: cannot check whether it runs: %v\n", err)
+		return 1
+	}
+	if !status.Running {
+		fmt.Fprintf(inv.stdout, "Installed the aiqsa-connect service (%s), but it is not running: %s.\n", manager.File(), status.Detail)
+		fmt.Fprintln(inv.stderr, stopReason(manager))
+		return 1
+	}
+	fmt.Fprintf(inv.stdout, "Installed and started the aiqsa-connect service (%s): %s.\n", manager.File(), status.Detail)
+	fmt.Fprintln(inv.stdout, "It runs aiqsa-connect up --service whenever you are logged in to this computer; your sessions survive its restarts and updates.")
 	if version == "dev" {
 		fmt.Fprintf(inv.stdout, "Note: this is a development build at %s; the service keeps using that file.\n", executable)
 	}
@@ -146,11 +175,70 @@ func serviceStatus(inv *invocation, manager service.Manager) int {
 		state = "running"
 	}
 	fmt.Fprintf(inv.stdout, "The aiqsa-connect service is installed and %s: %s (%s).\n", state, status.Detail, manager.File())
-	if !status.Running && status.LastExitRevoked {
-		fmt.Fprintln(inv.stdout, "It stopped because this computer is not logged in or was revoked: run aiqsa-connect login <AIQSA address>, then aiqsa-connect service install.")
-	}
 	if status.Running {
 		return 0
 	}
+	fmt.Fprintln(inv.stdout, stopReason(manager))
 	return 1
+}
+
+// serviceSettle is how long `service install` lets the restarted client run
+// before it reports the service's state; tests shorten it.
+var serviceSettle = 2 * time.Second
+
+// credentialsStopReason names why `up --service` would stop at once for its
+// credentials, or is empty.
+func credentialsStopReason() string {
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return ""
+	}
+	_, err = paths.LoadCredentials()
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, config.ErrNotLoggedIn):
+		if _, statErr := os.Stat(filepath.Join(paths.ConfigDir, revokedCredentialsFile)); statErr == nil {
+			return "This computer was revoked in AIQSA: run aiqsa-connect login <AIQSA address>, then aiqsa-connect service install."
+		}
+		return "This computer is not logged in: run aiqsa-connect login <AIQSA address>, then aiqsa-connect service install."
+	}
+	return fmt.Sprintf("Its credentials cannot be used: %v. Then run aiqsa-connect service install.", err)
+}
+
+// lockStopReason names another running `up` that the service would give
+// way to, or is empty. It takes the lock for a moment, so it is called only
+// while the service itself is not running.
+func lockStopReason() string {
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return ""
+	}
+	release, err := daemon.AcquireLock(paths.LockFile())
+	if err == nil {
+		release()
+	}
+	if errors.Is(err, daemon.ErrAlreadyRunning) {
+		return "Another aiqsa-connect up is running on this computer (for example in a terminal): stop it, then run aiqsa-connect service install."
+	}
+	return ""
+}
+
+// stopReason explains a stopped service: its credentials, another `up`, or
+// where its log is.
+func stopReason(manager service.Manager) string {
+	if reason := credentialsStopReason(); reason != "" {
+		return reason
+	}
+	if reason := lockStopReason(); reason != "" {
+		return reason
+	}
+	logFile := "~/.local/state/aiqsa-connect/aiqsa-connect.log"
+	if paths, err := config.ResolvePaths(); err == nil {
+		logFile = paths.LogFile()
+	}
+	if manager.GOOS == "linux" {
+		return fmt.Sprintf("See its log, %s, and journalctl --user -u aiqsa-connect.", logFile)
+	}
+	return fmt.Sprintf("See its log, %s.", logFile)
 }
