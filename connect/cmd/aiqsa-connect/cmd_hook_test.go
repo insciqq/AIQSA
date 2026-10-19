@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/localsock"
 	"github.com/insciqq/AIQSA/connect/internal/logx"
+	"github.com/insciqq/AIQSA/connect/internal/procs"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 	"github.com/insciqq/AIQSA/connect/internal/status"
 	"github.com/insciqq/AIQSA/connect/internal/tmux"
@@ -220,6 +222,50 @@ func TestHooksWithAScrubbedEnvironmentReportForTheirPane(t *testing.T) {
 	server := tmuxtest.New(t)
 	stateDir := shortStateDir(t)
 	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	id, err := server.Manager.Create(context.Background(), tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: server.Home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe := testExecutable(t)
+	// The pane shell runs a script that runs the hook: the hook is below
+	// the pane and has none of the session's variables.
+	script := filepath.Join(stateDir, "hook.sh")
+	scriptText := "env -u " + sessionEnv + " -u TMUX -u TMUX_PANE " + runCLIEnv + "=1 '" + exe + "' hook codex < \"$1\"\nexit 0\n"
+	if err := os.WriteFile(script, []byte(scriptText), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := func(name, text string) string {
+		path := filepath.Join(stateDir, name)
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	prompt := payload("prompt.json", `{"session_id":"x","turn_id":"y","cwd":"/","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"deploy it"}`)
+	stop := payload("stop.json", `{"session_id":"x","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"done"}`)
+	typeInPane(t, server, id, "sh '"+script+"' '"+prompt+"'")
+	reports.expect(t, hookReport{id, protocol.StatusRunning, protocol.ReasonInput})
+	typeInPane(t, server, id, "sh '"+script+"' '"+stop+"'")
+	reports.expect(t, hookReport{id, protocol.StatusWaiting, protocol.ReasonTurnEnd})
+
+	// Outside the panes of the client's tmux server: in this process and in
+	// a hook process of its own.
+	if code, stdout, stderr := runHookArgs(strings.NewReader(`{"hook_event_name":"UserPromptSubmit"}`), "codex"); code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("in process: %d %q %q", code, stdout, stderr)
+	}
+	cmd := exec.Command("sh", script, prompt)
+	cmd.Env = append(os.Environ(), runCLIEnv+"=1")
+	if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
+		t.Fatalf("outside a pane: %v %q", err, out)
+	}
+	reports.expectNone(t)
+}
+
+// listenForReports serves the client's local sockets, as `up` does, and
+// hands every report to the test.
+func listenForReports(t *testing.T) reportSink {
+	t.Helper()
 	paths, err := config.ResolvePaths()
 	if err != nil {
 		t.Fatal(err)
@@ -239,69 +285,206 @@ func TestHooksWithAScrubbedEnvironmentReportForTheirPane(t *testing.T) {
 		cancel()
 		<-served
 	})
-	id, err := server.Manager.Create(context.Background(), tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: server.Home})
-	if err != nil {
-		t.Fatal(err)
+	return reports
+}
+
+func (r reportSink) expect(t *testing.T, want hookReport) {
+	t.Helper()
+	select {
+	case got := <-r:
+		if got != want {
+			t.Fatalf("report %+v, want %+v", got, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no report, want %+v", want)
 	}
+}
+
+func (r reportSink) expectNone(t *testing.T) {
+	t.Helper()
+	select {
+	case got := <-r:
+		t.Fatalf("unexpected report %+v", got)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// testExecutable is this test binary, which runs as aiqsa-connect with
+// runCLIEnv set.
+func testExecutable(t *testing.T) string {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil || strings.Contains(exe, "'") {
 		t.Skipf("test binary path %q: %v", exe, err)
 	}
-	// The pane shell runs a script that runs the hook: the hook is below
-	// the pane and has none of the session's variables.
-	script := filepath.Join(stateDir, "hook.sh")
-	scriptText := "env -u " + sessionEnv + " -u TMUX -u TMUX_PANE " + runCLIEnv + "=1 '" + exe + "' hook codex < \"$1\"\nexit 0\n"
-	if err := os.WriteFile(script, []byte(scriptText), 0o700); err != nil {
-		t.Fatal(err)
+	return exe
+}
+
+func typeInPane(t *testing.T, server *tmuxtest.Server, id, line string) {
+	t.Helper()
+	for _, keys := range [][]string{{"-l", line}, {"Enter"}} {
+		sendKeys(t, server, id, keys...)
 	}
-	payload := func(name, text string) string {
-		path := filepath.Join(stateDir, name)
-		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+}
+
+func sendKeys(t *testing.T, server *tmuxtest.Server, id string, keys ...string) {
+	t.Helper()
+	cmd := exec.Command(server.Manager.Binary(), append([]string{"-u", "-L", server.Socket, "send-keys", "-t", "=" + id + ":"}, keys...)...)
+	cmd.Env = tmux.Environ()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("send-keys: %v %s", err, out)
+	}
+}
+
+func TestACodexHookFindsTheOnlyCodexSessionRunningInItsDirectory(t *testing.T) {
+	base := t.TempDir()
+	work := filepath.Join(base, "work")
+	other := filepath.Join(base, "other")
+	link := filepath.Join(base, "link")
+	for _, dir := range []string{work, other} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		return path
 	}
-	typeInPane := func(line string) {
-		t.Helper()
-		for _, keys := range [][]string{{"-l", line}, {"Enter"}} {
-			cmd := exec.Command(server.Manager.Binary(), append([]string{"-u", "-L", server.Socket, "send-keys", "-t", "=" + id + ":"}, keys...)...)
-			cmd.Env = tmux.Environ()
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("send-keys: %v %s", err, out)
-			}
+	if err := os.Symlink(work, link); err != nil {
+		t.Fatal(err)
+	}
+	// Pane 10 runs node -> codex; pane 20 runs codex directly; pane 30's
+	// agent has exited; pane 40 is a shell; pane 50 runs claude.
+	snapshot := procs.NewSnapshot([]procs.Process{
+		{PID: 10, PPID: 2, Name: "sh"}, {PID: 11, PPID: 10, Name: "node"}, {PID: 12, PPID: 11, Name: "codex"},
+		{PID: 20, PPID: 2, Name: "sh"}, {PID: 21, PPID: 20, Name: "codex"},
+		{PID: 30, PPID: 2, Name: "sh"},
+		{PID: 40, PPID: 2, Name: "sh"}, {PID: 41, PPID: 40, Name: "codex"},
+		{PID: 50, PPID: 2, Name: "sh"}, {PID: 51, PPID: 50, Name: "codex"},
+	})
+	codexA := tmux.Pane{PID: 10, Session: "ac-aaaa1111", Cwd: work, Program: "codex"}
+	codexB := tmux.Pane{PID: 20, Session: "ac-bbbb2222", Cwd: work, Program: "codex"}
+	exited := tmux.Pane{PID: 30, Session: "ac-cccc3333", Cwd: work, Program: "codex"}
+	shell := tmux.Pane{PID: 40, Session: "ac-dddd4444", Cwd: work, Program: "shell"}
+	claude := tmux.Pane{PID: 50, Session: "ac-eeee5555", Cwd: work, Program: "claude"}
+	foreign := tmux.Pane{PID: 20, Session: "main", Cwd: work, Program: "codex"}
+	elsewhere := tmux.Pane{PID: 20, Session: "ac-bbbb2222", Cwd: other, Program: "codex"}
+	cases := []struct {
+		name  string
+		panes []tmux.Pane
+		cwd   string
+		want  string
+	}{
+		{"one match", []tmux.Pane{codexA, shell, claude, exited}, work, "ac-aaaa1111"},
+		{"the hook names the directory through a symlink", []tmux.Pane{codexA}, link, "ac-aaaa1111"},
+		{"the pane reports it through a symlink", []tmux.Pane{{PID: 10, Session: "ac-aaaa1111", Cwd: link, Program: "codex"}}, work + "/./", "ac-aaaa1111"},
+		{"two codex sessions in one directory", []tmux.Pane{codexA, codexB}, work, ""},
+		{"two panes of one session", []tmux.Pane{codexA, {PID: 12, Session: "ac-aaaa1111", Cwd: work, Program: "codex"}}, work, "ac-aaaa1111"},
+		{"its agent has exited", []tmux.Pane{exited}, work, ""},
+		{"shell and claude sessions never count", []tmux.Pane{shell, claude}, work, ""},
+		{"a session the client did not create", []tmux.Pane{foreign}, work, ""},
+		{"another directory", []tmux.Pane{elsewhere}, work, ""},
+		{"a relative pane path", []tmux.Pane{{PID: 10, Session: "ac-aaaa1111", Cwd: "work", Program: "codex"}}, work, ""},
+		{"no panes", nil, work, ""},
+	}
+	for _, c := range cases {
+		if got := codexSessionOfCwd(snapshot, c.panes, c.cwd); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
-	expect := func(want hookReport) {
-		t.Helper()
-		select {
-		case got := <-reports:
-			if got != want {
-				t.Fatalf("report %+v, want %+v", got, want)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("no report, want %+v", want)
-		}
-	}
-	prompt := payload("prompt.json", `{"session_id":"x","turn_id":"y","cwd":"/","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"deploy it"}`)
-	stop := payload("stop.json", `{"session_id":"x","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"done"}`)
-	typeInPane("sh '" + script + "' '" + prompt + "'")
-	expect(hookReport{id, protocol.StatusRunning, protocol.ReasonInput})
-	typeInPane("sh '" + script + "' '" + stop + "'")
-	expect(hookReport{id, protocol.StatusWaiting, protocol.ReasonTurnEnd})
+}
 
-	// Outside the panes of the client's tmux server: in this process and in
-	// a hook process of its own.
-	if code, stdout, stderr := runHookArgs(strings.NewReader(`{"hook_event_name":"UserPromptSubmit"}`), "codex"); code != 0 || stdout != "" || stderr != "" {
-		t.Fatalf("in process: %d %q %q", code, stdout, stderr)
+// Codex 0.163 runs its hooks from a background Codex process outside every
+// tmux pane, without the session's environment. The hook still reports for
+// the one Codex session that runs codex in the hook's directory, and for
+// none once that codex has exited.
+func TestACodexHookFromOutsideThePanesReportsForTheCodexSessionInItsDirectory(t *testing.T) {
+	server := tmuxtest.New(t)
+	stateDir := shortStateDir(t)
+	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	exe := testExecutable(t)
+	ctx := context.Background()
+	work := filepath.Join(server.Home, "work")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	cmd := exec.Command("sh", script, prompt)
+	// A stand-in for codex: sleep under the name codex. Codex itself never runs.
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep")
+	}
+	data, err := os.ReadFile(sleep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(stateDir, "bin", "codex")
+	if err := os.MkdirAll(filepath.Dir(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fake, data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A Codex session and a shell session, both in work.
+	codexID, err := server.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: work})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Manager.SetOptions(ctx, codexID, tmux.OptionProgram, string(protocol.ProgramCodex)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: work}); err != nil {
+		t.Fatal(err)
+	}
+	panePID, err := server.Manager.Display(ctx, codexID, "#{pane_pid}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runsCodex := func() bool {
+		pid, err := strconv.Atoi(panePID)
+		if err != nil {
+			t.Fatalf("pane pid %q", panePID)
+		}
+		snapshot, err := procs.Take(ctx)
+		return err == nil && snapshot.HasDescendant(pid, func(name string) bool { return name == "codex" })
+	}
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s", what)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	typeInPane(t, server, codexID, "'"+fake+"' 600")
+	waitFor("the fake codex", runsCodex)
+	// The hook is a process of its own, not below any pane, with the
+	// environment Codex gives it.
+	hook := func(stdin string) {
+		t.Helper()
+		cmd := exec.Command(exe, "hook", "codex")
+		cmd.Env = append(os.Environ(), runCLIEnv+"=1")
+		cmd.Stdin = strings.NewReader(stdin)
+		if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
+			t.Fatalf("hook: %v %q", err, out)
+		}
+	}
+	hook(`{"session_id":"x","turn_id":"y","cwd":"` + work + `","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"deploy it"}`)
+	reports.expect(t, hookReport{codexID, protocol.StatusRunning, protocol.ReasonInput})
+	hook(`{"hook_event_name":"Stop","cwd":"` + work + `"}`)
+	reports.expect(t, hookReport{codexID, protocol.StatusWaiting, protocol.ReasonTurnEnd})
+	// Another directory names no session; a Claude hook never matches by directory.
+	hook(`{"hook_event_name":"Stop","cwd":"` + server.Home + `"}`)
+	reports.expectNone(t)
+	cmd := exec.Command(exe, "hook", "claude")
 	cmd.Env = append(os.Environ(), runCLIEnv+"=1")
+	cmd.Stdin = strings.NewReader(`{"hook_event_name":"Stop","cwd":"` + work + `"}`)
 	if out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {
-		t.Fatalf("outside a pane: %v %q", err, out)
+		t.Fatalf("claude hook: %v %q", err, out)
 	}
-	select {
-	case got := <-reports:
-		t.Fatalf("a hook outside the panes reported %+v", got)
-	case <-time.After(500 * time.Millisecond):
-	}
+	reports.expectNone(t)
+
+	// Once codex has exited, the session in work runs a shell only.
+	sendKeys(t, server, codexID, "C-c")
+	waitFor("the fake codex to exit", func() bool { return !runsCodex() })
+	hook(`{"hook_event_name":"Stop","cwd":"` + work + `"}`)
+	reports.expectNone(t)
 }
