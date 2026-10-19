@@ -657,19 +657,29 @@ export function createConnectRelay(options: Readonly<{ now?: () => number }> = {
       });
     },
 
-    /** The account lost its devices: every stream of theirs gets `closed {code}`, their views close and their lists reload. */
-    disconnectUser(userId: string, code: ConnectDeviceStreamClosedCode): void {
+    /**
+     * The account lost its devices: every device stream of theirs gets
+     * `closed {connect_unauthorized}` (its token is gone) and their lists
+     * reload. A view whose browser session was revoked with them closes as
+     * unauthorized; a view of a session that stays signed in (a password
+     * change keeps the current one) closes as `connect_device_offline`.
+     */
+    disconnectUser(userId: string, input: Readonly<{ activeAuthSessionIds: Iterable<string> }>): void {
       epoch += 1;
+      const active = new Set(input.activeAuthSessionIds);
+      const userViews = () => [...views.values()].filter((view) => view.userId === userId);
+      // The device streams end below, so the devices are not told about these views.
+      closeViews(userViews().filter((view) => !active.has(view.authSessionId)).map((view) => view.id), "connect_unauthorized", false);
       for (const device of [...devices.values()]) {
         if (device.record.userId === userId) {
           endDevice(device, {
-            final: { data: { code }, event: "closed" },
+            final: { data: { code: "connect_unauthorized" }, event: "closed" },
             pendingCode: "connect_device_offline",
-            viewReason: "connect_unauthorized"
+            viewReason: "connect_device_offline"
           });
         }
       }
-      closeViews([...views.values()].filter((view) => view.userId === userId).map((view) => view.id), "connect_unauthorized", false);
+      closeViews(userViews().map((view) => view.id), "connect_device_offline", false);
       emit({ type: "devices_changed", userId });
     },
 
