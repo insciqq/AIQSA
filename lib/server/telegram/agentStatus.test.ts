@@ -10,9 +10,11 @@ import {
 } from "./agentStatus";
 import { createTelegramBotApi, createTelegramPacer } from "./botApi";
 import type { TelegramRunEvent, TelegramRunEventContext } from "./bridge/events";
+import type { TelegramAccessDecision } from "./control/access";
 import { TELEGRAM_COPY } from "./copy";
 import type { TelegramBotSession } from "./dispatcher";
 import { createTelegramOutbound } from "./outbound";
+import type { TelegramLinkRecord } from "./store/links";
 
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -54,12 +56,23 @@ async function setup(mode: TelegramWorkMode = "workspace") {
     await runLinks.store.create({ draftId: 7, linkId: "link-1", now: new Date(START), runId, telegramChatId: user.id, userId: "user-1" });
   }
   const runMode = vi.fn(async () => mode);
-  const status = createTelegramAgentStatus({ messageRefs: refs.store, runLinks: runLinks.store, runMode });
+  const link: TelegramLinkRecord = {
+    agentEnabled: false, botId: fake.bot.id, currentChatId: "chat-1", displayName: null, id: "link-1", lastSeenAt: new Date(START),
+    linkedAt: new Date(START), pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null,
+    telegramChatId: user.id, telegramUserId: user.id, telegramUsername: null, userId: "user-1", workspaceEnabled: false
+  };
+  let decision: TelegramAccessDecision = { allowed: true, control: {} as never, link };
+  const access = { resolveTelegramAccess: vi.fn(async () => decision) };
+  const status = createTelegramAgentStatus({
+    access, messageRefs: refs.store, runLinks: runLinks.store, runMode, sessions: { current: async () => session }
+  });
   const context: TelegramRunEventContext = {
     bot: session, chatId: "chat-1", linkId: "link-1", runId: "run-1", source: "live", telegramChatId: user.id, userId: "user-1"
   };
   return {
-    fake, refs, runLinks, runMode, session, status, user,
+    access, fake, refs, runLinks, runMode, session, status, user,
+    /** The user unlinks: the run's link no longer reaches its chat. */
+    unlink() { decision = { allowed: false, link: null, reasonCode: "telegram_not_linked" }; },
     emit(event: TelegramRunEvent, runId = "run-1") {
       void status.listener(event, { ...context, runId });
     },
@@ -165,6 +178,29 @@ describe("Telegram Agent and Workspace status", () => {
     expect(h.edits()).toHaveLength(0);
   });
 
+  it("stops its edits and timers once the run's chat may no longer receive it, while the run goes on", async () => {
+    const h = await setup();
+    h.emit(activity(command("cmd-1", "running", "npm test")));
+    await settle(h.status);
+    expect(h.sends()).toHaveLength(1);
+
+    h.unlink();
+    // A newer step, the minutes going on and the run's end: none of it reaches the chat any more.
+    h.emit(activity(fileRead("read-1", "running", "PRIVATE_AFTER_UNLINK.ts")));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle(h.status);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await settle(h.status);
+    expect(vi.getTimerCount()).toBe(0);
+    h.emit({ status: "complete", type: "done" });
+    // Nor does a status for another run of the link.
+    h.emit(activity(command("cmd-2", "running", "PRIVATE_AFTER_UNLINK")), "run-2");
+    await settle(h.status);
+    expect(h.sends()).toHaveLength(1);
+    expect(h.edits()).toHaveLength(0);
+    expect(JSON.stringify(h.fake.calls())).not.toContain("PRIVATE_AFTER_UNLINK");
+  });
+
   it("ends a status a previous process left working when recovery delivers its run", async () => {
     const h = await setup();
     const left = await h.session.api.sendMessage({ chat_id: h.user.id, text: "Agent is working · 2 min" });
@@ -207,7 +243,9 @@ describe("Telegram Agent and Workspace status in the chat bridge", () => {
     let status: TelegramAgentStatus | null = null;
     const h = createBridgeHarness({ bridge: { publish: async (event, context) => { await status?.listener(event, context); } }, gateway });
     closers.push(h.close);
-    status = createTelegramAgentStatus({ messageRefs: h.messageRefs.store, runLinks: h.runLinks.store, runMode: async () => "workspace" });
+    status = createTelegramAgentStatus({
+      access: h.access, messageRefs: h.messageRefs.store, runLinks: h.runLinks.store, runMode: async () => "workspace", sessions: h.sessions
+    });
     const user = h.fake.inject.addUser({ firstName: "Alex" });
     h.link(user, "user-1", { workspaceEnabled: true });
     await h.deliver(h.fake.inject.text(user, "[AIQSA_WORKSPACE_E2E:long_command]"));

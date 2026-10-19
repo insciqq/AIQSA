@@ -44,6 +44,14 @@ async function runStarted(gateway: FakeGateway, count: number) {
   return gateway.runs[count - 1]!;
 }
 
+function draftCalls(h: BridgeHarness) {
+  return [...h.fake.calls("sendMessageDraft"), ...h.fake.calls("sendRichMessageDraft")];
+}
+
+async function pause(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe("Telegram chat bridge: a message becomes an ordinary chat", () => {
   it("starts a new personal chat with explicit catalog values, streams a draft and delivers the rendered answer once", async () => {
     const h = harness();
@@ -323,6 +331,38 @@ describe("Telegram chat bridge: a run in progress", () => {
     expect(h.fake.botMessages(h.user.id).at(-1)).toMatchObject({ rich_message: renderTelegramAnswer("Partial and the rest").messages[0] });
     expect(h.fake.calls("sendRichMessage")).toHaveLength(2);
     expect(h.runLinks.rows.get(lost.id)?.deliveryState).toBe("delivered");
+  });
+
+  it.each([
+    ["the user unlinks (the link and its run links go)", (h: ReturnType<typeof harness>, runId: string) => {
+      h.links.records.delete("user-1");
+      h.runLinks.rows.delete(runId);
+    }],
+    ["Telegram access ends for the user", (h: ReturnType<typeof harness>) => {
+      h.setUser({ activeGroupIds: [], scimDeactivatedAt: null, status: "disabled" });
+    }],
+    ["the bot is switched off", (h: ReturnType<typeof harness>) => { h.setSessionOn(false); }]
+  ])("stops streaming the answer into Telegram once %s, while the run goes on in AIQSA", async (_case, revoke) => {
+    const gateway = createFakeGateway({ autoAnswer: null });
+    const h = harness({ bridge: { draftThrottleMs: 5 }, gateway });
+    await say(h, h.fake.inject.text(h.user, "write a long answer"));
+    const run = await runStarted(gateway, 1);
+    run.token("PUBLIC_BEFORE_UNLINK");
+    await vi.waitFor(() => expect(JSON.stringify(h.fake.calls("sendRichMessageDraft"))).toContain("PUBLIC_BEFORE_UNLINK"));
+    const before = draftCalls(h).length;
+
+    revoke(h, run.id);
+    run.token(" PRIVATE_AFTER_UNLINK");
+    await pause(50);
+    run.token(" and more");
+    await pause(50);
+    // No draft after the change, the text it would have carried included; the run itself keeps going.
+    expect(draftCalls(h)).toHaveLength(before);
+    expect(run.status).toBe("streaming");
+    run.complete();
+    await h.settle();
+    expect(draftCalls(h)).toHaveLength(before);
+    expect(JSON.stringify(h.fake.calls())).not.toContain("PRIVATE_AFTER_UNLINK");
   });
 });
 

@@ -49,7 +49,9 @@ export function startTelegramChatBridge(telegram: TelegramBridgeDefaults): Teleg
     bridge.register(registry),
     registry.registerMessage(media),
     registerTelegramApprovals({ access: telegram.access, conversation: bridge.conversation, registry, sessions: telegram.sessions }),
-    registerTelegramAgentStatus({ messageRefs: telegram.messageRefs, runLinks: telegram.runLinks }),
+    registerTelegramAgentStatus({
+      access: telegram.access, messageRefs: telegram.messageRefs, runLinks: telegram.runLinks, sessions: telegram.sessions
+    }),
     registerTelegramRunFiles({ access: telegram.access, answer: (input) => gateway.answer(input) })
   ];
   const unregister = () => {

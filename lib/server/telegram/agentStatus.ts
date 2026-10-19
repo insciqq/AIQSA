@@ -7,10 +7,14 @@ import {
   onTelegramRunEvent, type TelegramRunDeliveredEvent, type TelegramRunEventContext, type TelegramRunListener
 } from "./bridge/events";
 import { telegramFailureCode } from "./codes";
+import type { TelegramAccessResolver } from "./control/access";
+import { reachTelegramChat } from "./control/reach";
+import type { TelegramSessionProvider } from "./control/session";
 import {
   TELEGRAM_COPY, telegramAgentFinishedText, telegramAgentWorkingText, telegramWorkActivityText, telegramWorkFailedText,
   telegramWorkspaceWorkingText
 } from "./copy";
+import type { TelegramBotSession } from "./dispatcher";
 import type { TelegramMessageRefStore } from "./store/messageRefs";
 import type { TelegramRunLinkStore } from "./store/runLinks";
 import type { TelegramFailure, TelegramOutcome } from "./transport";
@@ -24,7 +28,9 @@ import type { TelegramFailure, TelegramOutcome } from "./transport";
  * or the failure, without the button. The answer itself is the bridge's
  * separate message. The message is recorded on the run's link, so a restart's
  * recovery still ends it. Activity comes already redacted and bounded by the
- * run's own projection; logs carry ids and codes only.
+ * run's own projection; logs carry ids and codes only. Every send and edit
+ * first checks that the run's link still reaches its chat (D-04); once it does
+ * not, the status stops for good while the run goes on in AIQSA.
  */
 
 export const TELEGRAM_STATUS_EDIT_INTERVAL_MS = 5_000;
@@ -42,6 +48,8 @@ export type TelegramWorkMode = "agent" | "workspace";
 export type TelegramWorkEnding = TelegramRunDeliveredEvent["status"];
 
 export type TelegramAgentStatusDeps = Readonly<{
+  access: Pick<TelegramAccessResolver, "resolveTelegramAccess">;
+  sessions: TelegramSessionProvider;
   runLinks: Pick<TelegramRunLinkStore, "find" | "setStatusMessage">;
   messageRefs: Pick<TelegramMessageRefStore, "record">;
   /** Whether the run was admitted with Agent or with Workspace alone. */
@@ -76,7 +84,9 @@ type RunStatus = {
 };
 
 /** Content-free: run identity, codes and HTTP status. */
-function log(fields: Readonly<{ code: string; error?: unknown; httpStatus?: number; outcome: "degraded" | "failed"; runId: string }>): void {
+function log(fields: Readonly<{
+  code: string; error?: unknown; httpStatus?: number; outcome: "degraded" | "failed" | "skipped"; runId: string;
+}>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.error ? { error: fields.error, prisma_code: databaseFailureCode(fields.error) } : {}),
     ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), outcome: fields.outcome, run_id: fields.runId, stage: "dispatch",
@@ -167,13 +177,40 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     if (runs.get(status.context.runId) === status) runs.delete(status.context.runId);
   }
 
+  function endedRun(runId: string): void {
+    ended.add(runId);
+    while (ended.size > RUNS_KEPT) ended.delete(ended.values().next().value as string);
+  }
+
+  /** The bot the run's chat is reached through now, or null when its link no longer reaches it. */
+  async function reachRun(context: TelegramRunEventContext): Promise<TelegramBotSession | null> {
+    const reached = await reachTelegramChat(deps, {
+      botId: context.bot.botId, linkId: context.linkId, telegramChatId: context.telegramChatId, userId: context.userId
+    });
+    if (reached.ok) return reached.bot;
+    log({ code: reached.reasonCode, outcome: "skipped", runId: context.runId });
+    return null;
+  }
+
+  /** Checked right before every send and edit: once the chat may no longer receive the run, the status stops for good. */
+  async function reach(status: RunStatus): Promise<TelegramBotSession | null> {
+    const bot = await reachRun(status.context);
+    if (bot) return bot;
+    status.broken = true;
+    endedRun(status.context.runId);
+    forget(status);
+    return null;
+  }
+
   function working(status: RunStatus): string {
     return telegramWorkStatusText({ activity: status.activity, elapsedMs: now() - status.startedAt, mode: status.mode });
   }
 
-  async function edit(status: RunStatus, text: string, markup: TelegramInlineKeyboardMarkup | undefined): Promise<boolean> {
+  async function edit(
+    status: RunStatus, bot: TelegramBotSession, text: string, markup: TelegramInlineKeyboardMarkup | undefined
+  ): Promise<boolean> {
     const { context } = status;
-    const edited = await context.bot.api.editMessageText({
+    const edited = await bot.api.editMessageText({
       chat_id: context.telegramChatId, link_preview_options: { is_disabled: true }, message_id: status.messageId!, text,
       ...(markup ? { reply_markup: markup } : {})
     });
@@ -211,12 +248,14 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     status.mode = mode;
     // The run started when its link was recorded, before its first activity.
     if (link) status.startedAt = Math.min(status.startedAt, link.createdAt.getTime());
+    const bot = await reach(status);
+    if (!bot) return;
     const ending = status.ending;
     const text = ending ? telegramWorkEndingText(ending, now() - status.startedAt) : working(status);
-    const markup = ending ? undefined : await context.bot.outbound.replyMarkup({
+    const markup = ending ? undefined : await bot.outbound.replyMarkup({
       keyboard: [[{ callback: { kind: "stop_run", payload: { runId: context.runId } }, text: TELEGRAM_COPY.stop }]], linkId: context.linkId
     });
-    const sent = await once(() => context.bot.api.sendMessage({
+    const sent = await once(() => bot.api.sendMessage({
       chat_id: context.telegramChatId, link_preview_options: { is_disabled: true }, text, ...(markup ? { reply_markup: markup } : {})
     }));
     if (!sent.ok) {
@@ -253,15 +292,20 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     if (status.ending || status.broken || status.messageId === null) return;
     const text = working(status);
     if (text === status.shown) return;
+    const bot = await reach(status);
+    // Ended while its chat was checked: the closing edit follows instead.
+    if (!bot || status.ending) return;
     status.lastEditAt = now();
-    if (await edit(status, text, status.markup)) status.shown = text;
+    if (await edit(status, bot, text, status.markup)) status.shown = text;
   }
 
   /** The last edit: how the run ended, without Stop. */
   async function close(status: RunStatus): Promise<void> {
     if (status.messageId === null || status.broken || !status.ending) return;
     const text = telegramWorkEndingText(status.ending, now() - status.startedAt);
-    if (text !== status.shown && await edit(status, text, undefined)) status.shown = text;
+    if (text === status.shown) return;
+    const bot = await reach(status);
+    if (bot && await edit(status, bot, text, undefined)) status.shown = text;
   }
 
   function activity(raw: unknown, context: TelegramRunEventContext): void {
@@ -291,8 +335,7 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
   function finish(runId: string, ending: TelegramWorkEnding): void {
     const status = runs.get(runId);
     if (!status || status.ending) return;
-    ended.add(runId);
-    while (ended.size > RUNS_KEPT) ended.delete(ended.values().next().value as string);
+    endedRun(runId);
     status.ending = ending;
     stopTimers(status);
     queue(status, () => close(status));
@@ -305,7 +348,9 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
     track(runInBackground(async () => {
       const link = await deps.runLinks.find(context.runId);
       if (!link?.statusMessageId) return;
-      const edited = await context.bot.api.editMessageText({
+      const bot = await reachRun(context);
+      if (!bot) return;
+      const edited = await bot.api.editMessageText({
         chat_id: context.telegramChatId, link_preview_options: { is_disabled: true }, message_id: link.statusMessageId,
         text: telegramWorkEndingText(event.status, now() - link.createdAt.getTime())
       });
@@ -341,11 +386,16 @@ export function createTelegramAgentStatus(deps: TelegramAgentStatusDeps): Telegr
 
 /** Status messages for every Telegram run of this process; returns the function that removes them. */
 export function registerTelegramAgentStatus(deps: Readonly<{
+  access: Pick<TelegramAccessResolver, "resolveTelegramAccess">;
+  sessions: TelegramSessionProvider;
   messageRefs: Pick<TelegramMessageRefStore, "record">;
   runLinks: Pick<TelegramRunLinkStore, "find" | "setStatusMessage">;
   runMode?: TelegramAgentStatusDeps["runMode"];
 }>): () => void {
-  const status = createTelegramAgentStatus({ messageRefs: deps.messageRefs, runLinks: deps.runLinks, runMode: deps.runMode ?? telegramRunWorkMode });
+  const status = createTelegramAgentStatus({
+    access: deps.access, messageRefs: deps.messageRefs, runLinks: deps.runLinks, runMode: deps.runMode ?? telegramRunWorkMode,
+    sessions: deps.sessions
+  });
   const unsubscribe = onTelegramRunEvent(status.listener);
   return () => {
     unsubscribe();
