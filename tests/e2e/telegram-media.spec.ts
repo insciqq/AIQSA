@@ -11,7 +11,7 @@ import type { ContentBlock } from "../../lib/domain/content";
 import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
 import { getSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import {
-  TELEGRAM_MEDIA_COPY, telegramConnectedText, telegramReasonText, telegramUnsupportedFileText, telegramVoiceTranscriptText
+  TELEGRAM_COPY, TELEGRAM_MEDIA_COPY, telegramConnectedText, telegramReasonText, telegramUnsupportedFileText, telegramVoiceTranscriptText
 } from "../../lib/server/telegram/copy";
 import { telegramAttachmentTypeNames } from "../../lib/server/telegram/media/plan";
 import { createFakeTelegramBotApi, type FakeTelegramCall, type FakeTelegramUser } from "../support/fakeTelegramBotApi";
@@ -83,6 +83,13 @@ async function nextAnswer(since: number, timeout = REPLY_TIMEOUT_MS): Promise<Fa
     throw new Error(`no rich answer within ${timeout} ms; the bot sent: ${seen}`, { cause: error });
   }
   return answers()[0]!;
+}
+
+/** `/new`: the next request starts its own chat, so earlier images do not fill the fake model's context. */
+async function startNewChat(): Promise<void> {
+  const since = bot.calls().length;
+  bot.inject.command(tgAlice, "new");
+  await expectText(since, TELEGRAM_COPY.newChat);
 }
 
 async function currentChatId(): Promise<string> {
@@ -297,6 +304,7 @@ test("a photo with a caption reaches the model as an image block plus the captio
 });
 
 test("an album of three photos becomes one run with three images", async () => {
+  await startNewChat();
   const runs = await runCount();
   const since = bot.calls().length;
   bot.inject.album(tgAlice, 3, { caption: "Compare these three" });
@@ -310,6 +318,7 @@ test("an album of three photos becomes one run with three images", async () => {
 });
 
 test("a PDF document becomes a file attachment under its own name", async () => {
+  await startNewChat();
   const since = bot.calls().length;
   bot.inject.document(tgAlice, { bytes: await samplePdf(), caption: "Check the totals", fileName: "Q3 report.pdf", mimeType: "application/pdf" });
   await nextAnswer(since);
