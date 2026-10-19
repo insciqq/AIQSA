@@ -82,6 +82,18 @@ func (t *threads) session(thread string) (string, bool) {
 	return e.session, true
 }
 
+// taken reports whether some thread is bound to session.
+func (t *threads) taken(session string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, e := range t.bound {
+		if e.session == session {
+			return true
+		}
+	}
+	return false
+}
+
 // forgetSession drops every thread bound to a session that is gone.
 func (t *threads) forgetSession(session string) {
 	t.mu.Lock()

@@ -60,6 +60,7 @@ func runHook(inv *invocation) int {
 		return 0
 	}
 	var session, thread, candidate string
+	var weak bool
 	var update status.Update
 	switch agent := status.Agent(inv.args[0]); agent {
 	case status.AgentClaude, status.AgentCodex:
@@ -93,6 +94,7 @@ func runHook(inv *invocation) int {
 			if thread == "" {
 				candidate = ""
 			}
+			weak = candidate != "" && status.ShortPromptKey(in.PromptKey)
 			if session == "" && thread == "" {
 				return 0
 			}
@@ -112,7 +114,8 @@ func runHook(inv *invocation) int {
 	}
 	// The daemon may be down; the agent goes on either way.
 	localsock.Send(inv.ctx, localsock.Candidates(paths), localsock.Message{
-		Session: session, Thread: thread, Candidate: candidate, Status: update.Status, Reason: update.Reason,
+		Session: session, Thread: thread, Candidate: candidate, Weak: weak,
+		Status: update.Status, Reason: update.Reason,
 		At: started.At, Clock: started.Kind,
 	})
 	return 0

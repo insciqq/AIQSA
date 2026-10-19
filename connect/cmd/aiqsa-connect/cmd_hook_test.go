@@ -612,6 +612,28 @@ func TestAForeignCodexThreadInTheFolderOfACodexSessionReportsNothing(t *testing.
 	reports.expectNone(t)
 }
 
+// A first prompt as short as "hi" binds the Codex session showing it as a
+// prompt line; the same short line from another conversation in the folder
+// never takes a session another thread already holds.
+func TestAShortPromptBindsOnlyASessionNoOtherThreadHolds(t *testing.T) {
+	s := tmuxtest.New(t)
+	dir := shortStateDir(t)
+	t.Setenv(sessionEnv, "")
+	reports := listenForReports(t)
+	// The empty line ends the shell prompt's line, so "› hi" starts its own.
+	id := startCodexSession(t, s, fakeCodex(t, dir), s.Home, "", "› hi")
+	hook := func(fields string) {
+		runHookArgs(strings.NewReader(`{"cwd":`+strconv.Quote(s.Home)+`,`+fields+`}`), "codex")
+	}
+	hook(`"session_id":"own","hook_event_name":"UserPromptSubmit","prompt":"hi"`)
+	reports.expect(t, hookReport{id, protocol.StatusRunning, protocol.ReasonInput})
+	hook(`"session_id":"own","hook_event_name":"PermissionRequest"`)
+	reports.expect(t, hookReport{id, protocol.StatusNeedsApproval, protocol.ReasonPermission})
+	hook(`"session_id":"foreign","hook_event_name":"UserPromptSubmit","prompt":"hi"`)
+	hook(`"session_id":"foreign","hook_event_name":"Stop"`)
+	reports.expectNone(t)
+}
+
 // Codex 0.163 runs its hooks from a background Codex process outside every
 // tmux pane, without the session's environment. A submitted prompt that
 // the screen of the one Codex session in the hook's directory shows binds

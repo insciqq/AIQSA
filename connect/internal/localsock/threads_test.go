@@ -167,6 +167,7 @@ func TestTheDaemonRejectsInvalidThreadMessages(t *testing.T) {
 		`{"candidate":"ac-abc123","status":"idle"}`,
 		`{"session":"ac-abc123","thread":"t1","candidate":"ac-xyz789","status":"idle"}`,
 		`{"thread":"t1","candidate":"../x","status":"idle"}`,
+		`{"thread":"t1","weak":true,"status":"idle"}`,
 		`{"session":"ac-abc123","thread":"t1","status":"waiting","reason":"bell"}`,
 	} {
 		conn, err := net.Dial("unix", s.path)
@@ -271,6 +272,28 @@ func TestAPromptShownOnAnotherScreenNeverMovesABoundThread(t *testing.T) {
 		report{sessionA, protocol.StatusWaiting, protocol.ReasonTurnEnd},
 		report{sessionB, protocol.StatusRunning, protocol.ReasonInput},
 		report{sessionB, protocol.StatusWaiting, protocol.ReasonTurnEnd},
+	)
+}
+
+// A candidate found by a short prompt line binds only a session no other
+// thread holds; one found by a longer line may still join it (a new
+// conversation after /new, or after Codex ended without its SessionEnd).
+func TestAWeakCandidateNeverTakesAHeldSession(t *testing.T) {
+	s, r := applier(t)
+	at := hookStarts()
+	weak := func(m Message) Message {
+		m.Weak = true
+		return m
+	}
+	s.applyMessage(t, at(1, weak(of(running, "", "t-own", sessionA))))
+	s.applyMessage(t, at(2, of(approval, "", "t-own", "")))
+	s.applyMessage(t, at(3, weak(of(running, "", "t-foreign", sessionA))))
+	s.applyMessage(t, at(4, of(stopped, "", "t-foreign", "")))
+	s.applyMessage(t, at(5, of(running, "", "t-new", sessionA)))
+	expectReports(t, r,
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
+		report{sessionA, protocol.StatusNeedsApproval, protocol.ReasonPermission},
+		report{sessionA, protocol.StatusRunning, protocol.ReasonInput},
 	)
 }
 

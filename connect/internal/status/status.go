@@ -95,6 +95,12 @@ func PromptKey(prompt string) string {
 	return ""
 }
 
+// ShortPromptKey reports a key under 8 characters: ScreenShows finds it
+// only as a whole prompt line, and it may still be any conversation's.
+func ShortPromptKey(key string) bool {
+	return key != "" && utf8.RuneCountInString(key) < minPromptKeyRunes
+}
+
 // ScreenShows reports whether a screen's text holds a prompt key. A key of
 // at least 8 characters may be anywhere, with the screen's whitespace (line
 // breaks included) collapsed as the key's is: an agent wraps a long prompt
@@ -104,7 +110,7 @@ func ScreenShows(screen, key string) bool {
 	if key == "" {
 		return false
 	}
-	if utf8.RuneCountInString(key) >= minPromptKeyRunes {
+	if !ShortPromptKey(key) {
 		return strings.Contains(collapseSpace(screen), key)
 	}
 	want := promptMarker + " " + key
