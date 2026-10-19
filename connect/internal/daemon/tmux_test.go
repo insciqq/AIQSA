@@ -110,15 +110,6 @@ func TestSessionsAndViewsWithRealTmux(t *testing.T) {
 	events = server.waitUntil(t, "echo output", func(e []protocol.DeviceEvent) bool {
 		return strings.Contains(viewOutput(t, e, viewA), "aiqsa42")
 	})
-	server.waitUntil(t, "running status", func(e []protocol.DeviceEvent) bool {
-		for _, event := range e {
-			if s, ok := event.(*protocol.StatusEvent); ok && s.SessionID == sessionID && s.Status == protocol.StatusRunning &&
-				s.Reason != nil && *s.Reason == protocol.ReasonInput {
-				return true
-			}
-		}
-		return false
-	})
 	if width, _ := ts.Manager.Display(ctx, sessionID, "#{window_width}"); width != "80" {
 		t.Fatalf("width after open: %q", width)
 	}
@@ -127,10 +118,17 @@ func TestSessionsAndViewsWithRealTmux(t *testing.T) {
 		width, _ := ts.Manager.Display(ctx, sessionID, "#{window_width}")
 		return width == "100"
 	})
-	server.waitUntil(t, "attached snapshot", func(e []protocol.DeviceEvent) bool {
+	events = server.waitUntil(t, "attached snapshot", func(e []protocol.DeviceEvent) bool {
 		s := findSession(lastSnapshot(e), sessionID)
-		return s != nil && s.AttachedClients == 1 && s.Status == protocol.StatusRunning
+		return s != nil && s.AttachedClients == 1
 	})
+	// A shell has no agent turns: input leaves its status alone.
+	if s := findSession(lastSnapshot(events), sessionID); s.Status != protocol.StatusIdle || statusEvents(events, sessionID) != 0 {
+		t.Fatalf("shell input changed status: %+v, %d status events", s, statusEvents(events, sessionID))
+	}
+	if v, _ := ts.Manager.Option(ctx, sessionID, tmux.OptionStatus); v != string(protocol.StatusIdle) {
+		t.Fatalf("shell status option after input: %q", v)
+	}
 
 	stream.command(map[string]any{"type": "view_close", "viewId": viewA})
 	server.waitUntil(t, "detached snapshot", func(e []protocol.DeviceEvent) bool {
@@ -213,6 +211,58 @@ func TestSessionsAndViewsWithRealTmux(t *testing.T) {
 	if !strings.Contains(log, "view_open") || !strings.Contains(log, "reply") {
 		t.Errorf("log lacks events:\n%s", log)
 	}
+}
+
+func statusEvents(events []protocol.DeviceEvent, sessionID string) int {
+	count := 0
+	for _, e := range events {
+		if s, ok := e.(*protocol.StatusEvent); ok && s.SessionID == sessionID {
+			count++
+		}
+	}
+	return count
+}
+
+// Input from a view marks an agent session running, once.
+func TestAgentInputMarksRunningWithRealTmux(t *testing.T) {
+	ts := tmuxtest.New(t)
+	server := newFakeServer(t)
+	h := newHarness(t, server, ts.Manager, fastTiming())
+	ctx := context.Background()
+	// A shell session labeled claude: the test never starts a real agent.
+	id, err := ts.Manager.Create(ctx, tmux.CreateOptions{Program: protocol.ProgramShell, Cwd: t.TempDir(), Title: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Manager.SetOptions(ctx, id, tmux.OptionProgram, string(protocol.ProgramClaude)); err != nil {
+		t.Fatal(err)
+	}
+	h.start()
+	stream := server.nextStream(t)
+	stream.command(map[string]any{"type": "view_open", "viewId": viewA, "sessionId": id, "cols": 80, "rows": 24})
+	server.waitUntil(t, "first output", func(e []protocol.DeviceEvent) bool { return viewOutput(t, e, viewA) != "" })
+	stream.command(map[string]any{"type": "view_input", "viewId": viewA, "data": "echo first$((6*7))\r"})
+	server.waitUntil(t, "running status", func(e []protocol.DeviceEvent) bool {
+		for _, event := range e {
+			if s, ok := event.(*protocol.StatusEvent); ok && s.SessionID == id && s.Status == protocol.StatusRunning &&
+				s.Reason != nil && *s.Reason == protocol.ReasonInput {
+				return true
+			}
+		}
+		return false
+	})
+	stream.command(map[string]any{"type": "view_input", "viewId": viewA, "data": "echo second$((6*7))\r"})
+	events := server.waitUntil(t, "running snapshot", func(e []protocol.DeviceEvent) bool {
+		s := findSession(lastSnapshot(e), id)
+		return strings.Contains(viewOutput(t, e, viewA), "second42") && s != nil && s.Status == protocol.StatusRunning
+	})
+	if n := statusEvents(events, id); n != 1 {
+		t.Fatalf("%d status events, want 1", n)
+	}
+	if v, _ := ts.Manager.Option(ctx, id, tmux.OptionStatus); v != string(protocol.StatusRunning) {
+		t.Fatalf("status option: %q", v)
+	}
+	h.stop(t)
 }
 
 func TestReportStatusWithRealTmux(t *testing.T) {
