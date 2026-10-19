@@ -7,6 +7,8 @@ import {
   connectDeviceSessionsPath,
   connectPairingByCodePath,
   connectRecentDirsPath,
+  connectSessionHistoryPath,
+  connectSessionOptionsPath,
   connectViewInputPath,
   connectViewPath,
   connectViewResizePath,
@@ -17,6 +19,8 @@ import {
   decodeConnectPairingLookupResponse,
   decodeConnectRecentDirsResponse,
   decodeConnectSessionCreateResponse,
+  decodeConnectSessionHistoryResponse,
+  decodeConnectSessionOptionsResponse,
   decodeConnectViewCreateResponse,
   type ConnectDevicesResponse,
   type ConnectPairingDecision,
@@ -26,6 +30,8 @@ import {
   type ConnectRecentDirsResponse,
   type ConnectSessionCreateRequest,
   type ConnectSessionCreateResponse,
+  type ConnectSessionHistoryResponse,
+  type ConnectSessionOptionsResponse,
   type ConnectViewCreateRequest,
   type ConnectViewCreateResponse
 } from "@/lib/contracts/connect";
@@ -117,6 +123,24 @@ export function createConnectSession(
 
 export function endConnectSession(deviceId: string, sessionId: string): Promise<ConnectApiResult<void>> {
   return connectRequest(connectDeviceSessionPath(deviceId, sessionId), { method: "DELETE" }, null);
+}
+
+/** The numbered choices on the session's screen, read when it needs approval; may be empty. */
+export function loadConnectSessionOptions(
+  deviceId: string,
+  sessionId: string,
+  signal?: AbortSignal
+): Promise<ConnectApiResult<ConnectSessionOptionsResponse>> {
+  return connectRequest(connectSessionOptionsPath(deviceId, sessionId), signal ? { signal } : {}, decodeConnectSessionOptionsResponse);
+}
+
+/** The session's recent lines as plain text. */
+export function loadConnectSessionHistory(
+  deviceId: string,
+  sessionId: string,
+  signal?: AbortSignal
+): Promise<ConnectApiResult<ConnectSessionHistoryResponse>> {
+  return connectRequest(connectSessionHistoryPath(deviceId, sessionId), signal ? { signal } : {}, decodeConnectSessionHistoryResponse);
 }
 
 export function loadConnectRecentDirs(
