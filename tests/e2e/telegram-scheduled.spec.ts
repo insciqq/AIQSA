@@ -270,9 +270,14 @@ test("a scheduled run that pauses its task sends the heading and the reason only
   const since = bot.calls().length;
   const occurrence = await settled(taskId);
   expect(occurrence).toMatchObject({ reasonCode: "model_unavailable", state: "FAILED", trigger: "schedule" });
-  // The row's state and code name a missing notice in the report.
-  await expect.poll(async () => ({ row: await deliveryState(occurrence.id), texts: textsSince(since).length }), { timeout: DELIVERY_TIMEOUT_MS })
-    .toMatchObject({ texts: 1 });
+  try {
+    await expect.poll(() => textsSince(since), { timeout: DELIVERY_TIMEOUT_MS }).toHaveLength(1);
+  } catch (error) {
+    // The delivery row and the bot's calls name a missing notice in the report.
+    const calls = bot.calls().slice(since).filter((call) => call.method !== "getUpdates").map((call) => `${call.method}:${call.status}`);
+    throw new Error(`no paused notice; delivery ${JSON.stringify(await deliveryState(occurrence.id))}; bot calls ${calls.join(", ") || "none"}`,
+      { cause: error });
+  }
   const [text] = textsSince(since);
   expect(text).toMatch(/^Telegram pause check\nScheduled task paused\n\S/u);
   expect(text).not.toContain("Fake answer");
