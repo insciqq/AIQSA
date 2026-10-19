@@ -3,10 +3,10 @@ import { authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
 import { SESSION_COOKIE_NAME } from "@/lib/server/auth/session";
 import { prisma } from "@/lib/server/prisma";
+import { isTelegramAvailableForUser } from "@/lib/server/telegram/defaultTelegram";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
-import { loadViewerTelegramAvailable } from "./telegramAvailability";
 
 export type ChatViewer = Readonly<{
   accountDisplayName: string;
@@ -33,7 +33,7 @@ export const loadChatViewer = cache(async (): Promise<ChatViewer | null> => {
   });
   if (!user || user.status !== "active") return null;
   // An unreadable Telegram state hides the block; it never blocks the chat.
-  const telegramAvailable = await loadViewerTelegramAvailable(session.userId).catch(() => false);
+  const telegramAvailable = await isTelegramAvailableForUser(session.userId).catch(() => false);
   return {
     accountDisplayName: user.displayName,
     accountEmail: user.email,

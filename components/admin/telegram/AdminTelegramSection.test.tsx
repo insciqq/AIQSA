@@ -114,7 +114,7 @@ describe("AdminTelegramSection", () => {
   it("reloads after a stale version and keeps the unsaved token for another try", async () => {
     const { calls } = mockFetch(adminState({ version: 3 }), (_body, state) => {
       state.current = adminState({ botUsername: "other_admin_bot", tokenConfigured: true, version: 4 });
-      return Response.json({ error: "telegram_version_conflict" }, { status: 409 });
+      return Response.json({ error: "telegram_control_stale" }, { status: 409 });
     });
     renderSection();
     const token = await screen.findByLabelText("Bot token");
@@ -205,7 +205,7 @@ describe("AdminTelegramSection", () => {
   it("keeps the access choice through a stale save", async () => {
     mockFetch(adminState({ version: 8 }), (_body, state) => {
       state.current = adminState({ version: 9 });
-      return Response.json({ error: "telegram_version_conflict" }, { status: 409 });
+      return Response.json({ error: "telegram_control_stale" }, { status: 409 });
     });
     renderSection();
     const form = await screen.findByTestId("telegram-access-form");
