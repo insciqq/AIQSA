@@ -17,17 +17,21 @@ import { providerHttpFailureMessage } from "../providers/providerObservability";
 import { providerStreamDrop } from "../providers/streamDrop";
 import { anthropicMessagesToolBridge, geminiInteractionsToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 import {
+  providerRoundToolCalls,
+  providerToolLoopContinuationAfterResult,
+  roundToolCalls,
   runProviderToolLoop,
   stalledToolRound,
   toolSynthesisDecision,
   unknownToolCorrectionSpent,
   type ToolRoundCall
 } from "./providerToolLoop";
-import { TOOL_CALL_UNKNOWN, unknownToolCallResult } from "./unknownToolCall";
+import { normalizeProviderToolCallName, TOOL_CALL_UNKNOWN, unknownToolCallResult } from "./unknownToolCall";
+import { namespacedMcpToolName, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
-import { openRouterChatToolBridge } from "../tools/bridges";
+import { openAICompatibleChatToolBridge, openRouterChatToolBridge } from "../tools/bridges";
 import { createOpenRouterChatAdapter } from "../providers/openRouterChat";
-import type { RunTool, ToolExecutionResult } from "../tools/types";
+import type { ProviderToolBridge, RunTool, ToolExecutionResult } from "../tools/types";
 import { executeReadToolResult, READ_TOOL_RESULT_NAME, readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import { captureMcpObservation, observationReadBudget, observationWholeDeliveryBatches, wholeDeliveryAllowance } from "../toolObservations/sourceAdapters";
@@ -2530,10 +2534,43 @@ describe("calls of tools their round did not declare", () => {
     expect(persist).not.toHaveBeenCalled();
   });
 
+  it("stops for the user's approval before any name correction when a gated call shares the round", async () => {
+    const { adapter, requests } = scripted([[declared, "read_notes"], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input,
+      // The declared call may change data: its owner settled it gated, undispatched.
+      executeTool: async (call) => call.name === declared
+        ? { status: "complete" as const, value: { callId: call.id, name: call.name, status: "error" as const,
+          content: [{ type: "json" as const, value: { error: "mcp_approval_required" } }] } }
+        : store.input.executeTool(call),
+      isApprovalGatedCall: (call) => call.name === declared });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer" } });
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content:
+      "Tool use is now disabled for this run: a tool call waits for the user's approval in the chat. Some planned tool calls were not executed. " +
+      "Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed." });
+  });
+
+  it.each(["", "  "])("settles a call without a name (%j) as an unknown tool the model can correct", async (blank) => {
+    const { adapter, requests } = scripted([[blank], [declared], []]);
+    const store = owner();
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 80, maxToolRounds: 32 }, initialRequest: request(), parallelToolCalls: true,
+      tools, ...store.input });
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "answer" } });
+    expect(store.rows[0]).toEqual({ id: "call-1-0", name: "invalid_tool_name", round: 1,
+      undeclared: { requested: blank ? "?" : "" } });
+    expect(requests[1]!.providerToolMessages).toContainEqual(expect.objectContaining({ call_id: "call-1-0", name: "invalid_tool_name" }));
+    expect(store.executed).toEqual([declared]);
+  });
+
   it.each([
     [["unknown_tool"], false, null],
     [["unknown_tool", "repeat_blocked"], false, null],
-    [["unknown_tool", "approval_gated"], false, null],
+    [["unknown_tool", "approval_gated"], false, "approval_required"],
+    [["unknown_tool", "approval_gated", "repeat_blocked"], false, "approval_required"],
     [["unknown_tool"], true, "unknown_tool"],
     [["unknown_tool", "repeat_blocked"], true, "unknown_tool"],
     [["unknown_tool", "approval_gated"], true, "approval_required"],
@@ -2553,7 +2590,71 @@ describe("calls of tools their round did not declare", () => {
     expect(unknownToolCorrectionSpent(entries([["unknown_tool"], ["unknown_tool"]]), 1)).toBe(false);
     expect(unknownToolCorrectionSpent(entries([["unknown_tool", "executed"], ["unknown_tool"]]), 2)).toBe(false);
     expect(unknownToolCorrectionSpent(entries([["repeat_blocked"], ["unknown_tool"]]), 2)).toBe(false);
+    // A round with a gated call stopped for approval; it was no correction.
+    expect(unknownToolCorrectionSpent(entries([["unknown_tool", "approval_gated"], ["unknown_tool"]]), 2)).toBe(false);
     // Automatic Knowledge calls before the loop (round 0) never count.
     expect(unknownToolCorrectionSpent([{ call: "unknown_tool", round: 0 }], 5)).toBe(false);
+  });
+});
+
+describe("a round's transcript carries the names the round kept, on every bridge", () => {
+  const readNote = namespacedMcpToolName("notes", "read_note");
+  const snapshot: McpRunPlanSnapshot = { version: 1,
+    servers: [{ fingerprint: "f".repeat(64), revisionId: "notes-revision", serverId: "notes", serverName: "Notes" }],
+    tools: [{ definitionHash: "a".repeat(64), description: null, inputSchema: { type: "object" }, name: "read_note",
+      namespacedName: readNote, originalName: "read_note", serverId: "notes", serverName: "Notes" }] };
+  const normalize = (name: string, declared: ReadonlySet<string>) =>
+    normalizeProviderToolCallName(name, declared, { mcp: snapshot, workspace: false });
+  // A name with leaked markup, a name Gemini rejects, and the bare original name of the declared tool.
+  const malformed = "read_note</｜DSML｜>";
+  const digitFirst = "9read_note";
+  const kept = ["invalid_tool_name", "invalid_tool_name", readNote];
+
+  /** The continuation after one round of these calls, as the loop builds it. */
+  function transcript(bridge: ProviderToolBridge, response: unknown, providerToolCallMessage?: unknown) {
+    const calls = roundToolCalls(bridge.parseToolCalls(response), new Set([readNote]), normalize);
+    expect(calls.map(call => call.name)).toEqual(kept);
+    return providerToolLoopContinuationAfterResult(bridge, { providerResponseId: null, providerToolMessages: [] }, {
+      finalProviderResponsePreview: {}, finalText: "", toolCalls: providerRoundToolCalls(calls), usage: {},
+      ...(providerToolCallMessage !== undefined ? { providerToolCallMessage } : {}) }).providerToolMessages;
+  }
+
+  it.each([["openrouter", openRouterChatToolBridge], ["openai_compatible", openAICompatibleChatToolBridge]] as const)(
+    "renames Chat Completions tool calls by id and keeps every other field (%s)", (_family, bridge) => {
+      const toolCall = (id: string, name: string, args: string) => ({ function: { arguments: args, name }, id, type: "function" });
+      const message = { content: null, reasoning_details: [{ data: "private-signature", type: "reasoning.encrypted" }], role: "assistant",
+        tool_calls: [toolCall("c1", malformed, "{}"), toolCall("c2", digitFirst, "{}"), toolCall("c3", "read_note", "{\"id\":\"n1\"}")] };
+      const renamed = [toolCall("c1", kept[0]!, "{}"), toolCall("c2", kept[1]!, "{}"), toolCall("c3", readNote, "{\"id\":\"n1\"}")];
+      expect(transcript(bridge, { choices: [{ message }] }, message)).toEqual([{ ...message, tool_calls: renamed }]);
+      // Without the provider's message, its raw calls carry the same names.
+      expect(transcript(bridge, { choices: [{ message }] })).toEqual([{ content: null, role: "assistant", tool_calls: renamed }]);
+    });
+
+  it("renames Gemini function-call steps by id and keeps thought and call signatures", () => {
+    const step = (id: string, name: string, extra: Record<string, unknown> = {}) =>
+      ({ arguments: { id: "n1" }, id, name, type: "function_call", ...extra });
+    const steps = [{ signature: "thought-signature", type: "thought" }, step("c1", malformed, { signature: "call-signature" }),
+      step("c2", digitFirst), step("c3", "read_note")];
+    const renamed = [steps[0], step("c1", kept[0]!, { signature: "call-signature" }), step("c2", kept[1]!), step("c3", readNote)];
+    expect(transcript(geminiInteractionsToolBridge, steps, steps)).toEqual(renamed);
+    expect(transcript(geminiInteractionsToolBridge, steps)).toEqual(renamed.slice(1));
+  });
+
+  it("renames Anthropic tool_use blocks by id and keeps thinking signatures", () => {
+    const block = (id: string, name: string) => ({ id, input: { id: "n1" }, name, type: "tool_use" });
+    const thinking = { signature: "thinking-signature", thinking: "private reasoning", type: "thinking" };
+    const message = { content: [thinking, block("c1", malformed), block("c2", digitFirst), block("c3", "read_note")], role: "assistant" };
+    const renamed = [block("c1", kept[0]!), block("c2", kept[1]!), block("c3", readNote)];
+    expect(transcript(anthropicMessagesToolBridge, message, message)).toEqual([{ ...message, content: [thinking, ...renamed] }]);
+    expect(transcript(anthropicMessagesToolBridge, message)).toEqual([{ content: renamed, role: "assistant" }]);
+  });
+
+  it("renames Responses function_call items by call id and keeps reasoning items", () => {
+    const item = (callId: string, name: string) => ({ arguments: "{}", call_id: callId, id: `fc_${callId}`, name, type: "function_call" });
+    const reasoning = { encrypted_content: "private", id: "rs_1", summary: [], type: "reasoning" };
+    const output = [reasoning, item("c1", malformed), item("c2", digitFirst), item("c3", "read_note")];
+    const renamed = [item("c1", kept[0]!), item("c2", kept[1]!), item("c3", readNote)];
+    expect(transcript(openAIResponsesToolBridge, { output }, output)).toEqual([reasoning, ...renamed]);
+    expect(transcript(openAIResponsesToolBridge, { output })).toEqual(renamed);
   });
 });

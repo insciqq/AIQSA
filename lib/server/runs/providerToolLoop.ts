@@ -61,23 +61,26 @@ export type ToolRoundCall = "approval_gated" | "executed" | "repeat_blocked" | "
 
 /**
  * The rule for a round none of whose calls ran, shared by live execution and
- * recovery: it ends tool use, as the user's approval when one of its calls
- * waits for it. The run's first such round that holds a call of a tool its
- * round did not declare continues instead, once, so the model can correct the
- * name; every later one ends tool use too. Budgets still bound every round.
+ * recovery: it ends tool use. A call in it that waits for the user's approval
+ * makes that the reason first. Otherwise the run's first such round that holds
+ * a call of a tool its round did not declare continues instead, once, so the
+ * model can correct the name; every later one ends tool use too. Budgets still
+ * bound every round.
  */
 export function stalledToolRound(
   calls: readonly ToolRoundCall[],
   unknownToolCorrectionSpent: boolean
 ): Extract<ToolSynthesisReason, "approval_required" | "no_progress" | "unknown_tool"> | null {
   if (calls.length === 0 || calls.includes("executed")) return null;
+  if (calls.includes("approval_gated")) return "approval_required";
   const unknown = calls.includes("unknown_tool");
   if (unknown && !unknownToolCorrectionSpent) return null;
-  return calls.includes("approval_gated") ? "approval_required" : unknown ? "unknown_tool" : "no_progress";
+  return unknown ? "unknown_tool" : "no_progress";
 }
 
-/** Whether a round before `round` (from 1) held only calls that did not run,
- * one of an unknown tool: the run's one correction of a tool name is spent. */
+/** Whether a round before `round` (from 1) continued as the run's one
+ * correction of a tool name: none of its calls ran, none waits for approval,
+ * and one names an unknown tool. */
 export function unknownToolCorrectionSpent(
   calls: Iterable<Readonly<{ call: ToolRoundCall; round: number }>>,
   round: number
@@ -87,7 +90,8 @@ export function unknownToolCorrectionSpent(
     if (entry.round < 1 || entry.round >= round) continue;
     rounds.set(entry.round, [...rounds.get(entry.round) ?? [], entry.call]);
   }
-  return [...rounds.values()].some(classes => classes.includes("unknown_tool") && !classes.includes("executed"));
+  return [...rounds.values()].some(classes => classes.includes("unknown_tool") && !classes.includes("executed") &&
+    !classes.includes("approval_gated"));
 }
 
 export type ToolSynthesisDecision = Readonly<{

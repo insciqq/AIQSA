@@ -16,11 +16,12 @@ export const CHAT_PDF_ROUTE_UNAVAILABLE_CODE = "pdf_processing_configuration_inc
 export const CHAT_PDF_ROUTE_UNAVAILABLE_LABEL = "Can't read PDF";
 export const CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE = "No PDF-reading model is configured for this installation.";
 
-/** The reader's definitive answer exhausted its output budget (typically on
- * reasoning); the same binding would fail again, so the run is not retried. */
+/** The reader's definitive answer exhausted its output budget (on reasoning or
+ * on a very long page); the same binding would fail again, so the run is not
+ * retried. */
 export const CHAT_PDF_READER_OUTPUT_LIMIT = Object.freeze({
   code: "pdf_reader_output_limit",
-  message: "The PDF reader ran out of output tokens on this document. An administrator can lower the PDF reader's reasoning in System roles, then send the message again."
+  message: "The PDF reader ran out of output tokens on this document. An administrator can lower the PDF reader's reasoning or choose another PDF reader in System roles, then send the message again."
 } as const);
 
 /** The live error event names the code; a reloaded answer keeps only its message. */

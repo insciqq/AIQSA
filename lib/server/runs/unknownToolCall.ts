@@ -17,8 +17,9 @@ export const TOOL_CALL_UNKNOWN = "tool_call_unknown";
 export const UNKNOWN_TOOL_CALL_MESSAGE =
   "This tool does not exist in this step, so nothing was executed. Call one of the declared tools by its exact name.";
 
-/** What every provider accepts as a function name. */
-const VALID_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/u;
+/** What every provider accepts as a function name, including Gemini's rule
+ * that a name starts with a letter or an underscore. */
+const VALID_TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u;
 /** The name an unknown call keeps when the requested one is no valid tool
  * name. No first-party tool is called so, and MCP names are namespaced. */
 export const INVALID_TOOL_NAME = "invalid_tool_name";
@@ -33,11 +34,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * The name an unknown call keeps in its round's transcript, its row and its
  * result: the requested one when it is a valid tool name (undeclared, so it
- * names no declared tool), else `invalid_tool_name`. A blank name stays blank:
- * a call without a name is a protocol failure, not a correctable one.
+ * names no declared tool), else `invalid_tool_name`, a blank name included.
  */
 export function unknownToolCallName(requested: string): string {
-  return !requested.trim() || VALID_TOOL_NAME.test(requested) ? requested : INVALID_TOOL_NAME;
+  return VALID_TOOL_NAME.test(requested) ? requested : INVALID_TOOL_NAME;
 }
 
 /** The requested name as its result shows the model: letters, digits and
@@ -49,9 +49,9 @@ export function requestedToolNameExcerpt(requested: string): string {
     : characters.join("");
 }
 
-/** A bounded excerpt as `requestedToolNameExcerpt` produces one. */
+/** A bounded excerpt as `requestedToolNameExcerpt` produces one, empty for an empty name. */
 export function validRequestedToolName(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && [...value].length <= REQUESTED_NAME_CHARACTERS + 1 &&
+  return typeof value === "string" && [...value].length <= REQUESTED_NAME_CHARACTERS + 1 &&
     !/[\u0000-\u001f\u007f]/u.test(value);
 }
 

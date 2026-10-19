@@ -1862,9 +1862,16 @@ describe("Prisma tool-free synthesis and blocked repeats", () => {
     // A different decision for the same batch is a conflict.
     expect(await store.operations.persistToolLoopCallBatch({ ...batch, calls: batch.calls.map(({ unknownTool: _unknown, ...call }) => call) }))
       .toEqual({ kind: "conflict" });
+    // A call without a name keeps an empty excerpt.
+    const blank = harness();
+    blank.run.toolLoopState = toolLoopCheckpoint({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage }],
+      phase: "provider_running", providerContinuation: { providerResponseId: null, providerToolMessages: [] }, roundIndex: 1 });
+    expect(await blank.operations.persistToolLoopCallBatch({ ...batch, calls: [{ ...batch.calls[0]!, unknownTool: { requested: "" } }] }))
+      .toMatchObject({ kind: "persisted", calls: [{ state: "error", startedAt: null, result: { content: [{ value: { requested: "" } }] } }] });
     // An unknown call keeps its bounded name and has no route, binding or approval.
-    for (const call of [{ toolName: "mcp_notes</read>" }, { runtimeGenerationFingerprint: "a".repeat(64) }, { workspace: true as const },
-      { repeatBlocked: { repeatOf: [1, 2] as const } }, { unknownTool: { requested: "" } }]) {
+    for (const call of [{ toolName: "mcp_notes</read>" }, { toolName: "9read_note" }, { runtimeGenerationFingerprint: "a".repeat(64) },
+      { workspace: true as const }, { repeatBlocked: { repeatOf: [1, 2] as const } }, { unknownTool: { requested: "x".repeat(82) } },
+      { unknownTool: { requested: "read\u0000note" } }]) {
       const invalid = harness();
       invalid.run.toolLoopState = toolLoopCheckpoint({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 3, usage }],
         phase: "provider_running", providerContinuation: { providerResponseId: null, providerToolMessages: [] }, roundIndex: 3 });
