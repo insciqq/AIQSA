@@ -1,110 +1,91 @@
-# SIGN_IN
+---
+paths:
+  - "lib/server/auth/**"
+  - "app/login/**"
+  - "app/saml/**"
+  - "app/scim/**"
+  - "components/admin/signIn/**"
+  - "tests/auth-idp/**"
+---
+# Sign-in
 
-Owner: Security and backend maintainers
-Scope: External sign-in methods, their identities, IdP-managed groups and admin role, and how a sign-in ends.
+External sign-in methods (Google, Yandex, OpenID Connect, LDAP, SAML, trusted header), SCIM provisioning and two-factor sign-in. Code: `lib/server/auth/` with one subdirectory per method (`lib/server/auth/oidc/`, `lib/server/auth/ldap/`, `lib/server/auth/saml/`, `lib/server/auth/scim/`, `lib/server/auth/trustedHeader/`) and the settings in `lib/server/auth/signInSettings/`; admin cards in `components/admin/signIn/`; IdP interoperability tests in `tests/auth-idp/`.
 
-## Identities And Settlement
+## Identity settlement
 
-Every external sign-in (Google, Yandex, OIDC, LDAP, SAML, trusted header) goes through one settlement; methods add only transport and claim extraction, never their own linking, admission or role rules.
+- Every external method goes through one identity settlement (`lib/server/auth/externalIdentity.ts`) and one completion seam (`lib/server/auth/signInCompletion.ts`) inside the transaction that creates the session. A method adds only transport and claim extraction, never its own linking, admission or role rules.
+- The provider's subject, not the email, owns later logins. Identities other than Google and Yandex are bound to their configured source (issuer, directory, IdP entity, trusted proxy); a known subject from another source is refused as `source_changed` until an administrator unlinks it, so a reconfigured or second IdP cannot take over accounts.
+- Only an email the source verified, or one the operator explicitly trusts for that method (`trustUnverifiedEmail`), may link to an existing account, count for access rules or become a new account's address. Otherwise linking fails as `account_conflict` and a new account gets no email. Google links only after `email_verified`; Yandex keeps its historical email link; LDAP trusts its directory by default; SAML never asserts a verified email; the trusted-header proxy is the email authority.
+- One exception: an account SCIM provisioned, with no sign-in identity yet and not an administrator, links its first identity of the method chosen on the SCIM card by email even without email trust.
+- With allowed groups configured, a missing groups claim fails closed; an empty list admits anyone the source authenticated. Accounts are created only after admission, and refusals that depend only on claims are decided before any account is read.
 
-- A provider subject, not mutable email, owns later login. Identities other than Google and Yandex are bound to their configured source (issuer, directory, IdP entity, trusted proxy): a known subject from another source never matches and is refused as `source_changed` until an administrator unlinks it.
-- Only an email the source verified, or one the operator explicitly trusts for that method, links a new identity to an existing account by normalized email, counts for access rules or becomes a new account's address. Otherwise linking is `account_conflict`, whatever the account's state, and a new account gets no email, so a later verified sign-in or registration for that address never lands in it. Google links only after its `email_verified` check; Yandex keeps its historical email link.
-- Groups admission with allowed groups fails closed when the groups claim is missing; an empty list admits anyone the source authenticated. Accounts are created only after admission, when the method creates users. Outcomes are stable content-free codes, and refusals that depend only on the source's claims are decided before any account is read.
+## Settings and switches
 
-## Settings And Switches
+- Only administrators configure methods: a draft, a test of exactly that draft, then activation. Secrets are write-only envelopes under the encryption purpose `auth-sign-in:<method>`; a blank field keeps the stored value.
+- An active admin configuration wins. `AIQSA_GOOGLE_OAUTH_*` and `AIQSA_YANDEX_OAUTH_*` are a fallback only while no admin configuration of that provider is active; an enabled configuration that cannot be read keeps the method off instead of falling back. Read methods only through `resolveSignInMethods()`.
+- A new method registers its definition in `lib/server/auth/signInSettings/methods.ts` and its card in `components/admin/signIn/signInMethodCards.ts`. Its `identitySource` must return exactly the source its handler passes to settlement; activating a draft with a different source asks the administrator to confirm how many people stop signing in.
+- Password sign-in off refuses every local-password operation (`password_login_disabled`); the bootstrap token still works. Registration off refuses self-service requests; invitations still work.
+- Lockout guard: password sign-in can be turned off only from a session signed in with an external method that is active now, and while it is off no disable may end that session's method or the last active external method (an environment fallback counts). Both writers take one advisory policy lock. The bootstrap token is the break-glass sign-in.
 
-Only administrators configure sign-in methods, in the admin panel: a draft validated by the method's contract, a test of exactly that draft (for methods with a tester), then activation; disabling keeps the configuration. Secrets are write-only: one envelope per method under the encryption purpose `auth-sign-in:<method>`, never returned or rendered; a blank field keeps the stored value and only an explicit clear removes it. Outcomes, test results and health are content-free codes.
+## Groups and the admin role
 
-- An active admin configuration wins. The Google and Yandex environment variables are a fallback only while no admin configuration of that provider is active; an enabled configuration that cannot be read keeps its method off instead of falling back. Login pages and method handlers read methods only through `resolveSignInMethods()`, whose short process-local snapshot is dropped on every activation and disable (one replica).
-- A method task registers its server definition in `lib/server/auth/signInSettings/methods.ts` and its card in `components/admin/signIn/signInMethodCards.ts`. Its `identitySource` hook must return exactly the source its handler passes to settlement: activating a draft whose source differs from existing identities' needs the administrator's confirmation naming how many stop signing in, and the recovery is unlinking those identities on the user page.
-- Password sign-in off refuses every local-password operation (login, a pending password second-factor step, registration and its password step, password invitation acceptance, password reset request and completion) with `password_login_disabled` and hides the forms; the bootstrap token login is unaffected. A directory sign-in sharing the password form branches off before that refusal. Registration off refuses self-service access requests; invitations still work.
-- Lockout guard: password sign-in can be switched off only from a session whose sign-in method is an external method that is active right now, and while it is off no disable may end that session's own method or the last active external method (an environment fallback counts); both refusals are `password_login_lockout_risk`. Both writers take one policy lock (advisory, so it holds before the policy row exists) before the method row. The bootstrap token stays the break-glass sign-in.
+- Every membership writer (sign-in sync, SCIM, the administrator editor) goes through `lib/server/auth/groupMembership.ts` and shares its MCP runtime side effects. Group sync changes only memberships of active groups that carry an external name for that source. It never creates groups (SCIM is the exception) and a missing claim changes nothing.
+- Such memberships are managed: administrators cannot change them by hand (`group_membership_managed`), because the next sign-in or SCIM push would undo it.
+- A source grants admin to members of its admin groups and revokes it only from admins it promoted itself. Manual admins are never demoted by a source, and the last active admin keeps the role (`last_admin_kept`).
 
-## IdP-Managed Groups And Admin Role
+## Refused sign-ins
 
-- Group sync changes only memberships of active groups that carry an external name for that source. It never creates groups (SCIM is the explicit exception), never touches other groups, and a missing claim changes nothing. Every membership writer shares the administrator path's MCP runtime side effects.
-- A membership is managed while its group has an external name for a source the user has an identity of, or SCIM pushes the group. Administrators cannot change it manually (`group_membership_managed`): the next sign-in or push would undo it.
-- A source grants admin to members of its admin groups and revokes it only from admins it promoted itself; manual admins are never demoted by a source, a manual role change takes the role over, and the last active admin keeps the role with a `last_admin_kept` warning.
+Administrators see refused sign-ins on the Users page and can invite those people, because content-free telemetry cannot say who they were (operator decision 2026-10-18). A row names an email only when the source verified or the method trusts it, and names a password or second-factor refusal only by an existing account's id. An address typed for no account is never stored, so bots and typos cannot fill the journal, and the form never waits for the write, so known and unknown addresses answer alike. Never store a typed email, password, code, token, IdP payload or IP address.
 
-## Ending A Sign-In
+## Two-factor sign-in
 
-Every sign-in that creates a session decides it through one completion seam in the transaction that creates the session (for password and invite sign-in, the one that re-checks the credential), and each session records its sign-in method.
-
-## Refused Sign-Ins
-
-Administrators see who was refused at sign-in on the Users page and can invite them (operator decision 2026-10-18), because content-free telemetry cannot say who it was. One row per UTC day, method, reason and subject counts the attempts with their first and last time.
-
-- An external method's settlement refusal names the email only when the source verified it or the method trusts its emails; otherwise the row names nobody. LDAP is recorded only after the directory authenticated the name.
-- Password and second-factor refusals name only an existing account, by id. An address typed for no account is never stored, so bots and typos cannot fill the journal, and the form never waits for the write, so known and unknown addresses still answer alike.
-- Never a typed email, password, code, token, IdP payload or IP address. A day itemizes at most 500 subjects; later attempts count in a per-method, per-reason row that names nobody.
-- The application prunes rows 30 days after their last attempt; deleting an account removes the rows naming it or its emails. Invite is offered only for an email no account has.
-
-## Two-Factor Sign-In
-
-TOTP is optional per user and covers only the sign-ins AIQSA verifies itself: password and LDAP. Google, Yandex, OIDC, SAML and the trusted header rely on the identity provider's MFA; accounts that only use one see no setting. Invite acceptance needs no code, and the bootstrap token is the break-glass path that never asks for one.
-
-- A verified first factor of a user with a confirmed factor creates no session, only a short-lived signed challenge bound to the password hash (or LDAP identity) and the factor state. The second step re-checks both, the account and the code in the transaction that issues the session; a code counts once per step, a recovery code once, and any success makes earlier challenges stale. Code guesses are limited per source and per account.
-- A new secret replaces the active one only after it is confirmed, and starting that replacement, new recovery codes and turning TOTP off each need a current code or a recovery code. Password reset by email never touches the factor. An administrator reset removes the factor and its codes and ends every session of the user; it is refused for the administrator's own account.
-- Secrets live in purpose-bound envelopes under the encryption key, and recovery codes only as hashes keyed from it, so losing that key blocks password and LDAP sign-in of users with TOTP until an administrator resets their factor.
+- TOTP covers only sign-ins AIQSA verifies itself: password and LDAP. Other methods rely on the identity provider's MFA; invite acceptance and the bootstrap token never ask for a code.
+- A verified first factor creates no session, only a short-lived challenge bound to the credential and factor state; the second step re-checks everything in the transaction that issues the session.
+- Changing or disabling the factor needs a current code or recovery code; email password reset never touches it. An administrator reset removes it and ends the user's sessions, and is refused for the administrator's own account.
+- Factor secrets and recovery-code hashes depend on `AIQSA_ENCRYPTION_KEY`; losing the key blocks password and LDAP sign-in for TOTP users until an administrator resets their factor.
 
 ## OpenID Connect
 
-One OIDC connection rides the shared OAuth start and callback (signed flow cookie, PKCE S256, state, nonce, rate limits). Its identities are bound to the configured issuer.
+- Identities are bound to the configured issuer, which discovery must name exactly. Issuers that admit any tenant (`{tenantid}`, Entra `common`, `organizations`, `consumers`) are refused, because any tenant's users could sign in.
+- ID tokens count only with an asymmetric signature from the issuer's keys, never `none` or HS*, and exact issuer, audience, authorized party, nonce and time checks (`lib/server/auth/oidc/oidcClient.ts`).
+- A namespaced groups claim (Auth0 drops a custom `groups` claim) is read by its full name before the path is split at dots; an Entra overage pointer counts as a missing claim.
+- Codes and tokens live only in the exchanging request. The one stored token: while IdP logout is on, a session keeps its ID token as an envelope bound to that session, cleared on revocation and used only as `id_token_hint`. Logout revokes the local session before redirecting to the IdP.
+- IdP requests follow the personal MCP address policy with the LAN allowed: no metadata, link-local or AIQSA service addresses, plain HTTP only to private addresses, no redirects.
 
-- Discovery must name that issuer exactly and offer the code flow and, when it lists challenge methods, `S256`. Issuers that admit any tenant (`{tenantid}`, Entra `common`, `organizations`, `consumers`) are refused by the tester and at sign-in. The tester also probes the client credentials with an unknown code.
-- An id token counts only when a key from the issuer's JWKS signed it with RS256/384/512, PS256 or ES256/384 (never `none` or HS*), with exact `iss`, `aud` containing the client, `azp` equal to the client when present or when there are several audiences, the flow's nonce, and `exp`/`iat` within 60 s. Userinfo must name the same `sub`.
-- `email_verified` counts only as `true` or `"true"`. Groups at the claim path are strings; a claim whose whole name equals the path (a namespaced claim such as Auth0's `https://example.com/groups`, since Auth0 drops a custom `groups` claim) is read before the path is split at dots; over 1 000 values, a value over 512 characters or an Entra overage pointer mean the claim is missing.
-- Codes and tokens live only in the exchanging request: never logged, returned or recorded in health, and never stored except the ID token below.
-- A sign-in made while IdP logout is on keeps its ID token (up to 6 KiB, since the hint travels in the logout URL) with its session, as an envelope under the encryption key bound to that session's id, issuer and client; revoking the session clears it in the database, whichever writer revokes. Its only use is `id_token_hint`, and only while IdP logout is on.
-- IdP logout revokes the local session first, then sends the browser to the end-session endpoint with `client_id`, `post_logout_redirect_uri=<base>/login` and the session's ID token as `id_token_hint` (Okta requires it; Keycloak and Auth0 then skip their confirmation). A session without one, or whose envelope no longer opens, logs out without the hint. Auto-redirect skips `/login?local=1` (the administrator's way back), shown outcomes, expired sessions and invitation, reset or verification links.
-- IdP requests follow the personal MCP address policy with the LAN allowed: metadata, link-local and AIQSA's own services stay unreachable, plain HTTP stays private, and redirects are refused.
+## Trusted header
 
-## Trusted Header
-
-Sign-in from an authenticating reverse proxy's identity headers exists only in trusted-proxy client identity mode (`AIQSA_TRUST_PROXY_HEADERS` with a loopback bind), which only the environment sets; the admin panel shows the mode and cannot enable it. In any other mode the method's test fails, activation is refused and the sign-in route never reads the headers, checked on every request.
-
-- The proxy must authenticate every request it forwards and overwrite any identity header the client sent. Any path to AIQSA around the proxy lets anyone sign in as anyone.
-- The proxy is the authority for the email: it counts as verified and is the identity's subject under the source `trusted-header`, so a changed address is a new identity, linked by email under the settlement rules.
-- Header values are bounded before use (email 320 and name 160 characters, groups 4 KiB and 200 values); an oversized or malformed header refuses the sign-in, and a missing email header says the proxy provided no identity.
-- Without a session, `/login` goes straight to the sign-in route unless `?local=1` or an outcome keeps it on screen.
-- A sign-in arriving with a session of another account revokes that session first, whatever its outcome. Nothing re-checks the header after sign-in. Signing out lands on `/login?local=1`, since a plain `/login` would sign the browser straight back in while the proxy still vouches; on shared browsers, sign out at the proxy as well.
-- The route is a session-creating GET. A cross-site request still carries only the identity the proxy sets for that browser, so it can sign the browser's own user in, never into an account the requester picks, and it returns only to an internal path.
+- This method exists only in trusted-proxy mode (`AIQSA_TRUST_PROXY_HEADERS` with a loopback bind), which only the environment can set. In any other mode the route never reads the headers, checked on every request.
+- The proxy must authenticate every forwarded request and overwrite client-sent identity headers; any path to AIQSA around the proxy lets anyone sign in as anyone. Nothing re-checks the header after sign-in.
+- Signing out lands on `/login?local=1`, because a plain `/login` would sign the browser straight back in while the proxy still vouches.
+- The route is a session-creating GET. That is acceptable because a cross-site request carries only the identity the proxy sets for that browser and returns only to an internal path.
 
 ## LDAP
 
-LDAP shares the login form. While password sign-in is on, an email with a usable local password keeps it (break-glass accounts); every other name, and every name while local passwords are off, goes to the directory.
-
-- An empty or whitespace password is refused before any network I/O: directories report a DN bind without a password as a successful unauthenticated bind. A bind DN without its password is refused too; without a bind DN the search is anonymous.
-- The trimmed, bounded name is RFC 4515-escaped into the filter; the search must find exactly one entry, and only the DN it returned is bound. Groups come from a `memberOf`-style attribute in DN or first-CN form.
-- An unknown name, an ambiguous search and a wrong password answer one `unauthorized` after one response floor, which a refused local password on the form also waits for; attempts share the password login's budgets. An unreachable or misconfigured directory answers `ldap_unavailable` and records its content-free code as health.
-- TLS verifies against the pasted CA, then the only anchor, or the system roots; with verification off, which the card warns about, the host name is still checked.
-- The directory owns its email addresses, so LDAP trusts them for linking by default; the card says so.
+- LDAP shares the login form. While password sign-in is on, an email with a usable local password keeps it (break-glass accounts); everything else goes to the directory.
+- Empty passwords are refused before any network I/O, because directories treat a DN bind without a password as a successful unauthenticated bind.
+- The name is RFC 4515-escaped, the search must find exactly one entry, and only that DN is bound. Unknown names, ambiguous searches and wrong passwords give the same answer after the same delay.
 - Identities are bound to the directory host and user search base, so scheme and port changes keep them.
 
 ## SAML
 
-SAML is SP-initiated: unsigned AuthnRequests over HTTP-Redirect, responses over HTTP-POST. IdP-initiated SSO, Single Logout and encrypted assertions are unsupported.
+- SP-initiated only. IdP-initiated SSO, Single Logout and encrypted assertions are unsupported.
+- The ACS (`/saml/acs`) lives outside `/api` because the IdP's cross-site POST carries no `Lax` cookies and would fail the `/api` origin guard. XML is bounded before canonicalization and DTDs are refused.
+- Pending requests live in process memory (single replica). A response must answer a pending request, so unsolicited assertions are refused, and only the same-site completion step carrying the browser's cookie issues the session, so a replayed response signs nobody in.
+- Signatures verify only against pinned certificates, never `KeyInfo`; SHA-1 needs `allowSha1`; HMAC is refused.
+- IdP metadata is fetched only when an administrator imports or tests a metadata URL, through the pinned transport with private networks allowed and AIQSA services and cloud metadata refused. Sign-in itself makes no server request to the IdP.
 
-- The ACS (`/saml/acs`) is public and outside `/api`: the IdP's cross-site form POST carries no `Lax` cookies and would fail the `/api` origin guard. Its body is bounded at 256 KiB before parsing, documents deeper than 64 levels or larger than 20 000 nodes are refused before any canonicalization, and each client is rate-limited.
-- Each AuthnRequest waits in process memory for 10 minutes with its destination and configuration version (one replica; a restart ends sign-ins in flight), bound to the initiating browser by a `Lax` cookie carrying a nonce under an HMAC of the session secret. A response must name a pending request, consumed before validation, and its signed bearer confirmation must answer that request: a signed unsolicited assertion is refused inside any response. The ACS keeps the validated identity for two minutes; only the same-site completion step that carries the browser's cookie settles it and issues the session, so a response replayed into another browser signs nobody in. `RelayState` is an HMAC of the request id and expiry; missing, altered or naming another request, the sign-in continues at `/`.
-- Signatures verify only against the pinned certificates, never `KeyInfo`, on the assertion, the response or both as configured. SHA-1 needs `allowSha1`; HMAC and unknown algorithms are refused. Destination and Recipient must be the ACS URL, Audience the SP entity id, Issuer the IdP entity id; timestamps allow 60 s of skew and assertion ids stay remembered until they expire. XML with a DTD is refused before parsing.
-- Attributes come only from the validated assertion, each with the values of all its `Attribute` elements (Keycloak sends one element per group). The subject is the NameID (transient refused) or the configured attribute. SAML asserts no verified email, so linking by email needs `trustUnverifiedEmail`.
+## SCIM
 
-## SCIM Provisioning
-
-SCIM 2.0 under `/scim/v2` is an admin-level integration: its client sees every user and active group by AIQSA id, and `DELETE` never erases. Bearer tokens are shown once and stored as hashes; after a bounded body read, every token failure or SCIM being off gets the same 401, rate-limited per source. `userName` is the account email.
-
-- A user or group a SCIM write touches becomes SCIM-managed (`scimExternalId`: the client's externalId, else its own id); SCIM never changes the email of an administrator or an account with a local password, and its groups count as managed only while SCIM is enabled. POST links an unmanaged account with the same email, or group with the same name; a linked group keeps its grants and takes the pushed members. Creating groups is SCIM's exception to never auto-creating them; a deleted group is archived under a name that frees the original. Full access links only by its exact name and is never renamed or archived.
-- Memberships change through the shared membership service, at most 1 000 per request, serializable against the administrators' editor.
-- Deactivation revokes sessions and inbound MCP grants at once and records `scimDeactivatedAt`, with `disableUser`'s guards: the last administrator who can still sign in stays, and a sole direct Project Owner stays `active` (409, shown to administrators) until ownership moves and the IdP retries; meanwhile only the bootstrap token signs in, connected apps get no consent, code, refresh or token, and scheduled tasks pause. Reactivation re-enables only accounts SCIM disabled; an administrator's disable or denial wins (409).
-- The one exception to email trust: an account SCIM provisioned with no sign-in identity yet, not an administrator, links its first identity of the method chosen on the SCIM card by email even when that method does not trust unverified emails.
+- `/scim/v2` is an admin-level integration outside `/api`. Its client sees every user and active group and changes accounts and memberships only through the commands the administrator paths use. `DELETE` never erases. Every token failure, and SCIM being off, gets the same 401.
+- SCIM never changes the email of an administrator or an account with a local password. It is the only path that creates groups; Full access links only by its exact name and is never renamed or archived.
+- Deactivation revokes sessions and inbound MCP grants at once, under `disableUser`'s guards: the last administrator who can sign in stays, and a sole direct Project Owner stays active (409) until ownership moves. Reactivation re-enables only accounts SCIM disabled; an administrator's disable wins.
 
 ## Dependencies
 
-| Dependency | Boundary/rationale |
+| Dependency | Why |
 | --- | --- |
-| `uqr` | Zero-dependency QR encoder that turns the provisioning URI into module data in the browser, rendered as a React SVG path without markup injection; the URI never leaves the account settings page. |
-| `ldapts` | MIT LDAP client with one dependency (`ldapjs` is decommissioned), server-only. It gets a socket AIQSA already opened to a policy-checked address and verified, never reconnects, and every operation is bounded; its error messages, which can echo filters, are never logged or returned. |
-| `@node-saml/node-saml` | Server-only SAML response validation, AuthnRequest and SP metadata. Floor 5.1.0 (CVE-2025-54419: assertion read from unsigned content). AIQSA adds the request binding, Destination, Recipient, Issuer, status, algorithm and replay checks it lacks. |
-| `xml-crypto` | The signature verifier node-saml uses, pinned directly and by override; floor 6.1.2 (signature bypasses fixed in 6.0.1). HMAC stays off; tests sign fixtures with it. |
-| `@xmldom/xmldom` | Parses untrusted SAML responses and IdP metadata, also inside node-saml and xml-crypto. Override floor 0.8.15 for the parser denial-of-service and well-formedness advisories up to 0.8.14. |
+| `uqr` | Zero-dependency QR encoder; the TOTP provisioning URI is rendered as a React SVG path and never leaves the page. |
+| `ldapts` | Server-only LDAP client (`ldapjs` is decommissioned). It gets a socket AIQSA opened to a policy-checked address. Its errors can echo filters, so they are never logged or returned. |
+| `@node-saml/node-saml` | Floor 5.1.0 for CVE-2025-54419. AIQSA adds the request binding, destination, recipient, issuer, algorithm and replay checks it lacks. |
+| `xml-crypto` | node-saml's signature verifier, pinned directly and by override; floor 6.1.2 for signature bypasses. |
+| `@xmldom/xmldom` | Parses untrusted SAML XML, also inside node-saml and xml-crypto; override floor 0.8.15 for parser advisories. |

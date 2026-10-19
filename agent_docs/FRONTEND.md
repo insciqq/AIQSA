@@ -1,66 +1,62 @@
-# FRONTEND
+---
+paths:
+  - "components/**"
+  - "features/**"
+  - "app/**/*.tsx"
+  - "styles/**"
+---
+# Frontend
 
-Owns presentation and interaction rules.
+The browser UI: product surfaces in `features/`, shared pieces in `components/`, pages under `app/`, tokens in `styles/tokens-v2.css`, themes in `components/app-shell/theme.ts`.
 
-## State And Trust
+## What users see
 
-- Keep one conversation-first presentation and one owner per resource. Server pages authorize and send least-data props; views consume decoded client-safe contracts. Never mirror server authority or the same async resource in component-local state.
-- Key drafts, uploads, runs, and async work by their resource/chat/session. Capture the key at dispatch; abort or ignore stale results after navigation. Background refresh preserves drafts, committed mutations, focus, selection, and scroll ownership. Malformed responses fail visibly instead of becoming guessed state.
-- Server truth owns identity, entitlement, catalogs, branches, lifecycle and persisted preferences. Browser state owns overlays, focus, drafts, in-flight handles, theme and bounded account/resource-scoped disclosure choices.
-- Loading failure is not an empty result. Pending, unavailable, disabled, revoked, degraded, cancelled, partial, and complete remain distinct except Memory. Time and animation never invent progress, readiness, evidence, cost or completion.
+- Answers show content, sources, generated files, factual progress and actionable failures. Inspecting internal execution is not a product goal: no diagnostic panels, raw payloads, retrieval scores, event histories, private identifiers or receipts.
+- Each answer has one process disclosure above the body (thinking, friendly tool names, outcomes, duration), actions below it, then sources and downloads.
+- Counts must be true. Search ×N counts successful calls per engine; failures show separately. Memory and Past chats counts describe what entered the context, not proven influence.
+- Users never see Memory failures, limits or unavailability; those are for the model and administrators.
+- Only the person who started a run may expand its bounded, redacted MCP request and response details. No other raw payload is shown.
+- Per-answer usage is never shown. Users see their own monthly allowance in Settings and a composer warning near the limit, never installation amounts.
+- Time and animation never invent progress, readiness, cost or completion. A loading failure is not an empty result, and a Knowledge retrieval failure is never shown as "the documents contain no answer".
 
-## Conversation And Workspace
+## State
 
-Chat/composer stay primary across layouts. Header selects models/Assistants; composer holds tools. Assistants are opt-in, including empty chats. Branches/previews are temporary overlays. Artifact previews open by user action in closable side panels or compact full-screen sheets, preserving focus, draft and scroll across versions. Chats have URLs (`/c/<id>`, `/p/<id>/c/<id>`); `/` and `/assistant/<id>` open new chats, overlays/drafts/pending folders stay browser state, unavailable targets fall back privacy-neutrally to `/`; shell-leaving flows return to their origin chat.
+- One state owner per resource. Server pages authorize and pass the least data needed; views consume decoded contracts from `lib/contracts/`. Never mirror server authority or the same async resource in component-local state.
+- Server truth owns identity, entitlement, catalogs, branches, lifecycle and saved preferences. Browser state owns overlays, focus, drafts, in-flight handles and theme.
+- Key drafts, uploads and runs by their chat or resource, capture the key at dispatch, and drop stale results after navigation. Background refresh keeps drafts, focus, selection and scroll. A malformed response fails visibly instead of becoming guessed state.
+- Browser drafts are keyed by account and session; temporary-chat drafts never persist, and sign-out clears the account's drafts. Browser storage grants no authority; attachments and controls are never restored from it.
+- Components never import Prisma, server repositories, secrets, route handlers or provider transports.
 
-Composer preserves one keyed draft and explicit model, Assistant, tools and run controls without silent substitution. Assistant-governed controls show provenance: fixed rows lock (fixed models still open parameters); unavailable adjustable values visibly fall back to the user's or Project's default; others change per chat with reset. MCP retry never switches Auto to Load all implicitly. Editing a sent message uses its own inline draft, keeps sent attachments and the composer draft, and visibly branches. Keyboard submission respects IME and multiline entry.
+## Conversation
 
-Bounded, unencrypted browser drafts use stable account/session IDs; temporary drafts never persist. Sign-out clears account drafts; session expiry preserves recovery. Storage grants no authority; attachments/controls never restore.
+- Chat and composer stay primary at every width. The header selects models and Assistants; the composer holds tools. Assistants are opt-in.
+- URLs: `/c/<chatId>` and `/p/<projectId>/c/<chatId>` address chats; `/` and `/assistant/<assistantId>` open new ones. An unavailable target falls back to `/` without revealing anything.
+- The composer never substitutes the chosen model, Assistant, tools or controls. Assistant-governed controls show where a value comes from: fixed rows are locked (a fixed model still opens its parameters), an unavailable adjustable value visibly falls back to the user's or Project's default, and an unavailable fixed row makes the Assistant unavailable instead of falling back (`lib/server/assistants/rowResolution.ts`). Changing a chat's controls never changes personal defaults.
+- Skills and MCP modes (Auto, Load all, Off) are independent of pins. An Assistant's Skill links stay read-only in chat and the user pins on top of them. Enabling a Skill or an MCP server is a Settings or Studio action; the composer only discloses what the modes act on.
+- Editing a sent message creates a visible branch and keeps the composer draft.
+- Upload integrity gates Send; PDF preparation does not. An admitted message appears at once and its draft clears. Server-confirmed final text releases Send even while Workspace cleanup continues, and late events stay with their own answer.
+- A reviewed answer is one block: latest version, a quiet status line, collapsed history. Server-written review turns never render as user speech. Automatic review is a per-chat choice in the model picker, shown on the header model chip, never as a composer chip.
+- Workspace is a persistent chat toggle. Controls wrap whole; no More menu or horizontal scroll hides a capability. Stop keeps files, branching never rolls them back, and Reset keeps messages and outputs. Cards show relative paths, never runtime identities. A continuation whose Workspace copy failed opens empty and never claims the files survived.
+- Agent is a per-turn choice in personal chats. When it cannot run, explain why and block the send without changing the user's selections.
+- Artifact previews open only by user action. Historical answers keep pointing at their own artifact versions and files (`sandbox:` links), and thumbnails never run scripts.
+- Project surfaces use current Project catalogs and never fall back to personal resources. They show durable activity, never online presence, and Project chats never enter personal history or Memory.
 
-Continuation preserves controls/Workspace; copy drafts and settled attachments into its empty composer. Pending uploads/session work retain ownership. Focus without scrolling. Server model revalidation retains the source default for absent/unavailable selections. New chats use personal defaults; chat Search edits and sending never change them.
+## Management surfaces
 
-Upload integrity/ownership gates Send; PDF preparation does not. Successful admission immediately shows the committed message, clears its draft and displays truthful preparation with Stop/retry in the conversation. Counts describe accepted work. Informational PDF notices neither require acknowledgement nor disable Send.
+- Studio holds Assistants, Instructions, Skills, Knowledge, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings holds appearance, account, personal MCP connections, connected apps and personal data. In the Control Center, Providers holds deployments, Defaults & roles holds assignments, and Knowledge & Memory holds health and limits.
+- Destructive actions name the target and the consequences. Secret fields explain keep or replace and never echo the value.
+- Knowledge pages show documents, readiness, access and product actions; profiles, chunks, scores and raw failures stay off ordinary surfaces. Activating a Knowledge profile explicitly acknowledges external processing and reindexing.
+- Memory consent for connected apps covers facts, not chat history. Viewing MCP servers never wakes an idle one, and nothing re-enables a server the user deliberately disabled except completing its setup.
 
-Server-confirmed final text releases Send during Workspace cleanup. Preparation belongs to the next accepted message; finished answers never appear still generating. Late events stay with their original answer, never overwriting the next request or draft. Branch/environment mutations respect execution ownership.
+## Interaction and visual intent
 
-Answers show one process disclosure above the body, actions below, available Sources and downloads. Process shows thinking, friendly tool/server names, outcomes, rounds and duration. Search ×N counts successful logical calls per engine; failures stay separate and transport retries are excluded. Bounded Memory/Past chats counts describe context, not proven influence. Memory search shows searching, empty and stopped outcomes; users never see Memory failures, limits, unavailability or load errors, kept for models and admins. Initiators may expand bounded, redacted MCP requests/responses on demand. Other raw requests/tool payloads, retrieval scores, event histories, private identifiers and per-answer usage remain unavailable. Compaction exposes server stage/outcome; settlement beats late progress. Announce phases and settled compaction outcomes. Working-context reductions are estimates, separate from provider usage.
+- No page-wide horizontal overflow; code, tables and math wrap or scroll locally. Respect safe areas and software keyboards; the composer never covers the last answer.
+- Primary actions work without hover or precise dragging. Modals trap focus, handle Escape with nested confirmations first, and restore focus. Keyboard submission respects IME composition. WCAG certification is deferred, but labels, keyboard and touch access, focus safety and reduced motion are required.
+- Streaming never animates layout. Busy controls keep their labels and reject duplicate submission.
+- A quiet reading workspace. Cyan is the control accent; violet marks answer activity and is never used for controls or navigation. No decorative cards around prose, rows of badges, idle animation or dashboards.
+- Use semantic tokens from `styles/tokens-v2.css`, never raw colors or component-local theme recipes. Prose uses bundled Golos Text, code JetBrains Mono. Themes are `system`, `light` and `dark`; a cookie decides the first paint.
+- Segmented controls are for two or three fixed choices; catalogs use a select.
 
-Workspace cards expose bounded output/relative paths, never runtime identities. Hide successful empty settlement; show work, files and unresolved outcomes. Process/command details start collapsed, including errors/Stop; preserve disclosure choices and historical failures. Warnings describe unresolved answer/cleanup/export failures. Authenticated settled downloads survive runtime loss/refresh; `sandbox:` links resolve that answer’s exact files. Pending/failed exports never promise exhausted retries. Polling stops after settlement, navigation or access loss.
+## Verification
 
-Each answer shows artifacts' latest successful versions once, in first-appearance order. Historical cards and explicit selections never follow global current versions. Code previews stay bounded and inert until READY; thumbnails never execute scripts. Runtime repairs enter drafts through private tab state.
-
-A reviewed answer is one block: its latest version, a quiet status line of the review's progress or outcome, and a collapsed history of earlier versions, reviews and decisions. Versions are answer content, not a receipt row; the review's server-written turns never render as user speech, and step models appear by display name. Automatic review is a per-chat choice in the model picker, shown as a glyph in the header model chip, never a composer chip; while it runs the composer waits with Stop, and only its end notifies.
-
-Workspace is a persistent chat toggle projecting availability, session and read-only internet policy. Its chip and other controls wrap whole; no More menu or horizontal scrolling hides capabilities. Only enabled Workspace admits opaque uploads. Stop preserves files; branching/regeneration never rolls them back. Reset confirms filesystem loss while preserving messages, attachments and outputs. Download workspace is a separate non-LLM action. Saved-file reuse is explicit; matching names imply no version chain.
-A continuation carrying Workspace projects its seed as pending, restored, skipped (source disk gone) or failed with a bounded reason. Failed/skipped copies open an empty Workspace, never claiming files survived; the private seed never appears as an attachment or staged input.
-
-Agent is per-turn in personal chats, available mid-conversation with Workspace, administrator-enabled Internet and an eligible model. Explain restrictions; block incompatible sends without changing selections. Reuse chat activity/files; lifetime follows Workspace.
-
-Project surfaces use current Project catalogs; access loss clears stale selection and synchronization without personal fallbacks. Shared refresh preserves local edits and shows only durable activity, never online presence. Internal links never create public shares. Project chats never enter personal history/Memory.
-
-## Management
-
-Studio owns model behavior and resources: Assistants, Instructions, Skills, Knowledge, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings owns appearance, account, personal MCP connections, external-client permissions and personal data. Users see their own monthly allowance in account Settings and a composer warning near a limit, never installation amounts; per-answer usage stays unavailable. Lists/editors belong on pages or sheets.
-
-Control Center resources have URLs; add/edit sheets own focus and dirty-discard confirmation. Ordinary navigation has no global save gate. Errors preserve fields; independent saves preserve drafts. Destructive actions name targets/consequences. Secret fields explain preserve/replace without echoing values; third-party secret inputs are masked text.
-
-Configuration owners: Providers for deployments, Defaults & roles for assignments, Knowledge & Memory for health/limits. Knowledge profile activation/rollback explicitly acknowledges external processing and reindexing; accepted work retains its frozen profile. Reprocess never asks ordinary users to choose infrastructure.
-
-Knowledge management shows current documents, readiness, access and product actions. Usable artifacts remain Ready; Needs attention requires executable recovery. Otherwise unavailable remains unavailable. Keep technical profiles, generations, chunks, scores, raw failures, and processing internals out of ordinary surfaces; support references are opaque. Separate Base membership changes from canonical document deletion, explain multi-membership restore consequences, and show permanent deletion as durably pending. Retrieval failure never becomes “the documents contain no answer.” Authenticated citations may expose exact source/locator/excerpt context, without a diagnostic inspector.
-
-Auto/Off is independent of pins; personal Enabled preferences exclude Projects/Assistants. Assistant Skill links stay read-only in chat; users pin on top. Import needs no review gate. Show limits; omit revision/bundle editors. Archive is reversible; Delete lists consequences.
-
-Connected apps owns external-client permissions; consent and revocation name the resource. Memory consent covers fact read/add/change/delete, excluding chat history; revocation preserves facts. MCP enablement covers chats and authorized Hub clients; rows hide session warmth; viewing never wakes idle servers. Completing setup, including Connect to enable, enables disabled servers; admin Test & Save validates first, and no replacement re-enables intentional disablement.
-
-## Interaction And Visual Intent
-
-- Preserve one navigation/state tree across widths. Respect safe areas, software keyboards, deliberate scroll ownership, and a composer that never covers the last answer. No page-wide horizontal overflow: code, tables, math, and exceptional grids wrap or own local scrollers.
-- Primary actions remain reachable without hover or precise dragging. Modals isolate the background, contain Tab, own Escape/nested-confirmation priority, and restore valid focus. Responsive transitions move hidden focus to a reachable control without losing drafts or selection.
-- WCAG certification is deferred; semantic labels, keyboard entry, touch access, readable overflow, focus safety, and reduced motion remain required.
-- Keep a quiet reading workspace. Cyan is the control accent; violet marks answer activity, not controls/navigation. Hierarchy comes from placement, typography, and spacing. Avoid decorative cards around prose, badge carpets, idle animation, and diagnostic dashboards.
-- Consume semantic tokens from `styles/tokens-v2.css`, not raw colors or local theme recipes. Use bundled Golos Text for prose and JetBrains Mono for code. Themes remain `system`, `light`, and `dark`; cookie state owns first paint, recognized LocalStorage may repair after hydration, and System follows the OS.
-- Selection gives ordinary text a readable primary foreground and code a softer highlight preserving syntax colors. Interactive chrome and identity tiles stay unselectable; copyable content and fields opt in. The code editor renders one text layer: transparent input glyphs over syntax in ordinary themes, native selection colors in forced colors. Unsupported native selection styling needs no workaround.
-- Segmented controls serve two or three fixed choices; catalogs use a select.
-- Busy controls retain labels and reject duplicate submission. Errors remain associated with fields; empty/error states explain the next valid action. Motion communicates state; streaming never animates layout.
-
-For material UI changes, inspect affected Chat/Control Center states, themes, long content, narrow/short viewports and focus/breakpoint transitions per [Testing](TESTING.md). Assert behavior/geometry, not screenshots or component structure.
+Use focused Testing Library tests for observable behavior and Playwright only for a real browser, server or viewport boundary (`agent_docs/TESTING.md`). Assert behavior and geometry, not screenshots or component structure. For a material UI change, check affected states, both themes, long content, narrow and short viewports, and focus across breakpoints.
