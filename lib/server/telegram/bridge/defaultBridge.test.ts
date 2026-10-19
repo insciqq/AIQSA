@@ -27,7 +27,7 @@ describe("default chat bridge", () => {
     expect(startTelegramChatBridge(first)).toBe(bridge);
     expect(telegramChatBridge()).toBe(bridge);
     const registry = telegramHandlerRegistry();
-    expect(registry.messageHandlers()).toHaveLength(1);
+    expect(registry.messageHandlers()).toHaveLength(2);
     expect(registry.stopHandlers()).toHaveLength(1);
     for (const kind of ["select_chat", "select_assistant", "select_model", "model_page", "toggle_search", "toggle_workspace",
       "toggle_agent", "open_settings", "stop_run"] as const) expect(registry.callbackHandler(kind), kind).toBeTruthy();
@@ -36,7 +36,7 @@ describe("default chat bridge", () => {
 
     const rebuilt = startTelegramChatBridge(defaults());
     expect(rebuilt).not.toBe(bridge);
-    expect(registry.messageHandlers()).toHaveLength(1);
+    expect(registry.messageHandlers()).toHaveLength(2);
     expect(registry.stopHandlers()).toHaveLength(1);
   });
 });
