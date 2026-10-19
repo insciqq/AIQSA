@@ -164,6 +164,15 @@ describe("documentation sanity check", () => {
       expect(checkDocs(root)).toEqual([]);
     });
 
+    it("matches globs against committed migrations", () => {
+      const root = fixture();
+      write(root, "prisma/migrations/20260101000000_init/migration.sql", "SELECT 1;\n");
+      write(root, "agent_docs/PERSISTENCE.md", scoped("prisma/migrations/**"));
+      link(root, "persistence.md", "../../agent_docs/PERSISTENCE.md");
+
+      expect(checkDocs(root)).toEqual([]);
+    });
+
     it("requires a rule symlink for a document with paths frontmatter", () => {
       const root = fixture();
       write(root, "lib/server/memory/store.ts", "export {};\n");
@@ -200,19 +209,28 @@ describe("documentation sanity check", () => {
 
   it("rejects a cited repository path that does not exist", () => {
     const root = fixture();
-    const initialized = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
-    expect(initialized.status, initialized.stderr).toBe(0);
-    write(root, ".gitignore", "/lib/server/private/\n");
     write(root, "lib/server/memory/store.ts", "export {};\n");
+    write(root, "proxy.ts", "export {};\n");
     write(root, "prisma/migrations/20260101000000_init/migration.sql", "SELECT 1;\n");
     write(
       root,
       "agent_docs/MEMORY.md",
-      "See `lib/server/memory/store.ts`, `lib/server/memory/`, `prisma/migrations/20260101000000_init/migration.sql`, `lib/server/gone.ts`, `lib/server/private/`, `lib/**/x.ts`, `agent_docs/<FILE>.md` and `queue/old.md`.\n\n```\n`lib/server/fenced.ts`\n```\n"
+      [
+        "Present: `lib/server/memory/store.ts`, `lib/server/memory/`, `proxy.ts`,",
+        "`prisma/migrations/20260101000000_init/migration.sql`.",
+        "Missing: `lib/server/gone.ts`, `gone.ts`.",
+        "Not paths: `lib/**/x.ts`, `agent_docs/<FILE>.md`, `queue/old.md`, `aiqsa.chat`, `/c/<id>`.",
+        "Private, absent from clones and exports: `agent_docs/PRD/`, `.claude/agents/`, `DEV_SERVER.md`.",
+        "```",
+        "`lib/server/fenced.ts`",
+        "```",
+        ""
+      ].join("\n")
     );
 
     expect(checkDocs(root)).toEqual([
-      "agent_docs/MEMORY.md: cited path does not exist: lib/server/gone.ts"
+      "agent_docs/MEMORY.md: cited path does not exist: lib/server/gone.ts",
+      "agent_docs/MEMORY.md: cited path does not exist: gone.ts"
     ]);
   });
 });

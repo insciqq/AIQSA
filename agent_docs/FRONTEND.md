@@ -31,7 +31,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 
 - Chat and composer stay primary at every width. The header selects models and Assistants; the composer holds tools. Assistants are opt-in.
 - URLs: `/c/<chatId>` and `/p/<projectId>/c/<chatId>` address chats; `/` and `/assistant/<assistantId>` open new ones. An unavailable target falls back to `/` without revealing anything.
-- The composer never substitutes the chosen model, Assistant, tools or controls. Assistant-governed controls show where a value comes from, and an unavailable value visibly falls back to the user's or Project's default. Changing a chat's controls never changes personal defaults.
+- The composer never substitutes the chosen model, Assistant, tools or controls. Assistant-governed controls show where a value comes from: fixed rows are locked (a fixed model still opens its parameters), an unavailable adjustable value visibly falls back to the user's or Project's default, and an unavailable fixed row makes the Assistant unavailable instead of falling back (`lib/server/assistants/rowResolution.ts`). Changing a chat's controls never changes personal defaults.
 - Skills and MCP modes (Auto, Load all, Off) are independent of pins. An Assistant's Skill links stay read-only in chat and the user pins on top of them. Enabling a Skill or an MCP server is a Settings or Studio action; the composer only discloses what the modes act on.
 - Editing a sent message creates a visible branch and keeps the composer draft.
 - Upload integrity gates Send; PDF preparation does not. An admitted message appears at once and its draft clears. Server-confirmed final text releases Send even while Workspace cleanup continues, and late events stay with their own answer.

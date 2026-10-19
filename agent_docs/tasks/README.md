@@ -55,4 +55,4 @@ node scripts/task-ledger.mjs block <task-id-or-stem> --reason "<specific blocker
 node scripts/task-ledger.mjs list [--group <name> | --all]
 ```
 
-Task filenames are a 17-digit local timestamp with milliseconds and a kebab-case slug, for example `20260801143025123-search-quota-guard.md`; the CLI allocates them and prevents reuse.
+Task filenames are a 17-digit local timestamp with milliseconds and a kebab-case slug, for example `queue/20260801143025123-search-quota-guard.md`; the CLI allocates them and prevents reuse.

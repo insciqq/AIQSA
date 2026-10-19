@@ -9,6 +9,7 @@ import {
   AGENT_RULES_DIRECTORY,
   HANDWRITTEN_AGENT_DOCS,
   INSTRUCTION_BUDGETS,
+  PRIVATE_LOCAL_PATHS,
   REQUIRED_DOCS
 } from "./docs-manifest.mjs";
 
@@ -284,12 +285,15 @@ function ruleErrors(root, files) {
   return errors;
 }
 
-// Private local paths such as `.claude/agents/` are named on purpose and never exist in a clean clone.
-function gitIgnored(root, relative) {
-  return spawnSync("git", ["check-ignore", "-q", "--no-index", relative], { cwd: root }).status === 0;
+// Agent documents cite code by repository path in backticks; a renamed file must not leave a stale pointer.
+const ROOT_FILE_CITATION = /\.(?:c?js|mjs|tsx?|json|md|ya?ml|sh|sql|prisma|css)$/u;
+
+function privateCitation(candidate) {
+  return PRIVATE_LOCAL_PATHS.some((entry) =>
+    entry.endsWith("/") ? `${candidate}/`.startsWith(entry) : candidate === entry
+  );
 }
 
-// Agent documents cite code by repository path in backticks; a renamed file must not leave a stale pointer.
 function codePathErrors(root, files) {
   const errors = [];
   const known = new Set(files);
@@ -303,9 +307,9 @@ function codePathErrors(root, files) {
     const body = readFileSync(path.join(root, filename), "utf8").replace(/^```[\s\S]*?^```/gmu, "");
     for (const match of body.matchAll(/`([^`\s]+)`/gu)) {
       const candidate = match[1].replace(/\/$/u, "");
-      if (!candidate.includes("/") || /[*?{}<>:]/u.test(candidate)) continue;
-      if (!topLevel.has(candidate.split("/", 1)[0])) continue;
-      if (known.has(candidate) || directories.has(candidate) || gitIgnored(root, match[1])) continue;
+      if (/[*?{}<>:]/u.test(candidate) || privateCitation(candidate)) continue;
+      if (candidate.includes("/") ? !topLevel.has(candidate.split("/", 1)[0]) : !ROOT_FILE_CITATION.test(candidate)) continue;
+      if (known.has(candidate) || directories.has(candidate)) continue;
       errors.push(`${filename}: cited path does not exist: ${match[1]}`);
     }
   }
@@ -331,6 +335,7 @@ export function checkDocs(root = process.cwd()) {
   root = path.resolve(root);
   const errors = manifestErrors();
   const files = repositoryFiles(root);
+  const citable = repositoryFiles(root, { citable: true });
   for (const filename of REQUIRED_DOCS) {
     const target = path.join(root, filename);
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
@@ -338,8 +343,8 @@ export function checkDocs(root = process.cwd()) {
   errors.push(...documentationBudgetErrors(root, files));
   errors.push(...instructionBudgetErrors(root));
   errors.push(...localLinkErrors(root, files));
-  errors.push(...ruleErrors(root, files));
-  errors.push(...codePathErrors(root, repositoryFiles(root, { citable: true })));
+  errors.push(...ruleErrors(root, citable));
+  errors.push(...codePathErrors(root, citable));
   return errors;
 }
 

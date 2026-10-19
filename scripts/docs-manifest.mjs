@@ -35,6 +35,19 @@ export const INSTRUCTION_BUDGETS = Object.freeze([
   Object.freeze({ filename: "CLAUDE.md", lines: 80, words: 100 })
 ]);
 
+// Private checkout-local state the documents name on purpose; it never exists in a clean clone or a
+// `git archive` export, so citations of it are not checked.
+export const PRIVATE_LOCAL_PATHS = Object.freeze([
+  "AGENTS.override.md",
+  "CLAUDE.local.md",
+  "DEV_SERVER.md",
+  ".aiqsa/",
+  ".claude/agents/",
+  ".claude/settings.local.json",
+  ".claude/worktrees/",
+  "agent_docs/PRD/"
+]);
+
 const ROOT_MARKDOWN = ["AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md"];
 
 export const REQUIRED_DOCS = Object.freeze([...ROOT_MARKDOWN, ...HANDWRITTEN_AGENT_DOCS]);
