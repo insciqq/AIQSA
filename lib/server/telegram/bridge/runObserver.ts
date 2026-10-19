@@ -28,6 +28,10 @@ export type TelegramRunObservation = Readonly<{
   admission: TelegramAdmitted;
   bot: TelegramBotSession;
   link: TelegramLinkRecord;
+  /** The run settled (`done` or `failed`): it takes no follow-up any more. */
+  onAnswered?: () => void;
+  /** Its final message was handled; what follows (files, status) no longer holds the chat's next message. */
+  onDelivered?: () => void;
 }>;
 
 /** Publishes `delivered` for a run whose final message was handled (live or recovery). */
@@ -104,9 +108,11 @@ export async function observeTelegramRun(deps: TelegramRunObserverDeps, input: T
     });
     return;
   }
+  input.onAnswered?.();
   const result = await deliverTelegramRun(deps, {
     linkId: link.id, runId: admission.runId, runLinked: admission.runLinked, telegramChatId: link.telegramChatId, userId: link.userId
   });
+  input.onDelivered?.();
   await publishTelegramDelivery(publish, result, {
     linkId: link.id, runId: admission.runId, source: "live", telegramChatId: link.telegramChatId, userId: link.userId
   });

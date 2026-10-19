@@ -83,14 +83,16 @@ export type TelegramSubmission = Readonly<{
   updateId: number;
 }>;
 
-type ActiveRun = Readonly<{
-  runId: string;
-  chatId: string;
-  assistantMessageId: string | null;
-  draftId: number;
+type ActiveRun = {
+  readonly runId: string;
+  readonly chatId: string;
+  readonly assistantMessageId: string | null;
+  readonly draftId: number;
   /** Resolves once the run's final message was handled, or the wait bound passed. */
-  settled: Promise<void>;
-}>;
+  readonly settled: Promise<void>;
+  /** The run settled: a message for its chat is a new request, not a follow-up the finished answer would never read. */
+  answered: boolean;
+};
 
 type Slot = {
   linkId: string;
@@ -368,11 +370,19 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
     let settle: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
     const active: ActiveRun = {
-      assistantMessageId: admission.assistantMessageId, chatId: admission.chatId, draftId: admission.draftId, runId: admission.runId, settled
+      answered: false, assistantMessageId: admission.assistantMessageId, chatId: admission.chatId, draftId: admission.draftId,
+      runId: admission.runId, settled
     };
     slot.active = active;
     observing.add(admission.runId);
-    void runInBackground(() => runWithContext({ run_id: admission.runId, user_id: link.userId }, () => deps.observe({ admission, bot, link })))
+    // Once the final message is out, the chat's next message runs; files and the status ending follow on their own.
+    const release = () => {
+      if (slot.active === active) slot.active = null;
+      settle();
+    };
+    void runInBackground(() => runWithContext({ run_id: admission.runId, user_id: link.userId }, () => deps.observe({
+      admission, bot, link, onAnswered: () => { active.answered = true; }, onDelivered: release
+    })))
       .catch((error: unknown) => log({ code: "telegram_run_delivery_failed", error, outcome: "failed", runId: admission.runId }))
       .finally(() => {
         observing.delete(admission.runId);
@@ -391,7 +401,8 @@ export function createTelegramConversation(deps: TelegramConversationDeps): Tele
       const { notice, target } = await route(link, batch);
       const active = slot.active;
       if (active) {
-        if (target.kind === "existing" && target.chatId === active.chatId && await followUp(link, batch, blocks, active)) return;
+        if (!active.answered && target.kind === "existing" && target.chatId === active.chatId &&
+          await followUp(link, batch, blocks, active)) return;
         await waitFor(slot, active);
         continue;
       }
