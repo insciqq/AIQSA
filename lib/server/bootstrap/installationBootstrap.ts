@@ -393,6 +393,13 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.connectPolicy.upsert({
+    // AIQSA Connect relays terminals on users' computers, so it stays off
+    // until an administrator turns it on; adoption keeps the saved choice.
+    create: { enabled: false, id: "installation" },
+    update: {},
+    where: { id: "installation" }
+  });
   await tx.telegramBotControl.upsert({
     // Telegram starts off without a bot; adoption repairs a missing singleton
     // but never changes an administrator's token, switch or access groups.

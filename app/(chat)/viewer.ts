@@ -2,6 +2,7 @@ import { getAuthConfig } from "@/lib/server/auth/config";
 import { authSessionStore } from "@/lib/server/auth/defaultAuth";
 import { resolveAuthToken } from "@/lib/server/auth/requestAuth";
 import { SESSION_COOKIE_NAME } from "@/lib/server/auth/session";
+import { isConnectEnabled } from "@/lib/server/connect/policy";
 import { prisma } from "@/lib/server/prisma";
 import { isTelegramAvailableForUser } from "@/lib/server/telegram/defaultTelegram";
 import { cookies } from "next/headers";
@@ -13,6 +14,8 @@ export type ChatViewer = Readonly<{
   accountEmail: string | null;
   accountId: string;
   adminEntryVisible: boolean;
+  /** The installation allows AIQSA Connect: the mode's entry shows and `/connect` opens. */
+  connectEnabled: boolean;
   /** Settings shows the Telegram block; false while the feature is off or closed to this user. */
   telegramAvailable: boolean;
 }>;
@@ -39,6 +42,7 @@ export const loadChatViewer = cache(async (): Promise<ChatViewer | null> => {
     accountEmail: user.email,
     accountId: session.userId,
     adminEntryVisible: user.role === "admin",
+    connectEnabled: await isConnectEnabled(),
     telegramAvailable
   };
 });

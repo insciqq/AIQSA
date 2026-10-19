@@ -1,0 +1,40 @@
+{
+  "events": [
+    {
+      "type": "sessions",
+      "sessions": [
+        {
+          "id": "ac-k3x9q2",
+          "title": "Claude Code · AIQSA",
+          "cwd": "/home/user/src/AIQSA",
+          "program": "claude",
+          "status": "running",
+          "statusAt": "2026-10-19T10:15:30.000Z",
+          "createdAt": "2026-10-19T09:00:00Z",
+          "attachedClients": 1
+        }
+      ]
+    },
+    {
+      "type": "output",
+      "viewId": "c4ca4238-a0b9-4382-8dcc-509a6f75849b",
+      "seq": 0,
+      "data": "G1sySmhlbGxvDQo="
+    },
+    {
+      "type": "status",
+      "sessionId": "ac-k3x9q2",
+      "status": "needs_approval",
+      "statusAt": "2026-10-19T10:15:30.000Z",
+      "reason": "permission"
+    },
+    {
+      "type": "reply",
+      "requestId": "e4da3b7f-bbce-4345-9777-2b0670b8a1c4",
+      "ok": true,
+      "result": {
+        "sessionId": "ac-k3x9q2"
+      }
+    }
+  ]
+}

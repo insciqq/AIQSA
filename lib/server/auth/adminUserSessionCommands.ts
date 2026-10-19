@@ -23,6 +23,7 @@ import {
   revokeAllInboundMcpGrants,
   revokeInboundMcpGrantsForUser
 } from "../memoryMcp/oauth/repository";
+import { revokeAllConnectDevices, revokeConnectDevicesForUser } from "../connect/revocation";
 import { clearTelemetryIncidentUser } from "../telemetry/store";
 import { revokeAllTelegramLinks, revokeTelegramLinksForUser } from "../telegram/linking/revocation";
 import { deleteSignInRefusalsOfEmails } from "./signInRefusals";
@@ -339,6 +340,8 @@ export function createAdminUserSessionCommands(
           }
         });
         await revokeAllInboundMcpGrants(tx, { now, reason: "admin_revoke_all" });
+        // Likewise a device a stolen session paired, and every open terminal view.
+        await revokeAllConnectDevices(tx);
         await revokeAllTelegramLinks(tx, { now, reason: "admin_revoke_all" });
 
         return result.count;
@@ -668,6 +671,7 @@ async function revokeAccountAccess(
     reason: input.reason,
     userId: input.userId
   });
+  await revokeConnectDevicesForUser(tx, { userId: input.userId });
   await revokeTelegramLinksForUser(tx, {
     now: input.now,
     reason: input.reason,

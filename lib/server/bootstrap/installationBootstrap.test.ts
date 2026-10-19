@@ -140,6 +140,7 @@ function createBootstrapTransaction(input: {
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     mcpPolicyUpsert: record("mcpPolicy.upsert", { id: "installation" }),
     usageLimitPolicyUpsert: record("usageLimitPolicy.upsert", { id: "installation" }),
+    connectPolicyUpsert: record("connectPolicy.upsert", { id: "installation" }),
     telegramBotControlUpsert: record("telegramBotControl.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
@@ -233,6 +234,7 @@ function createBootstrapTransaction(input: {
     },
     mcpPolicy: { upsert: spies.mcpPolicyUpsert },
     usageLimitPolicy: { upsert: spies.usageLimitPolicyUpsert },
+    connectPolicy: { upsert: spies.connectPolicyUpsert },
     telegramBotControl: { upsert: spies.telegramBotControlUpsert },
     user: {
       create: spies.userCreate,
@@ -517,6 +519,12 @@ describe("installation bootstrap", () => {
       update: {},
       where: { id: "installation" }
     });
+    // AIQSA Connect starts off and adoption keeps an administrator's saved choice.
+    expect(fixture.spies.connectPolicyUpsert).toHaveBeenCalledWith({
+      create: { enabled: false, id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
     // Telegram starts off without a bot; adoption never touches a saved token, switch or access.
     expect(fixture.spies.telegramBotControlUpsert).toHaveBeenCalledWith({
       create: { id: "installation" },
@@ -707,6 +715,11 @@ describe("installation bootstrap", () => {
     // A rerun repairs a missing limits singleton and never touches saved limits.
     expect(fixture.spies.usageLimitPolicyUpsert).toHaveBeenCalledWith({
       create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
+    expect(fixture.spies.connectPolicyUpsert).toHaveBeenCalledWith({
+      create: { enabled: false, id: "installation" },
       update: {},
       where: { id: "installation" }
     });
