@@ -1,5 +1,6 @@
+import { MCP_APPROVAL_CONTINUATION_UNAVAILABLE } from "../../../contracts/mcpApprovals";
 import { isUsageLimitRefusalCode } from "../../../contracts/usageLimits";
-import { TELEGRAM_RUN_REFUSAL_COPY as COPY, telegramReasonText, telegramUsageLimitText } from "../copy";
+import { TELEGRAM_COPY, TELEGRAM_RUN_REFUSAL_COPY as COPY, telegramReasonText, telegramUsageLimitText } from "../copy";
 
 /**
  * Every refusal of the send handler as a short text and the one recovery
@@ -63,6 +64,8 @@ export function telegramRefusalReply(refusal: TelegramSendRefusal): TelegramRefu
   if (code.startsWith("workspace_")) return reply(COPY.workspaceUnavailable, "settings");
   if (code === "agent_model_unsupported") return reply(COPY.agentModel, "model");
   if (code.startsWith("agent_")) return reply(COPY.agentUnavailable, "settings");
+  // An approval's continuation after its window or its use: only a new request asks again.
+  if (code === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) return reply(TELEGRAM_COPY.approvalExpired, "none");
   if (code.startsWith("mcp_")) return reply(COPY.toolsUnavailable, "open");
   if (code.startsWith("skill")) return reply(COPY.skillUnavailable, "open");
   if (code.startsWith("assistant_")) return reply(COPY.assistantUnavailable, "none");
