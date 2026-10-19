@@ -1,10 +1,14 @@
 package daemon
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -39,6 +43,12 @@ type view struct {
 	pending []byte
 	timer   *time.Timer
 	seq     uint64
+
+	// claim asks claimLoop to give this view's client the window size.
+	claim chan struct{}
+	// clientName is the tmux name of the attach client once found; only
+	// claimLoop uses it.
+	clientName string
 }
 
 func (c *connection) viewByID(id string) *view {
@@ -90,6 +100,7 @@ func (c *connection) openView(m *protocol.ViewOpen) {
 		pty:       ptmx,
 		input:     make(chan []byte, viewInputQueue),
 		done:      make(chan struct{}),
+		claim:     make(chan struct{}, 1),
 	}
 	c.viewsMu.Lock()
 	if c.ctx.Err() != nil {
@@ -104,6 +115,8 @@ func (c *connection) openView(m *protocol.ViewOpen) {
 	c.viewsMu.Unlock()
 	go v.readLoop()
 	go v.writeLoop()
+	go v.claimLoop()
+	v.claimWindowSize()
 	c.d.log.Event("view_open", "views", open)
 	c.kickSnapshot()
 }
@@ -137,6 +150,99 @@ func (c *connection) viewResize(m *protocol.ViewResize) {
 	if err := pty.Setsize(v.pty, &pty.Winsize{Cols: uint16(m.Cols), Rows: uint16(m.Rows)}); err != nil {
 		c.d.log.Event("view_resize_failed", "err", err)
 	}
+	// The browser sends its size again when the view comes back on screen,
+	// usually unchanged: the PTY alone then tells tmux nothing.
+	v.claimWindowSize()
+}
+
+// claimWindowSize makes this view's client the most recently active one, so
+// with `window-size latest` the window takes its size. Otherwise a view
+// opened or shown again after a client of another size was used keeps that
+// size (tmux fills the difference with dots) until its user types.
+func (v *view) claimWindowSize() {
+	select {
+	case v.claim <- struct{}{}:
+	default:
+	}
+}
+
+// claimRetry is how often claimLoop looks again for an attach client that
+// has not reached the tmux server yet.
+const claimRetry = 50 * time.Millisecond
+
+func (v *view) claimLoop() {
+	for {
+		select {
+		case <-v.done:
+			return
+		case <-v.claim:
+		}
+		ctx, cancel := context.WithTimeout(v.c.ctx, 3*time.Second)
+		err := v.claimOnce(ctx)
+		cancel()
+		if err != nil && !v.closing.Load() && v.c.ctx.Err() == nil {
+			v.c.d.log.Event("view_claim_failed", "err", err)
+		}
+	}
+}
+
+var errClientNotAttached = errors.New("attach client not found")
+
+// claimOnce switches the view's client to its own session, which tmux counts
+// as that client's activity, so the window is resized for it. -E leaves the
+// session environment alone and -Z keeps a zoomed pane zoomed.
+func (v *view) claimOnce(ctx context.Context) error {
+	if v.clientName == "" {
+		name, err := v.findClient(ctx)
+		if err != nil {
+			return err
+		}
+		v.clientName = name
+	}
+	_, err := v.tmuxCommand(ctx, "switch-client", "-E", "-Z", "-c", v.clientName, "-t", "="+v.sessionID)
+	return err
+}
+
+// findClient waits for the view's attach client to reach the server and
+// returns its tmux name.
+func (v *view) findClient(ctx context.Context) (string, error) {
+	if v.cmd.Process == nil {
+		return "", errClientNotAttached
+	}
+	pid := strconv.Itoa(v.cmd.Process.Pid)
+	for {
+		out, err := v.tmuxCommand(ctx, "list-clients", "-F", "#{client_pid} #{client_name}")
+		if err != nil {
+			return "", err
+		}
+		scanner := bufio.NewScanner(bytes.NewReader(out))
+		for scanner.Scan() {
+			if p, name, ok := strings.Cut(scanner.Text(), " "); ok && p == pid && name != "" {
+				return name, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", errClientNotAttached
+		case <-v.done:
+			return "", errClientNotAttached
+		case <-time.After(claimRetry):
+		}
+	}
+}
+
+// tmuxCommand runs one command against the client's tmux server. Its stderr
+// is not kept: it can quote session content.
+func (v *view) tmuxCommand(ctx context.Context, args ...string) ([]byte, error) {
+	m := v.c.d.tmux
+	cmd := exec.CommandContext(ctx, m.Binary(), append([]string{"-u", "-L", m.Socket(), "-f", m.ConfigPath()}, args...)...)
+	cmd.Env = tmux.Environ()
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, &tmux.CommandError{Err: err}
+	}
+	return out, nil
 }
 
 // closeView closes a view on the client's side: its pending output is
