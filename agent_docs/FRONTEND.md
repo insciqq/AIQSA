@@ -53,7 +53,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - No page-wide horizontal overflow; code, tables and math wrap or scroll locally. Respect safe areas and software keyboards; the composer never covers the last answer.
 - Primary actions work without hover or precise dragging. Modals trap focus, handle Escape with nested confirmations first, and restore focus. Keyboard submission respects IME composition. WCAG certification is deferred, but labels, keyboard and touch access, focus safety and reduced motion are required.
 - Streaming never animates layout. Busy controls keep their labels and reject duplicate submission.
-- A quiet reading workspace. Cyan is the control accent; violet marks answer activity and is never used for controls or navigation. No decorative cards around prose, rows of badges, idle animation or dashboards.
+- A quiet reading workspace. Controls are monochrome: the `accent` token is ink, not a hue. Colour means state (ok, warn, danger) or code syntax, never navigation, emphasis or brand (operator decision 2026-10-20). Selection and focus read by fill, edge and ring, not glow. No decorative cards around prose, rows of badges, gradients, idle animation or dashboards.
 - Use semantic tokens from `styles/tokens-v2.css`, never raw colors or component-local theme recipes. Prose uses bundled Golos Text, code JetBrains Mono. Themes are `system`, `light` and `dark`; a cookie decides the first paint.
 - Segmented controls are for two or three fixed choices; catalogs use a select.
 
