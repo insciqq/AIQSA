@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +22,7 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/localsock"
 	"github.com/insciqq/AIQSA/connect/internal/logx"
+	"github.com/insciqq/AIQSA/connect/internal/monoclock"
 	"github.com/insciqq/AIQSA/connect/internal/procs"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 	"github.com/insciqq/AIQSA/connect/internal/status"
@@ -143,6 +147,58 @@ func TestHooksReportToTheDaemonOfUp(t *testing.T) {
 	hook("", "bell", id)
 	time.Sleep(200 * time.Millisecond)
 	expect(protocol.StatusIdle)
+}
+
+// A hook stamps its start on this computer's own clock (monotonic where
+// there is one), which the daemon orders reports by.
+func TestAHookStampsItsStartOnTheComputersClock(t *testing.T) {
+	isolate(t)
+	shortStateDir(t)
+	t.Setenv(sessionEnv, "ac-abc123")
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", localsock.Candidates(paths)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	lines := make(chan []byte, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := io.ReadAll(io.LimitReader(conn, 1024))
+		lines <- line
+	}()
+	before := monoclock.Now()
+	if code, stdout, stderr := runHookArgs(strings.NewReader(`{"hook_event_name":"Stop"}`), "claude"); code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("%d %q %q", code, stdout, stderr)
+	}
+	after := monoclock.Now()
+	var msg localsock.Message
+	select {
+	case line := <-lines:
+		if err := json.Unmarshal(line, &msg); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no message")
+	}
+	want := monoclock.Wall
+	if runtime.GOOS == "linux" {
+		want = monoclock.Mono
+	}
+	started := msg.Started()
+	if started.Kind != want || !started.Comparable(before) {
+		t.Fatalf("stamp %+v, want kind %s", started, want)
+	}
+	if want == monoclock.Mono && !(before.At <= started.At && started.At <= after.At) {
+		t.Fatalf("stamp %+v not between %+v and %+v", started, before, after)
+	}
 }
 
 type hookReport struct {
