@@ -1,5 +1,5 @@
 import {
-  isTelegramReasonCode, telegramAdminStateSchema, type TelegramAdminState
+  isTelegramReasonCode, telegramAdminStateSchema, type TelegramAdminState, type TelegramHealthCode
 } from "../../../contracts/telegram";
 import { logEvent } from "../../observability";
 import type { TelegramBotApi } from "../botApi";
@@ -121,7 +121,7 @@ export function createTelegramControlService(deps: Readonly<{
   }
 
   /** Takes the bot over for long polling and registers its commands, then runs the activation hooks. */
-  async function activate(api: TelegramBotApi, botId: number): Promise<TelegramControlErrorCode | null> {
+  async function activate(api: TelegramBotApi, botId: number): Promise<ReturnType<typeof telegramTokenFailureCode> | null> {
     for (const step of [() => api.deleteWebhook(), () => api.setMyCommands(TELEGRAM_BOT_COMMANDS)]) {
       const outcome = await withDeadline(step(), deadlineMs);
       if (outcome === "timeout") {
@@ -141,6 +141,19 @@ export function createTelegramControlService(deps: Readonly<{
       }
     }
     return null;
+  }
+
+  /** Health of the bot just saved; a lost health write still shows the failure in this answer. */
+  async function recordActivationFailure(
+    record: TelegramControlRecord, botId: number, failureCode: TelegramHealthCode
+  ): Promise<TelegramControlRecord> {
+    const at = new Date();
+    try {
+      await deps.repository.recordPollHealth({ at, botId, failureCode, success: false });
+    } catch {
+      log({ code: "telegram_health_write_failed", outcome: "failed", stage: "write" });
+    }
+    return { ...record, lastFailureAt: at, lastFailureCode: failureCode, lastPollAt: at };
   }
 
   return Object.freeze({
@@ -181,8 +194,12 @@ export function createTelegramControlService(deps: Readonly<{
       });
       if (write.kind !== "ok") return refused(writeFailure(write));
       log({ outcome: "completed", stage: "probe" });
-      // A new token while the bot is on: the new bot is taken over now; health shows a failure.
-      if (write.record.enabled) await activate(api, me.result.id);
+      // A new token while the bot is on: the new bot is taken over now. The token stays saved
+      // either way; a failed takeover becomes the bot's health so the administrator sees it.
+      if (write.record.enabled) {
+        const failure = await activate(api, me.result.id);
+        if (failure) return committed(await recordActivationFailure(write.record, me.result.id, failure));
+      }
       return committed(write.record);
     },
 
