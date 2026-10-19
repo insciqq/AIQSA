@@ -57,7 +57,12 @@ export type TelegramFileOutcome =
   /** Not sent, and safe to name as such: its bytes cannot be read now, or Telegram refused this file. */
   | Readonly<{ kind: "skipped" }>
   /** The send itself failed (the chat refuses, rate limit, network): the caller decides what follows. */
-  | Readonly<{ kind: "failed"; failure: TelegramFailure }>;
+  | Readonly<{ kind: "failed"; failure: TelegramFailure }>
+  /** Not sent: the chat may no longer receive it, so nothing more goes there. */
+  | Readonly<{ kind: "unreachable" }>;
+
+/** Asked after a file's bytes are read and before every upload: false when the chat may no longer receive it. */
+export type TelegramFileAuthority = () => Promise<boolean>;
 
 export type TelegramFilesResult = Readonly<{ sent: number; failed: number; left: number }>;
 
@@ -205,6 +210,7 @@ export async function sendTelegramFile(input: Readonly<{
   userId: string;
   item: TelegramPlannedFile;
   read: TelegramFileReader;
+  authorize?: TelegramFileAuthority;
 }>): Promise<TelegramFileOutcome> {
   const { file, kind } = input.item;
   const data = await input.read({
@@ -212,9 +218,11 @@ export async function sendTelegramFile(input: Readonly<{
   });
   if (!data) return { kind: "skipped" };
   const upload = { contentType: file.mimeType, data, filename: cleanTelegramFileName(file.fileName, file.mimeType) };
+  if (input.authorize && !(await input.authorize())) return { kind: "unreachable" };
   let delivery = await input.outbound.sendFile({ chatId: input.chatId, file: upload, kind, owner: input.owner });
   // Telegram shows some images only as files (dimensions, format): the same file once more as a document.
   if (!delivery.ok && kind === "photo" && refusedFile(delivery.failure)) {
+    if (input.authorize && !(await input.authorize())) return { kind: "unreachable" };
     delivery = await input.outbound.sendFile({ chatId: input.chatId, file: upload, kind: "document", owner: input.owner });
   }
   if (delivery.ok) return { kind: "sent", messageIds: delivery.messageIds };
@@ -224,7 +232,8 @@ export async function sendTelegramFile(input: Readonly<{
 /**
  * An answer's files after its final message, in order, then the one line
  * naming what stayed in AIQSA, with Open in AIQSA. A chat that refuses a send
- * ends the files: the rest is counted in that line.
+ * ends the files: the rest is counted in that line. A chat that may no longer
+ * receive them (`authorize`) ends them without that line.
  */
 export async function deliverTelegramFiles(input: Readonly<{
   outbound: Pick<TelegramOutbound, "sendFile" | "sendText">;
@@ -235,6 +244,7 @@ export async function deliverTelegramFiles(input: Readonly<{
   read: TelegramFileReader;
   /** Workspace outputs still exported after the wait, or whose export failed. */
   outputs?: "pending" | "failed";
+  authorize?: TelegramFileAuthority;
 }>): Promise<TelegramFilesResult> {
   const plan = planTelegramFiles(input.files);
   let sent = 0;
@@ -249,6 +259,8 @@ export async function deliverTelegramFiles(input: Readonly<{
       failed += 1;
       continue;
     }
+    // The chat may no longer receive files: the rest stays in AIQSA, and nothing more goes there to name it.
+    if (outcome.kind === "unreachable") return { failed: failed + plan.items.length - index, left: plan.left, sent };
     log({ code: telegramFailureCode(outcome.failure.kind, outcome.failure.errorCode), httpStatus: outcome.failure.status, outcome: "failed",
       stage: "dispatch" });
     if (ambiguous(outcome.failure)) continue;
@@ -257,7 +269,9 @@ export async function deliverTelegramFiles(input: Readonly<{
   }
   if (failed > 0) log({ code: "telegram_file_failed", count: failed, outcome: "failed", stage: "dispatch" });
   const summary = telegramFilesSummaryText({ failed, left: plan.left, ...(input.outputs ? { outputs: input.outputs } : {}) });
-  if (summary) await input.outbound.sendText({ chatId: input.chatId, openInAiqsa: true, owner: input.owner, text: summary });
+  if (summary && (!input.authorize || await input.authorize())) {
+    await input.outbound.sendText({ chatId: input.chatId, openInAiqsa: true, owner: input.owner, text: summary });
+  }
   return { failed, left: plan.left, sent };
 }
 
@@ -283,8 +297,10 @@ function defaultSleep(ms: number): Promise<void> {
 
 /**
  * The generated files of every Telegram run, sent once its final message
- * reached Telegram (live or after a restart), after access is checked again.
- * Files a Workspace run still exports are waited for (bounded) and read anew.
+ * reached Telegram (live or after a restart), while the run's link still
+ * reaches its chat with access allowed: checked before the files and again
+ * after every file's read. Files a Workspace run still exports are waited for
+ * (bounded) and read anew.
  */
 export function createTelegramRunFiles(deps: Readonly<{
   access: Pick<TelegramAccessResolver, "resolveTelegramAccess">;
@@ -322,10 +338,17 @@ export function createTelegramRunFiles(deps: Readonly<{
   async function send(summaryFiles: readonly TelegramAnswerFile[], context: TelegramRunEventContext): Promise<void> {
     const settled = await settledFiles(summaryFiles, { runId: context.runId, userId: context.userId });
     if (settled.files.length === 0 && !settled.outputs) return;
-    const access = await deps.access.resolveTelegramAccess(context.userId);
-    if (!access.allowed || access.link.id !== context.linkId || access.link.botId !== context.bot.botId) return;
+    // The run's link still reaches its chat (the same link, bot and chat) with Telegram access allowed.
+    const reaches = async (): Promise<boolean> => {
+      const access = await deps.access.resolveTelegramAccess(context.userId);
+      return access.allowed && access.link.id === context.linkId && access.link.botId === context.bot.botId &&
+        access.link.telegramChatId === context.telegramChatId;
+    };
+    if (!(await reaches())) return;
     await deliverTelegramFiles({
-      chatId: access.link.telegramChatId, files: settled.files, outbound: context.bot.outbound,
+      // Asked again after every file's read and before its upload, and before the files line.
+      authorize: reaches,
+      chatId: context.telegramChatId, files: settled.files, outbound: context.bot.outbound,
       owner: { chatId: context.chatId, linkId: context.linkId, userId: context.userId }, read: deps.read, userId: context.userId,
       ...(settled.outputs ? { outputs: settled.outputs } : {})
     });

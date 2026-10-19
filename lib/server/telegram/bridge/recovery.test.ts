@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TELEGRAM_COPY } from "../copy";
 import { renderTelegramAnswer } from "../render";
 import { createBridgeHarness, createFakeGateway } from "@/tests/support/telegramChatBridge";
-import type { TelegramRunEvent } from "./events";
-import { TELEGRAM_RECOVERY_MAX_AGE_MS } from "./recovery";
+import type { TelegramRunEvent, TelegramRunEventContext } from "./events";
+import { TELEGRAM_RECOVERY_FOLLOW_MS, TELEGRAM_RECOVERY_GRACE_MS, TELEGRAM_RECOVERY_MAX_AGE_MS } from "./recovery";
 
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
@@ -87,5 +87,89 @@ describe("Telegram delivery recovery after a restart", () => {
     await h.bridge.recover(after());
     expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("failed");
     expect(h.fake.botMessages(user.id)).toHaveLength(0);
+  });
+
+  it("delivers a run still going long after the restart through a later minute sweep, once it settles", async () => {
+    const clock = { now: Date.now() };
+    const { h, run, user } = await interruptedRun({ bridge: {
+      now: () => clock.now, recoverySweepMs: 5,
+      sleep: async (ms) => {
+        clock.now += ms;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    } });
+    const startedAt = clock.now + 1;
+    const stop = h.bridge.startRecovery(new Date(startedAt));
+    closers.push(async () => stop());
+    // The restart's sweep and the ones after it each follow the run a minute and leave it pending.
+    await vi.waitFor(() => expect(clock.now - startedAt).toBeGreaterThan(3 * TELEGRAM_RECOVERY_FOLLOW_MS));
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending");
+    expect(h.fake.botMessages(user.id)).toHaveLength(0);
+    // 45 minutes in, past what one restart's recovery followed before, the run settles.
+    clock.now = Math.max(clock.now, startedAt + 45 * 60_000);
+    run.token("Finished after 45 minutes");
+    run.complete();
+    await vi.waitFor(() => expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("delivered"));
+    expect(h.fake.botMessages(user.id)).toHaveLength(1);
+    expect(h.fake.botMessages(user.id)[0]).toMatchObject({ rich_message: renderTelegramAnswer("Finished after 45 minutes").messages[0] });
+  });
+});
+
+describe("Telegram delivery sweeps while this process runs", () => {
+  /** A run of this process, started after `startedAt`, on a clock the test moves. */
+  async function liveRun() {
+    const clock = { now: Date.now() };
+    const sources: Array<TelegramRunEventContext["source"]> = [];
+    const gateway = createFakeGateway({ autoAnswer: null });
+    const h = createBridgeHarness({
+      bridge: { now: () => clock.now, publish: async (event, context) => { if (event.type === "delivered") sources.push(context.source); } },
+      gateway
+    });
+    closers.push(h.close);
+    const user = h.fake.inject.addUser();
+    h.link(user);
+    const startedAt = new Date(clock.now - 1);
+    await h.deliver(h.fake.inject.text(user, "a long question"));
+    h.bridge.conversation.flush();
+    await vi.waitFor(() => expect(gateway.runs).toHaveLength(1));
+    const run = gateway.runs[0]!;
+    await vi.waitFor(() => expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending"));
+    return { clock, h, run, sources, startedAt, user };
+  }
+
+  it("never delivers a run this process still follows: its observer delivers it, once", async () => {
+    const { clock, h, run, sources, startedAt, user } = await liveRun();
+    // Old enough for a sweep and already settled in AIQSA, while the live stream has not ended yet.
+    clock.now += 2 * TELEGRAM_RECOVERY_GRACE_MS;
+    run.token("The live answer");
+    run.status = "complete";
+    await h.bridge.recover(startedAt);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending");
+    expect(h.fake.botMessages(user.id)).toHaveLength(0);
+    run.complete();
+    await h.settle();
+    expect(sources).toEqual(["live"]);
+    expect(h.fake.botMessages(user.id)).toHaveLength(1);
+  });
+
+  it("delivers a run its observer had to leave while the bot was off once the bot is back, after the run's grace", async () => {
+    const { clock, h, run, sources, startedAt, user } = await liveRun();
+    h.setSessionOn(false);
+    run.token("Answered while the bot was off");
+    run.complete();
+    await h.settle();
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending");
+    expect(h.fake.botMessages(user.id)).toHaveLength(0);
+
+    // The bot is switched on again: the sweep that follows leaves a run linked just now to its observer's hand-over.
+    h.setSessionOn(true);
+    await h.bridge.recover(startedAt);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending");
+    clock.now += TELEGRAM_RECOVERY_GRACE_MS;
+    await h.bridge.recover(startedAt);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("delivered");
+    expect(sources).toEqual(["recovery"]);
+    expect(h.fake.botMessages(user.id)).toHaveLength(1);
+    expect(h.fake.botMessages(user.id)[0]).toMatchObject({ rich_message: renderTelegramAnswer("Answered while the bot was off").messages[0] });
   });
 });

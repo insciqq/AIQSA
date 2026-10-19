@@ -1,5 +1,6 @@
 import type { TelegramCallbackKind } from "../../../contracts/telegram";
-import { logEvent } from "../../observability";
+import { logEvent, runInBackground } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { TelegramAccessResolver } from "../control/access";
 import type { TelegramSessionProvider } from "../control/session";
 import { TELEGRAM_BRIDGE_COPY } from "../copy";
@@ -13,14 +14,14 @@ import { deliverTelegramRun } from "./delivery";
 import { publishTelegramRunEvent, type TelegramRunEvent, type TelegramRunEventContext } from "./events";
 import type { TelegramRunGateway } from "./gateway";
 import { createTelegramBridgeMenus } from "./menus";
-import { recoverTelegramDeliveries } from "./recovery";
+import { recoverTelegramDeliveries, TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS } from "./recovery";
 import { observeTelegramRun } from "./runObserver";
 
 /**
  * Telegram messages as ordinary AIQSA chats (chat bridge): the message
  * handler (text into the merge window, the chat commands, the stale-backlog
- * cutoff), the buttons of its menus, the draft's Stop, the startup recovery
- * of interrupted deliveries, and the entry points later features use: add
+ * cutoff), the buttons of its menus, the draft's Stop, the recovery sweeps of
+ * interrupted deliveries, and the entry points later features use: add
  * prepared content to a chat's merge window (`conversation.queue`, media),
  * run a server-prepared request in order, streamed and delivered
  * (`conversation.submit`, an approval's continuation), follow every run
@@ -32,8 +33,14 @@ export type TelegramChatBridge = Readonly<{
   conversation: TelegramConversation;
   /** Registers the bridge's handlers; returns the function that removes them. */
   register(registry: TelegramHandlerRegistry): () => void;
-  /** Delivers what a restart interrupted, for runs linked before `startedAt`. */
+  /**
+   * Sweeps the deliveries left pending: of runs linked before `startedAt` (a restart interrupted
+   * them) or that this process no longer follows. One sweep at a time; asked during one, another
+   * follows it. Resolves once no sweep runs; a failed sweep is logged.
+   */
   recover(startedAt: Date): Promise<void>;
+  /** Sweeps now and then once a minute; returns the function that stops the minute sweeps. */
+  startRecovery(startedAt: Date): () => void;
 }>;
 
 export type TelegramChatBridgeDeps = Readonly<{
@@ -51,6 +58,8 @@ export type TelegramChatBridgeDeps = Readonly<{
   draftThrottleMs?: number;
   draftRefreshMs?: number;
   idleMs?: number;
+  /** How often `startRecovery` sweeps, for tests. */
+  recoverySweepMs?: number;
 }>;
 
 /** Log codes the bridge adds to the transport and reason codes; all registered in the failure-code registry. */
@@ -94,6 +103,46 @@ export function createTelegramChatBridge(deps: TelegramChatBridgeDeps): Telegram
   });
   const menus = createTelegramBridgeMenus({ conversation, gateway: deps.gateway, links: deps.links, messageRefs: deps.messageRefs, now });
   const staleNotices = new Map<string, number>();
+  const waitForRun = createTelegramRunWait(deps.gateway, { now, ...(deps.sleep ? { sleep: deps.sleep } : {}) });
+  /** The sweep in progress, and whether (and for which start) another one was asked for meanwhile. */
+  let sweeping: Promise<void> | null = null;
+  let requested: Date | null = null;
+
+  async function sweep(startedAt: Date): Promise<void> {
+    try {
+      await recoverTelegramDeliveries({
+        deliver: (input) => deliverTelegramRun(delivery, input),
+        isLive: (runId) => conversation.isLive(runId),
+        now,
+        publish,
+        runLinks: deps.runLinks,
+        sessions: deps.sessions,
+        waitForRun
+      }, { startedAt });
+    } catch (error) {
+      logEvent("service_operation", {
+        code: "telegram_run_recovery_failed", error, outcome: "failed", prisma_code: databaseFailureCode(error), stage: "recovery",
+        subsystem: "telegram"
+      });
+    }
+  }
+
+  function recover(startedAt: Date): Promise<void> {
+    requested = startedAt;
+    // Detached from whoever asked (an administrator's request, a timer): the sweep is the bridge's own work.
+    sweeping ??= runInBackground(async () => {
+      try {
+        while (requested) {
+          const next = requested;
+          requested = null;
+          await sweep(next);
+        }
+      } finally {
+        sweeping = null;
+      }
+    });
+    return sweeping;
+  }
 
   async function noticeStale(context: TelegramMessageContext): Promise<void> {
     logEvent("service_operation", { code: "telegram_stale_message", outcome: "skipped", stage: "dispatch", subsystem: "telegram" });
@@ -163,16 +212,13 @@ export function createTelegramChatBridge(deps: TelegramChatBridgeDeps): Telegram
       return () => { for (const remove of removers) remove(); };
     },
 
-    recover(startedAt: Date) {
-      return recoverTelegramDeliveries({
-        deliver: (input) => deliverTelegramRun(delivery, input),
-        isLive: (runId) => conversation.isLive(runId),
-        now,
-        publish,
-        runLinks: deps.runLinks,
-        sessions: deps.sessions,
-        waitForRun: createTelegramRunWait(deps.gateway, { now, ...(deps.sleep ? { sleep: deps.sleep } : {}) })
-      }, { startedAt });
+    recover,
+
+    startRecovery(startedAt: Date) {
+      const timer = setInterval(() => { void recover(startedAt); }, deps.recoverySweepMs ?? TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS);
+      timer.unref?.();
+      void recover(startedAt);
+      return () => clearInterval(timer);
     }
   });
 }

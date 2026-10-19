@@ -29,8 +29,16 @@ function streamer() {
       return api.sendRichMessageDraft(params);
     }
   };
-  const drafts = createTelegramDraftStreamer({ api: recording, chatId: user.id, draftId: 4242 });
-  return { drafts, sent, start: Date.now(), user };
+  /** Whether the run's chat may still receive its answer; every draft asks right before it is sent. */
+  const reach = { allowed: true, asked: 0 };
+  const drafts = createTelegramDraftStreamer({
+    chatId: user.id, draftId: 4242,
+    reach: async () => {
+      reach.asked += 1;
+      return reach.allowed ? recording : null;
+    }
+  });
+  return { drafts, reach, sent, start: Date.now(), user };
 }
 
 describe("Telegram run drafts", () => {
@@ -87,6 +95,31 @@ describe("Telegram run drafts", () => {
     await vi.advanceTimersByTimeAsync(TELEGRAM_DRAFT_THROTTLE_MS);
     expect(sent.map((entry) => entry.method)).toEqual(["sendMessageDraft", "sendRichMessageDraft", "sendMessageDraft"]);
     expect(sent[2]!.params.text).toBe("");
+    await drafts.stop();
+  });
+
+  it("asks before every draft whether the chat may still receive the answer, and ends for good once it may not", async () => {
+    const { drafts, reach, sent } = streamer();
+    drafts.start();
+    drafts.update("Before the unlink");
+    await vi.advanceTimersByTimeAsync(TELEGRAM_DRAFT_THROTTLE_MS);
+    expect(sent.map((entry) => entry.method)).toEqual(["sendMessageDraft", "sendRichMessageDraft"]);
+    expect(reach.asked).toBe(2);
+
+    // Asked after the pacing wait, not when the text arrived: the text that came meanwhile never goes out.
+    drafts.update("PRIVATE_AFTER_UNLINK");
+    reach.allowed = false;
+    await vi.advanceTimersByTimeAsync(TELEGRAM_DRAFT_THROTTLE_MS);
+    expect(reach.asked).toBe(3);
+    // Ended: no timer asks or sends again, whatever text or time comes.
+    reach.allowed = true;
+    drafts.update("PRIVATE_AFTER_UNLINK and more");
+    drafts.reset();
+    await vi.advanceTimersByTimeAsync(5 * TELEGRAM_DRAFT_REFRESH_MS);
+    expect(sent).toHaveLength(2);
+    expect(reach.asked).toBe(3);
+    expect(JSON.stringify(sent)).not.toContain("PRIVATE_AFTER_UNLINK");
+    expect(vi.getTimerCount()).toBe(0);
     await drafts.stop();
   });
 

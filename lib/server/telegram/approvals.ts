@@ -11,6 +11,7 @@ import type { TelegramConversation } from "./bridge/conversation";
 import { onTelegramRunEvent, type TelegramRunEventContext, type TelegramRunListener } from "./bridge/events";
 import { telegramFailureCode } from "./codes";
 import type { TelegramAccessResolver } from "./control/access";
+import { reachTelegramChat, type TelegramChatBinding } from "./control/reach";
 import type { TelegramSessionProvider } from "./control/session";
 import {
   TELEGRAM_APPROVAL_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramAlwaysAllowLabel, telegramApprovalTitle
@@ -33,7 +34,11 @@ import type { TelegramFailure } from "./transport";
  * the continuation turn in order with the chat's messages, from the chat's
  * current leaf, streamed and delivered like any answer. Buttons decide within
  * the window an Allow once lasts (15 minutes); later the message says the
- * approval expired. Logs carry ids and codes only.
+ * approval expired. Every decision attempt after a wait, every message with
+ * the request and the continuation first check that the press's exact link
+ * still reaches its chat with Telegram access allowed (D-04); once it does
+ * not, nothing more is decided, shown or started from Telegram and the
+ * approval stays pending in AIQSA. Logs carry ids and codes only.
  */
 
 export const TELEGRAM_APPROVAL_CALLBACK_KINDS = [
@@ -109,7 +114,9 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const NONCE = /^[A-Za-z0-9_-]{8,128}$/u;
 
 /** Content-free: ids, codes and HTTP status. */
-function log(fields: Readonly<{ code: string; error?: unknown; httpStatus?: number; outcome: "degraded" | "failed"; runId?: string }>): void {
+function log(fields: Readonly<{
+  code: string; error?: unknown; httpStatus?: number; outcome: "degraded" | "failed" | "skipped"; runId?: string;
+}>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.error ? { error: fields.error, prisma_code: databaseFailureCode(fields.error) } : {}),
     ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), outcome: fields.outcome,
@@ -230,20 +237,31 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
     }
   }
 
-  /** The bot and the link while Telegram access allows them, or null. */
-  async function reach(userId: string, linkId: string): Promise<Readonly<{ bot: TelegramBotSession; link: TelegramLinkRecord }> | null> {
-    const [bot, access] = await Promise.all([deps.sessions.current(), deps.access.resolveTelegramAccess(userId)]);
-    if (!bot || !access.allowed || access.link.id !== linkId || access.link.botId !== bot.botId) return null;
-    return { bot, link: access.link };
+  /** The bot and the link while the bound chat may still receive approvals (D-04), or null (logged). */
+  async function reach(
+    binding: TelegramChatBinding, runId: string
+  ): Promise<Readonly<{ bot: TelegramBotSession; link: TelegramLinkRecord }> | null> {
+    const reached = await reachTelegramChat(deps, binding);
+    if (reached.ok) return reached;
+    log({ code: reached.reasonCode, outcome: "skipped", runId });
+    return null;
+  }
+
+  /** The chat a press came from, bound to the link it was pressed through. */
+  function pressed(press: Press): TelegramChatBinding {
+    return { botId: press.link.botId, linkId: press.link.id, telegramChatId: press.telegramChatId, userId: press.link.userId };
   }
 
   /** Sends one pending approval's message; false when it did not reach Telegram. */
   async function announce(card: McpApprovalCard, context: TelegramRunEventContext): Promise<boolean> {
-    const reached = await reach(context.userId, context.linkId);
-    if (!reached) return false;
     const details = await readDetails(card, context.runId, context.userId);
+    // Checked once the request is read, right before it goes out.
+    const reached = await reach({
+      botId: context.bot.botId, linkId: context.linkId, telegramChatId: context.telegramChatId, userId: context.userId
+    }, context.runId);
+    if (!reached) return false;
     const delivery = await reached.bot.outbound.sendContent({
-      chatId: reached.link.telegramChatId,
+      chatId: context.telegramChatId,
       keyboard: telegramApprovalKeyboard(card, {
         approvalId: card.approvalId, chatId: context.chatId, runId: context.runId, until: now() + TELEGRAM_APPROVAL_WINDOW_MS
       }),
@@ -287,9 +305,17 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
     return false;
   }
 
-  /** Shows the approval as it now is on the pressed message (or anew when it cannot be edited). */
-  async function show(bot: TelegramBotSession, press: Press, view: View | null): Promise<void> {
+  /**
+   * Shows the approval as it now is on the pressed message (or anew when it cannot be edited),
+   * only while the press's chat may still receive it.
+   */
+  async function show(press: Press, view: View | null): Promise<void> {
     const owner = { chatId: press.payload.chatId, linkId: press.link.id, userId: press.link.userId };
+    const details = view ? await readDetails(view.card, press.payload.runId, press.link.userId) : null;
+    // Checked once the request is read, right before the decision and the request go out.
+    const reached = await reach(pressed(press), press.payload.runId);
+    if (!reached) return;
+    const { bot } = reached;
     if (!view) {
       if (!(await edit(bot, press, { text: TELEGRAM_APPROVAL_COPY.unavailable }, undefined))) {
         await bot.outbound.sendText({ chatId: press.telegramChatId, text: TELEGRAM_APPROVAL_COPY.unavailable });
@@ -297,8 +323,7 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
       return;
     }
     const message = telegramApprovalMessage({
-      card: view.card, details: await readDetails(view.card, press.payload.runId, press.link.userId),
-      ...(view.expired ? { expired: true } : {}), ...(view.notice ? { notice: view.notice } : {})
+      card: view.card, details, ...(view.expired ? { expired: true } : {}), ...(view.notice ? { notice: view.notice } : {})
     });
     const keyboard = view.retry && view.card.state === "pending" && view.card.canDecide
       ? telegramApprovalKeyboard(view.card, { approvalId: press.payload.approvalId, chatId: press.payload.chatId, runId: press.payload.runId,
@@ -311,8 +336,11 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
 
   type Decided = McpApprovalDecisionOutcome | Readonly<{ kind: "failed" }>;
 
-  /** Decides, retrying while the run still settles (and after a failed write) for at most 30 s. */
-  async function decide(press: Press): Promise<Decided> {
+  /**
+   * Decides, retrying while the run still settles (and after a failed write) for at most 30 s;
+   * null when a wait outlived the press's link, the user's access or the bot.
+   */
+  async function decide(press: Press): Promise<Decided | null> {
     const deadline = now() + TELEGRAM_APPROVAL_RUN_WAIT_MS;
     let delay = RETRY_FIRST_DELAY_MS;
     for (;;) {
@@ -330,6 +358,8 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
       if ((outcome.kind !== "run_active" && outcome.kind !== "failed") || now() + delay > deadline) return outcome;
       await sleep(delay);
       delay = Math.min(delay * 2, RETRY_MAX_DELAY_MS);
+      // Nothing is decided for a chat that may no longer decide: no consent outlives the link or access.
+      if (!(await reach(pressed(press), press.payload.runId))) return null;
     }
   }
 
@@ -342,40 +372,42 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
     }
   }
 
-  /** The continuation turn of an Allow, once, in order with the chat's messages. */
-  function continueAnswer(press: Press, bot: TelegramBotSession, link: TelegramLinkRecord): void {
+  /** The continuation turn of an Allow, once, in order with the chat's messages, while the press's chat may still receive it. */
+  async function continueAnswer(press: Press): Promise<void> {
     if (continued.has(press.payload.approvalId)) return;
+    const reached = await reach(pressed(press), press.payload.runId);
+    if (!reached) return;
     remember(continued, press.payload.approvalId, true);
-    deps.conversation.submit(link, bot, {
+    deps.conversation.submit(reached.link, reached.bot, {
       chatId: press.payload.chatId, contentBlocks: [],
       systemTurn: { approvalId: press.payload.approvalId, kind: MCP_APPROVAL_CONTINUATION_KIND }, updateId: press.updateId
     });
   }
 
   async function decidePress(press: Press): Promise<void> {
-    const reached = await reach(press.link.userId, press.link.id);
-    if (!reached) return;
-    const { bot } = reached;
+    // A press that waited behind another one is checked as it starts.
+    if (!(await reach(pressed(press), press.payload.runId))) return;
     if (now() >= press.payload.until) {
       // Past the window: the card shows the decision stored meanwhile, or that it expired.
       const current = await card(press);
-      return show(bot, press, current ? { card: current, expired: true } : null);
+      return show(press, current ? { card: current, expired: true } : null);
     }
     const outcome = await decide(press);
+    if (!outcome) return;
     switch (outcome.kind) {
       case "decided":
-        await show(bot, press, { card: outcome.card });
-        if (outcome.continuation) continueAnswer(press, bot, reached.link);
+        await show(press, { card: outcome.card });
+        if (outcome.continuation) await continueAnswer(press);
         return;
       case "conflict":
         // Decided otherwise first (in AIQSA, or by another button): that decision stands and continues nothing here.
-        return show(bot, press, { card: outcome.card });
+        return show(press, { card: outcome.card });
       case "not_found":
-        return show(bot, press, null);
+        return show(press, null);
       default: {
         const current = await card(press);
-        if (current && current.state !== "pending") return show(bot, press, { card: current });
-        return show(bot, press, current ? {
+        if (current && current.state !== "pending") return show(press, { card: current });
+        return show(press, current ? {
           card: current, notice: outcome.kind === "run_active" ? TELEGRAM_APPROVAL_COPY.stillRunning : TELEGRAM_APPROVAL_COPY.notSaved, retry: true
         } : null);
       }
