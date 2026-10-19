@@ -7,7 +7,7 @@ import {
 } from "./botApi";
 import { telegramFailureCode } from "./codes";
 import type { TelegramAccessResolver, TelegramAccessRefusal } from "./control/access";
-import { TELEGRAM_COPY, TELEGRAM_CORE_COPY, telegramReasonText } from "./copy";
+import { TELEGRAM_COPY, telegramReasonText } from "./copy";
 import type { TelegramOutbound } from "./outbound";
 import type { TelegramCallbackRecord, TelegramCallbackStore } from "./store/callbacks";
 import type { TelegramLinkRecord, TelegramLinkStore } from "./store/links";
@@ -234,8 +234,9 @@ function remember<K>(memory: Map<K, number>, key: K, at: number): void {
   while (memory.size > NOTICE_MEMORY_LIMIT) memory.delete(memory.keys().next().value as K);
 }
 
-export const coreComingSoonHandler: TelegramMessageHandler = async (context) => {
-  await context.bot.outbound.sendText({ chatId: context.message.chat.id, text: TELEGRAM_CORE_COPY.comingSoon });
+/** What no registered handler took (a sticker, a video, …) gets the unsupported-message reason. */
+export const unsupportedMessageHandler: TelegramMessageHandler = async (context) => {
+  await context.bot.outbound.sendText({ chatId: context.message.chat.id, text: telegramReasonText("telegram_unsupported_message")! });
   return true;
 };
 
@@ -244,7 +245,7 @@ export function createTelegramDispatcher(deps: TelegramDispatcherDeps): Telegram
   const queueLimit = deps.queueLimit ?? TELEGRAM_CHAT_QUEUE_LIMIT;
   const concurrency = deps.concurrency ?? TELEGRAM_DISPATCH_CONCURRENCY;
   const unknownInterval = deps.unknownReplyIntervalMs ?? TELEGRAM_UNKNOWN_REPLY_INTERVAL_MS;
-  const fallback = deps.fallback ?? coreComingSoonHandler;
+  const fallback = deps.fallback ?? unsupportedMessageHandler;
   const unknownReplies = new Map<number, number>();
   const editNotices = new Map<string, number>();
 

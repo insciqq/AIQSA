@@ -201,6 +201,24 @@ describe("persisted browser push", () => {
     expect(await prisma.browserPushDelivery.count({ where: { OR: [{ runId: complete.runId }, { occurrenceId: occurrence.id }] } })).toBe(2);
   });
 
+  it("pushes no run a Telegram message started, while a web run of the same account still notifies", async () => {
+    const userId = await owner();
+    await subscribe(userId, (await session(userId)).id);
+    const now = new Date();
+    const telegramId = BigInt(900_000_000_000 + Math.floor(Math.random() * 1_000_000_000));
+    const link = await prisma.telegramLink.create({
+      data: { botId: 100_000_001n, telegramChatId: telegramId, telegramUserId: telegramId, userId }
+    });
+    const fromTelegram = await run(userId, "complete");
+    await prisma.telegramRunLink.create({
+      data: { draftId: 7, linkId: link.id, runId: fromTelegram.runId, telegramChatId: telegramId, userId }
+    });
+    expect(await store.claimRun(fromTelegram.runId, now)).toBeNull();
+    expect(await prisma.browserPushDelivery.count({ where: { runId: fromTelegram.runId } })).toBe(0);
+    const fromWeb = await run(userId, "complete");
+    expect(await store.claimRun(fromWeb.runId, now)).toMatchObject({ chatId: fromWeb.chatId, kind: "run", status: "complete", userId });
+  });
+
   it("pushes no run of an automatic answer review and names its chat for the session's one end notice", async () => {
     const userId = await owner();
     await subscribe(userId, (await session(userId)).id);

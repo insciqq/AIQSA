@@ -4,7 +4,7 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import { createTelegramBotApi, createTelegramPacer, decodeTelegramUpdate, type TelegramUpdate } from "./botApi";
 import { createTelegramAccessResolver, type TelegramAccessUser } from "./control/access";
 import type { TelegramEffectiveControl } from "./control/state";
-import { TELEGRAM_CORE_COPY, TELEGRAM_COPY } from "./copy";
+import { TELEGRAM_COPY, telegramReasonText } from "./copy";
 import {
   createTelegramDispatcher, createTelegramHandlerRegistry, createTelegramTestUpdateHandler, parseTelegramCommand,
   type TelegramBotSession, type TelegramDispatcher, type TelegramHandlerRegistry
@@ -189,7 +189,7 @@ describe("Telegram dispatcher: who the bot answers", () => {
       { command: null, link: record.id, text: "handled" },
       { command: { args: "", name: "new" }, link: record.id, text: "/new" }
     ]);
-    expect(textsTo(fake, owner.id)).toEqual([TELEGRAM_CORE_COPY.comingSoon]);
+    expect(textsTo(fake, owner.id)).toEqual([telegramReasonText("telegram_unsupported_message")]);
     expect(touched).toEqual([record.id, record.id]);
   });
 

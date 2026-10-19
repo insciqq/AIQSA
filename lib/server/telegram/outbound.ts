@@ -7,17 +7,19 @@ import type {
 } from "./botApi";
 import { telegramFailureCode } from "./codes";
 import { TELEGRAM_COPY } from "./copy";
+import { plainTelegramMessage } from "./render";
 import type { TelegramCallbackInput, TelegramCallbackStore } from "./store/callbacks";
 import type { TelegramMessageRefOwner, TelegramMessageRefStore } from "./store/messageRefs";
 import type { TelegramFailure, TelegramOutcome } from "./transport";
 
 /**
  * Sends what other modules already rendered: rich answer messages (explicit
- * blocks only, entity detection off), their plain fallback, bot copy, files
- * from buffers and inline keyboards whose buttons are server rows or http(s)
- * links. Every message carrying chat content records a message reference so a
- * reply continues that chat. Only a send that provably never reached Telegram
- * is repeated; an ambiguous one is reported, never resent.
+ * blocks only, entity detection off), each falling back alone to its plain
+ * text when Telegram refuses its rich form, bot copy, files from buffers and
+ * inline keyboards whose buttons are server rows or http(s) links. Every
+ * message carrying chat content records a message reference so a reply
+ * continues that chat. Only a send that provably never reached Telegram is
+ * repeated; an ambiguous one is reported, never resent.
  */
 
 export const TELEGRAM_MESSAGE_MAX_LENGTH = 4_096;
@@ -43,9 +45,12 @@ type Placement = Readonly<{
 }>;
 
 export type TelegramOutbound = Readonly<{
-  /** An answer's rich messages, falling back once to its plain chunks when Telegram refuses one. */
+  /**
+   * An answer's rich messages in order. A part Telegram refuses (400) goes as
+   * that part's plain text instead; parts already delivered are never sent again.
+   */
   sendContent(input: Placement & Readonly<{
-    owner: TelegramMessageRefOwner; messages: readonly TelegramInputRichMessage[]; plainFallback: readonly string[];
+    owner: TelegramMessageRefOwner; messages: readonly TelegramInputRichMessage[];
   }>): Promise<TelegramDelivery>;
   /** One plain text message (bot copy, or chat content when an owner is named), split at 4096 characters. */
   sendText(input: Placement & Readonly<{ text: string; linkId?: string; owner?: TelegramMessageRefOwner }>): Promise<TelegramDelivery>;
@@ -191,37 +196,36 @@ export function createTelegramOutbound(deps: Readonly<{
         keyboard: input.keyboard, linkId: input.owner.linkId, openChatId: input.openInAiqsa ? input.owner.chatId : undefined
       });
       const sent: number[] = [];
-      const plain = { chatId: input.chatId, chunks: input.plainFallback, markup, owner: input.owner, replyTo: input.replyTo };
+      let fallback = false;
       for (const [index, message] of input.messages.entries()) {
+        const last = index === input.messages.length - 1;
         const outcome = await once(() => deps.api.sendRichMessage({
           chat_id: input.chatId,
           rich_message: { ...message, skip_entity_detection: true },
           ...(index === 0 ? reply(input.replyTo) : {}),
-          ...(index === input.messages.length - 1 && markup ? { reply_markup: markup } : {})
+          ...(last && markup ? { reply_markup: markup } : {})
         }));
         if (outcome.ok) {
           sent.push(outcome.result.message_id);
           await recordRef(input.owner, input.chatId, outcome.result);
           continue;
         }
-        if (!isRichRefusal(outcome)) {
+        const chunks = isRichRefusal(outcome) ? plainTelegramMessage(message) : [];
+        if (chunks.length === 0) {
           logFailure(outcome);
           return { failure: outcome, messageIds: sent, ok: false };
         }
-        if (!input.plainFallback.some((chunk) => chunk.trim())) {
-          logFailure(outcome);
-          return { failure: outcome, messageIds: sent, ok: false };
-        }
-        // Telegram refused the rich form: the whole answer once more as plain text, never lost.
+        // Telegram refused this part's rich form: this part alone as plain text. The parts
+        // already delivered stay as they are and later parts still try their rich form.
         log({ code: "telegram_render_fallback", httpStatus: outcome.status, outcome: "degraded" });
-        const failure = await sendPlain(plain, sent);
-        return failure ? { failure, messageIds: sent, ok: false } : { fallback: true, messageIds: sent, ok: true };
-      }
-      if (input.messages.length === 0) {
-        const failure = await sendPlain(plain, sent);
+        fallback = true;
+        const failure = await sendPlain({
+          chatId: input.chatId, chunks, markup: last ? markup : undefined, owner: input.owner,
+          replyTo: index === 0 ? input.replyTo : undefined
+        }, sent);
         if (failure) return { failure, messageIds: sent, ok: false };
       }
-      return { fallback: false, messageIds: sent, ok: true };
+      return { fallback, messageIds: sent, ok: true };
     },
 
     async sendText(input) {
