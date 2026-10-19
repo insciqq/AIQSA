@@ -64,3 +64,50 @@ func ListPanes(ctx context.Context, bin, socket string) ([]Pane, error) {
 	}
 	return panes, nil
 }
+
+// maxPaneCaptureBytes bounds what CapturePane reads.
+const maxPaneCaptureBytes = 256 << 10
+
+// CapturePane returns the visible screen and the last history lines above
+// it of the session's pane on the tmux server of socket, as plain text with
+// wrapped lines joined. Like ListPanes it only reads. The text is the
+// user's terminal content: it stays in memory on this computer.
+func CapturePane(ctx context.Context, bin, socket, session string, history int) (string, error) {
+	cmd := exec.CommandContext(ctx, bin, "-u", "-L", socket, "capture-pane", "-p", "-J",
+		"-S", "-"+strconv.Itoa(max(history, 0)), "-t", paneTarget(session))
+	cmd.Env = Environ()
+	var stdout limitedBuffer
+	var stderr bytes.Buffer
+	stdout.limit = maxPaneCaptureBytes
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd.WaitDelay = 100 * time.Millisecond
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		message := stderr.String()
+		switch {
+		case strings.Contains(message, "no server running"), strings.Contains(message, "error connecting to"):
+			return "", ErrNoServer
+		case strings.Contains(message, "can't find"), strings.Contains(message, "no such session"),
+			strings.Contains(message, "session not found"):
+			return "", ErrSessionNotFound
+		}
+		return "", &CommandError{Err: err}
+	}
+	return stdout.String(), nil
+}
+
+// limitedBuffer keeps the first limit bytes written to it and discards the
+// rest, so a huge capture never fills memory.
+type limitedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.Len(); room > 0 {
+		b.Buffer.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
