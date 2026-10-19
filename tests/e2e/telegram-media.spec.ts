@@ -11,7 +11,7 @@ import type { ContentBlock } from "../../lib/domain/content";
 import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
 import { getSecretEncryptionKey } from "../../lib/server/secrets/envelope";
 import {
-  TELEGRAM_COPY, TELEGRAM_MEDIA_COPY, telegramConnectedText, telegramReasonText, telegramUnsupportedFileText, telegramVoiceTranscriptText
+  TELEGRAM_COPY, TELEGRAM_MEDIA_COPY, TELEGRAM_RUN_REFUSAL_COPY, telegramConnectedText, telegramReasonText, telegramUnsupportedFileText, telegramVoiceTranscriptText
 } from "../../lib/server/telegram/copy";
 import { telegramAttachmentTypeNames } from "../../lib/server/telegram/media/plan";
 import { createFakeTelegramBotApi, type FakeTelegramCall, type FakeTelegramUser } from "../support/fakeTelegramBotApi";
@@ -327,16 +327,20 @@ test("a PDF document becomes a file attachment under its own name", async () => 
   await startNewChat();
   const since = bot.calls().length;
   bot.inject.document(tgAlice, { bytes: await samplePdf(), caption: "Check the totals", fileName: "Q3 report.pdf", mimeType: "application/pdf" });
-  await nextAnswer(since);
-
-  const blocks = await lastQuestion();
-  expect(blocks).toEqual([
+  // The upload is this feature's; answering needs PDF text or native PDF input, which this stand's fake model and
+  // missing PDF parser may not offer — then the server refuses it like a web send (`pdf_text_unavailable`).
+  await expect.poll(() => callsSince(since, "sendRichMessage", tgAlice.id).length > 0 ||
+    textsSince(since).includes(TELEGRAM_RUN_REFUSAL_COPY.attachmentUnavailable), { timeout: REPLY_TIMEOUT_MS }).toBe(true);
+  const attachment = await prisma.attachment.findFirstOrThrow({
+    orderBy: { createdAt: "desc" }, select: { fileName: true, id: true, kind: true, mimeType: true },
+    where: { fileName: "Q3 report.pdf", userId: aliceSession.user.id }
+  });
+  expect(attachment).toMatchObject({ kind: "pdf", mimeType: "application/pdf" });
+  if (callsSince(since, "sendRichMessage", tgAlice.id).length === 0) return;
+  expect(await lastQuestion()).toEqual([
     { text: "Check the totals", type: "text" },
-    { attachmentId: expect.any(String), fileName: "Q3 report.pdf", type: "file" }
+    { attachmentId: attachment.id, fileName: "Q3 report.pdf", type: "file" }
   ]);
-  const file = blocks[1] as Extract<ContentBlock, { type: "file" }>;
-  expect(await prisma.attachment.findUniqueOrThrow({ select: { kind: true, mimeType: true }, where: { id: file.attachmentId } }))
-    .toEqual({ kind: "pdf", mimeType: "application/pdf" });
 });
 
 test("a forbidden type and a 25 MB file are refused before download, a renamed binary by the upload's own checks", async () => {
