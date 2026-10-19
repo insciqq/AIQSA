@@ -20,9 +20,11 @@ import { observeTelegramRun } from "./runObserver";
  * Telegram messages as ordinary AIQSA chats (chat bridge): the message
  * handler (text into the merge window, the chat commands, the stale-backlog
  * cutoff), the buttons of its menus, the draft's Stop, the startup recovery
- * of interrupted deliveries, and the entry points later features use: run a
- * message (`sendTelegramMessage`, e.g. an approval's continuation) or add
- * prepared content to a chat's merge window (`conversation.queue`, media).
+ * of interrupted deliveries, and the entry points later features use: add
+ * prepared content to a chat's merge window (`conversation.queue`, media),
+ * run a server-prepared request in order, streamed and delivered
+ * (`conversation.submit`, an approval's continuation), follow every run
+ * (`onTelegramRunEvent`), or only admit one (`sendTelegramMessage`).
  */
 
 export type TelegramChatBridge = Readonly<{
