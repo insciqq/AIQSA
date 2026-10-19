@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { hashToken } from "../../auth/token";
 import { prisma } from "../../prisma";
@@ -204,6 +205,47 @@ describe("Telegram link codes and links (stateful)", () => {
       repository.consumeCodeAndLink({ codeHash, control: control(), now: LATER, target: target(account) })));
     expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual(["linked", "refused"]);
     await expect(prisma.telegramLink.count({ where: { userId } })).resolves.toBe(1);
+  });
+
+  it("spends the losing code when another account links the same Telegram account during its attempt", async () => {
+    const { botId, code, control, session, target, telegramUser, user } = fixture();
+    const winner = await user({ local: "winner" });
+    const loser = await user({ local: "loser" });
+    const telegramUserId = telegramUser();
+    const codeHash = await code(loser, await session(loser));
+    // The winner's link commits between the loser's holder check and its insert, so the insert hits the unique key.
+    const racing = createPrismaTelegramLinkingRepository({
+      $transaction: ((work: (tx: Prisma.TransactionClient) => Promise<unknown>) => prisma.$transaction((tx) => work(new Proxy(tx, {
+        get(client, property) {
+          const value: unknown = Reflect.get(client, property);
+          if (property !== "telegramLink") return typeof value === "function" ? value.bind(client) : value;
+          const links = value as Prisma.TransactionClient["telegramLink"];
+          return new Proxy(links, {
+            get(delegate, method) {
+              const member: unknown = Reflect.get(delegate, method);
+              if (method !== "create") return typeof member === "function" ? member.bind(delegate) : member;
+              return async (args: Parameters<typeof links.create>[0]) => {
+                await prisma.telegramLink.create({
+                  data: { botId: BigInt(botId), linkedAt: NOW, telegramChatId: BigInt(telegramUserId), telegramUserId: BigInt(telegramUserId), userId: winner }
+                });
+                return links.create(args);
+              };
+            }
+          });
+        }
+      })))) as typeof prisma.$transaction,
+      telegramLink: prisma.telegramLink,
+      telegramLinkCode: prisma.telegramLinkCode
+    });
+    await expect(racing.consumeCodeAndLink({ codeHash, control: control(), now: LATER, target: target(telegramUserId) }))
+      .resolves.toEqual({ code: "telegram_account_in_use", kind: "refused" });
+    await expect(prisma.telegramLinkCode.findUniqueOrThrow({ where: { codeHash } })).resolves.toMatchObject({ consumedAt: LATER });
+    await expect(prisma.telegramLink.count({ where: { userId: loser } })).resolves.toBe(0);
+    await expect(prisma.telegramLink.findUniqueOrThrow({ where: { userId: winner } })).resolves.toMatchObject({ telegramUserId: BigInt(telegramUserId) });
+    // The spent code cannot link the loser once the winner unlinks.
+    await prisma.telegramLink.delete({ where: { userId: winner } });
+    await expect(repository.consumeCodeAndLink({ codeHash, control: control(), now: LATER, target: target(telegramUserId) }))
+      .resolves.toEqual({ code: "telegram_link_code_invalid", kind: "refused" });
   });
 
   it("keeps one unused code per user and unlinks only the named link", async () => {

@@ -172,6 +172,8 @@ describe("AdminTelegramSection", () => {
 
     expect(await screen.findByTestId("telegram-bot-status")).toHaveTextContent("Attention");
     expect(screen.getByTestId("telegram-bot-health")).toHaveTextContent("Another program is reading this bot's updates.");
+    // A restart or deploy overlap is named first, so a transient conflict does not send the administrator to rotate the token.
+    expect(screen.getByTestId("telegram-bot-health")).toHaveTextContent(/second AIQSA instance during a restart or deploy.*if it persists/u);
   });
 
   it("opens Telegram to selected groups, requires one, and drops archived groups on save", async () => {
