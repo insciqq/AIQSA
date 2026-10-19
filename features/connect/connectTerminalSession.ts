@@ -50,16 +50,23 @@ export const browserConnectViewTransport: ConnectViewTransport = {
   setVisibility: setConnectViewVisibility
 };
 
-export type ConnectReconnectCause = ConnectFailureCode | ConnectViewStreamClosedReason | "out_of_order" | "stream_lost";
+/** `input_lost`: a keystroke request failed, so the line on the computer may miss part of what was typed. */
+export type ConnectReconnectCause =
+  | ConnectFailureCode
+  | ConnectViewStreamClosedReason
+  | "input_lost"
+  | "out_of_order"
+  | "stream_lost";
 
 export type ConnectViewState =
   | Readonly<{ kind: "connecting" }>
-  | Readonly<{ kind: "live" }>
+  /** `inputLost`: typed input was dropped earlier; shown until the user dismisses it. */
+  | Readonly<{ inputLost?: true; kind: "live" }>
   | Readonly<{ kind: "offline" }>
   | Readonly<{ kind: "ended" }>
   | Readonly<{ kind: "not_found" }>
   | Readonly<{ cause: ConnectReconnectCause; kind: "reconnecting"; retryAt: number }>
-  | Readonly<{ code: ConnectFailureCode; kind: "failed" }>
+  | Readonly<{ code: ConnectFailureCode; inputLost?: true; kind: "failed" }>
   | Readonly<{ kind: "left"; reason: ConnectLeaveReason }>;
 
 /** Reopen delays after a lost view; the last one repeats until the view is live again. */
@@ -109,7 +116,9 @@ type Options = Readonly<{
  * One terminal on screen attached to one session: opens a view sized to the
  * terminal, writes its output stream in order, sends keystrokes strictly one
  * request at a time and reopens a lost view with backoff (tmux redraws the
- * screen on each attach). Only the latest view's answers count.
+ * screen on each attach). Only the latest view's answers count. A failed
+ * keystroke request stops typing at once: later keystrokes would complete a
+ * line that misses that chunk, so the view is reopened on the real screen.
  */
 export class ConnectTerminalSession {
   private state: ConnectViewState = { kind: "connecting" };
@@ -125,6 +134,8 @@ export class ConnectTerminalSession {
   private inputBuffer = "";
   private inputInFlight = false;
   private inputRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Typed input was dropped; live states say so until the user dismisses it. */
+  private inputLost = false;
   private visible = false;
   private sentVisible: boolean | null = null;
   private sentSize: string | null = null;
@@ -177,6 +188,13 @@ export class ConnectTerminalSession {
     const wasOnline = this.deviceOnline;
     this.deviceOnline = online;
     if (online && wasOnline === false && this.state.kind === "offline") void this.openView();
+  }
+
+  /** The user has seen that earlier keystrokes may be missing. */
+  dismissInputNotice(): void {
+    if (!this.inputLost) return;
+    this.inputLost = false;
+    if (!this.disposed && this.state.kind === "live") this.setState({ kind: "live" });
   }
 
   /** The user's "Try again" in a failed, offline or reconnecting state. */
@@ -281,7 +299,7 @@ export class ConnectTerminalSession {
     this.attempt = 0;
     // The new attach redraws the whole screen; the old one would stay underneath.
     this.options.terminal.reset();
-    this.setState({ kind: "live" });
+    this.setState(this.inputLost ? { inputLost: true, kind: "live" } : { kind: "live" });
     this.sendVisibility(true);
     if (this.visibilityTimer) clearInterval(this.visibilityTimer);
     this.visibilityTimer = setInterval(() => {
@@ -377,8 +395,10 @@ export class ConnectTerminalSession {
     void this.transport.sendInput(viewId, chunk).then((result) => {
       this.inputInFlight = false;
       if (this.disposed) return;
-      // Keystrokes typed into a reopened view wait only for this request.
       if (viewId !== this.viewId) {
+        // The reopened view redrew the real screen, so a chunk lost on the old one shows there.
+        if (!result.ok) this.markInputLost();
+        // Keystrokes typed into a reopened view wait only for this request.
         this.flushInput();
         return;
       }
@@ -387,6 +407,7 @@ export class ConnectTerminalSession {
         return;
       }
       if (result.code === "connect_rate_limited") {
+        // Nothing was delivered: the same chunk goes first once the limit allows.
         this.inputBuffer = chunk + this.inputBuffer;
         this.inputRetryTimer = setTimeout(() => {
           this.inputRetryTimer = null;
@@ -394,13 +415,33 @@ export class ConnectTerminalSession {
         }, (result.retryAfterSeconds ?? 1) * 1000);
         return;
       }
-      this.inputBuffer = "";
-      // An unknown view expired on the server: a new one continues the session.
-      if (result.code === "connect_not_found") this.reconnect("stream_lost", 0);
-      else if (result.code === "connect_device_offline" || result.code === "connect_session_not_found" ||
-        result.code === "connect_disabled" || result.code === "connect_unauthorized") {
-        this.refused(result.code);
+      // Every path below leaves the live state, which drops the queued input unsent.
+      this.inputLost = true;
+      switch (result.code) {
+        case "connect_input_too_large":
+        case "connect_request_invalid":
+          this.settle({ code: result.code, inputLost: true, kind: "failed" });
+          return;
+        case "connect_device_offline":
+        case "connect_session_not_found":
+        case "connect_disabled":
+        case "connect_unauthorized":
+          this.refused(result.code);
+          return;
+        case "connect_not_found":
+          // The view expired on the server: a new one continues the session at once.
+          this.reconnect("input_lost", 0);
+          return;
+        default:
+          // Delivery is unknown (network error, server failure): nothing typed may follow it blindly.
+          this.reconnect("input_lost");
       }
     });
+  }
+
+  private markInputLost(): void {
+    if (this.inputLost) return;
+    this.inputLost = true;
+    if (this.state.kind === "live") this.setState({ inputLost: true, kind: "live" });
   }
 }
