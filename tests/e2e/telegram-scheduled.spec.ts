@@ -270,7 +270,9 @@ test("a scheduled run that pauses its task sends the heading and the reason only
   const since = bot.calls().length;
   const occurrence = await settled(taskId);
   expect(occurrence).toMatchObject({ reasonCode: "model_unavailable", state: "FAILED", trigger: "schedule" });
-  await expect.poll(() => textsSince(since), { timeout: DELIVERY_TIMEOUT_MS }).toHaveLength(1);
+  // The row's state and code name a missing notice in the report.
+  await expect.poll(async () => ({ row: await deliveryState(occurrence.id), texts: textsSince(since).length }), { timeout: DELIVERY_TIMEOUT_MS })
+    .toMatchObject({ texts: 1 });
   const [text] = textsSince(since);
   expect(text).toMatch(/^Telegram pause check\nScheduled task paused\n\S/u);
   expect(text).not.toContain("Fake answer");
