@@ -388,8 +388,8 @@ export function createTelegramDispatcher(deps: TelegramDispatcherDeps): Telegram
         }
       }
       if (registration.singleUse && !(await deps.callbacks.consume({ id: callback.id, now: new Date(now()) }))) return;
-      // From here a failure is the handler's own: the press is answered without claiming the button expired.
-      reply = {};
+      // From here a failure is the handler's own: the press says so instead of claiming the button expired.
+      reply = { text: TELEGRAM_COPY.buttonFailed };
       reply = await registration.handler({
         bot: session, callback, chatId, link, messageId: query.message?.message_id ?? null, query, updateId
       }) ?? {};
