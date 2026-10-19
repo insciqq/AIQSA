@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { decodeChatPdfPreparation, decodeChatPdfRouteAvailability } from "./chatPdfPreparation";
+import {
+  CHAT_PDF_READER_OUTPUT_LIMIT,
+  decodeChatPdfPreparation,
+  decodeChatPdfRouteAvailability,
+  isChatPdfReaderOutputLimitFailure
+} from "./chatPdfPreparation";
+
+describe("exhausted PDF reader output", () => {
+  it("is recognized by its code live and by its exact message after reload", () => {
+    expect(isChatPdfReaderOutputLimitFailure(CHAT_PDF_READER_OUTPUT_LIMIT.code)).toBe(true);
+    expect(isChatPdfReaderOutputLimitFailure(null, CHAT_PDF_READER_OUTPUT_LIMIT.message)).toBe(true);
+    expect(isChatPdfReaderOutputLimitFailure("pdf_transcription_failed", "The PDF reader ran out of output tokens.")).toBe(false);
+    expect(isChatPdfReaderOutputLimitFailure(undefined, null)).toBe(false);
+  });
+
+  it("names a remedy for a reader that does not reason as well", () => {
+    expect(CHAT_PDF_READER_OUTPUT_LIMIT.message).toContain("choose another PDF reader in System roles");
+  });
+});
 
 describe("PDF preparation projection", () => {
   const original = { completedPages: 0, limitedReadingQuality: true, longDocument: false,

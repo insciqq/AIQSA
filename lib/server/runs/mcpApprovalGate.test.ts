@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_APPROVAL_REQUIRED, MCP_APPROVAL_REQUIRED_MESSAGE, mcpApprovalAdmission } from "../mcp/writeApproval";
 import { mcpApprovalGated, mcpApprovalRequestForCall, mcpApprovalRequiredToolCallResult } from "./mcpApprovalGate";
-import { toolSynthesisDecision, toolSynthesisInstruction } from "./providerToolLoop";
-import { repeatBlockedToolCallResult, roundAwaitsApproval, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
+import { stalledToolRound, toolSynthesisDecision, toolSynthesisInstruction } from "./providerToolLoop";
+import { repeatBlockedToolCallResult, ToolCallRepeatHistory, toolRoundCall } from "./toolCallRepeatGuard";
 import type { PersistedToolLoopCall } from "./toolLoopPersistence";
+
+/** The live and recovered verdict on a round of these rows, before any correction was spent. */
+const roundAwaitsApproval = (rows: readonly PersistedToolLoopCall[]) =>
+  stalledToolRound(rows.map(entry => toolRoundCall(entry)), false) === "approval_required";
 
 const snapshot: McpRunPlanSnapshot = {
   servers: [{ fingerprint: "f".repeat(64), revisionId: "revision-1", serverId: "server-1", serverName: "Records" }],

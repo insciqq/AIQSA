@@ -411,6 +411,16 @@ export function activeChatPdfReader(policy: ChatPdfReaderPolicy): AdminSystemMod
   return chatPdfUsesNativeReader(policy) ? policy.chatPdfNativeModel ?? null : policy.chatPdfModel;
 }
 
+/** Reasoning the PDF reader uses without an explicit setting, lowest first. */
+export const CHAT_PDF_READER_DEFAULT_REASONING_EFFORTS: readonly string[] = Object.freeze(["none", "minimal", "low"]);
+
+/** The PDF reader only transcribes; reasoning spends its output budget without
+ * improving the transcription. Without an explicit setting both reader methods
+ * use the lowest level the exact deployment supports, else its own default (null). */
+export function chatPdfReaderDefaultReasoningEffort(supports: (effort: string) => boolean): string | null {
+  return CHAT_PDF_READER_DEFAULT_REASONING_EFFORTS.find((effort) => supports(effort)) ?? null;
+}
+
 /** Select only an advertised way to disable optional reasoning for new title assignments. */
 export function initialChatTitleReasoningEffort(model: Pick<AdminSystemModelCandidate, "reasoningEfforts"> | undefined): string | null {
   return model?.reasoningEfforts.includes("none") ? "none" : null;

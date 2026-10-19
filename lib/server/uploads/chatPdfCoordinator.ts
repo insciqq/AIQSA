@@ -123,6 +123,11 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       (attempt.state === "settled" || attempt.state === "ambiguous"))) {
       throw new ChatPdfPreparationError("pdf_transcription_failed", true);
     }
+    // A definitive answer that exhausted the reader's output budget repeats
+    // on the same frozen binding, so recovery re-derives the same outcome.
+    if (attempts.some((attempt) => attempt.state === "settled" && attempt.errorCode === "pdf_reader_output_limit")) {
+      throw new ChatPdfPreparationError("pdf_reader_output_limit", false);
+    }
     if (attempts.some((attempt) => attempt.state === "dispatched" || attempt.state === "ambiguous")) {
       throw new ChatPdfPreparationError("pdf_preparation_ambiguous", true);
     }
@@ -180,6 +185,12 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
       try {
         result = await boundedOperation(operation, providerSignal);
       } catch (error) {
+        if (!signal.aborted && !providerSignal.aborted && observedFailure(error).code === "provider_budget_exhausted") {
+          logEvent("job_attempt", { subsystem: "pdf", stage: "process", outcome: "failed", code: "pdf_reader_output_limit", action: "stop" });
+          await observeChatPdfPersistence(claim.runId, "settle", () => deps.attempts.settle(dispatch, { errorCode: "pdf_reader_output_limit",
+            resultArtifactId: null, usage: normalizeTokenUsage({ ...observedUsage, completeness: "partial" }) }));
+          throw new ChatPdfPreparationError("pdf_reader_output_limit", false);
+        }
         const status = typeof error === "object" && error !== null && "status" in error
           && typeof error.status === "number" ? error.status : null;
         const transcriptionFailure = !signal.aborted && (providerSignal.aborted ||
@@ -235,8 +246,10 @@ export function createChatPdfCoordinator(deps: ChatPdfCoordinatorDependencies) {
     try {
       await prepareAttachment(claim, preparation, signal);
     } catch (error) {
+      // An exhausted reader output budget degrades like a failed transcription.
       const code = error instanceof ChatPdfPreparationError && error.code === "pdf_local_text_unusable"
-        ? error.code : error instanceof ChatPdfPreparationError && error.code === "pdf_transcription_failed" ||
+        ? error.code : error instanceof ChatPdfPreparationError &&
+          (error.code === "pdf_transcription_failed" || error.code === "pdf_reader_output_limit") ||
           error instanceof DocumentParserError && ["parser_timeout", "parser_unavailable"].includes(error.code)
           ? "pdf_transcription_failed" : null;
       if (!code || !loaded.modelRun.workspaceRunBinding || signal.aborted) throw error;

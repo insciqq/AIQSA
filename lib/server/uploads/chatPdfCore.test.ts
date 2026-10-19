@@ -8,6 +8,7 @@ import { isLongChatPdf, decodeChatPdfPreparation } from "../../contracts/chatPdf
 import { chatPdfFingerprint, resolveChatPdfRoute, type ChatPdfAttachmentAdmission } from "./chatPdfAdmission";
 import { chatPdfCompatibilityKey, createChatPdfCore, decodeChatPdfArtifact, encodeChatPdfArtifact } from "./chatPdfCore";
 import { chatPdfAdmissionFromRow, chatPdfJson } from "./chatPdfPersistence";
+import { modelPdfProviderRequest } from "../parsing/modelPdfRequest";
 
 function role(verifiedVisionInput = false, nativePdfInput = false): ProviderAdmissionRole {
   const capabilities = { nativePdfInput, nativeSearch: false, pdf: true, reasoning: false,
@@ -172,6 +173,41 @@ describe("chat PDF adaptive preparation", () => {
     const results = [pageResult(1, "First page"), pageResult(2, "Second page")];
     expect(core.assemble({ admission: admitted, ...planned, results }).text).toContain("Second page");
     expect(() => core.assemble({ admission: admitted, ...planned, results: results.slice(0, 1) })).toThrow();
+  }, 20_000);
+
+  it("raises an undeclared reader output cap only while the frozen reader reasons", async () => {
+    const bytes = await source();
+    const reader = role(false, true);
+    const reasoning = (defaultParams: Record<string, unknown>, declared?: number) => ({ ...reader.snapshot, model: {
+      ...reader.snapshot.model, defaultParams, capabilities: { ...reader.snapshot.model.capabilities, reasoning: true,
+        defaultMaxOutputTokens: declared } } });
+    const prepare = async (snapshot: ReturnType<typeof reasoning>) => {
+      const admitted: ChatPdfAttachmentAdmission = { ...admission(bytes), mode: "use_pdf_reader",
+        route: "system_pdf", policyVersion: 2, snapshot, authority: reader.authority ?? null };
+      const core = createChatPdfCore({ parseDocling: null });
+      const planned = await core.plan({ admission: admitted, bytes, onPageCount: vi.fn() });
+      return core.page({ admission: admitted, bytes, ...planned, page: 1 });
+    };
+    const off = await prepare(reasoning({ reasoning: { effort: "none", enabled: false } }));
+    const on = await prepare(reasoning({ reasoning: { effort: "high", enabled: true } }));
+    const inherited = await prepare(reasoning({}));
+    const declared = await prepare(reasoning({ reasoning: { effort: "high", enabled: true } }, 8_192));
+    expect(off.request.params).toMatchObject({ maxOutputTokens: 16_384, max_output_tokens: 16_384 });
+    expect(on.request.params).toMatchObject({ maxOutputTokens: 32_768, max_output_tokens: 32_768 });
+    expect(inherited.request.params.maxOutputTokens).toBe(32_768);
+    expect(declared.request.params.maxOutputTokens).toBe(8_192);
+    const vision = admission(bytes);
+    const visionReader = { ...vision, snapshot: { ...vision.snapshot!, model: { ...vision.snapshot!.model,
+      defaultParams: { reasoning: { effort: "low", enabled: true } },
+      capabilities: { ...vision.snapshot!.model.capabilities, reasoning: true, defaultMaxOutputTokens: undefined } } } };
+    const visionCore = createChatPdfCore({ parseDocling: null });
+    const visionPlan = await visionCore.plan({ admission: visionReader, bytes, onPageCount: vi.fn() });
+    expect((await visionCore.page({ admission: visionReader, bytes, ...visionPlan, page: 1 })).request.params.maxOutputTokens)
+      .toBe(32_768);
+    // Knowledge parsing keeps its cap for the same reasoning deployment.
+    expect(modelPdfProviderRequest({ batch: { kind: "pdf", bytes, pageStart: 1, pageEnd: 1 } as never,
+      mode: "system_model_direct_pdf", prompt: "Transcribe.", snapshot: reasoning({ reasoning: { effort: "high" } }),
+      supplement: null, visionDetail: "original" }).params.maxOutputTokens).toBe(16_384);
   }, 20_000);
 
   it("retains accepted legacy preparation and its prompt instead of mixing parser generations", async () => {

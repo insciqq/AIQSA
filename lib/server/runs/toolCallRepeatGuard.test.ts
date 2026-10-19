@@ -2,15 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   repeatBlockedRounds,
   repeatBlockedToolCallResult,
-  roundMadeNoProgress,
   settledRepeatOutcome,
   toolCallOutcomeFingerprint,
   ToolCallRepeatHistory,
+  toolRoundCall,
   type ToolCallRepeatRow
 } from "./toolCallRepeatGuard";
+import { stalledToolRound } from "./providerToolLoop";
 import type { ToolLoopJsonValue } from "./toolLoopPersistence";
+import { unknownToolCallResult } from "./unknownToolCall";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
+
+/** The live and recovered verdict on a round of these rows, before any correction was spent. */
+const roundMadeNoProgress = (rows: readonly ToolCallRepeatRow[]) =>
+  stalledToolRound(rows.map(entry => toolRoundCall(entry)), false) === "no_progress";
 
 let sequence = 0;
 
@@ -185,6 +191,18 @@ describe("repeated identical calls without progress", () => {
     expect(repeatBlockedRounds({ ...blocked, roundIndex: 2 })).toBeNull();
     expect(roundMadeNoProgress([blocked, row({ round: 3 })])).toBe(false);
     expect(roundMadeNoProgress([])).toBe(false);
+  });
+
+  it("never counts a call of an undeclared tool as a call that may have changed state", () => {
+    const writes = { batch: [], readOnly: (name: string) => name === "get_record" };
+    const base = row({ round: 2, name: "update_record" });
+    const unknown: ToolCallRepeatRow = { ...base, startedAt: null, state: "error",
+      result: unknownToolCallResult({ providerCallId: base.providerCallId, requested: "update_record", toolName: "update_record" }) };
+    expect(toolRoundCall(unknown)).toBe("unknown_tool");
+    expect(new ToolCallRepeatHistory([row({ round: 1 }), unknown, row({ round: 3 })]).blockFor(call, 4, writes)).toEqual([1, 3]);
+    // The same name that ran may have changed the record.
+    expect(new ToolCallRepeatHistory([row({ round: 1 }), base, row({ round: 3 })]).blockFor(call, 4, writes)).toBeNull();
+    expect(toolRoundCall(base)).toBe("executed");
   });
 
   it("explains a block in the projection without changing the comparison basis", () => {

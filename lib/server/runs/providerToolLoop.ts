@@ -27,6 +27,7 @@ import {
 } from "./toolLoop";
 import { providerRequestContextRebuild } from "./runContextBudget";
 import { canonicalJsonText } from "./contextCompactionContract";
+import { requestedToolNameExcerpt, unknownToolCallName } from "./unknownToolCall";
 
 /** A checkpointed decision that the next round is tool-free synthesis. Only
  * `budget_exhausted` is ever written; `no_progress` is derived from the
@@ -47,13 +48,51 @@ export type ProviderToolLoopContinuation = Readonly<{
 }>;
 
 /** Why a round answers without tools. `calls` and `rounds` are an exactly
- * reached budget; the markers and `approval_required` also left planned calls
- * unexecuted. `approval_required`, like `no_progress`, is derived from
- * persisted calls: the previous round held only calls gated for the user's
- * approval and blocked repeats. `time`: the turn's time budget is used up
- * (known to live execution only; a batch it refused is checkpointed as
- * `budget_exhausted`). */
-export type ToolSynthesisReason = ToolSynthesisMarker | "approval_required" | "calls" | "rounds" | "time";
+ * reached budget; the markers, `approval_required` and `unknown_tool` also
+ * left planned calls unexecuted. `approval_required`, `unknown_tool` and
+ * `no_progress` are derived from persisted calls (`stalledToolRound`). `time`:
+ * the turn's time budget is used up (known to live execution only; a batch it
+ * refused is checkpointed as `budget_exhausted`). */
+export type ToolSynthesisReason = ToolSynthesisMarker | "approval_required" | "calls" | "rounds" | "time" | "unknown_tool";
+
+/** How one call counts for its round's progress, from its persisted row
+ * (`toolRoundCall`): only an `executed` call can have made progress. */
+export type ToolRoundCall = "approval_gated" | "executed" | "repeat_blocked" | "unknown_tool";
+
+/**
+ * The rule for a round none of whose calls ran, shared by live execution and
+ * recovery: it ends tool use. A call in it that waits for the user's approval
+ * makes that the reason first. Otherwise the run's first such round that holds
+ * a call of a tool its round did not declare continues instead, once, so the
+ * model can correct the name; every later one ends tool use too. Budgets still
+ * bound every round.
+ */
+export function stalledToolRound(
+  calls: readonly ToolRoundCall[],
+  unknownToolCorrectionSpent: boolean
+): Extract<ToolSynthesisReason, "approval_required" | "no_progress" | "unknown_tool"> | null {
+  if (calls.length === 0 || calls.includes("executed")) return null;
+  if (calls.includes("approval_gated")) return "approval_required";
+  const unknown = calls.includes("unknown_tool");
+  if (unknown && !unknownToolCorrectionSpent) return null;
+  return unknown ? "unknown_tool" : "no_progress";
+}
+
+/** Whether a round before `round` (from 1) continued as the run's one
+ * correction of a tool name: none of its calls ran, none waits for approval,
+ * and one names an unknown tool. */
+export function unknownToolCorrectionSpent(
+  calls: Iterable<Readonly<{ call: ToolRoundCall; round: number }>>,
+  round: number
+): boolean {
+  const rounds = new Map<number, ToolRoundCall[]>();
+  for (const entry of calls) {
+    if (entry.round < 1 || entry.round >= round) continue;
+    rounds.set(entry.round, [...rounds.get(entry.round) ?? [], entry.call]);
+  }
+  return [...rounds.values()].some(classes => classes.includes("unknown_tool") && !classes.includes("executed") &&
+    !classes.includes("approval_gated"));
+}
 
 export type ToolSynthesisDecision = Readonly<{
   /** The transient budget signal, when a budget ended tool use. */
@@ -64,15 +103,16 @@ export type ToolSynthesisDecision = Readonly<{
 /**
  * The one rule for a tool-free synthesis round, shared by live execution and
  * recovery: a checkpointed marker first, then a previous round awaiting the
- * user's approval, then one of only blocked repeats, then an exactly reached
- * budget. A run admitted without tools (`toolChoice: "none"`) is not
- * synthesis. A used-up time budget (`timeExhausted`, live execution only)
- * forces synthesis as well and is named as its cause unless the previous
- * round made no progress (only blocked repeats, or calls awaiting approval:
- * the approval, not the clock, is what the user acts on next).
+ * user's approval, then one of only blocked repeats, then one that again named
+ * only unknown tools, then an exactly reached budget. A run admitted without
+ * tools (`toolChoice: "none"`) is not synthesis. A used-up time budget
+ * (`timeExhausted`, live execution only) forces synthesis as well and is named
+ * as its cause unless the previous round made no progress (only blocked
+ * repeats or unknown tools, or calls awaiting approval: the approval, not the
+ * clock, is what the user acts on next).
  */
 export function toolSynthesisDecision(input: Readonly<{
-  /** The previous round awaits the user's approval (`roundAwaitsApproval`). */
+  /** The previous round awaits the user's approval (`stalledToolRound`). */
   approvalRequired?: boolean;
   budgets: Pick<ToolLoopBudgets, "maxToolCalls" | "maxToolRounds">;
   continuation: Pick<ProviderToolLoopContinuation, "finalSynthesis">;
@@ -80,11 +120,13 @@ export function toolSynthesisDecision(input: Readonly<{
   noProgress: boolean;
   progress: Pick<ToolLoopProgress, "toolCalls" | "toolRounds">;
   timeExhausted?: boolean;
+  /** The previous round again ran nothing and named an unknown tool (`stalledToolRound`). */
+  unknownTool?: boolean;
 }>): ToolSynthesisDecision | null {
   if (input.initialToolChoice === "none") return null;
   const reached = reachedToolLoopBudget(input.progress, input.budgets);
   if (input.timeExhausted === true && input.continuation.finalSynthesis !== "no_progress" && !input.noProgress &&
-    input.approvalRequired !== true) {
+    input.approvalRequired !== true && input.unknownTool !== true) {
     return { budget: null, reason: "time" };
   }
   if (input.continuation.finalSynthesis === "budget_exhausted") {
@@ -94,6 +136,7 @@ export function toolSynthesisDecision(input: Readonly<{
   if (input.continuation.finalSynthesis === "no_progress" || input.noProgress) {
     return { budget: reached, reason: "no_progress" };
   }
+  if (input.unknownTool) return { budget: reached, reason: "unknown_tool" };
   return reached ? { budget: reached, reason: reached.kind } : null;
 }
 
@@ -103,9 +146,11 @@ export function toolSynthesisInstruction(reason: ToolSynthesisReason): string {
   const cause = reason === "no_progress"
     ? "repeated identical calls returned no new data"
     : reason === "approval_required" ? "a tool call waits for the user's approval in the chat"
+    : reason === "unknown_tool" ? "tool calls again named tools that do not exist"
     : reason === "time" ? "the time limit of this turn is close"
     : reason === "rounds" ? "the tool-round budget is exhausted" : "the tool-call budget is exhausted";
-  const unexecuted = reason === "budget_exhausted" || reason === "no_progress" || reason === "approval_required"
+  const unexecuted = reason === "budget_exhausted" || reason === "no_progress" || reason === "approval_required" ||
+    reason === "unknown_tool"
     ? " Some planned tool calls were not executed."
     : reason === "time" ? " Planned tool calls may not have been executed." : "";
   return `Tool use is now disabled for this run: ${cause}.${unexecuted} Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.`;
@@ -225,6 +270,11 @@ export type ProviderToolLoopInput = Readonly<{
   isRepeatBlockedCall?(call: ToolLoopCall): boolean;
   /** True only for a persisted call gated for the user's approval. */
   isApprovalGatedCall?(call: ToolLoopCall): boolean;
+  /** True only for a persisted call settled as an unknown tool (`tool_call_unknown`). */
+  isUnknownToolCall?(call: ToolLoopCall): boolean;
+  /** From the persisted calls: a round before `round` already spent the run's
+   * one correction of an unknown tool name (`unknownToolCorrectionSpent`). */
+  unknownToolCorrectionSpent?(round: number): boolean;
   /** A server-owned repeat note for a settled result, in the projection only. */
   toolResultNoteForProvider?(entry: ToolLoopSettledCall<ToolExecutionResult>): string | undefined;
   onProviderResult?(input: Readonly<{
@@ -260,7 +310,9 @@ export type ProviderToolLoopInput = Readonly<{
    * durable continuation then carry that exact summary state and projection.
    */
   dispatchedRequest?(input: Readonly<{ request: ProviderRunRequest; round: number }>): ProviderRunRequest | undefined;
-  /** Normalize a known provider alias against the tools advertised in this round. */
+  /** Normalize an exact provider alias against the tools advertised in this
+   * round (`normalizeProviderToolCallName`); a name it leaves undeclared is an
+   * unknown call (`roundToolCalls`). */
   normalizeToolCallName?(name: string, advertisedToolNames: ReadonlySet<string>): string;
   projectToolResultForProvider?(
     result: ToolExecutionResult,
@@ -365,6 +417,39 @@ export const REQUIRED_TOOL_CALL_FAILURE = Object.freeze({
   fatal: true,
   message: "The model did not call the required tool."
 });
+
+export type RoundToolCall = ModelToolCall & Pick<ToolLoopCall, "undeclared">;
+
+/**
+ * A round's calls as the loop persists them, shared by live execution and
+ * recovery: each name normalized against the tools the round declared. A call
+ * whose name it still does not declare keeps a bounded name and is marked
+ * undeclared, so its owner persists it already settled as an undispatched
+ * `tool_call_unknown` error: nothing the round did not declare executes,
+ * even when discovery in the same batch loads it. The batch's declared calls
+ * proceed, and every call id still receives its result.
+ */
+export function roundToolCalls(
+  calls: readonly ModelToolCall[],
+  declared: ReadonlySet<string>,
+  normalize?: ProviderToolLoopInput["normalizeToolCallName"]
+): RoundToolCall[] {
+  return calls.map((call) => {
+    const name = normalize?.(call.name, declared) ?? call.name;
+    if (declared.has(name)) return name === call.name ? call : { ...call, name };
+    return { ...call, name: unknownToolCallName(name), undeclared: { requested: requestedToolNameExcerpt(name) } };
+  });
+}
+
+/** The calls as the round's provider transcript carries them, without marks. */
+export function providerRoundToolCalls(calls: readonly RoundToolCall[]): ModelToolCall[] {
+  return calls.map((call) => {
+    if (!call.undeclared) return call;
+    const { undeclared: _undeclared, ...unmarked } = call;
+    void _undeclared;
+    return unmarked;
+  });
+}
 
 /** App-level obligation, independent of the tool choice sent on the wire. */
 export function missingRequiredToolCall(
@@ -490,17 +575,22 @@ export async function runProviderToolLoop(
         input.projectToolResultForProvider,
         input.toolResultNoteForProvider
       );
-      const gated = (entry: ToolLoopSettledCall<ToolExecutionResult>) => input.isApprovalGatedCall?.(entry.call) === true;
+      const roundCall = (entry: ToolLoopSettledCall<ToolExecutionResult>): ToolRoundCall =>
+        input.isRepeatBlockedCall?.(entry.call) === true ? "repeat_blocked"
+          : input.isUnknownToolCall?.(entry.call) === true ? "unknown_tool"
+          : input.isApprovalGatedCall?.(entry.call) === true ? "approval_gated" : "executed";
+      const previousRound = previousToolResults[0]?.round;
+      const stalled = stalledToolRound(previousToolResults.map(roundCall),
+        previousRound !== undefined && input.unknownToolCorrectionSpent?.(previousRound) === true);
       const decision = toolSynthesisDecision({
-        approvalRequired: previousToolResults.some(gated) && previousToolResults.every(entry =>
-          gated(entry) || input.isRepeatBlockedCall?.(entry.call) === true),
+        approvalRequired: stalled === "approval_required",
         budgets: input.budgets,
         continuation,
         initialToolChoice: input.initialRequest.toolChoice,
-        noProgress: previousToolResults.length > 0 && input.isRepeatBlockedCall !== undefined &&
-          previousToolResults.every(entry => input.isRepeatBlockedCall!(entry.call)),
+        noProgress: stalled === "no_progress",
         progress,
-        timeExhausted: input.timeBudgetExhausted?.() === true
+        timeExhausted: input.timeBudgetExhausted?.() === true,
+        unknownTool: stalled === "unknown_tool"
       });
       // An exactly used budget first offers an outstanding reserved call
       // alone; synthesis follows once it was made or refused.
@@ -719,14 +809,16 @@ export async function runProviderToolLoop(
           status: "error" as const
         };
       }
-      const normalizedCalls = calls.map((call) => {
-        const name = input.normalizeToolCallName?.(call.name, advertisedToolNames) ?? call.name;
-        return name === call.name ? call : { ...call, name };
-      });
-      const normalizedResult = normalizedCalls.some((call, index) => call !== calls[index])
-        ? { ...result, toolCalls: normalizedCalls }
+      // The batch is judged against this provider round's declarations before
+      // anything is persisted or executed. Discovery can add authority only to
+      // a later request, even when a provider omits/ignores its optional
+      // parallel flag: a call the round did not declare never executes.
+      const roundCalls = roundToolCalls(calls, advertisedToolNames, input.normalizeToolCallName);
+      const transcriptCalls = providerRoundToolCalls(roundCalls);
+      const normalizedResult = transcriptCalls.some((call, index) => call !== calls[index])
+        ? { ...result, toolCalls: transcriptCalls }
         : result;
-      if (required && missingRequiredToolCall(input.initialRequest, normalizedCalls)) {
+      if (required && missingRequiredToolCall(input.initialRequest, roundCalls.filter(call => !call.undeclared))) {
         if (calls.length > 0 || continuation.requiredToolCorrection || synthesis) {
           return { error: REQUIRED_TOOL_CALL_FAILURE, status: "error" as const };
         }
@@ -738,26 +830,11 @@ export async function runProviderToolLoop(
         return { continuation: correction, status: "continue" as const };
       }
       if (calls.length === 0) return { final: result, status: "complete" as const };
-      // Validate the entire batch against this provider round before persisting
-      // or executing any call. Discovery can add authority only to a later
-      // request, even when a provider omits/ignores its optional parallel flag.
-      const unsupportedCall = normalizedCalls.find((call) => !advertisedToolNames.has(call.name));
-      if (unsupportedCall) {
-        return {
-          error: {
-            code: "unsupported_tool_call",
-            fatal: true,
-            message: `The model requested a tool that was not available in this step: ${unsupportedCall.name}.`,
-            toolName: unsupportedCall.name
-          },
-          status: "error" as const
-        };
-      }
       // Executed or refused with its batch, the reserved call is no longer
       // outstanding: the round after an exhausted budget then synthesizes.
-      if (reserved && normalizedCalls.some((call) => call.name === reserved.name)) reservedCalled = true;
+      if (reserved && roundCalls.some((call) => call.name === reserved.name)) reservedCalled = true;
       return {
-        calls: normalizedCalls,
+        calls: roundCalls,
         continuation: providerToolLoopContinuationAfterResult(
           input.bridge,
           dispatchedContinuation,
