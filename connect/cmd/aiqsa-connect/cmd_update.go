@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/insciqq/AIQSA/connect/internal/api"
 	"github.com/insciqq/AIQSA/connect/internal/config"
@@ -110,9 +111,36 @@ type autoUpdater struct {
 	source    updateSource
 	log       *logx.Logger
 	notices   io.Writer
-	attempted map[string]bool
+	now       func() time.Time
+	attempts  map[string]updateAttempts
 	busy      bool
 	installed string
+}
+
+// updateAttempts is what the updater remembers about one announced server
+// version: a permanent failure ends the attempts, any other failure delays
+// the next one.
+type updateAttempts struct {
+	permanent bool
+	failures  int
+	retryAt   time.Time
+}
+
+// Pauses before an automatic update is tried again after a failure that may
+// pass (network, timeouts, refusals): doubling from updateRetryMin up to
+// updateRetryMax and never giving up, so a client its server refuses as
+// outdated catches up once the server answers again.
+const (
+	updateRetryMin = 5 * time.Minute
+	updateRetryMax = time.Hour
+)
+
+func updateRetryDelay(failures int) time.Duration {
+	delay := updateRetryMin
+	for i := 1; i < failures && delay < updateRetryMax; i++ {
+		delay *= 2
+	}
+	return min(delay, updateRetryMax)
 }
 
 func (u *autoUpdater) bindUp(ctx context.Context, stop context.CancelFunc, origin string, log *logx.Logger, notices io.Writer) {
@@ -120,10 +148,15 @@ func (u *autoUpdater) bindUp(ctx context.Context, stop context.CancelFunc, origi
 	defer u.mu.Unlock()
 	u.ctx, u.stop, u.log, u.notices = ctx, stop, log, notices
 	u.source = newUpdateClient(origin)
-	u.attempted = map[string]bool{}
+	u.attempts = map[string]updateAttempts{}
+	if u.now == nil {
+		u.now = time.Now
+	}
 }
 
-// OnServerVersion runs on the stream goroutine; the download runs in the background.
+// OnServerVersion runs on the stream goroutine; the download runs in the
+// background. It is called after every hello and every outdated refusal, so
+// a failed attempt is retried on a later call once its pause is over.
 func (u *autoUpdater) OnServerVersion(server, minClient string) {
 	if version == "dev" || server == "dev" || server == version {
 		return
@@ -131,17 +164,21 @@ func (u *autoUpdater) OnServerVersion(server, minClient string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	// server is empty after an outdated refusal without a hello: the manifest names the version.
-	if u.source == nil || u.busy || u.installed != "" || u.attempted[server] {
+	if u.source == nil || u.busy || u.installed != "" {
 		return
 	}
-	u.attempted[server] = true
+	if previous := u.attempts[server]; previous.permanent || u.now().Before(previous.retryAt) {
+		return
+	}
 	u.busy = true
 	ctx, source, log := u.ctx, u.source, u.log
 	go func() {
 		executable := selfExecutable()
 		var result update.Result
-		err := errors.New("cannot find this program's own file")
-		if executable != "" {
+		var err error
+		if executable == "" {
+			err = errors.New("cannot find this program's own file")
+		} else {
 			log.Event("update_start")
 			result, err = source.Install(ctx, executable, server)
 		}
@@ -149,10 +186,22 @@ func (u *autoUpdater) OnServerVersion(server, minClient string) {
 		defer u.mu.Unlock()
 		u.busy = false
 		if err != nil {
-			if ctx.Err() == nil {
-				log.Event("update_failed", "not_writable", errors.Is(err, update.ErrNotWritable))
-				u.notice("aiqsa-connect could not update itself: %s. It keeps running version %s.", updateFailure(err), version)
+			if ctx.Err() != nil {
+				return
 			}
+			attempts := u.attempts[server]
+			attempts.permanent = executable == "" || update.Permanent(err)
+			log.Event("update_failed", "not_writable", errors.Is(err, update.ErrNotWritable), "permanent", attempts.permanent)
+			if attempts.permanent {
+				u.notice("aiqsa-connect could not update itself: %s. It keeps running version %s.", updateFailure(err), version)
+			} else {
+				attempts.failures++
+				delay := updateRetryDelay(attempts.failures)
+				attempts.retryAt = u.now().Add(delay)
+				u.notice("aiqsa-connect could not update itself: %s. It keeps running version %s and tries again in %d minutes.",
+					updateFailure(err), version, int(delay/time.Minute))
+			}
+			u.attempts[server] = attempts
 			return
 		}
 		log.Event("update_installed")

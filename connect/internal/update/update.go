@@ -44,6 +44,23 @@ var (
 	ErrUnsupported = errors.New("the AIQSA server offers no aiqsa-connect for this computer")
 )
 
+// permanentError is a failure that trying again against the same server
+// version cannot fix.
+type permanentError struct{ err error }
+
+func (e permanentError) Error() string { return e.err.Error() }
+func (e permanentError) Unwrap() error { return e.err }
+
+// Permanent reports whether err from Install repeats on every attempt for
+// the same announced server version: an unwritable directory, no binary for
+// this computer, a development build, or a server offering or building
+// another version than it announces. Other failures (network, timeouts,
+// refusals, checksums) may pass on a later attempt.
+func Permanent(err error) bool {
+	var permanent permanentError
+	return errors.As(err, &permanent) || errors.Is(err, ErrNotWritable) || errors.Is(err, ErrUnsupported)
+}
+
 // Refusal is a refused manifest or download request.
 type Refusal struct {
 	Status int
@@ -178,10 +195,10 @@ func (c *Client) Install(ctx context.Context, executable, want string) (Result, 
 		return Result{}, err
 	}
 	if manifest.Version == "dev" {
-		return Result{}, errors.New("the AIQSA server offers a development build of aiqsa-connect, which is never installed automatically")
+		return Result{}, permanentError{errors.New("the AIQSA server offers a development build of aiqsa-connect, which is never installed automatically")}
 	}
 	if want != "" && manifest.Version != want {
-		return Result{}, fmt.Errorf("the AIQSA server runs %s but offers aiqsa-connect %s", want, manifest.Version)
+		return Result{}, permanentError{fmt.Errorf("the AIQSA server runs %s but offers aiqsa-connect %s", want, manifest.Version)}
 	}
 	var target *protocol.ClientTarget
 	for i := range manifest.Targets {
@@ -249,7 +266,7 @@ func (c *Client) Install(ctx context.Context, executable, want string) (Result, 
 	if got, err := reportedVersion(ctx, tmpName); err != nil {
 		return Result{}, fmt.Errorf("the downloaded aiqsa-connect does not run: %w", err)
 	} else if got != manifest.Version {
-		return Result{}, fmt.Errorf("the downloaded aiqsa-connect reports version %s, not %s", strconv.Quote(got), manifest.Version)
+		return Result{}, permanentError{fmt.Errorf("the downloaded aiqsa-connect reports version %s, not %s", strconv.Quote(got), manifest.Version)}
 	}
 	if err := os.Rename(tmpName, executable); err != nil {
 		if errors.Is(err, fs.ErrPermission) {
