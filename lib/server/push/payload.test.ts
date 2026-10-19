@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { browserPushMessage } from "./payload";
+import { browserPushMessage, connectPushMessage } from "./payload";
 import type { OccurrencePushEvent } from "./store";
 
 const occurrence: OccurrencePushEvent = {
@@ -75,5 +75,15 @@ describe("browser push message", () => {
     expect([...long.title]).toHaveLength(120);
     expect(long.title.endsWith("…")).toBe(true);
     expect(browserPushMessage({ chatId: "c", kind: "run", status: "complete", title: " \n ", userId: "u" }).title).toBe("AIQSA chat");
+  });
+
+  it("names an AIQSA Connect session that needs its owner with fixed copy and links the session", () => {
+    const deviceId = "0b5e8c1e-7f43-4c55-9a43-7d1f5c0e2a11";
+    expect(connectPushMessage({ deviceId, sessionId: "ac-abc123", sessionTitle: "Fix\u001b[31m build", status: "needs_approval" })).toEqual({
+      body: "Needs approval", tag: `aiqsa-connect-${deviceId}-ac-abc123`, title: "Fix [31m build", url: `/connect/${deviceId}/ac-abc123`, v: 1
+    });
+    expect(connectPushMessage({ deviceId, sessionId: "ac-abc123", sessionTitle: " ", status: "waiting" }))
+      .toMatchObject({ body: "Waiting for you", title: "AIQSA Connect" });
+    expect([...connectPushMessage({ deviceId, sessionId: "ac-abc123", sessionTitle: "x".repeat(300), status: "waiting" }).title]).toHaveLength(120);
   });
 });
