@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/insciqq/AIQSA/connect/internal/api"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
+	"github.com/insciqq/AIQSA/connect/internal/tmux"
 )
 
 // viewInputQueue bounds the input chunks waiting for one PTY.
@@ -23,10 +25,13 @@ type view struct {
 	c         *connection
 	id        string
 	sessionID string
-	cmd       *exec.Cmd
-	pty       *os.File
-	input     chan []byte
-	done      chan struct{}
+	// agent is set for Claude Code and Codex sessions, whose status
+	// describes agent turns; input marks only those running.
+	agent bool
+	cmd   *exec.Cmd
+	pty   *os.File
+	input chan []byte
+	done  chan struct{}
 	// closing is set once the client closes the view or it exited.
 	closing atomic.Bool
 
@@ -58,12 +63,12 @@ func (c *connection) openView(m *protocol.ViewOpen) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
-	exists, err := c.d.tmux.Exists(ctx, m.SessionID)
+	program, err := c.d.tmux.Option(ctx, m.SessionID, tmux.OptionProgram)
 	cancel()
-	if err != nil || !exists {
-		reason := protocol.ViewClosedSessionEnded
-		if err != nil {
-			reason = protocol.ViewClosedError
+	if err != nil {
+		reason := protocol.ViewClosedError
+		if errors.Is(err, tmux.ErrSessionNotFound) {
+			reason = protocol.ViewClosedSessionEnded
 		}
 		c.d.log.Event("view_open_refused", "reason", reason)
 		c.pushViewClosed(m.ViewID, reason)
@@ -80,6 +85,7 @@ func (c *connection) openView(m *protocol.ViewOpen) {
 		c:         c,
 		id:        m.ViewID,
 		sessionID: m.SessionID,
+		agent:     isAgent(protocol.Program(program)),
 		cmd:       cmd,
 		pty:       ptmx,
 		input:     make(chan []byte, viewInputQueue),
@@ -114,7 +120,13 @@ func (c *connection) viewInput(m *protocol.ViewInput) {
 		c.closeView(v, protocol.ViewClosedError)
 		return
 	}
-	c.d.reportInput(v.sessionID)
+	if v.agent {
+		c.d.reportInput(v.sessionID)
+	}
+}
+
+func isAgent(program protocol.Program) bool {
+	return program == protocol.ProgramClaude || program == protocol.ProgramCodex
 }
 
 func (c *connection) viewResize(m *protocol.ViewResize) {

@@ -135,6 +135,10 @@ type Daemon struct {
 	conn      *connection
 	lastHello *protocol.Hello
 
+	// createSlot serializes session_create's count-then-create, so
+	// concurrent requests cannot pass the session limit together.
+	createSlot chan struct{}
+
 	// reportMu serializes ReportStatus; statusMu guards status, the last
 	// status known for each session.
 	reportMu sync.Mutex
@@ -171,15 +175,16 @@ func New(opts Options) (*Daemon, error) {
 		updater = NoopUpdater{}
 	}
 	return &Daemon{
-		api:     client,
-		tmux:    opts.Tmux,
-		log:     log,
-		updater: updater,
-		notices: opts.Notices,
-		recent:  &recentDirs{path: opts.Paths.RecentDirsFile()},
-		home:    validHome(home),
-		timing:  opts.Timing.withDefaults(),
-		status:  map[string]protocol.SessionStatus{},
+		api:        client,
+		tmux:       opts.Tmux,
+		log:        log,
+		updater:    updater,
+		notices:    opts.Notices,
+		recent:     &recentDirs{path: opts.Paths.RecentDirsFile()},
+		home:       validHome(home),
+		timing:     opts.Timing.withDefaults(),
+		status:     map[string]protocol.SessionStatus{},
+		createSlot: make(chan struct{}, 1),
 	}, nil
 }
 
