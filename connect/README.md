@@ -42,9 +42,16 @@ aiqsa-connect login https://ai.example.com
 ```
 
 It prints a code and a link. Open the link in AIQSA (you are already signed
-in), check the code and approve this computer. Only `https://` addresses are
-accepted, except `http://localhost` for development. The device token is
-stored in `~/.config/aiqsa-connect/credentials.json`, readable only by you.
+in), check the code and approve this computer. The device token is stored in
+`~/.config/aiqsa-connect/credentials.json`, readable only by you.
+
+Use `https://`. Plain `http://` works only on your local network: the address
+(or every address its name resolves to) must be loopback, private (`10.x`,
+`172.16–31.x`, `192.168.x`, `fc00::/7`), link-local or a Tailscale `100.x`
+address, and the client then connects directly, never through a proxy. Over
+`http://` the device token and the terminal travel unencrypted, so use it only
+on a network you trust; browsers also turn off notifications and dictation
+without HTTPS.
 
 ## Set up tmux and the agent hooks
 

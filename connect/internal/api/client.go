@@ -12,10 +12,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 )
 
@@ -32,24 +36,63 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// ErrPlainHTTPNotLocal refuses a plain http connection outside the local
+// network: the device token and the terminal would travel unencrypted.
+var ErrPlainHTTPNotLocal error = plainHTTPError{}
+
+type plainHTTPError struct{}
+
+func (plainHTTPError) Error() string {
+	return "this address is outside your local network, where http:// is refused; use https://"
+}
+
+func (plainHTTPError) LogCode() string { return "http_not_local" }
+
 // NewHTTPClient returns an HTTP client without a cookie jar and without
 // redirects, so the bearer token only ever goes to the configured origin.
+// Plain http goes directly, never through a proxy, and only to addresses on
+// the local network.
 func NewHTTPClient() *http.Client {
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	return &http.Client{
+		Transport: schemeTransport{
+			secure: newTransport(http.ProxyFromEnvironment, nil),
+			plain:  newTransport(nil, refuseNonLocal),
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func newTransport(proxy func(*http.Request) (*url.URL, error), control func(string, string, syscall.RawConn) error) *http.Transport {
+	return &http.Transport{
+		Proxy:                 proxy,
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second, Control: control}).DialContext,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConnsPerHost:   4,
 		ForceAttemptHTTP2:     true,
 	}
-	return &http.Client{
-		Transport: transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+}
+
+// schemeTransport sends plain http through its own transport.
+type schemeTransport struct{ secure, plain *http.Transport }
+
+func (t schemeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme == "http" {
+		return t.plain.RoundTrip(req)
 	}
+	return t.secure.RoundTrip(req)
+}
+
+// refuseNonLocal runs before each plain http connection, on the resolved
+// address, so a host name is checked for every address it resolves to.
+func refuseNonLocal(_, address string, _ syscall.RawConn) error {
+	if addr, err := netip.ParseAddrPort(address); err != nil || !config.IsLocalIP(addr.Addr()) {
+		return ErrPlainHTTPNotLocal
+	}
+	return nil
 }
 
 // New returns a client for origin; token may be empty for pairing.
@@ -119,6 +162,9 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body any) 
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	resp, err := c.HTTP.Do(req)
+	if errors.Is(err, ErrPlainHTTPNotLocal) {
+		return nil, ErrPlainHTTPNotLocal
+	}
 	if err != nil {
 		return nil, err
 	}

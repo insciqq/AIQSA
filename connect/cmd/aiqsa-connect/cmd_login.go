@@ -116,6 +116,9 @@ func runLogin(inv *invocation) int {
 		fmt.Fprintf(inv.stderr, "aiqsa-connect login: %s\n", describeAPIError(origin, err))
 		return 1
 	}
+	if config.IsUnencryptedOrigin(origin) {
+		fmt.Fprintln(inv.stderr, "aiqsa-connect login: warning: http:// sends this computer's token and the terminal unencrypted; use it only on a network you trust. Browsers also turn off notifications and dictation without https://.")
+	}
 	fmt.Fprintf(inv.stdout, "Open %s and approve this computer. Code: %s\n", pairing.VerificationURI, pairing.UserCode)
 	fmt.Fprintln(inv.stdout, "Waiting for approval…")
 	approved, err := client.WaitForApproval(inv.ctx, pairing, loginPairOptions)
@@ -142,6 +145,9 @@ func runLogin(inv *invocation) int {
 
 // describeAPIError explains a failed device API call without echoing the server's body.
 func describeAPIError(origin string, err error) string {
+	if errors.Is(err, api.ErrPlainHTTPNotLocal) {
+		return fmt.Sprintf("%s: %v", origin, err)
+	}
 	apiErr, ok := api.AsError(err)
 	if !ok {
 		return fmt.Sprintf("cannot reach AIQSA at %s: %v", origin, err)

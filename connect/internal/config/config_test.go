@@ -18,6 +18,12 @@ func TestNormalizeOrigin(t *testing.T) {
 		"http://127.0.0.1:3000/":       "http://127.0.0.1:3000",
 		"http://127.10.0.1":            "http://127.10.0.1",
 		"http://[::1]:3000":            "http://[::1]:3000",
+		"http://192.168.1.10:3000":     "http://192.168.1.10:3000",
+		"http://10.0.0.1":              "http://10.0.0.1",
+		"http://100.101.102.103":       "http://100.101.102.103",
+		"http://[fd12::1]:3000":        "http://[fd12::1]:3000",
+		// A name is checked on every address it resolves to (api transport).
+		"http://AIQSA.lan:3000": "http://aiqsa.lan:3000",
 	}
 	for raw, want := range accepted {
 		got, err := NormalizeOrigin(raw)
@@ -26,8 +32,8 @@ func TestNormalizeOrigin(t *testing.T) {
 		}
 	}
 	refused := []string{
-		"", "ai.example.com", "ftp://ai.example.com", "http://ai.example.com",
-		"http://10.0.0.1", "http://localhost.example.com", "https://ai.example.com/app",
+		"", "ai.example.com", "ftp://ai.example.com", "http://8.8.8.8", "http://192.0.2.1:3000",
+		"http://172.32.0.1", "http://[2001:4860::8888]", "http://0.0.0.0", "http://[fe80::1%25eth0]:3000", "https://ai.example.com/app",
 		"https://ai.example.com/?x=1", "https://ai.example.com/#top", "https://user:pw@ai.example.com",
 		"https://ai.example.com:0", "https://ai.example.com:99999", "https://", "https://ai.example.com:",
 		"https://ai.example.com?", "javascript:alert(1)",
@@ -35,6 +41,17 @@ func TestNormalizeOrigin(t *testing.T) {
 	for _, raw := range refused {
 		if got, err := NormalizeOrigin(raw); err == nil {
 			t.Errorf("NormalizeOrigin(%q) accepted as %q", raw, got)
+		}
+	}
+}
+
+func TestIsUnencryptedOrigin(t *testing.T) {
+	for origin, want := range map[string]bool{
+		"https://ai.example.com": false, "http://localhost:3000": false, "http://127.0.0.1:3000": false,
+		"http://[::1]:3000": false, "http://192.168.1.10:3000": true, "http://aiqsa.lan": true,
+	} {
+		if got := IsUnencryptedOrigin(origin); got != want {
+			t.Errorf("IsUnencryptedOrigin(%q) = %v, want %v", origin, got, want)
 		}
 	}
 }
@@ -144,7 +161,7 @@ func TestCredentialsRejectDamagedFiles(t *testing.T) {
 	for _, body := range []string{
 		`not json`,
 		`{"origin":"https://ai.example.com","deviceId":"x","deviceToken":"y"}`,
-		`{"origin":"http://ai.example.com","deviceId":"0b5e8c1e-7f43-4c55-9a43-7d1f5c0e2a11","deviceToken":"aiqsa_connect_` + strings.Repeat("A", 43) + `"}`,
+		`{"origin":"http://8.8.8.8","deviceId":"0b5e8c1e-7f43-4c55-9a43-7d1f5c0e2a11","deviceToken":"aiqsa_connect_` + strings.Repeat("A", 43) + `"}`,
 		`{"origin":"https://ai.example.com","deviceId":"0b5e8c1e-7f43-4c55-9a43-7d1f5c0e2a11","deviceToken":"aiqsa_connect_` + strings.Repeat("A", 43) + `","extra":1}`,
 	} {
 		if err := os.WriteFile(paths.CredentialsFile(), []byte(body), 0o600); err != nil {
