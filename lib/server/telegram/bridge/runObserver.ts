@@ -34,9 +34,10 @@ export async function publishTelegramDelivery(
 ): Promise<void> {
   if (result.state === "skipped" || !result.answer) return;
   const status = result.answer.status === "streaming" ? "complete" : result.answer.status;
-  await publish({ messageIds: result.messageIds, sent: result.state === "delivered", status, type: "delivered" }, {
-    ...context, bot: result.bot, chatId: result.answer.chatId
-  });
+  const summary = result.answer.artifactSummary;
+  await publish({
+    messageIds: result.messageIds, sent: result.state === "delivered", status, type: "delivered", ...(summary ? { artifactSummary: summary } : {})
+  }, { ...context, bot: result.bot, chatId: result.answer.chatId });
 }
 
 export async function observeTelegramRun(deps: TelegramRunObserverDeps, input: TelegramRunObservation): Promise<void> {
