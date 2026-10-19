@@ -44,8 +44,8 @@ const SECTION_META: Record<SettingsSectionV2, Readonly<{ icon: UiV2IconName; lab
 };
 
 const THEME_CAPTIONS: Record<ThemeId, string> = {
-  dark: "Deep navy",
-  light: "Cool paper",
+  dark: "Graphite",
+  light: "Paper",
   system: "Follow this device"
 };
 
