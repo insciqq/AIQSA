@@ -76,7 +76,8 @@ export function unlinkAdminUserTelegram(userId: string, fetcher: Fetcher = fetch
 }
 
 const HEALTH_MESSAGES: Readonly<Record<string, string>> = {
-  telegram_poll_conflict: "Another program is reading this bot's updates. Stop it, or create a new token in @BotFather and use Test & Save.",
+  telegram_poll_conflict: "Another program is reading this bot's updates. A second AIQSA instance during a restart or deploy " +
+    "causes this briefly; if it persists, stop the other program or create a new token in @BotFather and use Test & Save.",
   telegram_token_rejected: "Telegram rejected the bot token. Create a new token in @BotFather and use Test & Save.",
   telegram_unreachable: "AIQSA cannot reach Telegram. Check the server's outbound network and try again."
 };

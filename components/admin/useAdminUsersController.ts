@@ -146,7 +146,7 @@ export function useAdminUsersController({
       dialogLabel: `Revoke sessions for ${userLabel(user)}`,
       icon: "x",
       message: "User sessions revoked.",
-      prompt: `Revoke active sessions for ${userLabel(user)}? They will need to sign in again.`,
+      prompt: `Revoke active sessions for ${userLabel(user)}? They will need to sign in again and reconnect Telegram.`,
       testId: "admin-confirm-revoke-user-sessions",
       title: "Revoke user sessions?",
       tone: "warning"
@@ -185,7 +185,7 @@ export function useAdminUsersController({
           message: "User sessions and connected apps revoked. The account stays active until Project ownership is transferred.",
           prompt: `${userLabel(user)} was not disabled: they are the only active Owner of ${soleOwnedProjectsLabel(result)}. ` +
             "Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. " +
-            "Revoke their sessions and connected apps now? They will need to sign in again.",
+            "Revoke their sessions and connected apps now? They will need to sign in again and reconnect Telegram.",
           testId: "admin-confirm-revoke-sessions-after-owner-conflict",
           title: "Revoke sessions instead?",
           tone: "warning"
@@ -233,7 +233,8 @@ export function useAdminUsersController({
       dialogLabel: "Revoke all sessions",
       icon: "x",
       message: "All sessions revoked.",
-      prompt: "Revoke every active session, including yours? Everyone will need to sign in again.",
+      prompt: "Revoke every active session, including yours? Everyone will need to sign in again, " +
+        "and every Telegram account is disconnected until its user connects it again.",
       testId: "admin-confirm-revoke-all-sessions",
       title: "Revoke all sessions?",
       tone: "warning"
