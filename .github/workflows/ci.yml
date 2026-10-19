@@ -38,6 +38,16 @@ jobs:
           command -v shellcheck >/dev/null || { echo "shellcheck is missing on this runner" >&2; exit 1; }
           shellcheck aiqsa.sh
 
+      # The AIQSA Connect client is a Go module outside check:hermetic.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: connect/go.mod
+          cache-dependency-path: connect/go.sum
+
+      - name: Check the AIQSA Connect client
+        run: npm run check:connect
+
       - name: Run authoritative hermetic checks
         env:
           NODE_OPTIONS: --max-old-space-size=8192

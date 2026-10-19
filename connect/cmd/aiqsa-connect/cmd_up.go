@@ -64,6 +64,11 @@ func runUp(inv *invocation) int {
 		return 1
 	}
 	creds, err := paths.LoadCredentials()
+	if errors.Is(err, config.ErrNotLoggedIn) {
+		// No network call: a service manager restarting this must not reach the server.
+		fmt.Fprintln(inv.stderr, "aiqsa-connect: not logged in — run aiqsa-connect login <AIQSA address>")
+		return exitRevoked
+	}
 	if err != nil {
 		fmt.Fprintf(inv.stderr, "aiqsa-connect up: %v\n", err)
 		return 1
@@ -110,16 +115,26 @@ func runUp(inv *invocation) int {
 	}
 	ctx, cancel := context.WithCancel(inv.ctx)
 	defer cancel()
+	binder, _ := updater.(upBinder)
+	if binder != nil {
+		binder.bindUp(ctx, cancel, creds.Origin, log, inv.stderr)
+	}
 	for _, hook := range upHooks {
 		if err := hook(ctx, d); err != nil {
 			fmt.Fprintf(inv.stderr, "aiqsa-connect up: %v\n", err)
 		}
 	}
 	err = d.Run(ctx)
+	if err == nil && inv.ctx.Err() == nil && binder != nil {
+		if code, restarted := binder.restartUpdated(inv.stderr); restarted {
+			return code
+		}
+	}
 	switch {
 	case err == nil:
 		return 0
 	case errors.Is(err, daemon.ErrRevoked):
+		retireRevokedCredentials(paths, creds)
 		fmt.Fprintln(inv.stderr, "aiqsa-connect: device revoked — run aiqsa-connect login")
 		return exitRevoked
 	case errors.Is(err, daemon.ErrReplaced):
@@ -128,4 +143,15 @@ func runUp(inv *invocation) int {
 	}
 	fmt.Fprintf(inv.stderr, "aiqsa-connect up: %v\n", err)
 	return 1
+}
+
+// retireRevokedCredentials moves the revoked token aside, so a restarted `up`
+// stops at once without asking the server again. Credentials written by a
+// newer login stay.
+func retireRevokedCredentials(paths config.Paths, revoked config.Credentials) {
+	current, err := paths.LoadCredentials()
+	if err != nil || current.DeviceToken != revoked.DeviceToken {
+		return
+	}
+	os.Rename(paths.CredentialsFile(), filepath.Join(paths.ConfigDir, "credentials.revoked.json"))
 }
