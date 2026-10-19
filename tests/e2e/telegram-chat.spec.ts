@@ -71,7 +71,9 @@ async function nextAnswer(since: number, timeout = REPLY_TIMEOUT_MS): Promise<Fa
     await expect.poll(() => callsSince(since, "sendRichMessage", tgAlice.id).length, { timeout }).toBeGreaterThan(0);
   } catch (error) {
     // Name what the bot did instead, so a missing answer is diagnosable from the report.
-    const seen = bot.calls().slice(since).map((call) => `${call.method}:${call.status}`).join(", ") || "nothing";
+    const seen = bot.calls().slice(since).filter((call) => call.method !== "getUpdates")
+      .map((call) => `${call.method}:${call.status}${call.method === "sendMessage" ? ` ${JSON.stringify(String(call.params.text).slice(0, 160))}` : ""}`)
+      .join(", ") || "nothing";
     throw new Error(`no rich answer within ${timeout} ms; the bot sent: ${seen}`, { cause: error });
   }
   return callsSince(since, "sendRichMessage", tgAlice.id)[0]!;
