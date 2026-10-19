@@ -18,6 +18,7 @@ import { activeRunStaleMs } from "../../runs/runRecovery";
 import type { TelegramAccessResolver } from "../control/access";
 import { createPrismaTelegramChatListStore } from "../store/chats";
 import type { TelegramRunGateway } from "./gateway";
+import { telegramRequestAuth } from "./requestAuth";
 
 /**
  * The bridge's AIQSA operations in this process, through the product's own
@@ -58,15 +59,7 @@ export function createDefaultTelegramRunGateway(deps: Readonly<{ access: Pick<Te
 
   /** The linked user while the account is active and Telegram access holds, re-read on every call. */
   function telegramAuth(userId: string): RequestAuthResolver {
-    return async () => {
-      const [user, access] = await Promise.all([
-        prisma.user.findUnique({ select: { displayName: true, email: true, id: true, role: true, status: true }, where: { id: userId } }),
-        deps.access.resolveTelegramAccess(userId)
-      ]);
-      return user && user.status === "active" && access.allowed
-        ? { expiresAt: new Date(Date.now() + 60_000), id: "telegram", user, userId: user.id }
-        : null;
-    };
+    return telegramRequestAuth(deps.access, userId);
   }
 
   return Object.freeze({
