@@ -226,7 +226,8 @@ describe("persisted scheduled task chat rotation", () => {
     await createPrismaScheduledTaskStore(prisma).update(userId, taskId, { draft: {
       title: "Synthetic brief", prompt: "Another synthetic question", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
       modelId: providerTemplateIds.fakeModel, provider: providerTemplateIds.fakeConnection, searchEnabled: false, emailNotify: false,
-      toolsEnabled: false, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], chatMode: "same", kind: "standard",
+      telegramNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], chatMode: "same",
+      kind: "standard",
       historyRetentionDays: 90
     }, expectedRevision: current.revision, nextRunAt: null, promptUrls: scheduledPromptUrlDigests("", { kind: "owner" }),
     status: "paused" });

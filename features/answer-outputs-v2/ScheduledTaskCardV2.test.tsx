@@ -12,7 +12,8 @@ const card: ScheduledTaskCard = {
 };
 const listed: ScheduledTask = {
   id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.", schedule: card.schedule, timeZone: "Europe/Moscow",
-  modelId: "model-1", provider: "connection-1", searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: true,
+  modelId: "model-1", provider: "connection-1", searchEnabled: false, emailNotify: false, telegramNotify: false, toolsEnabled: true,
+  workspaceEnabled: true,
   memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", historyRetentionDays: 90, historyDeletedChats: 0,
   historyNextDeletionAt: null, status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 1,
@@ -213,7 +214,7 @@ describe("cards of tasks an answer managed", () => {
   it("asks the ready list to read a task the answer changed, once per state", async () => {
     activateScheduledTasksAccount("account-1");
     const fetchMock = vi.fn(async () => Response.json({ tasks: [{ ...listed, status: "paused", nextRunAt: null }],
-      emailAvailable: false, limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 } }));
+      emailAvailable: false, telegramAvailable: false, limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 } }));
     vi.stubGlobal("fetch", fetchMock);
     useScheduledTasksStore.setState({ loadState: "ready", tasks: [listed] });
     const paused: ScheduledTaskCard = { ...card, action: "paused", nextRunAt: null, status: "paused" };
@@ -233,7 +234,7 @@ describe("a created task and the account's task list", () => {
   it("asks the ready list to read a task it does not know yet, once", async () => {
     activateScheduledTasksAccount("account-1");
     const fetchMock = vi.fn(async () => Response.json({ tasks: [{ ...listed, id: "task-new" }], emailAvailable: false,
-      limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 } }));
+      limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 }, telegramAvailable: false }));
     vi.stubGlobal("fetch", fetchMock);
     // Still loading: the list's own read will include the task.
     useScheduledTasksStore.setState({ loadState: "loading", tasks: [] });
@@ -264,7 +265,7 @@ describe("scheduled task cards in an answer", () => {
 
   it("opens Studio's editor on the task once the account's list knows it", async () => {
     activateScheduledTasksAccount("account-1");
-    const fetchMock = vi.fn(async () => Response.json({ tasks: [listed], emailAvailable: false,
+    const fetchMock = vi.fn(async () => Response.json({ tasks: [listed], emailAvailable: false, telegramAvailable: false,
       limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 } }));
     vi.stubGlobal("fetch", fetchMock);
     const order: string[] = [];

@@ -2,7 +2,7 @@ import {
   parseMarkdown,
   type MarkdownBlock,
   type MarkdownInline
-} from "@/components/chat/markdownParser";
+} from "@/lib/domain/markdown/parser";
 
 /**
  * Pure helpers that turn an answer's Markdown into what the browser's speech

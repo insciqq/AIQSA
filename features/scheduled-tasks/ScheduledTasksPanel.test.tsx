@@ -40,8 +40,8 @@ const run = vi.mocked(runScheduledTaskNow);
 const catalog = scheduledTaskCatalogFixture();
 let account = 0;
 
-function listed(tasks: ScheduledTask[], emailAvailable = false): ScheduledTaskListResponse {
-  return { tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 }, emailAvailable };
+function listed(tasks: ScheduledTask[], emailAvailable = false, telegramAvailable = false): ScheduledTaskListResponse {
+  return { tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 }, emailAvailable, telegramAvailable };
 }
 
 function renderPanel(onOpenChat = vi.fn(), workspace: ScheduledTaskWorkspaceAvailability = "available",
@@ -149,6 +149,51 @@ describe("ScheduledTasksPanel", () => {
     const error = await within(sheet).findByText("This model is no longer available to you. Choose another model.");
     expect(within(sheet).getByLabelText("Model")).toHaveAttribute("aria-describedby", error.id);
     expect(within(sheet).getByLabelText("Name")).toHaveValue("Brief");
+  });
+
+  it("offers Telegram delivery only when results can go there or the task already sends them", async () => {
+    const task = scheduledTaskFixture({ revision: 2 });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [] });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    expect(within(screen.getByRole("dialog", { name: "Edit scheduled task" })).queryByRole("switch", { name: "Send results to Telegram" }))
+      .toBeNull();
+  });
+
+  it("creates a task that sends its results to Telegram", async () => {
+    list.mockResolvedValue(listed([], false, true));
+    create.mockResolvedValueOnce(scheduledTaskFixture({ title: "Brief", telegramNotify: true }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "New task" }));
+    const sheet = screen.getByRole("dialog", { name: "New scheduled task" });
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Brief" } });
+    fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Summarize" } });
+    const telegram = within(sheet).getByRole("switch", { name: "Send results to Telegram" });
+    expect(telegram).toHaveAttribute("aria-checked", "false");
+    expect(telegram).toHaveAccessibleDescription("Telegram receives the result itself.");
+    fireEvent.click(telegram);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create.mock.calls[0]![0]).toMatchObject({ emailNotify: false, telegramNotify: true });
+  });
+
+  it("keeps the Telegram switch of a task that sends there after the link is gone, so it can be turned off", async () => {
+    const task = scheduledTaskFixture({ revision: 2, telegramNotify: true });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [] });
+    update.mockResolvedValueOnce({ ...task, revision: 3, telegramNotify: false });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
+    const telegram = within(sheet).getByRole("switch", { name: "Send results to Telegram" });
+    expect(telegram).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(telegram);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(update).toHaveBeenLastCalledWith(task.id, { expectedRevision: 2, telegramNotify: false });
   });
 
   it("edits with recent runs, reloads a stale task with a notice and keeps the draft", async () => {

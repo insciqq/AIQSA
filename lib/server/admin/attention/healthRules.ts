@@ -165,6 +165,7 @@ const subsystemLabels = {
   push: "Push notifications",
   run_recovery: "Chat run recovery",
   scheduled_tasks: "Scheduled tasks",
+  telegram: "Telegram",
   telemetry: "Health telemetry",
   workspace: "Workspace"
 } as const;

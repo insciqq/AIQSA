@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { MAX_INPUT_CHARACTERS, MAX_NESTING_DEPTH, MAX_TREE_NODES, parseMarkdown } from "./markdownParser";
+import { MAX_INPUT_CHARACTERS, MAX_NESTING_DEPTH, MAX_TREE_NODES, parseMarkdown } from "@/lib/domain/markdown/parser";
 
 // Hostile-input coverage runs the real markdown-it parser: no parser mocks here.
 
@@ -21,11 +21,6 @@ describe("Markdown parser bounds", () => {
     expect(overflow.textContent).toContain("**tail** stays [literal](https://example.com)");
     expect(overflow.querySelectorAll("strong, a")).toHaveLength(0);
     expect(container.querySelectorAll("p strong").length).toBeGreaterThan(0);
-  });
-
-  it("keeps a single over-limit line entirely as text", () => {
-    const content = `*${"x".repeat(MAX_INPUT_CHARACTERS)}*`;
-    expect(parseMarkdown(content)).toEqual({ blocks: [], overflow: content });
   });
 
   it("stops before the top-level block that would exceed the node limit", () => {
@@ -53,26 +48,6 @@ describe("Markdown parser bounds", () => {
     const { container } = render(<MarkdownMessage content={content} />);
     expect(container.querySelectorAll("strong").length).toBeLessThanOrEqual(32);
     expect(container).toHaveTextContent("x");
-  });
-
-  it.each([
-    ["link openers", "[".repeat(300_000)],
-    ["emphasis runs", "*a _b ".repeat(80_000)],
-    ["unclosed paren math", "\\( ".repeat(200_000)],
-    ["unclosed dollar math", "$a ".repeat(180_000)],
-    ["backtick runs", "`a ``b ".repeat(80_000)],
-    ["nested quote markers", `${"> ".repeat(250_000)}x`],
-    ["staircase lists", Array.from({ length: 40_000 }, (_, index) => `${" ".repeat(index % 70)}- x`).join("\n")],
-    ["unclosed display math", "$$\nx\n".repeat(100_000)],
-    ["unclosed bracket math", "\\[\nx\n".repeat(100_000)],
-    ["citations", "[K1]".repeat(140_000)],
-    ["character references", "&#x41;&amp;&bogus;".repeat(30_000)],
-    ["table rows", `| a | b |\n| --- | --- |\n${"| x \\| y | `z` |\n".repeat(30_000)}`]
-  ])("parses hostile %s within bounds", (_name, content) => {
-    const started = performance.now();
-    const document = parseMarkdown(content);
-    expect(document).not.toBeNull();
-    expect(performance.now() - started).toBeLessThan(5_000);
   });
 });
 

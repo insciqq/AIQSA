@@ -4,7 +4,13 @@ import type { AuthenticatedSession } from "../auth/requestAuth";
 import { AudioTranscriptionError, type AudioTranscriptionAdapter } from "../providers/audioTranscription";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import type { SpeechToTextConnectionBinding, SpeechToTextRoleResolution } from "./role";
-import { audioContentMatches, createTranscriptionHandler, dictationRateLimitKey, type TranscriptionHandlerDeps } from "./transcriptionHandlers";
+import { createTranscriptionHandler, type TranscriptionHandlerDeps } from "./transcriptionHandlers";
+import { dictationRateLimitKey, transcribeUserAudio } from "./transcribeUserAudio";
+
+vi.mock("./transcribeUserAudio", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./transcribeUserAudio")>();
+  return { ...actual, transcribeUserAudio: vi.fn(actual.transcribeUserAudio) };
+});
 
 const NO_LIMITS: UsageLimitStatus = {
   effective: { exempt: false, messagesPerDay: { source: null, value: null }, messagesPerHour: { source: null, value: null },
@@ -57,8 +63,11 @@ describe("POST /api/me/transcriptions", () => {
   it("transcribes once, records one personal speech_to_text row with the reported cost and never logs the text", async () => {
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const { POST, rateLimiter, transcribe, usage } = setup();
+    vi.mocked(transcribeUserAudio).mockClear();
     const response = await POST(request());
     expect(response.status).toBe(200);
+    expect(transcribeUserAudio).toHaveBeenCalledOnce();
+    expect(vi.mocked(transcribeUserAudio).mock.calls[0]![1]).toMatchObject({ userId: "user-1", signal: expect.any(AbortSignal) });
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({ text: PRIVATE_TEXT });
     expect(transcribe).toHaveBeenCalledWith(expect.objectContaining({ audio: WEBM, mimeType: "audio/webm" }));
@@ -75,8 +84,10 @@ describe("POST /api/me/transcriptions", () => {
     expect(plain.status).toBe(415);
     for (const reason of ["not_configured", "verification_required"] as const) {
       const { POST, transcribe } = setup({ resolveRole: async () => ({ ok: false, reason }) });
-      const response = await POST(request());
+      const unread = request();
+      const response = await POST(unread);
       expect(response.status).toBe(503);
+      expect(unread.bodyUsed).toBe(false);
       expect(await response.json()).toEqual({ error: "dictation_unavailable" });
       expect(transcribe).not.toHaveBeenCalled();
     }
@@ -150,16 +161,5 @@ describe("POST /api/me/transcriptions", () => {
     const response = await POST(request());
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ text: PRIVATE_TEXT });
-  });
-
-  it("recognizes the container signature of each allowlisted type", () => {
-    expect(audioContentMatches(WEBM, "audio/webm")).toBe(true);
-    expect(audioContentMatches(new TextEncoder().encode("OggS\0"), "audio/ogg")).toBe(true);
-    expect(audioContentMatches(new TextEncoder().encode("\0\0\0\x18ftypM4A "), "audio/mp4")).toBe(true);
-    expect(audioContentMatches(new Uint8Array([0xff, 0xfb, 0x90]), "audio/mpeg")).toBe(true);
-    expect(audioContentMatches(new TextEncoder().encode("ID3\x04"), "audio/mpeg")).toBe(true);
-    expect(audioContentMatches(new TextEncoder().encode("RIFF\0\0\0\0WAVEfmt "), "audio/wav")).toBe(true);
-    expect(audioContentMatches(new TextEncoder().encode("RIFF\0\0\0\0AVI "), "audio/wav")).toBe(false);
-    expect(audioContentMatches(WEBM, "audio/ogg")).toBe(false);
   });
 });

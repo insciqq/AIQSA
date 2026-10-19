@@ -170,6 +170,8 @@ export function createPeopleFixture(
         await tx.assistantPublication.deleteMany({ where: { groupId: { in: groups } } });
         await deleteOwnedSkills(tx, users, groups);
         await tx.userGroup.deleteMany({ where: { OR: [{ userId: { in: users } }, { groupId: { in: groups } }] } });
+        // A session one fixture administrator revoked restricts deleting that administrator.
+        await tx.authSession.deleteMany({ where: { userId: { in: users } } });
         await tx.user.deleteMany({ where: { id: { in: users } } });
         await tx.group.deleteMany({ where: { id: { in: groups } } });
       }, { timeout: 30_000 });

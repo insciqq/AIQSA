@@ -210,11 +210,19 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "settings") {
     const state = fixtureState(
       query.state,
-      ["appearance", "archived", "dirty", "account", "connections", "connections-empty", "connections-error", "connections-rows"] as const,
+      [
+        "appearance", "archived", "dirty", "account", "connections", "connections-empty", "connections-error", "connections-rows",
+        "telegram-access-off", "telegram-bot-changed", "telegram-linked", "telegram-not-linked"
+      ] as const,
       "appearance"
     );
     const { SettingsV2Gallery } = await import("./_fixtures/SettingsV2Gallery");
     return <SettingsV2Gallery state={state} />;
+  }
+  if (query.fixture === "telegram-admin") {
+    const state = fixtureState(query.state, ["attention", "on", "setup"] as const, "on");
+    const { TelegramAdminV2Gallery } = await import("./_fixtures/TelegramAdminV2Gallery");
+    return <TelegramAdminV2Gallery state={state} />;
   }
   if (query.fixture === "projects") {
     const state = fixtureState(
