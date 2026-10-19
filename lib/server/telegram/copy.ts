@@ -51,6 +51,97 @@ export const TELEGRAM_COPY = {
   openSettings: "Open settings"
 } as const;
 
+/** Texts of the chat bridge: commands, menus, routing notices and how an answer ended. */
+export const TELEGRAM_BRIDGE_COPY = {
+  chooseModel: "Choose a model",
+  staleMessage: "This message arrived while the bot was offline. Send it again to get an answer.",
+  nothingRunning: "Nothing is running.",
+  unknownCommand: "Unknown command. /help lists commands.",
+  chatsTitle: "Choose a chat to continue:",
+  noChats: "No chats yet. Send a message to start one.",
+  assistantsTitle: "Choose an assistant. Your next message starts a chat with it:",
+  noAssistants: "No assistants are available to you.",
+  modelsTitle: "Choose the model for your messages:",
+  noModels: "No models are available to you. Ask your AIQSA administrator.",
+  settingsTitle: "Settings for your messages from Telegram:",
+  previousPage: "‹ Back",
+  nextPage: "More ›",
+  replyChatUnavailable: "That chat isn't available anymore, so this goes to your current chat.",
+  currentChatUnavailable: "Your current chat isn't available anymore, so this starts a new chat.",
+  chatUnavailable: "That chat isn't available anymore.",
+  assistantUnavailable: "That assistant isn't available anymore.",
+  modelUnavailable: "That model isn't available anymore.",
+  answerInAiqsa: "The answer is in AIQSA.",
+  answerFailed: "The answer couldn't be completed. Open it in AIQSA for details."
+} as const;
+
+/** A failed answer: the reason AIQSA shows for it in the chat, bounded, or the generic text. */
+export function telegramAnswerFailedText(reason: string | null | undefined): string {
+  const detail = reason ? bounded(reason, 300) : "";
+  return detail ? `The answer couldn't be completed: ${detail.replace(/[.!]$/u, "")}.` : TELEGRAM_BRIDGE_COPY.answerFailed;
+}
+
+/**
+ * Why AIQSA did not start an answer, by family of the send handler's refusal
+ * codes, each naming what to do next (`/model`, `/settings`, `/new` or AIQSA).
+ */
+export const TELEGRAM_RUN_REFUSAL_COPY = {
+  replyRunning: `${TELEGRAM_COPY.replyRunning} Wait for it or stop it in AIQSA.`,
+  usageUnavailable: "Usage limits could not be checked. Try again in a moment.",
+  modelUnavailable: "This model isn't available to you now. Choose another with /model.",
+  noModel: "No model is available to you. Ask your AIQSA administrator.",
+  searchUnavailable: "Search isn't available for this model now. Turn Search off in /settings or choose another model with /model.",
+  workspaceDisabled: "Workspace is off on this AIQSA. Turn Workspace off in /settings.",
+  workspaceModel: "This model can't use Workspace. Choose another with /model or turn Workspace off in /settings.",
+  workspaceUnavailable: "Workspace can't take this message now. Try again, or turn Workspace off in /settings.",
+  agentModel: "This model can't run Agent. Choose another with /model or turn Agent off in /settings.",
+  agentUnavailable: "Agent isn't available for this message. Turn Agent off in /settings or try again later.",
+  toolsUnavailable: "A connected tool this chat uses isn't ready. Review your connections in AIQSA.",
+  skillUnavailable: "A Skill this chat uses isn't available. Review your Skills in AIQSA.",
+  assistantUnavailable: "This assistant isn't available now. Start a new chat with /new or choose another with /assistant.",
+  knowledgeUnavailable: "This chat's Knowledge isn't ready. Continue it in AIQSA or start a new chat with /new.",
+  chatUnavailable: "This chat isn't available anymore. Your next message starts a new chat.",
+  attachmentUnavailable: "An attachment couldn't be used. Open AIQSA to check it.",
+  contextTooLarge: "This chat is too long to continue here. Start a new chat with /new.",
+  tooLong: "This message is too long. Shorten it and send it again.",
+  generic: "AIQSA couldn't answer this message. Try again, or open AIQSA."
+} as const;
+
+function waitText(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds <= 60) return "in a minute";
+  const waitMinutes = Math.ceil(seconds / 60);
+  if (waitMinutes < 60) return `in ${waitMinutes} min`;
+  const hours = Math.round(waitMinutes / 60);
+  if (hours < 48) return `in about ${hours} h`;
+  return `in about ${Math.round(hours / 24)} days`;
+}
+
+/**
+ * A usage limit refusal (`429`): which limit, never the shared installation
+ * amounts, and when sending works again from `retry-after`.
+ */
+export function telegramUsageLimitText(input: Readonly<{
+  code: string; limit?: number | null; retryAfterSeconds?: number | null; window?: string | null;
+}>): string {
+  const when = waitText(input.retryAfterSeconds);
+  switch (input.code) {
+    case "installation_budget_exhausted":
+      return `The monthly budget shared by everyone is used up. You can send messages again ${when}, or sooner if an administrator raises it.`;
+    case "usage_budget_exhausted":
+      return input.limit === 0
+        ? "Your monthly budget is $0.00, so you can't send messages. An administrator can raise it."
+        : `Your monthly budget is used up. You can send messages again ${when}.`;
+    default: {
+      const window = input.window === "day" ? "day" : "hour";
+      if (input.limit === 0) return `Your limit is 0 messages per ${window}, so you can't send messages. An administrator can raise it.`;
+      const reached = typeof input.limit === "number"
+        ? `your limit of ${input.limit} ${input.limit === 1 ? "message" : "messages"} per ${window}`
+        : "your message limit";
+      return `You've reached ${reached}. You can send again ${when}.`;
+    }
+  }
+}
+
 export function telegramConnectedText(name: string): string {
   return `Connected to AIQSA as ${bounded(name)}. Send a message to start a new chat. /help lists commands.`;
 }
@@ -130,8 +221,7 @@ export function telegramReasonText(code: TelegramReasonCode): string | undefined
   return REASON_TEXT[code];
 }
 
-/** Replies of the core bot until the chat bridge answers messages itself. */
+/** Replies of the core account commands. */
 export const TELEGRAM_CORE_COPY = {
-  comingSoon: "Chats from Telegram aren't available on this AIQSA yet. /help lists commands.",
   notConnected: "This Telegram account is not connected to AIQSA."
 } as const;
