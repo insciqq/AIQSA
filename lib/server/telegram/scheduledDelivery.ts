@@ -17,9 +17,8 @@ import type { TelegramSessionProvider } from "./control/session";
 import { telegramScheduledFilesInAiqsaText, telegramScheduledTitle } from "./copy";
 import { getDefaultTelegram } from "./defaultTelegram";
 import type { TelegramDelivery } from "./outbound";
-import { renderTelegramAnswer, type TelegramAnswerCitation, type TelegramAnswerSource } from "./render";
-import { plainBlock, TEXT_LIMIT } from "./render/richText";
-import { packBlocks, splitText } from "./render/split";
+import { plainTelegramMessage, renderTelegramAnswer, type TelegramAnswerCitation, type TelegramAnswerSource } from "./render";
+import { packBlocks } from "./render/split";
 import type { TelegramMessageRefOwner } from "./store/messageRefs";
 import type { TelegramFailure } from "./transport";
 
@@ -163,12 +162,6 @@ function ambiguous(failure: TelegramFailure): boolean {
   return failure.kind === "timeout" || failure.kind === "network_after_send";
 }
 
-/** The plain projection of one rich message, in Telegram text chunks. */
-function plainOf(message: TelegramInputRichMessage): string[] {
-  return splitText(message.blocks.map((block) => plainBlock(block, true)).join("\n\n"), TEXT_LIMIT)
-    .filter((chunk) => chunk.trim());
-}
-
 /** The heading lines: title, outcome, reason, unavailable sources and files left in AIQSA. */
 function headline(context: TelegramScheduledDeliveryContext, filesLeft: number): Readonly<{ title: string; lines: string[] }> {
   const { occurrence, task } = context;
@@ -212,7 +205,7 @@ export function telegramScheduledParts(context: TelegramScheduledDeliveryContext
   const messages = joined.length === 1 ? [joined[0]!, ...rest] : [{ blocks: [heading], skip_entity_detection: true }, ...answer.messages];
   return [
     ...messages.map((message, index): Part => ({
-      kind: "content", message, openInAiqsa: openInAiqsa && index === messages.length - 1, plainFallback: plainOf(message)
+      kind: "content", message, openInAiqsa: openInAiqsa && index === messages.length - 1, plainFallback: plainTelegramMessage(message)
     })),
     ...fileParts
   ];
@@ -297,7 +290,7 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     if (part.kind === "content") {
       if (!owner) return outbound.sendText({ chatId: plan.telegramChatId, text: part.plainFallback.join("\n\n") });
       return outbound.sendContent({
-        chatId: plan.telegramChatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner, plainFallback: part.plainFallback
+        chatId: plan.telegramChatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner
       });
     }
     const maxBytes = part.photo ? TELEGRAM_PHOTO_MAX_BYTES : TELEGRAM_DOCUMENT_MAX_BYTES;
