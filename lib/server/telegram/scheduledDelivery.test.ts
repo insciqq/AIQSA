@@ -82,9 +82,9 @@ function memoryStore(context: () => TelegramScheduledDeliveryContext | null) {
   return { files, rows, store };
 }
 
-function link(telegramChatId: number, botId: number): TelegramLinkRecord {
+function link(telegramChatId: number, botId: number, id = "link-1"): TelegramLinkRecord {
   return {
-    agentEnabled: false, botId, currentChatId: null, displayName: null, id: "link-1", lastSeenAt: new Date(START),
+    agentEnabled: false, botId, currentChatId: null, displayName: null, id, lastSeenAt: new Date(START),
     linkedAt: new Date(START), pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null,
     telegramChatId, telegramUserId: telegramChatId, telegramUsername: null, userId: "user-1", workspaceEnabled: false
   };
@@ -107,14 +107,15 @@ function setup(options: Readonly<{
   const session: TelegramBotSession = { api, botId: fake.bot.id, botUsername: fake.bot.username, generation: 1, outbound };
   let now = START;
   let refusal: TelegramAccessRefusal | null = null;
+  let linkId = "link-1";
   let bot: TelegramBotSession | null = session;
   let current = options.context ?? (() => completed());
   const memory = memoryStore(() => current());
   const timers: Array<{ ms: number; wake: () => void }> = [];
   const access = {
     resolveTelegramAccess: vi.fn(async (): Promise<TelegramAccessDecision> => refusal
-      ? { allowed: false, link: refusal === "telegram_not_linked" ? null : link(user.id, fake.bot.id), reasonCode: refusal }
-      : { allowed: true, control: {} as never, link: link(user.id, fake.bot.id) })
+      ? { allowed: false, link: refusal === "telegram_not_linked" ? null : link(user.id, fake.bot.id, linkId), reasonCode: refusal }
+      : { allowed: true, control: {} as never, link: link(user.id, fake.bot.id, linkId) })
   };
   const sender = createTelegramScheduledDeliverySender({
     access, now: () => new Date(now), sessions: { current: async () => bot }, setTimer: (ms, wake) => { timers.push({ ms, wake }); },
@@ -125,6 +126,8 @@ function setup(options: Readonly<{
     advance(ms: number) { now += ms; },
     at(instant: Date) { now = instant.getTime(); },
     refuse(code: TelegramAccessRefusal | null) { refusal = code; },
+    /** The user linked anew: access allows, through another link. */
+    relink(id: string) { linkId = id; },
     setBot(value: TelegramBotSession | null) { bot = value; },
     setContext(next: () => TelegramScheduledDeliveryContext | null) { current = next; },
     row() { return [...memory.rows.values()][0]!; },
@@ -366,6 +369,51 @@ describe("Telegram scheduled delivery", () => {
     await other.restarted().sweep();
     expect(other.row()).toMatchObject({ lastFailureCode: "telegram_delivery_unknown", state: "unknown" });
     expect(other.fake.botMessages(other.user.id)).toHaveLength(1);
+  });
+
+  it.each([
+    ["Telegram access ends", (h: ReturnType<typeof setup>) => h.refuse("telegram_access_off"), "telegram_access_off"],
+    ["the user unlinks", (h: ReturnType<typeof setup>) => h.refuse("telegram_not_linked"), "telegram_not_linked"],
+    ["the user links another Telegram account", (h: ReturnType<typeof setup>) => h.relink("link-2"), "telegram_not_linked"]
+  ] as const)("sends nothing more of a long result once %s after its first message, failing the row with that reason", async (
+    _case, change, code
+  ) => {
+    // The sentinel closes the result, so only its last message carries it.
+    const LONG = `${"x".repeat(40_000)}\n\n${SENTINEL}`;
+    expect(telegramScheduledParts(completed(LONG)).length).toBeGreaterThanOrEqual(2);
+    let afterSend: () => void = () => undefined;
+    const h = setup({
+      context: () => completed(LONG),
+      transport: (base) => ({
+        ...base,
+        call: async (input) => {
+          const outcome = await base.call(input);
+          if (input.method === "sendRichMessage") afterSend();
+          return outcome;
+        }
+      })
+    });
+    afterSend = () => change(h);
+    await h.sender.queue("occurrence-1");
+    await h.sender.idle();
+    expect(h.fake.calls()).toHaveLength(1);
+    expect(JSON.stringify(h.fake.calls())).not.toContain(SENTINEL);
+    expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: code, sentAt: null, state: "failed" });
+  });
+
+  it("uploads no file whose recipient lost access while its bytes were read", async () => {
+    const report = { attachmentId: "report-1", byteSize: 18, fileName: "report.pdf", mimeType: "application/pdf" };
+    const h = setup({ context: () => ({ ...completed("Done."), result: result("Done.", [report]) }) });
+    vi.spyOn(h.memory.store, "readFile").mockImplementation(async () => {
+      h.refuse("telegram_access_off");
+      return Buffer.from("%PDF-1.7 synthetic");
+    });
+    await h.sender.queue("occurrence-1");
+    await h.sender.idle();
+    expect(h.fake.calls("sendRichMessage")).toHaveLength(1);
+    expect(h.fake.calls("sendDocument")).toHaveLength(0);
+    expect(h.fake.calls("sendMessage")).toHaveLength(0);
+    expect(h.row()).toMatchObject({ lastFailureCode: "telegram_access_off", state: "failed" });
   });
 
   it("sends the run's files after the text: images as photos, the rest as documents, too many or too large left in AIQSA", async () => {
