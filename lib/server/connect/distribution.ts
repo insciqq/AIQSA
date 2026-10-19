@@ -230,10 +230,31 @@ case ":\${PATH:-}:" in
     ;;
 esac
 
-printf '\\nNext steps:\\n'
-printf '  %s login %s       # connect this computer to your AIQSA account\\n' "$command" "$origin"
-printf '  %s setup                # check tmux and add the agent hooks\\n' "$command"
-printf '  %s service install      # keep it running in the background\\n' "$command"
+# An installed user service keeps running the previous version until it restarts.
+service_file=
+if [ -n "\${HOME:-}" ]; then
+  config_home=\${XDG_CONFIG_HOME:-$HOME/.config}
+  case "$config_home" in
+    /*) ;;
+    *) config_home=$HOME/.config ;;
+  esac
+  for file in "$config_home/systemd/user/aiqsa-connect.service" "$HOME/Library/LaunchAgents/io.github.insciqq.aiqsa-connect.plist"; do
+    if [ -f "$file" ]; then
+      service_file=$file
+    fi
+  done
+fi
+
+if [ -n "$service_file" ]; then
+  printf '\\nThe aiqsa-connect service (%s) still runs the previous version.\\n' "$service_file"
+  printf 'Restart the background client:\\n'
+  printf '  %s service install\\n' "$command"
+else
+  printf '\\nNext steps:\\n'
+  printf '  %s login %s       # connect this computer to your AIQSA account\\n' "$command" "$origin"
+  printf '  %s setup                # check tmux and add the agent hooks\\n' "$command"
+  printf '  %s service install      # keep it running in the background\\n' "$command"
+fi
 `;
 }
 

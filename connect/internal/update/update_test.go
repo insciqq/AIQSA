@@ -165,16 +165,17 @@ func TestInstallKeepsTheBinaryOnEveryFailure(t *testing.T) {
 		prepare   func(*fakeServer)
 		announced string
 		want      string
+		permanent bool
 	}{
-		"checksum mismatch":         {func(f *fakeServer) { f.binary = fakeBinary("1.1.1") }, "1.1.0", "SHA-256"},
-		"announced version differs": {func(*fakeServer) {}, "1.2.0", "offers aiqsa-connect 1.1.0"},
+		"checksum mismatch":         {func(f *fakeServer) { f.binary = fakeBinary("1.1.1") }, "1.1.0", "SHA-256", false},
+		"announced version differs": {func(*fakeServer) {}, "1.2.0", "offers aiqsa-connect 1.1.0", true},
 		"binary reports another version": {func(f *fakeServer) {
 			f.binary = fakeBinary("2.0.0")
 			digest := sha256.Sum256(f.binary)
 			f.sum = hex.EncodeToString(digest[:])
-		}, "", "reports version"},
-		"development build":      {func(f *fakeServer) { f.manifestVersion = "dev" }, "", "development build"},
-		"server has no binaries": {func(f *fakeServer) { f.manifestStatus = http.StatusServiceUnavailable }, "1.1.0", "connect_client_unavailable"},
+		}, "", "reports version", true},
+		"development build":      {func(f *fakeServer) { f.manifestVersion = "dev" }, "", "development build", true},
+		"server has no binaries": {func(f *fakeServer) { f.manifestStatus = http.StatusServiceUnavailable }, "1.1.0", "connect_client_unavailable", false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -186,6 +187,9 @@ func TestInstallKeepsTheBinaryOnEveryFailure(t *testing.T) {
 			_, err := server.client().Install(context.Background(), path, want)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+			if Permanent(err) != tc.permanent {
+				t.Fatalf("Permanent(%v) = %v", err, !tc.permanent)
 			}
 			data, _ := os.ReadFile(path)
 			if string(data) != string(fakeBinary("1.0.0")) {
@@ -210,7 +214,7 @@ func TestInstallReportsAnUnwritableDirectory(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
 	_, err := server.client().Install(context.Background(), path, "1.1.0")
-	if !errors.Is(err, ErrNotWritable) {
+	if !errors.Is(err, ErrNotWritable) || !Permanent(err) {
 		t.Fatalf("err = %v", err)
 	}
 	if server.downloads.Load() != 0 {

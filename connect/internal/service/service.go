@@ -1,9 +1,11 @@
-// Package service installs `aiqsa-connect up` as a per-user background
+// Package service installs `aiqsa-connect up --service` as a per-user background
 // service: a systemd user unit on Linux (and WSL with systemd), a launchd
 // LaunchAgent on macOS. Restarting or updating the client must never stop
 // the tmux server that holds the sessions, so systemd kills only the main
 // process (KillMode=process) and launchd leaves the process group alone
-// (AbandonProcessGroup).
+// (AbandonProcessGroup). In service mode `up` exits 0 for every stop that a
+// restart cannot fix (logged out, revoked, damaged credentials, another `up`
+// already running), so neither manager restarts it in a loop.
 package service
 
 import (
@@ -22,9 +24,9 @@ const (
 	SystemdUnitName = "aiqsa-connect.service"
 	// LaunchdLabel is the LaunchAgent's label and file name.
 	LaunchdLabel = "io.github.insciqq.aiqsa-connect"
-	// RevokedExitStatus is the status of `up` for revoked or missing
-	// credentials; the service must not restart it.
-	RevokedExitStatus = 3
+	// NoRestartExitStatus is the status of an interactive `up` that a
+	// restart cannot fix; the unit also refuses to restart it.
+	NoRestartExitStatus = 3
 	// RestartDelaySeconds is the pause before a failed client is restarted.
 	RestartDelaySeconds = 5
 )
@@ -78,11 +80,11 @@ func SystemdUnit(spec Spec) (string, error) {
 	b.WriteString("Documentation=https://github.com/insciqq/AIQSA/blob/main/connect/README.md\n\n")
 	b.WriteString("[Service]\n")
 	b.WriteString("Type=simple\n")
-	fmt.Fprintf(&b, "ExecStart=%s up\n", systemdQuote(spec.Executable, true))
+	fmt.Fprintf(&b, "ExecStart=%s up --service\n", systemdQuote(spec.Executable, true))
 	b.WriteString("Restart=on-failure\n")
 	fmt.Fprintf(&b, "RestartSec=%d\n", RestartDelaySeconds)
-	b.WriteString("# A revoked or logged-out client exits 3 and stays stopped.\n")
-	fmt.Fprintf(&b, "RestartPreventExitStatus=%d\n", RevokedExitStatus)
+	b.WriteString("# A client that a restart cannot fix (logged out, revoked) exits 0 and stays stopped.\n")
+	fmt.Fprintf(&b, "RestartPreventExitStatus=%d\n", NoRestartExitStatus)
 	b.WriteString("# Stop or restart only the client: the tmux server with the sessions keeps running.\n")
 	b.WriteString("KillMode=process\n")
 	fmt.Fprintf(&b, "Environment=%s\n\n", systemdQuote("PATH="+spec.Path, false))
@@ -109,11 +111,10 @@ func LaunchAgentPlist(spec Spec) (string, error) {
 <dict>
 `)
 	fmt.Fprintf(&b, "\t<key>Label</key>\n\t%s\n", str(LaunchdLabel))
-	fmt.Fprintf(&b, "\t<key>ProgramArguments</key>\n\t<array>\n\t\t%s\n\t\t%s\n\t</array>\n", str(spec.Executable), str("up"))
+	fmt.Fprintf(&b, "\t<key>ProgramArguments</key>\n\t<array>\n\t\t%s\n\t\t%s\n\t\t%s\n\t</array>\n", str(spec.Executable), str("up"), str("--service"))
 	b.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n")
 	// Restarted after a failure, not after a clean stop; launchd cannot
-	// exclude status 3, so `up` without valid credentials exits at once
-	// without contacting the server.
+	// exclude a status, so `up --service` exits 0 when a restart cannot help.
 	b.WriteString("\t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n")
 	fmt.Fprintf(&b, "\t<key>ThrottleInterval</key>\n\t<integer>%d</integer>\n", 10)
 	// The tmux server started by the client keeps running when launchd stops it.
@@ -153,8 +154,6 @@ type Status struct {
 	// Detail is the service manager's own summary, such as systemd's
 	// ActiveState/SubState or launchd's last exit status.
 	Detail string
-	// LastExitRevoked is true when the client last stopped as not logged in or revoked.
-	LastExitRevoked bool
 }
 
 // File is the service definition's path.
@@ -286,16 +285,15 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 			return Status{Installed: true}, err
 		}
 		out, err := m.run(ctx, "systemctl", "--user", "show", SystemdUnitName,
-			"--property=ActiveState,SubState,ExecMainStatus")
+			"--property=ActiveState,SubState")
 		if err != nil {
 			return Status{Installed: true}, err
 		}
 		props := parseProperties(out, "=")
 		return Status{
-			Installed:       true,
-			Running:         props["ActiveState"] == "active",
-			Detail:          strings.TrimSpace(props["ActiveState"] + " (" + props["SubState"] + ")"),
-			LastExitRevoked: props["ExecMainStatus"] == strconv.Itoa(RevokedExitStatus),
+			Installed: true,
+			Running:   props["ActiveState"] == "active",
+			Detail:    strings.TrimSpace(props["ActiveState"] + " (" + props["SubState"] + ")"),
 		}, nil
 	case "darwin":
 		out, err := m.run(ctx, "launchctl", "print", m.launchdService())
@@ -306,7 +304,6 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 		status := Status{Installed: true, Running: props["state"] == "running", Detail: props["state"]}
 		if code := props["last exit code"]; code != "" {
 			status.Detail += ", last exit code " + code
-			status.LastExitRevoked = code == strconv.Itoa(RevokedExitStatus)
 		}
 		return status, nil
 	}
