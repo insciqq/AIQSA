@@ -128,10 +128,12 @@ async function latestRun() {
   return prisma.modelRun.findFirstOrThrow({ orderBy: { createdAt: "desc" }, select: { id: true, status: true }, where: { userId: aliceSession.user.id } });
 }
 
-/** The status message the newest run recorded on its Telegram link, once it was sent. */
-async function statusMessage(since: number): Promise<FakeTelegramMessage> {
+/** The status message a run started after `before` recorded on its Telegram link, once it was sent. */
+async function statusMessage(since: number, before: string): Promise<FakeTelegramMessage> {
   const recorded = async () => {
+    // The message waits in the merge window first: until its run exists the newest run is the previous one.
     const run = await latestRun();
+    if (run.id === before) return null;
     const link = await prisma.telegramRunLink.findUnique({ select: { statusMessageId: true }, where: { runId: run.id } });
     return link?.statusMessageId === null || link?.statusMessageId === undefined ? null : Number(link.statusMessageId);
   };
@@ -228,6 +230,15 @@ test.afterAll(async () => {
     try {
       if (workspacePolicy) await prisma.workspacePolicy.update({ data: workspacePolicy, where: { id: "installation" } }).catch(() => undefined);
       await restoreFakeContext?.();
+      // Workspace sessions restrict their chat's deletion, so the runs and sessions go first (as the Workspace specs do).
+      if (aliceSession) {
+        const userId = aliceSession.user.id;
+        await prisma.$transaction(async (tx) => {
+          await tx.providerRunBinding.deleteMany({ where: { modelRun: { userId } } });
+          await tx.modelRun.deleteMany({ where: { userId } });
+          await tx.workspaceSession.deleteMany({ where: { chat: { userId } } });
+        }).catch(() => undefined);
+      }
       await people.cleanup();
     } finally {
       await endpoint?.close();
@@ -389,9 +400,10 @@ test("a Workspace run keeps one status message with Stop, ends it as finished an
   test.setTimeout(300_000);
   await prisma.telegramLink.update({ data: { workspaceEnabled: true }, where: { userId: aliceSession.user.id } });
   await newChat();
+  const before = await latestRun().then((run) => run.id, () => "");
   const since = bot.calls().length;
   bot.inject.text(tgAlice, "[AIQSA_WORKSPACE_E2E:activity_probe]");
-  const status = await statusMessage(since);
+  const status = await statusMessage(since, before);
   const sent = callsSince(since, "sendMessage").find((call) => String(call.params.text).startsWith("Working in Workspace · "))!;
   expect(buttonRows({ reply_markup: sent.params.reply_markup } as FakeTelegramMessage).map((row) => row.map((button) => button.text)))
     .toEqual([[TELEGRAM_COPY.stop]]);
@@ -409,9 +421,10 @@ test("a Workspace run keeps one status message with Stop, ends it as finished an
 test("Stop on the status message stops the Workspace run and the status says Stopped", async () => {
   test.setTimeout(300_000);
   await newChat();
+  const before = await latestRun().then((run) => run.id, () => "");
   const since = bot.calls().length;
   bot.inject.text(tgAlice, "[AIQSA_WORKSPACE_E2E:long_command]");
-  const status = await statusMessage(since);
+  const status = await statusMessage(since, before);
   press(status, TELEGRAM_COPY.stop);
   await expect.poll(() => botMessage(status.message_id)?.text, { timeout: 120_000 }).toBe(TELEGRAM_COPY.stopped);
   expect(botMessage(status.message_id)?.reply_markup).toBeUndefined();
