@@ -165,7 +165,8 @@ end with `tmux -L aiqsa-connect kill-server`.
   session (again after `up` restarts, and after Codex ends and is resumed),
   and Codex threads elsewhere do not change them.
   Once found, a session keeps its Codex conversation until Codex ends there,
-  whatever other screens show. Two Codex sessions in the same folder whose
+  whatever other screens show; a first prompt line under 8 characters
+  ("hi") finds only a session that has no Codex conversation yet. Two Codex sessions in the same folder whose
   prompts have identical first lines cannot be told apart, and a Codex
   conversation in another terminal whose first prompt line is already on the
   screen of a Codex session in that folder still waiting for its first prompt

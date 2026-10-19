@@ -59,9 +59,13 @@ type Message struct {
 	// Candidate is, in a message of a thread without a session, the one
 	// session whose screen showed the thread's submitted prompt: it binds
 	// the thread only while the thread is not bound.
-	Candidate string                 `json:"candidate,omitempty"`
-	Status    protocol.SessionStatus `json:"status"`
-	Reason    protocol.StatusReason  `json:"reason,omitempty"`
+	Candidate string `json:"candidate,omitempty"`
+	// Weak marks a Candidate found by a short prompt line ("hi", "yes"),
+	// which other conversations type too: it binds only a session no other
+	// thread is bound to.
+	Weak   bool                   `json:"weak,omitempty"`
+	Status protocol.SessionStatus `json:"status"`
+	Reason protocol.StatusReason  `json:"reason,omitempty"`
 	// At is when the hook started, in nanoseconds of Clock; the daemon
 	// drops a report that started before one of the same clock it already
 	// applied to the session or the thread. Without it (and Clock) the
@@ -84,11 +88,13 @@ func (m Message) Started() monoclock.Stamp {
 // Validate checks the session, thread and candidate ids, the status values
 // and the start stamp, which is either absent or a valid stamp. A message
 // names a session, a thread or both; a candidate only with a thread and
-// without a session; a bell always names its session and nothing else.
+// without a session, and Weak only with a candidate; a bell always names
+// its session and nothing else.
 func (m Message) Validate() error {
 	if m.Session != "" && !protocol.SessionIDRegexp.MatchString(m.Session) ||
 		m.Thread != "" && !status.ValidThread(m.Thread) || m.Session == "" && m.Thread == "" ||
 		m.Candidate != "" && (m.Thread == "" || m.Session != "" || !protocol.SessionIDRegexp.MatchString(m.Candidate)) ||
+		m.Weak && m.Candidate == "" ||
 		m.Reason == protocol.ReasonBell && (m.Session == "" || m.Thread != "") ||
 		!slices.Contains(protocol.SessionStatuses, m.Status) ||
 		m.Reason != "" && !slices.Contains(protocol.StatusReasons, m.Reason) ||
@@ -334,7 +340,8 @@ func (s *Server) deliver(msg Message) {
 		session = msg.Session
 	case bound:
 		// A prompt also shown on another session's screen never moves a binding.
-	case msg.Candidate != "":
+	case msg.Candidate != "" && !(msg.Weak && s.threads.taken(msg.Candidate)):
+		// A short prompt line never takes a session another thread holds.
 		session = msg.Candidate
 	default:
 		// A thread of an agent outside the client's sessions, or one whose
