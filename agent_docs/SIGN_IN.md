@@ -29,7 +29,7 @@ External sign-in methods (Google, Yandex, OpenID Connect, LDAP, SAML, trusted he
 
 ## Groups and the admin role
 
-- Group sync changes only memberships of active groups that carry an external name for that source. It never creates groups (SCIM is the exception) and a missing claim changes nothing.
+- Every membership writer (sign-in sync, SCIM, the administrator editor) goes through `lib/server/auth/groupMembership.ts` and shares its MCP runtime side effects. Group sync changes only memberships of active groups that carry an external name for that source. It never creates groups (SCIM is the exception) and a missing claim changes nothing.
 - Such memberships are managed: administrators cannot change them by hand (`group_membership_managed`), because the next sign-in or SCIM push would undo it.
 - A source grants admin to members of its admin groups and revokes it only from admins it promoted itself. Manual admins are never demoted by a source, and the last active admin keeps the role (`last_admin_kept`).
 

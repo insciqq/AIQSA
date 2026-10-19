@@ -80,7 +80,7 @@ These are the invariants most likely to be broken by an otherwise reasonable cha
 
 ## Git and publication
 
-`origin` is public. `DEV_SERVER.md`, `AGENTS.override.md`, `CLAUDE.local.md`, `.claude/agents/`, `.aiqsa/`, `agent_docs/PRD/` and task files under `agent_docs/tasks/` are private: never stage, force-add, commit or ship them in Docker contexts or images. Pushes, ref rewrites and release tags need an explicit request and a fresh `npm run release:privacy:check`. To export code, `git archive` an inspected commit into a fresh directory; never copy the working directory.
+`origin` is public. `DEV_SERVER.md`, `AGENTS.override.md`, `CLAUDE.local.md`, `.claude/agents/`, `.aiqsa/`, `agent_docs/PRD/` and task files under `agent_docs/tasks/` are private: never stage, force-add, commit or ship them in Docker contexts or images. Pushes, ref rewrites and release tags need an explicit request and a fresh `npm run release:privacy:check`. To export code, `git archive` an inspected commit into a fresh directory; never copy the working directory, and attach local tasks separately only after reviewing them. Under `.aiqsa/`, use only the workspaces that exist (`handoff/` when explicitly requested, `local-dev-profile/`, `kb-microbench/` and the others the operator approved), each under its own instructions, and never create sibling variants.
 
 ## Writing agent docs
 
