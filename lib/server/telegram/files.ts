@@ -61,7 +61,10 @@ export type TelegramFileOutcome =
   /** Not sent: the chat may no longer receive it, so nothing more goes there. */
   | Readonly<{ kind: "unreachable" }>;
 
-/** Asked after a file's bytes are read and before every upload: false when the chat may no longer receive it. */
+/**
+ * Asked after a file's bytes are read, and again by the Bot API right before every upload leaves (after
+ * its pacing or a 429's wait): false when the chat may no longer receive it.
+ */
 export type TelegramFileAuthority = () => Promise<boolean>;
 
 export type TelegramFilesResult = Readonly<{ sent: number; failed: number; left: number }>;
@@ -218,14 +221,16 @@ export async function sendTelegramFile(input: Readonly<{
   });
   if (!data) return { kind: "skipped" };
   const upload = { contentType: file.mimeType, data, filename: cleanTelegramFileName(file.fileName, file.mimeType) };
+  const authority = input.authorize ? { authorize: input.authorize } : {};
   if (input.authorize && !(await input.authorize())) return { kind: "unreachable" };
-  let delivery = await input.outbound.sendFile({ chatId: input.chatId, file: upload, kind, owner: input.owner });
+  let delivery = await input.outbound.sendFile({ chatId: input.chatId, file: upload, kind, owner: input.owner, ...authority });
   // Telegram shows some images only as files (dimensions, format): the same file once more as a document.
   if (!delivery.ok && kind === "photo" && refusedFile(delivery.failure)) {
     if (input.authorize && !(await input.authorize())) return { kind: "unreachable" };
-    delivery = await input.outbound.sendFile({ chatId: input.chatId, file: upload, kind: "document", owner: input.owner });
+    delivery = await input.outbound.sendFile({ chatId: input.chatId, file: upload, kind: "document", owner: input.owner, ...authority });
   }
   if (delivery.ok) return { kind: "sent", messageIds: delivery.messageIds };
+  if (delivery.failure.kind === "unreachable") return { kind: "unreachable" };
   return refusedFile(delivery.failure) ? { kind: "skipped" } : { kind: "failed", failure: delivery.failure };
 }
 
@@ -270,7 +275,9 @@ export async function deliverTelegramFiles(input: Readonly<{
   if (failed > 0) log({ code: "telegram_file_failed", count: failed, outcome: "failed", stage: "dispatch" });
   const summary = telegramFilesSummaryText({ failed, left: plan.left, ...(input.outputs ? { outputs: input.outputs } : {}) });
   if (summary && (!input.authorize || await input.authorize())) {
-    await input.outbound.sendText({ chatId: input.chatId, openInAiqsa: true, owner: input.owner, text: summary });
+    await input.outbound.sendText({
+      chatId: input.chatId, openInAiqsa: true, owner: input.owner, text: summary, ...(input.authorize ? { authorize: input.authorize } : {})
+    });
   }
   return { failed, left: plan.left, sent };
 }

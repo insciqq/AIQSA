@@ -98,7 +98,11 @@ function setup(options: Readonly<{
   closers.push(() => fake.close());
   const user = fake.inject.addUser();
   const transport = options.transport ? options.transport(fake.transport) : fake.transport;
-  const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => {}, token: fake.token, transport });
+  /** Called on every Bot API wait (pacing or a 429's retry_after). */
+  const hooks: { onSleep?: (ms: number) => void } = {};
+  const api = createTelegramBotApi({
+    pacer: createTelegramPacer({ now: () => 0 }), sleep: async (ms) => hooks.onSleep?.(ms), token: fake.token, transport
+  });
   const refs: TelegramMessageRef[] = [];
   const outbound = createTelegramOutbound({
     api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id, callbacks: { create: async () => [] },
@@ -122,7 +126,7 @@ function setup(options: Readonly<{
     store: memory.store
   });
   return {
-    access, fake, memory, refs, sender, session, timers, user,
+    access, fake, hooks, memory, refs, sender, session, timers, user,
     advance(ms: number) { now += ms; },
     at(instant: Date) { now = instant.getTime(); },
     refuse(code: TelegramAccessRefusal | null) { refusal = code; },
@@ -399,6 +403,28 @@ describe("Telegram scheduled delivery", () => {
     expect(h.fake.calls()).toHaveLength(1);
     expect(JSON.stringify(h.fake.calls())).not.toContain(SENTINEL);
     expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: code, sentAt: null, state: "failed" });
+  });
+
+  it("sends nothing more once the user unlinks while the client waits out a 429, failing the row with that reason", async () => {
+    const LONG = `${"x".repeat(40_000)}\n\n${SENTINEL}`;
+    expect(telegramScheduledParts(completed(LONG)).length).toBeGreaterThanOrEqual(2);
+    let richSends = 0;
+    const h = setup({
+      context: () => completed(LONG),
+      transport: (base) => ({
+        ...base,
+        // The second message is rate limited: the client waits out Telegram's 60 s itself.
+        call: async (input) => input.method === "sendRichMessage" && (richSends += 1) === 2
+          ? { errorCode: 429, kind: "telegram", ok: false, retryAfter: 60, status: 429 } : base.call(input)
+      })
+    });
+    h.hooks.onSleep = (ms) => { if (ms === 60_000) h.refuse("telegram_not_linked"); };
+    await h.sender.queue("occurrence-1");
+    await h.sender.idle();
+    expect(richSends).toBe(2);
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(1);
+    expect(JSON.stringify(h.fake.botMessages(h.user.id))).not.toContain(SENTINEL);
+    expect(h.row()).toMatchObject({ attempts: 1, lastFailureCode: "telegram_not_linked", sentAt: null, state: "failed" });
   });
 
   it("uploads no file whose recipient lost access while its bytes were read", async () => {

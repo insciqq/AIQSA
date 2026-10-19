@@ -3,7 +3,7 @@ import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type {
   TelegramBotApi, TelegramFileInput, TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup, TelegramInputRichMessage,
-  TelegramReplyParameters, TelegramSentMessage
+  TelegramReplyParameters, TelegramSendAuthority, TelegramSentMessage
 } from "./botApi";
 import { telegramFailureCode } from "./codes";
 import { TELEGRAM_COPY } from "./copy";
@@ -19,7 +19,9 @@ import type { TelegramFailure, TelegramOutcome } from "./transport";
  * inline keyboards whose buttons are server rows or http(s) links. Every
  * message carrying chat content records a message reference so a reply
  * continues that chat. Only a send that provably never reached Telegram is
- * repeated; an ambiguous one is reported, never resent.
+ * repeated; an ambiguous one is reported, never resent. With `authorize`,
+ * every message, fallback and retry asks it right before it leaves, and the
+ * first refusal ends the call `unreachable`.
  */
 
 export const TELEGRAM_MESSAGE_MAX_LENGTH = 4_096;
@@ -42,6 +44,8 @@ type Placement = Readonly<{
   openInAiqsa?: boolean;
   /** The user's message this answers; sent even if that message is gone. */
   replyTo?: number;
+  /** Whether the chat may still receive it, asked before every dispatch (see `TelegramSendAuthority`). */
+  authorize?: TelegramSendAuthority;
 }>;
 
 export type TelegramOutbound = Readonly<{
@@ -167,7 +171,9 @@ export function createTelegramOutbound(deps: Readonly<{
   /** Plain messages in order; the keyboard goes on the last one. */
   async function sendPlain(input: Readonly<{
     chatId: number; chunks: readonly string[]; markup?: TelegramInlineKeyboardMarkup; owner?: TelegramMessageRefOwner; replyTo?: number;
+    authorize?: TelegramSendAuthority;
   }>, sent: number[]): Promise<TelegramFailure | null> {
+    const options = { authorize: input.authorize };
     const chunks = input.chunks.flatMap((chunk) => splitTelegramText(chunk));
     for (const [index, text] of chunks.entries()) {
       const outcome = await once(() => deps.api.sendMessage({
@@ -176,7 +182,7 @@ export function createTelegramOutbound(deps: Readonly<{
         text,
         ...(index === 0 ? reply(input.replyTo) : {}),
         ...(index === chunks.length - 1 && input.markup ? { reply_markup: input.markup } : {})
-      }));
+      }, options));
       if (!outcome.ok) {
         logFailure(outcome);
         return outcome;
@@ -196,6 +202,7 @@ export function createTelegramOutbound(deps: Readonly<{
         keyboard: input.keyboard, linkId: input.owner.linkId, openChatId: input.openInAiqsa ? input.owner.chatId : undefined
       });
       const sent: number[] = [];
+      const options = { authorize: input.authorize };
       let fallback = false;
       for (const [index, message] of input.messages.entries()) {
         const last = index === input.messages.length - 1;
@@ -204,7 +211,7 @@ export function createTelegramOutbound(deps: Readonly<{
           rich_message: { ...message, skip_entity_detection: true },
           ...(index === 0 ? reply(input.replyTo) : {}),
           ...(last && markup ? { reply_markup: markup } : {})
-        }));
+        }, options));
         if (outcome.ok) {
           sent.push(outcome.result.message_id);
           await recordRef(input.owner, input.chatId, outcome.result);
@@ -220,7 +227,7 @@ export function createTelegramOutbound(deps: Readonly<{
         log({ code: "telegram_render_fallback", httpStatus: outcome.status, outcome: "degraded" });
         fallback = true;
         const failure = await sendPlain({
-          chatId: input.chatId, chunks, markup: last ? markup : undefined, owner: input.owner,
+          authorize: input.authorize, chatId: input.chatId, chunks, markup: last ? markup : undefined, owner: input.owner,
           replyTo: index === 0 ? input.replyTo : undefined
         }, sent);
         if (failure) return { failure, messageIds: sent, ok: false };
@@ -234,7 +241,9 @@ export function createTelegramOutbound(deps: Readonly<{
         openChatId: input.openInAiqsa ? input.owner?.chatId : undefined
       });
       const sent: number[] = [];
-      const failure = await sendPlain({ chatId: input.chatId, chunks: [input.text], markup, owner: input.owner, replyTo: input.replyTo }, sent);
+      const failure = await sendPlain({
+        authorize: input.authorize, chatId: input.chatId, chunks: [input.text], markup, owner: input.owner, replyTo: input.replyTo
+      }, sent);
       return failure ? { failure, messageIds: sent, ok: false } : { fallback: false, messageIds: sent, ok: true };
     },
 
@@ -248,7 +257,9 @@ export function createTelegramOutbound(deps: Readonly<{
         ...reply(input.replyTo),
         ...(markup ? { reply_markup: markup } : {})
       };
-      const outcome = await once(() => input.kind === "photo" ? deps.api.sendPhoto(params, input.file) : deps.api.sendDocument(params, input.file));
+      const options = { authorize: input.authorize };
+      const outcome = await once(() => input.kind === "photo" ? deps.api.sendPhoto(params, input.file, options)
+        : deps.api.sendDocument(params, input.file, options));
       if (!outcome.ok) {
         logFailure(outcome);
         return { failure: outcome, messageIds: [], ok: false };
