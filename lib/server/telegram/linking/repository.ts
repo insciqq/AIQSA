@@ -1,17 +1,17 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { lockAuthUser } from "../../auth/transactionLocks";
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { eligibleForTelegram } from "../control/access";
 import type { TelegramEffectiveControl } from "../control/state";
 import { telegramLinkRecord, type TelegramLinkRecord } from "../store/links";
 
 /**
- * Link codes and the links they create. A code is consumed by exactly one
- * `/start` (a conditional update that only one transaction wins); the same
- * transaction locks the account, then reads the creating session `FOR SHARE`,
- * so a concurrent revocation either commits first (the session is revoked and
- * the link refused) or waits for the link and then deletes it with the
- * session. A consumed code stays consumed whatever the outcome.
+ * Link codes and the links they create. A `/start` locks the code's account,
+ * reads the creating session `FOR SHARE`, then consumes the code with a
+ * conditional update that only one transaction wins: the account-security
+ * writers' lock order, so a concurrent revocation either commits first (the
+ * session is revoked and the link refused) or waits for the link and then
+ * deletes it with the session. A consumed code stays consumed whatever the
+ * outcome.
  */
 
 export type TelegramLinkTarget = Readonly<{
@@ -53,6 +53,14 @@ type LinkingClient = Pick<PrismaClient, "$transaction" | "telegramLink" | "teleg
 
 type SessionRow = { expiresAt: Date; revokedAt: Date | null };
 
+/**
+ * Serializes with every writer of the account row (status, role, deletion and `lockAuthUser`)
+ * without blocking foreign-key checks that only need the row to exist.
+ */
+async function lockAccount(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR NO KEY UPDATE`).catch(retainDatabaseFailure);
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
@@ -71,6 +79,8 @@ export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): Te
   return Object.freeze({
     async createCode(input) {
       await prisma.$transaction(async (tx) => {
+        // Same lock order as a /start consuming one of these codes: the account first.
+        await lockAccount(tx, input.userId);
         await tx.telegramLinkCode.deleteMany({ where: { consumedAt: null, userId: input.userId } }).catch(retainDatabaseFailure);
         await tx.telegramLinkCode.create({
           data: {
@@ -90,21 +100,23 @@ export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): Te
       try {
         return await prisma.$transaction(async (tx): Promise<TelegramLinkOutcome> => {
           const invalid = { code: "telegram_link_code_invalid", kind: "refused" } as const;
-          const consumed = await tx.telegramLinkCode.updateMany({
-            data: { consumedAt: input.now },
-            where: { codeHash: input.codeHash, consumedAt: null, expiresAt: { gt: input.now } }
-          }).catch(retainDatabaseFailure);
-          if (consumed.count !== 1) return invalid;
           const code = await tx.telegramLinkCode.findUnique({
             select: { authSessionId: true, botId: true, userId: true }, where: { codeHash: input.codeHash }
           }).catch(retainDatabaseFailure);
-          if (!code || Number(code.botId) !== target.botId) return invalid;
-
-          await lockAuthUser(tx, code.userId).catch(retainDatabaseFailure);
+          if (!code) return invalid;
+          // The lock order of the account-security writers: the account, then its session, then
+          // its codes and link. Taking the code's row first would deadlock with a revocation that
+          // holds the session and waits to delete the code.
+          await lockAccount(tx, code.userId);
           const [session] = await tx.$queryRaw<SessionRow[]>(Prisma.sql`
             SELECT "expiresAt", "revokedAt" FROM "AuthSession"
             WHERE "id" = ${code.authSessionId} AND "userId" = ${code.userId}
             FOR SHARE`).catch(retainDatabaseFailure);
+          const consumed = await tx.telegramLinkCode.updateMany({
+            data: { consumedAt: input.now },
+            where: { codeHash: input.codeHash, consumedAt: null, expiresAt: { gt: input.now } }
+          }).catch(retainDatabaseFailure);
+          if (consumed.count !== 1 || Number(code.botId) !== target.botId) return invalid;
           if (!session || session.revokedAt !== null || session.expiresAt <= input.now) return invalid;
 
           const user = await tx.user.findUnique({
