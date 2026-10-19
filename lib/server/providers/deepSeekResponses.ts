@@ -15,8 +15,31 @@ import {
   parseOpenAIResponsesSse
 } from "./openaiResponsesResponse";
 import { providerStreamTimingLimits } from "./network";
+import { providerResponseFailure } from "./responseFailure";
 import { guardDeepSeekSynthesis } from "./deepSeekSynthesis";
 import type { ProviderAdapter, ProviderRunResult } from "./types";
+
+export function deepSeekNotCompletedCode(status: string): string {
+  return status === "failed" || status === "incomplete" || status === "cancelled"
+    ? `deepseek_response_${status}`
+    : "deepseek_response_not_completed";
+}
+
+/** An incomplete response whose reported output reached the requested cap
+ * exhausted its output budget even when DeepSeek names no incomplete reason. */
+export function deepSeekTerminalResponse(
+  response: Readonly<Record<string, unknown>>,
+  body: Readonly<{ max_output_tokens: number }>
+): Readonly<Record<string, unknown>> {
+  if (openAIResponseStatus(response) !== "incomplete" || typeof response.incomplete_details === "object" &&
+    response.incomplete_details !== null) return response;
+  const usage = typeof response.usage === "object" && response.usage !== null
+    ? response.usage as Record<string, unknown> : null;
+  const outputTokens = usage?.output_tokens;
+  return typeof outputTokens === "number" && Number.isSafeInteger(body.max_output_tokens) &&
+    body.max_output_tokens > 0 && outputTokens >= body.max_output_tokens
+    ? { ...response, incomplete_details: { reason: "max_output_tokens" } } : response;
+}
 
 export type DeepSeekResponsesAdapterOptions = Readonly<{
   client: DeepSeekResponsesClient;
@@ -76,9 +99,7 @@ export function createDeepSeekResponsesAdapter(
         yield { data: extractOpenAIUsage(response), type: "usage" };
       }
       if (status !== "completed") {
-        throw new Error(status === "failed" || status === "incomplete" || status === "cancelled"
-          ? `deepseek_response_${status}`
-          : "deepseek_response_not_completed");
+        throw providerResponseFailure(deepSeekNotCompletedCode(status), deepSeekTerminalResponse(response, body));
       }
       try {
         const completed = normalizeCompletedOpenAIResponse(

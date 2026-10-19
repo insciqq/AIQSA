@@ -136,7 +136,7 @@ export function createChatPdfAttempts(prisma: PrismaClient) {
     },
 
     async settle(dispatch: ChatPdfDispatch, input: Readonly<{
-      errorCode?: "pdf_preparation_invalid" | "pdf_transcription_failed";
+      errorCode?: "pdf_preparation_invalid" | "pdf_reader_output_limit" | "pdf_transcription_failed";
       resultArtifactId: string | null;
       usage: ModelRunUsage;
     }>): Promise<boolean> {

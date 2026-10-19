@@ -9,6 +9,7 @@ import { createRunExecutionResponse, type RunExecutionInput } from "../runs/runE
 import { acceptedRunSnapshot, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "../runs/preparingRunMaterialization";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "../runs/runRepositoryContract";
+import { CHAT_PDF_READER_OUTPUT_LIMIT } from "../../contracts/chatPdfPreparation";
 import { ChatPdfPreparationError } from "./chatPdfCore";
 import type { ChatPdfCoordinatorDependencies } from "./chatPdfCoordinator";
 import type { createChatPdfRepository } from "./chatPdfPersistence";
@@ -37,6 +38,7 @@ export function createChatPdfRunFailure(deps: Readonly<{
     const message = error.code === "pdf_local_text_unusable"
       ? "This PDF could not be read. Try a different file."
       : error.code === "pdf_preparation_context_limit" ? "This document does not fit the conversation context."
+      : error.code === CHAT_PDF_READER_OUTPUT_LIMIT.code ? CHAT_PDF_READER_OUTPUT_LIMIT.message
       : error.code === CONTEXT_COMPACTION_POLICY_RETIRED.code ? CONTEXT_COMPACTION_POLICY_RETIRED.message
       : "Document preparation could not finish. Try again.";
     const settled = await observeChatPdfPersistence(claim.runId, "fail", () => deps.repository.settlePreparingRunFailure({
