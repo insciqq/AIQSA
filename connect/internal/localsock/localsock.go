@@ -1,6 +1,6 @@
 // Package localsock is the unix socket on which `aiqsa-connect up` hears
 // agent hooks and terminal bells of its sessions. A message is one JSON
-// line {"session","thread","status","reason","at"}; it carries nothing
+// line {"session","thread","status","reason","at","clock"}; it carries nothing
 // else. A message with a session applies to it and binds its thread, if
 // any, to it; a message with only a thread applies to the session that
 // thread is bound to, and to none while it is not bound.
@@ -23,6 +23,7 @@ import (
 
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/logx"
+	"github.com/insciqq/AIQSA/connect/internal/monoclock"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 	"github.com/insciqq/AIQSA/connect/internal/status"
 	"github.com/insciqq/AIQSA/connect/internal/tmux"
@@ -51,20 +52,28 @@ type Message struct {
 	Thread string                 `json:"thread,omitempty"`
 	Status protocol.SessionStatus `json:"status"`
 	Reason protocol.StatusReason  `json:"reason,omitempty"`
-	// At is when the hook started, in Unix nanoseconds; the daemon drops a
-	// report older than one it already applied to the session.
+	// At is when the hook started, in nanoseconds of Clock; the daemon
+	// drops a report that started before one of the same clock it already
+	// applied to the session. Without it (and Clock) the report is applied
+	// in arrival order.
 	At int64 `json:"at,omitempty"`
+	// Clock names the clock of At (monoclock.Mono or monoclock.Wall).
+	Clock monoclock.Kind `json:"clock,omitempty"`
 }
 
-// Validate checks the session and thread ids and the status values. A
-// message names a session, a thread or both; a bell always names its
-// session.
+// Started is the hook's start stamp; invalid when the message has none.
+func (m Message) Started() monoclock.Stamp { return monoclock.Stamp{Kind: m.Clock, At: m.At} }
+
+// Validate checks the session and thread ids, the status values and the
+// start stamp, which is either absent or a valid stamp. A message names a
+// session, a thread or both; a bell always names its session.
 func (m Message) Validate() error {
 	if m.Session != "" && !protocol.SessionIDRegexp.MatchString(m.Session) ||
 		m.Thread != "" && !status.ValidThread(m.Thread) || m.Session == "" && m.Thread == "" ||
 		m.Session == "" && m.Reason == protocol.ReasonBell ||
 		!slices.Contains(protocol.SessionStatuses, m.Status) ||
-		m.Reason != "" && !slices.Contains(protocol.StatusReasons, m.Reason) || m.At < 0 {
+		m.Reason != "" && !slices.Contains(protocol.StatusReasons, m.Reason) ||
+		(m.At != 0 || m.Clock != "") && !m.Started().Valid() {
 		return errors.New("invalid status message")
 	}
 	return nil
@@ -301,11 +310,7 @@ func (s *Server) apply(line []byte) {
 			return
 		}
 	} else {
-		var started time.Time
-		if msg.At > 0 {
-			started = time.Unix(0, msg.At)
-		}
-		if !s.gate.AcceptHook(session, started) {
+		if !s.gate.AcceptHook(session, msg.Started()) {
 			s.log.Event("hook_status_stale")
 			return
 		}

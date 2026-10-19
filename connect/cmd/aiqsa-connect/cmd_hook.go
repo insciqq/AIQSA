@@ -13,6 +13,7 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/config"
 	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/localsock"
+	"github.com/insciqq/AIQSA/connect/internal/monoclock"
 	"github.com/insciqq/AIQSA/connect/internal/procs"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 	"github.com/insciqq/AIQSA/connect/internal/status"
@@ -48,8 +49,10 @@ const drainWait = 500 * time.Millisecond
 // thread elsewhere in the same folder (another terminal, another tmux
 // server) is never bound, so it never changes a session's status.
 func runHook(inv *invocation) int {
-	// The agent starts its hooks in event order; the daemon orders reports by it.
-	started := time.Now()
+	// The agent starts its hooks in event order; the daemon orders reports
+	// by it. The wall clock can step back between two hooks (WSL's time
+	// sync does, by up to a second), so a monotonic clock stamps it.
+	started := monoclock.Now()
 	if len(inv.args) == 0 || len(inv.args) > 2 {
 		return 0
 	}
@@ -103,7 +106,8 @@ func runHook(inv *invocation) int {
 	}
 	// The daemon may be down; the agent goes on either way.
 	localsock.Send(inv.ctx, localsock.Candidates(paths), localsock.Message{
-		Session: session, Thread: thread, Status: update.Status, Reason: update.Reason, At: started.UnixNano(),
+		Session: session, Thread: thread, Status: update.Status, Reason: update.Reason,
+		At: started.At, Clock: started.Kind,
 	})
 	return 0
 }
