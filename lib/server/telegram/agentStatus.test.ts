@@ -42,7 +42,11 @@ async function setup(mode: TelegramWorkMode = "workspace") {
   const fake = createFakeTelegramBotApi({ now: () => Date.now() });
   closers.push(() => fake.close());
   const user = fake.inject.addUser();
-  const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => {}, token: fake.token, transport: fake.transport });
+  /** Called on every Bot API wait (pacing or a 429's retry_after). */
+  const hooks: { onSleep?: (ms: number) => void } = {};
+  const api = createTelegramBotApi({
+    pacer: createTelegramPacer({ now: () => 0 }), sleep: async (ms) => hooks.onSleep?.(ms), token: fake.token, transport: fake.transport
+  });
   let rows = 0;
   const outbound = createTelegramOutbound({
     api, appBaseUrl: "https://aiqsa.example", botId: fake.bot.id,
@@ -70,7 +74,7 @@ async function setup(mode: TelegramWorkMode = "workspace") {
     bot: session, chatId: "chat-1", linkId: "link-1", runId: "run-1", source: "live", telegramChatId: user.id, userId: "user-1"
   };
   return {
-    access, fake, refs, runLinks, runMode, session, status, user,
+    access, fake, hooks, refs, runLinks, runMode, session, status, user,
     /** The user unlinks: the run's link no longer reaches its chat. */
     unlink() { decision = { allowed: false, link: null, reasonCode: "telegram_not_linked" }; },
     emit(event: TelegramRunEvent, runId = "run-1") {
@@ -199,6 +203,27 @@ describe("Telegram Agent and Workspace status", () => {
     expect(h.sends()).toHaveLength(1);
     expect(h.edits()).toHaveLength(0);
     expect(JSON.stringify(h.fake.calls())).not.toContain("PRIVATE_AFTER_UNLINK");
+  });
+
+  it("asks again after a 429's wait and edits nothing once the run's chat may no longer receive it", async () => {
+    const h = await setup();
+    h.emit(activity(command("cmd-1", "running", "npm test")));
+    await settle(h.status);
+    expect(h.sends()).toHaveLength(1);
+
+    // The user unlinks while the client waits out Telegram's retry_after for the next edit.
+    h.hooks.onSleep = (ms) => { if (ms === 60_000) h.unlink(); };
+    h.fake.failNext("editMessageText", { retryAfter: 60, status: 429 });
+    h.emit(activity(fileRead("read-1", "running", "PRIVATE_AFTER_UNLINK.ts")));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle(h.status);
+    expect(h.edits()).toHaveLength(1);
+    // Ended for good: no timer, no closing edit.
+    expect(vi.getTimerCount()).toBe(0);
+    h.emit({ status: "complete", type: "done" });
+    await settle(h.status);
+    expect(h.edits()).toHaveLength(1);
+    expect(h.sends()).toHaveLength(1);
   });
 
   it("ends a status a previous process left working when recovery delivers its run", async () => {

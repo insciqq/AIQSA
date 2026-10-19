@@ -37,12 +37,13 @@ import type { TelegramFailure } from "./transport";
  * attempt it rechecks Telegram access (D-04), the task's switch, the chat and
  * the occurrence; the attempt is bound to the user's exact link (link, chat
  * and bot), and every part, a file again after its bytes were read, first
- * checks that this link still reaches the chat: once it does not, nothing more
- * goes out and the row settles with the access reason. Only a send that
- * provably never reached Telegram (429 or a network failure before sending)
- * is retried, up to five attempts within 30 minutes; an ambiguous one settles
- * `unknown`. Rows are swept at start and once a minute. Logs carry ids and
- * codes, never content.
+ * checks that this link still reaches the chat, and every message and upload
+ * checks again right before it leaves the Bot API (after its pacing or a
+ * 429's wait): once it does not, nothing more goes out and the row settles
+ * with the access reason. Only a send that provably never reached Telegram
+ * (429 or a network failure before sending) is retried, up to five attempts
+ * within 30 minutes; an ambiguous one settles `unknown`. Rows are swept at
+ * start and once a minute. Logs carry ids and codes, never content.
  */
 
 /** Settled rows record why they were skipped or failed; content-free codes. */
@@ -147,8 +148,11 @@ type Plan = Readonly<{
   owner: TelegramMessageRefOwner | null; parts: readonly Part[]; outputs?: "pending" | "failed";
 }>;
 
-/** A part's outcome; `refused`: the plan's link no longer reaches its chat, and nothing more goes out. */
-type PartOutcome = TelegramDelivery | "skipped" | Readonly<{ refused: TelegramAccessRefusal }>;
+/**
+ * A part's outcome; `refused`: the plan's link no longer reaches its chat, and nothing more goes out
+ * (`partly`: some of this part's messages went before that).
+ */
+type PartOutcome = TelegramDelivery | "skipped" | Readonly<{ refused: TelegramAccessRefusal; partly?: boolean }>;
 
 /** Delivery progress kept between attempts of a partly sent result, in this process only. */
 type Held = Readonly<{ attempts: number; plan: Plan; progress: number; skipped: number }>;
@@ -317,6 +321,22 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
   }
 
   /**
+   * The plan's link checked again right before each message or upload leaves the Bot API; `reasonCode`
+   * is why it no longer reaches the chat once `authorize` said false.
+   */
+  function authority(binding: TelegramChatBinding): { authorize: () => Promise<boolean>; reasonCode: TelegramAccessRefusal } {
+    const recheck = {
+      authorize: async () => {
+        const again = await reachTelegramChat(deps, binding);
+        if (!again.ok) recheck.reasonCode = again.reasonCode;
+        return again.ok;
+      },
+      reasonCode: "telegram_access_off" as TelegramAccessRefusal
+    };
+    return recheck;
+  }
+
+  /**
    * Sends one part, right after checking that the plan's link still reaches its chat (a file once
    * more after its bytes were read). `skipped`: a file Telegram did not get (unreadable now, or
    * refused itself), named once after the last part.
@@ -327,23 +347,25 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     const { outbound } = reached.bot;
     const chatId = plan.binding.telegramChatId;
     const owner = plan.owner;
+    const recheck = authority(plan.binding);
+    const sent = (delivery: TelegramDelivery): PartOutcome => !delivery.ok && delivery.failure.kind === "unreachable"
+      ? { partly: delivery.messageIds.length > 0, refused: recheck.reasonCode }
+      : delivery;
     if (part.kind === "text") {
-      return outbound.sendText({ chatId, openInAiqsa: part.openInAiqsa && Boolean(owner), text: part.text, ...(owner ? { owner } : {}) });
+      return sent(await outbound.sendText({
+        authorize: recheck.authorize, chatId, openInAiqsa: part.openInAiqsa && Boolean(owner), text: part.text, ...(owner ? { owner } : {})
+      }));
     }
     if (part.kind === "content") {
-      if (!owner) return outbound.sendText({ chatId, text: part.plainFallback.join("\n\n") });
-      return outbound.sendContent({ chatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner });
+      if (!owner) return sent(await outbound.sendText({ authorize: recheck.authorize, chatId, text: part.plainFallback.join("\n\n") }));
+      return sent(await outbound.sendContent({
+        authorize: recheck.authorize, chatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner
+      }));
     }
     // Only a result in a usable chat has files; they stay in AIQSA otherwise.
     if (!owner) return "skipped";
-    const recheck: { reasonCode: TelegramAccessRefusal } = { reasonCode: "telegram_access_off" };
     const outcome = await sendTelegramFile({
-      authorize: async () => {
-        const again = await reachTelegramChat(deps, plan.binding);
-        if (!again.ok) recheck.reasonCode = again.reasonCode;
-        return again.ok;
-      },
-      chatId, item: part.item, outbound, owner, read: (input) => deps.store.readFile(input), userId
+      authorize: recheck.authorize, chatId, item: part.item, outbound, owner, read: (input) => deps.store.readFile(input), userId
     });
     if (outcome.kind === "sent") return { fallback: false, messageIds: outcome.messageIds, ok: true };
     if (outcome.kind === "unreachable") return { refused: recheck.reasonCode };
@@ -360,8 +382,11 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     if (skipped > 0) log({ code: "telegram_file_failed", count: skipped, job_id: row.id, outcome: "degraded", stage: "dispatch" });
     const reached = await reachTelegramChat(deps, plan.binding);
     if (!reached.ok) return reached.reasonCode;
-    await reached.bot.outbound.sendText({ chatId: plan.binding.telegramChatId, openInAiqsa: true, owner: plan.owner, text });
-    return null;
+    const recheck = authority(plan.binding);
+    const delivery = await reached.bot.outbound.sendText({
+      authorize: recheck.authorize, chatId: plan.binding.telegramChatId, openInAiqsa: true, owner: plan.owner, text
+    });
+    return !delivery.ok && delivery.failure.kind === "unreachable" ? recheck.reasonCode : null;
   }
 
   /** The delay before the next attempt, or null when the attempts or the window are used up. */
@@ -389,7 +414,7 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
         continue;
       }
       // The link no longer reaches the chat: nothing more goes out, and what already went fails the delivery.
-      if ("refused" in delivery) return settle(row, index === 0 ? "skipped" : "failed", delivery.refused);
+      if ("refused" in delivery) return settle(row, index === 0 && !delivery.partly ? "skipped" : "failed", delivery.refused);
       if (delivery.ok) continue;
       const { failure } = delivery;
       const code = telegramFailureCode(failure.kind, failure.errorCode);

@@ -7,7 +7,9 @@ import type { TelegramFailure, TelegramOutcome, TelegramTransport, TelegramUploa
  * A typed minimal Bot API client over the pinned transport. It knows only the
  * methods and fields AIQSA uses; every inbound field the server relies on is
  * validated and bounded here. Sends are paced per chat and per bot, and one
- * 429 per call is waited out once. The token stays inside this closure.
+ * 429 per call is waited out once. A send bound to one chat's authority asks
+ * it again after every wait, right before each dispatch. The token stays
+ * inside this closure.
  */
 
 // ---------------------------------------------------------------------------
@@ -252,6 +254,13 @@ export type TelegramChatAction = "typing" | "upload_photo" | "upload_document";
 export type TelegramSendFileParams = MessageTarget & Markup & Readonly<{ caption?: string; reply_parameters?: TelegramReplyParameters }>;
 /** An upload without its multipart field (the method picks it); keeps the buffer-or-stream union. */
 export type TelegramFileInput = TelegramUploadFile extends infer File ? File extends unknown ? Omit<File, "field"> : never : never;
+/**
+ * Whether the chat may still receive this send, asked after its pacing and any
+ * 429 wait, right before every dispatch or upload: false sends nothing and
+ * returns the `unreachable` failure.
+ */
+export type TelegramSendAuthority = () => Promise<boolean>;
+export type TelegramSendOptions = Readonly<{ authorize?: TelegramSendAuthority }>;
 export type TelegramGetUpdatesParams = Readonly<{
   offset?: number; limit?: number; timeoutSeconds: number; allowedUpdates?: readonly string[];
 }>;
@@ -311,16 +320,18 @@ export type TelegramBotApi = Readonly<{
   getWebhookInfo(): Promise<TelegramOutcome<TelegramWebhookState>>;
   setMyCommands(commands: readonly TelegramBotCommand[]): Promise<TelegramOutcome<true>>;
   getUpdates(params: TelegramGetUpdatesParams): Promise<TelegramOutcome<readonly TelegramUpdate[]>>;
-  sendMessage(params: TelegramSendMessageParams): Promise<TelegramOutcome<TelegramSentMessage>>;
-  sendRichMessage(params: TelegramSendRichMessageParams): Promise<TelegramOutcome<TelegramSentMessage>>;
-  sendMessageDraft(params: TelegramSendMessageDraftParams): Promise<TelegramOutcome<true>>;
-  sendRichMessageDraft(params: TelegramSendRichMessageDraftParams): Promise<TelegramOutcome<true>>;
-  editMessageText(params: TelegramEditMessageTextParams): Promise<TelegramOutcome<TelegramSentMessage | true>>;
-  editMessageReplyMarkup(params: TelegramEditMessageReplyMarkupParams): Promise<TelegramOutcome<TelegramSentMessage | true>>;
+  sendMessage(params: TelegramSendMessageParams, options?: TelegramSendOptions): Promise<TelegramOutcome<TelegramSentMessage>>;
+  sendRichMessage(params: TelegramSendRichMessageParams, options?: TelegramSendOptions): Promise<TelegramOutcome<TelegramSentMessage>>;
+  sendMessageDraft(params: TelegramSendMessageDraftParams, options?: TelegramSendOptions): Promise<TelegramOutcome<true>>;
+  sendRichMessageDraft(params: TelegramSendRichMessageDraftParams, options?: TelegramSendOptions): Promise<TelegramOutcome<true>>;
+  editMessageText(params: TelegramEditMessageTextParams, options?: TelegramSendOptions): Promise<TelegramOutcome<TelegramSentMessage | true>>;
+  editMessageReplyMarkup(
+    params: TelegramEditMessageReplyMarkupParams, options?: TelegramSendOptions
+  ): Promise<TelegramOutcome<TelegramSentMessage | true>>;
   answerCallbackQuery(params: TelegramAnswerCallbackQueryParams): Promise<TelegramOutcome<true>>;
   sendChatAction(params: MessageTarget & Readonly<{ action: TelegramChatAction }>): Promise<TelegramOutcome<true>>;
-  sendDocument(params: TelegramSendFileParams, file: TelegramFileInput): Promise<TelegramOutcome<TelegramSentMessage>>;
-  sendPhoto(params: TelegramSendFileParams, file: TelegramFileInput): Promise<TelegramOutcome<TelegramSentMessage>>;
+  sendDocument(params: TelegramSendFileParams, file: TelegramFileInput, options?: TelegramSendOptions): Promise<TelegramOutcome<TelegramSentMessage>>;
+  sendPhoto(params: TelegramSendFileParams, file: TelegramFileInput, options?: TelegramSendOptions): Promise<TelegramOutcome<TelegramSentMessage>>;
   getFile(fileId: string): Promise<TelegramOutcome<TelegramFile>>;
   downloadFile(filePath: string, options?: Readonly<{ maxBytes?: number }>): Promise<TelegramOutcome<Buffer>>;
   leaveChat(chatId: number): Promise<TelegramOutcome<true>>;
@@ -329,6 +340,7 @@ export type TelegramBotApi = Readonly<{
 type Pace = "chat" | "bot" | "none";
 
 const INVALID_RESPONSE: TelegramFailure = { ok: false, kind: "http", status: 200, category: "invalid_response" };
+const UNREACHABLE: TelegramFailure = { ok: false, kind: "unreachable" };
 const trueSchema = z.literal(true);
 const editedSchema = z.union([trueSchema, sentMessageSchema]);
 
@@ -353,13 +365,15 @@ export function createTelegramBotApi(options: Readonly<{
 
   async function run<T>(
     pace: Pace, chatId: number | undefined, send: () => Promise<TelegramOutcome<unknown>>, decode: (value: unknown) => T | undefined,
-    repeatable = true
+    repeatable = true, authorize?: TelegramSendAuthority
   ): Promise<TelegramOutcome<T>> {
     for (let attempt = 0; ; attempt += 1) {
       if (pace !== "none") {
         const delay = pacer.reserve(pace === "chat" ? chatId : undefined);
         if (delay > 0) await sleep(delay);
       }
+      // After every wait, before the bytes leave: a chat that may no longer receive it gets nothing.
+      if (authorize && !(await authorize())) return UNREACHABLE;
       const outcome = await send();
       if (!outcome.ok) {
         if (attempt === 0 && repeatable && outcome.kind === "telegram" && outcome.errorCode === 429) {
@@ -380,14 +394,20 @@ export function createTelegramBotApi(options: Readonly<{
     return parsed.success ? parsed.data : undefined;
   };
   const call = (method: string, params?: Readonly<Record<string, unknown>>) => () => transport.call({ token, method, params });
+  /** One send paced per chat, asking its authority (if any) before every dispatch. */
+  const chatSend = <T>(
+    method: string, params: MessageTarget, decode: (value: unknown) => T | undefined, sendOptions?: TelegramSendOptions
+  ) => run("chat", params.chat_id, call(method, params), decode, true, sendOptions?.authorize);
   /** A streamed file is consumed by its first attempt, so only a buffer is sent again after a 429. */
-  const upload = (method: string, field: "document" | "photo", params: TelegramSendFileParams, file: TelegramFileInput) => {
+  const upload = (
+    method: string, field: "document" | "photo", params: TelegramSendFileParams, file: TelegramFileInput, options?: TelegramSendOptions
+  ) => {
     const fields: Record<string, string> = { chat_id: String(params.chat_id) };
     if (params.caption !== undefined) fields.caption = params.caption;
     if (params.reply_markup) fields.reply_markup = JSON.stringify(params.reply_markup);
     if (params.reply_parameters) fields.reply_parameters = JSON.stringify(params.reply_parameters);
     const send = () => transport.upload({ token, method, fields, file: { ...file, field } as TelegramUploadFile });
-    return run("chat", params.chat_id, send, parse(sentMessageSchema), "data" in file);
+    return run("chat", params.chat_id, send, parse(sentMessageSchema), "data" in file, options?.authorize);
   };
 
   return Object.freeze({
@@ -409,16 +429,16 @@ export function createTelegramBotApi(options: Readonly<{
       const updates = value.map(decodeTelegramUpdate);
       return updates.every((update) => update !== undefined) ? updates as TelegramUpdate[] : undefined;
     }),
-    sendMessage: (params) => run("chat", params.chat_id, call("sendMessage", params), parse(sentMessageSchema)),
-    sendRichMessage: (params) => run("chat", params.chat_id, call("sendRichMessage", params), parse(sentMessageSchema)),
-    sendMessageDraft: (params) => run("chat", params.chat_id, call("sendMessageDraft", params), parse(trueSchema)),
-    sendRichMessageDraft: (params) => run("chat", params.chat_id, call("sendRichMessageDraft", params), parse(trueSchema)),
-    editMessageText: (params) => run("chat", params.chat_id, call("editMessageText", params), parse(editedSchema)),
-    editMessageReplyMarkup: (params) => run("chat", params.chat_id, call("editMessageReplyMarkup", params), parse(editedSchema)),
+    sendMessage: (params, sendOptions) => chatSend("sendMessage", params, parse(sentMessageSchema), sendOptions),
+    sendRichMessage: (params, sendOptions) => chatSend("sendRichMessage", params, parse(sentMessageSchema), sendOptions),
+    sendMessageDraft: (params, sendOptions) => chatSend("sendMessageDraft", params, parse(trueSchema), sendOptions),
+    sendRichMessageDraft: (params, sendOptions) => chatSend("sendRichMessageDraft", params, parse(trueSchema), sendOptions),
+    editMessageText: (params, sendOptions) => chatSend("editMessageText", params, parse(editedSchema), sendOptions),
+    editMessageReplyMarkup: (params, sendOptions) => chatSend("editMessageReplyMarkup", params, parse(editedSchema), sendOptions),
     answerCallbackQuery: (params) => run("none", undefined, call("answerCallbackQuery", params), parse(trueSchema)),
     sendChatAction: (params) => run("bot", undefined, call("sendChatAction", params), parse(trueSchema)),
-    sendDocument: (params, file) => upload("sendDocument", "document", params, file),
-    sendPhoto: (params, file) => upload("sendPhoto", "photo", params, file),
+    sendDocument: (params, file, sendOptions) => upload("sendDocument", "document", params, file, sendOptions),
+    sendPhoto: (params, file, sendOptions) => upload("sendPhoto", "photo", params, file, sendOptions),
     getFile: (fileId) => run("none", undefined, call("getFile", { file_id: fileId }), parse(fileSchema)),
     downloadFile: (filePath, downloadOptions) => transport.download({ token, filePath, maxBytes: downloadOptions?.maxBytes }),
     leaveChat: (chatId) => run("none", undefined, call("leaveChat", { chat_id: chatId }), parse(trueSchema))

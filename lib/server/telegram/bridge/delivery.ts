@@ -1,6 +1,7 @@
 import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
-import type { TelegramAccessResolver } from "../control/access";
+import type { TelegramAccessRefusal, TelegramAccessResolver } from "../control/access";
+import { reachTelegramChat } from "../control/reach";
 import type { TelegramSessionProvider } from "../control/session";
 import { TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY, telegramAnswerFailedText, telegramReasonText } from "../copy";
 import type { TelegramBotSession } from "../dispatcher";
@@ -16,7 +17,10 @@ import type { TelegramRunAnswer, TelegramRunGateway } from "./gateway";
  * its citations and sources, delivery is claimed before anything is sent so a
  * restart never sends it twice, and the claim settles `delivered`, `failed`,
  * or `unknown` when Telegram may have received it (never resent). A run that
- * was stopped or failed sends what it wrote, then why it ended.
+ * was stopped or failed sends what it wrote, then why it ended. Every message
+ * asks right before it leaves whether the run's exact link still reaches its
+ * chat; once it does not, nothing more goes and the claim settles `failed`
+ * with the access reason.
  */
 
 export type TelegramDeliveryDeps = Readonly<{
@@ -90,6 +94,14 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
   const owner = answer
     ? { chatId: answer.chatId, linkId: input.linkId, messageId: answer.assistantMessageId, userId: input.userId }
     : null;
+  // Asked by the Bot API right before every message leaves, after its pacing or a 429's wait.
+  const recheck: { reasonCode: TelegramAccessRefusal } = { reasonCode: "telegram_access_off" };
+  const binding = { botId: bot.botId, linkId: input.linkId, telegramChatId: input.telegramChatId, userId: input.userId };
+  const authorize = async (): Promise<boolean> => {
+    const reached = await reachTelegramChat(deps, binding);
+    if (!reached.ok) recheck.reasonCode = reached.reasonCode;
+    return reached.ok;
+  };
   const sent: { failure: TelegramFailure | null; messageIds: number[] } = { failure: null, messageIds: [] };
   const take = (delivery: TelegramDelivery): boolean => {
     sent.messageIds.push(...delivery.messageIds);
@@ -99,7 +111,7 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
   try {
     if (!answer || !owner) {
       // The chat can no longer be read here (archived, deleted): nothing to quote.
-      take(await bot.outbound.sendText({ chatId: input.telegramChatId, text: TELEGRAM_BRIDGE_COPY.answerInAiqsa }));
+      take(await bot.outbound.sendText({ authorize, chatId: input.telegramChatId, text: TELEGRAM_BRIDGE_COPY.answerInAiqsa }));
     } else {
       const text = answer.text.trim();
       const ending = answer.status === "cancelled" ? TELEGRAM_COPY.stopped
@@ -113,10 +125,12 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
           sources: summary?.sources ?? []
         });
         continued = take(await bot.outbound.sendContent({
-          chatId: input.telegramChatId, messages: rendered.messages, openInAiqsa: ending === null, owner
+          authorize, chatId: input.telegramChatId, messages: rendered.messages, openInAiqsa: ending === null, owner
         }));
       }
-      if (ending && continued) take(await bot.outbound.sendText({ chatId: input.telegramChatId, openInAiqsa: true, owner, text: ending }));
+      if (ending && continued) {
+        take(await bot.outbound.sendText({ authorize, chatId: input.telegramChatId, openInAiqsa: true, owner, text: ending }));
+      }
     }
   } catch (error) {
     // Thrown mid-send (a button row or reference write): whether Telegram got it is unknown.
@@ -127,6 +141,12 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
   if (!sent.failure) {
     await settle("delivered");
     return { answer, bot, messageIds: sent.messageIds, state: "delivered" };
+  }
+  if (sent.failure.kind === "unreachable") {
+    // The link stopped reaching the chat mid-answer: the rest stays in AIQSA.
+    await settle("failed");
+    log({ code: recheck.reasonCode, outcome: "failed", runId: input.runId });
+    return { answer, bot, messageIds: sent.messageIds, state: "failed" };
   }
   const state = ambiguous(sent.failure) ? "unknown" : "failed";
   log({

@@ -1131,6 +1131,7 @@
   "telegram_bot_changed",
   "telegram_busy",
   "telegram_button_refused",
+  "telegram_chat_unreachable",
   "telegram_control_action_failed",
   "telegram_control_unavailable",
   "telegram_delivery_unknown",
