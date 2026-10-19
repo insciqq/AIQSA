@@ -3,6 +3,7 @@ package localsock
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -92,7 +93,7 @@ func (w lockedBuffer) Write(p []byte) (int, error) {
 func serve(t *testing.T, gate *status.Gate) *served {
 	t.Helper()
 	s := &served{path: filepath.Join(shortDir(t), "daemon.sock"), reporter: newFakeReporter(), log: &bytes.Buffer{}, logMu: &sync.Mutex{}, done: make(chan struct{})}
-	server, err := Listen(s.path, s.reporter, logx.New(lockedBuffer{s.logMu, s.log}), gate)
+	server, err := Listen([]string{s.path}, s.reporter, logx.New(lockedBuffer{s.logMu, s.log}), gate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +180,75 @@ func TestSendTriesTheFallbackPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.reporter.wait(t, 1)
+}
+
+// The tmux server keeps the environment of the `up` that started it, so a
+// hook can see another XDG_RUNTIME_DIR than the daemon: the daemon listens
+// on every candidate, and a hook reaches it either way.
+func TestHooksReachTheDaemonWhateverRuntimeDirEitherSaw(t *testing.T) {
+	runtime := shortDir(t)
+	os.Chmod(runtime, 0o700)
+	paths := config.Paths{StateDir: shortDir(t), TmuxSocket: "aiqsa-connect"}
+	t.Setenv(config.EnvStateDir, "")
+	msg := Message{Session: "ac-abc123", Status: protocol.StatusRunning, Reason: protocol.ReasonInput}
+	for _, daemonHasRuntime := range []bool{true, false} {
+		if daemonHasRuntime {
+			t.Setenv("XDG_RUNTIME_DIR", runtime)
+		} else {
+			t.Setenv("XDG_RUNTIME_DIR", "")
+		}
+		reporter := newFakeReporter()
+		server, err := Listen(Candidates(paths), reporter, logx.Discard(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sock := range Candidates(paths) {
+			if info, err := os.Lstat(sock); err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatalf("socket %s: %v %v", sock, info, err)
+			}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			server.Serve(ctx)
+			close(done)
+		}()
+		for i, hookHasRuntime := range []bool{true, false} {
+			if hookHasRuntime {
+				t.Setenv("XDG_RUNTIME_DIR", runtime)
+			} else {
+				t.Setenv("XDG_RUNTIME_DIR", "")
+			}
+			if err := Send(context.Background(), Candidates(paths), msg); err != nil {
+				t.Fatalf("daemon runtime dir %v, hook runtime dir %v: %v", daemonHasRuntime, hookHasRuntime, err)
+			}
+			reporter.wait(t, i+1)
+		}
+		cancel()
+		<-done
+		// Both socket files go with the daemon.
+		for _, sock := range []string{filepath.Join(runtime, "aiqsa-connect.sock"), filepath.Join(paths.StateDir, "daemon.sock")} {
+			if _, err := os.Lstat(sock); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s left behind: %v", sock, err)
+			}
+		}
+	}
+}
+
+func TestListenOpensNothingWhenOneSocketFails(t *testing.T) {
+	dir := shortDir(t)
+	good := filepath.Join(dir, "a.sock")
+	other := filepath.Join(dir, "file.sock")
+	os.WriteFile(other, []byte("keep"), 0o600)
+	if _, err := Listen([]string{good, other}, newFakeReporter(), logx.Discard(), nil); err == nil {
+		t.Fatal("listened over a regular file")
+	}
+	if _, err := os.Lstat(good); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("first socket left open: %v", err)
+	}
+	if _, err := Listen(nil, newFakeReporter(), logx.Discard(), nil); err == nil {
+		t.Fatal("listened on no path")
+	}
 }
 
 func TestSendFailsFastWithoutADaemon(t *testing.T) {
@@ -269,19 +339,19 @@ func TestListenReplacesOnlyAStaleSocket(t *testing.T) {
 	}
 	stale.SetUnlinkOnClose(false)
 	stale.Close()
-	server, err := Listen(path, newFakeReporter(), logx.Discard(), nil)
+	server, err := Listen([]string{path}, newFakeReporter(), logx.Discard(), nil)
 	if err != nil {
 		t.Fatalf("stale socket: %v", err)
 	}
 	// A live socket belongs to another daemon.
-	if _, err := Listen(path, newFakeReporter(), logx.Discard(), nil); err == nil || !strings.Contains(err.Error(), "already listening") {
+	if _, err := Listen([]string{path}, newFakeReporter(), logx.Discard(), nil); err == nil || !strings.Contains(err.Error(), "already listening") {
 		t.Fatalf("live socket: %v", err)
 	}
 	server.Close()
 	// Any other file is never removed.
 	other := filepath.Join(dir, "file.sock")
 	os.WriteFile(other, []byte("keep"), 0o600)
-	if _, err := Listen(other, newFakeReporter(), logx.Discard(), nil); err == nil {
+	if _, err := Listen([]string{other}, newFakeReporter(), logx.Discard(), nil); err == nil {
 		t.Fatal("listened over a regular file")
 	}
 	if data, _ := os.ReadFile(other); string(data) != "keep" {

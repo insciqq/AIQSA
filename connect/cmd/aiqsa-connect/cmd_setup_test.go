@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/insciqq/AIQSA/connect/internal/config"
+	"github.com/insciqq/AIQSA/connect/internal/daemon"
 	"github.com/insciqq/AIQSA/connect/internal/hooks"
 	"github.com/insciqq/AIQSA/connect/internal/tmux"
 )
@@ -111,6 +113,31 @@ func TestSetupNamesTheOriginAndSkipsMissingAgents(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("setup touched the Codex directory without Codex")
+	}
+}
+
+// A second setup while the first waits for its answer changes nothing.
+func TestSetupRunsOneAtATime(t *testing.T) {
+	home := fakeSetup(t, nil, map[string]string{"claude": "/usr/bin/claude"})
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths.EnsureStateDir()
+	release, err := daemon.AcquireLock(filepath.Join(paths.StateDir, "setup.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runSetupArgs("", "--yes")
+	if code != 1 || !strings.Contains(stderr, "another aiqsa-connect setup is running") {
+		t.Fatalf("got %d %q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a second setup wrote the hooks")
+	}
+	release()
+	if code, stdout, stderr := runSetupArgs("", "--yes"); code != 0 || !strings.Contains(stdout, "Hooks added.") {
+		t.Fatalf("after the first: %d %q %q", code, stdout, stderr)
 	}
 }
 
