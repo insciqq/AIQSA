@@ -32,7 +32,7 @@ const (
 	MaxSnapshotSessions                  = 50
 	MaxDeviceNameLength                  = 64
 	MaxHostnameLength                    = 255
-	MaxAccountLabelLength                = 160
+	MaxAccountLabelLength                = 400
 	MaxSessionOptions                    = 9
 	MaxOptionLabelLength                 = 80
 	MaxAttachedClients                   = 1_000

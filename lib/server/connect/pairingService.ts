@@ -24,18 +24,30 @@ import {
 } from "./tokens";
 
 const CODE_ATTEMPTS = 4;
-const CONTROL_CHARACTERS = new RegExp(CONNECT_CONTROL_CHARACTER_PATTERN.source, "gu");
+/** Control and invisible format characters (bidi overrides, zero-width), which could disguise a label. */
+const HIDDEN_CHARACTERS = new RegExp(`${CONNECT_CONTROL_CHARACTER_PATTERN.source}|\\p{Cf}`, "gu");
+const MAX_LABEL_EMAIL_LENGTH = 320;
+
+function codePoints(value: string, max: number): string {
+  return Array.from(value).slice(0, Math.max(max, 0)).join("");
+}
 
 /**
- * Who approved a pairing, as the computer's `login` prints it: the display name and the email with
- * its local part masked ("Ann (a•••@example.com)"), so the owner notices a code someone else approved.
+ * Who approved a pairing, as the computer's `login` prints it, so the owner notices a code someone
+ * else approved: the account's email first, which its holder cannot choose freely, then the display
+ * name, which anyone can set to look like someone else's ("ann@example.com ("Ann Lee")"). An account
+ * without an email says so. Cut to length, the name gives way, never the email.
  */
 export function connectAccountLabel(account: ConnectPairingAccount): string {
-  const name = account.displayName.replace(CONTROL_CHARACTERS, "").trim() || "AIQSA account";
-  const email = account.email?.replace(CONTROL_CHARACTERS, "") ?? "";
-  const at = email.lastIndexOf("@");
-  const label = at > 0 ? `${name} (${Array.from(email)[0]}•••${email.slice(at)})` : name;
-  return Array.from(label).slice(0, CONNECT_MAX_ACCOUNT_LABEL_LENGTH).join("");
+  const clean = (value: string) => value.replace(HIDDEN_CHARACTERS, "").trim().replace(/\s+/gu, " ");
+  const email = codePoints(clean(account.email ?? ""), MAX_LABEL_EMAIL_LENGTH);
+  const name = clean(account.displayName);
+  if (!email) {
+    const suffix = " (no email address)";
+    return name ? `"${codePoints(name, CONNECT_MAX_ACCOUNT_LABEL_LENGTH - suffix.length - 2)}"${suffix}` : suffix.trim();
+  }
+  const room = CONNECT_MAX_ACCOUNT_LABEL_LENGTH - Array.from(email).length - 5;
+  return name && room > 0 ? `${email} ("${codePoints(name, room)}")` : email;
 }
 
 export type ConnectPairingService = ReturnType<typeof createConnectPairingService>;

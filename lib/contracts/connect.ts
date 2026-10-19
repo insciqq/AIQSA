@@ -33,8 +33,8 @@ export const CONNECT_MAX_RECENT_DIRS = 20;
 export const CONNECT_MAX_SNAPSHOT_SESSIONS = 50;
 export const CONNECT_MAX_DEVICE_NAME_LENGTH = 64;
 export const CONNECT_MAX_HOSTNAME_LENGTH = 255;
-/** Who approved a pairing, as `login` prints it: a display name and a masked email. */
-export const CONNECT_MAX_ACCOUNT_LABEL_LENGTH = 160;
+/** Who approved a pairing, as `login` prints it: the account's email, then its display name. */
+export const CONNECT_MAX_ACCOUNT_LABEL_LENGTH = 400;
 export const CONNECT_MAX_SESSION_OPTIONS = 9;
 export const CONNECT_MAX_OPTION_LABEL_LENGTH = 80;
 export const CONNECT_MAX_ATTACHED_CLIENTS = 1_000;
