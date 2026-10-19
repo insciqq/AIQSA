@@ -260,7 +260,9 @@ describe.skipIf(!canRunInstaller)("install.sh", () => {
   async function install(env: Record<string, string>) {
     const script = path.join(root, "install.sh");
     writeFileSync(script, connectInstallScript(origin));
-    return run("sh", [script], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env }, timeout: 30_000 });
+    // Only these variables: the script must not see the host's own HOME or XDG directories.
+    const childEnv: NodeJS.ProcessEnv = { NODE_ENV: "test", PATH: process.env.PATH ?? "/usr/bin:/bin", ...env };
+    return run("sh", [script], { env: childEnv, timeout: 30_000 });
   }
 
   it("installs a verified, working binary into ~/.local/bin of a fresh HOME", async () => {
@@ -284,6 +286,22 @@ describe.skipIf(!canRunInstaller)("install.sh", () => {
     expect((await run(path.join(dir, "aiqsa-connect"), ["version"])).stdout.trim()).toBe(VERSION);
     expect(stdout).not.toContain("is not on your PATH");
     expect(stdout).toContain(`aiqsa-connect login ${origin}`);
+    expect(stdout).not.toContain("still runs the previous version");
+  });
+
+  it.each<{ name: string; file: string; xdg?: string }>([
+    { name: "systemd user unit", file: ".config/systemd/user/aiqsa-connect.service" },
+    { name: "systemd user unit under XDG_CONFIG_HOME", file: "xdg/systemd/user/aiqsa-connect.service", xdg: "xdg" },
+    { name: "LaunchAgent", file: "Library/LaunchAgents/io.github.insciqq.aiqsa-connect.plist" }
+  ])("tells to restart an installed $name", async ({ file: relative, xdg }) => {
+    const home = path.join(root, "home");
+    const file = path.join(home, relative);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "service");
+    const { stdout } = await install({ HOME: home, ...(xdg ? { XDG_CONFIG_HOME: path.join(home, xdg) } : {}) });
+    expect(stdout).toContain(`The aiqsa-connect service (${file}) still runs the previous version.`);
+    expect(stdout).toContain(`Restart the background client:\n  ${path.join(home, ".local", "bin", "aiqsa-connect")} service install\n`);
+    expect(stdout).not.toContain("Next steps");
   });
 
   it("installs nothing when the download does not match its checksum", async () => {

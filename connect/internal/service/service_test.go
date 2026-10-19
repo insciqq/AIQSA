@@ -12,7 +12,7 @@ import (
 
 const exe = "/home/ann/.local/bin/aiqsa-connect"
 
-func TestSystemdUnitKeepsSessionsAndStopsOnRevocation(t *testing.T) {
+func TestSystemdUnitRunsServiceModeAndKeepsSessions(t *testing.T) {
 	unit, err := SystemdUnit(Spec{Executable: exe, Path: "/home/ann/.nvm/bin:/usr/bin"})
 	if err != nil {
 		t.Fatal(err)
@@ -24,10 +24,10 @@ Documentation=https://github.com/insciqq/AIQSA/blob/main/connect/README.md
 
 [Service]
 Type=simple
-ExecStart="/home/ann/.local/bin/aiqsa-connect" up
+ExecStart="/home/ann/.local/bin/aiqsa-connect" up --service
 Restart=on-failure
 RestartSec=5
-# A revoked or logged-out client exits 3 and stays stopped.
+# A client that a restart cannot fix (logged out, revoked) exits 0 and stays stopped.
 RestartPreventExitStatus=3
 # Stop or restart only the client: the tmux server with the sessions keeps running.
 KillMode=process
@@ -47,7 +47,7 @@ func TestSystemdUnitQuotesSpecialCharacters(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, line := range []string{
-		`ExecStart="/home/a b/100%%/$$x/\"q\"\\bin" up`,
+		`ExecStart="/home/a b/100%%/$$x/\"q\"\\bin" up --service`,
 		`Environment="PATH=/p%%h:/q\"r"`,
 	} {
 		if !strings.Contains(unit, line+"\n") {
@@ -86,7 +86,7 @@ func TestLaunchAgentPlist(t *testing.T) {
 		t.Errorf("Label = %q", str("Label"))
 	}
 	args := values["ProgramArguments"].Items
-	if len(args) != 2 || args[0].Content != "/Users/ann/bin/a&b/aiqsa-connect" || args[1].Content != "up" {
+	if len(args) != 3 || args[0].Content != "/Users/ann/bin/a&b/aiqsa-connect" || args[1].Content != "up" || args[2].Content != "--service" {
 		t.Errorf("ProgramArguments = %+v", args)
 	}
 	for _, key := range []string{"RunAtLoad", "AbandonProcessGroup"} {
@@ -126,8 +126,8 @@ func manager(t *testing.T, goos string, system *fakeSystem) Manager {
 
 func TestSystemdInstallUninstallAndStatus(t *testing.T) {
 	system := &fakeSystem{outputs: map[string]string{
-		"systemctl --user show aiqsa-connect.service --property=ActiveState,SubState,ExecMainStatus": "ActiveState=active\nSubState=running\nExecMainStatus=0\n",
-		"loginctl show-user ann --property=Linger":                                                   "Linger=no\n",
+		"systemctl --user show aiqsa-connect.service --property=ActiveState,SubState": "ActiveState=active\nSubState=running\n",
+		"loginctl show-user ann --property=Linger":                                    "Linger=no\n",
 	}}
 	m := manager(t, "linux", system)
 	if status, err := m.Status(context.Background()); err != nil || status.Installed {
@@ -181,20 +181,6 @@ func TestSystemdInstallUninstallAndStatus(t *testing.T) {
 	}
 }
 
-func TestSystemdStatusNamesARevokedStop(t *testing.T) {
-	system := &fakeSystem{outputs: map[string]string{
-		"systemctl --user show aiqsa-connect.service --property=ActiveState,SubState,ExecMainStatus": "ActiveState=failed\nSubState=failed\nExecMainStatus=3\n",
-	}}
-	m := manager(t, "linux", system)
-	if err := writeFile(m.File(), "unit"); err != nil {
-		t.Fatal(err)
-	}
-	status, err := m.Status(context.Background())
-	if err != nil || status.Running || !status.LastExitRevoked {
-		t.Fatalf("status: %+v %v", status, err)
-	}
-}
-
 func TestMissingUserSystemdIsReportedBeforeAnyChange(t *testing.T) {
 	system := &fakeSystem{failures: map[string]error{
 		"systemctl --user show-environment": errors.New("exit status 1"),
@@ -237,7 +223,7 @@ func TestLaunchdInstallUninstallAndStatus(t *testing.T) {
 		t.Fatalf("calls:\n%s", strings.Join(system.calls, "\n"))
 	}
 	status, err := m.Status(context.Background())
-	if err != nil || !status.Installed || status.Running || !status.LastExitRevoked || status.Detail != "not running, last exit code 3" {
+	if err != nil || !status.Installed || status.Running || status.Detail != "not running, last exit code 3" {
 		t.Fatalf("status: %+v %v", status, err)
 	}
 	if hint := m.LingerHint(context.Background()); hint != "" {

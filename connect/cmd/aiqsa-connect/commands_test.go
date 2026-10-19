@@ -137,12 +137,12 @@ func writeCredentials(t *testing.T, paths config.Paths, origin string) {
 func TestUpRefusesMissingAndReadableCredentials(t *testing.T) {
 	paths := isolate(t)
 	// Not logged in is final for a service manager, like a revoked device.
-	if code, _, stderr := runArgs("up"); code != exitRevoked || !strings.Contains(stderr, "not logged in — run aiqsa-connect login") {
+	if code, _, stderr := runArgs("up"); code != exitNoRestart || !strings.Contains(stderr, "not logged in — run aiqsa-connect login") {
 		t.Fatalf("not logged in: %d %q", code, stderr)
 	}
 	writeCredentials(t, paths, "https://ai.example.com")
 	os.Chmod(paths.CredentialsFile(), 0o644)
-	if code, _, stderr := runArgs("up"); code != 1 || !strings.Contains(stderr, "chmod 600") {
+	if code, _, stderr := runArgs("up"); code != exitNoRestart || !strings.Contains(stderr, "chmod 600") {
 		t.Fatalf("readable credentials: %d %q", code, stderr)
 	}
 }
@@ -158,7 +158,7 @@ func TestUpExitsWithStatus3WhenRevoked(t *testing.T) {
 	defer srv.Close()
 	writeCredentials(t, paths, srv.URL)
 	code, _, stderr := runArgs("up")
-	if code != exitRevoked || !strings.Contains(stderr, "device revoked — run aiqsa-connect login") {
+	if code != exitNoRestart || !strings.Contains(stderr, "device revoked — run aiqsa-connect login") {
 		t.Fatalf("revoked: %d %q", code, stderr)
 	}
 	// The revoked token is set aside, so a restart stops without asking the server.
@@ -168,7 +168,7 @@ func TestUpExitsWithStatus3WhenRevoked(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths.ConfigDir, "credentials.revoked.json")); err != nil {
 		t.Fatalf("revoked credentials: %v", err)
 	}
-	if code, _, _ := runArgs("up"); code != exitRevoked {
+	if code, _, _ := runArgs("up"); code != exitNoRestart {
 		t.Fatalf("restart after revocation: %d", code)
 	}
 	if _, err := os.Stat(paths.LogFile()); err != nil {
@@ -176,6 +176,70 @@ func TestUpExitsWithStatus3WhenRevoked(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(paths.TmuxConfigFile()); !strings.Contains(string(data), "set -g history-limit 50000") {
 		t.Fatalf("tmux config: %q", data)
+	}
+	// The service exits 0, so launchd's KeepAlive does not restart it either.
+	writeCredentials(t, paths, srv.URL)
+	code, _, stderr = runArgs("up", "--service")
+	if code != 0 || !strings.Contains(stderr, "device revoked") || !strings.Contains(stderr, "the service stays stopped") {
+		t.Fatalf("revoked service: %d %q", code, stderr)
+	}
+	if data, _ := os.ReadFile(paths.LogFile()); !strings.Contains(string(data), "up_stop_final reason=revoked") {
+		t.Fatalf("log: %q", data)
+	}
+}
+
+func TestUpServiceModeStopsWithoutRestartForEveryFinalReason(t *testing.T) {
+	paths := isolate(t)
+	previous := serviceLockWait
+	serviceLockWait = 0
+	t.Cleanup(func() { serviceLockWait = previous })
+	expectStop := func(reason, message string) {
+		t.Helper()
+		code, _, stderr := runArgs("up", "--service")
+		if code != 0 || !strings.Contains(stderr, message) || !strings.Contains(stderr, "run aiqsa-connect service install") {
+			t.Fatalf("%s: %d %q", reason, code, stderr)
+		}
+		if data, _ := os.ReadFile(paths.LogFile()); !strings.Contains(string(data), "up_stop_final reason="+reason+"\n") {
+			t.Fatalf("%s: log %q", reason, data)
+		}
+	}
+	expectStop("not_logged_in", "not logged in — run aiqsa-connect login")
+	writeCredentials(t, paths, "https://ai.example.com")
+	os.Chmod(paths.CredentialsFile(), 0o644)
+	expectStop("credentials_invalid", "chmod 600")
+	os.Chmod(paths.CredentialsFile(), 0o600)
+	os.WriteFile(paths.CredentialsFile(), []byte("{"), 0o600)
+	expectStop("credentials_invalid", "damaged")
+	writeCredentials(t, paths, "https://ai.example.com")
+	release, err := daemon.AcquireLock(paths.LockFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	expectStop("already_running", "already running")
+	for _, args := range [][]string{{"up", "--bogus"}, {"up", "--service", "--service"}, {"up", "now"}} {
+		if code, _, stderr := runArgs(args...); code != 2 || !strings.Contains(stderr, "up [--service]") {
+			t.Fatalf("%v: %d %q", args, code, stderr)
+		}
+	}
+}
+
+func TestUpServiceModeWaitsForAStoppingClient(t *testing.T) {
+	paths := isolate(t)
+	writeCredentials(t, paths, "https://ai.example.com")
+	paths.EnsureStateDir()
+	release, err := daemon.AcquireLock(paths.LockFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := serviceLockWait
+	serviceLockWait = 300 * time.Millisecond
+	t.Cleanup(func() { serviceLockWait = previous })
+	started := time.Now()
+	code, _, _ := runArgs("up", "--service")
+	release()
+	if code != 0 || time.Since(started) < 300*time.Millisecond {
+		t.Fatalf("did not wait for the lock: %d after %s", code, time.Since(started))
 	}
 }
 
@@ -214,7 +278,7 @@ func TestUpIsSingleInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	if code, _, stderr := runArgs("up"); code != 1 || !strings.Contains(stderr, "already running") {
+	if code, _, stderr := runArgs("up"); code != exitNoRestart || !strings.Contains(stderr, "already running") {
 		t.Fatalf("second up: %d %q", code, stderr)
 	}
 }
