@@ -1,11 +1,14 @@
 import { getAuthConfig } from "../auth/config";
 import { emailDispatcher } from "../email/defaultEmail";
-import { runInBackground } from "../observability";
+import { logEvent, runInBackground } from "../observability";
 import { prisma } from "../prisma";
 import { getDefaultBrowserPush } from "../push/defaultBrowserPush";
 import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
 import { stopModelRun } from "../runs/handlers";
 import { RunRecoveryScheduler } from "../runs/recoveryScheduler";
+import { getDefaultTelegram } from "../telegram/defaultTelegram";
+import { getDefaultTelegramScheduledDelivery } from "../telegram/scheduledDelivery";
+import { registerScheduledTaskTelegramOrigin } from "../tools/scheduledTaskCreation";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { getScheduledWorkspaceMaxConcurrent } from "../workspace/config";
 import { workspaceRuntime } from "../workspace/defaultServices";
@@ -56,6 +59,7 @@ export function getDefaultScheduledTaskRunner(): RunRecoveryScheduler {
       send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps }),
       sendEmail: (message) => emailDispatcher.send(message),
       sendPush: (occurrenceId) => getDefaultBrowserPush().sender.notifyOccurrence(occurrenceId),
+      queueTelegram: (occurrenceId) => void getDefaultTelegramScheduledDelivery().queue(occurrenceId),
       // The run deadline uses the chat's own Stop path in this process, where the runs execute.
       stopRun: ({ code, message, runId, userId }) => stopModelRun(sendDeps, { payload: { code, message }, runId, userId }),
       store: createPrismaScheduledTaskRunnerStore(prisma),
@@ -73,4 +77,20 @@ export function getDefaultScheduledTaskRunner(): RunRecoveryScheduler {
 
 export function startDefaultScheduledTaskRunner(): void {
   getDefaultScheduledTaskRunner().start();
+  startTelegramScheduledDelivery();
+}
+
+/**
+ * Telegram delivery of results: the startup and once-a-minute sweep of the
+ * outbox, and the run lookup that turns Telegram delivery on for a task an
+ * answer to a Telegram message creates. Feature-local: the runner works without it.
+ */
+function startTelegramScheduledDelivery(): void {
+  try {
+    const telegram = getDefaultTelegram();
+    registerScheduledTaskTelegramOrigin(async ({ runId, userId }) => (await telegram.runLinks.find(runId))?.userId === userId);
+    getDefaultTelegramScheduledDelivery().start();
+  } catch (error) {
+    logEvent("service_operation", { code: "telegram_startup_failed", error, outcome: "failed", stage: "startup", subsystem: "telegram" });
+  }
 }

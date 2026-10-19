@@ -25,6 +25,7 @@ import {
 } from "../memoryMcp/oauth/repository";
 import { revokeAllConnectDevices, revokeConnectDevicesForUser } from "../connect/revocation";
 import { clearTelemetryIncidentUser } from "../telemetry/store";
+import { revokeAllTelegramLinks, revokeTelegramLinksForUser } from "../telegram/linking/revocation";
 import { deleteSignInRefusalsOfEmails } from "./signInRefusals";
 
 export type AdminUserSessionCommands = Pick<
@@ -324,8 +325,8 @@ export function createAdminUserSessionCommands(
       });
     },
     async revokeAllSessions(input) {
-      // The installation-wide response to a suspected compromise also ends inbound MCP grants: a
-      // stolen session could have minted one that would otherwise outlive every revoked session.
+      // The installation-wide response to a suspected compromise also ends inbound MCP grants and
+      // Telegram links: a stolen session could have minted either, outliving every revoked session.
       return prisma.$transaction(async (tx) => {
         const now = new Date();
         const result = await tx.authSession.updateMany({
@@ -341,6 +342,7 @@ export function createAdminUserSessionCommands(
         await revokeAllInboundMcpGrants(tx, { now, reason: "admin_revoke_all" });
         // Likewise a device a stolen session paired, and every open terminal view.
         await revokeAllConnectDevices(tx);
+        await revokeAllTelegramLinks(tx, { now, reason: "admin_revoke_all" });
 
         return result.count;
       });
@@ -630,7 +632,7 @@ async function soleOwnedProjectConflict(
   };
 }
 
-/** Ends the account's sessions and inbound MCP grants; disable and reject inherit both. */
+/** Ends the account's sessions, inbound MCP grants and Telegram link; disable and reject inherit all three. */
 async function revokeUserSessions(
   tx: Prisma.TransactionClient,
   input: AdminRevokeUserSessionsInput
@@ -670,6 +672,11 @@ async function revokeAccountAccess(
     userId: input.userId
   });
   await revokeConnectDevicesForUser(tx, { userId: input.userId });
+  await revokeTelegramLinksForUser(tx, {
+    now: input.now,
+    reason: input.reason,
+    userId: input.userId
+  });
 
   return result.count;
 }

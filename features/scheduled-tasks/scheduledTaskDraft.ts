@@ -113,6 +113,8 @@ export type ScheduledTaskEditorDraft = Readonly<{
   provider: string;
   searchEnabled: boolean;
   emailNotify: boolean;
+  /** Results go to the owner's linked Telegram with their content; a new task starts with it off. */
+  telegramNotify: boolean;
   /** MCP tools and Skills; a new task starts from the composer defaults. */
   toolsEnabled: boolean;
   workspaceEnabled: boolean;
@@ -205,6 +207,7 @@ export function blankScheduledTaskDraft(
     ...model,
     searchEnabled: false,
     emailNotify: false,
+    telegramNotify: false,
     ...scheduledTaskStartingTools(catalog, model, workspace),
     memoryEnabled: true,
     pinnedSkills: [],
@@ -242,6 +245,7 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
     provider: task.provider,
     searchEnabled: task.searchEnabled,
     emailNotify: task.emailNotify,
+    telegramNotify: task.telegramNotify,
     toolsEnabled: task.toolsEnabled,
     workspaceEnabled: task.workspaceEnabled,
     memoryEnabled: task.memoryEnabled,
@@ -421,6 +425,7 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     provider: draft.provider,
     searchEnabled: draft.searchEnabled,
     emailNotify: draft.emailNotify,
+    telegramNotify: draft.telegramNotify,
     toolsEnabled: draft.toolsEnabled,
     workspaceEnabled: draft.workspaceEnabled,
     memoryEnabled: draft.memoryEnabled,
@@ -455,6 +460,7 @@ export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, orig
   }
   if (next.searchEnabled !== original.searchEnabled) patch.searchEnabled = next.searchEnabled;
   if (next.emailNotify !== original.emailNotify) patch.emailNotify = next.emailNotify;
+  if (next.telegramNotify !== original.telegramNotify) patch.telegramNotify = next.telegramNotify;
   if (next.toolsEnabled !== original.toolsEnabled) patch.toolsEnabled = next.toolsEnabled;
   if (next.workspaceEnabled !== original.workspaceEnabled) patch.workspaceEnabled = next.workspaceEnabled;
   if (next.memoryEnabled !== original.memoryEnabled) patch.memoryEnabled = next.memoryEnabled;
@@ -469,7 +475,8 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
   return left.title === right.title && left.prompt === right.prompt && left.repeat === right.repeat &&
     left.time === right.time && left.dayOfMonth === right.dayOfMonth && left.date === right.date &&
     left.timeZone === right.timeZone && left.modelId === right.modelId && left.provider === right.provider &&
-    left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify && left.chatMode === right.chatMode &&
+    left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify &&
+    left.telegramNotify === right.telegramNotify && left.chatMode === right.chatMode &&
     left.everyHours === right.everyHours && left.hourlyWindow === right.hourlyWindow && left.until === right.until &&
     left.toolsEnabled === right.toolsEnabled && left.workspaceEnabled === right.workspaceEnabled &&
     left.memoryEnabled === right.memoryEnabled && left.kind === right.kind &&

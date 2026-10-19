@@ -7,7 +7,10 @@ import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import { kickScheduledTaskRunner } from "./runnerKick";
 import { createPrismaScheduledTaskStore } from "./store";
 
-export const defaultScheduledTaskStore = createPrismaScheduledTaskStore(prisma);
+export const defaultScheduledTaskStore = createPrismaScheduledTaskStore(prisma, {
+  // Telegram loads on the first list, not with the owner API's routes.
+  telegramAvailable: async (userId) => (await import("../telegram/scheduledDelivery")).isTelegramScheduledDeliveryAvailable(userId)
+});
 export const defaultScheduledTaskCatalogLoader = createPrismaScheduledTaskCatalogLoader(prisma);
 export const defaultScheduledTaskHandlers = createScheduledTaskHandlers({
   kick: kickScheduledTaskRunner,

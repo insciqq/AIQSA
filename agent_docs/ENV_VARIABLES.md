@@ -11,7 +11,7 @@ Mutable provider/Search credentials/configuration belong in encrypted database r
 
 Artifact resource policy lives in [resourcePolicy](../lib/server/artifacts/resourcePolicy.ts). `AIQSA_ARTIFACT_EXTERNAL_RESOURCES=off` stops new downloads, preserving saved resources/local capabilities. `AIQSA_ARTIFACT_LIBRARY_HOSTS` and `AIQSA_ARTIFACT_IMAGE_HOSTS` replace defaults; empty means none. Adding npm mirrors or image hosts widens model-controlled URL egress, including bounded image queries; operators accept that disclosure risk.
 
-Test auth/fakes/demo credentials/deterministic runtime require every disposable non-production gate, never persistent data. Optional SMTP/OAuth/parser/Memory absence cannot weaken auth/readiness. Emergency switches are temporary and externally auditable; ownership, egress, migration and retention guards remain mandatory.
+Test auth/fakes/demo credentials/deterministic runtime require every disposable non-production gate, never persistent data. Telegram's test update route and loopback-only `AIQSA_TELEGRAM_API_ORIGIN` are such fakes. Optional SMTP/OAuth/parser/Memory absence cannot weaken auth/readiness. Emergency switches are temporary and externally auditable; ownership, egress, migration and retention guards remain mandatory.
 
 ## Secrets And Rotation
 

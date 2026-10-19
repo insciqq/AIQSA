@@ -4,7 +4,7 @@ import { prisma } from "../prisma";
 import { usageLimitsRepository } from "../usageLimits/defaultRepository";
 import { createSpeechToTextAdminService } from "./adminService";
 import { resolveSpeechToTextRole } from "./role";
-import { DICTATION_RATE_LIMIT, DICTATION_RATE_LIMIT_WINDOW_MS, type TranscriptionHandlerDeps } from "./transcriptionHandlers";
+import { DICTATION_RATE_LIMIT, DICTATION_RATE_LIMIT_WINDOW_MS, type TranscribeUserAudioDeps } from "./transcribeUserAudio";
 
 export const speechToTextAdminService = createSpeechToTextAdminService({ db: prisma });
 
@@ -16,7 +16,8 @@ const dictationRateLimiter = createPrismaLoginRateLimiter({
   windowMs: DICTATION_RATE_LIMIT_WINDOW_MS
 });
 
-export const transcriptionHandlerDeps: Omit<TranscriptionHandlerDeps, "resolveAuth"> = {
+/** Production dependencies of `transcribeUserAudio`, for the dictation route and other server callers. */
+export const transcriptionHandlerDeps: TranscribeUserAudioDeps = {
   rateLimiter: dictationRateLimiter,
   resolveRole: () => resolveSpeechToTextRole(prisma),
   usageLimits: usageLimitsRepository,
