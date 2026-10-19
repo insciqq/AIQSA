@@ -5,6 +5,7 @@ import failureCodes from "../observability/failureCodes.json";
 import { createTelegramBotApi, createTelegramPacer, type TelegramInputRichMessage } from "./botApi";
 import type { TelegramAccessDecision, TelegramAccessRefusal } from "./control/access";
 import type { TelegramBotSession } from "./dispatcher";
+import { TELEGRAM_FILES_EXPORT_POLL_MS, TELEGRAM_FILES_EXPORT_WAIT_MS } from "./files";
 import { createTelegramOutbound } from "./outbound";
 import {
   TELEGRAM_SCHEDULED_CLAIM_LEASE_MS,
@@ -383,6 +384,67 @@ describe("Telegram scheduled delivery", () => {
     expect(h.fake.lastCall("sendDocument")).toMatchObject({ file: { field: "document", filename: "report.pdf" } });
     expect(h.refs.map((ref) => ref.chatId)).toEqual(["chat-1", "chat-1", "chat-1"]);
     expect(h.row().state).toBe("sent");
+  });
+
+  it("sends files under cleaned names, a refused photo as a document, and names a file Telegram did not get once, last", async () => {
+    const files = [
+      { attachmentId: "image-1", byteSize: 305, fileName: "plots/wide chart.png", mimeType: "image/png" },
+      { attachmentId: "gone-1", byteSize: 10, fileName: "gone.csv", mimeType: "text/csv" },
+      { attachmentId: "report-1", byteSize: 18, fileName: "report‮.pdf", mimeType: "application/pdf" }
+    ];
+    const h = setup({ context: () => ({ ...completed("Done."), result: result("Done.", files) }) });
+    h.memory.files.set("image-1", telegramPhotoFixture());
+    h.memory.files.set("report-1", Buffer.from("%PDF-1.7 synthetic"));
+    h.fake.failNext("sendPhoto", { description: "Bad Request: PHOTO_INVALID_DIMENSIONS", status: 400 });
+    await h.sender.queue("occurrence-1");
+    await h.sender.idle();
+    expect(h.fake.calls("sendPhoto").map((call) => call.status)).toEqual([400]);
+    expect(h.fake.calls("sendDocument").map((call) => [call.file?.filename, call.status])).toEqual([
+      ["wide chart.png", 200], ["report.pdf", 200]
+    ]);
+    const last = h.fake.botMessages(h.user.id).at(-1)!;
+    expect(last.text).toBe("1 file couldn't be sent here; it's in AIQSA.");
+    expect(last.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] });
+    expect(h.row().state).toBe("sent");
+  });
+
+  it("waits for a result's Workspace files to be exported, at most two minutes, then names what is still being prepared", async () => {
+    const report = { attachmentId: "report-1", byteSize: 18, fileName: "report.pdf", mimeType: "application/pdf" };
+    let loads = 0;
+    const h = setup({ context: () => {
+      loads += 1;
+      return loads < 3
+        ? { ...completed("Done."), result: { ...result("Done."), outputs: "pending" as const } }
+        : { ...completed("Done."), result: result("Done.", [report]) };
+    } });
+    h.memory.files.set("report-1", Buffer.from("%PDF-1.7 synthetic"));
+    await h.sender.queue("occurrence-1");
+    await h.sender.idle();
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(0);
+    expect(h.timers.map((timer) => timer.ms)).toEqual([TELEGRAM_FILES_EXPORT_POLL_MS]);
+    expect(h.row()).toMatchObject({ attempts: 0, state: "pending" });
+    h.advance(TELEGRAM_FILES_EXPORT_POLL_MS);
+    h.timers[0]!.wake();
+    await h.sender.idle();
+    expect(h.timers).toHaveLength(2);
+    h.advance(TELEGRAM_FILES_EXPORT_POLL_MS);
+    h.timers[1]!.wake();
+    await h.sender.idle();
+    expect(h.fake.lastCall("sendDocument")).toMatchObject({ file: { filename: "report.pdf" } });
+    expect(h.fake.botMessages(h.user.id).filter((message) => message.kind === "text")).toHaveLength(0);
+    expect(h.row()).toMatchObject({ attempts: 1, state: "sent" });
+
+    const slow = setup({ context: () => ({ ...completed("Done."), result: { ...result("Done."), outputs: "pending" as const } }) });
+    await slow.sender.queue("occurrence-1");
+    await slow.sender.idle();
+    slow.advance(TELEGRAM_FILES_EXPORT_WAIT_MS);
+    slow.timers[0]!.wake();
+    await slow.sender.idle();
+    expect(slow.fake.botMessages(slow.user.id).at(-1)).toMatchObject({
+      reply_markup: { inline_keyboard: [[{ text: "Open in AIQSA", url: "https://aiqsa.example/c/chat-1" }]] },
+      text: "More files are still being prepared in AIQSA."
+    });
+    expect(slow.row().state).toBe("sent");
   });
 
   it("puts a long result's heading alone when the first message has no room for it, every message within Telegram's limits", () => {

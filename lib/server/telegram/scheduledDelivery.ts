@@ -14,8 +14,12 @@ import type { TelegramInputRichBlock, TelegramInputRichMessage } from "./botApi"
 import { telegramFailureCode } from "./codes";
 import type { TelegramAccessResolver } from "./control/access";
 import type { TelegramSessionProvider } from "./control/session";
-import { telegramScheduledFilesInAiqsaText, telegramScheduledTitle } from "./copy";
+import { telegramFilesSummaryText, telegramScheduledFilesInAiqsaText, telegramScheduledTitle } from "./copy";
 import { getDefaultTelegram } from "./defaultTelegram";
+import {
+  createPrismaTelegramFileReader, planTelegramFiles, sendTelegramFile, TELEGRAM_FILES_EXPORT_POLL_MS, TELEGRAM_FILES_EXPORT_WAIT_MS,
+  telegramAnswerFiles, telegramRunExport, type TelegramAnswerFile, type TelegramPlannedFile
+} from "./files";
 import type { TelegramDelivery } from "./outbound";
 import { plainTelegramMessage, renderTelegramAnswer, type TelegramAnswerCitation, type TelegramAnswerSource } from "./render";
 import { packBlocks } from "./render/split";
@@ -61,11 +65,6 @@ const NETWORK_RETRY_BASE_MS = 30_000;
 const NETWORK_RETRY_MAX_MS = 10 * 60_000;
 const DEFAULT_CONCURRENCY = 2;
 const SWEEP_BATCH = 50;
-/** Files a result sends (D-16); more stay behind Open in AIQSA. */
-export const TELEGRAM_SCHEDULED_MAX_FILES = 10;
-export const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
-export const TELEGRAM_DOCUMENT_MAX_BYTES = 50 * 1024 * 1024;
-const PHOTO_MIME_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/webp"]);
 const SOURCE_LINES = 3;
 
 export type TelegramScheduledDeliveryRow = Readonly<{
@@ -78,12 +77,8 @@ export type TelegramScheduledDeliveryRow = Readonly<{
   createdAt: Date;
 }>;
 
-export type TelegramScheduledFile = Readonly<{
-  attachmentId: string;
-  byteSize: number;
-  fileName: string;
-  mimeType: string;
-}>;
+/** A file of a scheduled result, as every answer's files are sent (`files.ts`). */
+export type TelegramScheduledFile = TelegramAnswerFile;
 
 /** What one attempt delivers, read fresh before it. */
 export type TelegramScheduledDeliveryContext = Readonly<{
@@ -108,6 +103,8 @@ export type TelegramScheduledDeliveryContext = Readonly<{
     citations: readonly TelegramAnswerCitation[];
     sources: readonly TelegramAnswerSource[];
     files: readonly TelegramScheduledFile[];
+    /** The run's Workspace files are still being exported, or their export failed. */
+    outputs?: "pending" | "failed";
   }> | null;
 }>;
 
@@ -128,7 +125,7 @@ export type TelegramScheduledDeliveryStore = Readonly<{
   release(input: Readonly<{ code: string; id: string; nextAttemptAt: Date }>): Promise<void>;
   /** Settles a pending row; false when it was already settled. */
   settle(input: Readonly<{ at: Date; code: string | null; id: string; state: "sent" | "failed" | "unknown" | "skipped" }>): Promise<boolean>;
-  /** The bytes of one of the owner's ready files, at most `maxBytes`; null when unavailable. */
+  /** The bytes of a ready file the owner may open now (`files.ts` reader), at most `maxBytes`; null when unavailable. */
   readFile(input: Readonly<{ attachmentId: string; maxBytes: number; userId: string }>): Promise<Buffer | null>;
 }>;
 
@@ -136,20 +133,22 @@ export type TelegramScheduledDeliveryStore = Readonly<{
 export type TelegramScheduledPart =
   | Readonly<{ kind: "content"; message: TelegramInputRichMessage; plainFallback: readonly string[]; openInAiqsa: boolean }>
   | Readonly<{ kind: "text"; text: string; openInAiqsa: boolean }>
-  | Readonly<{ kind: "file"; file: TelegramScheduledFile; photo: boolean }>;
+  | Readonly<{ kind: "file"; item: TelegramPlannedFile }>;
 type Part = TelegramScheduledPart;
 
-type Plan = Readonly<{ botId: number; owner: TelegramMessageRefOwner | null; parts: readonly Part[]; telegramChatId: number }>;
+type Plan = Readonly<{
+  botId: number; owner: TelegramMessageRefOwner | null; parts: readonly Part[]; telegramChatId: number; outputs?: "pending" | "failed";
+}>;
 
 /** Delivery progress kept between attempts of a partly sent result, in this process only. */
-type Held = Readonly<{ attempts: number; plan: Plan; progress: number }>;
+type Held = Readonly<{ attempts: number; plan: Plan; progress: number; skipped: number }>;
 
 type Settled = "sent" | "failed" | "unknown" | "skipped";
 
 /** Content-free: the row id, codes, delays and counts. */
 function log(fields: Readonly<{
-  action?: "retry" | "skip" | "fail"; code?: string; count?: number; delay_ms?: number; job_id?: string; prisma_code?: string;
-  outcome: "completed" | "failed" | "skipped" | "waiting"; stage: "claim" | "dispatch" | "settle" | "write";
+  action?: "retry" | "skip" | "fail" | "wait"; code?: string; count?: number; delay_ms?: number; job_id?: string; prisma_code?: string;
+  outcome: "completed" | "degraded" | "failed" | "skipped" | "waiting"; stage: "claim" | "dispatch" | "settle" | "write";
 }>): void {
   logEvent("service_operation", { subsystem: "telegram", ...fields });
 }
@@ -180,20 +179,17 @@ function headline(context: TelegramScheduledDeliveryContext, filesLeft: number):
 /**
  * The parts one delivery sends, in order: the heading with the rendered
  * result (split into messages within Telegram's limits; the heading goes
- * alone when the first message has no room for it), then the files. Open in
- * AIQSA goes on the last text message.
+ * alone when the first message has no room for it), then the files as every
+ * answer sends them (`files.ts`: at most ten, photos and documents within
+ * Telegram's bounds; the heading names the rest). Open in AIQSA goes on the
+ * last text message.
  */
 export function telegramScheduledParts(context: TelegramScheduledDeliveryContext): readonly Part[] {
   const result = context.occurrence.state === "COMPLETED" ? context.result : null;
-  const files = result?.files ?? [];
-  // A photo over Telegram's photo bound goes as a document; anything over the document bound stays in AIQSA.
-  const sendable = files.filter((file) => file.byteSize > 0 && file.byteSize <= TELEGRAM_DOCUMENT_MAX_BYTES)
-    .slice(0, TELEGRAM_SCHEDULED_MAX_FILES);
-  const head = headline(context, files.length - sendable.length);
+  const files = planTelegramFiles(result?.files ?? []);
+  const head = headline(context, files.left);
   const openInAiqsa = Boolean(context.chat?.usable);
-  const fileParts: Part[] = sendable.map((file) => ({
-    file, kind: "file", photo: PHOTO_MIME_TYPES.has(file.mimeType) && file.byteSize <= TELEGRAM_PHOTO_MAX_BYTES
-  }));
+  const fileParts: Part[] = files.items.map((item) => ({ item, kind: "file" }));
   if (!result) return [{ kind: "text", openInAiqsa, text: [head.title, ...head.lines].join("\n") }, ...fileParts];
   const heading: TelegramInputRichBlock = {
     type: "paragraph", text: [{ type: "bold", text: head.title }, `\n${head.lines.join("\n")}`]
@@ -235,12 +231,15 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
   const concurrency = Math.max(1, deps.concurrency ?? DEFAULT_CONCURRENCY);
   const inFlight = new Set<string>();
   const held = new Map<string, Held>();
+  /** When this process first saw a row's result files still exported. */
+  const exporting = new Map<string, number>();
   let scanning: Promise<void> | null = null;
   let rescan = false;
   let interval: ReturnType<typeof setInterval> | null = null;
 
   async function settle(row: TelegramScheduledDeliveryRow, state: Settled, code: string | null): Promise<void> {
     held.delete(row.id);
+    exporting.delete(row.id);
     await deps.store.settle({ at: clock(), code, id: row.id, state });
     log({
       ...(code ? { code } : {}), job_id: row.id, stage: "settle",
@@ -268,15 +267,40 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     if (!session) return { skip: "telegram_access_off" };
     if (session.botId !== access.link.botId) return { skip: "telegram_bot_changed" };
     const chat = context.chat?.usable ? context.chat.id : null;
+    const outputs = context.occurrence.state === "COMPLETED" ? context.result?.outputs : undefined;
     return { plan: {
       botId: session.botId,
       owner: chat ? { chatId: chat, linkId: access.link.id, messageId: context.result?.messageId ?? null, userId: row.userId } : null,
       parts: telegramScheduledParts(context),
-      telegramChatId: access.link.telegramChatId
+      telegramChatId: access.link.telegramChatId,
+      ...(outputs ? { outputs } : {})
     } };
   }
 
-  async function sendPart(plan: Plan, part: Part, userId: string): Promise<TelegramDelivery | "unavailable"> {
+  /**
+   * A result's Workspace files are published after its run: the delivery
+   * waits for their export in this process, at most two minutes, then sends
+   * what is there and names the rest. True while it waits.
+   */
+  function awaitOutputs(row: TelegramScheduledDeliveryRow, plan: Plan): boolean {
+    if (plan.outputs !== "pending") {
+      exporting.delete(row.id);
+      return false;
+    }
+    const at = clock().getTime();
+    const since = exporting.get(row.id) ?? at;
+    if (at - since >= TELEGRAM_FILES_EXPORT_WAIT_MS) {
+      exporting.delete(row.id);
+      return false;
+    }
+    exporting.set(row.id, since);
+    log({ action: "wait", delay_ms: TELEGRAM_FILES_EXPORT_POLL_MS, job_id: row.id, outcome: "waiting", stage: "dispatch" });
+    setTimer(TELEGRAM_FILES_EXPORT_POLL_MS, wake);
+    return true;
+  }
+
+  /** `skipped`: a file Telegram did not get (unreadable now, or refused itself), named once after the last part. */
+  async function sendPart(plan: Plan, part: Part, userId: string): Promise<TelegramDelivery | "unavailable" | "skipped"> {
     const session = await deps.sessions.current();
     // The bot went off or changed since the recheck: its links no longer reach the user.
     if (!session || session.botId !== plan.botId) return "unavailable";
@@ -293,14 +317,23 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
         chatId: plan.telegramChatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner
       });
     }
-    const maxBytes = part.photo ? TELEGRAM_PHOTO_MAX_BYTES : TELEGRAM_DOCUMENT_MAX_BYTES;
-    const data = owner ? await deps.store.readFile({ attachmentId: part.file.attachmentId, maxBytes, userId }) : null;
-    // A file that cannot be read now stays in AIQSA, behind the result's Open in AIQSA.
-    if (!data || !owner) return { fallback: false, messageIds: [], ok: true };
-    return outbound.sendFile({
-      chatId: plan.telegramChatId, file: { contentType: part.file.mimeType, data, filename: part.file.fileName },
-      kind: part.photo ? "photo" : "document", owner
+    // Only a result in a usable chat has files; they stay in AIQSA otherwise.
+    if (!owner) return "skipped";
+    const outcome = await sendTelegramFile({
+      chatId: plan.telegramChatId, item: part.item, outbound, owner, read: (input) => deps.store.readFile(input), userId
     });
+    if (outcome.kind === "sent") return { fallback: false, messageIds: outcome.messageIds, ok: true };
+    return outcome.kind === "skipped" ? "skipped" : { failure: outcome.failure, messageIds: [], ok: false };
+  }
+
+  /** The files Telegram did not get, named once under Open in AIQSA; the result itself is delivered either way. */
+  async function summarizeFiles(row: TelegramScheduledDeliveryRow, plan: Plan, skipped: number): Promise<void> {
+    const text = telegramFilesSummaryText({ failed: skipped, left: 0, ...(plan.outputs ? { outputs: plan.outputs } : {}) });
+    if (!text || !plan.owner) return;
+    if (skipped > 0) log({ code: "telegram_file_failed", count: skipped, job_id: row.id, outcome: "degraded", stage: "dispatch" });
+    const session = await deps.sessions.current();
+    if (session?.botId !== plan.botId) return;
+    await session.outbound.sendText({ chatId: plan.telegramChatId, openInAiqsa: true, owner: plan.owner, text });
   }
 
   /** The delay before the next attempt, or null when the attempts or the window are used up. */
@@ -312,7 +345,7 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     return clock().getTime() + delay > row.createdAt.getTime() + TELEGRAM_SCHEDULED_RETRY_WINDOW_MS ? null : delay;
   }
 
-  async function attempt(row: TelegramScheduledDeliveryRow, plan: Plan, from: number): Promise<void> {
+  async function attempt(row: TelegramScheduledDeliveryRow, plan: Plan, from: number, skippedBefore = 0): Promise<void> {
     const attempts = row.attempts + 1;
     if (!await deps.store.claim({
       attempts: row.attempts, id: row.id, leaseUntil: new Date(clock().getTime() + TELEGRAM_SCHEDULED_CLAIM_LEASE_MS)
@@ -320,9 +353,14 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
       held.delete(row.id);
       return;
     }
+    let skipped = skippedBefore;
     for (let index = from; index < plan.parts.length; index += 1) {
       const delivery = await sendPart(plan, plan.parts[index]!, row.userId);
       if (delivery === "unavailable") return settle(row, index === 0 ? "skipped" : "failed", "telegram_access_off");
+      if (delivery === "skipped") {
+        skipped += 1;
+        continue;
+      }
       if (delivery.ok) continue;
       const { failure } = delivery;
       const code = telegramFailureCode(failure.kind, failure.errorCode);
@@ -338,13 +376,14 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
       } else {
         // Part of the result is out: only this process knows where to go on, so the
         // row stays claimed and settles `unknown` if the process ends meanwhile.
-        held.set(row.id, { attempts, plan, progress: index });
+        held.set(row.id, { attempts, plan, progress: index, skipped });
         await deps.store.release({ code: TELEGRAM_SCHEDULED_CODES.unknown, id: row.id, nextAttemptAt });
       }
       log({ action: "retry", code, delay_ms: delay, job_id: row.id, outcome: "waiting", stage: "dispatch" });
       setTimer(delay, wake);
       return;
     }
+    await summarizeFiles(row, plan, skipped);
     return settle(row, "sent", null);
   }
 
@@ -362,12 +401,12 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     }
     // Part of a result is out already: what stops the rest fails the delivery rather than skipping it.
     if ("skip" in prepared) return settle(row, resumable ? "failed" : "skipped", prepared.skip);
-    if (!resumable) return attempt(row, prepared.plan, 0);
+    if (!resumable) return awaitOutputs(row, prepared.plan) ? undefined : attempt(row, prepared.plan, 0);
     if (prepared.plan.telegramChatId !== resumable.plan.telegramChatId || prepared.plan.botId !== resumable.plan.botId) {
       // Linked anew meanwhile: the rest never goes to another Telegram chat.
       return settle(row, "failed", "telegram_not_linked");
     }
-    return attempt(row, resumable.plan, resumable.progress);
+    return attempt(row, resumable.plan, resumable.progress, resumable.skipped);
   }
 
   async function guarded(row: TelegramScheduledDeliveryRow): Promise<void> {
@@ -466,6 +505,7 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
   storage: () => StorageAdapter;
 }>): TelegramScheduledDeliveryStore {
   const { prisma } = deps;
+  const readFile = createPrismaTelegramFileReader({ prisma, storage: deps.storage });
   return Object.freeze({
     async enqueue(occurrenceId, now) {
       const inserted = await prisma.$executeRaw(Prisma.sql`
@@ -528,6 +568,7 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
             where: { eventType: { in: ["artifact", "grounding_display"] } }
           },
           searchRuns: { orderBy: { createdAt: "asc" }, select: { artifacts: true, invocationId: true, status: true, strategyId: true } },
+          workspaceRunBinding: { select: { exportState: true } },
           workspaceProducedAttachments: {
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             select: {
@@ -548,19 +589,15 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
       }
       const markdown = scheduledCopyText(message.content);
       const summary = summarizeMessageRunArtifacts(run, message.content);
-      const files: TelegramScheduledFile[] = [
-        ...(summary?.generatedImages ?? []).map((image) => ({
-          attachmentId: image.attachmentId, byteSize: image.byteSize, fileName: image.fileName, mimeType: image.mimeType
-        })),
-        ...(summary?.generatedFiles ?? []).map((file) => ({
-          attachmentId: file.attachmentId, byteSize: file.byteSize, fileName: file.fileName, mimeType: file.mimeType
-        }))
-      ];
+      const files = telegramAnswerFiles(summary);
+      const exported = telegramRunExport(run.workspaceRunBinding?.exportState);
+      const outputs = exported === "pending" || exported === "failed" ? exported : undefined;
       return {
         ...base,
         chat: { id: message.chat.id, usable: message.chat.permanentDeletionAt === null },
-        result: markdown || files.length > 0 ? {
-          citations: summary?.citations ?? [], files, markdown, messageId: message.id, sources: summary?.sources ?? []
+        result: markdown || files.length > 0 || outputs ? {
+          citations: summary?.citations ?? [], files, markdown, messageId: message.id, sources: summary?.sources ?? [],
+          ...(outputs ? { outputs } : {})
         } : null
       };
     },
@@ -586,20 +623,7 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
       return settled.count === 1;
     },
 
-    async readFile({ attachmentId, maxBytes, userId }) {
-      const attachment = await prisma.attachment.findFirst({
-        select: { byteSize: true, storageKey: true },
-        where: { id: attachmentId, projectId: null, status: "ready", userId }
-      });
-      if (!attachment || attachment.byteSize > maxBytes) return null;
-      try {
-        return (await deps.storage().getObject(attachment.storageKey, { maxBytes })).body;
-      } catch (error) {
-        // The file stays behind the result's Open in AIQSA.
-        logEvent("service_operation", { action: "degrade", error, outcome: "degraded", stage: "read", subsystem: "telegram" });
-        return null;
-      }
-    }
+    readFile
   });
 }
 
