@@ -1638,6 +1638,11 @@
     padding-bottom: max(0.75rem, var(--v2-safe-area-bottom));
   }
 
+  /* The keyboard covers the home indicator: no extra bottom space then. */
+  .v2-live-workspace[data-keyboard] .v2-conversation-orientation {
+    padding-bottom: 0.75rem;
+  }
+
   .v2-live-workspace .v2-conversation-orientation-copy,
   .v2-live-workspace .v2-live-assistant-intro {
     align-self: center;
@@ -1689,12 +1694,15 @@
 }
 
 /*
- * A phone on its side: once files sit in the blank chat's composer, the
- * greeting gives up its room so the composer toolbar (Send, the file's
- * remove control) stays above the fold. The tray itself keeps one row.
+ * A phone on its side: once files sit in the blank chat's composer, or the
+ * keyboard is up, the greeting gives up its room so the composer toolbar
+ * (Send, the file's remove control) stays above the fold. The tray itself
+ * keeps one row.
  */
 @media (max-height: 32rem) {
   .v2-live-workspace .v2-conversation-orientation:has(.v2-attachment-tray) >
+    :is(.v2-conversation-orientation-copy, .v2-live-assistant-intro),
+  .v2-live-workspace[data-keyboard] .v2-conversation-orientation >
     :is(.v2-conversation-orientation-copy, .v2-live-assistant-intro) {
     display: none;
   }
@@ -1702,7 +1710,8 @@
 
 @media (max-width: 767px) and (max-height: 32rem) {
   /* The composer keeps its place at the bottom of the phone's blank chat. */
-  .v2-live-workspace .v2-conversation-orientation:has(.v2-attachment-tray) > .v2-conversation-empty-composer {
+  .v2-live-workspace .v2-conversation-orientation:has(.v2-attachment-tray) > .v2-conversation-empty-composer,
+  .v2-live-workspace[data-keyboard] .v2-conversation-orientation > .v2-conversation-empty-composer {
     grid-row: 2;
   }
 }
