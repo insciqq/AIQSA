@@ -49,6 +49,9 @@ export type ConnectBrowserHandlerDeps = Readonly<{
   resolveAuth: RequestAuthResolver;
 }>;
 
+/** A device-list stream re-reads this long after the last `devices_changed`, once the change has committed. */
+export const CONNECT_DEVICES_CHANGED_REREAD_MS = 1_000;
+
 type Params<T extends string> = Readonly<{ params: Promise<Readonly<Record<T, string>>> }>;
 type Owner = ConnectViewOwner;
 
@@ -202,17 +205,17 @@ export function createConnectBrowserHandlers(deps: ConnectBrowserHandlerDeps) {
       const userId = owner.userId;
       if (!deps.relay.acquireEventsStream(userId)) return connectRateLimited(headers, CONNECT_HEARTBEAT_SECONDS);
       const stream = createConnectSseStream({ maxQueuedBytes: CONNECT_EVENTS_STREAM_QUEUE_BYTES, signal: request.signal });
+      if (stream.isClosed()) {
+        // The browser went away while it was authorized: nothing subscribes.
+        deps.relay.releaseEventsStream(userId);
+        return stream.response;
+      }
       let timer: ReturnType<typeof setInterval> | undefined;
-      let unsubscribe: (() => void) | undefined;
+      let reread: ReturnType<typeof setTimeout> | undefined;
       let ready = false;
       let refreshing = false;
       let refreshAgain = false;
       let stale = false;
-      stream.onClose(() => {
-        if (timer) clearInterval(timer);
-        unsubscribe?.();
-        deps.relay.releaseEventsStream(userId);
-      });
 
       const snapshot = async (): Promise<void> => {
         const records = await deps.repository.listDevices(userId);
@@ -243,7 +246,7 @@ export function createConnectBrowserHandlers(deps: ConnectBrowserHandlerDeps) {
         }
       };
 
-      unsubscribe = deps.relay.onEvent((event) => {
+      const unsubscribe = deps.relay.onEvent((event) => {
         if (stream.isClosed()) return;
         if (event.type === "closed") {
           stream.close({ data: { code: event.code }, event: "closed" });
@@ -252,10 +255,24 @@ export function createConnectBrowserHandlers(deps: ConnectBrowserHandlerDeps) {
         if (event.userId !== userId) return;
         if (event.type === "devices_changed") {
           void refresh();
+          // A revocation announces the change inside its transaction; this read follows its commit.
+          if (reread) clearTimeout(reread);
+          reread = setTimeout(() => {
+            reread = undefined;
+            if (!stream.isClosed()) void refresh();
+          }, CONNECT_DEVICES_CHANGED_REREAD_MS);
+          reread.unref?.();
           return;
         }
         if (!ready) return;
         if (!stream.send("device", { device: event.device })) stream.close();
+      });
+      // Registered after the subscription: a stream that closes at any later point releases both exactly once.
+      stream.onClose(() => {
+        if (timer) clearInterval(timer);
+        if (reread) clearTimeout(reread);
+        unsubscribe();
+        deps.relay.releaseEventsStream(userId);
       });
 
       refreshing = true;
@@ -367,6 +384,8 @@ export function createConnectBrowserHandlers(deps: ConnectBrowserHandlerDeps) {
       const { viewId } = await context.params;
       if (!isConnectId(viewId)) return notFound();
       const stream = createConnectSseStream({ maxQueuedBytes: CONNECT_VIEW_STREAM_QUEUE_BYTES, signal: request.signal });
+      // A browser already gone never replaces the view's current stream.
+      if (stream.isClosed()) return stream.response;
       const attached = deps.relay.attachView({ owner, viewId, writer: stream });
       if (!attached.ok) {
         stream.close();

@@ -179,7 +179,7 @@ describe("AIQSA Connect relay: device streams", () => {
     const relay = createConnectRelay();
     const laptop = record(alice.userId);
     const epoch = relay.epoch();
-    relay.disconnectUser(alice.userId, "connect_unauthorized");
+    relay.disconnectUser(alice.userId, { activeAuthSessionIds: [] });
     const stream = fakeWriter();
 
     expect(relay.attachDevice({
@@ -416,13 +416,31 @@ describe("AIQSA Connect relay: revocation and switch-off", () => {
     const events: ConnectRelayEvent[] = [];
     relay.onEvent((event) => events.push(event));
 
-    relay.disconnectUser(alice.userId, "connect_unauthorized");
+    relay.disconnectUser(alice.userId, { activeAuthSessionIds: [] });
 
     expect(laptopStream.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
     expect(desktopStream.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
     expect(tab.state.final).toEqual({ data: { reason: "connect_unauthorized" }, event: "closed" });
     expect(otherStream.state.closed).toBe(false);
     expect(events.filter((event) => event.type === "devices_changed")).toEqual([{ type: "devices_changed", userId: alice.userId }]);
+    expect(events.some((event) => event.type === "closed")).toBe(false);
+  });
+
+  it("closes the views of a session that stays signed in as device offline when only the devices are revoked", () => {
+    const relay = createConnectRelay();
+    const laptop = record(alice.userId);
+    const device = attach(relay, laptop);
+    const kept = browser(relay, alice, openView(relay, alice, laptop.id));
+    const revoked = browser(relay, aliceOtherTab, openView(relay, aliceOtherTab, laptop.id));
+
+    // A password change keeps the current session and revokes the others.
+    relay.disconnectUser(alice.userId, { activeAuthSessionIds: [alice.authSessionId] });
+
+    expect(device.state.final).toEqual({ data: { code: "connect_unauthorized" }, event: "closed" });
+    expect(kept.state.final).toEqual({ data: { reason: "connect_device_offline" }, event: "closed" });
+    expect(revoked.state.final).toEqual({ data: { reason: "connect_unauthorized" }, event: "closed" });
+    expect(device.commands().filter((command) => command.type === "view_close")).toEqual([]);
+    expect(relay.size()).toMatchObject({ devices: 0, views: 0 });
   });
 
   it("closes only the views of a revoked browser session", () => {
