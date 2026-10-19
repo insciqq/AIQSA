@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { CSSProperties } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
@@ -25,6 +26,7 @@ import {
   chatLocationCrumbV2,
   BackgroundRunStatusV2,
   ComposerOperationErrorV2,
+  LiveWorkspaceSectionV2,
   SkillLibraryOverlayV2,
   selectNavigationChatV2,
   type RunSetupComposerV2
@@ -1016,6 +1018,33 @@ describe("Blank welcome v2", () => {
       projectSelected: false
     })}</>);
     expect(screen.getByTestId("assistant-intro")).toBeVisible();
+  });
+});
+
+describe("Live workspace keyboard inset v2", () => {
+  it("lifts the workspace above a keyboard iOS overlays and keeps the dock height", () => {
+    const viewport = Object.assign(new EventTarget(), { height: 874, offsetTop: 0, scale: 1 });
+    vi.stubGlobal("visualViewport", viewport);
+    vi.stubGlobal("innerHeight", 874);
+    render(<LiveWorkspaceSectionV2 data-testid="live" style={{ "--v2-live-dock-height": "120px" } as CSSProperties} />);
+    const section = screen.getByTestId("live");
+    expect(section.style.paddingBottom).toBe("");
+    expect(section).not.toHaveAttribute("data-keyboard");
+
+    act(() => {
+      viewport.height = 530;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(section.style.paddingBottom).toBe("344px");
+    expect(section.style.getPropertyValue("--v2-live-dock-height")).toBe("120px");
+    expect(section).toHaveAttribute("data-keyboard", "open");
+
+    act(() => {
+      viewport.height = 874;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+    expect(section.style.paddingBottom).toBe("");
+    expect(section).not.toHaveAttribute("data-keyboard");
   });
 });
 

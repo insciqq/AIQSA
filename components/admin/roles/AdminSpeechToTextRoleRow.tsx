@@ -66,6 +66,9 @@ export function AdminSpeechToTextRoleRow({ requestConfirmation }: Readonly<{
   const status = assignment ? assignment.available ? "working" as const : "unavailable" as const : "not_assigned" as const;
   const statusLabel = assignment ? assignment.available ? "Ready" : "Unavailable" : "Not assigned";
   const listed = candidates?.connectionId === connectionId ? candidates.models : null;
+  // A ready role whose provider and model are unchanged has nothing to test:
+  // Test & save shows again once either changes or the role becomes unavailable.
+  const testable = !assignment?.available || assignment.connectionId !== connectionId || assignment.modelId !== modelId.trim();
 
   async function discover() {
     if (!connectionId) return;
@@ -163,12 +166,12 @@ export function AdminSpeechToTextRoleRow({ requestConfirmation }: Readonly<{
           <UiV2Button busy={busy === "discover"} disabled={locked || !connectionId} onClick={() => void discover()} type="button">
             Find models
           </UiV2Button>
-          <UiV2Button busy={busy === "test"} disabled={locked || !connectionId || !modelId.trim()} onClick={() => void testAndSave()}
+          {testable ? <UiV2Button busy={busy === "test"} disabled={locked || !connectionId || !modelId.trim()} onClick={() => void testAndSave()}
             tone="primary" type="button" data-testid="admin-speech-to-text-save">
             Test &amp; save
-          </UiV2Button>
+          </UiV2Button> : null}
         </div>
-        <p className="text-xs leading-5 text-ink-muted">Test sends a short synthetic recording to the provider and is billed as a model check.</p>
+        {testable ? <p className="text-xs leading-5 text-ink-muted">Test sends a short synthetic recording to the provider and is billed as a model check.</p> : null}
       </> : <p className="text-xs leading-5 text-ink-muted">Add an OpenRouter, OpenAI or OpenAI-compatible provider in Providers to choose a speech-to-text model.</p>}
       {message ? <p className={`text-xs leading-5 ${message.tone === "error" ? "text-critical" : "text-positive"}`}
         role={message.tone === "error" ? "alert" : "status"} data-testid="admin-speech-to-text-message">{message.text}</p> : null}

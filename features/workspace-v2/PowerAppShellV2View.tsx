@@ -95,6 +95,7 @@ import {
 } from "@/components/app-shell/threadContent";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { UiV2Button, UiV2Icon, UiV2IconSprite } from "@/components/ui-v2";
+import { useVisualViewportInset } from "@/components/ui-v2/useVisualViewportInset";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import { RunFollowupHistoryV2 } from "@/features/conversation-v2/RunFollowupHistoryV2";
 import { useAnswerReadAloud } from "@/features/read-aloud/useAnswerReadAloud";
@@ -230,6 +231,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type ComponentProps,
   type CSSProperties,
   type ReactNode
 } from "react";
@@ -543,6 +545,18 @@ export function SkillLibraryOverlayV2({
       selectedIds={selectedIds}
     />
   ) : null;
+}
+
+/**
+ * The live workspace, padded by a software keyboard the browser overlays
+ * (iOS Safari ignores `interactive-widget`), so the composer stays above it
+ * even when focus did not scroll it into view. Only this element re-renders
+ * as the keyboard moves.
+ */
+export function LiveWorkspaceSectionV2({ style, ...props }: ComponentProps<"section">) {
+  const keyboardInset = useVisualViewportInset();
+  return <section {...props} data-keyboard={keyboardInset > 0 ? "open" : undefined}
+    style={keyboardInset > 0 ? { ...style, paddingBottom: keyboardInset } : style} />;
 }
 
 /** Defaults & roles > PDF processing in chats, where the PDF reader is assigned. */
@@ -2086,7 +2100,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               }}
             />
           ) : (
-          <section className="v2-live-workspace" ref={setLiveWorkspaceRef} data-project-context={projectContext || undefined}
+          <LiveWorkspaceSectionV2 className="v2-live-workspace" ref={setLiveWorkspaceRef} data-project-context={projectContext || undefined}
             data-artifact-docked={Boolean(visibleArtifactPanel && workspaceWidth >= 896) || undefined}
             data-streaming={thread.activeChatStreaming || undefined}
             style={conversationMessages.length > 0 && composerDockHeight > 0
@@ -2345,7 +2359,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             {visibleArtifactPanel ? <ArtifactPanelV2 key={`${visibleArtifactPanel.chatId}:${visibleArtifactPanel.draftId ?? visibleArtifactPanel.artifactId}`}
               target={visibleArtifactPanel} compact={workspaceWidth < 896} latest={latestPanelArtifact} onEdit={editArtifact}
               draft={thread.artifactDrafts?.find(draft => draft.draftId === visibleArtifactPanel.draftId)} /> : null}
-          </section>
+          </LiveWorkspaceSectionV2>
           )}
         </ReadingRoomShellV2>
       )}
