@@ -41,7 +41,8 @@ function codePoints(value: string, max: number): string {
 export function connectAccountLabel(account: ConnectPairingAccount): string {
   const clean = (value: string) => value.replace(HIDDEN_CHARACTERS, "").trim().replace(/\s+/gu, " ");
   const email = codePoints(clean(account.email ?? ""), MAX_LABEL_EMAIL_LENGTH);
-  const name = clean(account.displayName);
+  // A double quote in the name could close the quoted name and draw a second account after it.
+  const name = clean(account.displayName).replaceAll('"', "'");
   if (!email) {
     const suffix = " (no email address)";
     return name ? `"${codePoints(name, CONNECT_MAX_ACCOUNT_LABEL_LENGTH - suffix.length - 2)}"${suffix}` : suffix.trim();
