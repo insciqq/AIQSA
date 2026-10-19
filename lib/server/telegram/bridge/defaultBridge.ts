@@ -2,6 +2,7 @@ import { logEvent, runInBackground } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { TelegramDefaults } from "../defaultTelegram";
 import { telegramHandlerRegistry } from "../dispatcher";
+import { createTelegramMediaHandler, lazyTelegramMediaServices } from "../media";
 import { lazyTelegramRunGateway } from "./gateway";
 import { createTelegramChatBridge, type TelegramChatBridge } from "./index";
 
@@ -31,7 +32,18 @@ export function startTelegramChatBridge(telegram: TelegramBridgeDefaults): Teleg
     runLinks: telegram.runLinks,
     sessions: telegram.sessions
   });
-  globalForBridge.__aiqsaTelegramChatBridge = { bridge, owner: telegram, unregister: bridge.register(telegramHandlerRegistry()) };
+  // Media after the bridge: the bridge's handler passes voice, audio, photos and documents on.
+  const media = createTelegramMediaHandler({
+    conversation: bridge.conversation,
+    services: lazyTelegramMediaServices(async () => (await import("../media/defaultServices")).createDefaultTelegramMediaServices({
+      access: telegram.access
+    }))
+  });
+  const registry = telegramHandlerRegistry();
+  const removers = [bridge.register(registry), registry.registerMessage(media)];
+  globalForBridge.__aiqsaTelegramChatBridge = {
+    bridge, owner: telegram, unregister: () => { for (const remove of removers) remove(); }
+  };
   const startedAt = new Date();
   void runInBackground(() => bridge.recover(startedAt)).catch((error: unknown) => logEvent("service_operation", {
     code: "telegram_run_recovery_failed", error, outcome: "failed", prisma_code: databaseFailureCode(error), stage: "recovery",
