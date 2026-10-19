@@ -146,6 +146,8 @@ export function modelPdfProviderRequest(input: Readonly<{
   prompt: string;
   snapshot: ProviderExecutionSnapshot;
   supplement: AdaptivePdfVisionSupplement | null;
+  /** The cap for a model that declares no output default; Knowledge keeps 16,384. */
+  undeclaredMaxOutputTokens?: number;
   visionDetail: PdfVisionDetail;
 }>): ProviderRunRequest {
   const files = attachments(input.batch, input.visionDetail, input.supplement);
@@ -153,7 +155,7 @@ export function modelPdfProviderRequest(input: Readonly<{
   const maxOutputTokens = typeof declaredOutput === "number" &&
     Number.isSafeInteger(declaredOutput) && declaredOutput > 0
     ? Math.min(32_768, declaredOutput)
-    : 16_384;
+    : input.undeclaredMaxOutputTokens ?? 16_384;
   return {
     attachmentIds: files.map((attachment) => attachment.id),
     attachments: files,

@@ -14,7 +14,8 @@ import {
   DeepSeekHttpError,
   type DeepSeekResponsesClient
 } from "./deepSeekResponsesTransport";
-import type { ProviderRunRequest, ProviderSearchRequest } from "./types";
+import { ProviderSearchExecutionError, type ProviderRunRequest, type ProviderSearchRequest } from "./types";
+import { observedFailure } from "./providerObservability";
 import {
   buildDeepSeekResponsesStructuredOutputRequest,
   createDeepSeekResponsesStructuredOutputAdapter
@@ -449,5 +450,56 @@ describe("DeepSeek Responses provider", () => {
     expect(events).toContainEqual({ data: expect.objectContaining({ inputTokens: 5, webSearchCount: 1 }), type: "usage" });
     if (!next.done) throw new Error("expected the answer to finish");
     expect(next.value.usage).toMatchObject({ inputTokens: 5, webSearchCount: 1 });
+  });
+});
+
+describe("DeepSeek non-completed responses", () => {
+  const canary = "PRIVATE_DEEPSEEK_REASONING_CANARY";
+  function client(response: Record<string, unknown>): DeepSeekResponsesClient {
+    return { create: async () => response, stream: async () => { throw new Error("unexpected stream"); } };
+  }
+  async function failure(response: Record<string, unknown>) {
+    const stream = createDeepSeekResponsesAdapter({ client: client(response) })
+      .stream(request({ forceNonStreaming: true, toolChoice: "none", toolMode: "none" }));
+    const events = [];
+    try {
+      for (let next = await stream.next(); !next.done; next = await stream.next()) events.push(next.value);
+    } catch (error) { return { error, events }; }
+    throw new Error("expected a failure");
+  }
+  const reasoningOnly = [{ content: [{ text: canary, type: "reasoning_text" }], id: "reasoning-1", type: "reasoning" }];
+
+  it.each([
+    ["names max_output_tokens", { incomplete_details: { reason: "max_output_tokens" }, usage: { input_tokens: 9, output_tokens: 512, output_tokens_details: { reasoning_tokens: 512 } } }],
+    ["reaches the requested cap without a reason", { usage: { input_tokens: 9, output_tokens: 1_024, output_tokens_details: { reasoning_tokens: 1_024 } } }]
+  ])("classifies an incomplete answer that %s as an exhausted output budget", async (_name, fields) => {
+    const { error, events } = await failure({ id: "response-cap", output: reasoningOnly, status: "incomplete", ...fields });
+    expect(error).toMatchObject({ message: "deepseek_response_incomplete", capabilityFailureReason: "budget_exhausted" });
+    expect(observedFailure(error)).toMatchObject({ code: "provider_budget_exhausted", reason: "safety_limit" });
+    expect(events).toContainEqual(expect.objectContaining({ type: "usage" }));
+    expect(JSON.stringify(error)).not.toContain(canary);
+  });
+
+  it("keeps an incomplete answer below its cap unclassified and carries the provider error identity", async () => {
+    const { error } = await failure({ error: { code: "server_error", message: canary }, id: "response-short",
+      output: reasoningOnly, status: "failed", usage: { input_tokens: 9, output_tokens: 10 } });
+    expect(error).toMatchObject({ message: "deepseek_response_failed" });
+    expect(error).not.toHaveProperty("capabilityFailureReason");
+    expect(observedFailure(error)).toMatchObject({ provider_error_code: "server_error" });
+    expect(observedFailure((await failure({ id: "response-short", status: "incomplete",
+      usage: { input_tokens: 9, output_tokens: 10 } })).error).code).not.toBe("provider_budget_exhausted");
+  });
+
+  it("names the exhausted budget cause of an incomplete Search response", async () => {
+    const search = createDeepSeekResponsesSearchAdapter({ client: client({ id: "search-cap", output: reasoningOnly,
+      status: "incomplete", usage: { input_tokens: 4, output_tokens: 1_024 } }) });
+    const error = await search.search({ correlationId: "search-test", query: "official DeepSeek" as ValidatedSearchQuery,
+      searchPolicy: { maxOutputTokens: 1_024, modelCapabilities: { nativePdfInput: false, nativeSearch: true, pdf: true, reasoning: true,
+        reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], vision: false },
+      modelId: "deepseek-v4-pro", provider: "deepseek", reasoningPolicy: "lowest_supported", strategyId: "deepseek-responses-web-search" },
+      strategyId: "deepseek-native-web-search" }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProviderSearchExecutionError);
+    expect(error).toMatchObject({ code: "deepseek_response_incomplete", providerStatus: "incomplete", reason: "max_output_tokens" });
+    expect(observedFailure(error)).toMatchObject({ cause: "max_output_tokens", reason: "safety_limit" });
   });
 });

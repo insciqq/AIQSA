@@ -4,6 +4,7 @@ import {
 } from "./admission";
 import { systemModelRoleEligible } from "./systemModelCapabilities";
 import { supportsConfiguredReasoningEffort } from "../providers/providerModelCapabilities";
+import { chatPdfReaderDefaultReasoningEffort } from "../../contracts/adminSystemModelPolicy";
 import {
   SYSTEM_MODEL_ABSENT, SYSTEM_MODEL_UNAVAILABLE, type SystemModelRoleResolution
 } from "./systemModelRole";
@@ -23,11 +24,17 @@ export function createChatPdfModelRoleResolver(
       if (!policy || !providerModelId) return { ok: false, code: SYSTEM_MODEL_ABSENT };
       try {
         const role = await loadRole(db, { providerModelId });
-        const effort = (method === "pdf_reader" ? policy.chatPdfNativeReasoningEffort : policy.chatPdfReasoningEffort) ?? null;
-        if (!systemModelRoleEligible(role, method === "pdf_reader" ? "direct_pdf" : "vision") || effort !== null &&
-          !supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, effort)) {
+        const configured = (method === "pdf_reader" ? policy.chatPdfNativeReasoningEffort : policy.chatPdfReasoningEffort) ?? null;
+        const supports = (effort: string) =>
+          supportsConfiguredReasoningEffort(role.snapshot.model, role.snapshot.providerFamily, effort);
+        if (!systemModelRoleEligible(role, method === "pdf_reader" ? "direct_pdf" : "vision") || configured !== null &&
+          !supports(configured)) {
           return { ok: false, code: SYSTEM_MODEL_UNAVAILABLE };
         }
+        // An explicit setting wins; otherwise the reader does not reason when
+        // its deployment allows that. Admission freezes the resolved effort.
+        const effort = configured ?? (role.snapshot.model.capabilities.reasoning === true
+          ? chatPdfReaderDefaultReasoningEffort(supports) : null);
         return { ok: true, credentialScope: "installation", policyVersion: policy.version,
           providerModelId, reasoningEffort: effort, role };
       } catch (error) {

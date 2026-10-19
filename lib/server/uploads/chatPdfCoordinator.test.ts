@@ -6,6 +6,7 @@ import { createChatPdfCoordinator, type ChatPdfCoordinatorDependencies } from ".
 import { ChatPdfPreparationError, encodeChatPdfArtifact } from "./chatPdfCore";
 import { getContext, runInBackground, runWithContext } from "../observability";
 import { CHAT_PDF_HEARTBEAT_MS } from "./chatPdfPersistence";
+import { providerResponseFailure } from "../providers/responseFailure";
 
 function harness(workspace = false) {
   const controller = new AbortController();
@@ -274,5 +275,65 @@ describe("durable PDF coordinator", () => {
     expect(h.deps.repository.reserveArtifact).not.toHaveBeenCalled();
     expect(h.deps.continueRun).not.toHaveBeenCalled();
     expect(h.deps.repository.useWorkspaceOriginal).not.toHaveBeenCalled();
+  });
+});
+
+describe("PDF reader output budget", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const exhausted = () => providerResponseFailure("deepseek_response_incomplete",
+    { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } });
+  const reported = { inputTokens: 900, outputTokens: 16_384, reasoningTokens: 16_384 };
+  function exhaust(h: ReturnType<typeof harness>, failure: unknown = exhausted()) {
+    h.deps.execute.mockImplementation((async (_snapshot: unknown, _request: unknown, options: { onUsage(value: unknown): void }) => {
+      options.onUsage(reported);
+      throw failure;
+    }) as never);
+  }
+
+  it("settles a definitive exhausted answer and fails the ordinary chat without retry", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const h = harness();
+    exhaust(h);
+    await h.coordinator().runOne();
+    expect(h.attempts[0]).toMatchObject({ state: "settled", errorCode: "pdf_reader_output_limit", resultArtifactId: null,
+      usage: expect.objectContaining({ outputTokens: 16_384, reasoningTokens: 16_384 }) });
+    expect(h.deps.attempts.ambiguous).not.toHaveBeenCalled();
+    expect(h.deps.fail).toHaveBeenCalledExactlyOnceWith(expect.anything(),
+      expect.objectContaining({ code: "pdf_reader_output_limit", retryable: false }));
+    expect(h.deps.repository.useWorkspaceOriginal).not.toHaveBeenCalled();
+  });
+
+  it("re-derives the same failure from the settled attempt on recovery without dispatch", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const h = harness();
+    h.attempts.push({ state: "settled", page: 1, resultArtifactId: null, errorCode: "pdf_reader_output_limit" });
+    await h.coordinator().runOne();
+    expect(h.deps.execute).not.toHaveBeenCalled();
+    expect(h.deps.fail).toHaveBeenCalledExactlyOnceWith(expect.anything(),
+      expect.objectContaining({ code: "pdf_reader_output_limit", retryable: false }));
+  });
+
+  it.each(["live", "recovered"])("continues a Workspace run with its original after a %s exhausted answer", async (kind) => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const h = harness(true);
+    if (kind === "live") exhaust(h);
+    else h.attempts.push({ state: "settled", page: 1, resultArtifactId: null, errorCode: "pdf_reader_output_limit" });
+    await h.coordinator().runOne();
+    expect(h.deps.fail).not.toHaveBeenCalled();
+    expect(h.deps.repository.useWorkspaceOriginal).toHaveBeenCalledExactlyOnceWith(expect.anything(), "preparation", "pdf_transcription_failed");
+    expect(h.row.state).toBe("original_only");
+    await h.coordinator().runOne();
+    expect(h.deps.continueRun).toHaveBeenCalledOnce();
+    expect(h.deps.execute).toHaveBeenCalledTimes(kind === "live" ? 1 : 0);
+  });
+
+  it("keeps other incomplete answers ambiguous and retryable", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const h = harness();
+    exhaust(h, providerResponseFailure("deepseek_response_incomplete", { status: "incomplete" }));
+    await h.coordinator().runOne();
+    expect(h.attempts[0]).toMatchObject({ state: "ambiguous", errorCode: "pdf_preparation_ambiguous" });
+    expect(h.deps.fail).toHaveBeenCalledExactlyOnceWith(expect.anything(),
+      expect.objectContaining({ code: "pdf_preparation_ambiguous", retryable: true }));
   });
 });

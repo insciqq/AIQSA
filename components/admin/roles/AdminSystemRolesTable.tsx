@@ -18,7 +18,7 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import { UiV2Button } from "@/components/ui-v2";
 import { useState } from "react";
 import { ImageParameterFields } from "@/components/admin/providers/models/ImageParameterFields";
-import { activeChatPdfReader, chatPdfUsesNativeReader, initialChatTitleReasoningEffort, type AdminPublishedImageModel, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import { activeChatPdfReader, chatPdfReaderDefaultReasoningEffort, chatPdfUsesNativeReader, initialChatTitleReasoningEffort, type AdminPublishedImageModel, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ImageGenerationParameters, ImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import type { ImageModelUnavailableReason } from "@/lib/contracts/imageModels";
 
@@ -157,6 +157,9 @@ export function AdminSystemRolesTable({
   const pdfReader = activeChatPdfReader(policy);
   const pdfReaderName = pdfUsesNativeReader ? "PDF reader" : "Page-image reader";
   const pdfReaderReasoning = (pdfUsesNativeReader ? policy.chatPdfNativeReasoningEffort : policy.chatPdfReasoningEffort) ?? null;
+  // "Default" names what the server resolves for an unset reader effort.
+  const pdfReaderReasoningModel = pdfReader ? { ...pdfReader, defaultReasoningEffort:
+    chatPdfReaderDefaultReasoningEffort((effort) => pdfReader.reasoningEfforts.includes(effort)) ?? pdfReader.defaultReasoningEffort } : null;
   const pdfReaderSelection = (providerModelId: string | null, reasoningEffort: string | null) => pdfUsesNativeReader
     ? { chatPdfNativeProviderModelId: providerModelId, chatPdfNativeReasoningEffort: reasoningEffort }
     : { chatPdfProviderModelId: providerModelId, chatPdfReasoningEffort: reasoningEffort };
@@ -439,7 +442,7 @@ export function AdminSystemRolesTable({
             <ReasoningSelect
               disabled={busy}
               label={`${pdfReaderName} reasoning`}
-              model={pdfReader}
+              model={pdfReaderReasoningModel}
               onChange={(effort) => void controller.assign(pdfReaderSelection(pdfReader?.id ?? null, effort), pdfReaderUndo)}
               value={pdfReaderReasoning}
             />

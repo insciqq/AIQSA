@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
 import { RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { CHAT_PDF_READER_OUTPUT_LIMIT } from "@/lib/contracts/chatPdfPreparation";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
@@ -801,6 +802,18 @@ describe("PDF preparation presentation", () => {
       pdfPreparation: [{ completedPages: 4, pageCount: 10, phase: "failed", retryable: true,
         route: "selected_model_vision", limitedReadingQuality: false, longDocument: false }] })).toMatchObject({
       kind: "recoverable_error", failure: { recovery: "retry", message: "Document preparation could not finish." }
+    });
+  });
+
+  it.each([
+    ["live", { events: [{ type: "error", data: { code: "pdf_reader_output_limit", message: "x", retryable: false } }] }],
+    ["reloaded", { failure: { message: CHAT_PDF_READER_OUTPUT_LIMIT.message } }]
+  ])("explains an exhausted reader output budget without a retry (%s)", (_kind, source) => {
+    expect(presentRunLifecycleV2({ content: "", events: [], runId: "run-pdf", status: "error", ...source,
+      pdfPreparation: [{ completedPages: 1, pageCount: 3, phase: "failed", retryable: false,
+        route: "system_vision", limitedReadingQuality: false, longDocument: false }] } as RunLifecycleStateV2)).toEqual({
+      kind: "terminal_error", runId: "run-pdf",
+      failure: { code: "pdf_reader_output_limit", message: CHAT_PDF_READER_OUTPUT_LIMIT.message, recovery: "change_parameters" }
     });
   });
 });

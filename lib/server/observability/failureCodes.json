@@ -859,6 +859,7 @@
   "pdf_processing_ambiguous",
   "pdf_processing_failed",
   "pdf_processing_unavailable",
+  "pdf_reader_output_limit",
   "pdf_text_unavailable",
   "pdf_transcription_failed",
   "policy_conflict",

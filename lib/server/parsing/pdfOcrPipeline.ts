@@ -99,6 +99,7 @@ export async function planPdfOcrSource(input: Readonly<{
 export async function preparePdfOcrPage(input: Readonly<{
   bytes: Buffer; local: PdfOcrLocal; maxPages: number; page: number;
   parserVersion?: number; signal?: AbortSignal; snapshot: ProviderExecutionSnapshot;
+  undeclaredMaxOutputTokens?: number;
 }>, prepare: typeof preparePdfModelBatch = preparePdfModelBatch) {
   input.signal?.throwIfAborted();
   const parserVersion = input.parserVersion ?? PDF_OCR_PARSER_VERSION;
@@ -121,7 +122,8 @@ export async function preparePdfOcrPage(input: Readonly<{
     pageEnd: input.page, promptVersion: PDF_OCR_PROMPT_VERSION });
   const prompt = supplement ? adaptivePdfVisionPrompt(base, supplement) : base;
   const request = modelPdfProviderRequest({ batch, mode: "system_model_vision", prompt,
-    snapshot: input.snapshot, supplement, visionDetail: "original" });
+    snapshot: input.snapshot, supplement, undeclaredMaxOutputTokens: input.undeclaredMaxOutputTokens,
+    visionDetail: "original" });
   if (request.attachments.length > limits.imageCount ||
     request.attachments.some(image => image.byteSize > limits.imageBytes) ||
     request.attachments.some(image => {

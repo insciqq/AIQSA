@@ -12,6 +12,8 @@ import {
   normalizeCompletedOpenAIResponse,
   openAIResponseStatus
 } from "./openaiResponsesResponse";
+import { deepSeekNotCompletedCode, deepSeekTerminalResponse } from "./deepSeekResponses";
+import { markProviderErrorDetail } from "./providerErrorCode";
 import {
   normalizeSearchFindings
 } from "../search/evidence";
@@ -138,12 +140,6 @@ function searchOperationCount(response: Readonly<Record<string, unknown>>): numb
   return output.filter((item) => isRecord(item) && item.type === "web_search_call").length;
 }
 
-function failureCode(status: string): string {
-  return status === "incomplete" || status === "failed" || status === "cancelled"
-    ? `deepseek_response_${status}`
-    : "deepseek_response_not_completed";
-}
-
 export function createDeepSeekResponsesSearchAdapter(input: Readonly<{
   client: DeepSeekResponsesClient;
 }>): ProviderSearchAdapter {
@@ -177,12 +173,17 @@ export function createDeepSeekResponsesSearchAdapter(input: Readonly<{
       const artifacts = searchArtifacts(response);
       const usage = extractOpenAIUsage(response);
       if (status !== "completed") {
-        throw new ProviderSearchExecutionError({
+        // Search names the cause as the other Search adapters do; the
+        // provider's reviewed error identity rides along, never its message.
+        const terminal = deepSeekTerminalResponse(response, body);
+        const incomplete = isRecord(terminal.incomplete_details) ? terminal.incomplete_details.reason : undefined;
+        throw markProviderErrorDetail(new ProviderSearchExecutionError({
           artifacts,
-          code: failureCode(status),
+          code: deepSeekNotCompletedCode(status),
           ...(status === "unknown" ? {} : { providerStatus: status }),
+          ...(incomplete === "max_output_tokens" || incomplete === "content_filter" ? { reason: incomplete } : {}),
           usage
-        });
+        }), response.error);
       }
       const operationCount = searchOperationCount(response);
       if (operationCount === 0) {

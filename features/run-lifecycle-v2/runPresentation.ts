@@ -1,6 +1,6 @@
 import { decodeMemorySearchActivity } from "@/lib/contracts/memorySearchActivity";
 import { decodeFetchUrlTarget } from "@/lib/contracts/fetchUrlActivity";
-import type { ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
+import { CHAT_PDF_READER_OUTPUT_LIMIT, isChatPdfReaderOutputLimitFailure, type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import {
   isToolSynthesisFailure,
   TOOL_SYNTHESIS_FAILURE,
@@ -959,7 +959,10 @@ export function presentRunLifecycleV2(
   }
   if (terminal === "error") {
     const pdfFailed = state.pdfPreparation?.some((item) => item.phase === "failed");
-    const failure = pdfFailed ? {
+    const failure = pdfFailed && isChatPdfReaderOutputLimitFailure(eventFailure?.code ?? state.failure?.code,
+      state.failure?.message ?? eventFailure?.message) ? {
+      code: CHAT_PDF_READER_OUTPUT_LIMIT.code, message: CHAT_PDF_READER_OUTPUT_LIMIT.message, recovery: "change_parameters" as const
+    } : pdfFailed ? {
       code: null,
       message: state.pdfPreparation!.every((item) => item.route === "local_text")
         ? "This PDF could not be read. Try a different file." : "Document preparation could not finish.",
