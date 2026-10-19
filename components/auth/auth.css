@@ -1,7 +1,8 @@
-/* Login (PRD §4.11): canvas with a soft accent glow in the upper third, a
-   400px column with the Bubble-Q mark and the AI·Q·SA lockup, one card for
-   the active auth mode, and a footer line. Every color is a Signal token;
-   the inner fields keep the shared Tailwind role aliases. */
+/* Login (PRD §4.11): a plain canvas, a 400px column with the Bubble-Q mark
+   and the AI·Q·SA lockup in the text colour, one hairline-edged card for the
+   active auth mode, and a footer line. Graphite: no glow, no gradient, no
+   hue. Every color is a v2 token; the inner fields keep the shared Tailwind
+   role aliases. */
 
 .v2-auth-root {
   position: relative;
@@ -16,18 +17,6 @@
     max(1rem, env(safe-area-inset-left));
   color: var(--v2-color-text);
   background: var(--v2-color-canvas);
-}
-
-.v2-auth-root::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    55% 40% at 50% 16%,
-    color-mix(in srgb, var(--v2-color-accent) 10%, transparent),
-    transparent 72%
-  );
 }
 
 .v2-auth-column {
@@ -46,12 +35,16 @@
 .v2-auth-mark {
   width: 4rem;
   height: 4rem;
-  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--v2-color-accent) 45%, transparent));
+  color: var(--v2-color-text);
+  /* At display size the mark takes a lighter stroke than the 2.4 it uses
+     as the lockup's Q. */
+  stroke-width: 2;
 }
 
 /* "AIQSA" with the mark as the Q: the mark's body matches the cap height and
-   sits on the baseline, its tail hanging like a Q's, with the same tracking
-   on both sides as between the letters (UX audit 2026-09-02 C3). */
+   sits on the baseline, its tail hanging like a Q's, spaced evenly against
+   its neighbours (UX audit 2026-09-02 C3). Graphite wordmark: weight 600 and
+   light 0.04em tracking instead of wide bold tracking. */
 .v2-auth-lockup {
   display: inline-flex;
   align-items: baseline;
@@ -59,8 +52,8 @@
   margin: 0.25rem 0 0;
   color: var(--v2-color-text);
   font-size: 1.625rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   line-height: 1;
 }
 
@@ -70,11 +63,12 @@
   /* The glyph body spans 14/24 of the box: 1.2em of box gives a 0.7em body. */
   width: 1.2em;
   height: 1.2em;
-  /* The box's own inner padding (3.5/24 ≈ 0.18em) already tracks the mark;
-     the negative margins remove the doubled gap. */
+  /* The box's own inner padding (3.5/24 ≈ 0.18em) already spaces the mark
+     from "I"; the small negative right margin pulls "S" in under the tail so
+     both sides of the mark read evenly. */
   margin: 0 -0.06em 0 0;
   transform: translateY(0.24em);
-  color: var(--v2-color-accent);
+  color: var(--v2-color-text);
 }
 
 .v2-auth-lockup-q svg {
@@ -156,15 +150,19 @@
 .v2-auth-link {
   padding: 0;
   border: 0;
-  color: var(--v2-color-accent);
+  color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
   font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--v2-color-border2);
+  text-underline-offset: 3px;
   cursor: pointer;
 }
 
 .v2-auth-link:hover {
-  text-decoration: underline;
+  color: var(--v2-color-text);
+  text-decoration-color: currentColor;
 }
 
 .v2-auth-link:disabled {
