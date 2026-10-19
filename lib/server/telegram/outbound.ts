@@ -1,5 +1,6 @@
 import { formatChatRoutePath } from "../../domain/chatRoute";
 import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import type {
   TelegramBotApi, TelegramFileInput, TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup, TelegramInputRichMessage,
   TelegramReplyParameters, TelegramSentMessage
@@ -142,9 +143,16 @@ export function createTelegramOutbound(deps: Readonly<{
     return inline.length > 0 ? { inline_keyboard: inline } : undefined;
   }
 
+  /** A reference only routes later replies: losing one never turns a delivered message into a failure. */
   async function recordRef(owner: TelegramMessageRefOwner | undefined, chatId: number, sent: TelegramSentMessage): Promise<void> {
     if (!owner) return;
-    await deps.messageRefs.record([{ ...owner, botId: deps.botId, telegramChatId: chatId, telegramMessageId: sent.message_id }], now());
+    try {
+      await deps.messageRefs.record([{ ...owner, botId: deps.botId, telegramChatId: chatId, telegramMessageId: sent.message_id }], now());
+    } catch (error) {
+      logEvent("service_operation", {
+        code: "telegram_message_ref_failed", error, outcome: "failed", prisma_code: databaseFailureCode(error), stage: "dispatch", subsystem: "telegram"
+      });
+    }
   }
 
   function reply(replyTo: number | undefined): Readonly<{ reply_parameters?: TelegramReplyParameters }> {
@@ -197,6 +205,10 @@ export function createTelegramOutbound(deps: Readonly<{
           continue;
         }
         if (!isRichRefusal(outcome)) {
+          logFailure(outcome);
+          return { failure: outcome, messageIds: sent, ok: false };
+        }
+        if (!input.plainFallback.some((chunk) => chunk.trim())) {
           logFailure(outcome);
           return { failure: outcome, messageIds: sent, ok: false };
         }

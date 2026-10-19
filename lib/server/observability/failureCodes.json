@@ -1139,6 +1139,7 @@
   "telegram_link_action_failed",
   "telegram_link_code_invalid",
   "telegram_link_code_rate_limited",
+  "telegram_message_ref_failed",
   "telegram_network_after_send",
   "telegram_network_before_send",
   "telegram_not_linked",
