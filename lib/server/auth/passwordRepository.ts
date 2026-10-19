@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { revokeConnectDevicesForUser } from "../connect/revocation";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
 import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
@@ -205,6 +206,7 @@ export function createPrismaPasswordAuthRepository(prisma: PrismaClient): Passwo
           reason: "password_reset",
           userId: flowToken.identity.userId
         });
+        await revokeConnectDevicesForUser(tx, { userId: flowToken.identity.userId });
 
         return {
           normalizedEmail: flowToken.identity.normalizedEmail,

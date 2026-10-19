@@ -18,6 +18,7 @@ import { hashToken } from "./token";
 
 const resetNow = new Date("2026-07-14T00:00:00.000Z");
 const resetExpiry = new Date("2026-07-14T01:00:00.000Z");
+const connectMachine = { arch: "amd64", clientVersion: "0.3.20", hostname: "synthetic.local", name: "Synthetic", os: "linux" } as const;
 
 type ResetFixture = {
   email: string;
@@ -277,6 +278,8 @@ describe("Prisma-backed password reset completion", () => {
       const pendingMemoryCode = await pendingClient.approve(target.userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
       const bystander = await mcp.connect(other.userId, INBOUND_MCP_TEST_AUTHORITIES.hub);
       await expect(mcp.access(hub)).resolves.toBe(true);
+      const [targetDevice, bystanderDevice] = await Promise.all([target.userId, other.userId].map((userId) =>
+        prisma.connectDevice.create({ data: { ...connectMachine, tokenHash: hashToken(`connect-${userId}`), userId } })));
 
       await expect(
         repository.completePasswordReset({
@@ -286,6 +289,9 @@ describe("Prisma-backed password reset completion", () => {
         })
       ).resolves.toEqual({ normalizedEmail: target.email, userId: target.userId });
 
+      // Whoever held the old password may have paired a computer: AIQSA Connect devices go too.
+      await expect(prisma.connectDevice.findUnique({ where: { id: targetDevice!.id } })).resolves.toBeNull();
+      await expect(prisma.connectDevice.findUnique({ where: { id: bystanderDevice!.id } })).resolves.not.toBeNull();
       await expect(pendingClient.exchange(pendingMemoryCode)).resolves.toBeNull();
       await expectInboundMcpRevokedAndReconsentable({
         connections: [memory, hub],
@@ -319,6 +325,7 @@ describe("Prisma-backed password reset completion", () => {
         orderBy: { tokenHash: "asc" },
         where: { userId: fixture.userId }
       });
+      await prisma.connectDevice.create({ data: { ...connectMachine, tokenHash: hashToken(`connect-${fixture.userId}`), userId: fixture.userId } });
 
       await expect(repository.changePassword({
         expectedPasswordHash: identity.passwordHash!,
@@ -327,6 +334,7 @@ describe("Prisma-backed password reset completion", () => {
         now: resetNow,
         passwordHash: await hashPassword("changed-password-revokes-grants")
       })).resolves.toBe(true);
+      await expect(prisma.connectDevice.count({ where: { userId: fixture.userId } })).resolves.toBe(0);
 
       await expect(prisma.authSession.findMany({
         orderBy: { tokenHash: "asc" },
