@@ -185,8 +185,11 @@ export function createFakeGateway(options: Readonly<{
   assistants?: readonly TelegramAssistantChoice[];
   /** The answer a run completes with right away; null leaves every run to the test. */
   autoAnswer?: ((body: Record<string, unknown>) => string | null) | null;
+  /** The zone the user's browser last reported; none by default. */
+  timeZone?: string | null;
 }> = {}) {
   let catalog = options.catalog ?? fakeCatalog();
+  let timeZone = options.timeZone ?? null;
   const sent: FakeSend[] = [];
   const runs: FakeRun[] = [];
   const chats = new Map<string, FakeChat>();
@@ -323,7 +326,8 @@ export function createFakeGateway(options: Readonly<{
     },
     recentChats: async (userId) => [...chats.values()].filter((chat) => chat.userId === userId && !chat.archived).reverse().slice(0, 10)
       .map((chat) => ({ id: chat.id, title: chat.title })),
-    assistants: async () => options.assistants ?? []
+    assistants: async () => options.assistants ?? [],
+    timeZone: async () => timeZone
   };
 
   return {
@@ -334,6 +338,7 @@ export function createFakeGateway(options: Readonly<{
     sent,
     setAutoAnswer(next: ((body: Record<string, unknown>) => string | null) | null) { autoAnswer = next; },
     setCatalog(next: TelegramRunCatalog) { catalog = next; },
+    setTimeZone(next: string | null) { timeZone = next; },
     setFollowupResponse(next: typeof followupResponse) { followupResponse = next; },
     /** The next send answers with this response instead of admitting a run. */
     respondNext(response: (input: FakeSend) => Response) { queued.push(response); },

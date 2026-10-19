@@ -17,6 +17,7 @@ import { parameterDialect } from "../../runs/runPreparation";
 import { activeRunStaleMs } from "../../runs/runRecovery";
 import type { TelegramAccessResolver } from "../control/access";
 import { createPrismaTelegramChatListStore } from "../store/chats";
+import { createPrismaTelegramTimeZoneStore } from "../store/timeZone";
 import type { TelegramRunGateway } from "./gateway";
 
 /**
@@ -55,6 +56,7 @@ export function createDefaultTelegramRunGateway(deps: Readonly<{ access: Pick<Te
   const followups = createPrismaRunFollowupOperations(prisma);
   const loadCatalogData = createPrismaCatalogDataLoader({ checkDefaultAssistant: false, prisma });
   const chats = createPrismaTelegramChatListStore(prisma);
+  const timeZones = createPrismaTelegramTimeZoneStore(prisma);
 
   /** The linked user while the account is active and Telegram access holds, re-read on every call. */
   function telegramAuth(userId: string): RequestAuthResolver {
@@ -161,6 +163,8 @@ export function createDefaultTelegramRunGateway(deps: Readonly<{ access: Pick<Te
     },
 
     recentChats: (userId: string) => chats.recentPersonalChats(userId),
+
+    timeZone: (userId: string) => timeZones.latestClientTimeZone(userId),
 
     async assistants(userId: string) {
       const response = await createListAssistantsHandler({ ...defaultAssistantHandlerDeps, resolveAuth: telegramAuth(userId) })(
