@@ -156,6 +156,29 @@ describe("Telegram control service: Test & Save", () => {
     expect(memory.record.tokenGeneration).toBe(2);
     expect(fake.calls().map((call) => call.method)).toEqual(["getMe", "deleteWebhook", "setMyCommands"]);
   });
+
+  it("keeps the saved token but shows a failed takeover of the bot that is on as its health", async () => {
+    const { changed, fake, memory, service } = setup((key, bot) => configured(key, bot, { enabled: true }));
+    fake.failNext("deleteWebhook", { status: 401 });
+    const rejected = await service.testAndSave({ actorUserId: ADMIN, expectedVersion: 1, token: fake.token });
+    expect(rejected).toMatchObject({
+      ok: true, state: { enabled: true, health: { lastFailureCode: "telegram_token_rejected" }, tokenConfigured: true, version: 2 }
+    });
+    if (!rejected.ok) throw new Error("Test & Save refused");
+    expect(rejected.state.health.lastFailureAt).not.toBeNull();
+    expect(memory.record.tokenGeneration).toBe(2);
+    expect(memory.repository.recordPollHealth).toHaveBeenCalledWith(expect.objectContaining({
+      botId: fake.bot.id, failureCode: "telegram_token_rejected", success: false
+    }));
+    expect(changed).toHaveBeenCalledOnce();
+
+    fake.failNext("setMyCommands", { drop: true });
+    vi.mocked(memory.repository.recordPollHealth).mockRejectedValueOnce(new Error("database unavailable"));
+    await expect(service.testAndSave({ actorUserId: ADMIN, expectedVersion: 2, token: fake.token })).resolves.toMatchObject({
+      ok: true, state: { health: { lastFailureCode: "telegram_unreachable" }, version: 3 }
+    });
+    expect(memory.record.tokenGeneration).toBe(3);
+  });
 });
 
 describe("Telegram control service: enable, disable and access", () => {

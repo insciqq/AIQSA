@@ -170,9 +170,13 @@ export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): Te
           };
         });
       } catch (error) {
-        // Another transaction linked this Telegram account first; nothing of this attempt was kept.
-        if (isUniqueViolation(error)) return { code: "telegram_account_in_use", kind: "refused" };
-        throw error;
+        if (!isUniqueViolation(error)) throw error;
+        // Another transaction linked this Telegram account first and this attempt rolled back,
+        // its consumption included: consume the code again so it stays spent like any other refusal.
+        await prisma.telegramLinkCode.updateMany({
+          data: { consumedAt: input.now }, where: { codeHash: input.codeHash, consumedAt: null }
+        }).catch(retainDatabaseFailure);
+        return { code: "telegram_account_in_use", kind: "refused" };
       }
     },
 
