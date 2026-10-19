@@ -514,28 +514,19 @@ function PasswordVisibilityButton({
   );
 }
 
-/** The Bubble-Q mark (PRD §3.4) with the accent→accent2 gradient stroke. */
-function AuthMark({ className, gradient = false }: { className?: string; gradient?: boolean }) {
-  const stroke = gradient ? "url(#auth-mark-gradient)" : "currentColor";
+/** The Bubble-Q mark (PRD §3.4), stroked in the current text colour. */
+function AuthMark({ className }: { className?: string }) {
   return (
     <svg
       aria-hidden="true"
       className={className}
       fill="none"
-      stroke={stroke}
+      stroke="currentColor"
       strokeLinecap="round"
       strokeLinejoin="round"
-      strokeWidth={gradient ? 2 : 2.4}
+      strokeWidth={2.4}
       viewBox="0 0 24 24"
     >
-      {gradient ? (
-        <defs>
-          <linearGradient gradientUnits="userSpaceOnUse" id="auth-mark-gradient" x1="4" x2="21" y1="4" y2="21">
-            <stop offset="0" style={{ stopColor: "var(--v2-color-accent)" }} />
-            <stop offset="1" style={{ stopColor: "var(--v2-color-accent2)" }} />
-          </linearGradient>
-        </defs>
-      ) : null}
       <rect x="3.5" y="3.5" width="14" height="14" rx="4.5" />
       <path d="M12.5 12.5 21 21" />
     </svg>
@@ -1065,7 +1056,7 @@ export function AuthLogin({
         data-testid="auth-workspace"
       >
         <div className="v2-auth-brand">
-          <AuthMark className="v2-auth-mark" gradient />
+          <AuthMark className="v2-auth-mark" />
           {/* The lockup reads "AIQSA": the mark stands in for the Q visually. */}
           <p className="v2-auth-lockup" data-testid="auth-lockup">
             AI
