@@ -378,7 +378,7 @@ describe("AIQSA Connect pairing", () => {
 
     const first = connectPairingPollResponseSchema.parse(await (await poll()).json());
     if (first.status !== "approved") throw new Error("not approved");
-    expect(first.account).toBe("alice owner (a•••@example.test)");
+    expect(first.account).toBe('alice@example.test ("alice owner")');
     const stored = context.store.devices.get(first.deviceId)!;
     expect(stored).toMatchObject({ hostname: "studio.local", name: "Studio", tokenHash: hashToken(first.deviceToken), userId: "alice" });
     await expect((await poll()).json()).resolves.toEqual({ status: "expired" });
@@ -446,11 +446,10 @@ describe("AIQSA Connect pairing", () => {
     expect(polled.headers.get("retry-after")).toBe("3");
     expect(context.limits.poll.check).toHaveBeenCalledWith("connect:pairing-poll:ip:203.0.113.5");
 
-    // An address AIQSA cannot resolve behind its proxy shares one budget instead of being refused.
     context.clientKey.mockReturnValueOnce(null);
     const unresolved = await context.device.createPairing(deviceRequest("/connect-api/v1/pairings", { body: machine }));
-    expect(unresolved.status).not.toBe(429);
-    expect(context.limits.create.check).toHaveBeenLastCalledWith("connect:pairing-create:unresolved");
+    expect(unresolved.status).toBe(429);
+    expect(unresolved.headers.get("retry-after")).toBe("60");
 
     context.limits.code.check.mockResolvedValueOnce({ allowed: false, retryAfterSeconds: 120 });
     const code = await context.browser.lookupPairing(
@@ -1141,11 +1140,18 @@ describe("AIQSA Connect logging", () => {
 });
 
 describe("connectAccountLabel", () => {
-  it("names the approving account with a masked email", () => {
-    expect(connectAccountLabel({ displayName: "Ann Lee", email: "ann.lee@example.com" })).toBe("Ann Lee (a•••@example.com)");
-    expect(connectAccountLabel({ displayName: "Ann", email: null })).toBe("Ann");
-    expect(connectAccountLabel({ displayName: " \u0007 ", email: "ёж@пример.рф" })).toBe("AIQSA account (ё•••@пример.рф)");
-    expect(connectAccountLabel({ displayName: "Ann", email: "@broken" })).toBe("Ann");
-    expect(Array.from(connectAccountLabel({ displayName: "я".repeat(300), email: "a@b.c" }))).toHaveLength(CONNECT_MAX_ACCOUNT_LABEL_LENGTH);
+  it("leads with the account's email, which a display name cannot fake", () => {
+    expect(connectAccountLabel({ displayName: "Ann Lee", email: "ann.lee@example.com" })).toBe('ann.lee@example.com ("Ann Lee")');
+    // A display name made to look like another account still follows the approver's own email.
+    expect(connectAccountLabel({ displayName: 'ann.lee@example.com ("Ann Lee")', email: "bob@evil.example" }))
+      .toBe('bob@evil.example ("ann.lee@example.com ("Ann Lee")")');
+    expect(connectAccountLabel({ displayName: 'ann.lee@example.com ("Ann Lee")', email: null }))
+      .toBe('"ann.lee@example.com ("Ann Lee")" (no email address)');
+    expect(connectAccountLabel({ displayName: " \u0007 ", email: null })).toBe("(no email address)");
+    expect(connectAccountLabel({ displayName: "Ann\u202e eeL", email: "ёж@\u200bпример.рф" })).toBe('ёж@пример.рф ("Ann eeL")');
+    const long = connectAccountLabel({ displayName: "я".repeat(600), email: `${"a".repeat(64)}@example.com` });
+    expect(Array.from(long)).toHaveLength(CONNECT_MAX_ACCOUNT_LABEL_LENGTH);
+    expect(long.startsWith(`${"a".repeat(64)}@example.com ("я`)).toBe(true);
+    expect(long.endsWith('я")')).toBe(true);
   });
 });

@@ -156,7 +156,7 @@ func TestPairingPollsUntilApproved(t *testing.T) {
 				w.WriteHeader(http.StatusTooManyRequests)
 				io.WriteString(w, `{"code":"connect_rate_limited"}`)
 			default:
-				json.NewEncoder(w).Encode(map[string]string{"status": "approved", "deviceId": testDeviceID, "deviceToken": testToken, "account": "Owner (o•••@example.test)"})
+				json.NewEncoder(w).Encode(map[string]string{"status": "approved", "deviceId": testDeviceID, "deviceToken": testToken, "account": `owner@example.test ("Owner")`})
 			}
 		}
 	}))
@@ -173,7 +173,7 @@ func TestPairingPollsUntilApproved(t *testing.T) {
 		waits = append(waits, d)
 		return nil
 	}})
-	if err != nil || approved.DeviceID != testDeviceID || approved.DeviceToken != testToken || approved.Account != "Owner (o•••@example.test)" {
+	if err != nil || approved.DeviceID != testDeviceID || approved.DeviceToken != testToken || approved.Account != `owner@example.test ("Owner")` {
 		t.Fatalf("approved: %+v %v", approved, err)
 	}
 	if len(waits) != 3 || waits[0] != 2*time.Second || waits[1] != 2*time.Second || waits[2] != 9*time.Second {
