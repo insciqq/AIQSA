@@ -233,6 +233,28 @@ describe("Telegram chat bridge: a run in progress", () => {
     expect(h.fake.botMessages(h.user.id).filter((message) => message.kind === "rich")).toHaveLength(2);
   });
 
+  it("runs a message sent after the answer was delivered as a new request while the answer's files still wait", async () => {
+    const gateway = createFakeGateway({ autoAnswer: null });
+    let releaseFiles: () => void = () => undefined;
+    const filesWait = new Promise<void>((resolve) => { releaseFiles = resolve; });
+    // A Workspace answer's files wait for their export after the final message went out.
+    const h = harness({ bridge: { publish: async (event) => { if (event.type === "delivered") await filesWait; } }, gateway });
+    await say(h, h.fake.inject.text(h.user, "run a hello world"));
+    const run = await runStarted(gateway, 1);
+    run.token("Hello from Workspace.");
+    run.complete();
+    await vi.waitFor(() => expect(h.fake.botMessages(h.user.id).filter((message) => message.kind === "rich")).toHaveLength(1));
+
+    gateway.setAutoAnswer(() => "Node.js version");
+    await say(h, h.fake.inject.text(h.user, "and try it in nodejs"));
+    await vi.waitFor(() => expect(gateway.sent).toHaveLength(2));
+    expect(gateway.followups).toEqual([]);
+    expect(texts(h, h.user)).not.toContain(TELEGRAM_COPY.followupAdded);
+    expect(gateway.sent[1]).toMatchObject({ body: { content: { blocks: [{ text: "and try it in nodejs", type: "text" }] } }, chatId: run.chatId });
+    releaseFiles();
+    await h.settle();
+  });
+
   it("runs a server-prepared continuation after the active run, in its chat, observed and delivered like a message", async () => {
     const gateway = createFakeGateway({ autoAnswer: null });
     const h = harness({ gateway });
