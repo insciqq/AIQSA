@@ -212,6 +212,8 @@ test.beforeAll(async ({ browser }) => {
 });
 
 test.afterAll(async () => {
+  // Cleanup may wait for a stopped Workspace session to be released.
+  test.setTimeout(180_000);
   try {
     if (aliceSession) {
       // Nothing of Alice's may still run when her account is removed.
@@ -233,11 +235,13 @@ test.afterAll(async () => {
       // Workspace sessions restrict their chat's deletion, so the runs and sessions go first (as the Workspace specs do).
       if (aliceSession) {
         const userId = aliceSession.user.id;
-        await prisma.$transaction(async (tx) => {
+        // A stopped run's Workspace session is released shortly after the run settles: retry until it is.
+        await expect.poll(() => prisma.$transaction(async (tx) => {
           await tx.providerRunBinding.deleteMany({ where: { modelRun: { userId } } });
           await tx.modelRun.deleteMany({ where: { userId } });
           await tx.workspaceSession.deleteMany({ where: { chat: { userId } } });
-        }).catch(() => undefined);
+        }).then(() => "removed", (error: unknown) => (error instanceof Error ? error.message.slice(0, 200) : "failed")),
+        { intervals: [2_000], timeout: 60_000 }).toBe("removed");
       }
       await people.cleanup();
     } finally {
