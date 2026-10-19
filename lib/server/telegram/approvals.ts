@@ -247,6 +247,14 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
     return null;
   }
 
+  /**
+   * Asks the chat's authority again right before each Bot API dispatch, after the client's
+   * pacing and 429 waits (a send refused here returns `unreachable`, nothing is dispatched).
+   */
+  function authority(binding: TelegramChatBinding): () => Promise<boolean> {
+    return async () => (await reachTelegramChat(deps, binding)).ok;
+  }
+
   /** The chat a press came from, bound to the link it was pressed through. */
   function pressed(press: Press): TelegramChatBinding {
     return { botId: press.link.botId, linkId: press.link.id, telegramChatId: press.telegramChatId, userId: press.link.userId };
@@ -256,11 +264,11 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
   async function announce(card: McpApprovalCard, context: TelegramRunEventContext): Promise<boolean> {
     const details = await readDetails(card, context.runId, context.userId);
     // Checked once the request is read, right before it goes out.
-    const reached = await reach({
-      botId: context.bot.botId, linkId: context.linkId, telegramChatId: context.telegramChatId, userId: context.userId
-    }, context.runId);
+    const binding = { botId: context.bot.botId, linkId: context.linkId, telegramChatId: context.telegramChatId, userId: context.userId };
+    const reached = await reach(binding, context.runId);
     if (!reached) return false;
     const delivery = await reached.bot.outbound.sendContent({
+      authorize: authority(binding),
       chatId: context.telegramChatId,
       keyboard: telegramApprovalKeyboard(card, {
         approvalId: card.approvalId, chatId: context.chatId, runId: context.runId, until: now() + TELEGRAM_APPROVAL_WINDOW_MS
@@ -269,7 +277,9 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
       owner: { chatId: context.chatId, linkId: context.linkId, userId: context.userId }
     });
     if (delivery.ok) return true;
-    log({ code: "telegram_approval_notice_failed", httpStatus: delivery.failure.status, outcome: "failed", runId: context.runId });
+    if (delivery.failure.kind !== "unreachable") {
+      log({ code: "telegram_approval_notice_failed", httpStatus: delivery.failure.status, outcome: "failed", runId: context.runId });
+    }
     return false;
   }
 
@@ -285,24 +295,31 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
     });
   }
 
-  /** Edits the pressed message in place, rich first, then as plain text; false when it can no longer be edited. */
+  /**
+   * Edits the pressed message in place, rich first, then as plain text: `edited`, `failed` when
+   * it can no longer be edited (a new message may follow), or `unreachable` when the chat's
+   * authority ended (nothing more may go out).
+   */
   async function edit(bot: TelegramBotSession, press: Press, content: Readonly<{ message?: TelegramInputRichMessage; text?: string }>,
-    markup: TelegramInlineKeyboardMarkup | undefined): Promise<boolean> {
-    if (press.messageId === null) return false;
+    markup: TelegramInlineKeyboardMarkup | undefined): Promise<"edited" | "failed" | "unreachable"> {
+    if (press.messageId === null) return "failed";
     const target = { chat_id: press.telegramChatId, message_id: press.messageId, ...(markup ? { reply_markup: markup } : {}) };
+    const options = { authorize: authority(pressed(press)) };
     if (content.message) {
-      const rich = await bot.api.editMessageText({ ...target, rich_message: { ...content.message, skip_entity_detection: true } });
-      if (rich.ok || unchanged(rich)) return true;
+      const rich = await bot.api.editMessageText({ ...target, rich_message: { ...content.message, skip_entity_detection: true } }, options);
+      if (rich.ok || unchanged(rich)) return "edited";
+      if (!rich.ok && rich.kind === "unreachable") return "unreachable";
       if (rich.kind !== "telegram" || rich.errorCode !== 400) {
         logFailure(rich, press.payload.runId);
-        return false;
+        return "failed";
       }
     }
     const text = (content.text ?? plainTelegramMessage(content.message!).join("\n\n")).slice(0, 4_096);
-    const plain = await bot.api.editMessageText({ ...target, link_preview_options: { is_disabled: true }, text });
-    if (plain.ok || unchanged(plain)) return true;
+    const plain = await bot.api.editMessageText({ ...target, link_preview_options: { is_disabled: true }, text }, options);
+    if (plain.ok || unchanged(plain)) return "edited";
+    if (!plain.ok && plain.kind === "unreachable") return "unreachable";
     logFailure(plain, press.payload.runId);
-    return false;
+    return "failed";
   }
 
   /**
@@ -317,8 +334,8 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
     if (!reached) return;
     const { bot } = reached;
     if (!view) {
-      if (!(await edit(bot, press, { text: TELEGRAM_APPROVAL_COPY.unavailable }, undefined))) {
-        await bot.outbound.sendText({ chatId: press.telegramChatId, text: TELEGRAM_APPROVAL_COPY.unavailable });
+      if (await edit(bot, press, { text: TELEGRAM_APPROVAL_COPY.unavailable }, undefined) === "failed") {
+        await bot.outbound.sendText({ authorize: authority(pressed(press)), chatId: press.telegramChatId, text: TELEGRAM_APPROVAL_COPY.unavailable });
       }
       return;
     }
@@ -330,8 +347,10 @@ export function createTelegramApprovals(deps: TelegramApprovalsDeps): TelegramAp
         until: press.payload.until }, { [press.decision]: press.nonce })
       : undefined;
     const markup = keyboard ? await bot.outbound.replyMarkup({ keyboard, linkId: press.link.id }) : undefined;
-    if (await edit(bot, press, { message }, markup)) return;
-    await bot.outbound.sendContent({ chatId: press.telegramChatId, ...(keyboard ? { keyboard } : {}), messages: [message], owner });
+    if (await edit(bot, press, { message }, markup) !== "failed") return;
+    await bot.outbound.sendContent({
+      authorize: authority(pressed(press)), chatId: press.telegramChatId, ...(keyboard ? { keyboard } : {}), messages: [message], owner
+    });
   }
 
   type Decided = McpApprovalDecisionOutcome | Readonly<{ kind: "failed" }>;
