@@ -60,6 +60,38 @@ func TestReadHookInputReadsOnlyTheEventFields(t *testing.T) {
 	}
 }
 
+func TestReadHookInputReadsTheWorkingDirectoryOfCodexPayloads(t *testing.T) {
+	cases := map[string]HookInput{
+		`{"session_id":"s","turn_id":"t","transcript_path":"/tmp/t.jsonl","cwd":"/home/u/project","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"deploy it"}`: {Event: "UserPromptSubmit", Cwd: "/home/u/project"},
+		`{"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"done","cwd":"/srv/a b"}`:                                                                                        {Event: "Stop", Cwd: "/srv/a b"},
+		`{"hook_event_name":"PermissionRequest","tool_name":"shell","tool_input":{"cwd":"/elsewhere","command":["ls"]},"cwd":"/work"}`:                                                                {Event: "PermissionRequest", Cwd: "/work"},
+		// Only the top-level cwd counts.
+		`{"hook_event_name":"PermissionRequest","tool_input":{"cwd":"/elsewhere"}}`: {Event: "PermissionRequest"},
+		// Relative, empty, non-string or NUL-containing values are dropped.
+		`{"hook_event_name":"Stop","cwd":"project"}`:                                   {Event: "Stop"},
+		`{"hook_event_name":"Stop","cwd":""}`:                                          {Event: "Stop"},
+		`{"hook_event_name":"Stop","cwd":["/a"]}`:                                      {Event: "Stop"},
+		`{"hook_event_name":"Stop","cwd":"/a\u0000b"}`:                                 {Event: "Stop"},
+		`{"hook_event_name":"Stop","cwd":"/` + strings.Repeat("d", MaxCwdBytes) + `"}`: {Event: "Stop"},
+	}
+	for input, want := range cases {
+		if got := ReadHookInput(strings.NewReader(input)); got != want {
+			t.Errorf("%.80q: got %+v, want %+v", input, got, want)
+		}
+	}
+	// The longest allowed path is kept.
+	long := "/" + strings.Repeat("d", MaxCwdBytes-1)
+	if got := ReadHookInput(strings.NewReader(`{"cwd":"` + long + `"}`)); got.Cwd != long {
+		t.Fatalf("a %d-byte cwd was dropped", len(long))
+	}
+	// A cwd after a huge field inside the input bound is still read.
+	big := strings.Repeat("x", MaxHookInputBytes-200)
+	got := ReadHookInput(strings.NewReader(`{"hook_event_name":"Stop","last_assistant_message":"` + big + `","cwd":"/work"}`))
+	if got != (HookInput{Event: "Stop", Cwd: "/work"}) {
+		t.Fatalf("after a large field: %+v", got)
+	}
+}
+
 func TestReadHookInputIsBounded(t *testing.T) {
 	big := strings.Repeat("x", 2*MaxHookInputBytes)
 	// The event name comes first, as both agents send it: a huge tool

@@ -1,12 +1,16 @@
 // Package status turns agent hook events and terminal bells into session
-// statuses. Only the event name and the notification type of a hook's input
-// are read; prompts, commands, messages and tool data are skipped unread
-// into any value and never leave this package.
+// statuses. Only the event name, the notification type and the working
+// directory of a hook's input are read; prompts, commands, messages and tool
+// data are skipped unread into any value and never leave this package. The
+// working directory only finds the hook's session on this computer; it is
+// never logged or sent.
 package status
 
 import (
 	"encoding/json"
 	"io"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,17 +39,32 @@ type Update struct {
 	Reason protocol.StatusReason
 }
 
+// MaxCwdBytes bounds the working directory a hook input may name.
+const MaxCwdBytes = 4096
+
 // HookInput is the part of an agent's hook input the client reads.
 type HookInput struct {
 	Event            string
 	NotificationType string
+	// Cwd is the agent session's absolute working directory, or empty. It
+	// stays on this computer.
+	Cwd string
 }
 
 // ReadHookInput reads at most MaxHookInputBytes of r as one JSON object and
-// returns its top-level hook_event_name and notification_type. Every other
-// value is skipped. Input that is cut off, malformed or not an object yields
-// whatever was read before the problem.
+// returns its top-level hook_event_name, notification_type and cwd; a cwd
+// that is not an absolute path of at most MaxCwdBytes is dropped. Every
+// other value is skipped. Input that is cut off, malformed or not an object
+// yields whatever was read before the problem.
 func ReadHookInput(r io.Reader) HookInput {
+	in := readHookInput(r)
+	if len(in.Cwd) > MaxCwdBytes || !filepath.IsAbs(in.Cwd) || strings.ContainsRune(in.Cwd, 0) {
+		in.Cwd = ""
+	}
+	return in
+}
+
+func readHookInput(r io.Reader) HookInput {
 	var in HookInput
 	dec := json.NewDecoder(io.LimitReader(r, MaxHookInputBytes))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
@@ -63,6 +82,8 @@ func ReadHookInput(r io.Reader) HookInput {
 			target = &in.Event
 		case "notification_type":
 			target = &in.NotificationType
+		case "cwd":
+			target = &in.Cwd
 		}
 		if target == nil {
 			if err := skipValue(dec); err != nil {

@@ -149,9 +149,12 @@ end with `tmux -L aiqsa-connect kill-server`.
 - **tmux is too old or missing.** Install tmux 3.2 or newer; `aiqsa-connect
   setup` checks it.
 - **A Codex session never shows running or waiting.** Codex runs hooks
-  without the session's environment, so the hook finds its session from the
-  tmux pane it runs under; trust the hook in `codex` with `/hooks`, and keep
-  `aiqsa-connect up` running with its default directories and tmux socket.
+  without the session's environment, often from a background process outside
+  the session, so the hook finds its session from the tmux pane it runs
+  under or else from the Codex session's folder; trust the hook in `codex`
+  with `/hooks`, and keep `aiqsa-connect up` running with its default
+  directories and tmux socket. Two Codex sessions in the same folder cannot
+  be told apart: start them in different folders.
 
 ## What the AIQSA server can see
 

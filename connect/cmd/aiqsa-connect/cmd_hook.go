@@ -68,8 +68,13 @@ func runHook(inv *invocation) int {
 			return 0
 		}
 		if session == "" {
-			// Codex runs its hooks with a scrubbed environment.
-			if session = sessionOfAncestry(inv.ctx); session == "" {
+			// Codex runs its hooks with a scrubbed environment, possibly
+			// from a background process outside the session's pane.
+			cwd := ""
+			if agent == status.AgentCodex {
+				cwd = in.Cwd
+			}
+			if session = sessionOfHookProcess(inv.ctx, cwd); session == "" {
 				return 0
 			}
 		}
@@ -110,15 +115,18 @@ func hookPaths() (config.Paths, error) {
 	return config.ResolvePaths()
 }
 
-// ancestryWait bounds the search for a hook's session in the process tree.
-const ancestryWait = time.Second
+// sessionSearchWait bounds the search for a hook's session: one tmux call
+// and one process snapshot.
+const sessionSearchWait = time.Second
 
-// sessionOfAncestry finds the session of a hook whose environment lacks
-// AIQSA_CONNECT_SESSION: the session of the nearest ancestor process that
-// is a pane of the client's own tmux server. Panes of any other tmux
-// server never count. Empty when there is none.
-func sessionOfAncestry(ctx context.Context) string {
-	ctx, cancel := context.WithTimeout(ctx, ancestryWait)
+// sessionOfHookProcess finds the session of a hook whose environment lacks
+// AIQSA_CONNECT_SESSION among the panes of the client's own tmux server;
+// panes of any other tmux server never count. First the nearest ancestor
+// process that is a pane; failing that, for a non-empty cwd, the one Codex
+// session whose pane runs codex in that directory. Empty when there is
+// none, or more than one.
+func sessionOfHookProcess(ctx context.Context, cwd string) string {
+	ctx, cancel := context.WithTimeout(ctx, sessionSearchWait)
 	defer cancel()
 	paths, err := hookPaths()
 	if err != nil {
@@ -128,11 +136,25 @@ func sessionOfAncestry(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	panes, err := tmux.PaneSessions(ctx, bin, paths.TmuxSocket)
+	panes, err := tmux.ListPanes(ctx, bin, paths.TmuxSocket)
 	if err != nil || len(panes) == 0 {
 		return ""
 	}
-	return sessionOfAncestors(procs.System(ctx), os.Getppid(), panes)
+	snapshot, err := procs.Take(ctx)
+	if err != nil {
+		return ""
+	}
+	sessions := make(map[int]string, len(panes))
+	for _, pane := range panes {
+		sessions[pane.PID] = pane.Session
+	}
+	if session := sessionOfAncestors(snapshot, os.Getppid(), sessions); session != "" {
+		return session
+	}
+	if cwd == "" {
+		return ""
+	}
+	return codexSessionOfCwd(snapshot, panes, cwd)
 }
 
 // sessionOfAncestors returns the session of the nearest of pid and its
@@ -147,6 +169,40 @@ func sessionOfAncestors(table procs.Table, pid int, panes map[int]string) string
 		return panes[pane]
 	}
 	return ""
+}
+
+// codexSessionOfCwd returns the only one of the client's Codex sessions
+// whose pane is in cwd and still runs a process named codex. Paths compare
+// cleaned and, where they resolve, with symlinks resolved. Two Codex
+// sessions in one directory are never told apart by guessing: neither is
+// returned.
+func codexSessionOfCwd(snapshot *procs.Snapshot, panes []tmux.Pane, cwd string) string {
+	want := canonicalPath(cwd)
+	isCodex := func(name string) bool { return name == string(protocol.ProgramCodex) }
+	found := ""
+	for _, pane := range panes {
+		if pane.Program != string(protocol.ProgramCodex) || !protocol.SessionIDRegexp.MatchString(pane.Session) ||
+			!filepath.IsAbs(pane.Cwd) || pane.Session == found {
+			continue
+		}
+		if canonicalPath(pane.Cwd) != want || !snapshot.HasDescendant(pane.PID, isCodex) {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = pane.Session
+	}
+	return found
+}
+
+// canonicalPath is path cleaned, with symlinks resolved when it resolves.
+func canonicalPath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 // serveHookSocket runs the local socket for as long as `up` runs.
