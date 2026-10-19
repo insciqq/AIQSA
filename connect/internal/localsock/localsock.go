@@ -1,6 +1,9 @@
 // Package localsock is the unix socket on which `aiqsa-connect up` hears
 // agent hooks and terminal bells of its sessions. A message is one JSON
-// line {"session","status","reason"}; it carries nothing else.
+// line {"session","thread","status","reason","at"}; it carries nothing
+// else. A message with a session applies to it and binds its thread, if
+// any, to it; a message with only a thread applies to the session that
+// thread is bound to, and to none while it is not bound.
 package localsock
 
 import (
@@ -22,6 +25,7 @@ import (
 	"github.com/insciqq/AIQSA/connect/internal/logx"
 	"github.com/insciqq/AIQSA/connect/internal/protocol"
 	"github.com/insciqq/AIQSA/connect/internal/status"
+	"github.com/insciqq/AIQSA/connect/internal/tmux"
 )
 
 // SendTimeout bounds a hook's whole exchange with the daemon.
@@ -34,21 +38,32 @@ const (
 	maxLinesPerConn = 8
 	maxConns        = 16
 	readTimeout     = 2 * time.Second
+	// unboundLogEvery bounds how often reports of unbound threads are logged.
+	unboundLogEvery = time.Minute
 )
 
 // Message is one status report.
 type Message struct {
-	Session string                 `json:"session"`
-	Status  protocol.SessionStatus `json:"status"`
-	Reason  protocol.StatusReason  `json:"reason,omitempty"`
+	// Session is empty when the hook could not tell its session; Thread
+	// then names the agent thread whose binding decides.
+	Session string `json:"session,omitempty"`
+	// Thread is the agent's own session id (a Codex thread), or empty.
+	Thread string                 `json:"thread,omitempty"`
+	Status protocol.SessionStatus `json:"status"`
+	Reason protocol.StatusReason  `json:"reason,omitempty"`
 	// At is when the hook started, in Unix nanoseconds; the daemon drops a
 	// report older than one it already applied to the session.
 	At int64 `json:"at,omitempty"`
 }
 
-// Validate checks the session id and the status values.
+// Validate checks the session and thread ids and the status values. A
+// message names a session, a thread or both; a bell always names its
+// session.
 func (m Message) Validate() error {
-	if !protocol.SessionIDRegexp.MatchString(m.Session) || !slices.Contains(protocol.SessionStatuses, m.Status) ||
+	if m.Session != "" && !protocol.SessionIDRegexp.MatchString(m.Session) ||
+		m.Thread != "" && !status.ValidThread(m.Thread) || m.Session == "" && m.Thread == "" ||
+		m.Session == "" && m.Reason == protocol.ReasonBell ||
+		!slices.Contains(protocol.SessionStatuses, m.Status) ||
 		m.Reason != "" && !slices.Contains(protocol.StatusReasons, m.Reason) || m.At < 0 {
 		return errors.New("invalid status message")
 	}
@@ -95,7 +110,8 @@ func Candidates(paths config.Paths) []string {
 	return []string{primary, fallback}
 }
 
-// Reporter applies a status; *daemon.Daemon is one.
+// Reporter applies a status; *daemon.Daemon is one. It returns
+// tmux.ErrSessionNotFound for a session that is gone.
 type Reporter interface {
 	ReportStatus(sessionID string, status protocol.SessionStatus, reason protocol.StatusReason) error
 }
@@ -106,10 +122,13 @@ type Server struct {
 	reporter  Reporter
 	log       *logx.Logger
 	gate      *status.Gate
+	threads   *threads
 	// applyMu makes the order check and the report one step per message.
 	applyMu sync.Mutex
-	slots   chan struct{}
-	wg      sync.WaitGroup
+	// unboundLogged is when hook_thread_unbound was last logged (applyMu).
+	unboundLogged time.Time
+	slots         chan struct{}
+	wg            sync.WaitGroup
 }
 
 // Listen creates a socket with mode 0600 at each of paths (duplicates
@@ -124,7 +143,7 @@ func Listen(paths []string, reporter Reporter, log *logx.Logger, gate *status.Ga
 	if len(paths) == 0 {
 		return nil, errors.New("cannot listen for agent hooks: no socket path")
 	}
-	s := &Server{reporter: reporter, log: log, gate: gate, slots: make(chan struct{}, maxConns)}
+	s := &Server{reporter: reporter, log: log, gate: gate, threads: newThreads(), slots: make(chan struct{}, maxConns)}
 	for i, path := range paths {
 		if slices.Contains(paths[:i], path) {
 			continue
@@ -259,8 +278,25 @@ func (s *Server) apply(line []byte) {
 	}
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
+	session := msg.Session
+	switch {
+	case session == "":
+		var bound bool
+		if session, bound = s.threads.session(msg.Thread); !bound {
+			// A thread of an agent outside the client's sessions, or one
+			// whose first prompt was not seen in a session. Every Codex
+			// thread on the computer runs the hook: the log notes it rarely.
+			if now := time.Now(); now.Sub(s.unboundLogged) >= unboundLogEvery {
+				s.unboundLogged = now
+				s.log.Event("hook_thread_unbound")
+			}
+			return
+		}
+	case msg.Thread != "":
+		s.threads.bind(msg.Thread, session)
+	}
 	if msg.Reason == protocol.ReasonBell {
-		if !s.gate.AcceptBell(msg.Session) {
+		if !s.gate.AcceptBell(session) {
 			s.log.Event("bell_ignored")
 			return
 		}
@@ -269,12 +305,15 @@ func (s *Server) apply(line []byte) {
 		if msg.At > 0 {
 			started = time.Unix(0, msg.At)
 		}
-		if !s.gate.AcceptHook(msg.Session, started) {
+		if !s.gate.AcceptHook(session, started) {
 			s.log.Event("hook_status_stale")
 			return
 		}
 	}
-	if err := s.reporter.ReportStatus(msg.Session, msg.Status, msg.Reason); err != nil {
+	if err := s.reporter.ReportStatus(session, msg.Status, msg.Reason); err != nil {
+		if errors.Is(err, tmux.ErrSessionNotFound) {
+			s.threads.forgetSession(session)
+		}
 		s.log.Event("hook_status_failed", "err", err)
 	}
 }
