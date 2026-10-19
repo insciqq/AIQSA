@@ -42,12 +42,15 @@ const drainWait = 500 * time.Millisecond
 // it from their hooks, and nothing it does may change what they do.
 //
 // A Codex hook also reports its Codex thread (the input's session_id).
-// When it finds its session (from the environment, its pane ancestry, or
-// for a submitted prompt the one Codex session whose screen shows it), the
-// daemon binds the thread to that session; otherwise the daemon applies the
-// report to the session the thread is bound to, or drops it. A Codex
-// thread elsewhere in the same folder (another terminal, another tmux
-// server) is never bound, so it never changes a session's status.
+// When it finds its session from the environment or its pane ancestry, the
+// daemon binds the thread to that session. For a submitted prompt the one
+// Codex session whose screen shows it is only a candidate: the daemon binds
+// the thread to it while the thread is not bound. Otherwise the daemon
+// applies the report to the session the thread is bound to, or holds it
+// for a moment until the thread is bound. A Codex thread elsewhere in the
+// same folder (another terminal, another tmux server) is not bound unless
+// its prompt shows on such a screen, so it does not change a session's
+// status.
 func runHook(inv *invocation) int {
 	// The agent starts its hooks in event order; the daemon orders reports
 	// by it. The wall clock can step back between two hooks (WSL's time
@@ -56,7 +59,7 @@ func runHook(inv *invocation) int {
 	if len(inv.args) == 0 || len(inv.args) > 2 {
 		return 0
 	}
-	var session, thread string
+	var session, thread, candidate string
 	var update status.Update
 	switch agent := status.Agent(inv.args[0]); agent {
 	case status.AgentClaude, status.AgentCodex:
@@ -86,7 +89,10 @@ func runHook(inv *invocation) int {
 		if session == "" {
 			// Codex runs its hooks with a scrubbed environment, possibly
 			// from a background process outside the session's pane.
-			session = sessionOfHook(inv.ctx, agent, in)
+			session, candidate = sessionOfHook(inv.ctx, agent, in)
+			if thread == "" {
+				candidate = ""
+			}
 			if session == "" && thread == "" {
 				return 0
 			}
@@ -106,7 +112,7 @@ func runHook(inv *invocation) int {
 	}
 	// The daemon may be down; the agent goes on either way.
 	localsock.Send(inv.ctx, localsock.Candidates(paths), localsock.Message{
-		Session: session, Thread: thread, Status: update.Status, Reason: update.Reason,
+		Session: session, Thread: thread, Candidate: candidate, Status: update.Status, Reason: update.Reason,
 		At: started.At, Clock: started.Kind,
 	})
 	return 0
@@ -168,33 +174,34 @@ func lookAround(ctx context.Context) *hookScene {
 
 // sessionOfHook finds the session of a hook whose environment lacks
 // AIQSA_CONNECT_SESSION: the session of the nearest ancestor process that
-// is a pane; failing that, for a prompt a Codex user submitted, the one
+// is a pane. Failing that, for a prompt a Codex user submitted, the one
 // Codex session in the hook's directory whose pane runs codex and whose
-// screen shows the prompt. Empty when there is none, or more than one: a
-// Codex thread is never bound by guessing.
-func sessionOfHook(ctx context.Context, agent status.Agent, in status.HookInput) string {
+// screen shows the prompt is the candidate: another session's screen may
+// show the same line, so it binds only a thread that is not bound. Both
+// are empty when there is none, or more than one candidate.
+func sessionOfHook(ctx context.Context, agent status.Agent, in status.HookInput) (session, candidate string) {
 	scene := lookAround(ctx)
 	if scene == nil {
-		return ""
+		return "", ""
 	}
 	sessions := make(map[int]string, len(scene.panes))
 	for _, pane := range scene.panes {
 		sessions[pane.PID] = pane.Session
 	}
 	if session := sessionOfAncestors(scene.snapshot, os.Getppid(), sessions); session != "" {
-		return session
+		return session, ""
 	}
 	if agent != status.AgentCodex || in.Event != "UserPromptSubmit" || in.Cwd == "" || in.PromptKey == "" {
-		return ""
+		return "", ""
 	}
 	candidates := codexSessionsOfCwd(scene.snapshot, scene.panes, in.Cwd)
 	if len(candidates) == 0 {
-		return ""
+		return "", ""
 	}
 	capture := func(ctx context.Context, session string) (string, error) {
 		return tmux.CapturePane(ctx, scene.bin, scene.socket, session, promptHistoryLines)
 	}
-	return sessionShowingPrompt(ctx, candidates, in.PromptKey, capture)
+	return "", sessionShowingPrompt(ctx, candidates, in.PromptKey, capture)
 }
 
 // sessionOfAncestors returns the session of the nearest of pid and its

@@ -1,9 +1,15 @@
 // Package localsock is the unix socket on which `aiqsa-connect up` hears
 // agent hooks and terminal bells of its sessions. A message is one JSON
-// line {"session","thread","status","reason","at","clock"}; it carries nothing
-// else. A message with a session applies to it and binds its thread, if
-// any, to it; a message with only a thread applies to the session that
-// thread is bound to, and to none while it is not bound.
+// line {"session","thread","candidate","status","reason","at","clock"}; it
+// carries nothing else.
+//
+// A message with a session applies to it and binds its thread, if any, to
+// it, moving an existing binding. A message with only a thread applies to
+// the session the thread is bound to; while the thread is not bound, to its
+// candidate (a session whose screen showed the thread's prompt), which it
+// then binds, and with no candidate it is held for a moment, until a
+// message binds the thread. A candidate never moves a binding. A report of
+// a thread's ended session (idle) drops its binding.
 package localsock
 
 import (
@@ -49,28 +55,41 @@ type Message struct {
 	// then names the agent thread whose binding decides.
 	Session string `json:"session,omitempty"`
 	// Thread is the agent's own session id (a Codex thread), or empty.
-	Thread string                 `json:"thread,omitempty"`
-	Status protocol.SessionStatus `json:"status"`
-	Reason protocol.StatusReason  `json:"reason,omitempty"`
+	Thread string `json:"thread,omitempty"`
+	// Candidate is, in a message of a thread without a session, the one
+	// session whose screen showed the thread's submitted prompt: it binds
+	// the thread only while the thread is not bound.
+	Candidate string                 `json:"candidate,omitempty"`
+	Status    protocol.SessionStatus `json:"status"`
+	Reason    protocol.StatusReason  `json:"reason,omitempty"`
 	// At is when the hook started, in nanoseconds of Clock; the daemon
 	// drops a report that started before one of the same clock it already
-	// applied to the session. Without it (and Clock) the report is applied
-	// in arrival order.
+	// applied to the session or the thread. Without it (and Clock) the
+	// report is applied in arrival order.
 	At int64 `json:"at,omitempty"`
-	// Clock names the clock of At (monoclock.Mono or monoclock.Wall).
+	// Clock names the clock of At (monoclock.Mono or monoclock.Wall). A
+	// hook of a version before it sends At alone, in Unix nanoseconds.
 	Clock monoclock.Kind `json:"clock,omitempty"`
 }
 
 // Started is the hook's start stamp; invalid when the message has none.
-func (m Message) Started() monoclock.Stamp { return monoclock.Stamp{Kind: m.Clock, At: m.At} }
+func (m Message) Started() monoclock.Stamp {
+	if m.Clock == "" && m.At > 0 {
+		// A hook of the previous version, during an update's swap.
+		return monoclock.Stamp{Kind: monoclock.Wall, At: m.At}
+	}
+	return monoclock.Stamp{Kind: m.Clock, At: m.At}
+}
 
-// Validate checks the session and thread ids, the status values and the
-// start stamp, which is either absent or a valid stamp. A message names a
-// session, a thread or both; a bell always names its session.
+// Validate checks the session, thread and candidate ids, the status values
+// and the start stamp, which is either absent or a valid stamp. A message
+// names a session, a thread or both; a candidate only with a thread and
+// without a session; a bell always names its session and nothing else.
 func (m Message) Validate() error {
 	if m.Session != "" && !protocol.SessionIDRegexp.MatchString(m.Session) ||
 		m.Thread != "" && !status.ValidThread(m.Thread) || m.Session == "" && m.Thread == "" ||
-		m.Session == "" && m.Reason == protocol.ReasonBell ||
+		m.Candidate != "" && (m.Thread == "" || m.Session != "" || !protocol.SessionIDRegexp.MatchString(m.Candidate)) ||
+		m.Reason == protocol.ReasonBell && (m.Session == "" || m.Thread != "") ||
 		!slices.Contains(protocol.SessionStatuses, m.Status) ||
 		m.Reason != "" && !slices.Contains(protocol.StatusReasons, m.Reason) ||
 		(m.At != 0 || m.Clock != "") && !m.Started().Valid() {
@@ -287,34 +306,71 @@ func (s *Server) apply(line []byte) {
 	}
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
-	session := msg.Session
-	switch {
-	case session == "":
-		var bound bool
-		if session, bound = s.threads.session(msg.Thread); !bound {
-			// A thread of an agent outside the client's sessions, or one
-			// whose first prompt was not seen in a session. Every Codex
-			// thread on the computer runs the hook: the log notes it rarely.
-			if now := time.Now(); now.Sub(s.unboundLogged) >= unboundLogEvery {
-				s.unboundLogged = now
-				s.log.Event("hook_thread_unbound")
-			}
-			return
-		}
-	case msg.Thread != "":
-		s.threads.bind(msg.Thread, session)
-	}
+	s.deliver(msg)
+}
+
+// deliver applies one valid message (applyMu).
+func (s *Server) deliver(msg Message) {
 	if msg.Reason == protocol.ReasonBell {
-		if !s.gate.AcceptBell(session) {
+		if !s.gate.AcceptBell(msg.Session) {
 			s.log.Event("bell_ignored")
 			return
 		}
-	} else {
-		if !s.gate.AcceptHook(session, msg.Started()) {
+		s.report(msg.Session, msg)
+		return
+	}
+	if msg.Thread == "" {
+		if !s.gate.AcceptHook(msg.Session, msg.Started()) {
 			s.log.Event("hook_status_stale")
 			return
 		}
+		s.report(msg.Session, msg)
+		return
 	}
+	session, bound := s.threads.session(msg.Thread)
+	switch {
+	case msg.Session != "":
+		// The hook found its session for sure: it binds, or moves, the thread.
+		session = msg.Session
+	case bound:
+		// A prompt also shown on another session's screen never moves a binding.
+	case msg.Candidate != "":
+		session = msg.Candidate
+	default:
+		// A thread of an agent outside the client's sessions, or one whose
+		// prompt has not bound it yet. Every Codex thread on the computer
+		// runs the hook: the log notes it rarely.
+		s.threads.hold(msg)
+		if now := time.Now(); now.Sub(s.unboundLogged) >= unboundLogEvery {
+			s.unboundLogged = now
+			s.log.Event("hook_thread_unbound")
+		}
+		return
+	}
+	// A stale report changes neither the status nor the binding.
+	if !s.gate.AcceptThreadHook(session, msg.Thread, msg.Started()) {
+		s.log.Event("hook_status_stale")
+		return
+	}
+	ended := msg.Status == protocol.StatusIdle
+	if ended {
+		// The agent session ended: its thread, resumed anywhere, is a new
+		// one to bind. The gate keeps the thread's order, so an earlier hook
+		// arriving late binds it to nothing.
+		s.threads.unbind(msg.Thread)
+	} else {
+		s.threads.bind(msg.Thread, session)
+	}
+	s.report(session, msg)
+	if !ended {
+		// Events whose hooks reached the daemon before the binding prompt's.
+		for _, held := range s.threads.take(msg.Thread) {
+			s.deliver(held)
+		}
+	}
+}
+
+func (s *Server) report(session string, msg Message) {
 	if err := s.reporter.ReportStatus(session, msg.Status, msg.Reason); err != nil {
 		if errors.Is(err, tmux.ErrSessionNotFound) {
 			s.threads.forgetSession(session)
