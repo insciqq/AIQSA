@@ -12,7 +12,8 @@ import { unavailableSourcesWire } from "../scheduledTasks/sourceHealth";
 import { createS3StorageAdapter, type StorageAdapter } from "../uploads/storage";
 import type { TelegramInputRichBlock, TelegramInputRichMessage } from "./botApi";
 import { telegramFailureCode } from "./codes";
-import type { TelegramAccessResolver } from "./control/access";
+import type { TelegramAccessRefusal, TelegramAccessResolver } from "./control/access";
+import { reachTelegramChat, type TelegramChatBinding } from "./control/reach";
 import type { TelegramSessionProvider } from "./control/session";
 import { telegramFilesSummaryText, telegramScheduledFilesInAiqsaText, telegramScheduledTitle } from "./copy";
 import { getDefaultTelegram } from "./defaultTelegram";
@@ -34,10 +35,14 @@ import type { TelegramFailure } from "./transport";
  * the run's files (D-16) and an Open in AIQSA button, every message
  * referenced to the run's chat (D-11) so a reply continues it. Before every
  * attempt it rechecks Telegram access (D-04), the task's switch, the chat and
- * the occurrence. Only a send that provably never reached Telegram (429 or a
- * network failure before sending) is retried, up to five attempts within 30
- * minutes; an ambiguous one settles `unknown`. Rows are swept at start and
- * once a minute. Logs carry ids and codes, never content.
+ * the occurrence; the attempt is bound to the user's exact link (link, chat
+ * and bot), and every part, a file again after its bytes were read, first
+ * checks that this link still reaches the chat: once it does not, nothing more
+ * goes out and the row settles with the access reason. Only a send that
+ * provably never reached Telegram (429 or a network failure before sending)
+ * is retried, up to five attempts within 30 minutes; an ambiguous one settles
+ * `unknown`. Rows are swept at start and once a minute. Logs carry ids and
+ * codes, never content.
  */
 
 /** Settled rows record why they were skipped or failed; content-free codes. */
@@ -137,8 +142,13 @@ export type TelegramScheduledPart =
 type Part = TelegramScheduledPart;
 
 type Plan = Readonly<{
-  botId: number; owner: TelegramMessageRefOwner | null; parts: readonly Part[]; telegramChatId: number; outputs?: "pending" | "failed";
+  /** The exact link, chat and bot the parts go to while that link still reaches the chat. */
+  binding: TelegramChatBinding;
+  owner: TelegramMessageRefOwner | null; parts: readonly Part[]; outputs?: "pending" | "failed";
 }>;
+
+/** A part's outcome; `refused`: the plan's link no longer reaches its chat, and nothing more goes out. */
+type PartOutcome = TelegramDelivery | "skipped" | Readonly<{ refused: TelegramAccessRefusal }>;
 
 /** Delivery progress kept between attempts of a partly sent result, in this process only. */
 type Held = Readonly<{ attempts: number; plan: Plan; progress: number; skipped: number }>;
@@ -271,10 +281,9 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     const chat = context.chat?.usable ? context.chat.id : null;
     const outputs = context.occurrence.state === "COMPLETED" ? context.result?.outputs : undefined;
     return { plan: {
-      botId: session.botId,
+      binding: { botId: session.botId, linkId: access.link.id, telegramChatId: access.link.telegramChatId, userId: row.userId },
       owner: chat ? { chatId: chat, linkId: access.link.id, messageId: context.result?.messageId ?? null, userId: row.userId } : null,
       parts: telegramScheduledParts(context),
-      telegramChatId: access.link.telegramChatId,
       ...(outputs ? { outputs } : {})
     } };
   }
@@ -307,41 +316,52 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     return true;
   }
 
-  /** `skipped`: a file Telegram did not get (unreadable now, or refused itself), named once after the last part. */
-  async function sendPart(plan: Plan, part: Part, userId: string): Promise<TelegramDelivery | "unavailable" | "skipped"> {
-    const session = await deps.sessions.current();
-    // The bot went off or changed since the recheck: its links no longer reach the user.
-    if (!session || session.botId !== plan.botId) return "unavailable";
-    const { outbound } = session;
+  /**
+   * Sends one part, right after checking that the plan's link still reaches its chat (a file once
+   * more after its bytes were read). `skipped`: a file Telegram did not get (unreadable now, or
+   * refused itself), named once after the last part.
+   */
+  async function sendPart(plan: Plan, part: Part, userId: string): Promise<PartOutcome> {
+    const reached = await reachTelegramChat(deps, plan.binding);
+    if (!reached.ok) return { refused: reached.reasonCode };
+    const { outbound } = reached.bot;
+    const chatId = plan.binding.telegramChatId;
     const owner = plan.owner;
     if (part.kind === "text") {
-      return outbound.sendText({
-        chatId: plan.telegramChatId, openInAiqsa: part.openInAiqsa && Boolean(owner), text: part.text, ...(owner ? { owner } : {})
-      });
+      return outbound.sendText({ chatId, openInAiqsa: part.openInAiqsa && Boolean(owner), text: part.text, ...(owner ? { owner } : {}) });
     }
     if (part.kind === "content") {
-      if (!owner) return outbound.sendText({ chatId: plan.telegramChatId, text: part.plainFallback.join("\n\n") });
-      return outbound.sendContent({
-        chatId: plan.telegramChatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner
-      });
+      if (!owner) return outbound.sendText({ chatId, text: part.plainFallback.join("\n\n") });
+      return outbound.sendContent({ chatId, messages: [part.message], openInAiqsa: part.openInAiqsa, owner });
     }
     // Only a result in a usable chat has files; they stay in AIQSA otherwise.
     if (!owner) return "skipped";
+    const recheck: { reasonCode: TelegramAccessRefusal } = { reasonCode: "telegram_access_off" };
     const outcome = await sendTelegramFile({
-      chatId: plan.telegramChatId, item: part.item, outbound, owner, read: (input) => deps.store.readFile(input), userId
+      authorize: async () => {
+        const again = await reachTelegramChat(deps, plan.binding);
+        if (!again.ok) recheck.reasonCode = again.reasonCode;
+        return again.ok;
+      },
+      chatId, item: part.item, outbound, owner, read: (input) => deps.store.readFile(input), userId
     });
     if (outcome.kind === "sent") return { fallback: false, messageIds: outcome.messageIds, ok: true };
+    if (outcome.kind === "unreachable") return { refused: recheck.reasonCode };
     return outcome.kind === "skipped" ? "skipped" : { failure: outcome.failure, messageIds: [], ok: false };
   }
 
-  /** The files Telegram did not get, named once under Open in AIQSA; the result itself is delivered either way. */
-  async function summarizeFiles(row: TelegramScheduledDeliveryRow, plan: Plan, skipped: number): Promise<void> {
+  /**
+   * The files Telegram did not get, named once under Open in AIQSA; the result itself is delivered
+   * either way. The access reason when the plan's link no longer reaches the chat.
+   */
+  async function summarizeFiles(row: TelegramScheduledDeliveryRow, plan: Plan, skipped: number): Promise<TelegramAccessRefusal | null> {
     const text = telegramFilesSummaryText({ failed: skipped, left: 0, ...(plan.outputs ? { outputs: plan.outputs } : {}) });
-    if (!text || !plan.owner) return;
+    if (!text || !plan.owner) return null;
     if (skipped > 0) log({ code: "telegram_file_failed", count: skipped, job_id: row.id, outcome: "degraded", stage: "dispatch" });
-    const session = await deps.sessions.current();
-    if (session?.botId !== plan.botId) return;
-    await session.outbound.sendText({ chatId: plan.telegramChatId, openInAiqsa: true, owner: plan.owner, text });
+    const reached = await reachTelegramChat(deps, plan.binding);
+    if (!reached.ok) return reached.reasonCode;
+    await reached.bot.outbound.sendText({ chatId: plan.binding.telegramChatId, openInAiqsa: true, owner: plan.owner, text });
+    return null;
   }
 
   /** The delay before the next attempt, or null when the attempts or the window are used up. */
@@ -364,11 +384,12 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     let skipped = skippedBefore;
     for (let index = from; index < plan.parts.length; index += 1) {
       const delivery = await sendPart(plan, plan.parts[index]!, row.userId);
-      if (delivery === "unavailable") return settle(row, index === 0 ? "skipped" : "failed", "telegram_access_off");
       if (delivery === "skipped") {
         skipped += 1;
         continue;
       }
+      // The link no longer reaches the chat: nothing more goes out, and what already went fails the delivery.
+      if ("refused" in delivery) return settle(row, index === 0 ? "skipped" : "failed", delivery.refused);
       if (delivery.ok) continue;
       const { failure } = delivery;
       const code = telegramFailureCode(failure.kind, failure.errorCode);
@@ -391,8 +412,8 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
       setTimer(delay, wake);
       return;
     }
-    await summarizeFiles(row, plan, skipped);
-    return settle(row, "sent", null);
+    const refused = await summarizeFiles(row, plan, skipped);
+    return refused ? settle(row, "failed", refused) : settle(row, "sent", null);
   }
 
   async function deliver(row: TelegramScheduledDeliveryRow): Promise<void> {
@@ -410,8 +431,10 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     // Part of a result is out already: what stops the rest fails the delivery rather than skipping it.
     if ("skip" in prepared) return settle(row, resumable ? "failed" : "skipped", prepared.skip);
     if (!resumable) return awaitOutputs(row, prepared.plan) ? undefined : attempt(row, prepared.plan, 0);
-    if (prepared.plan.telegramChatId !== resumable.plan.telegramChatId || prepared.plan.botId !== resumable.plan.botId) {
-      // Linked anew meanwhile: the rest never goes to another Telegram chat.
+    const current = prepared.plan.binding;
+    const earlier = resumable.plan.binding;
+    if (current.linkId !== earlier.linkId || current.telegramChatId !== earlier.telegramChatId || current.botId !== earlier.botId) {
+      // Linked anew meanwhile: the rest never goes to another link or Telegram chat.
       return settle(row, "failed", "telegram_not_linked");
     }
     return attempt(row, resumable.plan, resumable.progress, resumable.skipped);
