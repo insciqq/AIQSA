@@ -12,8 +12,8 @@ export type AdminTelegramResult<T> =
   | Readonly<{ data: T; ok: true }>
   | Readonly<{ error: string; ok: false }>;
 
-/** Any 409 from the bot-state route: another administrator changed it after this page read it. */
-export const ADMIN_TELEGRAM_STALE = "telegram_version_conflict";
+/** The bot-state route's stale-version refusal: another administrator changed it after this page read it. */
+export const ADMIN_TELEGRAM_STALE = "telegram_control_stale";
 export const ADMIN_TELEGRAM_NOT_FOUND = "not_found";
 
 const ADMIN_TELEGRAM_PATH = "/api/admin/telegram";
@@ -23,9 +23,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function errorFrom(response: Response, value: unknown, fallback: string): string {
-  if (response.status === 409) return ADMIN_TELEGRAM_STALE;
   if (response.status === 404) return ADMIN_TELEGRAM_NOT_FOUND;
-  return isRecord(value) && typeof value.error === "string" && value.error.trim() ? value.error.trim() : fallback;
+  const code = isRecord(value) && typeof value.error === "string" && value.error.trim() ? value.error.trim() : "";
+  // Other 409s (no stored token, unreadable token) are actionable refusals, not a stale page.
+  if (response.status === 409) return code || ADMIN_TELEGRAM_STALE;
+  return code || fallback;
 }
 
 async function request<T>(
@@ -54,7 +56,7 @@ export function requestAdminTelegram(fetcher: Fetcher = fetch, signal?: AbortSig
   return request<TelegramAdminState>(ADMIN_TELEGRAM_PATH, { method: "GET", ...(signal ? { signal } : {}) }, decodeTelegramAdminState, fetcher);
 }
 
-/** One command with the version the page last read; a stale version answers `telegram_version_conflict`. */
+/** One command with the version the page last read; a stale version answers `telegram_control_stale`. */
 export function runAdminTelegramCommand(command: TelegramAdminCommand, fetcher: Fetcher = fetch) {
   return request<TelegramAdminState>(ADMIN_TELEGRAM_PATH, {
     body: JSON.stringify(command),
@@ -90,7 +92,11 @@ export function adminTelegramErrorMessage(code: string): string {
     forbidden: "Your account no longer has permission to manage Telegram.",
     network_error: "Could not reach the Telegram administration API.",
     telegram_admin_action_failed: "The Telegram action could not be completed.",
+    telegram_access_groups_invalid: "Choose groups that exist and are not archived.",
     telegram_admin_response_invalid: "The Telegram API returned an unexpected response. Refresh and try again.",
+    telegram_encryption_unavailable: "AIQSA cannot store the token: the installation's encryption key is not configured.",
+    telegram_token_missing: "Save a bot token with Test & Save before turning Telegram on.",
+    telegram_token_unreadable: "The stored token cannot be read with this installation's encryption key. Paste the token again and use Test & Save.",
     unauthorized: "Your administrator session is no longer valid. Sign in again.",
     ...HEALTH_MESSAGES
   };

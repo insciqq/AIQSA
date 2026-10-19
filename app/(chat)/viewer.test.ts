@@ -16,7 +16,7 @@ vi.mock("@/lib/server/auth/requestAuth", () => ({ resolveAuthToken: mocks.resolv
 vi.mock("@/lib/server/prisma", () => ({ prisma: { user: { findUnique: mocks.findUser } } }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "session-token" }) }) }));
 vi.mock("next/navigation", () => ({ redirect: mocks.redirect }));
-vi.mock("./telegramAvailability", () => ({ loadViewerTelegramAvailable: mocks.telegramAvailable }));
+vi.mock("@/lib/server/telegram/defaultTelegram", () => ({ isTelegramAvailableForUser: mocks.telegramAvailable }));
 
 import NewChatPage from "./page";
 import AssistantEntryPage from "./assistant/[assistantId]/page";
