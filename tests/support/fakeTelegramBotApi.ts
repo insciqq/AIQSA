@@ -279,11 +279,23 @@ const METHOD_KEYS: Record<string, readonly string[]> = {
   leaveChat: ["chat_id"]
 };
 
-export function createFakeTelegramBotApi(options: Readonly<{ token?: string; now?: () => number }> = {}) {
+export type FakeTelegramBotApiOptions = Readonly<{
+  /** The bot's token; its numeric prefix is the bot id `getMe` answers. */
+  token?: string;
+  /** The bot's username, for a second bot identity. */
+  username?: string;
+  /** The first `update_id`; a stand that keeps its database across runs needs ids past the stored offset. */
+  firstUpdateId?: number;
+  now?: () => number;
+}>;
+
+export function createFakeTelegramBotApi(options: FakeTelegramBotApiOptions = {}) {
   const token = options.token ?? FAKE_TELEGRAM_TOKEN;
   const clock = options.now ?? Date.now;
   const seconds = () => Math.floor(clock() / 1_000);
-  const bot = Object.freeze({ ...FAKE_TELEGRAM_BOT, id: Number(token.split(":")[0]), is_bot: true as const });
+  const bot = Object.freeze({
+    ...FAKE_TELEGRAM_BOT, id: Number(token.split(":")[0]), is_bot: true as const, ...(options.username ? { username: options.username } : {})
+  });
   const botUser = { id: bot.id, is_bot: true, first_name: bot.first_name, username: bot.username };
 
   const users = new Map<number, FakeTelegramUser>();
@@ -300,7 +312,7 @@ export function createFakeTelegramBotApi(options: Readonly<{ token?: string; now
   let commands: unknown[] = [];
   let webhookUrl = "";
   let queue: RawUpdate[] = [];
-  let nextUpdateId = 1_000;
+  let nextUpdateId = options.firstUpdateId ?? 1_000;
   let nextUserId = 200_000_001;
   let nextGroupId = -1_000_000_000_001;
   let nextFile = 1;
@@ -856,8 +868,12 @@ export function createFakeTelegramBotApi(options: Readonly<{ token?: string; now
     }
   }
 
-  /** A loopback HTTP server over the same model, for Playwright and stands. */
-  async function start(): Promise<Readonly<{ origin: string; close: () => Promise<void> }>> {
+  /**
+   * A loopback HTTP server over the same model, for Playwright and stands; a
+   * fixed `port` lets a server configured with one origin reach it, or a
+   * second fake that replaces it.
+   */
+  async function start(startOptions: Readonly<{ port?: number }> = {}): Promise<Readonly<{ origin: string; close: () => Promise<void> }>> {
     const server = createServer((request: IncomingMessage, response: ServerResponse) => {
       void (async () => {
         const chunks: Buffer[] = [];
@@ -877,7 +893,7 @@ export function createFakeTelegramBotApi(options: Readonly<{ token?: string; now
         response.end(reply.body);
       })().catch(() => { response.statusCode = 500; response.end(); });
     });
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(startOptions.port ?? 0, "127.0.0.1", resolve); });
     const handleEntry = {
       close: () => new Promise<void>((resolve) => {
         servers.delete(handleEntry);
