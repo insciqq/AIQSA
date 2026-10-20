@@ -6,6 +6,7 @@ import {
   visibleWorkspaceActivityV2,
   workspaceActivityLabelV2,
   workspaceCodeMcpCopyV2,
+  workspaceActiveLabelV2,
   workspaceLiveLabelV2,
   workspaceOutputSkipsCopyV2,
   workspaceOutputStatusCopyV2,
@@ -162,6 +163,8 @@ describe("workspace activity presentation", () => {
     expect(presentWorkspaceActivityV2([], null)).toBeNull();
     expect(workspaceLiveLabelV2(presentWorkspaceActivityV2(events, null))).toBe("Running pytest…");
     expect(workspaceLiveLabelV2({ entries: [command("a", "succeeded")] })).toBe("Working in Workspace…");
+    expect(workspaceActiveLabelV2(presentWorkspaceActivityV2(events, null))).toBe("Running pytest…");
+    expect(workspaceActiveLabelV2({ entries: [command("a", "succeeded")] })).toBeNull();
   });
 
   it("aggregates consecutive successful checks and keeps failures visible", () => {
