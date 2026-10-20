@@ -175,11 +175,21 @@ export function AttachmentTrayV2({
           <li
             className="v2-attachment-chip"
             data-attachment-status={item.status}
+            data-preview={item.previewUrl ? "true" : undefined}
             data-warning={item.warning ? "true" : undefined}
             data-warning-blocking={item.warning?.blocking ? "true" : undefined}
             key={item.id}
           >
-            {(item.status === "uploading" || item.status === "processing") && !item.warning?.code ? (
+            {item.previewUrl ? (
+              <span className="v2-attachment-thumb" aria-hidden="true">
+                {/* A local object URL of the user's own file; next/image cannot load it. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img alt="" src={item.previewUrl} />
+                {(item.status === "uploading" || item.status === "processing") && !item.warning?.code ? (
+                  <span className="v2-attachment-thumb-busy"><span className="v2-attachment-spinner" /></span>
+                ) : null}
+              </span>
+            ) : (item.status === "uploading" || item.status === "processing") && !item.warning?.code ? (
               <span className="v2-attachment-spinner" aria-hidden="true" />
             ) : (
               <UiV2Icon name="attach" />

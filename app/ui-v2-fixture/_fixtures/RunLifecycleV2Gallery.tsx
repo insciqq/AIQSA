@@ -100,7 +100,7 @@ const activityCases: Array<{
       }, summary("model", "waiting")],
       status: "streaming"
     }),
-    label: "Reading results"
+    label: "After tool results"
   },
   {
     state: runState({ status: "in_progress" }),

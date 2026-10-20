@@ -10,10 +10,24 @@ export type WorkspaceUploadProgress = Readonly<{
   id: string; sourceKey: ComposerSessionKey; fileName: string; byteSize: number; sentBytes: number;
   state: "uploading" | "verifying" | "failed"; message: string | null; retryable: boolean;
 }>;
+/** Every upload the trays show before it becomes an attachment, ordinary or Workspace. */
 export const useWorkspaceUploadProgress = create<{ items: WorkspaceUploadProgress[] }>(() => ({ items: [] }));
 const actions = new Map<string, { cancel(): void; retry(): void }>();
 export function cancelWorkspaceUpload(id: string): boolean {
   const action = actions.get(id); action?.cancel(); return !!action;
+}
+/** Lists a pending upload (or replaces its row) with its tray actions. */
+export function trackUploadProgress(item: WorkspaceUploadProgress, action: { cancel(): void; retry(): void }): void {
+  actions.set(item.id, action);
+  useWorkspaceUploadProgress.setState(state => ({
+    items: state.items.some(candidate => candidate.id === item.id)
+      ? state.items.map(candidate => candidate.id === item.id ? item : candidate)
+      : [...state.items, item]
+  }));
+}
+export function untrackUploadProgress(id: string): void {
+  actions.delete(id);
+  useWorkspaceUploadProgress.setState(state => ({ items: state.items.filter(item => item.id !== id) }));
 }
 export function retryWorkspaceUpload(id: string): boolean {
   const action = actions.get(id); action?.retry(); return !!action;
@@ -106,8 +120,10 @@ export function putWorkspaceUploadPart(input: {
 
 export async function uploadWorkspaceFile(input: {
   file: File; projectId: string | null; sourceKey: ComposerSessionKey; generation: number;
+  /** The tray row already shown for this file, which this upload takes over. */
+  id?: string;
 }) {
-  const id = `upload-${randomUUID()}`;
+  const id = input.id ?? `upload-${randomUUID()}`;
   let key = randomUUID();
   let current: WorkspaceUploadWire | null = null;
   let resume: (() => void) | null = null;
@@ -118,11 +134,10 @@ export async function uploadWorkspaceFile(input: {
   const currentGeneration = () => useComposerSessionStore.getState().sessionsByKey[input.sourceKey]?.pendingUploadGenerations.includes(input.generation) === true;
   const cancel = () => { controller.abort(); resume?.(); };
   const unsubscribe = useComposerSessionStore.subscribe(() => { if (!currentGeneration()) cancel(); });
-  actions.set(id, { cancel, retry: () => resume?.() });
-  useWorkspaceUploadProgress.setState(state => ({ items: [...state.items, {
+  trackUploadProgress({
     id, sourceKey: input.sourceKey, fileName: input.file.name, byteSize: input.file.size, sentBytes: 0,
     state: "uploading", message: null, retryable: false
-  }] }));
+  }, { cancel, retry: () => resume?.() });
   try {
     while (!controller.signal.aborted && currentGeneration()) {
       try {
@@ -173,8 +188,7 @@ export async function uploadWorkspaceFile(input: {
     }
     return null;
   } finally {
-    unsubscribe(); actions.delete(id);
-    useWorkspaceUploadProgress.setState(state => ({ items: state.items.filter(item => item.id !== id) }));
+    unsubscribe(); untrackUploadProgress(id);
     if (controller.signal.aborted && current && current.state !== "completed") {
       void shellFetch(`/api/uploads/sessions/${current.id}`, { method: "DELETE", signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
     }
