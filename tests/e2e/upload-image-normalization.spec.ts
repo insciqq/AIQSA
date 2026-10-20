@@ -4,7 +4,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { syntheticPng } from "../support/rasterFixtures";
 import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
-import { loginWithPassword, selectFakeModel, setWorkspaceEnabled, startNewChat } from "./support/workspace";
+import { loginWithPassword, selectFakeModel, startNewChat } from "./support/workspace";
 
 /**
  * A valid static PNG named `.jpeg` is admitted under its decoded format on the
@@ -34,6 +34,9 @@ test.afterAll(async () => {
 });
 
 async function openComposer(page: Page, workspace: boolean): Promise<void> {
+  // Workspace is ambient (2026-10-20): with no composer switch, the
+  // installation policy decides whether this composer has Workspace.
+  await prisma.workspacePolicy.update({ where: { id: "installation" }, data: { enabled: workspace } });
   await loginWithPassword(page, LOCAL_MCP_MEMBER);
   // Compact viewports keep chat navigation in a closed drawer; open it the way
   // a phone user does before choosing New chat.
@@ -42,10 +45,6 @@ async function openComposer(page: Page, workspace: boolean): Promise<void> {
   }
   await startNewChat(page);
   await selectFakeModel(page);
-  await setWorkspaceEnabled(page, workspace);
-  // The toggle step closes the Workspace layer with Escape wherever focus went,
-  // so later assertions and screenshots see the composer notices.
-  await expect(page.getByRole("menu", { name: "Workspace", exact: true })).toBeHidden();
 }
 
 /** Every sampled point of the element hits the element itself, not a layer above it. */
@@ -98,8 +97,6 @@ for (const mimeType of ["image/jpeg", "image/png"]) {
     expect(status).toBe(200);
     expect(body.attachment).toMatchObject({ fileName: "synthetic.png", mimeType: "image/png" });
     await expect(chip(page, "synthetic.png")).toHaveAttribute("data-attachment-status", "ready", { timeout: 30_000 });
-    // The browser neither rejected the file nor switched Workspace on for it.
-    await expect(page.getByRole("button", { name: /^Workspace details\. Off\./u })).toBeVisible();
     await expectDownload(page, body.attachment!.id);
     const stored = await prisma.attachment.findUniqueOrThrow({ where: { id: body.attachment!.id },
       select: { checksum: true, fileName: true, kind: true, mimeType: true } });
@@ -152,7 +149,6 @@ for (const viewport of [{ width: 1440, height: 900, name: "desktop" }, { width: 
       { exact: true }
     );
     await expect(notice).toBeVisible();
-    await expect(page.getByRole("menu", { name: "Workspace", exact: true })).toBeHidden();
     await expectUnobscured(notice);
     await expect(page.getByRole("region", { name: "Attachments" }).getByRole("listitem")).toHaveCount(0);
     // Saved as files: Vision review needs them even when the test passes.

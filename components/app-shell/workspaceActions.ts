@@ -757,11 +757,8 @@ export function useWorkspaceActions({
     const sessionKey = composerSessionKey(chat.id);
     sessionStore.activateSession(sessionKey);
     writeChatRoute(chatRouteForChat(chat, chatSendUnderWay(chat.id)));
-    if (chat.workspace) {
-      useComposerSessionStore.getState().updateSession(sessionKey, {
-        workspaceEnabled: chat.workspace.enabled
-      });
-    }
+    // Workspace is ambient: the shell keeps the session's flag on the
+    // installation and the model, never on the chat's stored flag.
     if (!options.preserveControls) {
       applyChatDefaults(chat, options.catalogOverride);
     }
@@ -897,13 +894,6 @@ export function useWorkspaceActions({
     useComposerSessionStore.getState().activateSession(
       composerSessionKey(null, folderId, memoryMode)
     );
-    const personalCatalog = useWorkspaceStore.getState().catalog;
-    if (personalCatalog) {
-      useComposerSessionStore.getState().applyWorkspaceDefault(
-        composerSessionKey(null, folderId, memoryMode),
-        personalCatalog.defaults.workspaceEnabled ?? false
-      );
-    }
     pruneThreadCache();
     if (leavingChat || !useComposerControlStore.getState().assistant) {
       applyPersonalBlankDefaults(folderId);

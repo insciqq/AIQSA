@@ -28,7 +28,6 @@ import {
   restorePersonalComposerControls,
   shellComposerAssistant,
   runCatalogLoadDeduped,
-  workspaceCommandRunning,
   workspaceDefaultControlsFingerprint
 } from "./PowerAppShellV2";
 import type { Catalog } from "@/lib/contracts/catalog";
@@ -37,49 +36,6 @@ import type { ProjectDetailWire } from "@/lib/contracts/projects";
 afterEach(() => resetComposerControlStoreForTest());
 
 describe("PowerAppShellV2 catalog loading", () => {
-  it("reports a running Workspace command only from the live tool phase", () => {
-    const workspaceCall = {
-      data: {
-        artifactType: "tool_call",
-        payload: { serverName: "Workspace", status: "requested", toolName: "sandbox_shell" }
-      },
-      type: "artifact"
-    };
-
-    expect(workspaceCommandRunning([workspaceCall])).toBe(true);
-    expect(workspaceCommandRunning([{
-      ...workspaceCall,
-      data: { ...workspaceCall.data, payload: {
-        ...workspaceCall.data.payload, origin: "mcp"
-      } }
-    }])).toBe(false);
-    expect(workspaceCommandRunning([{
-      ...workspaceCall,
-      data: { ...workspaceCall.data, payload: {
-        ...workspaceCall.data.payload, origin: "workspace", serverName: "Execution tools"
-      } }
-    }])).toBe(true);
-    expect(workspaceCommandRunning([workspaceCall, {
-      data: { artifactType: "summary", payload: { stage: "model", status: "waiting" } },
-      type: "artifact"
-    }])).toBe(false);
-    expect(workspaceCommandRunning([{
-      data: {
-        artifactType: "tool_call",
-        payload: { serverName: "Knowledge", status: "requested", toolName: "search_knowledge" }
-      },
-      type: "artifact"
-    }])).toBe(false);
-    expect(workspaceCommandRunning([workspaceCall, {
-      data: { runId: "run_1", status: "cancelled" },
-      type: "done"
-    }])).toBe(false);
-    expect(workspaceCommandRunning([workspaceCall, {
-      data: { code: "provider_stream_failed", message: "failed" },
-      type: "error"
-    }])).toBe(false);
-  });
-
   it.each([
     ["search", { selectedSearchOptionIds: ["perplexity-tool-search"] }],
     [

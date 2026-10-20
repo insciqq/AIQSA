@@ -164,6 +164,14 @@ type MessageRunActionsInput = {
   ): Promise<ChatDetail | null>;
   refreshProjectWorkspace?(): Promise<boolean>;
   resolveCatalog?(): Catalog | null;
+  /**
+   * Whether the installation offers Workspace now (loaded, enabled, runner
+   * up). Workspace is ambient: a run uses it exactly when this holds and the
+   * run's model calls tools. Absent or still loading means no Workspace.
+   */
+  resolveWorkspaceInstallationAvailable?(): boolean;
+  /** Re-reads installation availability after a run was refused for Workspace. */
+  refreshWorkspaceAvailability?(): void;
   resetThreadToLatest(): void;
   /** Clears a run notice owned by the current chat before a new attempt. */
   clearNoticeForChat?(chatId: string): void;
@@ -287,10 +295,19 @@ export function useMessageRunActions({
   refreshActiveChat,
   refreshProjectWorkspace,
   resolveCatalog,
+  resolveWorkspaceInstallationAvailable,
+  refreshWorkspaceAvailability,
   resetThreadToLatest,
   clearNoticeForChat,
   setNotice
 }: MessageRunActionsInput) {
+  /** A refusal for Workspace means availability changed since the page loaded. */
+  function refreshWorkspaceAfterRefusal(code: string | undefined): void {
+    if (code === "workspace_runtime_unavailable" || code === "workspace_disabled") {
+      refreshWorkspaceAvailability?.();
+    }
+  }
+
   async function showMemoryTargetSelection(): Promise<void> {
     try {
       await refreshMemorySettings();
@@ -324,7 +341,6 @@ export function useMessageRunActions({
     const session = selectComposerSession(useComposerSessionStore.getState(), sessionKey);
     const chat = useWorkspaceStore.getState().chats.find((candidate) =>
       candidate.id === chatIdFromComposerSessionKey(sessionKey));
-    const workspaceEnabled = chat?.workspace?.enabled ?? session.workspaceEnabled;
     const catalog = resolveCatalog
       ? resolveCatalog()
       : useWorkspaceStore.getState().catalog;
@@ -334,6 +350,12 @@ export function useMessageRunActions({
       selectedModelId,
       catalog
     );
+    // Workspace is ambient (operator, 2026-10-20): decided here, at dispatch,
+    // from the installation and this run's model. A chat's stored flag or a
+    // saved default never turns it off, and a model without tools sends
+    // without it instead of failing.
+    const workspaceEnabled = resolveWorkspaceInstallationAvailable?.() === true &&
+      selectedModel?.capabilities.toolCalling === true;
     const model = selectedModel
       ? {
           ...selectedModel,
@@ -692,6 +714,7 @@ export function useMessageRunActions({
       // the edited question again, and the stranded-leaf reconcile owns retry.
     });
     await reconcileBranchConflict(chatId, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
     }
@@ -1246,6 +1269,7 @@ export function useMessageRunActions({
         }
       });
       await reconcileBranchConflict(chatIdForSend, result.failureCode);
+      refreshWorkspaceAfterRefusal(result.failureCode);
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
       sendFailureCode = result.failureCode ?? null;
       sendFailureMessage = result.failureMessage ?? null;
@@ -1514,6 +1538,7 @@ export function useMessageRunActions({
         }
       });
       await reconcileBranchConflict(chatIdForSend, result.failureCode);
+      refreshWorkspaceAfterRefusal(result.failureCode);
       if (result.failureCode === "memory_intent_confirmation_required") {
         await showMemoryTargetSelection();
       } else {
@@ -1646,6 +1671,7 @@ export function useMessageRunActions({
       }
     });
     await reconcileBranchConflict(chatId, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     if (result.failureCode === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) {
       // Expired or already used by a run: retrying cannot help.
       if (activeChatIdRef.current === chatId) setNotice({ chatId, kind: "error", text: MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY });
@@ -1812,6 +1838,7 @@ export function useMessageRunActions({
       }
     });
     await reconcileBranchConflict(chatId, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     noticeRejectedRun(chatId, result, (reason) => answerReviewRefusalCopy(result.failureCode) ?? reason);
     // The session's state (a stop on a refusal, a finished round) is the server's: read it again.
     if (activeChatIdRef.current === chatId) {
@@ -2007,6 +2034,7 @@ export function useMessageRunActions({
       }
     });
     await reconcileBranchConflict(chatIdForRegenerate, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
     } else {

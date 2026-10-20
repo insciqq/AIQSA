@@ -14,7 +14,7 @@ import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import { startMcpOAuth } from "./support/mcpOAuthStart";
 import { startOAuthMcpEndpoint } from "./support/oauthMcpEndpoint";
-import { selectFakeModel, setWorkspaceEnabled, submitPasswordSignIn } from "./support/workspace";
+import { selectFakeModel, submitPasswordSignIn } from "./support/workspace";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 type Viewport = Readonly<{ width: number; height: number }>;
@@ -58,7 +58,6 @@ async function chooseChat(page: Page, title: string): Promise<void> {
 }
 
 async function prepareFakeSend(page: Page): Promise<void> {
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await selectFakeModel(page);
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
 }

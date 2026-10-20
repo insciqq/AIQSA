@@ -62,10 +62,6 @@ import { touchInputPrimaryV2 } from "@/components/ui-v2/touchInputV2";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
-import type {
-  ChatWorkspaceState,
-  WorkspaceUnavailableReason
-} from "@/lib/contracts/workspace";
 import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
 import type {
   ComposerConfig,
@@ -100,7 +96,7 @@ import {
 } from "react";
 
 export type ComposerV2Layer =
-  "add" | "commands" | "files" | "knowledge" | "model" | "reasoning" | "search" | "tools" | "skills" | "workspace" | null;
+  "add" | "commands" | "files" | "knowledge" | "model" | "reasoning" | "search" | "tools" | "skills" | null;
 
 /**
  * Imperative handle for openers outside the composer (the header model
@@ -120,7 +116,6 @@ const LAYER_LABELS: Record<Exclude<ComposerV2Layer, null>, string> = {
   model: "Choose model",
   reasoning: "Reasoning effort",
   search: "Web search",
-  workspace: "Workspace",
   skills: "Skills",
   tools: "MCP tools"
 };
@@ -132,7 +127,6 @@ const LAYER_TITLES: Record<Exclude<ComposerV2Layer, null>, string> = {
   model: "Model",
   reasoning: "Reasoning effort",
   search: "Web search",
-  workspace: "Workspace",
   skills: "Skills",
   tools: "MCP tools"
 };
@@ -146,7 +140,6 @@ const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   model: 380,
   reasoning: 340,
   search: 340,
-  workspace: 340,
   skills: 340,
   tools: 340
 };
@@ -165,7 +158,7 @@ function CapabilityChipContent({ label, icon, count = 0, signal, description, de
   label: string;
   icon: UiV2IconName;
   count?: number;
-  signal?: "running" | "attention";
+  signal?: "attention";
   description: string;
   descriptionId: string;
 }>) {
@@ -468,47 +461,7 @@ export type ComposerV2Props = Readonly<{
   uploadLimitHint?: string;
   /** The signed-in account whose usage limits the composer reads; absent reads nothing. */
   usageLimitsAccountId?: string | null;
-  workspace?: Readonly<{
-    available: boolean;
-    busy: boolean;
-    commandRunning?: boolean;
-    enabled: boolean;
-    internetEnabled: boolean | null;
-    loading: boolean;
-    onToggle(value: boolean): void;
-    sessionState: ChatWorkspaceState["sessionState"];
-    unavailableReason?: WorkspaceUnavailableReason;
-  }>;
 }>;
-
-export function workspaceStatusCopy(
-  state: ChatWorkspaceState["sessionState"],
-  commandRunning: boolean
-): string {
-  if (commandRunning || state === "running") return "Running a command…";
-  switch (state) {
-    case "creating": return "Creating workspace…";
-    case "ready": return "Workspace ready";
-    case "stopped": return "Workspace stopped";
-    case "failed": return "Workspace unavailable";
-    case "not_started":
-    case null:
-    default:
-      return "Workspace has not started";
-  }
-}
-
-function workspaceUnavailableCopy(reason: WorkspaceUnavailableReason | undefined): string {
-  switch (reason) {
-    case "model_tools_required":
-      return "Workspace requires a model with tool support.";
-    case "installation_disabled":
-      return "Workspace is disabled by the administrator.";
-    case "runtime_unavailable":
-    default:
-      return "Workspace runtime is unavailable.";
-  }
-}
 
 function modelCapabilityLabels(model: CatalogModel): string[] {
   const labels: string[] = [];
@@ -693,8 +646,7 @@ export function ComposerV2({
   stopping = false,
   uploading = false,
   uploadLimitHint,
-  usageLimitsAccountId = null,
-  workspace
+  usageLimitsAccountId = null
 }: ComposerV2Props) {
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
   const [layerLeft, setLayerLeft] = useState(0);
@@ -707,7 +659,7 @@ export function ComposerV2({
     sources: readonly ComposerConfigKnowledgeSource[];
   }> | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [agentNotice, setAgentNotice] = useState<{ sessionKey: string; kind: "mode" | "blocked" } | null>(null);
+  const [agentNotice, setAgentNotice] = useState<{ sessionKey: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
@@ -794,15 +746,6 @@ export function ComposerV2({
   const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
   const dictationUi = useComposerDictationV2({ blockedReason: inputBlockedReason, dictation, draft, onDraftChange, sessionKey, textareaRef });
   const artifactMenuReason = artifactReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
-  const workspaceToggleReason = workspace?.loading
-    ? "Checking Workspace availability…"
-    : workspace && !workspace.available
-      ? workspaceUnavailableCopy(workspace.unavailableReason)
-      : null;
-  const workspaceToggleDisabled = Boolean(
-    !workspace || workspace.loading || workspace.busy || activeRun ||
-      (!workspace.enabled && !workspace.available)
-  );
 
   const concreteSearchOptions = config?.catalog.searchStrategies.filter(
     (option) => option.kind !== "none"
@@ -1409,10 +1352,8 @@ export function ComposerV2({
   /* The hover tooltip stays short so a blocking reason reads first; the full
      help remains the chip's accessible description. */
   const agentTooltip = `Agent: ${agent?.enabled ? "On" : "Off"}. ${agentExplanation ?? "Codex carries out your task in Workspace."}`;
-  const agentStatus = agentNotice && agentNotice.sessionKey === sessionKey && agent
-    ? agentNotice.kind === "blocked" ? agentDisabledReason : agent.enabled ? "Agent on · Codex in Workspace. Memory and Knowledge are unavailable." : "Agent off."
-    : null;
-  const workspaceDescription = workspace ? `Workspace: ${workspace.busy ? "Saving" : workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}` : "";
+  // Only a blocked click speaks: a mode change shows on the chip itself.
+  const agentStatus = agentNotice && agentNotice.sessionKey === sessionKey && agent ? agentDisabledReason : null;
   // Reasoning effort: how the model thinks, not which tools it has. The
   // Assistant's parameters row governs it only while the Assistant's own
   // model is in use, as in the Parameters dialog; it speaks for the level
@@ -1435,7 +1376,7 @@ export function ComposerV2({
     : "";
   // A labelled row holds six chips: the level as the seventh (or later) chip
   // turns every capability into its icon instead of adding a second row.
-  const otherChipCount = (comments.length > 0 ? 1 : 0) + (agent ? 1 : 0) + (workspace ? 1 : 0) +
+  const otherChipCount = (comments.length > 0 ? 1 : 0) + (agent ? 1 : 0) +
     (searchChipVisible ? 1 : 0) + (knowledgeChipVisible ? 1 : 0) + 2;
   const compactChipLabels = Boolean(reasoningChip) && otherChipCount >= 6;
   // A refreshed model without a reasoning control takes the level away with
@@ -1520,21 +1461,13 @@ export function ComposerV2({
         disabledReason: searchFixed ? assistantRowNoticeText(searchProvenance) ?? "Fixed by the Assistant" : null,
         run: () => onSelectSearchOptionIds([])
       } : null,
-      workspace: workspace ? {
-        detail: "Applies to future messages. Existing files are preserved.",
-        disabledReason: workspaceToggleDisabled
-          ? workspaceToggleReason ?? (workspace.busy ? "Saving Workspace…" : "Unavailable")
-          : null,
-        enabled: workspace.enabled,
-        run: () => workspace.onToggle(!workspace.enabled)
-      } : null,
       agent: agent ? {
         detail: "Codex carries out your task in Workspace",
         disabledReason: agentDisabledReason,
         enabled: agent.enabled,
         run: () => {
+          setAgentNotice(null);
           agent.onToggle(!agent.enabled);
-          setAgentNotice({ sessionKey, kind: "mode" });
         }
       } : null
     },
@@ -1724,24 +1657,11 @@ export function ComposerV2({
                   aria-label="Agent" aria-pressed={agent.enabled}
                   aria-describedby={`${layerId}-agent-reason`} aria-disabled={Boolean(agentDisabledReason)}
                   onClick={() => {
-                    if (agentDisabledReason) { setAgentNotice({ sessionKey, kind: "blocked" }); return; }
+                    if (agentDisabledReason) { setAgentNotice({ sessionKey }); return; }
+                    setAgentNotice(null);
                     agent.onToggle(!agent.enabled);
-                    setAgentNotice({ sessionKey, kind: "mode" });
                   }}>
                   <CapabilityChipContent label="Agent" icon="bot" description={agentDescription} descriptionId={`${layerId}-agent-reason`} />
-                </button>
-              ) : null}
-              {workspace ? (
-                <button type="button" className="v2-composer-indicator v2-composer-workspace-toggle v2-focusable"
-                  aria-label={`Workspace details. ${workspace.enabled ? "On" : "Off"}. ${workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}`}
-                  aria-controls={`${layerId}-workspace`} aria-expanded={layer === "workspace"} aria-haspopup="menu"
-                  aria-describedby={`${layerId}-workspace-description`}
-                  data-glyph="monitor" data-quiet={workspace.enabled ? undefined : ""}
-                  data-workspace-state={workspace.commandRunning ? "running" : workspace.sessionState ?? "off"}
-                  data-tooltip={workspaceDescription} data-tooltip-side="top"
-                  onClick={event => openLayer("workspace", event.currentTarget)}>
-                  <CapabilityChipContent label="Workspace" icon="monitor" signal={workspace.commandRunning ? "running" : undefined}
-                    description={workspaceDescription} descriptionId={`${layerId}-workspace-description`} />
                 </button>
               ) : null}
               {searchChipVisible ? (
@@ -1894,18 +1814,7 @@ export function ComposerV2({
                 <UiV2IconButton icon="close" label="Close" onClick={closeLayer} />
               </header>
 
-              {layer === "workspace" && workspace ? (
-                <div className="v2-composer-layer-scroll">
-                  <p className="v2-composer-layer-title">Workspace</p>
-                  <CapabilityRow selected={workspace.enabled} disabled={workspaceToggleDisabled}
-                    reason={workspaceToggleReason ?? (activeRun ? "A response is running." : "Applies to future messages. Existing files are preserved.")}
-                    onClick={() => workspace.onToggle(!workspace.enabled)}>
-                    {workspace.enabled ? "Turn off Workspace" : "Turn on Workspace"}
-                  </CapabilityRow>
-                  <p className="v2-composer-layer-note" role="status">{workspaceStatusCopy(workspace.sessionState, Boolean(workspace.commandRunning))}</p>
-                  <p className="v2-composer-layer-note">Internet: {workspace.internetEnabled === null ? "Not configured" : workspace.internetEnabled ? "On" : "Off"}. Managed by the administrator.</p>
-                </div>
-              ) : layer === "model" ? (
+              {layer === "model" ? (
                 <ModelLayer
                   answerReview={answerReview ? {
                     ...answerReview,

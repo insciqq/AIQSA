@@ -1209,7 +1209,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       attachmentLimitUsage={attachmentUsage}
       attachmentPolicy={attachmentPolicyForModel(
         composer.currentModel,
-        composer.workspace.available
+        composer.workspace.enabled
       )}
       config={config}
       configError={Boolean(composer.catalogError)}
@@ -1285,19 +1285,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       agent={composer.agent ? { ...composer.agent, onToggle: composer.agent.setEnabled } : undefined}
       uploading={composer.uploading}
       uploadLimitHint={composer.uploadLimitHint}
-      workspace={{
-        available: composer.workspace.available,
-        busy: composer.workspace.busy,
-        commandRunning: composer.workspace.commandRunning,
-        enabled: composer.workspace.enabled,
-        internetEnabled: composer.workspace.internetEnabled,
-        loading: composer.workspace.loading,
-        onToggle: (value) => void composer.workspace.setEnabled(value),
-        sessionState: composer.workspace.sessionState,
-        ...(composer.workspace.unavailableReason
-          ? { unavailableReason: composer.workspace.unavailableReason }
-          : {})
-      }}
     />
   );
   const focusComposerInput = () => {

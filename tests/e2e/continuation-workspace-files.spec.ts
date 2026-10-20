@@ -88,15 +88,8 @@ test("continues a Workspace chat with its project files and runs in the new chat
     await loginWithPassword(page, LOCAL_MCP_MEMBER);
     await startNewChat(page);
     await selectFakeModel(page);
+    // Workspace is ambient (2026-10-20): on with the installation and a tool model.
     await configureWorkspaceOnlyTools(page);
-    const workspaceDetails = page.getByRole("button", { name: /Workspace details/u });
-    await workspaceDetails.click();
-    const workspaceOn = page.getByRole("menuitemcheckbox", { name: /Turn off Workspace/u });
-    if (!(await workspaceOn.isVisible())) {
-      await page.getByRole("menuitemcheckbox", { name: /Turn on Workspace/u }).click();
-    }
-    await page.keyboard.press("Escape");
-    await expect(workspaceDetails).toHaveAccessibleName(/Workspace details\. On/u);
 
     // The deterministic provider writes this file into the project disk.
     await page.getByLabel("Attach files").setInputFiles({
@@ -140,11 +133,6 @@ test("continues a Workspace chat with its project files and runs in the new chat
     destinationChatId = await activeChatId(page);
     expect(destinationChatId).not.toBe(sourceChatId);
     await expect(page.getByRole("link", { name: "Previous chat" })).toBeVisible({ timeout: 30_000 });
-    const destinationWorkspaceDetails = page.getByRole("button", { name: /Workspace details/u });
-    await expect(destinationWorkspaceDetails).toHaveAccessibleName(/Workspace details\. On/u);
-    await destinationWorkspaceDetails.click();
-    await expect(page.getByRole("menuitemcheckbox", { name: /Turn off Workspace/u })).toBeVisible();
-    await page.keyboard.press("Escape");
 
     // Restoration is performed as part of the first run in the destination.
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:state_probe]", "Workspace state persisted.");

@@ -279,14 +279,6 @@
   font-size: 0.75rem;
   font-variant-ligatures: none;
 }
-.v2-composer-workspace-toggle[data-workspace-state="failed"] {
-  --v2-chip-border: var(--v2-color-danger);
-  color: var(--v2-color-danger);
-}
-.v2-composer-workspace-toggle[data-workspace-state="failed"] .v2-composer-indicator-face {
-  border-color: var(--v2-color-danger);
-  color: var(--v2-color-danger);
-}
 
 /* One bounded anchor for long descriptions keeps edge chips' tooltips in the
    composer. The icon and badge have their own positioning contexts. */
@@ -413,7 +405,6 @@
 .v2-composer-layer[data-kind="search"],
 .v2-composer-layer[data-kind="tools"],
 .v2-composer-layer[data-kind="skills"],
-.v2-composer-layer[data-kind="workspace"],
 .v2-composer-layer[data-kind="reasoning"] {
   left: var(--v2-composer-layer-left, 0px);
 }
@@ -421,7 +412,6 @@
 .v2-composer-layer[data-kind="search"],
 .v2-composer-layer[data-kind="tools"],
 .v2-composer-layer[data-kind="skills"],
-.v2-composer-layer[data-kind="workspace"],
 .v2-composer-layer[data-kind="reasoning"] {
   width: min(21.25rem, calc(100vw - 2rem));
 }

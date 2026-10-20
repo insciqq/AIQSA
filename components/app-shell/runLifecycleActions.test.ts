@@ -1243,7 +1243,7 @@ describe("run lifecycle actions", () => {
     },
     {
       body: () => Response.json({ error: "workspace_runtime_unavailable" }, { status: 503 }),
-      expected: "Workspace is unavailable. Turn it off or try again later."
+      expected: "Workspace is unavailable. Try again later."
     },
     {
       body: () => Response.json({ error: "unsupported_type" }, { status: 429 }),

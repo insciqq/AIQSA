@@ -1,6 +1,5 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import { humanizeErrorCode } from "@/components/app-shell/shellFormatting";
-import { decodeChatSummaryResponse } from "@/lib/contracts/chats";
 import {
   decodeChatWorkspaceState,
   decodeThreadGeneratedFile,
@@ -36,21 +35,6 @@ export async function loadWorkspaceAvailability(): Promise<ChatWorkspaceState> {
     await shellFetch("/api/workspace")
   ));
   if (!decoded) throw new Error("Workspace availability response was malformed.");
-  return decoded;
-}
-
-export async function updateChatWorkspaceEnabled(chatId: string, enabled: boolean) {
-  const decoded = decodeChatSummaryResponse(await successfulBody(await shellFetch(
-    `/api/chats/${encodeURIComponent(chatId)}`,
-    {
-      body: JSON.stringify({ workspaceEnabled: enabled }),
-      headers: { "content-type": "application/json" },
-      method: "PATCH"
-    }
-  )));
-  if (!decoded || decoded.id !== chatId) {
-    throw new Error("Workspace chat response was malformed.");
-  }
   return decoded;
 }
 

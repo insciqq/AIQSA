@@ -33,7 +33,7 @@ import { snapshotComposerDefaults, turnComposerToolsOff } from "./support/compos
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { createWriteApprovalFixture, startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
 import { paidEnv, pollUntil, setupCodexLbAnswerModel, type PaidAnswerModel } from "./support/paidProviders";
-import { activeChatId, disableMemoryRecall, lastAnswer, setWorkspaceEnabled } from "./support/workspace";
+import { activeChatId, disableMemoryRecall, lastAnswer } from "./support/workspace";
 
 const prisma = new PrismaClient();
 const enabled = process.env.AIQSA_FEATURES_PAID_E2E === "DISPOSABLE";
@@ -132,14 +132,13 @@ async function withApprovalServer(page: Page, testInfo: TestInfo, label: string,
 }
 
 /** A new chat on the codex-lb model with only the MCP tools listed up front (Load all); Workspace only when asked. */
-async function newChat(page: Page, stand: Stand, options: Readonly<{ workspace?: boolean }> = {}) {
+async function newChat(page: Page, stand: Stand) {
   await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
   await expect(page.getByRole("textbox", { exact: true, name: "Message" })).toBeVisible({ timeout: 60_000 });
   await selectModel(page, stand.model.connectionId, stand.model.displayName);
   await expect(page.getByTestId("header-model-trigger")).toContainText(stand.model.displayName);
   // Skills, Search and Memory off keep the paid turn to the MCP tools.
   await turnComposerToolsOff(page);
-  if (options.workspace) await setWorkspaceEnabled(page, true);
   const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
   await mcpMode.click();
   await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
@@ -298,7 +297,7 @@ test("Workspace code asks the same way and its re-run sends the approved call on
     `any MCP tool directly. Then tell me in one sentence what it printed.\n\n\`\`\`bash\n${script}\n\`\`\``;
   await withApprovalServer(page, testInfo, "Paid code records", async (stand) => {
     const cards = approvalCards(page, stand);
-    await newChat(page, stand, { workspace: true });
+    await newChat(page, stand);
     const turn = await send(page, stand, runScript("This is a test with a synthetic records server. "), GUEST_TURN_TIMEOUT_MS);
     const chatId = turn.chatId;
     expect(stand.endpoint.dispatches("delete_record"), "guest code sent nothing").toBe(0);

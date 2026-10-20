@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { decodeChatDetailResponse } from "../../lib/contracts/chats";
 import { chooseSearchStrategy } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
-import { selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
+import { selectFakeModel } from "./support/workspace";
 import { expectCenterUnobscured, expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAssertions";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
@@ -33,7 +33,6 @@ async function startAnswer(page: Page): Promise<string> {
   await signInWithLocalToken(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await selectFakeModel(page);
   // Compile this route before a short fake generation on reusable dev servers.
   expect((await page.request.post("/api/model-runs/missing/followups", { data: {} })).status()).toBe(400);

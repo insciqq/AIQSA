@@ -83,8 +83,10 @@ export type ComposerSessionSnapshot = {
   } | null;
   pendingUploadGenerations: number[];
   revision: number;
-  /** Chat-scoped execution intent. For blank sessions this is committed with
-   * the first send; saved-chat sessions mirror the canonical chat flag. */
+  /** Whether Workspace is usable here: the shell keeps it on the installation's
+   * availability and the selected model's tool calling (Workspace is ambient,
+   * no user toggle). Uploads and chat creation read it; a run decides its own
+   * value at dispatch. */
   workspaceEnabled: boolean;
   workspaceInitialized: boolean;
 };
@@ -144,7 +146,6 @@ type ComposerSessionStore = {
   /** Changes a pending comment; returns why it was refused, or null when changed. */
   updateComment(key: ComposerSessionKey, id: string, text: string): ComposerCommentRefusal | null;
   removeComment(key: ComposerSessionKey, id: string): boolean;
-  applyWorkspaceDefault(key: ComposerSessionKey, enabled: boolean): void;
   appendUploadedAttachment(
     key: ComposerSessionKey,
     generation: number,
@@ -459,15 +460,6 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     const session = get().sessionsByKey[key];
     if (!session || !session.comments.some(comment => comment.id === id)) return false;
     return get().updateSession(key, { comments: session.comments.filter(comment => comment.id !== id) });
-  },
-  applyWorkspaceDefault(key, enabled) {
-    if (chatIdFromComposerSessionKey(key) || projectIdFromComposerSessionKey(key)) return;
-    const session = get().sessionsByKey[key];
-    if (!session || session.pendingSend || session.pendingUploadGenerations.length > 0) return;
-    // A late catalog may initialize a typed draft, but never replace an
-    // initialized draft's execution intent or a file-driven Workspace choice.
-    if (session.workspaceInitialized && (session.draft || session.comments.length || session.attachments.length > 0 || session.editingMessageId)) return;
-    get().updateSession(key, { workspaceEnabled: enabled });
   },
   appendUploadedAttachment(key, generation, attachment) {
     const state = get();

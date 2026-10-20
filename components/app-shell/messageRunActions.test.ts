@@ -264,7 +264,9 @@ function useMessageRunActionsForTest(input: {
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
   ) => Promise<ChatDetail | null>;
   refreshProjectWorkspace?: () => Promise<boolean>;
+  refreshWorkspaceAvailability?: () => void;
   resolveCatalog?: () => Catalog | null;
+  resolveWorkspaceInstallationAvailable?: () => boolean;
 }) {
   resetRunLifecycleStoreForTest();
   resetRunSurfaceStoreForTest();
@@ -369,6 +371,8 @@ function useMessageRunActionsForTest(input: {
     refreshActiveChat,
     refreshProjectWorkspace,
     resolveCatalog: input.resolveCatalog,
+    resolveWorkspaceInstallationAvailable: input.resolveWorkspaceInstallationAvailable,
+    refreshWorkspaceAvailability: input.refreshWorkspaceAvailability,
     resetThreadToLatest,
     setNotice,
     activeChatStreaming: input.activeChatStreaming ?? false
@@ -570,6 +574,84 @@ describe("message run actions", () => {
       operationErrorRetryable: false,
       pendingSend: null
     });
+  });
+
+  describe("ambient Workspace", () => {
+    function messageBody(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown> {
+      const [, request] = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/messages"))! as unknown as [string, RequestInit];
+      return JSON.parse(String(request.body)) as Record<string, unknown>;
+    }
+
+    it("sends Workspace on with the installation and a tool model, whatever the chat's stored flag and saved default", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const storedOff = { ...chat(), workspace: { available: true, enabled: false, internetEnabled: true, sessionState: null } };
+      const actions = useMessageRunActionsForTest({
+        activeChat: storedOff,
+        attachments: [],
+        draft: "Use the files",
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+      const catalog = useWorkspaceStore.getState().catalog;
+      if (catalog) useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, workspaceEnabled: false } } });
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { workspaceEnabled: false });
+
+      await actions.submitComposer();
+
+      expect(messageBody(fetchMock).workspace).toEqual({ enabled: true });
+    });
+
+    it("sends without Workspace for a model that does not call tools instead of failing", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Plain question",
+        model: { ...model, capabilities: { ...model.capabilities, toolCalling: false } },
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { workspaceEnabled: true });
+
+      await actions.submitComposer();
+
+      expect(messageBody(fetchMock).workspace).toEqual({ enabled: false });
+      expect(actions.setNotice).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
+    });
+
+    it.each([["unknown", undefined], ["off", false]] as const)(
+      "sends without Workspace while installation availability is %s",
+      async (_state, available) => {
+        const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+        vi.stubGlobal("fetch", fetchMock);
+        const actions = useMessageRunActionsForTest({
+          attachments: [],
+          draft: "Plain question",
+          ...(available === undefined ? {} : { resolveWorkspaceInstallationAvailable: () => available })
+        });
+
+        await actions.submitComposer();
+
+        expect(messageBody(fetchMock).workspace).toEqual({ enabled: false });
+      }
+    );
+
+    it.each(["workspace_runtime_unavailable", "workspace_disabled"])(
+      "reads installation availability again after a %s refusal",
+      async (error) => {
+        vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error }, { status: 503 })));
+        const refreshWorkspaceAvailability = vi.fn();
+        const actions = useMessageRunActionsForTest({
+          attachments: [],
+          draft: "Use the files",
+          refreshWorkspaceAvailability,
+          resolveWorkspaceInstallationAvailable: () => true
+        });
+
+        await actions.submitComposer();
+
+        expect(refreshWorkspaceAvailability).toHaveBeenCalledOnce();
+      }
+    );
   });
 
   it("clears a Project draft as soon as first-send admission succeeds", async () => {
