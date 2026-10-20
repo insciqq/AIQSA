@@ -639,6 +639,21 @@ describe("composer session store", () => {
     });
   });
 
+  it("keeps the failure of an older batch that settles after a newer one", () => {
+    const chat = composerSessionKey("chat-a");
+    const store = useComposerSessionStore.getState();
+    store.activateSession(chat);
+    const first = store.beginUpload(chat)!;
+    const second = store.beginUpload(chat)!;
+
+    expect(store.finishUpload(chat, second, null)).toBe(true);
+    expect(store.finishUpload(chat, first, "first.pdf: older failed")).toBe(true);
+    expect(session(chat)).toMatchObject({
+      operationError: "first.pdf: older failed",
+      pendingUploadGenerations: []
+    });
+  });
+
   it("updates lifecycle state only in the source session and blocks send until ready", () => {
     const source = composerSessionKey("chat-a");
     const other = composerSessionKey("chat-b");

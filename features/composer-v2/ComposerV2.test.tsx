@@ -1572,6 +1572,22 @@ describe("Composer v2", () => {
     expect(onUploadFiles).toHaveBeenNthCalledWith(3, [pastedFile]);
   });
 
+  it("keeps taking files while earlier ones upload: they wait in the tray, not behind a locked composer", () => {
+    const onUploadFiles = vi.fn();
+    render(<ComposerV2 {...props({ onUploadFiles, uploading: true })} />);
+    const dropped = new File(["png"], "second.png", { type: "image/png" });
+    const pasted = new File(["png"], "third.png", { type: "image/png" });
+
+    fireEvent.drop(screen.getByTestId("composer-v2-surface"), {
+      dataTransfer: { dropEffect: "copy", files: [dropped], types: ["Files"] }
+    });
+    fireEvent.paste(screen.getByRole("textbox", { name: "Message" }), { clipboardData: { files: [pasted] } });
+
+    expect(onUploadFiles).toHaveBeenNthCalledWith(1, [dropped]);
+    expect(onUploadFiles).toHaveBeenNthCalledWith(2, [pasted]);
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
   it("offers no Workspace chip, menu or command: Workspace is ambient", () => {
     render(<ComposerV2 {...props({ agent: { enabled: false, onToggle: vi.fn() } })} />);
     const row = screen.getByLabelText("Active capabilities");

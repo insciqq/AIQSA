@@ -2,6 +2,7 @@
 
 import { DisclosurePreferencesProvider } from "@/components/app-shell/disclosurePreferences";
 import { fetchWorkspaceUploadConfig } from "@/components/app-shell/workspaceUploadClient";
+import { releasePendingUpload, trackPendingUploads } from "@/components/app-shell/pendingUploads";
 import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads";
 import type { GreetingPeriod } from "@/lib/domain/greeting";
 import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPreferences";
@@ -2526,22 +2527,32 @@ export function PowerAppShellV2({
   async function uploadComposerFiles(files: FileList | readonly File[]): Promise<void> {
     const selected = Array.from(files);
     const sourceKey = useComposerSessionStore.getState().activeSessionKey;
+    // The chosen files show in the tray before the settings round trip.
+    const pending = trackPendingUploads(sourceKey, selected);
+    const stop = () => { pending.forEach(releasePendingUpload); };
     let limits: WorkspaceUploadConfigWire;
     try { limits = await fetchWorkspaceUploadConfig(); }
-    catch { setNotice({ kind: "error", text: "Upload settings are unavailable. Try again shortly." }); return; }
-    if (activeSettingsSessionRef.current !== settingsSession || useComposerSessionStore.getState().activeSessionKey !== sourceKey) return;
+    catch { stop(); setNotice({ kind: "error", text: "Upload settings are unavailable. Try again shortly." }); return; }
+    if (activeSettingsSessionRef.current !== settingsSession || useComposerSessionStore.getState().activeSessionKey !== sourceKey) {
+      stop();
+      return;
+    }
     setUploadConfiguration({ accountId, value: limits });
     const ordinaryPolicy = attachmentPolicyForModel(effectiveCurrentModel);
     const workspaceFiles = selected.filter(file => file.size > limits.ordinaryMaxBytes ||
       partitionAttachmentSelection([file], ordinaryPolicy).rejected.length > 0);
     if (workspaceFiles.some(file => file.size > limits.maxBytes)) {
+      stop();
       setNotice({ kind: "error", text: `Files must be no larger than ${Number((limits.maxBytes / 1024 / 1024).toFixed(1))} MiB.` });
       return;
     }
     const requiresWorkspace = workspaceFiles.length > 0;
-    if (requiresWorkspace && !workspaceUsableForFiles()) return;
-    if (activeSettingsSessionRef.current !== settingsSession || useComposerSessionStore.getState().activeSessionKey !== sourceKey) return;
-    await uploadFiles(selected);
+    if ((requiresWorkspace && !workspaceUsableForFiles()) || activeSettingsSessionRef.current !== settingsSession ||
+      useComposerSessionStore.getState().activeSessionKey !== sourceKey) {
+      stop();
+      return;
+    }
+    await uploadFiles(selected, { limits, pending });
   }
 
   async function reuseComposerFile(attachmentId: string, fileName: string): Promise<boolean> {

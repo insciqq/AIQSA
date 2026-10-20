@@ -32,6 +32,8 @@ import {
 import { decodeUploadAttachmentResponse, decodeUploadErrorResponse, type UploadedAttachmentWire } from "@/lib/contracts/uploads";
 import type { Dispatch, SetStateAction } from "react";
 import { fetchWorkspaceUploadConfig, IMAGE_UPLOAD_FAILURE_MESSAGES, uploadWorkspaceFile } from "./workspaceUploadClient";
+import { moveUploadPreview, releasePendingUpload, trackPendingUploads, type PendingUpload } from "./pendingUploads";
+import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads";
 import { ATTACHMENT_UPLOAD_FORMAT_LABELS, uploadAdmissionFormatFor } from "@/lib/domain/uploadFormats";
 
 type MutableRef<T> = {
@@ -320,27 +322,43 @@ export function useRunLifecycleActions({
     void pending.then(releaseOwnership, releaseOwnership);
   }
 
-  async function uploadFiles(files: FileList | readonly File[]) {
+  async function uploadFiles(
+    files: FileList | readonly File[],
+    options: Readonly<{
+      /** Upload settings the caller already read for this selection. */
+      limits?: WorkspaceUploadConfigWire;
+      /** Tray rows the caller listed for these files when they were chosen. */
+      pending?: readonly PendingUpload[];
+    }> = {}
+  ) {
     const initialStore = useComposerSessionStore.getState();
     const sourceSessionKey = initialStore.activeSessionKey;
     const workspaceEnabled = selectComposerSession(initialStore, sourceSessionKey).workspaceEnabled;
+    const pending = options.pending ?? trackPendingUploads(sourceSessionKey, Array.from(files));
     const generation = initialStore.beginUpload(sourceSessionKey);
     if (generation === null) {
+      pending.forEach(releasePendingUpload);
       return;
     }
     const failures: Array<{ fileName: string; message: string }> = [];
 
     try {
-      const limits = workspaceEnabled ? await fetchWorkspaceUploadConfig() : null;
-      for (const file of Array.from(files)) {
+      const limits = workspaceEnabled ? options.limits ?? await fetchWorkspaceUploadConfig() : null;
+      for (const upload of pending) {
+        const { file } = upload;
         try {
           if (!useComposerSessionStore.getState().sessionsByKey[sourceSessionKey]?.pendingUploadGenerations.includes(generation)) break;
+          // The user removed this row while earlier files were uploading.
+          if (upload.signal.aborted) continue;
           const projectId = projectIdFromComposerSessionKey(sourceSessionKey) ??
             projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
           if (limits && (file.size > limits.ordinaryMaxBytes || !uploadAdmissionFormatFor(file.name, file.type, "attachment"))) {
             if (file.size > limits.maxBytes) throw new Error(`File exceeds the ${Number((limits.maxBytes / 1024 / 1024).toFixed(1))} MiB upload limit.`);
-            const attachment = await uploadWorkspaceFile({ file, projectId, sourceKey: sourceSessionKey, generation });
-            if (attachment) useComposerSessionStore.getState().appendUploadedAttachment(sourceSessionKey, generation, attachment);
+            const attachment = await uploadWorkspaceFile({ file, generation, id: upload.id, projectId, sourceKey: sourceSessionKey });
+            if (attachment) {
+              moveUploadPreview(upload.id, attachment.id);
+              useComposerSessionStore.getState().appendUploadedAttachment(sourceSessionKey, generation, attachment);
+            }
             continue;
           }
           const formData = new FormData();
@@ -349,7 +367,8 @@ export function useRunLifecycleActions({
           if (projectId) formData.append("projectId", projectId);
           const response = await shellFetch("/api/uploads", {
             body: formData,
-            method: "POST"
+            method: "POST",
+            signal: upload.signal
           });
 
           if (!response.ok) {
@@ -361,6 +380,8 @@ export function useRunLifecycleActions({
             throw new Error("upload_malformed");
           }
 
+          if (upload.signal.aborted) continue;
+          moveUploadPreview(upload.id, body.attachment.id);
           const appended = useComposerSessionStore
             .getState()
             .appendUploadedAttachment(sourceSessionKey, generation, body.attachment);
@@ -368,15 +389,20 @@ export function useRunLifecycleActions({
             startAttachmentPoll(sourceSessionKey, body.attachment.id);
           }
         } catch (error) {
+          if (upload.signal.aborted) continue;
           failures.push({
             fileName: file.name || "Unnamed file",
             message: errorMessage(error)
           });
+        } finally {
+          // The attachment (or the failure notice) replaces the row in the same update.
+          releasePendingUpload(upload);
         }
       }
     } catch {
       failures.push({ fileName: "Files", message: "Upload settings are unavailable. Try again shortly." });
     } finally {
+      pending.forEach(releasePendingUpload);
       const operationError = failures.length
         ? failures.length === 1
           ? `${failures[0]!.fileName}: ${failures[0]!.message}`
