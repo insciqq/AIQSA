@@ -13,6 +13,8 @@ import {
   formatWorkDurationV2,
   presentRunLifecycleV2,
   presentToolActivityV2,
+  RUN_WAITING_PHRASES_V2,
+  runWaitingPhraseV2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
   toolActivityOriginV2,
@@ -50,7 +52,7 @@ describe("native Memory search activity", () => {
     expect(projected?.calls[0]).toMatchObject({ status: "complete", memorySearchOutcome: "limited" });
     expect(presentToolActivityV2([running, settled], projected)).toEqual(projected);
     expect(presentRunLifecycleV2(state({ events: [running], runId: "run" })).activity?.label).toBe("Searching memory…");
-    expect(presentRunLifecycleV2(state({ events: [running, settled, running], runId: "run" })).activity?.label).toBe("Thinking…");
+    expect(presentRunLifecycleV2(state({ events: [running, settled, running], runId: "run" })).activity?.label).toBe(runWaitingPhraseV2("run"));
     expect(presentToolActivityV2([running, event({ call: 2, status: "running" })])?.calls).toHaveLength(2);
     expect(presentRunLifecycleV2(state({ events: [running, event({ call: 2, status: "running" }), settled], runId: "run" }))
       .activity?.label).toBe("Searching memory…");
@@ -75,6 +77,39 @@ describe("native Memory search activity", () => {
       expect(describeToolCallV2({ origin: "memory", toolName: "memory_search", memorySearchOutcome: "failure" }, phase))
         .not.toMatch(/unavailable|fail|limit/iu);
     }
+  });
+});
+
+describe("live reasoning headings", () => {
+  const heading = (text: unknown) => summary({ heading: text, stage: "reasoning", status: "running" });
+  const token = { data: { delta: "Ninety-two" }, type: "token" } satisfies RunEventView;
+  const toolCall = { data: { artifactType: "tool_call", payload: { name: "search_web", origin: "web_search", round: 1,
+    serverName: "Web search", status: "requested" } }, type: "artifact" } satisfies RunEventView;
+
+  it("names the waiting phase with the latest heading until the answer text starts", () => {
+    const waiting = presentRunLifecycleV2(state({ events: [heading("Setting up queen enumeration"),
+      heading("**Checking  the diagonals**\n")], runId: "run-1", status: "streaming" }));
+    expect(waiting).toMatchObject({ activity: { kind: "provider", reasoningHeading: "**Checking the diagonals**" }, kind: "activity" });
+    expect(waiting.activity?.label).not.toBe(waiting.activity?.reasoningHeading);
+    // Text replaces the status; the run keeps the fact that it showed thinking.
+    expect(presentRunLifecycleV2(state({ events: [heading("Checking"), token], runId: "run-1", status: "streaming" })))
+      .toEqual({ kind: "streaming", reasoningObserved: true, runId: "run-1" });
+    expect(presentRunLifecycleV2(state({ events: [token], runId: "run-1", status: "streaming" })))
+      .toEqual({ kind: "streaming", runId: "run-1" });
+  });
+
+  it("never lets an older heading name a later phase, and ignores malformed headings", () => {
+    const tool = presentRunLifecycleV2(state({ events: [heading("Planning the search"), toolCall], runId: "run-1", status: "streaming" }));
+    expect(tool.activity).toMatchObject({ kind: "tool", label: "Searching the web…" });
+    expect(tool.activity).not.toHaveProperty("reasoningHeading");
+    for (const malformed of [heading(" "), heading(7), summary({ heading: "x", stage: "reasoning" })]) {
+      expect(presentRunLifecycleV2(state({ events: [malformed], runId: "run-1", status: "streaming" })).activity)
+        .not.toHaveProperty("reasoningHeading");
+    }
+    const bounded = presentRunLifecycleV2(state({ events: [heading("x".repeat(500))], runId: "run-1", status: "streaming" }));
+    expect(bounded.activity?.reasoningHeading).toHaveLength(80);
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", events: [heading("Checking")], runId: "run-1" })))
+      .toEqual({ kind: "complete", runId: "run-1" });
   });
 });
 
@@ -241,7 +276,7 @@ describe("run lifecycle v2 presentation", () => {
         route: "local_text", limitedReadingQuality: false, longDocument: false }] })))
       .toEqual({ kind: "activity", activity: { kind: "preparing", label: "Preparing workspace..." }, runId: "next" });
     expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", status: "complete",
-      runId: "previous", content: "File saved.", events: [summary({ stage: "compute", status: "running" })] })))
+      runId: "previous", content: "File saved.", events: [summary({ stage: "files", status: "running" })] })))
       .toEqual({ kind: "complete", runId: "previous" });
   });
 
@@ -265,27 +300,67 @@ describe("run lifecycle v2 presentation", () => {
   });
 
   it.each([
-    ["queued", "queued", "Queued"],
-    ["preparing", "preparing", "Preparing request…"],
-    ["in_progress", "provider", "Thinking…"],
-    ["streaming", "provider", "Thinking…"]
-  ] as const)("maps explicit %s status to its truthful activity", (status, kind, label) => {
-    expect(presentRunLifecycleV2(state({ status: status as RunLifecycleStatusV2 }))).toMatchObject({
+    ["queued", null, "queued", "Queued"],
+    ["preparing", null, "preparing", "Preparing request…"],
+    // Not yet accepted by the server: the request is still being prepared.
+    ["in_progress", null, "preparing", "Preparing request…"],
+    ["streaming", null, "preparing", "Preparing request…"],
+    ["in_progress", "run-1", "provider", runWaitingPhraseV2("run-1")],
+    ["streaming", "run-1", "provider", runWaitingPhraseV2("run-1")]
+  ] as const)("maps explicit %s status (run %s) to its truthful activity", (status, runId, kind, label) => {
+    expect(presentRunLifecycleV2(state({ runId, status: status as RunLifecycleStatusV2 }))).toMatchObject({
       activity: { kind, label },
       kind: "activity"
     });
   });
 
+  it("waits with one neutral phrase per run that never changes for that run", () => {
+    const runIds = Array.from({ length: 64 }, (_, index) => `0b9a3981-${String(index).padStart(4, "0")}-4e58-9d1f-2b9a5c1e7a10`);
+    const phrases = runIds.map(runWaitingPhraseV2);
+    expect(phrases.every((phrase) => (RUN_WAITING_PHRASES_V2 as readonly string[]).includes(phrase))).toBe(true);
+    expect(new Set(phrases).size).toBeGreaterThan(3);
+    expect(RUN_WAITING_PHRASES_V2).toContain("Thinking…");
+    // The same run reads the same phrase on every render, event and reconnect.
+    for (const runId of runIds.slice(0, 8)) {
+      const phrase = runWaitingPhraseV2(runId);
+      expect(presentRunLifecycleV2(state({ runId, status: "streaming" })).activity?.label).toBe(phrase);
+      expect(presentRunLifecycleV2(state({ events: [summary({ stage: "model", status: "waiting" })], runId, status: "streaming" }))
+        .activity?.label).toBe(phrase);
+      expect(presentRunLifecycleV2(state({ runId, status: "streaming" })).activity?.label).toBe(phrase);
+    }
+    // Specific work keeps its own words; settled answers keep their factual line.
+    expect(presentRunLifecycleV2(state({ events: [summary({ stage: "knowledge", status: "running" })], runId: runIds[0]!,
+      status: "streaming" })).activity?.label).toBe("Searching Knowledge…");
+    expect(answerProcessLabelV2({ hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: 12_000 })).toBe("Thought for 12s");
+  });
+
   it.each([
-    [summary({ stage: "search", status: "running" }), "search", "Searching the web…"],
-    [summary({ stage: "compute", status: "running" }), "compute", "Computing…"],
-    [summary({ stage: "preview", status: "running" }), "preview", "Rendering preview…"],
+    [summary({ stage: "files", status: "running" }), "files", "Reading files…"],
+    [summary({ stage: "knowledge", status: "running" }), "knowledge", "Searching Knowledge…"],
     [summary({ stage: "model", status: "waiting" }), "provider", "Thinking…"]
   ] as const)("uses normalized lifecycle artifacts", (event, kind, label) => {
     expect(presentRunLifecycleV2(state({ events: [event] }))).toMatchObject({
       activity: { kind, label },
       kind: "activity"
     });
+  });
+
+  it("reads results only for a model request after shown tool or Knowledge work", () => {
+    const model = summary({ stage: "model", status: "waiting" });
+    const files = summary({ stage: "files", status: "running" });
+    const knowledge = summary({ stage: "knowledge", status: "running" });
+    const tool = { data: { artifactType: "tool_call", payload: { name: "fetch_url", origin: "web_fetch", round: 1,
+      serverName: "Web", status: "requested" } }, type: "artifact" } satisfies RunEventView;
+    const heading = summary({ heading: "Comparing the two pages", stage: "reasoning", status: "running" });
+    expect(presentRunLifecycleV2(state({ events: [tool, model] })).activity).toMatchObject({ kind: "results", label: "Reading results…" });
+    expect(presentRunLifecycleV2(state({ events: [knowledge, model] })).activity).toMatchObject({ kind: "results" });
+    expect(presentRunLifecycleV2(state({ events: [files, model] })).activity).toMatchObject({ kind: "provider" });
+    expect(presentRunLifecycleV2(state({ events: [tool, model, heading] })).activity)
+      .toMatchObject({ kind: "results", label: "Reading results…", reasoningHeading: "Comparing the two pages" });
+    // Retired stages name nothing.
+    for (const stage of ["search", "compute", "preview"]) {
+      expect(presentRunLifecycleV2(state({ events: [summary({ stage, status: "running" })] }))).toEqual({ kind: "idle", runId: null });
+    }
   });
 
   it("uses only bounded tool names and never server-authored display prose", () => {

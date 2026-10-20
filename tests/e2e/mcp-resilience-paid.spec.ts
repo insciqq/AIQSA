@@ -39,7 +39,7 @@ import { snapshotComposerDefaults, turnComposerToolsOff } from "./support/compos
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { startMutableMcpEndpoint, type MutableMcpEndpoint, type MutableMcpTool } from "./support/mutableMcpEndpoint";
 import { paidEnv, pollUntil, setupCodexLbAnswerModel, type PaidAnswerModel } from "./support/paidProviders";
-import { activeChatId, disableMemoryRecall, lastAnswer, openLastActivity, setWorkspaceEnabled } from "./support/workspace";
+import { activeChatId, disableMemoryRecall, lastAnswer, openLastActivity } from "./support/workspace";
 import { cleanupWorkspaceFixtureChat } from "./support/workspaceFixture";
 
 const prisma = new PrismaClient();
@@ -429,7 +429,6 @@ test("Agent refuses an oversized Max output tokens and runs a valid one", async 
       await maxOutput.fill(String(requested));
       await expect(maxOutput).toHaveValue(String(requested));
       await closeRunSetup(page);
-      await setWorkspaceEnabled(page, true);
       await expect(agent).toBeEnabled({ timeout: 30_000 });
       if (await agent.getAttribute("aria-pressed") !== "true") await agent.click();
       await expect(agent).toHaveAttribute("aria-pressed", "true");

@@ -23,7 +23,6 @@ import { useChatTitleReconciliation } from "@/components/app-shell/useChatTitleR
 
 import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contracts/answerSound";
 
-import { toolActivityOriginV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import {
   attachmentPolicyForModel,
   catalogWithImageEditing
@@ -125,7 +124,6 @@ import {
   useRunSurfaceStore
 } from "@/components/app-shell/runSurfaceStore";
 import {
-  chatSummaryFromApi,
   sessionExpiredLoginHref,
   shellFetch,
   subscribeToSessionExpired
@@ -147,6 +145,7 @@ import { usePinnedScroll } from "@/components/app-shell/usePinnedScroll";
 import { usePowerAppShellViewModel } from "@/components/app-shell/usePowerAppShellViewModel";
 import { useRunStreaming } from "@/components/app-shell/useRunStreaming";
 import { useInterruptedRunRecovery } from "@/components/app-shell/useInterruptedRunRecovery";
+import { useRefreshOnReturn, WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS } from "@/components/app-shell/useRefreshOnReturn";
 import { useShellAppearanceController } from "@/components/app-shell/useShellAppearanceController";
 import { useShellOverlayController } from "@/components/app-shell/useShellOverlayController";
 import { useShellUiActions } from "@/components/app-shell/useShellUiActions";
@@ -243,12 +242,10 @@ import type {
 } from "@/lib/contracts/knowledge";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
-import type { RunEventView } from "@/lib/contracts/runs";
 import {
   archiveChatWorkspace,
   loadWorkspaceAvailability,
-  resetChatWorkspace,
-  updateChatWorkspaceEnabled
+  resetChatWorkspace
 } from "@/components/app-shell/workspaceClient";
 import { ANSWER_REVIEW_AUTO_DEFAULT, type AnswerReviewAutoConfig } from "@/lib/contracts/answerReviews";
 import { answerReviewReviewerCandidatesV2 } from "@/features/answer-review-v2/answerReviewModel";
@@ -309,37 +306,6 @@ export function effectiveComposerDisabledHint(input: Readonly<{
   if (input.projectContext && input.projectAccessHint) return input.projectAccessHint;
   if (input.assistantBlocked) return ASSISTANT_SEND_GATE_HINT;
   return input.projectContext ? input.projectModelHint : input.personalHint;
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-/** A generic active model run is not enough to claim command execution. The
- * existing safe live tool events delimit the real Workspace tool phase. */
-export function workspaceCommandRunning(events: readonly RunEventView[]): boolean {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]!;
-    // A finished stream (Stop, error, completion) ends the tool phase even
-    // when the last artifact was a transient `tool_call requested`.
-    if (event.type === "done" || event.type === "error") return false;
-    if (event.type !== "artifact") continue;
-    const data = record(event.data);
-    const payload = record(data?.payload);
-    if (data?.artifactType === "summary" && payload?.stage === "model") return false;
-    if (
-      data?.artifactType === "tool_call" &&
-      payload?.status === "requested" &&
-      toolActivityOriginV2({
-        origin: payload.origin,
-        serverName: payload.serverName,
-        toolName: payload.name ?? payload.toolName
-      }) === "workspace"
-    ) return true;
-  }
-  return false;
 }
 
 function personalComposerKnowledgeBase(
@@ -767,6 +733,8 @@ export function PowerAppShellV2({
   }), []);
   const [workspaceInstallation, setWorkspaceInstallation] =
     useState<ChatWorkspaceState | null>(null);
+  // Sends read availability at dispatch; the reader keeps this beside the state.
+  const workspaceInstallationRef = useRef<ChatWorkspaceState | null>(null);
   const [workspaceCapabilityBusy, setWorkspaceCapabilityBusy] = useState(false);
   // The composer owns an unfiltered, first-page snapshot. Reusing the
   // Library's mutable query/page state would make its "All" total and recent
@@ -810,27 +778,33 @@ export function PowerAppShellV2({
     }
   });
 
-  useEffect(() => {
-    let current = true;
+  // The latest read wins: a send refused for Workspace reads availability
+  // again, so the next send goes without a Workspace that went away.
+  const workspaceAvailabilityReadRef = useRef(0);
+  const readWorkspaceAvailability = useCallback(() => {
+    const read = ++workspaceAvailabilityReadRef.current;
     void loadWorkspaceAvailability()
+      .catch((): ChatWorkspaceState => ({
+        available: false,
+        enabled: false,
+        internetEnabled: null,
+        sessionState: null,
+        unavailableReason: "runtime_unavailable"
+      }))
       .then((workspace) => {
-        if (current) setWorkspaceInstallation(workspace);
-      })
-      .catch(() => {
-        if (current) {
-          setWorkspaceInstallation({
-            available: false,
-            enabled: false,
-            internetEnabled: null,
-            sessionState: null,
-            unavailableReason: "runtime_unavailable"
-          });
-        }
+        if (workspaceAvailabilityReadRef.current !== read) return;
+        workspaceInstallationRef.current = workspace;
+        setWorkspaceInstallation(workspace);
       });
+  }, []);
+  useEffect(() => {
+    readWorkspaceAvailability();
     return () => {
-      current = false;
+      workspaceAvailabilityReadRef.current += 1;
     };
-  }, [accountId]);
+  }, [accountId, readWorkspaceAvailability]);
+  // A runner that recovered or went away shows without a reload.
+  useRefreshOnReturn(readWorkspaceAvailability, WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS);
   const activeChatIdRef = useRef<string | null>(null);
   const activeStreamAbortRef = useRef<Map<string, AbortController>>(new Map());
   const memorySourceMutationIdsRef = useRef(new Set<string>());
@@ -914,7 +888,8 @@ export function PowerAppShellV2({
   });
   const contextConfigurationKey = useComposerContextConfigurationKey({
     agentEnabled: composerSession.agentEnabled,
-    workspaceEnabled: chats.find(chat => chat.id === activeChatId)?.workspace?.enabled ?? composerSession.workspaceEnabled,
+    // Kept on the ambient value (installation and model) by the sync below.
+    workspaceEnabled: composerSession.workspaceEnabled,
     memoryMode: chats.find(chat => chat.id === activeChatId)?.pendingInitialMemoryMode ??
       chats.find(chat => chat.id === activeChatId)?.memoryMode ?? composerSessionModeFromKey(activeComposerSessionKey)
   });
@@ -1819,6 +1794,7 @@ export function PowerAppShellV2({
       ? useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId)?.projectId ?? null
       : null,
     refreshActiveChat,
+    refreshWorkspaceAvailability: readWorkspaceAvailability,
     setNotice
   });
   const { fetchRun, retryAttachment, reuseFile, stopCurrentRun, uploadFiles } = runLifecycleActions;
@@ -1921,6 +1897,7 @@ export function PowerAppShellV2({
     sendStarterPrompt,
     submitMessageEdit,
     submitComposer,
+    submitComposerWithoutWorkspace,
     submitFollowup
   } = useMessageRunActions({
     activeChat,
@@ -1947,6 +1924,8 @@ export function PowerAppShellV2({
     refreshActiveChat,
     refreshProjectWorkspace: projectWorkspace.actions.refresh,
     resolveCatalog: () => runCatalogRef.current,
+    resolveWorkspaceInstallationAvailable: () => workspaceInstallationRef.current?.available === true,
+    refreshWorkspaceAvailability: readWorkspaceAvailability,
     resetThreadToLatest,
     setNotice,
     activeChatStreaming,
@@ -2001,7 +1980,7 @@ export function PowerAppShellV2({
     rejectAttachments(fileNames: readonly string[]) {
       void reportRejectedAttachments(fileNames, effectiveCurrentModel, {
         personalChat: !projectContext,
-        workspaceAvailable
+        workspaceAvailable: workspaceUsable
       });
     },
     removeAttachment(attachmentId: string) {
@@ -2366,6 +2345,20 @@ export function PowerAppShellV2({
       )
     : undefined;
   const effectiveCurrentModel = projectContext ? projectCurrentModel : currentModel;
+  // Workspace is ambient in interactive chats (operator, 2026-10-20): usable
+  // exactly when the installation offers it and the model calls tools, with
+  // no toggle; unknown while availability loads. A chat's stored flag and the
+  // saved default never decide it. Runs decide their own value at dispatch
+  // (`resolveWorkspaceInstallationAvailable`); uploads, attachment checks and
+  // chat creation read the active session's flag kept here.
+  const workspaceUsable = workspaceInstallation?.available === true &&
+    effectiveCurrentModel?.capabilities.toolCalling === true;
+  // Also re-syncs a session recreated under the same key.
+  const activeSessionWorkspaceEnabled = composerSession.workspaceEnabled;
+  useEffect(() => {
+    if (activeSessionWorkspaceEnabled === workspaceUsable) return;
+    useComposerSessionStore.getState().updateSession(activeComposerSessionKey, { workspaceEnabled: workspaceUsable });
+  }, [activeComposerSessionKey, activeSessionWorkspaceEnabled, workspaceUsable]);
   // Automatic answer review of the chat: the next send's frozen choice, the header glyph and the picker's row.
   const answerReview = useAnswerReviewAutoV2({
     activeChat,
@@ -2424,20 +2417,19 @@ export function PowerAppShellV2({
 
     reconcileCurrentComposerAttachments(activeComposerSessionKey, effectiveCurrentModel, {
       clearResolvedLimitFeedback,
-      workspaceEnabled: activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled
+      workspaceEnabled: workspaceUsable
     });
     attachmentLimitContextsRef.current.set(
       activeComposerSessionKey,
       contextFingerprint
     );
   }, [
-    activeChat?.workspace?.enabled,
     activeComposerSessionKey,
     attachments,
     catalog?.attachmentLimits,
-    composerSession.workspaceEnabled,
     effectiveCurrentModel,
-    uploading
+    uploading,
+    workspaceUsable
   ]);
 
   const effectiveParameterControls = projectContext
@@ -2509,80 +2501,26 @@ export function PowerAppShellV2({
         : null
     : null;
 
-  const workspaceEnabled = activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled;
-  const workspaceDefault = catalog ? catalog.defaults.workspaceEnabled ?? false : null;
-  useEffect(() => {
-    if (workspaceDefault === null) return;
-    const sessions = useComposerSessionStore.getState();
-    sessions.applyWorkspaceDefault(sessions.activeSessionKey, workspaceDefault);
-  }, [workspaceDefault, activeChatId]);
-  const workspaceModelSupportsTools = effectiveCurrentModel?.capabilities.toolCalling === true;
-  const workspaceAvailable = workspaceInstallation?.available === true &&
-    workspaceModelSupportsTools;
   const workspaceUnavailableReason = workspaceInstallation?.available === true
-    ? workspaceModelSupportsTools ? undefined : "model_tools_required" as const
+    ? effectiveCurrentModel?.capabilities.toolCalling === true ? undefined : "model_tools_required" as const
     : workspaceInstallation?.unavailableReason;
   const workspaceInternetEnabled = activeChat?.workspace?.internetEnabled ??
     workspaceInstallation?.internetEnabled ?? null;
   const workspaceSessionState = activeChat?.workspace?.sessionState ??
-    (workspaceEnabled ? "not_started" as const : null);
+    (workspaceUsable ? "not_started" as const : null);
 
-  async function setWorkspaceEnabled(
-    value: boolean,
-    reason: "file_selection" | "user" = "user"
-  ): Promise<boolean> {
-    if (workspaceCapabilityMutationRef.current || activeChatStreaming) return false;
-    if (value && !workspaceAvailable) {
-      setNotice({
-        kind: "error",
-        text: workspaceUnavailableReason === "model_tools_required"
-          ? "Workspace requires a model with tool support."
-          : workspaceUnavailableReason === "installation_disabled"
-            ? "Workspace is disabled by the administrator."
-            : "Workspace runtime is unavailable."
-      });
-      return false;
-    }
-
-    workspaceCapabilityMutationRef.current = true;
-    setWorkspaceCapabilityBusy(true);
-    const sessionKey = useComposerSessionStore.getState().activeSessionKey;
-    const rememberChoice = reason === "user" && !projectRunContextRef.current;
-    const settingsCoordinator = settingsMutationCoordinatorRef.current;
-    try {
-      if (activeChat && !activeChat.pendingProjectDraft && !activeChat.pendingPersonalDraft) {
-        const wire = await updateChatWorkspaceEnabled(activeChat.id, value);
-        if (activeSettingsSessionRef.current !== settingsSession) return false;
-        const summary = chatSummaryFromApi(wire);
-        useWorkspaceStore.getState().upsertChat(summary);
-        useComposerSessionStore.getState().updateSession(sessionKey, {
-          workspaceEnabled: summary.workspace?.enabled ?? value
-        });
-        if (activeChat.projectId) void projectWorkspace.actions.refresh();
-      } else {
-        useComposerSessionStore.getState().updateSession(sessionKey, {
-          workspaceEnabled: value
-        });
-      }
-      if (rememberChoice && settingsCoordinator) {
-        await settingsCoordinator.enqueue({ workspaceEnabled: value });
-        if (activeSettingsSessionRef.current !== settingsSession) return false;
-      }
-      if (reason === "file_selection" && value) {
-        setNotice({
-          autoDismiss: true,
-          kind: "success",
-          text: "Workspace was enabled so every selected file can be used."
-        });
-      }
-      return true;
-    } catch (error) {
-      setNotice({ kind: "error", text: errorMessage(error) });
-      return false;
-    } finally {
-      workspaceCapabilityMutationRef.current = false;
-      setWorkspaceCapabilityBusy(false);
-    }
+  /** Files that only Workspace can take attach while it is usable; nothing turns it on. */
+  function workspaceUsableForFiles(): boolean {
+    if (workspaceUsable) return true;
+    setNotice({
+      kind: "error",
+      text: workspaceUnavailableReason === "model_tools_required"
+        ? "Workspace requires a model with tool support."
+        : workspaceUnavailableReason === "installation_disabled"
+          ? "Workspace is disabled by the administrator."
+          : "Workspace runtime is unavailable."
+    });
+    return false;
   }
 
   async function uploadComposerFiles(files: FileList | readonly File[]): Promise<void> {
@@ -2601,9 +2539,7 @@ export function PowerAppShellV2({
       return;
     }
     const requiresWorkspace = workspaceFiles.length > 0;
-    if (requiresWorkspace && !workspaceEnabled) {
-      if (!(await setWorkspaceEnabled(true, "file_selection"))) return;
-    }
+    if (requiresWorkspace && !workspaceUsableForFiles()) return;
     if (activeSettingsSessionRef.current !== settingsSession || useComposerSessionStore.getState().activeSessionKey !== sourceKey) return;
     await uploadFiles(selected);
   }
@@ -2620,7 +2556,7 @@ export function PowerAppShellV2({
     const requiresWorkspace = partitionAttachmentSelection(
       [new File([], fileName)], attachmentPolicyForModel(effectiveCurrentModel)
     ).rejected.length > 0;
-    if (requiresWorkspace && !workspaceEnabled && !(await setWorkspaceEnabled(true, "file_selection"))) return false;
+    if (requiresWorkspace && !workspaceUsableForFiles()) return false;
     if (useComposerSessionStore.getState().activeSessionKey !== sourceKey) return false;
     const used = await reuseFile(attachmentId, async (file) => {
       // A generated Office file can have a familiar extension but no extracted
@@ -2629,7 +2565,7 @@ export function PowerAppShellV2({
       const needsWorkspace = file.kind === "file" || (file.kind !== "image" && !file.extractedText);
       if (!needsWorkspace || selectComposerSession(useComposerSessionStore.getState(), sourceKey).workspaceEnabled) return true;
       if (useComposerSessionStore.getState().activeSessionKey !== sourceKey) return false;
-      return await setWorkspaceEnabled(true, "file_selection") && useComposerSessionStore.getState().activeSessionKey === sourceKey;
+      return workspaceUsableForFiles();
     });
     return used && useComposerSessionStore.getState().activeSessionKey === sourceKey;
   }
@@ -2930,6 +2866,7 @@ export function PowerAppShellV2({
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,
     operationErrorRetryable: composerSession.operationErrorRetryable,
+    operationErrorRecoveries: composerSession.operationErrorRecoveries,
     reasoningEffort,
     reasoningMode,
     retryCatalog,
@@ -2946,6 +2883,7 @@ export function PowerAppShellV2({
     stopping,
     streamMode,
     submitComposer,
+    submitComposerWithoutWorkspace,
     submitFollowup,
     temperature,
     toggleCitationsVisibility,
@@ -2959,7 +2897,7 @@ export function PowerAppShellV2({
     useOrganizationSearchDefault,
     useOrganizationModelDefault,
     uploadFiles: uploadComposerFiles,
-    uploadLimitHint: uploadLimits ? workspaceAvailable
+    uploadLimitHint: uploadLimits ? workspaceUsable
       ? `Up to ${Number((uploadLimits.maxBytes / 1024 / 1024).toFixed(1))} MiB with Workspace`
       : `Up to ${Number((uploadLimits.ordinaryMaxBytes / 1024 / 1024).toFixed(1))} MiB per file` : undefined,
     reuseFile: projectContext ? undefined : reuseComposerFile,
@@ -2968,9 +2906,9 @@ export function PowerAppShellV2({
       enabled: composerSession.agentEnabled === true,
       unavailableReason: projectContext ? "Agent is available in personal chats."
         : !effectiveCurrentModel?.agentAvailable ? "Choose a model that supports Agent."
-        : !workspaceEnabled ? "Turn on Workspace first."
+        : !workspaceUsable ? "Agent is unavailable. Ask an administrator to check the Workspace runner."
         : !workspaceInternetEnabled ? "Agent requires Workspace Internet access, managed by the administrator."
-        : !workspaceAvailable || workspaceInstallation?.agentAvailable !== true
+        : workspaceInstallation?.agentAvailable !== true
           ? "Agent is unavailable. Ask an administrator to check the Workspace runner."
         : composerAssistantState ? "Remove the Assistant to use Agent." : undefined,
       setEnabled: (value: boolean) => {
@@ -2979,15 +2917,12 @@ export function PowerAppShellV2({
     },
     workspace: {
       archive: archiveWorkspace,
-      available: workspaceAvailable,
+      available: workspaceUsable,
       busy: workspaceCapabilityBusy,
-      commandRunning: activeChatStreaming && workspaceCommandRunning(activeRunSurface.events),
-      enabled: workspaceEnabled,
-      internetEnabled: workspaceInternetEnabled,
+      enabled: workspaceUsable,
       loading: workspaceInstallation === null,
       reset: resetWorkspace,
       sessionState: workspaceSessionState,
-      setEnabled: setWorkspaceEnabled,
       ...(workspaceUnavailableReason ? { unavailableReason: workspaceUnavailableReason } : {})
     }
   } satisfies ShellComposerView;

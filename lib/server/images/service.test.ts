@@ -112,6 +112,26 @@ describe("withConversationPixels", () => {
     expect(result.attachments.at(-1)).not.toHaveProperty("imageProvenance");
   });
 
+  it("reports reading once, before the first stored image, and never when nothing is read", async () => {
+    const earlier = history(3);
+    const reading = harness(earlier.map(({ id }) => row(id)));
+    const order: string[] = [];
+    reading.getObject.mockImplementation(async (storageKey: string) => {
+      order.push(storageKey);
+      const entry = earlier.find(({ id }) => `key-${id}` === storageKey)!;
+      return { body: bytes(entry.id), contentType: "image/png" };
+    });
+    await reading.service.withConversationPixels(request([], earlier), USER, undefined, async () => { order.push("reading"); });
+    expect(order).toEqual(["reading", "key-h3", "key-h2", "key-h1"]);
+
+    const onRead = vi.fn(async () => undefined);
+    // Only the current message's own image: nothing stored is read.
+    await harness([]).service.withConversationPixels(request([current("c1")], []), USER, undefined, onRead);
+    // A reference whose row is gone is skipped without a read.
+    await harness([]).service.withConversationPixels(request([], history(2)), USER, undefined, onRead);
+    expect(onRead).not.toHaveBeenCalled();
+  });
+
   it("loads only the admitted newest references out of eight", async () => {
     const earlier = history(8);
     const withImage = harness(earlier.map(({ id }) => row(id)));

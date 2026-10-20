@@ -61,7 +61,7 @@ function streamingChat(): WorkspaceChatSummary {
 }
 
 function useRunLifecycleActionsForTest(
-  overrides: { activeChatId?: string | null; streamChatId?: string | null } = {}
+  overrides: { activeChatId?: string | null; refreshWorkspaceAvailability?: () => void; streamChatId?: string | null } = {}
 ) {
   resetRunLifecycleStoreForTest();
   resetRunSurfaceStoreForTest();
@@ -105,6 +105,7 @@ function useRunLifecycleActionsForTest(
     activeStreamAbortRef,
     notifyAnswerReady,
     refreshActiveChat,
+    refreshWorkspaceAvailability: overrides.refreshWorkspaceAvailability,
     setNotice(update) {
       noticeRef.current = typeof update === "function" ? update(noticeRef.current) : update;
     }
@@ -1243,7 +1244,7 @@ describe("run lifecycle actions", () => {
     },
     {
       body: () => Response.json({ error: "workspace_runtime_unavailable" }, { status: 503 }),
-      expected: "Workspace is unavailable. Turn it off or try again later."
+      expected: "Workspace is unavailable. Try again later."
     },
     {
       body: () => Response.json({ error: "unsupported_type" }, { status: 429 }),
@@ -1256,6 +1257,19 @@ describe("run lifecycle actions", () => {
     await actions.uploadFiles([new File(["synthetic"], "synthetic.pdf", { type: "application/pdf" })]);
 
     expect(composerSession("chat-1").operationError).toBe(`synthetic.pdf: ${expected}`);
+  });
+
+  it("reads Workspace availability again only after an upload refused for Workspace", async () => {
+    const refreshWorkspaceAvailability = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "upload_busy" }, { status: 429 })));
+    let { actions } = useRunLifecycleActionsForTest({ refreshWorkspaceAvailability });
+    await actions.uploadFiles([new File(["synthetic"], "synthetic.pdf", { type: "application/pdf" })]);
+    expect(refreshWorkspaceAvailability).not.toHaveBeenCalled();
+
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "workspace_runtime_unavailable" }, { status: 503 })));
+    ({ actions } = useRunLifecycleActionsForTest({ refreshWorkspaceAvailability }));
+    await actions.uploadFiles([new File(["synthetic"], "synthetic.pdf", { type: "application/pdf" })]);
+    expect(refreshWorkspaceAvailability).toHaveBeenCalledOnce();
   });
 
   it("keeps accepted attachments, the draft and the batch when one file is unsupported", async () => {

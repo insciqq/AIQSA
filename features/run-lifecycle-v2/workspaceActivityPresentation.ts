@@ -240,13 +240,20 @@ export function workspaceDurationV2(durationMs: number | undefined): string | nu
 export function workspaceLiveLabelV2(activity: ThreadWorkspaceActivity | null): string | null {
   const visible = visibleWorkspaceActivityV2(activity);
   if (!visible || visible.entries.length === 0) return null;
+  return workspaceActiveLabelV2(activity) ?? "Working in Workspace…";
+}
+
+/** The label of the Workspace step running now, without the generic fallback. */
+export function workspaceActiveLabelV2(activity: ThreadWorkspaceActivity | null): string | null {
+  const visible = visibleWorkspaceActivityV2(activity);
+  if (!visible) return null;
   for (let index = visible.entries.length - 1; index >= 0; index -= 1) {
     const entry = visible.entries[index]!;
     if (isWorkspaceActivityActive(entry) && entry.kind !== "plan") {
       return workspaceActivityLabelV2(entry);
     }
   }
-  return "Working in Workspace…";
+  return null;
 }
 
 export function workspaceProcessLabelV2(input: Readonly<{

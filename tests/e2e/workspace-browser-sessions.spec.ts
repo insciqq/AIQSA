@@ -6,7 +6,7 @@ import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { decryptWorkspaceSecret } from "../../lib/server/workspace/secrets/store";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
-import { activeChatId, loginWithPassword, selectFakeModel, sendAndExpect, startNewChat, turnWorkspaceOn } from "./support/workspace";
+import { activeChatId, loginWithPassword, selectFakeModel, sendAndExpect, startNewChat } from "./support/workspace";
 
 const prisma = new PrismaClient();
 test.describe.configure({ mode: "serial" });
@@ -36,7 +36,6 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       await page.context().addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
       await loginWithPassword(page, { email, password });
       await selectFakeModel(page);
-      await turnWorkspaceOn(page);
       await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:browser_save]", "Workspace browser session saved.");
       const firstChat = await activeChatId(page);
       await expect.poll(async () => (await rows()).length).toBe(1);
@@ -61,9 +60,7 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       if (!(await page.getByRole("complementary", { name: "Chat navigation" }).isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
       await startNewChat(page);
       await selectFakeModel(page);
-      // Ordinary New chat takes personal Chat defaults; enable Workspace for
-      // this new chat before checking account-wide browser-session restore.
-      await turnWorkspaceOn(page);
+      // Workspace is ambient in the new chat; check account-wide browser-session restore.
       await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:browser_restore]", "Workspace browser session restored.");
       expect(await activeChatId(page)).not.toBe(firstChat);
       await openSecrets(page);

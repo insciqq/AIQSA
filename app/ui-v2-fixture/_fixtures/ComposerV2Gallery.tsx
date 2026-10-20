@@ -55,8 +55,6 @@ export type ComposerGalleryState =
   | "chips-off-pinned"
   | "chips-agent"
   | "commands"
-  | "workspace-running"
-  | "workspace-failed"
   | "default"
   | "error"
   | "model"
@@ -558,8 +556,7 @@ const INITIAL_LAYER_TRIGGERS: Readonly<Record<Exclude<ComposerV2Layer, null>, st
   reasoning: 'button[aria-label^="Reasoning effort"]',
   search: 'button[aria-label^="Choose web search"]',
   skills: 'button[aria-label="Change Skills mode"]',
-  tools: 'button[aria-label="Change MCP mode"]',
-  workspace: 'button[aria-label^="Workspace details"]'
+  tools: 'button[aria-label="Change MCP mode"]'
 };
 
 /** A full raw level list, so the chip is measured with its widest values. */
@@ -651,9 +648,8 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
           : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
               wideChips || offChips ? { ...server, enabled: true } : server
             ) });
-  const [workspaceEnabled, setWorkspaceEnabled] = useState(!offChips);
   const [agentEnabled, setAgentEnabled] = useState(false);
-  const allCapabilities = chipFixture || ["capabilities", "commands", "workspace-running", "workspace-failed"].includes(state);
+  const allCapabilities = chipFixture || ["capabilities", "commands"].includes(state);
   // The `/` palette state pins from a small Skill list, as the Skill library would.
   const [palettePins, setPalettePins] = useState<string[]>([]);
   const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме"
@@ -834,7 +830,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
             <ComposerV2
               agent={allCapabilities ? {
                 enabled: agentEnabled, onToggle: setAgentEnabled,
-                unavailableReason: workspaceEnabled ? undefined : "Enable Workspace to use Agent."
+                unavailableReason: offChips ? "Agent is unavailable. Ask an administrator to check the Workspace runner." : undefined
               } : undefined}
               assistant={galleryAssistant}
               attachmentItems={attachmentItems}
@@ -927,9 +923,6 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                   };
                 })
               ])}
-              workspace={allCapabilities ? { available: true, busy: false, enabled: workspaceEnabled,
-                internetEnabled: false, loading: false, onToggle: setWorkspaceEnabled,
-                sessionState: state === "workspace-failed" || offChips ? "failed" : "ready", commandRunning: state === "workspace-running" || wideChips } : undefined}
               skillsMode={skillsMode}
               paletteSkills={state === "commands" ? {
                 items: GALLERY_PALETTE_SKILLS,

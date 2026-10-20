@@ -68,8 +68,6 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "chips-off-pinned",
         "chips-agent",
         "commands",
-        "workspace-running",
-        "workspace-failed",
         "default",
         "error",
         "knowledge",

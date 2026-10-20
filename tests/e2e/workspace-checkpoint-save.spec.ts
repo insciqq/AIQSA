@@ -6,7 +6,7 @@ import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { runAccountMenuAction } from "./shell/page";
 import { expectCenterUnobscured } from "./support/layoutAssertions";
 import {
-  activeChatId, bytesFromDownload, lastAnswer, loginWithPassword, selectFakeModel, sendAndExpect, turnWorkspaceOn
+  activeChatId, bytesFromDownload, lastAnswer, loginWithPassword, selectFakeModel, sendAndExpect
 } from "./support/workspace";
 
 // Deterministic Workspace runtime and fake model: the scenario writes this
@@ -69,7 +69,6 @@ test("saves, reuses and downloads a Workspace checkpoint draft", async ({ page }
   const { files, storageKey } = await test.step("publish a Saved draft", async () => {
     await loginWithPassword(page, { email, password });
     await selectFakeModel(page);
-    await turnWorkspaceOn(page);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:checkpoint_save]", "Workspace checkpoint saved.", 90_000);
     const chatId = await activeChatId(page);
     const files = lastAnswer(page).getByRole("region", { name: "Generated files" });

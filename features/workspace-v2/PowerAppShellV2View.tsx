@@ -250,11 +250,14 @@ export {
 } from "./WorkspaceHeaderV2";
 
 export function ComposerOperationErrorV2({
+  actions = [],
   error,
   live,
   onRetry,
   retryable
 }: Readonly<{
+  /** Recovery actions the refusal offers beside Retry. */
+  actions?: readonly Readonly<{ label: string; onClick(): void }>[];
   error: string | null;
   live: boolean;
   onRetry(): void;
@@ -263,7 +266,14 @@ export function ComposerOperationErrorV2({
   return error ? (
     <div className="v2-live-composer-error" role={live ? "alert" : "status"}>
       <span>{error}</span>
-      {retryable ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
+      {retryable || actions.length > 0 ? (
+        <div className="v2-live-composer-error-actions">
+          {retryable ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
+          {actions.map((action) => (
+            <UiV2Button key={action.label} onClick={action.onClick}>{action.label}</UiV2Button>
+          ))}
+        </div>
+      ) : null}
     </div>
   ) : null;
 }
@@ -1209,7 +1219,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       attachmentLimitUsage={attachmentUsage}
       attachmentPolicy={attachmentPolicyForModel(
         composer.currentModel,
-        composer.workspace.available
+        composer.workspace.enabled
       )}
       config={config}
       configError={Boolean(composer.catalogError)}
@@ -1285,24 +1295,21 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       agent={composer.agent ? { ...composer.agent, onToggle: composer.agent.setEnabled } : undefined}
       uploading={composer.uploading}
       uploadLimitHint={composer.uploadLimitHint}
-      workspace={{
-        available: composer.workspace.available,
-        busy: composer.workspace.busy,
-        commandRunning: composer.workspace.commandRunning,
-        enabled: composer.workspace.enabled,
-        internetEnabled: composer.workspace.internetEnabled,
-        loading: composer.workspace.loading,
-        onToggle: (value) => void composer.workspace.setEnabled(value),
-        sessionState: composer.workspace.sessionState,
-        ...(composer.workspace.unavailableReason
-          ? { unavailableReason: composer.workspace.unavailableReason }
-          : {})
-      }}
     />
   );
   const focusComposerInput = () => {
     composerDockRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
   };
+  // A Workspace refusal offers its own way out: reset a failed Workspace
+  // through the chat's one Reset confirmation, or send this message once
+  // without Workspace.
+  const composerRecoveryActions = followupSubmission ? [] : (composer.operationErrorRecoveries ?? []).flatMap((recovery) =>
+    recovery === "reset_workspace"
+      ? [{ label: "Reset workspace…", onClick: () => setWorkspaceResetOpen(true) }]
+      : composer.submitComposerWithoutWorkspace
+        ? [{ label: "Send without Workspace", onClick: () => void composer.submitComposerWithoutWorkspace?.() }]
+        : []
+  );
   const composerOperationError = (
     <>
       <BackgroundRunStatusV2 onCheck={thread.checkBackgroundRun} waiting={Boolean(thread.backgroundRunWaiting)} />
@@ -1312,6 +1319,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         </div>
       ) : null}
       <ComposerOperationErrorV2
+        actions={composerRecoveryActions}
         error={composer.operationError}
         live={composer.operationErrorLive}
         onRetry={() => followupSubmission ? void composer.submitFollowup?.(followupSubmission.runId) : void composer.submitComposer()}
@@ -2638,7 +2646,15 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onCancel={() => setWorkspaceResetOpen(false)}
           onConfirm={() => {
             void composer.workspace.reset().then((reset) => {
-              if (reset) setWorkspaceResetOpen(false);
+              if (!reset) return;
+              setWorkspaceResetOpen(false);
+              // The refusal that asked for this reset no longer holds; the
+              // restored draft is ready to send again.
+              const store = useComposerSessionStore.getState();
+              const active = store.sessionsByKey[store.activeSessionKey];
+              if (active?.operationErrorRecoveries.includes("reset_workspace")) {
+                store.updateSession(store.activeSessionKey, { operationError: null });
+              }
             });
           }}
           testId="reset-workspace-confirmation"

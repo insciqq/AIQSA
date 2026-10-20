@@ -3,14 +3,14 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
 import { hashPassword } from "../../lib/server/auth/password";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
-import { activeChatId, loginWithPassword, selectFakeModel, sendAndExpect, setWorkspaceEnabled, startNewChat } from "./support/workspace";
+import { activeChatId, loginWithPassword, selectFakeModel, sendAndExpect, startNewChat } from "./support/workspace";
 
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
 
-test("remembers explicit Workspace choices across chats and login, with account isolation and save retry", async ({ page }, testInfo) => {
+test("uses Workspace in interactive chats even when the saved default and the chat's stored flag are off", async ({ page }, testInfo) => {
   test.setTimeout(180_000);
-  const users = [0, 1].map(() => {
+  const users = [0].map(() => {
     const id = randomUUID();
     return { id, email: `workspace-default-${id}@example.test`, password: `Synthetic-${randomUUID()}` };
   });
@@ -18,9 +18,6 @@ test("remembers explicit Workspace choices across chats and login, with account 
   const policy = await prisma.workspacePolicy.findUniqueOrThrow({ where: { id: "installation" }, select: { enabled: true } });
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  const savedChoice = async (userId = users[0]!.id) => (await prisma.userSettings.findUniqueOrThrow({ where: { userId } })).defaultWorkspaceEnabled;
-  const on = page.getByRole("button", { name: /^Workspace details\. On\./u });
-  const off = page.getByRole("button", { name: /^Workspace details\. Off\./u });
   try {
     await prisma.workspacePolicy.update({ where: { id: "installation" }, data: { enabled: true } });
     const group = await prisma.group.findUniqueOrThrow({ where: { systemRole: "full_access" }, select: { id: true } });
@@ -32,66 +29,29 @@ test("remembers explicit Workspace choices across chats and login, with account 
       await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: user.id, groups: [{ groupId: group.id, role: "member" }] }));
     }
     await loginWithPassword(page, users[0]!);
+    // Workspace is ambient (operator, 2026-10-20): a saved default of off no
+    // longer decides it, and the composer shows no Workspace chip.
+    await prisma.userSettings.update({ where: { userId: users[0]!.id }, data: { defaultWorkspaceEnabled: false } });
+    await page.reload();
     await selectFakeModel(page);
-    await expect(on).toBeVisible();
-    expect(await savedChoice()).toBe(true);
-    expect(await prisma.workspaceSession.count({ where: { chat: { userId: users[0]!.id } } })).toBe(0);
-    await setWorkspaceEnabled(page, false);
-    await expect.poll(savedChoice).toBe(false);
-    await expect(off).toBeVisible();
-    await sendAndExpect(page, "Workspace default fixture", "Fake answer: Workspace default fixture");
-    const originalChat = await activeChatId(page);
-    await startNewChat(page);
-    await selectFakeModel(page);
-    let failSave = true;
-    await page.route("**/api/me/settings", async (route) => {
-      if (failSave && route.request().postDataJSON()?.defaultWorkspaceEnabled === true) {
-        failSave = false;
-        await route.fulfill({ status: 503, json: { error: "settings_update_failed_503" } });
-      } else await route.continue();
-    });
-    await setWorkspaceEnabled(page, true);
-    await expect(on).toBeEnabled();
-    await expect(page.getByRole("alert").filter({ hasText: "settings_update_failed_503" })).toBeVisible();
-    expect(await savedChoice()).toBe(false);
-    await page.getByRole("button", { name: "Retry", exact: true }).click();
-    await expect.poll(savedChoice).toBe(true);
-    await startNewChat(page);
-    await expect(on).toBeVisible();
-    await selectFakeModel(page);
+    await expect(page.getByRole("button", { name: /^Workspace details/u })).toHaveCount(0);
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:browser_missing]", "Workspace browser session absent.");
-    const enabledChat = await activeChatId(page);
-    expect(enabledChat).not.toBe(originalChat);
-    expect((await prisma.chat.findUniqueOrThrow({ where: { id: enabledChat } })).workspaceEnabled).toBe(true);
-    expect((await prisma.chat.findUniqueOrThrow({ where: { id: originalChat } })).workspaceEnabled).toBe(false);
-    await startNewChat(page);
-    await page.reload();
-    await selectFakeModel(page);
-    await expect(on).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath("workspace-default-enabled.png") });
+    const chatId = await activeChatId(page);
+    expect((await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).workspaceEnabled).toBe(true);
 
-    await page.request.post("/api/auth/logout", { data: {} });
-    await loginWithPassword(page, users[1]!);
-    await startNewChat(page);
-    await selectFakeModel(page);
-    await expect(on).toBeVisible();
-    expect(await savedChoice(users[1]!.id)).toBe(true);
-    await page.request.post("/api/auth/logout", { data: {} });
-    await loginWithPassword(page, users[0]!);
-    await startNewChat(page);
-    await selectFakeModel(page);
-    await expect(on).toBeVisible();
-    await setWorkspaceEnabled(page, false);
-    await expect.poll(savedChoice).toBe(false);
-    await prisma.$transaction((tx) => provisionActiveUser(tx, { userId: users[0]!.id }));
-    await page.request.post("/api/auth/logout", { data: {} });
-    await loginWithPassword(page, users[0]!);
-    await startNewChat(page);
+    // An old chat stored with Workspace off uses it on its next send.
+    await prisma.chat.update({ where: { id: chatId }, data: { workspaceEnabled: false } });
     await page.reload();
     await selectFakeModel(page);
-    await expect(off).toBeVisible();
-    expect((await prisma.chat.findUniqueOrThrow({ where: { id: enabledChat } })).workspaceEnabled).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath("workspace-default-disabled.png") });
+    const composer = page.getByRole("textbox", { name: "Message" });
+    await composer.fill("[AIQSA_WORKSPACE_E2E:browser_missing]");
+    await composer.press("Enter");
+    const answers = page.locator('article[data-role="assistant"]');
+    await expect(answers).toHaveCount(2, { timeout: 45_000 });
+    await expect(answers.last()).toContainText("Workspace browser session absent.", { timeout: 45_000 });
+    await expect.poll(async () => (await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).workspaceEnabled).toBe(true);
+    await startNewChat(page);
+    await page.screenshot({ path: testInfo.outputPath("workspace-ambient.png") });
     expect(pageErrors).toEqual([]);
   } finally {
     // Deferred Memory source guards must observe the complete fixture deletion.

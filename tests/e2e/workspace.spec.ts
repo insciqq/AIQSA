@@ -19,11 +19,8 @@ import {
   activeChatId,
   bytesFromDownload,
   loginWithPassword,
-  openWorkspaceDetails,
   selectFakeModel,
-  sendAndExpect,
-  setWorkspaceEnabled,
-  turnWorkspaceOn
+  sendAndExpect
 } from "./support/workspace";
 import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 
@@ -404,7 +401,12 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     }
   });
 
-  const workspaceDetails = page.getByRole("button", { name: /^Workspace details\./u });
+  // The composer no longer shows Workspace state (ambient since 2026-10-20);
+  // the chat's own wire state is read instead.
+  const workspaceSessionState = async () => {
+    const response = await page.request.get(`/api/chats/${chatId}`);
+    return response.ok() ? ((await response.json()) as { chat: { workspace?: { sessionState: string | null } } }).chat.workspace?.sessionState ?? null : null;
+  };
   let pdfReader: Awaited<ReturnType<typeof startPdfReaderFixture>> | null = null;
 
   try {
@@ -414,11 +416,6 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
       .getByRole("button", { name: "New chat", exact: true })
       .click();
     await selectFakeModel(page);
-    await turnWorkspaceOn(page);
-    const internetLayer = await openWorkspaceDetails(page);
-    await expect(internetLayer).toContainText("Internet: On. Managed by the administrator.");
-    await page.keyboard.press("Escape");
-    await expect(internetLayer).toBeHidden();
 
     const pdfDocument = await PDFDocument.create();
     pdfDocument.addPage();
@@ -451,7 +448,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
       "Workspace read the staged input and created result.zip."
     );
     chatId = await activeChatId(page);
-    await expect(workspaceDetails).toHaveAccessibleName(/Workspace stopped$/u, { timeout: 30_000 });
+    await expect.poll(workspaceSessionState, { timeout: 30_000 }).toBe("stopped");
     const activity = page.getByTestId("tool-activity-disclosure").last();
     await activity.locator(":scope > summary").click();
     await expect(activity).toContainText("Worked in Workspace");
@@ -480,7 +477,6 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     await composer.press("Enter");
     const stop = page.getByRole("button", { name: "Stop answer" });
     await expect(stop).toBeEnabled({ timeout: 15_000 });
-    await expect(workspaceDetails).toHaveAccessibleName(/Running a command…$/u);
     const terminalReadReleased = new Promise<void>((resolve) => { releaseTerminalRead = resolve; });
     let terminalReadWaiting = false;
     await page.route(/\/api\/model-runs\/[^/]+$/u, async (route) => {
@@ -531,8 +527,9 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     const reset = page.getByRole("dialog", { name: "Reset workspace" });
     await expect(reset).toBeVisible({ timeout: 10_000 });
     await reset.getByRole("button", { name: "Confirm reset workspace" }).click();
-    await expect(reset).toHaveCount(0);
-    await expect(workspaceDetails).toHaveAccessibleName(/Workspace has not started$/u);
+    // Reset retires the guest first; it has taken just over five seconds.
+    await expect(reset).toHaveCount(0, { timeout: 30_000 });
+    await expect.poll(async () => [null, "not_started"].includes(await workspaceSessionState())).toBe(true);
     await sendAndExpectRun(
       page,
       "[AIQSA_WORKSPACE_E2E:reset_probe]",
@@ -548,7 +545,6 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
       await unauthorizedContext.close();
     }
 
-    await setWorkspaceEnabled(page, false);
     modelSnapshot = await prisma.providerModel.findUnique({
       select: { activeConfig: true, capabilities: true },
       where: { id: providerTemplateIds.fakeModel }
@@ -557,12 +553,6 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     await updateFakeModelCapabilities({ toolCalling: false });
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    const unavailableLayer = await openWorkspaceDetails(page);
-    const unavailableToggle = unavailableLayer.getByRole("menuitemcheckbox", { name: /Turn on Workspace/u });
-    await expect(unavailableToggle).toBeDisabled();
-    await expect(unavailableToggle).toContainText("Workspace requires a model with tool support.");
-    await page.keyboard.press("Escape");
-    await expect(unavailableLayer).toBeHidden();
 
     const messageTemplate = latestMessageBody as Record<string, unknown> | null;
     if (!messageTemplate) throw new Error("workspace_message_admission_template_missing");
@@ -614,7 +604,6 @@ test("Project Contributor uses Workspace until the owner revokes access", async 
     await loginWithPassword(contributorPage, LOCAL_RESTRICTED_MEMBER);
     await openProject(contributorPage, projectName);
     await selectFakeModel(contributorPage);
-    await turnWorkspaceOn(contributorPage);
     await contributorPage.getByLabel("Attach files").setInputFiles({
       buffer: Buffer.from("project workspace input\n"),
       mimeType: "application/x-aiqsa-workspace-e2e",

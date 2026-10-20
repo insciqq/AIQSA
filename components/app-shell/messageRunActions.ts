@@ -5,8 +5,11 @@ import { useComposerControlStore } from "@/components/app-shell/composerControlS
 import { composerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
 import {
   attachmentBlocksSend,
-  firstBlockingAttachmentWarning
+  firstBlockingAttachmentWarning,
+  modelSupportsAttachment
 } from "@/components/app-shell/attachmentCapabilities";
+import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
+import type { ChatPdfRouteAvailability } from "@/lib/contracts/chatPdfPreparation";
 import { attachmentRetryAvailable } from "@/components/app-shell/attachmentLifecycle";
 import { latestChatPdfRouteAvailability } from "@/components/app-shell/useChatPdfRoutePreview";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
@@ -18,6 +21,7 @@ import {
   projectIdFromComposerSessionKey,
   selectComposerSession,
   useComposerSessionStore,
+  type ComposerOperationRecovery,
   type ComposerSessionKey
 } from "@/components/app-shell/composerSessionStore";
 import { loadChatMemoryState } from "@/components/app-shell/chatLifecycleApi";
@@ -164,6 +168,14 @@ type MessageRunActionsInput = {
   ): Promise<ChatDetail | null>;
   refreshProjectWorkspace?(): Promise<boolean>;
   resolveCatalog?(): Catalog | null;
+  /**
+   * Whether the installation offers Workspace now (loaded, enabled, runner
+   * up). Workspace is ambient: a run uses it exactly when this holds and the
+   * run's model calls tools. Absent or still loading means no Workspace.
+   */
+  resolveWorkspaceInstallationAvailable?(): boolean;
+  /** Re-reads installation availability after a run was refused for Workspace. */
+  refreshWorkspaceAvailability?(): void;
   resetThreadToLatest(): void;
   /** Clears a run notice owned by the current chat before a new attempt. */
   clearNoticeForChat?(chatId: string): void;
@@ -261,6 +273,38 @@ function mcpApprovalContinuationRetryCopy(reason: string): string {
 const MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY =
   "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval.";
 
+/**
+ * Workspace admission refusals that installation availability does not show
+ * (a busy or failed session, unreadable or oversized saved secrets, an
+ * incompatible runtime) or showed too late. Workspace is ambient, so each
+ * would refuse every send of the chat: the refused message may go once
+ * without Workspace. `workspace_model_tools_required` and the Agent codes are
+ * left out, as Agent needs Workspace.
+ */
+const WORKSPACE_ADMISSION_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "workspace_busy",
+  "workspace_disabled",
+  "workspace_runtime_incompatible",
+  "workspace_runtime_unavailable",
+  "workspace_secret_limit",
+  "workspace_secret_unavailable"
+]);
+/** A failed session refuses as busy, but waiting never helps: only a reset does. */
+const WORKSPACE_SESSION_FAILED_COPY =
+  "Workspace in this chat stopped working. Reset it to continue; messages and exported files stay.";
+
+/** Whether every file goes with this model without Workspace, so sending without it drops none. */
+function attachmentsSendableWithoutWorkspace(
+  attachments: readonly ComposerAttachment[],
+  model: CatalogModel,
+  pdfRoute: ChatPdfRouteAvailability | null
+): boolean {
+  return attachments.every((attachment) =>
+    modelSupportsAttachment(model, attachment, false) &&
+    !attachmentBlocksSend(attachment, model, false, pdfRoute)
+  ) && !firstBlockingAttachmentWarning(attachments, model, false, pdfRoute);
+}
+
 /** Chats whose run is waiting for a change of the chat's Assistant to settle. */
 const runsAwaitingAssistant = new Set<string>();
 
@@ -287,10 +331,19 @@ export function useMessageRunActions({
   refreshActiveChat,
   refreshProjectWorkspace,
   resolveCatalog,
+  resolveWorkspaceInstallationAvailable,
+  refreshWorkspaceAvailability,
   resetThreadToLatest,
   clearNoticeForChat,
   setNotice
 }: MessageRunActionsInput) {
+  /** A refusal for Workspace means availability changed since the page loaded. */
+  function refreshWorkspaceAfterRefusal(code: string | undefined): void {
+    if (code === "workspace_runtime_unavailable" || code === "workspace_disabled") {
+      refreshWorkspaceAvailability?.();
+    }
+  }
+
   async function showMemoryTargetSelection(): Promise<void> {
     try {
       await refreshMemorySettings();
@@ -308,7 +361,10 @@ export function useMessageRunActions({
     });
   }
 
-  function captureRunControlSnapshot(): MessageRunControlSnapshot {
+  /** `withoutWorkspace` sends this one run without Workspace, after the user chose so on a refusal. */
+  function captureRunControlSnapshot(
+    options: Readonly<{ withoutWorkspace?: boolean }> = {}
+  ): MessageRunControlSnapshot {
     const controls = useComposerControlStore.getState();
     const {
       knowledgeSelection,
@@ -324,7 +380,6 @@ export function useMessageRunActions({
     const session = selectComposerSession(useComposerSessionStore.getState(), sessionKey);
     const chat = useWorkspaceStore.getState().chats.find((candidate) =>
       candidate.id === chatIdFromComposerSessionKey(sessionKey));
-    const workspaceEnabled = chat?.workspace?.enabled ?? session.workspaceEnabled;
     const catalog = resolveCatalog
       ? resolveCatalog()
       : useWorkspaceStore.getState().catalog;
@@ -334,6 +389,13 @@ export function useMessageRunActions({
       selectedModelId,
       catalog
     );
+    // Workspace is ambient (operator, 2026-10-20): decided here, at dispatch,
+    // from the installation and this run's model. A chat's stored flag or a
+    // saved default never turns it off, and a model without tools sends
+    // without it instead of failing.
+    const workspaceEnabled = options.withoutWorkspace !== true &&
+      resolveWorkspaceInstallationAvailable?.() === true &&
+      selectedModel?.capabilities.toolCalling === true;
     const model = selectedModel
       ? {
           ...selectedModel,
@@ -692,6 +754,7 @@ export function useMessageRunActions({
       // the edited question again, and the stranded-leaf reconcile owns retry.
     });
     await reconcileBranchConflict(chatId, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
     }
@@ -702,6 +765,14 @@ export function useMessageRunActions({
 
   async function submitComposer() {
     await sendMessage();
+  }
+
+  /**
+   * Sends the refused composer message once without Workspace. Nothing is
+   * remembered: the chat's next send uses Workspace again when it is offered.
+   */
+  async function submitComposerWithoutWorkspace() {
+    await sendMessage({ withoutWorkspace: true });
   }
 
   function updateStreamChatMessages(chatId: string, updater: (messages: ThreadMessage[]) => ThreadMessage[]) {
@@ -872,7 +943,20 @@ export function useMessageRunActions({
     catch { /* Keep the draft and refusal; foreground recovery can retry. */ }
   }
 
-  async function sendMessage() {
+  /** Whether the chat's Workspace session failed, read from the server when possible. */
+  async function chatWorkspaceSessionFailed(chatId: string): Promise<boolean> {
+    let detail: ChatDetail | null = null;
+    try {
+      detail = await refreshActiveChat(chatId, { forceDetail: true, preserveControls: true });
+    } catch {
+      // The stored summary decides when the chat cannot be read now.
+    }
+    const state = detail?.workspace?.sessionState ??
+      useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId)?.workspace?.sessionState;
+    return state === "failed";
+  }
+
+  async function sendMessage(options: Readonly<{ withoutWorkspace?: boolean }> = {}) {
     const settleSessionKey = useComposerSessionStore.getState().activeSessionKey;
     const settleChatId = chatIdFromComposerSessionKey(settleSessionKey);
     if (assistantUpdatePending(settleChatId) && (
@@ -892,9 +976,22 @@ export function useMessageRunActions({
     ) {
       return;
     }
-    const runControlSnapshot = captureRunControlSnapshot();
+    const runControlSnapshot = captureRunControlSnapshot({ withoutWorkspace: options.withoutWorkspace });
     const modelForSend = runControlSnapshot.model;
     if (!modelForSend || assistantBlocksRun(runControlSnapshot)) {
+      return;
+    }
+    // Sending without Workspace never drops a file only Workspace can take.
+    const workspaceOnlyFiles = options.withoutWorkspace
+      ? sourceSession.attachments.filter((attachment) => !modelSupportsAttachment(modelForSend, attachment, false))
+      : [];
+    if (workspaceOnlyFiles.length > 0) {
+      setNotice({
+        kind: "error",
+        text: `${workspaceOnlyFiles.map((attachment) => attachment.fileName).join(", ")} ${
+          workspaceOnlyFiles.length === 1 ? "needs" : "need"} Workspace. Remove ${
+          workspaceOnlyFiles.length === 1 ? "it" : "them"} to send without Workspace.`
+      });
       return;
     }
     const artifactBlockReason = artifactUnavailableReason({
@@ -1048,6 +1145,7 @@ export function useMessageRunActions({
     let sendFailureLive = true;
     let sendFailureHandled = false;
     let sendRejectionMessage: string | null = null;
+    let sendRecoveries: ComposerOperationRecovery[] = [];
     let sendRunId: string | null = null;
     try {
       let chatIdForSend = sourceComposerChatId;
@@ -1246,6 +1344,7 @@ export function useMessageRunActions({
         }
       });
       await reconcileBranchConflict(chatIdForSend, result.failureCode);
+      refreshWorkspaceAfterRefusal(result.failureCode);
       sendOutcome = result.cancelled ? "cancelled" : result.failed ? "failed" : "succeeded";
       sendFailureCode = result.failureCode ?? null;
       sendFailureMessage = result.failureMessage ?? null;
@@ -1253,6 +1352,21 @@ export function useMessageRunActions({
         ? ASSISTANT_CHANGED_SEND_COPY
         : result.rejectionMessage ?? null;
       sendRunId = result.runId;
+      if (
+        result.rejectionMessage !== undefined && result.runId === null &&
+        runControlSnapshot.workspaceEnabled &&
+        result.failureCode !== undefined && WORKSPACE_ADMISSION_REFUSAL_CODES.has(result.failureCode)
+      ) {
+        const sessionFailed = result.failureCode === "workspace_busy" &&
+          await chatWorkspaceSessionFailed(chatIdForSend);
+        if (sessionFailed) sendRejectionMessage = WORKSPACE_SESSION_FAILED_COPY;
+        sendRecoveries = [
+          ...(sessionFailed ? ["reset_workspace" as const] : []),
+          ...(!runControlSnapshot.agentEnabled &&
+            attachmentsSendableWithoutWorkspace(sendToken.attachments, modelForSend, pdfRoute)
+            ? ["send_without_workspace" as const] : [])
+        ];
+      }
       if (
         refreshProjectWorkspace &&
         (result.failureCode === "project_setup_required" ||
@@ -1291,7 +1405,8 @@ export function useMessageRunActions({
           : null,
         sendFailureLive,
         sendRunId,
-        sendFailureCode
+        sendFailureCode,
+        sendRecoveries
       );
     }
   }
@@ -1514,6 +1629,7 @@ export function useMessageRunActions({
         }
       });
       await reconcileBranchConflict(chatIdForSend, result.failureCode);
+      refreshWorkspaceAfterRefusal(result.failureCode);
       if (result.failureCode === "memory_intent_confirmation_required") {
         await showMemoryTargetSelection();
       } else {
@@ -1646,6 +1762,7 @@ export function useMessageRunActions({
       }
     });
     await reconcileBranchConflict(chatId, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     if (result.failureCode === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) {
       // Expired or already used by a run: retrying cannot help.
       if (activeChatIdRef.current === chatId) setNotice({ chatId, kind: "error", text: MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY });
@@ -1812,6 +1929,7 @@ export function useMessageRunActions({
       }
     });
     await reconcileBranchConflict(chatId, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     noticeRejectedRun(chatId, result, (reason) => answerReviewRefusalCopy(result.failureCode) ?? reason);
     // The session's state (a stop on a refusal, a finished round) is the server's: read it again.
     if (activeChatIdRef.current === chatId) {
@@ -2007,6 +2125,7 @@ export function useMessageRunActions({
       }
     });
     await reconcileBranchConflict(chatIdForRegenerate, result.failureCode);
+    refreshWorkspaceAfterRefusal(result.failureCode);
     if (result.failureCode === "memory_intent_confirmation_required") {
       await showMemoryTargetSelection();
     } else {
@@ -2026,6 +2145,7 @@ export function useMessageRunActions({
     startAnswerReview,
     sendStarterPrompt,
     submitMessageEdit: editMessageBranch,
-    submitComposer
+    submitComposer,
+    submitComposerWithoutWorkspace
   };
 }

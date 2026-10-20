@@ -40,10 +40,16 @@ export function liveToolCallStatus(
   };
 }
 
-/** Minimal factual phase status for the active SSE response; never persisted. */
-export function liveToolLoopStatus(input: Readonly<{
+/**
+ * Minimal factual phase status for the active SSE response; never persisted.
+ * The server names only the phase that is doing work and the client owns the
+ * words: `files` while stored conversation images are read, `knowledge`
+ * while Knowledge is searched, `model` when a model request is sent (after a
+ * tool round it reads the results), `tools` when a declared batch starts.
+ */
+export function liveRunPhaseStatus(input: Readonly<{
   count?: number;
-  phase: "model" | "tools";
+  phase: "files" | "knowledge" | "model" | "tools";
 }>): ModelRunSseEvent {
   const count = Math.max(0, Math.floor(input.count ?? 0));
   return {
@@ -51,7 +57,7 @@ export function liveToolLoopStatus(input: Readonly<{
       artifactType: "summary",
       payload: input.phase === "model"
         ? { stage: "model", status: "waiting" }
-        : { count, stage: "tools", status: "running" }
+        : input.phase === "tools" ? { count, stage: "tools", status: "running" } : { stage: input.phase, status: "running" }
     },
     type: "artifact"
   };

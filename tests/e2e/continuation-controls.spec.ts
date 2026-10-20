@@ -213,7 +213,6 @@ for (const width of [1440, 390]) {
     expect(await composer.evaluate((element: HTMLTextAreaElement) => element.selectionStart === element.value.length && element.selectionEnd === element.value.length)).toBe(true);
     await expect(page.getByTestId("header-model-trigger")).toContainText(chosen.displayName);
     await expect(page.getByRole("button", { name: /^Choose web search/ })).toContainText("Perplexity");
-    await expect(page.getByRole("button", { name: /Workspace details/ })).toBeVisible();
     await expect(page.getByRole("button", { name: "Change MCP mode" })).toHaveAttribute("data-mcp-mode", "load_all");
     for (const number of [1, 2]) await expect(page.getByRole("button", { name: `Remove draft-${number}.pdf` })).toBeVisible();
     if (width === 1440) {

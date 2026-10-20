@@ -15,10 +15,8 @@ import {
   lastAnswer,
   loginWithPassword,
   openLastActivity,
-  openWorkspaceDetails,
   selectFakeModel,
-  startNewChat,
-  turnWorkspaceOn
+  startNewChat
 } from "./support/workspace";
 import { prepareWorkspaceFakeContext, waitForWorkspaceExport } from "./support/workspaceFixture";
 
@@ -74,18 +72,6 @@ function tarContents(gzip: Uint8Array): Readonly<{
   return { entries, files, linkTargets, types };
 }
 
-function workspaceDetails(page: Page) {
-  return page.getByRole("button", { name: /^Workspace details\./u });
-}
-
-/** The Workspace layer's administrator note about guest internet access. */
-async function expectWorkspaceInternet(page: Page, state: "On" | "Off"): Promise<void> {
-  const layer = await openWorkspaceDetails(page);
-  await expect(layer).toContainText(`Internet: ${state}. Managed by the administrator.`);
-  await page.keyboard.press("Escape");
-  await expect(layer).toBeHidden();
-}
-
 async function sendAndExpect(
   page: Page,
   prompt: string,
@@ -131,7 +117,6 @@ async function resetWorkspace(page: Page): Promise<void> {
   const confirmation = page.getByRole("dialog", { name: "Reset workspace" });
   await confirmation.getByRole("button", { name: "Confirm reset workspace" }).click();
   await expect(confirmation).toHaveCount(0, { timeout: 120_000 });
-  await expect(workspaceDetails(page)).toHaveAccessibleName(/Workspace has not started$/u);
 }
 
 async function setAdminPolicy(
@@ -213,8 +198,6 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     await startNewChat(page);
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await selectFakeModel(page);
-    await turnWorkspaceOn(page);
-    await expectWorkspaceInternet(page, "On");
 
     const arbitraryBytes = Buffer.from(Array.from({ length: 8_192 }, (_, index) => index % 251));
     await page.getByLabel("Attach files").setInputFiles({
@@ -236,7 +219,8 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     );
     const onlineChatId = await activeChatId(page);
     createdChatIds.push(onlineChatId);
-    await expect(workspaceDetails(page)).toHaveAccessibleName(/Workspace stopped$/u, { timeout: 30_000 });
+    await expect.poll(async () => (await prisma.workspaceSession.findUnique({ select: { state: true },
+      where: { chatId: onlineChatId } }))?.state, { timeout: 30_000 }).toBe("STOPPED");
     const activity = await openLastActivity(page);
     await expect(activity).toContainText("Worked in Workspace");
     await expect(activity).toContainText("Ran set -eu && test -s /workspace/inbox/index.json");
@@ -281,7 +265,6 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     );
     // Stop-to-STOPPED settlement takes about ten seconds on the KVM stand.
     await expect(liveActivity).toContainText("Workspace work stopped", { timeout: 30_000 });
-    await expect(workspaceDetails(page)).not.toHaveAccessibleName(/Running a command/u, { timeout: 30_000 });
     await page.waitForTimeout(13_000);
     const stoppedSession = await prisma.workspaceSession.findUniqueOrThrow({
       select: { id: true, state: true },
@@ -378,8 +361,6 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     await startNewChat(page);
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await selectFakeModel(page);
-    await turnWorkspaceOn(page);
-    await expectWorkspaceInternet(page, "Off");
     await sendAndExpect(
       page,
       "[AIQSA_WORKSPACE_E2E:network_off_probe]",

@@ -43,6 +43,13 @@ export type ComposerArtifactEdit = Readonly<{
   versionNumber: number;
 }>;
 
+/**
+ * A recovery a refused send offers next to its reason: sending that message
+ * once without Workspace, or resetting the chat's failed Workspace. Never
+ * persisted; any later send, upload or new error replaces it.
+ */
+export type ComposerOperationRecovery = "reset_workspace" | "send_without_workspace";
+
 export type ComposerSessionSnapshot = {
   followupSubmission?: Readonly<{
     runId: string;
@@ -73,6 +80,7 @@ export type ComposerSessionSnapshot = {
   contextRejectionGeneration: number | null;
   operationErrorLive: boolean;
   operationErrorRetryable: boolean;
+  operationErrorRecoveries: readonly ComposerOperationRecovery[];
   pendingEdit: ComposerPendingEdit | null;
   pendingSend: {
     attachments: ComposerAttachment[];
@@ -83,8 +91,10 @@ export type ComposerSessionSnapshot = {
   } | null;
   pendingUploadGenerations: number[];
   revision: number;
-  /** Chat-scoped execution intent. For blank sessions this is committed with
-   * the first send; saved-chat sessions mirror the canonical chat flag. */
+  /** Whether Workspace is usable here: the shell keeps it on the installation's
+   * availability and the selected model's tool calling (Workspace is ambient,
+   * no user toggle). Uploads and chat creation read it; a run decides its own
+   * value at dispatch. */
   workspaceEnabled: boolean;
   workspaceInitialized: boolean;
 };
@@ -144,7 +154,6 @@ type ComposerSessionStore = {
   /** Changes a pending comment; returns why it was refused, or null when changed. */
   updateComment(key: ComposerSessionKey, id: string, text: string): ComposerCommentRefusal | null;
   removeComment(key: ComposerSessionKey, id: string): boolean;
-  applyWorkspaceDefault(key: ComposerSessionKey, enabled: boolean): void;
   appendUploadedAttachment(
     key: ComposerSessionKey,
     generation: number,
@@ -163,7 +172,9 @@ type ComposerSessionStore = {
     operationErrorLive?: boolean,
     runId?: string | null,
     /** The refusal's stable code: it marks an oversized context and the refusals Retry cannot fix. */
-    failureCode?: string | null
+    failureCode?: string | null,
+    /** Recoveries the refusal offers beside its reason; a Workspace reset replaces Retry. */
+    recoveries?: readonly ComposerOperationRecovery[]
   ): boolean;
   finishUpload(key: ComposerSessionKey, generation: number, error: string | null): boolean;
   isEditCurrent(token: ComposerEditToken): boolean;
@@ -186,6 +197,7 @@ type ComposerSessionStore = {
 
 const emptyAttachments = Object.freeze([]) as unknown as ComposerAttachment[];
 const emptyUploadGenerations = Object.freeze([]) as unknown as number[];
+const noRecoveries: readonly ComposerOperationRecovery[] = Object.freeze([]);
 
 export const emptyComposerSessionSnapshot = Object.freeze({
   followupSubmission: null,
@@ -205,6 +217,7 @@ export const emptyComposerSessionSnapshot = Object.freeze({
   operationError: null,
   operationErrorLive: true,
   operationErrorRetryable: false,
+  operationErrorRecoveries: noRecoveries,
   pendingEdit: null,
   pendingSend: null,
   pendingUploadGenerations: emptyUploadGenerations,
@@ -330,6 +343,12 @@ function patchedSession(
   const errorPatched = hasOwn(patch, "operationError");
   const errorChanged = errorPatched && patch.operationError !== current.operationError;
   const retryabilityChanged = errorPatched && current.operationErrorRetryable;
+  // A new error drops every recovery; changed attachments drop the send
+  // without Workspace, which was judged for the refused files only.
+  const recoveries = errorPatched ? noRecoveries : attachmentsChanged
+    ? current.operationErrorRecoveries.filter((recovery) => recovery !== "send_without_workspace")
+    : current.operationErrorRecoveries;
+  const recoveriesChanged = recoveries.length !== current.operationErrorRecoveries.length;
   const workspaceChanged = hasOwn(patch, "workspaceEnabled") &&
     (patch.workspaceEnabled !== current.workspaceEnabled || !current.workspaceInitialized);
   const agentChanged = hasOwn(patch, "agentEnabled") && patch.agentEnabled !== current.agentEnabled;
@@ -347,6 +366,7 @@ function patchedSession(
     !editingMessageChanged &&
     !errorChanged &&
     !retryabilityChanged &&
+    !recoveriesChanged &&
     !workspaceChanged && !agentChanged && !artifactEditChanged && !artifactCreateChanged && !followupChanged &&
     !answerReviewChanged
   ) {
@@ -373,6 +393,7 @@ function patchedSession(
       ? { contextRejectionGeneration: null } : {}),
     ...(workspaceChanged ? { workspaceEnabled: patch.workspaceEnabled ?? false, workspaceInitialized: true } : {}),
     ...(errorPatched ? { operationErrorLive: true, operationErrorRetryable: false } : {}),
+    ...(recoveriesChanged ? { operationErrorRecoveries: recoveries } : {}),
     editRevision:
       current.editRevision + (editingDraftChanged || editingMessageChanged ? 1 : 0),
     revision: current.revision + (attachmentsChanged || draftChanged || commentsChanged || workspaceChanged || agentChanged || artifactEditChanged || artifactCreateChanged ? 1 : 0)
@@ -459,15 +480,6 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
     const session = get().sessionsByKey[key];
     if (!session || !session.comments.some(comment => comment.id === id)) return false;
     return get().updateSession(key, { comments: session.comments.filter(comment => comment.id !== id) });
-  },
-  applyWorkspaceDefault(key, enabled) {
-    if (chatIdFromComposerSessionKey(key) || projectIdFromComposerSessionKey(key)) return;
-    const session = get().sessionsByKey[key];
-    if (!session || session.pendingSend || session.pendingUploadGenerations.length > 0) return;
-    // A late catalog may initialize a typed draft, but never replace an
-    // initialized draft's execution intent or a file-driven Workspace choice.
-    if (session.workspaceInitialized && (session.draft || session.comments.length || session.attachments.length > 0 || session.editingMessageId)) return;
-    get().updateSession(key, { workspaceEnabled: enabled });
   },
   appendUploadedAttachment(key, generation, attachment) {
     const state = get();
@@ -570,6 +582,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           operationError: null,
           operationErrorLive: true,
           operationErrorRetryable: false,
+          operationErrorRecoveries: noRecoveries,
           pendingSend: {
             attachments: [...session.attachments],
             comments: [...session.comments],
@@ -601,6 +614,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           operationError: null,
           operationErrorLive: true,
           operationErrorRetryable: false,
+          operationErrorRecoveries: noRecoveries,
           pendingUploadGenerations: [...session.pendingUploadGenerations, generation]
         }
       },
@@ -694,7 +708,7 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       ...(clearEdit ? { artifactEdit: null } : {}), ...(clearCreate ? { artifactCreate: null } : {}) } } });
     return true;
   },
-  finishSend(token, outcome, error = null, operationErrorLive = true, runId = null, failureCode = null) {
+  finishSend(token, outcome, error = null, operationErrorLive = true, runId = null, failureCode = null, recoveries = noRecoveries) {
     const state = get();
     const sourceSession = state.sessionsByKey[token.sourceKey];
     const key =
@@ -754,7 +768,9 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
           contextRejectionGeneration: restore && !newerInput && contextTooLarge ? token.generation : null,
           operationError: restore ? error : null,
           operationErrorLive: restore ? operationErrorLive : true,
-          operationErrorRetryable: restore && !newerInput && Boolean(error) && retryable,
+          operationErrorRetryable: restore && !newerInput && Boolean(error) && retryable &&
+            !recoveries.includes("reset_workspace"),
+          operationErrorRecoveries: restore && !newerInput && error ? [...recoveries] : noRecoveries,
           pendingSend: null
         }
       }
@@ -784,7 +800,8 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
             ? {
                 operationError,
                 operationErrorLive: true,
-                operationErrorRetryable: false
+                operationErrorRetryable: false,
+                operationErrorRecoveries: noRecoveries
               }
             : {}),
           pendingUploadGenerations: session.pendingUploadGenerations.filter(

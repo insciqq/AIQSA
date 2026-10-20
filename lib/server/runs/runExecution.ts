@@ -248,7 +248,7 @@ import {
   type PersistedToolLoopCall,
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
-import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
+import { liveRunPhaseStatus, liveToolCallStatus } from "./liveToolStatus";
 import { readOnlyRunTool } from "./toolReadOnly";
 import { repeatBlockedRounds, settledRepeatOutcome, ToolCallRepeatHistory, toolRoundCall } from "./toolCallRepeatGuard";
 import { mcpApprovalGated, mcpApprovalRequestForCall } from "./mcpApprovalGate";
@@ -846,6 +846,18 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       });
       let persistedProviderResponseId: string | null = null;
       let answerStartMarked = false;
+      // Live phases (`liveRunPhaseStatus`): work before or between model
+      // requests is shown while it runs, and once one was shown every later
+      // model request is announced, so the status never keeps naming
+      // finished work. Live only: these events are never persisted.
+      let livePhaseShown = false;
+      const showLivePhase = async (phase: "files" | "knowledge") => {
+        livePhaseShown = true;
+        await emit(controller, encoder, input.repository, runId, liveRunPhaseStatus({ phase }));
+      };
+      const announceModelRequest = async () => {
+        if (livePhaseShown) await emit(controller, encoder, input.repository, runId, liveRunPhaseStatus({ phase: "model" }));
+      };
       let knowledgeAnswerAttempted = groundedKnowledgeAnswer;
       let lastSessionRequest = input.prepared.providerRequest;
       let projectAccessCheck: Promise<boolean> | null = null;
@@ -1427,6 +1439,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 "Knowledge access changed before focused retrieval"
               );
             }
+            await showLivePhase("knowledge");
             const receipt = input.memoryEgress
               ? await input.memoryEgress.beginDispatch({
                   destinationKind: "knowledge",
@@ -1762,6 +1775,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         contracts: KnowledgeAnswerFinalizationContracts;
         result: ProviderRunResult & { usageAttributions: RunUsageAttribution[] };
       }>> {
+        // After a shown search the grounded answer reads its evidence.
+        await announceModelRequest();
         const pipeline = selectKnowledgeAnswerPipelineForNewRun({ modelRunId: runId });
         const evidenceAnswer = normalizedRequest.knowledgeAnswerWorkflowVersion === 8 || normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11;
         const groundingUnavailable = !input.knowledgeProviderDispatch ||
@@ -2575,15 +2590,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 throw new RunPipelineError("tool_loop_checkpoint_conflict", "Provider round could not start");
               }
             }
-            if (hasMcpTools) {
-              await emit(
-                controller,
-                encoder,
-                input.repository,
-                runId,
-                liveToolLoopStatus({ phase: "model" })
-              );
-            }
+            // After a tool round this request reads its results.
+            await announceModelRequest();
           },
           bridge: toolBridge,
           budgets: {
@@ -3455,13 +3463,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             await tokenBuffer.flush().catch(error => { throw new RunSettlementError("publication", error); });
             // Only declared calls run: a batch of unknown tools shows no tool phase.
             const declaredCount = calls.filter(call => !call.undeclared).length;
+            if (declaredCount > 0) livePhaseShown = true;
             if (hasMcpTools && declaredCount > 0) {
               await emit(
                 controller,
                 encoder,
                 input.repository,
                 runId,
-                liveToolLoopStatus({ count: declaredCount, phase: "tools" })
+                liveRunPhaseStatus({ count: declaredCount, phase: "tools" })
               );
             }
             for (const call of calls) {
@@ -3682,7 +3691,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // The one projector places this request's tool-history records; the
         // prepared and accepted requests never carry them.
         const unprojectedRequest = input.images
-          ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal) : input.prepared.providerRequest;
+          ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal,
+            () => showLivePhase("files")) : input.prepared.providerRequest;
         const historyProjection = await runToolHistoryProjection();
         const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(historyProjection
           ? insertToolHistory(unprojectedRequest, historyProjection) : unprojectedRequest);
@@ -3716,6 +3726,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           }
           // An Agent answer is published only after its Codex exec, a Workspace tool call.
           toolRoundsBeforeOutput = true;
+          await announceModelRequest();
           providerResult = await executeCodexTurn({
             request: providerRequest, runId, userId: input.userId, signal,
             transport: input.agentResponses, workspace: input.workspace,
@@ -3787,13 +3798,15 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         } else {
           // A request without a tool loop still has exactly one consumer and
           // is never dispatched while it needs a summary.
-          providerResult = await streamProviderRequest(providerRequest.contextCompactionPolicy?.mode === "hybrid"
+          const answerRequest = providerRequest.contextCompactionPolicy?.mode === "hybrid"
             ? await compactAnswerRequest(
               providerRequest,
               input.toolBridge ?? providerToolBridges[providerRequest.provider as keyof typeof providerToolBridges],
               signal
             )
-            : providerRequest);
+            : providerRequest;
+          await announceModelRequest();
+          providerResult = await streamProviderRequest(answerRequest);
         }
         if (providerResult.synthesisToolCallForbidden) {
           throw new RunPipelineError(TOOL_SYNTHESIS_FAILURE.code, TOOL_SYNTHESIS_FAILURE.message);

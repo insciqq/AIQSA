@@ -28,7 +28,7 @@ import { keepAccountMcpDefault } from "./support/chatDefaults";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { signInWithLocalToken } from "./support/localAuth";
 import { startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
-import { activeChatId, disableMemoryRecall, lastAnswer, selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
+import { activeChatId, disableMemoryRecall, lastAnswer, selectFakeModel } from "./support/workspace";
 
 const configuredLimit = Number(process.env.AIQSA_MCP_CALL_TOOL_RESPONSE_MAX_BYTES?.trim() || Number.NaN);
 const limitLowered = Number.isSafeInteger(configuredLimit) && configuredLimit >= 4_096 && configuredLimit <= 65_536;
@@ -110,7 +110,6 @@ async function newChat(page: Page) {
   await selectFakeModel(page);
   const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
   await expect(mcpMode).toBeVisible({ timeout: 30_000 });
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await mcpMode.click();
   await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
   await expect(mcpMode).toHaveAccessibleDescription(/^MCP: Load all/u);

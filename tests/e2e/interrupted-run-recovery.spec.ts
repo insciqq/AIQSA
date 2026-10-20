@@ -4,7 +4,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { chooseSearchStrategy } from "./shell/composer";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
-import { activeChatId, disableMemoryRecall, selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
+import { activeChatId, disableMemoryRecall, selectFakeModel } from "./support/workspace";
 import { interruptAdmission, releaseLateAdmission, returnAfterAdmissionLoss } from "./support/admissionTransport";
 import type { ChatDetailWire } from "../../lib/contracts/chats";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
@@ -164,7 +164,6 @@ test("a Workspace answer recovers from lost acknowledgement across reading viewp
     }
     await page.reload();
     await startPlainFakeChat(page);
-    await setWorkspaceEnabled(page, true);
     let sends = 0;
     let documentLoads = 0;
     page.on("request", (request) => { if (request.isNavigationRequest()) documentLoads++; });
@@ -324,7 +323,6 @@ async function startPlainFakeChat(page: Page): Promise<void> {
   await disableMemoryRecall(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await selectFakeModel(page);
   await expect(page.getByTestId("header-model-trigger")).toHaveText("Fake QSA");
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
@@ -398,7 +396,6 @@ test("a disconnected accepted answer can be stopped through the real cancellatio
   await signInWithLocalToken(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("button", { name: "New chat", exact: true }).click();
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await selectFakeModel(page);
   await expect(page.getByTestId("header-model-trigger")).toHaveText("Fake QSA");
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");

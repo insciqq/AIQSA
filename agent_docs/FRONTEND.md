@@ -18,6 +18,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Only the person who started a run may expand its bounded, redacted MCP request and response details. No other raw payload is shown.
 - Per-answer usage is never shown. Users see their own monthly allowance in Settings and a composer warning near the limit, never installation amounts.
 - Time and animation never invent progress, readiness, cost or completion. A loading failure is not an empty result, and a Knowledge retrieval failure is never shown as "the documents contain no answer".
+- The live status names only real work: the server sends the phase (reading stored images, searching Knowledge, reading tool results) and the client owns its words. Without one, the line shows the model's own latest streamed reasoning heading, untrusted and bounded to one plain line, whatever the Reasoning blocks setting (it governs the reasoning disclosure); otherwise one neutral phrase chosen per answer that never rotates or names work that is not happening (operator decision 2026-10-20).
 
 ## State
 
@@ -36,7 +37,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Editing a sent message creates a visible branch and keeps the composer draft.
 - Upload integrity gates Send; PDF preparation does not. An admitted message appears at once and its draft clears. Server-confirmed final text releases Send even while Workspace cleanup continues, and late events stay with their own answer.
 - A reviewed answer is one block: latest version, a quiet status line, collapsed history. Server-written review turns never render as user speech. Automatic review is a per-chat choice in the model picker, shown on the header model chip, never as a composer chip.
-- Workspace is a persistent chat toggle. Controls wrap whole; no More menu or horizontal scroll hides a capability. Stop keeps files, branching never rolls them back, and Reset keeps messages and outputs. Cards show relative paths, never runtime identities. A continuation whose Workspace copy failed opens empty and never claims the files survived.
+- Workspace is ambient in interactive chats: a send uses it whenever the installation offers it and the model calls tools, with no composer or chat toggle and no saved default (operator decision 2026-10-20). Controls wrap whole; no More menu or horizontal scroll hides a capability. Stop keeps files, branching never rolls them back, and Reset keeps messages and outputs. Cards show relative paths, never runtime identities. A continuation whose Workspace copy failed opens empty and never claims the files survived.
 - Agent is a per-turn choice in personal chats. When it cannot run, explain why and block the send without changing the user's selections.
 - Artifact previews open only by user action. Historical answers keep pointing at their own artifact versions and files (`sandbox:` links), and thumbnails never run scripts.
 - Project surfaces use current Project catalogs and never fall back to personal resources. They show durable activity, never online presence, and Project chats never enter personal history or Memory.
