@@ -4,8 +4,9 @@ import { providerTemplateIds } from "../../../lib/domain/providerTemplates";
 import { parseChatRoutePath } from "../../../lib/domain/chatRoute";
 import { keepAccountMcpDefault } from "./chatDefaults";
 
-/** Workspace's admitted contract and tool schemas exceed Fake QSA's 8k seed
- * window. Bound only this disposable fake fixture; normal budgeting stays on.
+/** Pins Fake QSA's window at 64k so Workspace's admitted contract and tool
+ * schemas fit (the seed now matches; the specs that relied on this keep it).
+ * Bound only this disposable fake fixture; normal budgeting stays on.
  * The caller owns setup/teardown and must run its spec alone with one worker. */
 export async function prepareWorkspaceFakeContext(prisma: PrismaClient): Promise<() => Promise<void>> {
   expect(process.env.AIQSA_STATEFUL_TEST_TARGET).toBe("DISPOSABLE");
