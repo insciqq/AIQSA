@@ -91,6 +91,7 @@ Code: `lib/server/telegram/`.
 
 ## Workspace and Agent runs
 
+- Interactive chats admit Workspace whenever the installation offers it and the model calls tools (operator decision 2026-10-20), so its contract and tool schemas ride on every such request (accepted cost). A Workspace admission refusal offers sending that message once without Workspace.
 - Workspace admission freezes the runtime, image, tool catalog, network policy, authority and secret revisions. The server controls sandbox identity and VM lifecycle; execution and export are exclusive per chat. Guests receive verified originals and the owner's personal secrets under `agent_docs/SECURITY.md`.
 - Every terminal path retires guest execution authority: it stops registered processes, or stops the VM (disk intact) when execution state is unknown. Stop keeps the environment; a successful turn leaves no background processes. Completion requires closed output obligations; an export failure keeps the answer. Path escapes fail closed and links or special files are skipped visibly.
 - Vision-capable models read images natively. Workspace files, and chat images for tool-calling models without vision, reach a model only through admitted System Vision, whose results are untrusted. A Knowledge answer gets the current images as one frozen description: untrusted request context, never evidence.
