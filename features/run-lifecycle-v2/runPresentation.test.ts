@@ -345,18 +345,22 @@ describe("run lifecycle v2 presentation", () => {
     });
   });
 
-  it("reads results only for a model request after shown tool or Knowledge work", () => {
+  it("marks a model request after shown tool or Knowledge work, which waits with the run's own phrase", () => {
     const model = summary({ stage: "model", status: "waiting" });
     const files = summary({ stage: "files", status: "running" });
     const knowledge = summary({ stage: "knowledge", status: "running" });
     const tool = { data: { artifactType: "tool_call", payload: { name: "fetch_url", origin: "web_fetch", round: 1,
       serverName: "Web", status: "requested" } }, type: "artifact" } satisfies RunEventView;
     const heading = summary({ heading: "Comparing the two pages", stage: "reasoning", status: "running" });
-    expect(presentRunLifecycleV2(state({ events: [tool, model] })).activity).toMatchObject({ kind: "results", label: "Reading results…" });
+    expect(presentRunLifecycleV2(state({ events: [tool, model], runId: "run-tools" })).activity)
+      .toMatchObject({ kind: "results", label: runWaitingPhraseV2("run-tools") });
     expect(presentRunLifecycleV2(state({ events: [knowledge, model] })).activity).toMatchObject({ kind: "results" });
     expect(presentRunLifecycleV2(state({ events: [files, model] })).activity).toMatchObject({ kind: "provider" });
     expect(presentRunLifecycleV2(state({ events: [tool, model, heading] })).activity)
-      .toMatchObject({ kind: "results", label: "Reading results…", reasoningHeading: "Comparing the two pages" });
+      .toMatchObject({ kind: "results", label: runWaitingPhraseV2(null), reasoningHeading: "Comparing the two pages" });
+    // No answer ever reads "Reading results…" (operator decision 2026-10-21).
+    expect(presentRunLifecycleV2(state({ events: [tool, model, tool, model], runId: "run-loop" })).activity?.label)
+      .toBe(runWaitingPhraseV2("run-loop"));
     // Retired stages name nothing.
     for (const stage of ["search", "compute", "preview"]) {
       expect(presentRunLifecycleV2(state({ events: [summary({ stage, status: "running" })] }))).toEqual({ kind: "idle", runId: null });
