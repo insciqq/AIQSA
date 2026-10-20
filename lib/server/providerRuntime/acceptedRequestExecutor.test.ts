@@ -282,7 +282,11 @@ describe("accepted provider request executor", () => {
     it.each([
       ["a 502", gateway502],
       ["a stream that dropped before any output", sse(created, { type: "response.output_item.done", output_index: 0,
-        item: { type: "reasoning", summary: [] } })]
+        item: { type: "reasoning", summary: [] } })],
+      ["a stream that dropped after only reasoning summary progress", sse(created,
+        { type: "response.reasoning_summary_part.added", item_id: "rs-1", output_index: 0, summary_index: 0, part: { type: "summary_text", text: "" } },
+        { type: "response.reasoning_summary_text.delta", item_id: "rs-1", output_index: 0, summary_index: 0, delta: "**Reading the image**" },
+        { type: "response.reasoning_summary_text.done", item_id: "rs-1", output_index: 0, summary_index: 0, text: "**Reading the image**" })]
     ])("still sends again on the bearer-auth root after %s", async (_label, first) => {
       const call = await bearer([first, completed]);
       await expect(call.run()).resolves.toMatchObject({ finalText: "settled" });

@@ -17,6 +17,7 @@ import {
 import { formatMemoryUiCopy, memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { decodeThreadSearchActivitySnapshot, mergeThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, terminalContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
+import { decodeReasoningHeading } from "@/lib/domain/reasoningHeading";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
@@ -40,12 +41,14 @@ export type RunLifecycleStateV2 = Readonly<{
 }>;
 
 export type RunActivityKindV2 =
-  | "compute"
   | "compaction"
+  | "files"
+  | "knowledge"
   | "preparing"
-  | "preview"
   | "provider"
   | "queued"
+  /** A model request after tool or Knowledge work: it reads their results. */
+  | "results"
   | "search"
   | "synthesis"
   | "tool";
@@ -56,6 +59,10 @@ export type RunPresentationV2 = Readonly<{
     label: string;
     budget?: ThreadToolBudgetWarning;
     origin?: ThreadToolActivityOrigin;
+    /** The model's latest streamed reasoning heading since this activity
+     * began: untrusted, bounded plain text that replaces the waiting label
+     * only where the user shows reasoning. */
+    reasoningHeading?: string;
     serverName?: string;
     toolName?: string;
   }>;
@@ -78,6 +85,9 @@ export type RunPresentationV2 = Readonly<{
     | "recoverable_error"
     | "streaming"
     | "terminal_error";
+  /** This run streamed reasoning headings: its process line keeps its slot
+   * while the answer text streams. */
+  reasoningObserved?: true;
   runId: string | null;
 }>;
 
@@ -175,7 +185,8 @@ function contextCompactionCycles(
   return [...cycles.values()].sort((left, right) => left.cycle - right.cycle);
 }
 
-function activityFromEvent(event: RunEventView, index: number): ActivitySignal | null {
+/** `resultsPending`: tool or Knowledge work was shown earlier in this feed. */
+function activityFromEvent(event: RunEventView, index: number, resultsPending: boolean): ActivitySignal | null {
   if (event.type !== "artifact" || !isRecord(event.data)) return null;
   const payload = eventPayload(event);
   const artifactType = event.data.artifactType;
@@ -210,24 +221,17 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
 
   if (artifactType !== "summary") return null;
 
-  if (payload.stage === "search" && payload.status === "running") {
-    return { index, kind: "search" };
-  }
-
+  // Server phases (`liveRunPhaseStatus`): the server names the phase, the words are ours.
   if (payload.stage === "tools" && payload.status === "running") {
     return { index, kind: "tool", ...toolActivityMetadata(payload) };
   }
 
-  if (payload.stage === "compute" && payload.status === "running") {
-    return { index, kind: "compute" };
-  }
-
-  if (payload.stage === "preview" && payload.status === "running") {
-    return { index, kind: "preview" };
+  if ((payload.stage === "files" || payload.stage === "knowledge") && payload.status === "running") {
+    return { index, kind: payload.stage === "files" ? "files" : "knowledge" };
   }
 
   if (payload.stage === "model" && payload.status === "waiting") {
-    return { index, kind: "provider" };
+    return { index, kind: resultsPending ? "results" : "provider" };
   }
 
   return null;
@@ -489,7 +493,34 @@ export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null
   return segments.length > 0 ? segments.join(" · ") : null;
 }
 
-function activityLabel(signal: Omit<ActivitySignal, "index">): string {
+/**
+ * The neutral waiting phrases (operator decision 2026-10-20). An answer shows
+ * one of them while the model works without a more specific status: chosen
+ * from its run id, so it stays the same across renders and reconnects, never
+ * rotates, and never names work that is not happening.
+ */
+export const RUN_WAITING_PHRASES_V2 = Object.freeze([
+  "Thinking…",
+  "Pondering…",
+  "Mulling it over…",
+  "Working on it…",
+  "Considering…",
+  "Reflecting…",
+  "Deliberating…",
+  "Musing…"
+] as const);
+
+/** The run's waiting phrase (FNV-1a of its id); a run not yet accepted has none of its own. */
+export function runWaitingPhraseV2(runId: string | null): string {
+  if (!runId) return RUN_WAITING_PHRASES_V2[0];
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < runId.length; index += 1) {
+    hash = Math.imul(hash ^ runId.charCodeAt(index), 0x01000193);
+  }
+  return RUN_WAITING_PHRASES_V2[(hash >>> 0) % RUN_WAITING_PHRASES_V2.length]!;
+}
+
+function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | null): string {
   switch (signal.kind) {
     case "synthesis":
       return signal.budget
@@ -499,14 +530,16 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
       return "Searching the web…";
     case "tool":
       return `${describeToolCallV2(signal, "running")}…`;
-    case "compute":
-      return "Computing…";
     case "compaction":
       return "Compacting context…";
-    case "preview":
-      return "Rendering preview…";
+    case "files":
+      return "Reading files…";
+    case "knowledge":
+      return "Searching Knowledge…";
+    case "results":
+      return "Reading results…";
     case "provider":
-      return "Thinking…";
+      return runWaitingPhraseV2(runId);
   }
 }
 
@@ -814,15 +847,17 @@ export function presentToolActivityV2(
     : null;
 }
 
-function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {
+function statusActivity(status: RunLifecycleStatusV2 | null | undefined, runId: string | null) {
   if (status === "queued") {
     return { kind: "queued" as const, label: "Queued" };
   }
-  if (status === "preparing") {
+  // Until the server accepts the run (and names it) the request is still
+  // being prepared; only an accepted run has its own waiting phrase.
+  if (status === "preparing" || !runId && (status === "in_progress" || status === "streaming")) {
     return { kind: "preparing" as const, label: "Preparing request…" };
   }
   if (status === "in_progress" || status === "streaming") {
-    return { kind: "provider" as const, label: "Thinking…" };
+    return { kind: "provider" as const, label: runWaitingPhraseV2(runId) };
   }
   return null;
 }
@@ -905,6 +940,8 @@ export function presentRunLifecycleV2(
   );
   const activitySignals: ActivitySignal[] = [];
   let latestTokenIndex = -1;
+  let latestReasoning: Readonly<{ heading: string; index: number }> | null = null;
+  let resultsPending = false;
   let eventFailure: RunFailureV2 | null = null;
   const settledMemorySearchCalls = new Set<string>();
   const activeMemorySearchCalls = new Set<string>();
@@ -912,6 +949,14 @@ export function presentRunLifecycleV2(
   for (const [index, event] of state.events.entries()) {
     if (event.type === "token") {
       latestTokenIndex = index;
+      continue;
+    }
+
+    // A reasoning heading is progress of the current phase, never a phase.
+    const heading = event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "summary"
+      ? decodeReasoningHeading(event.data.payload) : null;
+    if (heading) {
+      latestReasoning = { heading, index };
       continue;
     }
 
@@ -927,8 +972,9 @@ export function presentRunLifecycleV2(
     }
     const activity = lateNativeStart ? null : nativeSearch && activeMemorySearchCalls.size > 0
       ? { index, kind: "tool" as const, origin: "memory" as const, serverName: "Memory", toolName: "memory_search" }
-      : activityFromEvent(event, index);
+      : activityFromEvent(event, index, resultsPending);
     if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
+    resultsPending ||= activity?.kind === "tool" || activity?.kind === "knowledge";
 
     if (event.type === "error") {
       terminal = "error";
@@ -1014,23 +1060,28 @@ export function presentRunLifecycleV2(
 
   const selectedActivity = activitySignals.at(-1) ?? null;
   if (latestTokenIndex >= 0 && latestTokenIndex >= (selectedActivity?.index ?? -1)) {
-    return present({ kind: "streaming", runId: state.runId });
+    return present({ kind: "streaming", runId: state.runId, ...(latestReasoning ? { reasoningObserved: true as const } : {}) });
   }
+  // Only a heading the model streamed after the current phase began names it.
+  const reasoningHeading = latestReasoning && latestReasoning.index > latestTokenIndex &&
+    latestReasoning.index > (selectedActivity?.index ?? -1) ? latestReasoning.heading : null;
 
   if (selectedActivity) {
     const { index: _index, ...signal } = selectedActivity;
     return present({
       activity: {
         ...signal,
-        label: activityLabel(signal)
+        label: activityLabel(signal, state.runId),
+        ...(reasoningHeading && (signal.kind === "provider" || signal.kind === "results") ? { reasoningHeading } : {})
       },
       kind: "activity",
       runId: state.runId
     });
   }
 
-  const activity = statusActivity(state.status);
+  const activity = statusActivity(state.status, state.runId);
   return present(activity
-    ? { activity, kind: "activity", runId: state.runId }
+    ? { activity: { ...activity, ...(reasoningHeading && activity.kind === "provider" ? { reasoningHeading } : {}) },
+        kind: "activity", runId: state.runId }
     : { kind: "idle", runId: state.runId });
 }

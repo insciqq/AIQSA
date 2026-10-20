@@ -316,6 +316,55 @@ describe("Run lifecycle v2", () => {
     );
   });
 
+  it("shows the model's reasoning heading as plain text only where reasoning is shown", () => {
+    const thinking = presentation({ activity: { kind: "provider", label: "Thinking…",
+      reasoningHeading: "<b>Checking</b> the diagonals" }, kind: "activity", runId: "run-heading" });
+    const { rerender } = render(<RunAnswerV2 content="" presentation={thinking} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent("<b>Checking</b> the diagonals");
+    expect(screen.getByTestId("run-status-line").querySelector("b")).toBeNull();
+    rerender(<RunAnswerV2 content="" presentation={thinking} showReasoning={false} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Thinking…$/u);
+    // A running tool keeps its label over the heading.
+    rerender(<RunAnswerV2 content="" presentation={thinking}
+      toolActivity={{ calls: [{ origin: "web_search", round: 1, serverName: "Web search", status: "running", toolName: "search_web" }] }} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Searching the web…$/u);
+  });
+
+  it("lets a phase that began after the tool calls replace their stale running label", () => {
+    const toolActivity = { calls: [{ origin: "web_search" as const, round: 1, serverName: "Web search",
+      status: "running" as const, toolName: "search_web" }] };
+    const reading = presentation({ activity: { kind: "results", label: "Reading results…" }, kind: "activity", runId: "run-results" });
+    const { rerender } = render(<RunAnswerV2 content="" presentation={reading} toolActivity={toolActivity} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Reading results…$/u);
+    rerender(<RunAnswerV2 content="" toolActivity={toolActivity} presentation={presentation({ activity: { kind: "results",
+      label: "Reading results…", reasoningHeading: "Comparing both sources" }, kind: "activity", runId: "run-results" })} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Comparing both sources$/u);
+    // A bare status (a reload without the live feed) never hides a running tool.
+    rerender(<RunAnswerV2 content="" toolActivity={toolActivity}
+      presentation={presentation({ activity: { kind: "provider", label: "Thinking…" }, kind: "activity", runId: "run-results" })} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Searching the web…$/u);
+  });
+
+  it("keeps the line of an answer that streamed thinking while its text streams, then settles it in place", () => {
+    const streaming = presentation({ kind: "streaming", reasoningObserved: true, runId: "run-thinking" });
+    const { rerender } = render(<RunAnswerV2 content="Ninety" presentation={streaming} workDurationMs={12_000} />);
+    const pending = screen.getByTestId("answer-process-pending");
+    expect(pending).toHaveTextContent(/^Thought for 12s$/u);
+    expect(pending.tagName).toBe("DIV");
+    expect(screen.queryByTestId("run-status-line")).toBeNull();
+    // Thinking that already streamed (Anthropic) opens in the same fold.
+    rerender(<RunAnswerV2 artifact={{ citations: [], reasoningText: ["Counting each pair."], sources: [] }}
+      content="Ninety" presentation={streaming} workDurationMs={12_000} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(/^Thought for 12s/u);
+    rerender(<RunAnswerV2 artifact={{ citations: [], reasoningText: ["Counting each pair."], sources: [], workDurationMs: 11_000 }}
+      content="Ninety-two" presentation={presentation({ kind: "complete", runId: "run-thinking" })} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(/^Thought for 11s/u);
+    // Hidden reasoning shows no line while the text streams.
+    rerender(<RunAnswerV2 content="Ninety" presentation={streaming} showReasoning={false} workDurationMs={12_000} />);
+    expect(screen.queryByTestId("answer-process-pending")).toBeNull();
+    expect(screen.queryByTestId("tool-activity-disclosure")).toBeNull();
+  });
+
   it("restores the semantic tool status from persisted running activity", () => {
     render(
       <RunAnswerV2

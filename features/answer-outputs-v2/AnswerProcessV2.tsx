@@ -126,6 +126,8 @@ export type AnswerProcessV2Props = Readonly<{
   onPinSkill?(skillId: string): Promise<void>;
   pinnedSkillIds?: readonly string[];
   memorySources?: readonly MemoryAnswerSource[];
+  /** The run streamed thinking whose text arrives with the settled answer: the line keeps its slot meanwhile. */
+  reasoningPending?: boolean;
   reasoningTexts?: readonly string[];
   /** Part of the thinking was too long to keep or show; the fold says so. */
   reasoningTruncated?: boolean;
@@ -153,6 +155,7 @@ export function AnswerProcessV2({
   onPinSkill,
   pinnedSkillIds = [],
   memorySources = [],
+  reasoningPending = false,
   reasoningTexts = [],
   reasoningTruncated = false,
   runId = null,
@@ -211,7 +214,7 @@ export function AnswerProcessV2({
   const label = timeline
     ? workspaceProcessLabelV2({ live, workDurationMs })
     : answerProcessLabelV2({
-        hasReasoning: reasoning.length > 0,
+        hasReasoning: reasoning.length > 0 || reasoningPending,
         memoryCount: memories.length,
         pastChatCount: pastChats.length,
         stepCount: calls.length,
@@ -219,6 +222,20 @@ export function AnswerProcessV2({
       });
   const displayLabel = [searchSummary, label, compactionLabel].filter((value): value is string => Boolean(value)).join(" · ");
   if (!displayLabel) return warning;
+  // Nothing to unfold yet (the thinking arrives with the settled answer): the
+  // same row as plain text, so the line neither disappears nor moves.
+  if (!live && !compactionLabel && !timeline && !reasoning && searchEngines.length === 0 && calls.length === 0 &&
+    listedMemorySources.length === 0) {
+    return (
+      <>
+        <div className="v2-answer-process" data-pending="true" data-testid="answer-process-pending">
+          <span className="v2-answer-process-slot" aria-hidden="true" />
+          <span className="v2-answer-process-label">{displayLabel}</span>
+        </div>
+        {warning}
+      </>
+    );
+  }
 
   return (
     <>

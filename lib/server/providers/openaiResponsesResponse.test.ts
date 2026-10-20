@@ -14,7 +14,7 @@ import {
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 import { observedFailure } from "./providerObservability";
-import { providerStreamDrop } from "./streamDrop";
+import { providerOutputObserved, providerStreamDrop } from "./streamDrop";
 
 function responseBody(frames: readonly string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -896,6 +896,87 @@ describe("private Responses tool argument observations", () => {
     expect(new Set(observed.map(event => event.callId)).size).toBe(PROVIDER_RESPONSE_MAX_TOOL_CALLS);
     await expect(collectSse(sseInput(framesFor(PROVIDER_RESPONSE_MAX_TOOL_CALLS + 1), { onToolArguments: async () => {} })))
       .rejects.toThrow("openai_tool_call_invalid");
+  });
+});
+
+describe("live reasoning summary headings", () => {
+  const frame = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+  const reasoningItem = {
+    id: "rs-1",
+    summary: [
+      { text: "**Setting up queen enumeration**", type: "summary_text" },
+      { text: "**Проверяю подсчёт диагоналей**\n\nСчитаю PRIVATE_SUMMARY_BODY пары.", type: "summary_text" }
+    ],
+    type: "reasoning"
+  };
+  const part = (summaryIndex: number) => ({ item_id: "rs-1", output_index: 0, summary_index: summaryIndex });
+  const progress = [
+    // Codex LB: a whole bold title in one delta.
+    { ...part(0), part: { text: "", type: "summary_text" }, type: "response.reasoning_summary_part.added" },
+    { ...part(0), delta: "**Setting up queen enumeration**", type: "response.reasoning_summary_text.delta" },
+    { ...part(0), text: "**Setting up queen enumeration**", type: "response.reasoning_summary_text.done" },
+    { ...part(0), part: { text: "**Setting up queen enumeration**", type: "summary_text" }, type: "response.reasoning_summary_part.done" },
+    // OpenAI: a title streamed in pieces, then its paragraph.
+    { ...part(1), part: { text: "", type: "summary_text" }, type: "response.reasoning_summary_part.added" },
+    ...["**Проверяю подсчёт", " диагоналей**", "\n\nСчитаю PRIVATE_SUMMARY_BODY пары."].map((delta) => ({
+      ...part(1), delta, type: "response.reasoning_summary_text.delta"
+    })),
+    { ...part(1), text: reasoningItem.summary[1]!.text, type: "response.reasoning_summary_text.done" }
+  ];
+  const head = [
+    frame({ response: { id: "resp-reasoning", status: "in_progress" }, type: "response.created" }),
+    frame({ item: { id: "rs-1", summary: [], type: "reasoning" }, output_index: 0, type: "response.output_item.added" })
+  ];
+  const tail = [
+    frame({ item: reasoningItem, output_index: 0, type: "response.output_item.done" }),
+    frame({ delta: "Ninety-two", type: "response.output_text.delta" }),
+    frame({ response: { id: "resp-reasoning", output: [reasoningItem, { content: [{ text: "Ninety-two", type: "output_text" }],
+      role: "assistant", type: "message" }], status: "completed", usage: { input_tokens: 3, output_tokens: 5, total_tokens: 8 } },
+    type: "response.completed" })
+  ];
+  const headings = (events: readonly ModelRunSseEvent[]) => events.flatMap((event) =>
+    event.type === "artifact" && event.data.artifactType === "summary" && (event.data.payload as { stage?: unknown }).stage === "reasoning"
+      ? [event.data.payload] : []);
+
+  it("streams one bounded heading per summary part and leaves the final reasoning unchanged", async () => {
+    const live = await collectSse(sseInput([...head, ...progress.map(frame), ...tail]));
+    const plain = await collectSse(sseInput([...head, ...tail]));
+
+    expect(headings(live.events)).toEqual([
+      { heading: "Setting up queen enumeration", stage: "reasoning", status: "running" },
+      { heading: "Проверяю подсчёт диагоналей", stage: "reasoning", status: "running" }
+    ]);
+    // Headings come before the answer text; nothing else changes.
+    const firstToken = live.events.findIndex((event) => event.type === "token");
+    expect(live.events.findIndex((event) => headings([event]).length > 0)).toBeLessThan(firstToken);
+    expect(live.events.filter((event) => headings([event]).length === 0)).toEqual(plain.events);
+    expect(live.result).toEqual(plain.result);
+    expect(plain.events).toContainEqual({ data: { artifactType: "reasoning",
+      payload: { id: "rs-1", summary: reasoningItem.summary, type: "reasoning" } }, type: "artifact" });
+    expect(JSON.stringify(headings(live.events))).not.toContain("PRIVATE_SUMMARY_BODY");
+  });
+
+  it("names a part announced only by its end and ignores malformed progress", async () => {
+    const live = await collectSse(sseInput([...head,
+      frame({ ...part(0), text: "Checking each row. Then the columns.", type: "response.reasoning_summary_text.done" }),
+      frame({ ...part(1), delta: 42, type: "response.reasoning_summary_text.delta" }),
+      frame({ ...part(2), part: "not a part", type: "response.reasoning_summary_part.added" }),
+      ...tail]));
+    expect(headings(live.events)).toEqual([{ heading: "Checking each row", stage: "reasoning", status: "running" }]);
+    expect(live.result.finalText).toBe("Ninety-two");
+  });
+
+  it("follows parts of a server that sends no part identities", async () => {
+    const anonymous = progress.map(({ item_id: _item, summary_index: _index, ...event }) => event);
+    const live = await collectSse(sseInput([...head, ...anonymous.map(frame), ...tail]));
+    expect(headings(live.events).map((payload) => (payload as { heading: string }).heading))
+      .toEqual(["Setting up queen enumeration", "Проверяю подсчёт диагоналей"]);
+  });
+
+  it("ends a reasoning-only stream as a dropped request without observed output", async () => {
+    const error = await collectSse(sseInput([...head, ...progress.map(frame)])).then(() => null, (failure: unknown) => failure);
+    expect(providerStreamDrop(error)).toBe("truncated");
+    expect(providerOutputObserved(error)).toBe(false);
   });
 });
 
