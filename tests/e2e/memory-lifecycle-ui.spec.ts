@@ -339,21 +339,18 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   await settingsDialog.getByRole("button", { name: "Close settings" }).click();
   await expect(workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
-  const selectNewChatMode = async (itemName: RegExp) => {
-    await workspace.getByRole("button", { name: "New chat mode" }).click();
-    await page.getByRole("menu", { name: "New chat mode" })
-      .getByRole("menuitem", { name: itemName }).click();
-  };
+  // Temporary is the blank chat's header switch; each mode keeps its own draft.
+  const temporaryToggle = page.getByTestId("header-temporary-toggle");
   await workspace.getByRole("button", { name: "New chat", exact: true }).click();
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Normal draft marker");
-  await selectNewChatMode(/Temporary chat/);
-  await expect(page.getByTestId("header-temporary-indicator")).toBeVisible();
+  await temporaryToggle.click();
+  await expect(temporaryToggle).toHaveAttribute("aria-pressed", "true");
   await composer.fill("Temporary draft marker");
-  await selectNewChatMode(/Normal/);
-  await expect(page.getByTestId("header-temporary-indicator")).toHaveCount(0);
+  await temporaryToggle.click();
+  await expect(temporaryToggle).toHaveAttribute("aria-pressed", "false");
   await expect(composer).toHaveValue("Normal draft marker");
-  await selectNewChatMode(/Temporary chat/);
+  await temporaryToggle.click();
   await expect(composer).toHaveValue("Temporary draft marker");
   await page.getByRole("button", { name: "Send message" }).click();
 

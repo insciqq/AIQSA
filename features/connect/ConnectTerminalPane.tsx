@@ -240,11 +240,11 @@ export function ConnectTerminalPane({
         linkHandler,
         scrollback: TERMINAL_SCROLLBACK,
         theme: {
-          background: cssValue("--v2-dark-color-code-bg", "#10161f"),
-          cursor: cssValue("--v2-dark-color-accent", "#38dfd0"),
-          cursorAccent: cssValue("--v2-dark-color-code-bg", "#10161f"),
-          foreground: cssValue("--v2-dark-color-text", "#e7edf5"),
-          selectionBackground: cssValue("--v2-dark-color-selection", "rgba(56, 223, 208, 0.3)")
+          background: cssValue("--v2-dark-color-code-bg", "#1e1f22"),
+          cursor: cssValue("--v2-dark-color-accent", "#e8e9eb"),
+          cursorAccent: cssValue("--v2-dark-color-code-bg", "#1e1f22"),
+          foreground: cssValue("--v2-dark-color-text", "#ececee"),
+          selectionBackground: cssValue("--v2-dark-color-selection", "rgba(255, 255, 255, 0.22)")
         }
       });
       const fit = new FitAddon();

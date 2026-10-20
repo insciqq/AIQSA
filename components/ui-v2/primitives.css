@@ -3,8 +3,18 @@
   background: var(--v2-color-surface);
 }
 
+/* Focus is a 2px ring in the text colour, never a glow. Text fields keep the
+   ring on their edge, softer, and step their border to text3. */
 .v2-focusable:focus-visible {
-  outline: 2px solid var(--v2-color-accent);
+  outline: 2px solid var(--v2-color-text);
+  outline-offset: 2px;
+}
+
+input.v2-focusable:focus-visible,
+textarea.v2-focusable:focus-visible,
+select.v2-focusable:focus-visible {
+  border-color: var(--v2-color-text3);
+  outline: 2px solid color-mix(in srgb, var(--v2-color-text) 45%, transparent);
   outline-offset: 2px;
 }
 
@@ -43,6 +53,7 @@
   cursor: pointer;
 }
 
+/* Primary is the ink fill; ghost and secondary stay outlined or bare. */
 .v2-button[data-tone="primary"] {
   border-color: var(--v2-color-accent);
   color: var(--v2-color-accent-ink);
@@ -67,7 +78,8 @@
 }
 
 .v2-button[data-tone="primary"]:hover:not(:disabled) {
-  filter: brightness(1.06);
+  border-color: color-mix(in srgb, var(--v2-color-accent) 86%, var(--v2-color-canvas));
+  background: color-mix(in srgb, var(--v2-color-accent) 86%, var(--v2-color-canvas));
 }
 
 .v2-button[data-tone="destructive"]:hover:not(:disabled) {
@@ -152,7 +164,8 @@
   animation: v2-spin 800ms linear infinite;
 }
 
-/* Switch: a 36×20 accent track; the thumb slides 16px when checked. */
+/* Switch: a 36×20 track, grey when off and ink when checked; the thumb
+   slides 16px when checked and takes the ink's contrast colour. */
 .v2-switch {
   display: inline-flex;
   align-items: center;
@@ -186,7 +199,7 @@
   width: 1rem;
   height: 1rem;
   border-radius: 50%;
-  background: var(--v2-color-surface);
+  background: var(--v2-color-switch-thumb-off);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
   transition: transform var(--v2-motion-fast);
 }
@@ -699,9 +712,15 @@ html[data-motion="off"] [data-tooltip]::after {
   pointer-events: auto;
 }
 
+/* The icon carries colour only for a state: success and error. An offer or
+   other info notice keeps it neutral. */
 .v2-notice-icon {
   flex: 0 0 auto;
   margin-top: 0.1875rem;
+  color: var(--v2-color-text2);
+}
+
+.v2-notice[data-kind="success"] .v2-notice-icon {
   color: var(--v2-color-ok);
 }
 

@@ -214,7 +214,7 @@ function NormalizedPassage({ blocks }: Readonly<{ blocks: readonly KnowledgeView
       {blocks.map((block, index) => (
         <section
           className={block.relation === "target"
-            ? "border-l-2 border-proof bg-proof/[0.045] px-3 py-2.5 text-ink"
+            ? "border-l-2 border-ink-muted bg-control-pressed px-3 py-2.5 text-ink"
             : "border-l-2 border-transparent px-3 py-2 text-ink-secondary"}
           data-citation-target={block.relation === "target" || undefined}
           key={`${block.pageStart}:${block.type}:${index}`}
@@ -265,7 +265,7 @@ function WorkbookRangeGrid({ range }: Readonly<{ range: KnowledgeViewerWorkbookR
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-xs font-semibold text-ink">{range.sheet}</span>
-          <span className="font-mono text-[11px] text-proof">{range.range}</span>
+          <span className="font-mono text-[11px] text-ink-secondary">{range.range}</span>
         </div>
         <span className="rounded-full border border-trace-subtle px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-ink-muted">
           {rangeRole(range.role)}
@@ -294,7 +294,7 @@ function WorkbookRangeGrid({ range }: Readonly<{ range: KnowledgeViewerWorkbookR
                     const cell = cells.get(`${row}:${column}`);
                     return (
                       <td
-                        className="min-w-28 border-r border-trace-subtle bg-proof/[0.045] px-2 py-1.5 align-top text-ink last:border-r-0"
+                        className="min-w-28 border-r border-trace-subtle bg-control-pressed px-2 py-1.5 align-top text-ink last:border-r-0"
                         key={column}
                       >
                         <span className="break-words [overflow-wrap:anywhere]">{cell?.display || "—"}</span>
@@ -336,7 +336,7 @@ function WorkbookEvidence({ workbook }: Readonly<{ workbook: KnowledgeViewerWork
       </h3>
       <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Cited workbook ranges">
         {workbook.ranges.map((range, index) => (
-          <span className="rounded-control border border-proof/30 bg-proof/[0.04] px-2 py-1 font-mono text-[11px] text-proof" key={`${range.sheet}:${range.range}:${range.role}:${index}`}>
+          <span className="rounded-control border border-trace-strong px-2 py-1 font-mono text-[11px] text-ink-secondary" key={`${range.sheet}:${range.range}:${range.role}:${index}`}>
             {range.sheet}!{range.range}
           </span>
         ))}
@@ -425,7 +425,7 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
             <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted" id="knowledge-visual-evidence-heading">
               Original visual evidence
             </h3>
-            <span className="font-mono text-[11px] text-proof">
+            <span className="font-mono text-[11px] text-ink-secondary">
               {pageLabel(value.locator.pageStart, value.locator.pageEnd)}
             </span>
           </div>
@@ -459,7 +459,7 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
             </p>
           ) : null}
           {value.visual.status === "available" ? (
-            <div className="mt-4 border-l-2 border-proof pl-4">
+            <div className="mt-4 border-l-2 border-ink-muted pl-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted">Bounded analysis</p>
               <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-ink">{value.visual.description}</p>
             </div>
@@ -478,12 +478,12 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
           <h3 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted" id="knowledge-exact-excerpt-heading">
             Cited passage
           </h3>
-          <span className="font-mono text-[11px] text-proof">
+          <span className="font-mono text-[11px] text-ink-secondary">
             {pageLabel(value.locator.pageStart, value.locator.pageEnd)}
           </span>
         </div>
         {heading ? <p className="mt-2 text-xs leading-5 text-ink-muted">{heading}</p> : null}
-        <blockquote className="mt-3 border-l-2 border-proof pl-4 text-[15px] leading-7 text-ink">
+        <blockquote className="mt-3 border-l-2 border-ink-muted pl-4 text-[15px] leading-7 text-ink">
           {value.excerpt}
         </blockquote>
         {value.excerptTruncated ? (
@@ -521,7 +521,7 @@ function ViewerDocument({ loaded }: Readonly<{ loaded: LoadedViewer }>) {
                     </span>
                   )}
                 </div>
-                <blockquote className="mt-2 whitespace-pre-wrap border-l-2 border-proof pl-4 text-sm leading-6 text-ink [overflow-wrap:anywhere]">
+                <blockquote className="mt-2 whitespace-pre-wrap border-l-2 border-ink-muted pl-4 text-sm leading-6 text-ink [overflow-wrap:anywhere]">
                   {excerpt.text}
                 </blockquote>
               </div>
@@ -627,10 +627,10 @@ function ViewerRail({
         role="dialog"
       >
         <header className="flex min-w-0 shrink-0 items-start gap-3 border-b border-trace-subtle px-4 py-3 sm:px-6">
-          <FileSearch className="mt-0.5 size-4 shrink-0 text-proof" aria-hidden="true" />
+          <FileSearch className="mt-0.5 size-4 shrink-0 text-ink-muted" aria-hidden="true" />
           <div className="min-w-0 flex-1">
             {eyebrow ? (
-              <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-proof">{eyebrow}</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-ink-muted">{eyebrow}</p>
             ) : null}
             <h2 className="mt-0.5 truncate text-sm font-semibold text-ink">{title}</h2>
             {available ? (

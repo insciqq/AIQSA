@@ -74,7 +74,7 @@ export function TemporaryChatIndicatorV2({ memory }: Readonly<{
         type="button"
         onClick={() => setOpen((value) => !value)}
       >
-        <UiV2Icon name="memory" />
+        <UiV2Icon name="incognito" />
         {memory.label}
       </button>
       {open ? (
@@ -278,6 +278,7 @@ export function WorkspaceHeaderV2({
   shareDisabled,
   supplementalActions = [],
   temporaryMemory,
+  temporaryToggle = null,
   title
 }: Readonly<{
   active: boolean;
@@ -351,6 +352,11 @@ export function WorkspaceHeaderV2({
   shareDisabled: boolean;
   supplementalActions?: readonly HeaderOverflowActionV2[];
   temporaryMemory: TemporaryChatHeaderMemoryV2 | null;
+  /**
+   * The blank personal chat's Temporary switch. A started chat cannot change
+   * mode, so it gives way to the Temporary label once the first message goes.
+   */
+  temporaryToggle?: Readonly<{ label: string; on: boolean; onToggle(): void }> | null;
   title: string;
 }>) {
   const displayTitle = chatTitleForDisplay(title);
@@ -458,7 +464,22 @@ export function WorkspaceHeaderV2({
             onOpenChange={contextPanel.setOpen}
           />
         ) : null}
-        {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
+        {temporaryToggle ? (
+          // The wrapper reuses the Temporary label's phone placement, which
+          // takes over the floating new-chat button on a blank chat.
+          <span className="v2-live-temporary">
+            <UiV2IconButton
+              aria-pressed={temporaryToggle.on}
+              className="v2-live-temporary-toggle"
+              data-testid="header-temporary-toggle"
+              icon="incognito"
+              label={temporaryToggle.label}
+              tooltip={temporaryToggle.on ? `${temporaryToggle.label}: on` : temporaryToggle.label}
+              tooltipSide="left"
+              onClick={temporaryToggle.onToggle}
+            />
+          </span>
+        ) : temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
         {/* The account menu lives in the sidebar footer (one entry, UX audit
             F11); the header carries only the chat's own actions. */}
         {active ? (

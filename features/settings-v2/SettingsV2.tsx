@@ -37,15 +37,15 @@ type SettingsIntentV2 =
 const SECTION_ORDER: readonly SettingsSectionV2[] = ["general", "account", "connections", "connected_apps", "data"];
 const SECTION_META: Record<SettingsSectionV2, Readonly<{ icon: UiV2IconName; label: string }>> = {
   general: { icon: "sun", label: "General" },
-  account: { icon: "assistant", label: "Account" },
+  account: { icon: "user", label: "Account" },
   connections: { icon: "plug", label: "Connections" },
   connected_apps: { icon: "link", label: "Claude Code & Codex" },
   data: { icon: "archive", label: "Data" }
 };
 
 const THEME_CAPTIONS: Record<ThemeId, string> = {
-  dark: "Deep navy",
-  light: "Cool paper",
+  dark: "Graphite",
+  light: "Paper",
   system: "Follow this device"
 };
 
