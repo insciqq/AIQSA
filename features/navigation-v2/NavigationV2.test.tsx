@@ -356,33 +356,20 @@ describe("Navigation v2", () => {
     expect(screen.queryByRole("button", { name: "Skip to message composer" })).toBeNull();
   });
 
-  it("routes Normal, Memory-off, and Temporary new-chat intents and marks the current mode", () => {
+  it("opens a normal chat from one New chat button with no mode menu", () => {
     const onNewChat = vi.fn();
-    sidebar({ currentNewChatMode: "EXCLUDED", onNewChat });
+    sidebar({ onNewChat });
 
     fireEvent.click(screen.getByRole("button", { name: "New chat" }));
     expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
-    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
-    expect(screen.getByRole("menuitem", { name: /Memory off/ })).toHaveAttribute(
-      "aria-current",
-      "true"
-    );
-    expect(screen.getByRole("menuitem", { name: /Normal/ })).not.toHaveAttribute("aria-current");
-    fireEvent.click(screen.getByRole("menuitem", { name: /Memory off/ }));
-    expect(onNewChat).toHaveBeenLastCalledWith("EXCLUDED");
-    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /Temporary chat/ }));
-    expect(onNewChat).toHaveBeenLastCalledWith("TEMPORARY");
+    // Temporary is the blank chat's header switch; Memory off is no longer offered.
+    expect(screen.queryByRole("button", { name: "New chat mode" })).toBeNull();
+    expect(screen.queryByText(/Memory off/)).toBeNull();
   });
 
   it("creates a root folder from the Folders header, not from the New-chat mode menu", () => {
     const onCreateFolder = vi.fn(async () => undefined);
     sidebar({ onCreateFolder });
-
-    // The mode menu carries only chat modes (UX audit F16).
-    fireEvent.click(screen.getByRole("button", { name: "New chat mode" }));
-    expect(screen.queryByRole("menuitem", { name: "New folder" })).toBeNull();
-    fireEvent.keyDown(screen.getByRole("menu", { name: "New chat mode" }), { key: "Escape" });
 
     // Reachable in one click even before the first folder exists.
     expect(screen.getByText("Folders")).toBeVisible();
@@ -1157,7 +1144,7 @@ describe("Navigation v2", () => {
     expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
   });
 
-  it("dismisses the mobile drawer after every personal new-chat mode", () => {
+  it("dismisses the mobile drawer after a new chat", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: true
     } as MediaQueryList)));
@@ -1178,18 +1165,6 @@ describe("Navigation v2", () => {
 
     fireEvent.click(openDrawer().getByRole("button", { name: "New chat" }));
     expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
-    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
-
-    let drawer = openDrawer();
-    fireEvent.click(drawer.getByRole("button", { name: "New chat mode" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /Memory off/ }));
-    expect(onNewChat).toHaveBeenLastCalledWith("EXCLUDED");
-    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
-
-    drawer = openDrawer();
-    fireEvent.click(drawer.getByRole("button", { name: "New chat mode" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: /Temporary chat/ }));
-    expect(onNewChat).toHaveBeenLastCalledWith("TEMPORARY");
     expect(shell).not.toHaveAttribute("data-mobile-sidebar");
   });
 
@@ -1456,22 +1431,6 @@ describe("Navigation v2", () => {
     fireEvent.click(trigger);
     fireEvent.focusIn(outsideTarget);
     expect(screen.queryByRole("menu", { name: "Chat actions: Selected brief" })).toBeNull();
-  });
-
-  it("dismisses the new-chat mode menu on Escape with focus returned to its trigger", () => {
-    const onNewChat = vi.fn();
-    sidebar({ onNewChat });
-    const trigger = screen.getByRole("button", { name: "New chat mode" });
-
-    fireEvent.click(trigger);
-    fireEvent.keyDown(
-      screen.getByRole("menuitem", { name: /Temporary chat/ }),
-      { key: "Escape" }
-    );
-
-    expect(screen.queryByRole("menu", { name: "New chat mode" })).toBeNull();
-    expect(trigger).toHaveFocus();
-    expect(onNewChat).not.toHaveBeenCalled();
   });
 
   it("shows the earlier-page control as busy, then as a manual Retry after a failed page", () => {

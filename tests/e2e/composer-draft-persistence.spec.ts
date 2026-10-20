@@ -130,9 +130,8 @@ test("temporary input leaves no draft, accounts stay isolated, and sign-out clea
   // The token helper waits for the shell; wait for workspace bootstrap before
   // changing the blank-chat mode so the route resolver cannot supersede it.
   await expect(composer(page)).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: "New chat mode" }).click();
-  await page.getByRole("menu", { name: "New chat mode" }).getByRole("menuitem", { name: /Temporary chat/u }).click();
-  await expect(page.getByTestId("header-temporary-indicator")).toBeVisible();
+  await page.getByTestId("header-temporary-toggle").click();
+  await expect(page.getByTestId("header-temporary-toggle")).toHaveAttribute("aria-pressed", "true");
   await composer(page).fill("Temporary input must stay volatile");
   await page.reload();
   await expect(composer(page)).toHaveValue("", { timeout: 30_000 });

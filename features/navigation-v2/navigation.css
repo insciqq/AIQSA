@@ -142,36 +142,20 @@
   stroke-width: 2;
 }
 
-/*
- * The New-chat split control is a quiet row per the prototype: no border box,
- * hover wash only, with the mode chevron kept as the split affordance.
- */
-/* New chat (PRD §4.2): one bordered split control on the surface — the
-   plus on the left, the mode chevron behind a hairline on the right. */
+/* New chat (PRD §4.2): one bordered button on the surface. A temporary chat
+   is a toggle in the blank chat's header, so there is no mode menu here. */
 .v2-new-chat-wrap {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 1.875rem;
   border: 1px solid var(--v2-color-border2);
   border-radius: var(--v2-radius-s);
   background: var(--v2-color-surface);
 }
 
-/* No overflow clipping on the wrap (it would swallow the mode menu, UX audit
-   v2 A1): the two halves round their own outer corners instead. */
 .v2-new-chat-main {
-  border-radius: calc(var(--v2-radius-s) - 1px) 0 0 calc(var(--v2-radius-s) - 1px);
-}
-
-.v2-new-chat-menu-trigger {
-  border-radius: 0 calc(var(--v2-radius-s) - 1px) calc(var(--v2-radius-s) - 1px) 0;
-}
-
-.v2-new-chat-main,
-.v2-new-chat-menu-trigger {
   min-height: 2.125rem;
   border: 0;
-  border-radius: 0;
+  border-radius: calc(var(--v2-radius-s) - 1px);
   color: var(--v2-color-text);
   background: transparent;
   cursor: pointer;
@@ -193,20 +177,8 @@
   stroke-width: 2;
 }
 
-.v2-new-chat-menu-trigger {
-  display: grid;
-  place-items: center;
-  border-left: 1px solid var(--v2-color-border);
-  color: var(--v2-color-text2);
-}
-
-.v2-new-chat-main:hover,
-.v2-new-chat-menu-trigger:hover {
+.v2-new-chat-main:hover {
   background: var(--v2-color-hover);
-}
-
-.v2-new-chat-menu {
-  width: 15rem;
 }
 
 /* Sidebar-scoped chat filter: one quiet field, never a global command search. */
@@ -1028,7 +1000,6 @@
 
 @media (hover: none), (pointer: coarse) {
   .v2-new-chat-main,
-  .v2-new-chat-menu-trigger,
   .v2-navigation-filter input,
   .v2-folder-toggle,
   .v2-chat-row,
@@ -1039,10 +1010,6 @@
   .v2-navigation-retry,
   .v2-navigation-section-status .v2-navigation-retry {
     min-height: 2.75rem;
-  }
-
-  .v2-new-chat-wrap {
-    grid-template-columns: minmax(0, 1fr) 2.75rem;
   }
 
   .v2-chat-menu-trigger {
@@ -1333,8 +1300,7 @@ html[data-motion="off"] .v2-sidebar-floats {
 .v2-rail-button:disabled,
 .v2-navigation-destination:disabled,
 .v2-chat-row:disabled,
-.v2-new-chat-main:disabled,
-.v2-new-chat-menu-trigger:disabled {
+.v2-new-chat-main:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

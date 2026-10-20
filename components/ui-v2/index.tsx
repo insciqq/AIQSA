@@ -46,6 +46,7 @@ export type UiV2IconName =
   | "globe"
   | "history"
   | "image"
+  | "incognito"
   | "layers"
   | "studio"
   | "library"
@@ -214,6 +215,12 @@ export function UiV2IconSprite() {
           <rect x="3" y="4" width="18" height="16" rx="2" />
           <circle cx="8.5" cy="9.5" r="1.5" />
           <path d="m21 16-5-5-8 8" />
+        </symbol>
+        <symbol id="v2-icon-incognito" viewBox="0 0 24 24">
+          <path d="M2 11h20M5 11l1.6-5.6a1.5 1.5 0 0 1 1.9-1L12 5.5l3.5-1.1a1.5 1.5 0 0 1 1.9 1L19 11" />
+          <circle cx="7" cy="17" r="3" />
+          <circle cx="17" cy="17" r="3" />
+          <path d="M10 17a2 2 0 0 1 4 0" />
         </symbol>
         <symbol id="v2-icon-layers" viewBox="0 0 24 24">
           <path d="m12 3 9 5-9 5-9-5z" />

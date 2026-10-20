@@ -1000,20 +1000,16 @@ test("a default Assistant starts every new personal chat with its intro; Remove 
     await expect(selector(page)).toHaveAccessibleName(`Assistant: ${daily.name}`);
 
     // A Temporary chat never starts with the personal default; a Normal one does again.
-    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
-    const newChatMode = async (mode: RegExp) => {
-      await navigation.getByRole("button", { name: "New chat mode" }).click();
-      await page.getByRole("menu", { name: "New chat mode" }).getByRole("menuitem", { name: mode }).click();
-    };
+    const temporaryToggle = page.getByTestId("header-temporary-toggle");
     const temporary = page.getByTestId("header-temporary-indicator");
-    await newChatMode(/^Temporary chat/u);
-    await expect(temporary).toBeVisible();
+    await temporaryToggle.click();
+    await expect(temporaryToggle).toHaveAttribute("aria-pressed", "true");
     // The strip shows once the Assistants are loaded, and only in a chat without one.
     await expect(strip.getByRole("button", { name: pinned.name })).toBeVisible();
     await expect(selector(page)).toHaveAttribute("data-state", "empty");
     await expect(intro).toHaveCount(0);
-    await newChatMode(/^Normal/u);
-    await expect(temporary).toHaveCount(0);
+    await temporaryToggle.click();
+    await expect(temporaryToggle).toHaveAttribute("aria-pressed", "false");
     await expect(selector(page)).toHaveAccessibleName(`Assistant: ${daily.name}`);
 
     // An archived default is never applied; Chat defaults names it and offers Clear.
