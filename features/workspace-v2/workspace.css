@@ -1127,6 +1127,7 @@
 
 .v2-live-composer-error {
   display: flex;
+  flex-wrap: wrap;
   width: min(var(--v2-measure), 100%);
   margin: 0 auto;
   align-items: center;
@@ -1142,10 +1143,20 @@
 }
 
 .v2-live-composer-error > span {
+  flex: 1 1 12rem;
   min-width: 0;
 }
 
-.v2-live-composer-error > .v2-button {
+/* Recovery actions stay together and move whole under the reason when the
+   row is too narrow for both. */
+.v2-live-composer-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-left: auto;
+  gap: 0.5rem;
+}
+
+.v2-live-composer-error-actions > .v2-button {
   min-height: 2rem;
   flex: none;
   padding: 0.25rem 0.625rem;

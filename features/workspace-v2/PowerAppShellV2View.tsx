@@ -266,10 +266,14 @@ export function ComposerOperationErrorV2({
   return error ? (
     <div className="v2-live-composer-error" role={live ? "alert" : "status"}>
       <span>{error}</span>
-      {retryable ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
-      {actions.map((action) => (
-        <UiV2Button key={action.label} onClick={action.onClick}>{action.label}</UiV2Button>
-      ))}
+      {retryable || actions.length > 0 ? (
+        <div className="v2-live-composer-error-actions">
+          {retryable ? <UiV2Button onClick={onRetry}>Retry</UiV2Button> : null}
+          {actions.map((action) => (
+            <UiV2Button key={action.label} onClick={action.onClick}>{action.label}</UiV2Button>
+          ))}
+        </div>
+      ) : null}
     </div>
   ) : null;
 }
