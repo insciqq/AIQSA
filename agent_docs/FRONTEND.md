@@ -18,6 +18,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Only the person who started a run may expand its bounded, redacted MCP request and response details. No other raw payload is shown.
 - Per-answer usage is never shown. Users see their own monthly allowance in Settings and a composer warning near the limit, never installation amounts.
 - Time and animation never invent progress, readiness, cost or completion. A loading failure is not an empty result, and a Knowledge retrieval failure is never shown as "the documents contain no answer".
+- The live status names only real work: the server sends the phase (reading stored images, searching Knowledge, reading tool results) and the client owns its words. Without one, the line shows the model's own latest streamed reasoning heading, untrusted and bounded to one plain line, where the user shows reasoning; otherwise one neutral phrase chosen per answer that never rotates or names work that is not happening (operator decision 2026-10-20).
 
 ## State
 

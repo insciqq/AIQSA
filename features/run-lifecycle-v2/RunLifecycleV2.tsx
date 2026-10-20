@@ -25,10 +25,12 @@ import {
 } from "react";
 import {
   describeToolCallV2,
+  runWaitingPhraseV2,
   settledRunPresentationV2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
   type AnnouncedRunPresentationV2,
+  type RunActivityKindV2,
   type RunAnnouncerMemoryV2,
   type RunPresentationV2
 } from "./runPresentation";
@@ -36,6 +38,8 @@ import {
 type MaybePromise = Promise<unknown> | unknown;
 
 type ToolCallV2 = ThreadToolActivity["calls"][number];
+
+const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "knowledge", "results"]);
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
   let call: ToolCallV2 | undefined;
@@ -308,12 +312,21 @@ export function RunAnswerV2({
   // The live status occupies the process line's slot until the first answer
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
+  const activity = presentation.activity;
+  // The model's own heading replaces only the waiting label, and only where reasoning is shown.
+  const activityLabel = activity ? (showReasoning && activity.reasoningHeading) || activity.label : null;
   const liveLabel = presentation.kind === "activity"
-    ? presentation.activity?.kind === "synthesis" || presentation.activity?.kind === "compaction" ? presentation.activity.label
+    ? activity?.kind === "synthesis" || activity?.kind === "compaction" ? activity.label
       : workspaceLiveLabelV2(workspaceActivity) ??
+      // Live tool calls read as running until the settled answer replaces
+      // them, so a server phase that began after them supersedes their label.
+      (activity && livePhaseKinds.has(activity.kind) ? activityLabel : null) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??
-      presentation.activity?.label ?? "Thinking…"
+      activityLabel ?? runWaitingPhraseV2(presentation.runId)
     : null;
+  // Thinking shown with the answer is also shown while its text streams, so
+  // the line that held the live status keeps its slot until the answer settles.
+  const reasoningShown = showReasoning && (settled || presentation.kind === "streaming");
   const process = (
     <AnswerProcessV2
       connectionLost={presentation.kind === "connection_lost"}
@@ -325,8 +338,9 @@ export function RunAnswerV2({
       onPinSkill={onPinSkill}
       pinnedSkillIds={pinnedSkillIds}
       memorySources={settled ? artifact?.memorySources ?? [] : []}
-      reasoningTexts={settled && showReasoning ? artifact?.reasoningText ?? [] : []}
-      reasoningTruncated={settled && showReasoning && artifact?.reasoningTruncated === true}
+      reasoningPending={reasoningShown && !settled && presentation.reasoningObserved === true}
+      reasoningTexts={reasoningShown ? artifact?.reasoningText ?? [] : []}
+      reasoningTruncated={reasoningShown && artifact?.reasoningTruncated === true}
       runId={presentation.runId}
       toolActivity={toolActivity}
       workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? stepDurationSumV2(toolActivity)}
