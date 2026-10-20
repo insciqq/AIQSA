@@ -13,7 +13,7 @@ import {
   type MutableMcpEndpoint,
   type MutableMcpTool
 } from "./support/mutableMcpEndpoint";
-import { disableMemoryRecall, setWorkspaceEnabled } from "./support/workspace";
+import { disableMemoryRecall } from "./support/workspace";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 const prisma = new PrismaClient();
@@ -50,7 +50,6 @@ async function sendWithLoadAll(page: Page, userId: string, serverId: string, que
   await expect(mcpMode).toBeVisible({ timeout: 30_000 });
   // Answers run on the 8k fake model, whose window cannot hold the Workspace
   // tool surface beside the MCP tools; Workspace is not under test here.
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await mcpMode.click();
   await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
   await expect(page.getByRole("button", { name: "Change MCP mode" })).toHaveAccessibleDescription(/^MCP: Load all/u);

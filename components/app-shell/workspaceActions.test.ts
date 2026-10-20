@@ -764,21 +764,18 @@ describe("workspace actions", () => {
     vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
   });
 
-  it("starts personal chats with the remembered Workspace choice and preserves saved chat flags", async () => {
+  it("lets neither a saved Workspace default nor a chat's stored flag set Workspace: it is ambient", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const catalog = useWorkspaceStore.getState().catalog!;
     useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, workspaceEnabled: true } } });
     state.actions.activateBlankWorkspace();
-    expect(state.activeComposer().workspaceEnabled).toBe(true);
-    state.actions.activateBlankWorkspace("folder-1", "TEMPORARY");
-    expect(state.activeComposer().workspaceEnabled).toBe(true);
+    expect(state.activeComposer().workspaceEnabled).toBe(false);
+    // The shell keeps the flag on installation availability and the model.
+    useComposerSessionStore.getState().updateSession(composerSessionKey(state.chatA.id), { workspaceEnabled: true });
     await state.actions.activateChat({ ...state.chatA, workspace: {
       enabled: false, internetEnabled: null, sessionState: null, available: true
     } }, { resumeRuns: false });
-    expect(state.activeComposer().workspaceEnabled).toBe(false);
-    useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, workspaceEnabled: false } } });
-    state.actions.activateBlankWorkspace();
-    expect(state.activeComposer().workspaceEnabled).toBe(false);
+    expect(state.activeComposer().workspaceEnabled).toBe(true);
   });
 
   it.each([null, "folder-1"])("restores current Search defaults for a new chat in %s", async (folderId) => {

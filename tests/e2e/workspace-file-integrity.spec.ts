@@ -12,7 +12,7 @@ import { RemoteWorkspaceRuntime } from "../../lib/server/workspace/remoteRuntime
 import { parseWorkspaceOperation } from "../../lib/server/workspace/operationFence";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { signInWithLocalToken } from "./support/localAuth";
-import { activeChatId, loginWithPassword, selectFakeModel, startNewChat, turnWorkspaceOn } from "./support/workspace";
+import { activeChatId, loginWithPassword, selectFakeModel, startNewChat } from "./support/workspace";
 
 // Isolated transport fault qualification. Real paid user tasks have their own
 // opt-in fixture; this test deliberately controls tool choices and byte races.
@@ -187,7 +187,7 @@ test("rejects a corrupted transfer, recovers the captured output despite guest c
   const page = await context.newPage();
   let chatId: string | null = null;
   try {
-    await loginWithPassword(page, LOCAL_MCP_MEMBER); await startNewChat(page); await selectFakeModel(page); await turnWorkspaceOn(page);
+    await loginWithPassword(page, LOCAL_MCP_MEMBER); await startNewChat(page); await selectFakeModel(page);
     await page.getByLabel("Attach files").setInputFiles({ buffer: inputBytes, mimeType: "application/x-aiqsa-workspace-e2e", name: "input.bin" });
     await expect(page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: "input.bin" })).toContainText("Ready", { timeout: 15_000 });
     for (let turn = 1; turn <= 3; turn += 1) {

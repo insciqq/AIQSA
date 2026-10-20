@@ -1,15 +1,15 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { expect, type Page } from "@playwright/test";
 import { chooseSearchStrategy } from "../shell/composer";
-import { disableMemoryRecall, setWorkspaceEnabled } from "./workspace";
+import { disableMemoryRecall } from "./workspace";
 
 /**
- * A composer turn without tools, chosen through the composer's own chips:
- * Workspace off, MCP off, Skills off and Search off (when the installation
- * offers Search), with Memory recall off. On the stand's 8k Fake QSA model
- * the Workspace tool surface beside the fixed prompt otherwise ends the turn
- * in 400 `context_too_large`; on a real model it keeps a bounded paid turn to
- * one plain answer.
+ * A composer turn with as few tools as the composer offers, chosen through
+ * its own chips: MCP off, Skills off and Search off (when the installation
+ * offers Search), with Memory recall off. Workspace has no switch any more
+ * (ambient since 2026-10-20): it joins every turn of a tool-calling model
+ * while the installation offers it. On a real model this keeps a bounded
+ * paid turn to one plain answer.
  *
  * The chips also save their choice as the account's chat defaults, so a spec
  * snapshots the defaults first and restores them afterwards.
@@ -18,7 +18,6 @@ export async function turnComposerToolsOff(page: Page): Promise<void> {
   const mcp = page.getByRole("button", { name: "Change MCP mode" });
   await expect(mcp).toBeVisible({ timeout: 30_000 });
   await disableMemoryRecall(page);
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   if (await mcp.getAttribute("data-mcp-mode") !== "off") {
     await mcp.click();
     await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Off/u }).click();

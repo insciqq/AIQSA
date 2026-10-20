@@ -6,7 +6,7 @@ import { chooseSearchStrategy } from "./shell/composer";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
-import { selectFakeModel, setWorkspaceEnabled, submitPasswordSignIn } from "./support/workspace";
+import { selectFakeModel, submitPasswordSignIn } from "./support/workspace";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 function composer(page: Page) { return page.getByRole("textbox", { name: "Message", exact: true }); }
@@ -16,7 +16,6 @@ async function storedText(page: Page) {
 }
 async function prepareSend(page: Page) {
   await selectFakeModel(page);
-  if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
 }
 /** Sends `source` to the fake model, then saves `comment` on the sent message's text. */

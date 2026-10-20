@@ -165,7 +165,7 @@ async function uploadFailureMessage(response: Response): Promise<string> {
     case "upload_busy":
       return "Upload capacity is busy. Try again shortly.";
     case "workspace_runtime_unavailable":
-      return "Workspace is unavailable. Turn it off or try again later.";
+      return "Workspace is unavailable. Try again later.";
     case "file_too_large":
       return "File exceeds the configured upload size limit.";
     case "file_required":

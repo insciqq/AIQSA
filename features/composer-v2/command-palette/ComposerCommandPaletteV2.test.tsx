@@ -335,29 +335,25 @@ describe("composer / palette entries mirror existing actions", () => {
     expect(option(/Архив проекта/u)).toHaveAttribute("aria-disabled", "true");
   });
 
-  it("turns web search off, Workspace and Agent on or off, with the chips' reasons", () => {
-    const onSelectSearchOptionIds = vi.fn(), onWorkspace = vi.fn(), onAgent = vi.fn();
-    const workspace = { available: true, busy: false, enabled: true, internetEnabled: false, loading: false,
-      onToggle: onWorkspace, sessionState: "ready" as const };
+  it("turns web search off and Agent on or off, with the chips' reasons and no Workspace command", () => {
+    const onSelectSearchOptionIds = vi.fn(), onAgent = vi.fn();
     const view = render(<Harness selectedSearchOptionIds={["web-primary"]} onSelectSearchOptionIds={onSelectSearchOptionIds}
-      workspace={workspace} agent={{ enabled: false, onToggle: onAgent }} />);
+      agent={{ enabled: false, onToggle: onAgent }} />);
     type("/", "/turn off web");
     key("Enter");
     expect(onSelectSearchOptionIds).toHaveBeenCalledWith([]);
-    type("/", "/turn off work");
-    key("Enter");
-    expect(onWorkspace).toHaveBeenCalledWith(false);
+    // Workspace is ambient: the palette offers no command to switch it.
+    type("/", "/workspace");
+    expect(screen.queryByRole("option", { name: /Turn (on|off) Workspace/u })).toBeNull();
     type("/", "/turn on agent");
     key("Enter");
     expect(onAgent).toHaveBeenCalledWith(true);
-    // The chip's own mode notice follows (the mocked toggle leaves the mode unchanged).
-    expect(screen.getByRole("status")).toHaveTextContent(/^Agent (on|off)/u);
+    // A mode change speaks through the chip alone, not a status line.
+    expect(screen.queryByText(/^Agent (on|off)/u)).toBeNull();
     view.rerender(<Harness selectedKnowledgeSelection={explicitKnowledgeSelection({ baseIds: ["kb-finance"] })}
-      workspace={{ ...workspace, available: false, enabled: false, unavailableReason: "installation_disabled" }}
       agent={{ enabled: false, onToggle: onAgent }} />);
     type("", "/");
     expect(option(/Turn on Agent/u)).toHaveTextContent("Turn off Knowledge to use Agent.");
-    expect(option(/Turn on Workspace/u)).toHaveTextContent("Workspace is disabled by the administrator.");
     fireEvent.click(option(/Turn on Agent/u));
     expect(onAgent).toHaveBeenCalledTimes(1);
   });

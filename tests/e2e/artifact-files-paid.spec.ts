@@ -82,7 +82,7 @@ import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { snapshotComposerDefaults, turnComposerToolsOff } from "./support/composerToolsOff";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { paidEnv, pollUntil, setupCodexLbAnswerModel, type PaidAnswerModel } from "./support/paidProviders";
-import { disableMemoryRecall, lastAnswer, setWorkspaceEnabled } from "./support/workspace";
+import { disableMemoryRecall, lastAnswer } from "./support/workspace";
 
 const enabled = process.env.AIQSA_FEATURES_PAID_E2E === "DISPOSABLE";
 const codexConfigured = Boolean(paidEnv("CODEX_LB_API_KEY") && paidEnv("CODEX_LB_BASE_URL"));
@@ -190,7 +190,6 @@ async function startChat(stand: Stand): Promise<void> {
   await selectModel(page, stand.model!.connectionId, stand.model!.displayName);
   await expect(page.getByTestId("header-model-trigger")).toContainText(stand.model!.displayName);
   await turnComposerToolsOff(page);
-  await setWorkspaceEnabled(page, true);
 }
 
 type ComposerFile = Readonly<{ fileName: string; mimeType: string; bytes?: Buffer; path?: string }>;

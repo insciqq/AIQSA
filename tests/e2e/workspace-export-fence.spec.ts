@@ -13,7 +13,7 @@ import { RemoteWorkspaceRuntime } from "../../lib/server/workspace/remoteRuntime
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { signInWithLocalToken } from "./support/localAuth";
 import { prepareWorkspaceFakeContext, configureWorkspaceOnlyTools } from "./support/workspaceFixture";
-import { activeChatId, loginWithPassword, selectFakeModel, startNewChat, turnWorkspaceOn } from "./support/workspace";
+import { activeChatId, loginWithPassword, selectFakeModel, startNewChat } from "./support/workspace";
 
 // Run alone in disposable Compose. The proxy delays the real application /
 // receiver boundary; optional upstream uses one real KVM guest. The provider
@@ -161,7 +161,6 @@ test("completed answer survives reset and archive attempts during recovered expo
     await loginWithPassword(page, LOCAL_MCP_MEMBER);
     await startNewChat(page);
     await selectFakeModel(page);
-    await turnWorkspaceOn(page);
     await configureWorkspaceOnlyTools(page);
     await page.getByLabel("Attach files").setInputFiles({ buffer: inputBytes, mimeType: "application/x-aiqsa-workspace-e2e", name: "input.bin" });
     await expect(page.getByRole("region", { name: "Attachments" }).getByRole("listitem").filter({ hasText: "input.bin" }))

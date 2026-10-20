@@ -1,4 +1,4 @@
-import { expect, type Download, type Locator, type Page } from "@playwright/test";
+import { expect, type Download, type Page } from "@playwright/test";
 import { parseChatRoutePath } from "../../../lib/domain/chatRoute";
 import { providerTemplateIds } from "../../../lib/domain/providerTemplates";
 import { selectModel } from "../shell/composer";
@@ -70,34 +70,6 @@ export async function startNewChat(page: Page): Promise<void> {
     .getByRole("button", { name: "New chat", exact: true })
     .click();
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
-}
-
-export async function turnWorkspaceOn(page: Page): Promise<void> {
-  await setWorkspaceEnabled(page, true);
-}
-
-export async function setWorkspaceEnabled(page: Page, enabled: boolean): Promise<void> {
-  const details = page.getByRole("button", { name: /^Workspace details\./u });
-  const expected = enabled ? /^Workspace details\. On\./u : /^Workspace details\. Off\./u;
-  await expect(details).toBeEnabled({ timeout: 15_000 });
-  if (expected.test(await details.getAttribute("aria-label") ?? "")) return;
-  await details.click();
-  const toggle = page.getByRole("menu", { name: "Workspace", exact: true })
-    .getByRole("menuitemcheckbox", { name: enabled ? /Turn on Workspace/u : /Turn off Workspace/u });
-  await expect(toggle).toBeEnabled();
-  await toggle.click();
-  await expect(details).toHaveAccessibleName(expected);
-  await page.keyboard.press("Escape");
-}
-
-/** Opens the composer's Workspace layer from its "Workspace details" chip and returns the layer. */
-export async function openWorkspaceDetails(page: Page): Promise<Locator> {
-  const details = page.getByRole("button", { name: /^Workspace details\./u });
-  await expect(details).toBeEnabled({ timeout: 15_000 });
-  await details.click();
-  const layer = page.getByRole("menu", { name: "Workspace", exact: true });
-  await expect(layer).toBeVisible();
-  return layer;
 }
 
 /** The chat the address names: `/c/<id>` or `/p/<project>/c/<id>`, once a first send is under way. */
