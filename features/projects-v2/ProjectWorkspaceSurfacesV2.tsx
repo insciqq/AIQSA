@@ -639,7 +639,7 @@ function ProjectSettingsDialogContentV2({
   };
   const tabs: readonly { id: ProjectSettingsTab; icon: "history" | "settings" | "tool" | "assistant"; label: string }[] = [
     { id: "general", icon: "settings", label: "Project" },
-    { id: "members", icon: "assistant", label: "Members" },
+    { id: "members", icon: "user", label: "Members" },
     { id: "resources", icon: "tool", label: "Resources" },
     { id: "activity", icon: "history", label: "Activity" }
   ];

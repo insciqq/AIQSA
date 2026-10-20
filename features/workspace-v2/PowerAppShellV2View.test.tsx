@@ -1019,6 +1019,23 @@ describe("Blank welcome v2", () => {
     })}</>);
     expect(screen.getByTestId("assistant-intro")).toBeVisible();
   });
+
+  it("names a blank temporary chat unless an Assistant intro or a Project owns the welcome", () => {
+    const temporaryOrientation = <section data-testid="temporary-intro">Temporary Chat</section>;
+    render(<>{blankConversationOrientationV2({ projectSelected: false, temporaryOrientation })}</>);
+    expect(screen.getByTestId("temporary-intro")).toBeVisible();
+
+    expect(blankConversationOrientationV2({
+      assistantOrientation: <section>Assistant</section>,
+      projectSelected: false,
+      temporaryOrientation
+    })).not.toBe(temporaryOrientation);
+    expect(blankConversationOrientationV2({
+      projectOrientation: <section>Shared project</section>,
+      projectSelected: true,
+      temporaryOrientation
+    })).not.toBe(temporaryOrientation);
+  });
 });
 
 describe("Live workspace keyboard inset v2", () => {

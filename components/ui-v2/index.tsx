@@ -88,6 +88,7 @@ export type UiV2IconName =
   | "type"
   | "tool"
   | "trash"
+  | "user"
   | "wand";
 
 export function UiV2IconSprite() {
@@ -368,6 +369,10 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-trash" viewBox="0 0 24 24">
           <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
+        </symbol>
+        <symbol id="v2-icon-user" viewBox="0 0 24 24">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
         </symbol>
         <symbol id="v2-icon-wand" viewBox="0 0 24 24">
           <path d="M3 21 14 10M15 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1zM19 13l.7 1.3 1.3.7-1.3.7L19 17l-.7-1.3-1.3-.7 1.3-.7z" />

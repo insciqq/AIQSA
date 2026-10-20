@@ -20,6 +20,11 @@ describe("Conversation v2", () => {
     vi.restoreAllMocks();
   });
 
+  it("titles the blank chat with the greeting it is given", () => {
+    render(<ConversationV2 messages={[]} orientationTitle="Good morning, Дмитрий" />);
+    expect(screen.getByRole("heading", { name: "Good morning, Дмитрий" })).toBeVisible();
+  });
+
   it("shows one-time empty orientation and removes it for optimistic state", () => {
     const { rerender } = render(
       <ConversationV2
@@ -29,7 +34,7 @@ describe("Conversation v2", () => {
     );
 
     expect(screen.getByTestId("conversation-empty")).toBeVisible();
-    expect(screen.getByText("What are we working on?")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "What are we working on?" })).toBeVisible();
     // Quiet greeting only: no canvas wordmark and no marketing subtitle.
     expect(screen.queryByText("AIQSA")).toBeNull();
     expect(screen.queryByText(/Спросите, исследуйте/u)).toBeNull();
