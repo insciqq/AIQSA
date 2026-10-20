@@ -788,10 +788,13 @@
   background: var(--v2-color-hover);
 }
 
-/* The blank chat's Temporary switch: pressed reads as a fill, not a hue. */
-.v2-live-temporary-toggle[aria-pressed="true"] {
-  color: var(--v2-color-text);
-  background: var(--v2-color-active);
+/* The blank chat's Temporary switch: on is the ink fill, like a checked
+   switch, so it reads without hue on the phone's header islands too. */
+.v2-live-header .v2-live-temporary-toggle[aria-pressed="true"],
+.v2-live-header .v2-live-temporary-toggle[aria-pressed="true"]:hover {
+  border-color: var(--v2-color-accent);
+  color: var(--v2-color-accent-ink);
+  background: var(--v2-color-accent);
 }
 
 .v2-live-temporary-popover {
