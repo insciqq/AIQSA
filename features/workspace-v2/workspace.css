@@ -1112,13 +1112,13 @@
 
 .v2-live-composer-error {
   display: flex;
-  width: min(42rem, 100%);
+  width: min(var(--v2-measure), 100%);
   margin: 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--v2-color-danger-dim);
+  border: 1px solid color-mix(in srgb, var(--v2-color-danger) 40%, transparent);
   border-radius: var(--v2-radius-s);
   color: var(--v2-color-danger);
   background: var(--v2-color-surface);
@@ -1141,9 +1141,29 @@
   color: var(--v2-color-text2);
 }
 
+/* Notices above the composer share its edges: the composer wrap's width on
+   project pages, the full column in the thread dock and the blank chat. In
+   the stack they are quiet strips, not floating cards. */
 .v2-live-notice {
   width: min(var(--v2-measure), calc(100% - 2rem));
   margin: 0 auto;
+}
+
+.v2-live-composer-dock .v2-live-notice,
+.v2-live-empty-composer-stack .v2-live-notice {
+  width: min(var(--v2-measure), 100%);
+}
+
+.v2-live-notice > .v2-notice {
+  max-width: none;
+  border-color: var(--v2-color-border);
+  box-shadow: none;
+}
+
+@media (max-width: 840px), (max-height: 32rem) {
+  .v2-live-notice {
+    width: min(var(--v2-measure), calc(100% - 1.25rem));
+  }
 }
 
 /* Shell notices enter like every ephemeral toast layer (S3 §8). */

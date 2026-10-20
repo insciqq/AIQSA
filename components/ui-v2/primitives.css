@@ -712,9 +712,15 @@ html[data-motion="off"] [data-tooltip]::after {
   pointer-events: auto;
 }
 
+/* The icon carries colour only for a state: success and error. An offer or
+   other info notice keeps it neutral. */
 .v2-notice-icon {
   flex: 0 0 auto;
   margin-top: 0.1875rem;
+  color: var(--v2-color-text2);
+}
+
+.v2-notice[data-kind="success"] .v2-notice-icon {
   color: var(--v2-color-ok);
 }
 
