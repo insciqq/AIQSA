@@ -104,18 +104,6 @@ function galleryAssistant(
   return { current: composerGalleryAssistant(input), resetRow };
 }
 
-function galleryWorkspace() {
-  return {
-    available: true,
-    busy: false,
-    enabled: true,
-    internetEnabled: false,
-    loading: false,
-    onToggle: vi.fn(),
-    sessionState: "ready" as const
-  };
-}
-
 /** Search, Knowledge, MCP and Skills: the chips an Assistant row can set. */
 function assistantChips() {
   return [
@@ -332,14 +320,16 @@ describe("Composer v2", () => {
     const toggle = screen.getByRole("button", { name: "Agent" });
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("status")).toHaveTextContent("Memory and Knowledge are unavailable.");
+    // The pressed chip reads the mode; no status line repeats it.
+    expect(screen.queryByText(/^Agent on/u)).toBeNull();
+    expect(toggle).toHaveAccessibleDescription(expect.stringContaining("Memory and Knowledge are unavailable."));
     expect(toggle).toHaveAccessibleDescription(expect.stringContaining("selected model, Skills, MCP mode"));
     expect(screen.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/1 pinned/);
     expect(onSelectMcp).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Проверь источники");
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("status")).toHaveTextContent("Agent off.");
+    expect(screen.queryByText("Agent off.")).toBeNull();
   });
 
   it("explains incompatible Agent controls and permits turning Agent off", () => {
@@ -706,30 +696,27 @@ describe("Composer v2", () => {
   });
 
   it("closes any layer with Escape wherever focus is, unless a menu took it or a modal dialog is above", async () => {
-    render(<ComposerV2 {...props({
-      workspace: { available: true, busy: false, enabled: true, internetEnabled: false, loading: false,
-        onToggle: vi.fn(), sessionState: "ready" }
-    })} />);
-    const opener = screen.getByRole("button", { name: /Workspace details/ });
+    render(<ComposerV2 {...props({ onSelectMcp: vi.fn() })} />);
+    const opener = screen.getByRole("button", { name: "Change MCP mode" });
     fireEvent.click(opener);
     (document.activeElement as HTMLElement | null)?.blur();
     // An open menu handles its own Escape first.
     const menuEscape = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault(); };
     document.body.addEventListener("keydown", menuEscape, { once: true });
     fireEvent.keyDown(document.body, { key: "Escape" });
-    expect(screen.getByRole("menu", { name: "Workspace" })).toBeVisible();
+    expect(screen.getByRole("menu", { name: "MCP tools" })).toBeVisible();
     // A modal dialog above the layer owns Escape.
     const modal = document.createElement("section");
     modal.setAttribute("role", "dialog");
     modal.setAttribute("aria-modal", "true");
     document.body.append(modal);
     fireEvent.keyDown(document.body, { key: "Escape" });
-    expect(screen.getByRole("menu", { name: "Workspace" })).toBeVisible();
+    expect(screen.getByRole("menu", { name: "MCP tools" })).toBeVisible();
     modal.remove();
     fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
-    expect(screen.getByRole("menu", { name: "Workspace" })).toBeVisible();
+    expect(screen.getByRole("menu", { name: "MCP tools" })).toBeVisible();
     fireEvent.keyDown(document.body, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Workspace" })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "MCP tools" })).toBeNull();
     await waitFor(() => expect(opener).toHaveFocus());
   });
 
@@ -784,8 +771,7 @@ describe("Composer v2", () => {
       agent: { enabled: false, onToggle: vi.fn() },
       assistant: galleryAssistant(),
       onOpenSkillLibrary: vi.fn(),
-      onSelectMcp: vi.fn(),
-      workspace: galleryWorkspace()
+      onSelectMcp: vi.fn()
     })} />);
 
     for (const chip of assistantChips()) {
@@ -795,7 +781,6 @@ describe("Composer v2", () => {
     expect(screen.getByRole("button", { name: "Change MCP mode" }))
       .toHaveAccessibleDescription("MCP: 1 server · From Research editor");
     expect(screen.getByRole("button", { name: "Agent" })).not.toHaveAttribute("data-provenance");
-    expect(screen.getByRole("button", { name: /^Workspace details/ })).not.toHaveAttribute("data-provenance");
 
     // A row changed for this chat, a fallback and an inherit row carry no dot.
     rerender(<ComposerV2 {...props({
@@ -1587,66 +1572,23 @@ describe("Composer v2", () => {
     expect(onUploadFiles).toHaveBeenNthCalledWith(3, [pastedFile]);
   });
 
-  it("exposes Workspace state, network policy, and its keyboard-operable toggle", () => {
-    const onToggle = vi.fn();
-    render(<ComposerV2 {...props({
-      workspace: {
-        available: true,
-        busy: false,
-        enabled: true,
-        internetEnabled: false,
-        loading: false,
-        onToggle,
-        sessionState: "ready"
-      }
-    })} />);
-
-    const opener = screen.getByRole("button", { name: /Workspace details/ });
-    expect(opener).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(opener);
-    expect(onToggle).not.toHaveBeenCalled();
-    expect(screen.getByRole("status")).toHaveTextContent("Workspace ready");
-    expect(screen.getByRole("menu", { name: "Workspace" })).toHaveTextContent("Internet: Off");
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Turn off Workspace/ }));
-    expect(onToggle).toHaveBeenCalledWith(false);
+  it("offers no Workspace chip, menu or command: Workspace is ambient", () => {
+    render(<ComposerV2 {...props({ agent: { enabled: false, onToggle: vi.fn() } })} />);
+    const row = screen.getByLabelText("Active capabilities");
+    expect(within(row).queryByRole("button", { name: /Workspace/u })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Workspace/u })).toBeNull();
+    expect(screen.queryByRole("menu", { name: "Workspace" })).toBeNull();
   });
 
-  it("explains an unavailable Workspace and accepts opaque files when available", () => {
-    const unavailable = props({
-      workspace: {
-        available: false,
-        busy: false,
-        enabled: false,
-        internetEnabled: null,
-        loading: false,
-        onToggle: vi.fn(),
-        sessionState: null,
-        unavailableReason: "model_tools_required"
-      }
-    });
-    const { rerender } = render(<ComposerV2 {...unavailable} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /Workspace details/ }));
-    const toggle = screen.getByRole("menuitemcheckbox", { name: /Turn on Workspace/ });
-    expect(toggle).toBeDisabled();
-    expect(toggle).toHaveTextContent("Workspace requires a model with tool support.");
-
+  it("accepts opaque files when the attachment policy allows any file", () => {
     const onUploadFiles = vi.fn();
     const opaque = new File(["opaque"], "dataset.custom", {
       type: "application/x-custom"
     });
-    rerender(<ComposerV2 {...props({
+    render(<ComposerV2 {...props({
       attachmentPolicy: { documents: true, files: true, images: true, pdfs: true },
-      onUploadFiles,
-      workspace: {
-        available: true,
-        busy: false,
-        enabled: true,
-        internetEnabled: true,
-        loading: false,
-        onToggle: vi.fn(),
-        sessionState: "not_started"
-      }
+      onUploadFiles
     })} />);
     const input = screen.getByLabelText("Attach files") as HTMLInputElement;
     expect(input.accept).toBe("");
@@ -1879,7 +1821,9 @@ describe("the composer's reasoning effort chip", () => {
   });
 
   it("sits after the tools and turns labels into icons only as the seventh chip", () => {
-    const six = { agent: { enabled: false, onToggle: vi.fn() }, workspace: galleryWorkspace() };
+    const agent = { enabled: false, onToggle: vi.fn() };
+    // Pending comments count as a chip.
+    const six = { agent, comments: [{ id: "one", quote: "Fragment", text: "Comment" }] };
     const { rerender } = render(<ComposerV2 {...props({ ...six, reasoningEffort: reasoning() })} />);
     const row = screen.getByLabelText("Active capabilities");
     const buttons = within(row).getAllByRole("button");
@@ -1888,16 +1832,9 @@ describe("the composer's reasoning effort chip", () => {
     expect(row).toHaveAttribute("data-compact-labels", "true");
 
     // Five capabilities and the level keep their labels; so do six without it.
-    rerender(<ComposerV2 {...props({ workspace: galleryWorkspace(), reasoningEffort: reasoning() })} />);
+    rerender(<ComposerV2 {...props({ agent, reasoningEffort: reasoning() })} />);
     expect(row).not.toHaveAttribute("data-compact-labels");
     rerender(<ComposerV2 {...props({ ...six, reasoningEffort: null })} />);
     expect(row).not.toHaveAttribute("data-compact-labels");
-    // Pending comments count as a chip.
-    rerender(<ComposerV2 {...props({
-      comments: [{ id: "one", quote: "Fragment", text: "Comment" }],
-      reasoningEffort: reasoning(),
-      workspace: galleryWorkspace()
-    })} />);
-    expect(row).toHaveAttribute("data-compact-labels", "true");
   });
 });

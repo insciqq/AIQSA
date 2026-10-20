@@ -51,8 +51,6 @@ export type ComposerPaletteActionsInput = Readonly<{
   /** The Search chip (its layer) and its "Turn off search". */
   search: PaletteAction | null;
   searchOff: PaletteAction | null;
-  /** The Workspace layer's on/off row. */
-  workspace: (PaletteAction & Readonly<{ enabled: boolean }>) | null;
   /** The Agent chip's toggle. */
   agent: (PaletteAction & Readonly<{ enabled: boolean }>) | null;
 }>;
@@ -141,10 +139,6 @@ function actionEntries(input: ComposerPaletteActionsInput): ComposerPaletteEntry
   add("mcp", "MCP tools…", "tool", input.mcp, ["mcp", "tools", "servers"]);
   if (input.search) add("search", "Web search…", "globe", input.search, ["web", "search", "internet"]);
   if (input.searchOff) add("search-off", "Turn off web search", "globe", input.searchOff, ["web", "search"]);
-  if (input.workspace) {
-    add("workspace", input.workspace.enabled ? "Turn off Workspace" : "Turn on Workspace", "monitor",
-      input.workspace, ["workspace", "sandbox", "code"]);
-  }
   if (input.agent) {
     add("agent", input.agent.enabled ? "Turn off Agent" : "Turn on Agent", "bot", input.agent, ["agent", "codex"]);
   }

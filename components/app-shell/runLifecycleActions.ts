@@ -142,8 +142,14 @@ function attachmentPollTimeoutMessage(fileName: string): string {
 const UPLOAD_FAILURE_GENERIC_MESSAGE =
   "Upload failed. Try again, or choose another file if it keeps failing.";
 
-/** Names a direct-upload refusal by decoded code first, then by status; never echoes the body. */
-async function uploadFailureMessage(response: Response): Promise<string> {
+/**
+ * Names a direct-upload refusal by decoded code first, then by status; never
+ * echoes the body. A Workspace refusal reports itself so availability is read again.
+ */
+async function uploadFailureMessage(
+  response: Response,
+  onWorkspaceUnavailable?: () => void
+): Promise<string> {
   let decoded: ReturnType<typeof decodeUploadErrorResponse> = null;
   try {
     decoded = decodeUploadErrorResponse(await response.json());
@@ -165,7 +171,8 @@ async function uploadFailureMessage(response: Response): Promise<string> {
     case "upload_busy":
       return "Upload capacity is busy. Try again shortly.";
     case "workspace_runtime_unavailable":
-      return "Workspace is unavailable. Turn it off or try again later.";
+      onWorkspaceUnavailable?.();
+      return "Workspace is unavailable. Try again later.";
     case "file_too_large":
       return "File exceeds the configured upload size limit.";
     case "file_required":
@@ -200,6 +207,8 @@ type RunLifecycleActionsInput = {
   activeStreamAbortRef: MutableRef<Map<string, AbortController>>;
   notifyAnswerReady(): Promise<void>;
   projectIdForChat?(chatId: string | null): string | null;
+  /** Re-reads installation availability after an upload was refused for Workspace. */
+  refreshWorkspaceAvailability?(): void;
   refreshActiveChat(
     chatId: string | null,
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
@@ -220,6 +229,7 @@ export function useRunLifecycleActions({
   activeStreamAbortRef,
   notifyAnswerReady,
   projectIdForChat = () => null,
+  refreshWorkspaceAvailability,
   refreshActiveChat,
   setNotice
 }: RunLifecycleActionsInput) {
@@ -343,7 +353,7 @@ export function useRunLifecycleActions({
           });
 
           if (!response.ok) {
-            throw new Error(await uploadFailureMessage(response));
+            throw new Error(await uploadFailureMessage(response, refreshWorkspaceAvailability));
           }
 
           const body = decodeUploadAttachmentResponse(await response.json());

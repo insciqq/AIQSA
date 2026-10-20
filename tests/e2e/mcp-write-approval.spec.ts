@@ -8,7 +8,7 @@ import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import { createWriteApprovalFixture, startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
-import { activeChatId, disableMemoryRecall, lastAnswer, setWorkspaceEnabled, turnWorkspaceOn } from "./support/workspace";
+import { activeChatId, disableMemoryRecall, lastAnswer } from "./support/workspace";
 import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 
 /**
@@ -91,25 +91,21 @@ async function withApprovalServer(page: Page, label: string, body: (stand: Stand
 
 /**
  * The open chat lists its MCP tools up front (Load all), which the scripted
- * call needs, with Workspace only when asked. Load all is chosen for this
- * chat only, never as the account default, so a reload returns the composer
- * to Auto: choose again after every reload.
+ * call needs. Workspace has no switch (ambient since 2026-10-20). Load all is
+ * chosen for this chat only, never as the account default, so a reload
+ * returns the composer to Auto: choose again after every reload.
  */
-async function chooseTools(page: Page, options: Readonly<{ workspace?: boolean }> = {}) {
+async function chooseTools(page: Page) {
   const mcpMode = page.getByRole("button", { name: "Change MCP mode" });
   await expect(mcpMode).toBeVisible({ timeout: 30_000 });
-  // The 8k fake model cannot hold the Workspace tool surface beside MCP tools;
-  // the Workspace case raises its window with prepareWorkspaceFakeContext.
-  if (options.workspace) await turnWorkspaceOn(page);
-  else if (await page.getByRole("button", { name: /^Workspace details\./u }).isVisible()) await setWorkspaceEnabled(page, false);
   await mcpMode.click();
   await page.getByRole("menu", { name: "MCP tools" }).getByRole("menuitemradio", { name: /^Load all/u }).click();
   await expect(mcpMode).toHaveAccessibleDescription(/^MCP: Load all/u);
 }
 
-async function newChat(page: Page, options: Readonly<{ workspace?: boolean }> = {}) {
+async function newChat(page: Page) {
   await page.goto("/");
-  await chooseTools(page, options);
+  await chooseTools(page);
 }
 
 /** Sends one turn and waits until its answer settled with `answer`. */
@@ -284,7 +280,7 @@ test("Workspace code asks the same way and its re-run sends the approved call on
   const restore = await prepareWorkspaceFakeContext(prisma);
   try {
     await withApprovalServer(page, "Code records", async (stand) => {
-      await newChat(page, { workspace: true });
+      await newChat(page);
       await send(page, stand, "Delete record r-5 from code [AIQSA_MCP_CODE_E2E:delete_record:r-5]",
         "Code MCP call finished: approval_required.", 360_000);
       const card = deleteCard(page, stand);

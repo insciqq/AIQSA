@@ -42,7 +42,9 @@ for (const viewport of [
         await expect(toggle).toBeInViewport();
         await expect(page.getByRole("button", { name: "Agent details", exact: true })).toHaveCount(0);
         await expect(toggle).toHaveAccessibleDescription(/Uses the selected model, Skills, MCP mode/);
-        await expect(page.getByRole("status").filter({ hasText: "Agent on" })).toContainText("Memory and Knowledge are unavailable.");
+        // The pressed chip reads the mode; no status line repeats it.
+        await expect(toggle).toHaveAccessibleDescription(/Memory and Knowledge are unavailable\./);
+        await expect(page.getByRole("status").filter({ hasText: /^Agent (on|off)/ })).toHaveCount(0);
         if (viewport.touch) {
           for (const control of [toggle]) {
             const box = await control.boundingBox();
@@ -56,8 +58,8 @@ for (const viewport of [
         await page.keyboard.press("Space");
         await expect(toggle).toHaveAttribute("aria-pressed", "false");
         await page.keyboard.press("Tab");
-        await expect(page.getByRole("button", { name: /^Workspace details/ })).toBeFocused();
-        await expect(page.getByRole("status").filter({ hasText: "Agent off." })).toBeVisible();
+        await expect(toggle).not.toBeFocused();
+        await expect(page.getByRole("status").filter({ hasText: /^Agent (on|off)/ })).toHaveCount(0);
         await expect(draft).toHaveValue("Inspect the project and prepare a short report.");
         await expect(toggle).toHaveAttribute("aria-pressed", "false");
         await expectNoHorizontalOverflow(page);

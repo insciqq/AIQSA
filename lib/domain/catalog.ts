@@ -399,7 +399,9 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     provider: "fake",
     modelId: "fake-qsa",
     displayName: "Fake QSA",
-    contextWindow: 8192,
+    // Workspace is ambient for tool-calling models (2026-10-20): its contract
+    // and tool schemas must fit beside an ordinary turn.
+    contextWindow: 65_536,
     capabilities: {
       backgroundStreaming: false,
       nativeBackground: false,

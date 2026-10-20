@@ -547,7 +547,7 @@ describe("installation bootstrap", () => {
     expect(fixture.spies.providerModelUpsert.mock.calls[0]?.[0]).toMatchObject({
       create: {
         draftConfig: {
-          capabilities: { contextWindow: 8192 }
+          capabilities: { contextWindow: 65_536 }
         },
         enabled: false
       },

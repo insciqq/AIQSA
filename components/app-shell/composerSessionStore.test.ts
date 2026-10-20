@@ -59,6 +59,36 @@ describe("composer session store", () => {
     expect(session(key)).toMatchObject({ draft: "", comments: [] });
   });
 
+  it("keeps a refusal's recoveries with its restored input and drops them for new input or errors", () => {
+    const store = useComposerSessionStore.getState();
+    const key = composerSessionKey("workspace-refused");
+    store.activateSession(key);
+    store.setDraft("Use the files");
+    let token = store.beginSend(key)!;
+    store.finishSend(token, "failed", "Workspace stopped.", true, null, "workspace_busy", ["reset_workspace", "send_without_workspace"]);
+    expect(session(key)).toMatchObject({
+      draft: "Use the files",
+      operationErrorRecoveries: ["reset_workspace", "send_without_workspace"],
+      operationErrorRetryable: false
+    });
+
+    // The send without Workspace was judged for the refused files only.
+    store.updateSession(key, { attachments: [attachment("added")] });
+    expect(session(key).operationErrorRecoveries).toEqual(["reset_workspace"]);
+    store.updateSession(key, { operationError: "Other problem." });
+    expect(session(key).operationErrorRecoveries).toEqual([]);
+
+    // Text typed while the send was pending joins the draft, so nothing is offered.
+    token = store.beginSend(key)!;
+    store.setDraft("newer text");
+    store.finishSend(token, "failed", "Refused.", true, null, "workspace_secret_unavailable", ["send_without_workspace"]);
+    expect(session(key).operationErrorRecoveries).toEqual([]);
+    token = store.beginSend(key)!;
+    expect(session(key).operationErrorRecoveries).toEqual([]);
+    store.finishSend(token, "succeeded", null, true, "run-1", null, ["send_without_workspace"]);
+    expect(session(key).operationErrorRecoveries).toEqual([]);
+  });
+
   it("keeps the draft and shows the refusal when Load all is refused before a run exists", () => {
     const store = useComposerSessionStore.getState();
     const key = composerSessionKey("load-all-refused");
@@ -259,37 +289,6 @@ describe("composer session store", () => {
     const previous = useComposerSessionStore.getState().sessionsByKey;
     expect(store.moveUnsentInputIfTargetEmpty(source, target)).toBe(false);
     expect(useComposerSessionStore.getState().sessionsByKey).toBe(previous);
-  });
-
-  it("initializes personal Workspace defaults while preserving explicit drafts and isolating saved/Project sessions", () => {
-    const store = useComposerSessionStore.getState();
-    const root = composerSessionKey(null);
-    store.setDraft("Typed before the catalog arrived");
-    store.applyWorkspaceDefault(root, true);
-    expect(session(root).workspaceEnabled).toBe(true);
-    store.updateSession(root, { workspaceEnabled: false });
-    store.applyWorkspaceDefault(root, true);
-    expect(session(root).workspaceEnabled).toBe(false);
-    store.setDraft("");
-    store.applyWorkspaceDefault(root, true);
-    expect(session(root).workspaceEnabled).toBe(true);
-    for (const key of [composerSessionKey("saved"), projectComposerSessionKey("project")]) {
-      store.activateSession(key);
-      store.applyWorkspaceDefault(key, true);
-      expect(session(key).workspaceEnabled).toBe(false);
-    }
-    for (const mode of ["NORMAL", "TEMPORARY", "EXCLUDED"] as const) {
-      const key = composerSessionKey(null, "folder", mode);
-      store.activateSession(key);
-      store.applyWorkspaceDefault(key, true);
-      store.setAttachments([attachment(mode)]);
-      store.applyWorkspaceDefault(key, false);
-      expect(session(key).workspaceEnabled).toBe(true);
-      const token = store.beginSend(key)!;
-      store.applyWorkspaceDefault(key, false);
-      expect(token.workspaceEnabled).toBe(true);
-      expect(session(key).workspaceEnabled).toBe(true);
-    }
   });
 
   afterEach(() => {
@@ -509,6 +508,7 @@ describe("composer session store", () => {
       operationError: null,
       operationErrorLive: true,
       operationErrorRetryable: false,
+      operationErrorRecoveries: [],
       pendingEdit: null,
       pendingSend: null,
       pendingUploadGenerations: [],

@@ -9,7 +9,7 @@ import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
 import { signInWithLocalToken } from "./support/localAuth";
 import {
   activeChatId, lastActivity, loginWithPassword, selectFakeModel,
-  sendAndExpect, startNewChat, turnWorkspaceOn
+  sendAndExpect, startNewChat
 } from "./support/workspace";
 
 // A real HTTP receiver with a held stop acknowledgement. Run this named
@@ -88,7 +88,6 @@ for (const separateContext of [false, true]) {
       await loginWithPassword(page, LOCAL_MCP_MEMBER);
       await startNewChat(page);
       await selectFakeModel(page);
-      await turnWorkspaceOn(page);
       const composer = page.getByRole("textbox", { name: "Message" });
       await composer.fill("[AIQSA_WORKSPACE_E2E:async_stop]");
       await composer.press("Enter");

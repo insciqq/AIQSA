@@ -20,15 +20,14 @@ for (const theme of ["light", "dark"]) {
       await expect(page.getByRole("button", { name: "Change Skills mode" })).toHaveAccessibleDescription(/Skills: Auto · 3 pinned \(always loaded\)/);
       await expect(page.getByRole("button", { name: "Add", exact: true })).toBeInViewport();
       await expect(page.getByRole("button", { name: "Send message" })).toBeInViewport();
-      const workspace = page.getByRole("button", { name: /Workspace details/ });
-      await workspace.click();
-      const details = page.getByRole("menu", { name: "Workspace" });
+      // Workspace is ambient (2026-10-20): no chip, menu or toggle.
+      await expect(chips.getByRole("button", { name: /Workspace/ })).toHaveCount(0);
+      const mcp = page.getByRole("button", { name: "Change MCP mode" });
+      await mcp.click();
+      const details = page.getByRole("menu", { name: "MCP tools" });
       await expect(details).toBeInViewport();
-      await expect(details).toContainText("Workspace ready");
-      await expect(details).toContainText("Internet: Off");
-      await expect(details.getByRole("menuitemcheckbox", { name: /Turn off Workspace/ })).toBeFocused();
       await page.keyboard.press("Escape");
-      await expect(workspace).toBeFocused();
+      await expect(mcp).toBeFocused();
       await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("Preserve this draft");
     }
     // Actual composer width, independent of a wide desktop viewport and at enlarged text.
@@ -37,20 +36,3 @@ for (const theme of ["light", "dark"]) {
     await expect(page.getByRole("button", { name: "Change Skills mode" })).toBeInViewport();
   });
 }
-
-test("Workspace running and failed states remain visible from the closed chip on touch", async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: "http://127.0.0.1:3000", viewport: { width: 360, height: 740 }, hasTouch: true });
-  const page = await context.newPage();
-  try {
-    for (const state of ["workspace-running", "workspace-failed"]) {
-      await page.goto(`/ui-v2-fixture?fixture=composer&state=${state}`);
-      const chip = page.getByRole("button", { name: /Workspace details/ });
-      await expect(chip).toHaveAccessibleDescription(state === "workspace-running" ? /Running a command/ : /Workspace unavailable/);
-      if (state === "workspace-running") await expect(chip.locator('[data-signal="running"]')).toBeVisible();
-      else await expect(chip).toHaveAttribute("data-workspace-state", "failed");
-      const box = await chip.boundingBox();
-      expect(box?.height).toBeGreaterThanOrEqual(44);
-      expect(box?.width).toBeGreaterThanOrEqual(44);
-    }
-  } finally { await context.close(); }
-});

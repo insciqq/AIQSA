@@ -264,7 +264,9 @@ function useMessageRunActionsForTest(input: {
     options?: { forceDetail?: boolean; preserveControls?: boolean; resumeRuns?: boolean }
   ) => Promise<ChatDetail | null>;
   refreshProjectWorkspace?: () => Promise<boolean>;
+  refreshWorkspaceAvailability?: () => void;
   resolveCatalog?: () => Catalog | null;
+  resolveWorkspaceInstallationAvailable?: () => boolean;
 }) {
   resetRunLifecycleStoreForTest();
   resetRunSurfaceStoreForTest();
@@ -369,6 +371,8 @@ function useMessageRunActionsForTest(input: {
     refreshActiveChat,
     refreshProjectWorkspace,
     resolveCatalog: input.resolveCatalog,
+    resolveWorkspaceInstallationAvailable: input.resolveWorkspaceInstallationAvailable,
+    refreshWorkspaceAvailability: input.refreshWorkspaceAvailability,
     resetThreadToLatest,
     setNotice,
     activeChatStreaming: input.activeChatStreaming ?? false
@@ -569,6 +573,227 @@ describe("message run actions", () => {
       operationError: null,
       operationErrorRetryable: false,
       pendingSend: null
+    });
+  });
+
+  describe("ambient Workspace", () => {
+    function messageBody(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown> {
+      const [, request] = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/messages"))! as unknown as [string, RequestInit];
+      return JSON.parse(String(request.body)) as Record<string, unknown>;
+    }
+
+    it("sends Workspace on with the installation and a tool model, whatever the chat's stored flag and saved default", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const storedOff = { ...chat(), workspace: { available: true, enabled: false, internetEnabled: true, sessionState: null } };
+      const actions = useMessageRunActionsForTest({
+        activeChat: storedOff,
+        attachments: [],
+        draft: "Use the files",
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+      const catalog = useWorkspaceStore.getState().catalog;
+      if (catalog) useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, workspaceEnabled: false } } });
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { workspaceEnabled: false });
+
+      await actions.submitComposer();
+
+      expect(messageBody(fetchMock).workspace).toEqual({ enabled: true });
+    });
+
+    it("sends without Workspace for a model that does not call tools instead of failing", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Plain question",
+        model: { ...model, capabilities: { ...model.capabilities, toolCalling: false } },
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { workspaceEnabled: true });
+
+      await actions.submitComposer();
+
+      expect(messageBody(fetchMock).workspace).toEqual({ enabled: false });
+      expect(actions.setNotice).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
+    });
+
+    it.each([["unknown", undefined], ["off", false]] as const)(
+      "sends without Workspace while installation availability is %s",
+      async (_state, available) => {
+        const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+        vi.stubGlobal("fetch", fetchMock);
+        const actions = useMessageRunActionsForTest({
+          attachments: [],
+          draft: "Plain question",
+          ...(available === undefined ? {} : { resolveWorkspaceInstallationAvailable: () => available })
+        });
+
+        await actions.submitComposer();
+
+        expect(messageBody(fetchMock).workspace).toEqual({ enabled: false });
+      }
+    );
+
+    it.each(["workspace_runtime_unavailable", "workspace_disabled"])(
+      "reads installation availability again after a %s refusal",
+      async (error) => {
+        vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error }, { status: 503 })));
+        const refreshWorkspaceAvailability = vi.fn();
+        const actions = useMessageRunActionsForTest({
+          attachments: [],
+          draft: "Use the files",
+          refreshWorkspaceAvailability,
+          resolveWorkspaceInstallationAvailable: () => true
+        });
+
+        await actions.submitComposer();
+
+        expect(refreshWorkspaceAvailability).toHaveBeenCalledOnce();
+      }
+    );
+
+    function messageBodies(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknown>[] {
+      return fetchMock.mock.calls
+        .filter(([url]) => String(url).endsWith("/messages"))
+        .map(([, request]) => JSON.parse(String((request as RequestInit).body)) as Record<string, unknown>);
+    }
+
+    function failedSessionDetail(sessionState: "failed" | "running"): ChatDetail {
+      return {
+        ...chat(),
+        contextStats: { approximateActiveBranchInputTokens: 0 },
+        messages: [],
+        pageInfo: { activeLeafMessageId: null, beforeCursor: null, hasOlder: false },
+        pinned: false,
+        workspace: { available: true, enabled: true, internetEnabled: true, sessionState }
+      } as unknown as ChatDetail;
+    }
+
+    it("offers sending a message refused for Workspace secrets once without Workspace; the next send uses Workspace again", async () => {
+      const responses = [
+        Response.json({ error: "workspace_secret_unavailable" }, { status: 503 }),
+        new Response("", { status: 200 }),
+        new Response("", { status: 200 })
+      ];
+      const fetchMock = vi.fn(async (..._args: unknown[]) => responses.shift()!);
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Use the files",
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+
+      await actions.submitComposer();
+
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        draft: "Use the files",
+        operationError: expect.stringContaining("Workspace could not read your saved secrets"),
+        operationErrorRecoveries: ["send_without_workspace"],
+        operationErrorRetryable: true
+      });
+
+      await actions.submitComposerWithoutWorkspace();
+
+      expect(messageBodies(fetchMock).map((body) => body.workspace)).toEqual([{ enabled: true }, { enabled: false }]);
+      expect(messageBodies(fetchMock)[1]?.content).toEqual({ blocks: [{ text: "Use the files", type: "text" }] });
+      expect(actions.session(actions.sourceSessionKey).operationErrorRecoveries).toEqual([]);
+
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { draft: "Next question" });
+      await actions.submitComposer();
+
+      expect(messageBodies(fetchMock).map((body) => body.workspace)).toEqual([
+        { enabled: true }, { enabled: false }, { enabled: true }
+      ]);
+    });
+
+    it("tells a failed Workspace session apart from a busy one and offers its reset", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "workspace_busy" }, { status: 409 })));
+      const refreshActiveChat = vi.fn(async () => failedSessionDetail("failed"));
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Use the files",
+        refreshActiveChat,
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+
+      await actions.submitComposer();
+
+      expect(refreshActiveChat).toHaveBeenCalledWith("chat-a", expect.objectContaining({ forceDetail: true }));
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        draft: "Use the files",
+        operationError: "Workspace in this chat stopped working. Reset it to continue; messages and exported files stay.",
+        operationErrorRecoveries: ["reset_workspace", "send_without_workspace"],
+        // Waiting or retrying never helps a failed session.
+        operationErrorRetryable: false
+      });
+    });
+
+    it("keeps the busy copy while another Workspace operation is genuinely running", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "workspace_busy" }, { status: 409 })));
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Use the files",
+        refreshActiveChat: async () => failedSessionDetail("running"),
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+
+      await actions.submitComposer();
+
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        operationError: expect.stringContaining("Another Workspace operation is still running"),
+        operationErrorRecoveries: ["send_without_workspace"]
+      });
+    });
+
+    it("never offers a send without Workspace that would drop a file only Workspace can take", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => Response.json({ error: "workspace_secret_unavailable" }, { status: 503 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const archive: ComposerAttachment = { fileName: "project.zip", id: "attachment-archive", kind: "file", status: "ready" };
+      const actions = useMessageRunActionsForTest({
+        attachments: [archive],
+        draft: "Unpack this",
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+
+      await actions.submitComposer();
+
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        attachments: [archive],
+        operationError: expect.stringContaining("saved secrets"),
+        operationErrorRecoveries: []
+      });
+
+      await actions.submitComposerWithoutWorkspace();
+
+      expect(messageBodies(fetchMock)).toHaveLength(1);
+      expect(actions.setNotice).toHaveBeenCalledWith({
+        kind: "error",
+        text: "project.zip needs Workspace. Remove it to send without Workspace."
+      });
+      expect(actions.session(actions.sourceSessionKey).attachments).toEqual([archive]);
+    });
+
+    it.each([
+      ["workspace_model_tools_required", false],
+      ["agent_unavailable", true],
+      ["workspace_secret_unavailable", true]
+    ] as const)("offers no send without Workspace for %s (Agent on: %s)", async (error, agentEnabled) => {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error }, { status: 409 })));
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Use the files",
+        resolveWorkspaceInstallationAvailable: () => true
+      });
+      useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { agentEnabled });
+
+      await actions.submitComposer();
+
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        draft: "Use the files",
+        operationErrorRecoveries: []
+      });
+      expect(actions.session(actions.sourceSessionKey).operationError).not.toBeNull();
     });
   });
 

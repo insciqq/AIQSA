@@ -2,6 +2,7 @@ import { withResponseReminder } from "./responseReminder";
 import { observeJsonParse, observeStreamParseFailure } from "./providerObservability";
 import { textFromContentBlocks, type ModelRunSseEvent, type ModelRunUsage } from "../../domain/modelRunEvents";
 import { createReasoningFragmentBuffer, type ReasoningRecord } from "../../domain/answerReasoning";
+import { createReasoningHeadingTracker, reasoningHeadingEvent } from "../../domain/reasoningHeading";
 import { normalizeTokenUsage } from "../../domain/usage";
 import {
   normalizeAnthropicMessagesParams,
@@ -517,6 +518,11 @@ function reasoningArtifacts(records: readonly ReasoningRecord[]): ModelRunSseEve
   return records.map((payload): ModelRunSseEvent => ({ data: { artifactType: "reasoning", payload }, type: "artifact" }));
 }
 
+/** A thinking paragraph's live heading (operator decision 2026-10-20): a lifecycle summary, never a fragment. */
+function reasoningHeadingEvents(heading: string | null | undefined): ModelRunSseEvent[] {
+  return heading ? [reasoningHeadingEvent(heading)] : [];
+}
+
 function contentBlockIndex(event: AnthropicStreamEvent): number | null {
   return typeof event.index === "number" && Number.isInteger(event.index) && event.index >= 0
     ? event.index
@@ -782,6 +788,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
         const openContentBlocks = new Set<number>();
         // Deltas of one thinking block merge before publication (see ReasoningRecord).
         const thinkingFragments = new Map<number, ReturnType<typeof createReasoningFragmentBuffer>>();
+        // Each thinking paragraph's opening is announced as soon as it is known.
+        const thinkingHeadings = new Map<number, ReturnType<typeof createReasoningHeadingTracker>>();
         let toolUseBlockCount = 0;
         // Citations of every text block of this provider message together.
         let attemptCitationCount = 0;
@@ -972,10 +980,13 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             }
             if (block.type === "thinking") {
               const fragments = createReasoningFragmentBuffer();
+              const headings = createReasoningHeadingTracker({ paragraphs: true });
               thinkingFragments.set(index, fragments);
+              thinkingHeadings.set(index, headings);
               if (typeof block.thinking === "string" && block.thinking) {
                 thinkingText.append(block.thinking, snapshot);
                 yield* reasoningArtifacts(fragments.append(block.thinking));
+                yield* reasoningHeadingEvents(headings.append(block.thinking));
               }
             }
             continue;
@@ -1051,6 +1062,7 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
                 );
               }
               yield* reasoningArtifacts(thinkingFragments.get(index!)?.append(delta.thinking) ?? []);
+              yield* reasoningHeadingEvents(thinkingHeadings.get(index!)?.append(delta.thinking));
             }
 
             if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
@@ -1118,6 +1130,8 @@ export function createAnthropicMessagesAdapter(options: AnthropicMessagesAdapter
             }
             yield* reasoningArtifacts(thinkingFragments.get(index)?.finish() ?? []);
             thinkingFragments.delete(index);
+            yield* reasoningHeadingEvents(thinkingHeadings.get(index)?.finish());
+            thinkingHeadings.delete(index);
             continue;
           }
 

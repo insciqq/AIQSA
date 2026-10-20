@@ -13,8 +13,7 @@ import {
   selectFakeModel,
   sendAndExpect,
   sendAndStop,
-  startNewChat,
-  turnWorkspaceOn
+  startNewChat
 } from "./support/workspace";
 
 /**
@@ -51,7 +50,6 @@ async function enableWorkspacePolicy(page: Page): Promise<void> {
 async function newWorkspaceChat(page: Page): Promise<void> {
   await startNewChat(page);
   await selectFakeModel(page);
-  await turnWorkspaceOn(page);
   await configureWorkspaceOnlyTools(page);
 }
 
@@ -161,7 +159,6 @@ test("shows a human-readable timeline, resolves exact sandbox links, and keeps d
     const reset = page.getByRole("dialog", { name: "Reset workspace" });
     await reset.getByRole("button", { name: "Confirm reset workspace" }).click();
     await expect(reset).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace has not started/u);
     const afterReset = await page.request.get(href!);
     expect(afterReset.status()).toBe(200);
     expect((await afterReset.body()).equals(bytes)).toBe(true);
@@ -269,10 +266,8 @@ test("Stop prevents synchronous, async, forgotten-handle and descendant side eff
       const live = await openLastActivity(page);
       await expect(live).toContainText("Running sleep 300", { timeout: 15_000 });
       await expect(live).toContainText("Running sleep 12 && echo late");
-      await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Running a command/u);
     });
     const chatId = await activeChatId(page);
-    await expect(page.getByRole("button", { name: /^Workspace details\./u })).not.toHaveAccessibleName(/Running a command/u, { timeout: 15_000 });
     const stopped = await openLastActivity(page);
     await expect(stopped).toContainText("sleep 300; echo late > /workspace/project/sync-after-stop.txt · exit not observed");
     await expect(stopped).toContainText("Workspace work stopped");
@@ -282,7 +277,6 @@ test("Stop prevents synchronous, async, forgotten-handle and descendant side eff
     })).state, { timeout: 30_000 }).toBe("STOPPED");
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace stopped/u, { timeout: 30_000 });
     await expect(openLastActivity(page)).resolves.toBeDefined();
     await expect(lastActivity(page)).toContainText("sleep 300; echo late > /workspace/project/sync-after-stop.txt · exit not observed");
     await page.waitForTimeout(13_000);
@@ -309,11 +303,9 @@ test("Stop prevents synchronous, async, forgotten-handle and descendant side eff
       expect(await prisma.workspaceExecution.count({
         where: { state: "LOST", workspaceSessionId: session.id }
       })).toBeGreaterThan(0);
-      await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace stopped/u, { timeout: 30_000 });
       await page.waitForTimeout(13_000);
       await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:marker_probe]", "Late marker absent after Stop.");
       await waitForWorkspaceExport(prisma, chatId);
-      await expect(page.getByRole("button", { name: /^Workspace details\./u })).toHaveAccessibleName(/Workspace stopped/u, { timeout: 30_000 });
     }
 
   } finally {

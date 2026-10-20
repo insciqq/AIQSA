@@ -27,6 +27,7 @@
 
 /* The standalone status is a row; an open disclosure must stack its body. */
 div.v2-answer-process[data-live],
+div.v2-answer-process[data-pending],
 .v2-answer-process > summary {
   display: inline-flex;
   min-height: 1.75rem;
