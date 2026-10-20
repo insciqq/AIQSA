@@ -79,7 +79,9 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
   const resolver = createImageModelRoleResolver(prisma);
   const service = {
     resolveFor: resolver.resolveFor,
-    async withConversationPixels(request: ProviderRunRequest, userId: string, signal?: AbortSignal): Promise<ProviderRunRequest> {
+    /** `onRead` runs once, just before the first stored image is read, so a caller can show that work. */
+    async withConversationPixels(request: ProviderRunRequest, userId: string, signal?: AbortSignal,
+      onRead?: () => Promise<void>): Promise<ProviderRunRequest> {
       const references = request.imageReferences;
       if (!request.modelCapabilities.vision || !references?.length) return request;
       const access = await resolveChatAccess(prisma, { chatId: request.chatId, userId });
@@ -94,9 +96,14 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         ...(access.kind === "project" ? { projectId: access.project.projectId } : { userId }) } });
       let remaining = Math.min(IMAGE_MAX_BYTES, request.modelCapabilities.imageInputLimits?.payloadBytes ?? Infinity) - request.attachments.reduce((sum, attachment) => sum + (attachment.base64Data || attachment.dataUrl ? attachment.byteSize : 0), 0);
       const extra: ProviderAttachment[] = [];
+      let reading = false;
       for (const id of [...ids].reverse()) {
         const row = rows.find((entry) => entry.id === id);
         if (!row || row.byteSize > remaining || row.byteSize > (request.modelCapabilities.imageInputLimits?.imageBytes ?? IMAGE_MAX_BYTES)) continue;
+        if (!reading) {
+          reading = true;
+          await onRead?.();
+        }
         const stored = await storage.getObject(row.storageKey, { maxBytes: Math.min(row.byteSize, IMAGE_MAX_BYTES), signal });
         if (stored.body.byteLength !== row.byteSize || row.checksum && hash(stored.body) !== row.checksum) throw new Error("image_reference_invalid");
         const encoded = stored.body.toString("base64");

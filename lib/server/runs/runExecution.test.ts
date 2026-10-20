@@ -2549,6 +2549,27 @@ describe("run execution", () => {
     expect(repository.persistedEvents.some(({ event }) => event.type === "artifact_generation")).toBe(false);
     expect(repository.completeRuns).toHaveLength(1);
   });
+  it("shows reading stored conversation images live only while they are read, then announces the answer request", async () => {
+    const stages = async (reads: boolean) => {
+      const repository = createRepository();
+      const images = { withConversationPixels: vi.fn(async (request: ProviderRunRequest, _userId: string, _signal?: AbortSignal,
+        onRead?: () => Promise<void>) => {
+        if (reads) await onRead?.();
+        return request;
+      }) };
+      const adapter = createAdapter(async function* () {
+        yield { data: { delta: "The chart shows growth." }, type: "token" };
+        return providerResult({ finalText: "The chart shows growth." });
+      });
+      const events = parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, repository: repository.repository }),
+        images: images as unknown as NonNullable<RunExecutionInput["images"]> }).text());
+      expect(repository.completeRuns).toHaveLength(1);
+      return events.flatMap((event) => event.type === "token" ? ["token"] : event.type === "artifact" &&
+        event.data.artifactType === "summary" ? [(event.data.payload as { stage?: string }).stage] : []);
+    };
+    expect(await stages(true)).toEqual(["files", "model", "token"]);
+    expect(await stages(false)).toEqual(["token"]);
+  });
   it.each(["image_reference_not_found", "image_reference_unsupported"] as const)("lets the model correct %s without failing the run", async (code) => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
     const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, imagePlan: mixedToolsImagePlan },
@@ -4511,6 +4532,35 @@ describe("run execution", () => {
       ["prepare", "dispatch", "settle"]));
   });
 
+  it("shows a Knowledge search live, then announces the grounded answer that reads it", async () => {
+    const stages = async (prepared: MaterializedPreparedRunData) => {
+      const repository = createRepository({ groundingResult: structuralGroundingResult("Supported answer [K1]") });
+      const { executor } = focusedKnowledgeExecutor();
+      let calls = 0;
+      const adapter = createAdapter(async function* () {
+        calls += 1;
+        const providerText = JSON.stringify(plannedCurrentKnowledgeOutput(calls, "Supported answer"));
+        yield { data: { delta: providerText }, type: "token" };
+        return providerResult({ finalText: providerText });
+      });
+      const events = parseSse(await createRunExecutionResponse(executionInput({
+        adapter, knowledgeExecutor: executor, knowledgeProviderDispatch: createKnowledgeProviderDispatchRecorder().lifecycle,
+        prepared, repository: repository.repository
+      })).text());
+      expect(repository.completeRuns).toHaveLength(1);
+      const firstToken = events.findIndex((event) => event.type === "token");
+      return events.flatMap((event, index) => event.type === "artifact" && event.data.artifactType === "summary" &&
+        typeof (event.data.payload as { stage?: unknown }).stage === "string" ? [{ beforeAnswer: index < firstToken, payload: event.data.payload }] : []);
+    };
+
+    expect(await stages(focusedKnowledgePreparedData())).toEqual([
+      { beforeAnswer: true, payload: { stage: "knowledge", status: "running" } },
+      { beforeAnswer: true, payload: { stage: "model", status: "waiting" } }
+    ]);
+    // A complete small corpus searches nothing, so no phase is shown.
+    expect(await stages(fullContextKnowledgePreparedData())).toEqual([]);
+  });
+
   it("answers from a complete small corpus with zero Knowledge searches", async () => {
     const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
     const repository = createRepository({
@@ -5710,6 +5760,7 @@ describe("run execution", () => {
       "artifact",
       "message_reset",
       "artifact",
+      "artifact",
       "token",
       "usage",
       "done"
@@ -5718,7 +5769,10 @@ describe("run execution", () => {
       events
         .filter((event) => event.type === "artifact")
         .map((event) => (event.type === "artifact" ? event.data.artifactType : ""))
-    ).toEqual(["reasoning", "search_activity", "tool_call", "search_activity"]);
+    ).toEqual(["reasoning", "search_activity", "tool_call", "search_activity", "summary"]);
+    // The request after the tool round is announced live: the client reads it as reading results.
+    expect(events.filter((event) => event.type === "artifact" && event.data.artifactType === "summary"))
+      .toEqual([{ data: { artifactType: "summary", payload: { stage: "model", status: "waiting" } }, type: "artifact" }]);
     const searchActivity = events.flatMap(event => event.type === "artifact" &&
       event.data.artifactType === "search_activity" ? [event.data.payload] : []);
     expect(searchActivity).toEqual([

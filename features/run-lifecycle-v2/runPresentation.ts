@@ -41,12 +41,14 @@ export type RunLifecycleStateV2 = Readonly<{
 }>;
 
 export type RunActivityKindV2 =
-  | "compute"
   | "compaction"
+  | "files"
+  | "knowledge"
   | "preparing"
-  | "preview"
   | "provider"
   | "queued"
+  /** A model request after tool or Knowledge work: it reads their results. */
+  | "results"
   | "search"
   | "synthesis"
   | "tool";
@@ -183,7 +185,8 @@ function contextCompactionCycles(
   return [...cycles.values()].sort((left, right) => left.cycle - right.cycle);
 }
 
-function activityFromEvent(event: RunEventView, index: number): ActivitySignal | null {
+/** `resultsPending`: tool or Knowledge work was shown earlier in this feed. */
+function activityFromEvent(event: RunEventView, index: number, resultsPending: boolean): ActivitySignal | null {
   if (event.type !== "artifact" || !isRecord(event.data)) return null;
   const payload = eventPayload(event);
   const artifactType = event.data.artifactType;
@@ -218,24 +221,17 @@ function activityFromEvent(event: RunEventView, index: number): ActivitySignal |
 
   if (artifactType !== "summary") return null;
 
-  if (payload.stage === "search" && payload.status === "running") {
-    return { index, kind: "search" };
-  }
-
+  // Server phases (`liveRunPhaseStatus`): the server names the phase, the words are ours.
   if (payload.stage === "tools" && payload.status === "running") {
     return { index, kind: "tool", ...toolActivityMetadata(payload) };
   }
 
-  if (payload.stage === "compute" && payload.status === "running") {
-    return { index, kind: "compute" };
-  }
-
-  if (payload.stage === "preview" && payload.status === "running") {
-    return { index, kind: "preview" };
+  if ((payload.stage === "files" || payload.stage === "knowledge") && payload.status === "running") {
+    return { index, kind: payload.stage };
   }
 
   if (payload.stage === "model" && payload.status === "waiting") {
-    return { index, kind: "provider" };
+    return { index, kind: resultsPending ? "results" : "provider" };
   }
 
   return null;
@@ -507,12 +503,14 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
       return "Searching the web…";
     case "tool":
       return `${describeToolCallV2(signal, "running")}…`;
-    case "compute":
-      return "Computing…";
     case "compaction":
       return "Compacting context…";
-    case "preview":
-      return "Rendering preview…";
+    case "files":
+      return "Reading files…";
+    case "knowledge":
+      return "Searching Knowledge…";
+    case "results":
+      return "Reading results…";
     case "provider":
       return "Thinking…";
   }
@@ -914,6 +912,7 @@ export function presentRunLifecycleV2(
   const activitySignals: ActivitySignal[] = [];
   let latestTokenIndex = -1;
   let latestReasoning: Readonly<{ heading: string; index: number }> | null = null;
+  let resultsPending = false;
   let eventFailure: RunFailureV2 | null = null;
   const settledMemorySearchCalls = new Set<string>();
   const activeMemorySearchCalls = new Set<string>();
@@ -944,8 +943,9 @@ export function presentRunLifecycleV2(
     }
     const activity = lateNativeStart ? null : nativeSearch && activeMemorySearchCalls.size > 0
       ? { index, kind: "tool" as const, origin: "memory" as const, serverName: "Memory", toolName: "memory_search" }
-      : activityFromEvent(event, index);
+      : activityFromEvent(event, index, resultsPending);
     if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
+    resultsPending ||= activity?.kind === "tool" || activity?.kind === "knowledge";
 
     if (event.type === "error") {
       terminal = "error";
@@ -1043,7 +1043,7 @@ export function presentRunLifecycleV2(
       activity: {
         ...signal,
         label: activityLabel(signal),
-        ...(reasoningHeading && signal.kind === "provider" ? { reasoningHeading } : {})
+        ...(reasoningHeading && (signal.kind === "provider" || signal.kind === "results") ? { reasoningHeading } : {})
       },
       kind: "activity",
       runId: state.runId
