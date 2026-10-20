@@ -32,7 +32,7 @@
 }
 
 /* The hairline outline paints over the preview frame, so light slides and the empty tile stay apart from the canvas. */
-.v2-artifact-thumbnail { position: relative; display: grid; width: 96px; height: 60px; flex: 0 0 96px; overflow: hidden; place-items: center; border-radius: var(--v2-radius-s); outline: 1px solid var(--v2-color-border); outline-offset: -1px; color: var(--v2-color-accent); background: var(--v2-color-surface2); pointer-events: none; }
+.v2-artifact-thumbnail { position: relative; display: grid; width: 96px; height: 60px; flex: 0 0 96px; overflow: hidden; place-items: center; border-radius: var(--v2-radius-s); outline: 1px solid var(--v2-color-border); outline-offset: -1px; color: var(--v2-color-text3); background: var(--v2-color-surface2); pointer-events: none; }
 .v2-artifact-thumbnail-frame { position: absolute; top: 0; left: 0; width: 1280px; height: 800px; border: 0; transform: scale(0.075); transform-origin: top left; pointer-events: none; }
 
 .v2-artifact-tabpanel[hidden] {
@@ -119,8 +119,8 @@
 
 .v2-artifact-tab[aria-selected="true"],
 .v2-artifact-file[aria-selected="true"] {
-  color: var(--v2-color-accent);
-  background: var(--v2-color-accent-dim);
+  color: var(--v2-color-text);
+  background: var(--v2-color-active);
 }
 
 .v2-artifact-close {
@@ -627,7 +627,7 @@
 .v2-artifact-generation-source { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
 .v2-artifact-generation-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--v2-color-border); }
 .v2-artifact-generation-files > button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; background: var(--v2-color-surface); border: 1px solid var(--v2-color-border); border-radius: 6px; padding: 5px 8px; color: var(--v2-color-text3); }
-.v2-artifact-generation-files > button[aria-pressed="true"] { color: var(--v2-color-text); border-color: var(--v2-color-accent); }
+.v2-artifact-generation-files > button[aria-pressed="true"] { color: var(--v2-color-text); border-color: var(--v2-color-text3); background: var(--v2-color-active); }
 .v2-artifact-generation-code { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 16px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; tab-size: 2; white-space: pre; }
 
 .v2-artifact-new-link,
@@ -652,7 +652,7 @@
 .v2-artifact-published-versions > li { display: grid; min-width: 0; gap: 0.5rem; padding-block: 0.625rem; border-top: 1px solid var(--v2-color-border); }
 .v2-artifact-member-title { display: flex; align-items: baseline; min-width: 0; gap: 0.5rem; }
 .v2-artifact-member-title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.v2-artifact-member-title small { margin-left: auto; flex-shrink: 0; color: var(--v2-color-accent); }
+.v2-artifact-member-title small { margin-left: auto; flex-shrink: 0; color: var(--v2-color-text2); }
 .v2-artifact-member-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .v2-artifact-move-down .v2-icon { transform: rotate(180deg); }
 .v2-public-artifact-toolbar > :not(h1) { flex-shrink: 0; }

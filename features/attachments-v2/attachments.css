@@ -93,7 +93,7 @@
   width: 0.875rem;
   height: 0.875rem;
   border: 1.5px solid var(--v2-color-border2);
-  border-top-color: var(--v2-color-accent);
+  border-top-color: var(--v2-color-text2);
   border-radius: 50%;
   animation: v2-attachment-spin 0.8s linear infinite;
 }
@@ -276,6 +276,13 @@
   border-radius: var(--v2-radius-s);
   color: var(--v2-color-text);
   background: var(--v2-color-surface);
+}
+
+/* A search field: a border step on focus, as in the composer's other
+   search fields. */
+.v2-saved-file-picker > input:focus-visible {
+  border-color: var(--v2-color-text3);
+  outline: none;
 }
 
 .v2-saved-file-picker ul {

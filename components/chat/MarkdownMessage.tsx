@@ -16,7 +16,7 @@ const PARAGRAPH_CLASS = "whitespace-pre-wrap break-words [overflow-wrap:anywhere
 const INLINE_CODE_CLASS =
   "break-words rounded-control bg-control-pressed px-1 py-0.5 font-mono text-[0.9em] text-ink [overflow-wrap:anywhere]";
 const LINK_CLASS =
-  "break-words text-proof underline decoration-proof/40 underline-offset-2 hover:decoration-proof [overflow-wrap:anywhere]";
+  "break-words text-ink underline decoration-ink-muted underline-offset-2 hover:decoration-ink [overflow-wrap:anywhere]";
 
 function MathExpression({ displayMode, raw, source }: { displayMode: boolean; raw: string; source: string }) {
   const [rendered, setRendered] = useState<{ html: string | null; key: string } | null>(null);
