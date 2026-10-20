@@ -2218,7 +2218,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               temporaryToggle={!projectContext && composer.memory.canToggleTemporary ? {
                 label: composer.memory.label,
                 on: temporarySession,
-                onToggle: composer.memory.toggleTemporary
+                // The same new-chat path the sidebar uses, so each mode keeps
+                // its own blank draft and the default Assistant follows the mode.
+                onToggle: () => createNavigationChat(temporarySession ? "NORMAL" : "TEMPORARY")
               } : null}
               title={session.activeChatTitle}
             />
