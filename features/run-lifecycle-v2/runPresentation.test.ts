@@ -274,7 +274,7 @@ describe("run lifecycle v2 presentation", () => {
         route: "local_text", limitedReadingQuality: false, longDocument: false }] })))
       .toEqual({ kind: "activity", activity: { kind: "preparing", label: "Preparing workspace..." }, runId: "next" });
     expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", status: "complete",
-      runId: "previous", content: "File saved.", events: [summary({ stage: "compute", status: "running" })] })))
+      runId: "previous", content: "File saved.", events: [summary({ stage: "files", status: "running" })] })))
       .toEqual({ kind: "complete", runId: "previous" });
   });
 
@@ -310,15 +310,32 @@ describe("run lifecycle v2 presentation", () => {
   });
 
   it.each([
-    [summary({ stage: "search", status: "running" }), "search", "Searching the web…"],
-    [summary({ stage: "compute", status: "running" }), "compute", "Computing…"],
-    [summary({ stage: "preview", status: "running" }), "preview", "Rendering preview…"],
+    [summary({ stage: "files", status: "running" }), "files", "Reading files…"],
+    [summary({ stage: "knowledge", status: "running" }), "knowledge", "Searching Knowledge…"],
     [summary({ stage: "model", status: "waiting" }), "provider", "Thinking…"]
   ] as const)("uses normalized lifecycle artifacts", (event, kind, label) => {
     expect(presentRunLifecycleV2(state({ events: [event] }))).toMatchObject({
       activity: { kind, label },
       kind: "activity"
     });
+  });
+
+  it("reads results only for a model request after shown tool or Knowledge work", () => {
+    const model = summary({ stage: "model", status: "waiting" });
+    const files = summary({ stage: "files", status: "running" });
+    const knowledge = summary({ stage: "knowledge", status: "running" });
+    const tool = { data: { artifactType: "tool_call", payload: { name: "fetch_url", origin: "web_fetch", round: 1,
+      serverName: "Web", status: "requested" } }, type: "artifact" } satisfies RunEventView;
+    const heading = summary({ heading: "Comparing the two pages", stage: "reasoning", status: "running" });
+    expect(presentRunLifecycleV2(state({ events: [tool, model] })).activity).toMatchObject({ kind: "results", label: "Reading results…" });
+    expect(presentRunLifecycleV2(state({ events: [knowledge, model] })).activity).toMatchObject({ kind: "results" });
+    expect(presentRunLifecycleV2(state({ events: [files, model] })).activity).toMatchObject({ kind: "provider" });
+    expect(presentRunLifecycleV2(state({ events: [tool, model, heading] })).activity)
+      .toMatchObject({ kind: "results", label: "Reading results…", reasoningHeading: "Comparing the two pages" });
+    // Retired stages name nothing.
+    for (const stage of ["search", "compute", "preview"]) {
+      expect(presentRunLifecycleV2(state({ events: [summary({ stage, status: "running" })] }))).toEqual({ kind: "idle", runId: null });
+    }
   });
 
   it("uses only bounded tool names and never server-authored display prose", () => {

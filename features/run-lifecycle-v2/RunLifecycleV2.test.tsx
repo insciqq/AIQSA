@@ -330,6 +330,21 @@ describe("Run lifecycle v2", () => {
     expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Searching the web…$/u);
   });
 
+  it("lets a phase that began after the tool calls replace their stale running label", () => {
+    const toolActivity = { calls: [{ origin: "web_search" as const, round: 1, serverName: "Web search",
+      status: "running" as const, toolName: "search_web" }] };
+    const reading = presentation({ activity: { kind: "results", label: "Reading results…" }, kind: "activity", runId: "run-results" });
+    const { rerender } = render(<RunAnswerV2 content="" presentation={reading} toolActivity={toolActivity} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Reading results…$/u);
+    rerender(<RunAnswerV2 content="" toolActivity={toolActivity} presentation={presentation({ activity: { kind: "results",
+      label: "Reading results…", reasoningHeading: "Comparing both sources" }, kind: "activity", runId: "run-results" })} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Comparing both sources$/u);
+    // A bare status (a reload without the live feed) never hides a running tool.
+    rerender(<RunAnswerV2 content="" toolActivity={toolActivity}
+      presentation={presentation({ activity: { kind: "provider", label: "Thinking…" }, kind: "activity", runId: "run-results" })} />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Searching the web…$/u);
+  });
+
   it("keeps the line of an answer that streamed thinking while its text streams, then settles it in place", () => {
     const streaming = presentation({ kind: "streaming", reasoningObserved: true, runId: "run-thinking" });
     const { rerender } = render(<RunAnswerV2 content="Ninety" presentation={streaming} workDurationMs={12_000} />);

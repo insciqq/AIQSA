@@ -29,6 +29,7 @@ import {
   stepDurationSumV2,
   stepRunAnnouncementV2,
   type AnnouncedRunPresentationV2,
+  type RunActivityKindV2,
   type RunAnnouncerMemoryV2,
   type RunPresentationV2
 } from "./runPresentation";
@@ -36,6 +37,8 @@ import {
 type MaybePromise = Promise<unknown> | unknown;
 
 type ToolCallV2 = ThreadToolActivity["calls"][number];
+
+const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "knowledge", "results"]);
 
 function runningToolLabel(activity: ThreadToolActivity): string | null {
   let call: ToolCallV2 | undefined;
@@ -314,6 +317,9 @@ export function RunAnswerV2({
   const liveLabel = presentation.kind === "activity"
     ? activity?.kind === "synthesis" || activity?.kind === "compaction" ? activity.label
       : workspaceLiveLabelV2(workspaceActivity) ??
+      // Live tool calls read as running until the settled answer replaces
+      // them, so a server phase that began after them supersedes their label.
+      (activity && livePhaseKinds.has(activity.kind) ? activityLabel : null) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??
       activityLabel ?? "Thinking…"
     : null;
