@@ -970,7 +970,7 @@ export function presentRunLifecycleV2(
         activeMemorySearchCalls.delete(nativeKey);
       } else if (!lateNativeStart) activeMemorySearchCalls.add(nativeKey);
     }
-    const activity = lateNativeStart ? null : nativeSearch && activeMemorySearchCalls.size > 0
+    const activity: ActivitySignal | null = lateNativeStart ? null : nativeSearch && activeMemorySearchCalls.size > 0
       ? { index, kind: "tool" as const, origin: "memory" as const, serverName: "Memory", toolName: "memory_search" }
       : activityFromEvent(event, index, resultsPending);
     if (activity && (activity.kind !== "compaction" || compaction?.state === "running")) activitySignals.push(activity);
