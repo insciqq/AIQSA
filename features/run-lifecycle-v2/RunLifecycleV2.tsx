@@ -308,12 +308,18 @@ export function RunAnswerV2({
   // The live status occupies the process line's slot until the first answer
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
+  const activity = presentation.activity;
+  // The model's own heading replaces only the waiting label, and only where reasoning is shown.
+  const activityLabel = activity ? (showReasoning && activity.reasoningHeading) || activity.label : null;
   const liveLabel = presentation.kind === "activity"
-    ? presentation.activity?.kind === "synthesis" || presentation.activity?.kind === "compaction" ? presentation.activity.label
+    ? activity?.kind === "synthesis" || activity?.kind === "compaction" ? activity.label
       : workspaceLiveLabelV2(workspaceActivity) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??
-      presentation.activity?.label ?? "Thinking…"
+      activityLabel ?? "Thinking…"
     : null;
+  // Thinking shown with the answer is also shown while its text streams, so
+  // the line that held the live status keeps its slot until the answer settles.
+  const reasoningShown = showReasoning && (settled || presentation.kind === "streaming");
   const process = (
     <AnswerProcessV2
       connectionLost={presentation.kind === "connection_lost"}
@@ -325,8 +331,9 @@ export function RunAnswerV2({
       onPinSkill={onPinSkill}
       pinnedSkillIds={pinnedSkillIds}
       memorySources={settled ? artifact?.memorySources ?? [] : []}
-      reasoningTexts={settled && showReasoning ? artifact?.reasoningText ?? [] : []}
-      reasoningTruncated={settled && showReasoning && artifact?.reasoningTruncated === true}
+      reasoningPending={reasoningShown && !settled && presentation.reasoningObserved === true}
+      reasoningTexts={reasoningShown ? artifact?.reasoningText ?? [] : []}
+      reasoningTruncated={reasoningShown && artifact?.reasoningTruncated === true}
       runId={presentation.runId}
       toolActivity={toolActivity}
       workDurationMs={workDurationMs ?? artifact?.workDurationMs ?? stepDurationSumV2(toolActivity)}

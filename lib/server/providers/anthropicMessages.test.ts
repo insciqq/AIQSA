@@ -1174,6 +1174,37 @@ describe("Anthropic Messages adapter", () => {
     expect(result.toolCalls).toEqual([]);
   });
 
+  it("announces each thinking paragraph's opening live without changing the merged fragments", async () => {
+    const deltas = ["The user asks for the count", " of solutions. I will enumerate PRIVATE_THINKING_BODY.\n",
+      "\nNext I verify the diagonals", " carefully"];
+    const client: AnthropicMessagesClient = {
+      stream: () => events([
+        { message: { id: "msg-headings" }, type: "message_start" },
+        { content_block: { signature: "", thinking: "", type: "thinking" }, index: 0, type: "content_block_start" },
+        ...deltas.map((thinking) => ({ delta: { thinking, type: "thinking_delta" }, index: 0, type: "content_block_delta" })),
+        { index: 0, type: "content_block_stop" },
+        { content_block: { text: "", type: "text" }, index: 1, type: "content_block_start" },
+        { delta: { text: "Ninety-two", type: "text_delta" }, index: 1, type: "content_block_delta" },
+        { index: 1, type: "content_block_stop" },
+        { delta: { stop_reason: "end_turn" }, type: "message_delta", usage: { output_tokens: 3 } },
+        { type: "message_stop" }
+      ])
+    };
+    const { events: seen } = await collectAdapterStream(client, DEFAULT_PROVIDER_STREAM_LIMITS.maxOutputChars);
+    const headingIndexes = seen.flatMap((event, index) => event.type === "artifact" && event.data.artifactType === "summary" &&
+      (event.data.payload as { stage?: unknown }).stage === "reasoning" ? [index] : []);
+
+    expect(headingIndexes.map((index) => seen[index])).toEqual([
+      "The user asks for the count of solutions",
+      "Next I verify the diagonals carefully"
+    ].map((heading) => ({ data: { artifactType: "summary", payload: { heading, stage: "reasoning", status: "running" } }, type: "artifact" })));
+    expect(Math.max(...headingIndexes)).toBeLessThan(seen.findIndex((event) => event.type === "token"));
+    // The durable thinking is still one merged record of the exact text.
+    expect(seen.flatMap((event) => event.type === "artifact" && event.data.artifactType === "reasoning" ? [event.data.payload] : []))
+      .toEqual([{ entry: "start", text: deltas.join("") }]);
+    expect(JSON.stringify(headingIndexes.map((index) => seen[index]))).not.toContain("PRIVATE_THINKING_BODY");
+  });
+
   it.each(["refusal", "model_context_window_exceeded"])(
     "rejects a non-hosted %s terminal without exposing provider details",
     async (stopReason) => {

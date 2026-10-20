@@ -17,6 +17,7 @@ import {
 import { formatMemoryUiCopy, memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { decodeThreadSearchActivitySnapshot, mergeThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, terminalContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
+import { decodeReasoningHeading } from "@/lib/domain/reasoningHeading";
 
 export type RunLifecycleStatusV2 = ModelRunStatus | "preparing";
 
@@ -56,6 +57,10 @@ export type RunPresentationV2 = Readonly<{
     label: string;
     budget?: ThreadToolBudgetWarning;
     origin?: ThreadToolActivityOrigin;
+    /** The model's latest streamed reasoning heading since this activity
+     * began: untrusted, bounded plain text that replaces the waiting label
+     * only where the user shows reasoning. */
+    reasoningHeading?: string;
     serverName?: string;
     toolName?: string;
   }>;
@@ -78,6 +83,9 @@ export type RunPresentationV2 = Readonly<{
     | "recoverable_error"
     | "streaming"
     | "terminal_error";
+  /** This run streamed reasoning headings: its process line keeps its slot
+   * while the answer text streams. */
+  reasoningObserved?: true;
   runId: string | null;
 }>;
 
@@ -905,6 +913,7 @@ export function presentRunLifecycleV2(
   );
   const activitySignals: ActivitySignal[] = [];
   let latestTokenIndex = -1;
+  let latestReasoning: Readonly<{ heading: string; index: number }> | null = null;
   let eventFailure: RunFailureV2 | null = null;
   const settledMemorySearchCalls = new Set<string>();
   const activeMemorySearchCalls = new Set<string>();
@@ -912,6 +921,14 @@ export function presentRunLifecycleV2(
   for (const [index, event] of state.events.entries()) {
     if (event.type === "token") {
       latestTokenIndex = index;
+      continue;
+    }
+
+    // A reasoning heading is progress of the current phase, never a phase.
+    const heading = event.type === "artifact" && isRecord(event.data) && event.data.artifactType === "summary"
+      ? decodeReasoningHeading(event.data.payload) : null;
+    if (heading) {
+      latestReasoning = { heading, index };
       continue;
     }
 
@@ -1014,15 +1031,19 @@ export function presentRunLifecycleV2(
 
   const selectedActivity = activitySignals.at(-1) ?? null;
   if (latestTokenIndex >= 0 && latestTokenIndex >= (selectedActivity?.index ?? -1)) {
-    return present({ kind: "streaming", runId: state.runId });
+    return present({ kind: "streaming", runId: state.runId, ...(latestReasoning ? { reasoningObserved: true as const } : {}) });
   }
+  // Only a heading the model streamed after the current phase began names it.
+  const reasoningHeading = latestReasoning && latestReasoning.index > latestTokenIndex &&
+    latestReasoning.index > (selectedActivity?.index ?? -1) ? latestReasoning.heading : null;
 
   if (selectedActivity) {
     const { index: _index, ...signal } = selectedActivity;
     return present({
       activity: {
         ...signal,
-        label: activityLabel(signal)
+        label: activityLabel(signal),
+        ...(reasoningHeading && signal.kind === "provider" ? { reasoningHeading } : {})
       },
       kind: "activity",
       runId: state.runId
@@ -1031,6 +1052,7 @@ export function presentRunLifecycleV2(
 
   const activity = statusActivity(state.status);
   return present(activity
-    ? { activity, kind: "activity", runId: state.runId }
+    ? { activity: { ...activity, ...(reasoningHeading && activity.kind === "provider" ? { reasoningHeading } : {}) },
+        kind: "activity", runId: state.runId }
     : { kind: "idle", runId: state.runId });
 }

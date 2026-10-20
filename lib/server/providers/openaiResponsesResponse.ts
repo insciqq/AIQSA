@@ -2,6 +2,7 @@ import { observeStreamParseFailure } from "./providerObservability";
 import { providerContextLengthFacts, providerResponseFailure } from "./responseFailure";
 import { safeExternalHref } from "../../domain/links";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
+import { createReasoningHeadingTracker, reasoningHeadingEvent } from "../../domain/reasoningHeading";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
@@ -570,10 +571,52 @@ function webSearchLifecycleArtifact(input: Readonly<{
   };
 }
 
+const reasoningSummaryProgress = new Set([
+  "response.reasoning_summary_part.added",
+  "response.reasoning_summary_part.done",
+  "response.reasoning_summary_text.delta",
+  "response.reasoning_summary_text.done"
+]);
+
+/**
+ * Live headings of the reasoning summary (operator decision 2026-10-20), one
+ * per summary part. Only a bounded heading leaves, as a lifecycle summary: the
+ * reasoning artifact still comes from the completed item, and progress is
+ * never answer output, so the round's output fact and replay rule ignore it.
+ */
+function createReasoningSummaryHeadings() {
+  const headings = createReasoningHeadingTracker({ paragraphs: false });
+  let part: string | null = null;
+  let closed = false;
+  return (eventType: string, payload: Record<string, unknown>): string | null => {
+    const index = Number.isSafeInteger(payload.summary_index) ? String(payload.summary_index) : "";
+    const key = `${stringValue(payload.item_id) ?? ""}:${index}`;
+    // An added part always opens a new one, even from a server without part ids.
+    const fresh = key !== part || eventType === "response.reasoning_summary_part.added";
+    if (!fresh && closed) return null;
+    const previous = fresh && part !== null && !closed ? headings.finish() : null;
+    if (fresh) {
+      part = key;
+      closed = false;
+    }
+    const partText = isRecord(payload.part) ? stringValue(payload.part.text) : undefined;
+    if (eventType.endsWith(".done")) {
+      // A part announced only by its end is still named once.
+      const text = eventType === "response.reasoning_summary_text.done" ? stringValue(payload.text) : partText;
+      const announced = fresh && text ? headings.append(text) : null;
+      closed = true;
+      return headings.finish() ?? announced ?? previous;
+    }
+    const text = eventType === "response.reasoning_summary_text.delta" ? stringValue(payload.delta) : partText;
+    return (text ? headings.append(text) : null) ?? previous;
+  };
+}
+
 export async function* parseOpenAIResponsesSse(
   input: ParseOpenAIResponsesSseInput
 ): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
   const streamLimits = resolveProviderStreamLimits(input.streamLimits);
+  const reasoningSummaryHeading = createReasoningSummaryHeadings();
   let providerResponseId: string | undefined;
   let finalResponse: Record<string, unknown> | null = null;
   let streamedRawText: BoundedTextAccumulator | undefined;
@@ -712,6 +755,12 @@ export async function* parseOpenAIResponsesSse(
         tool.arguments = new BoundedTextAccumulator({ initialValue: parsed.arguments, maxChars: streamLimits.maxOutputChars, retainedTextKind: "tool_arguments", snapshot: latestSnapshot });
         await input.onToolArguments({ callIndex: tool.callIndex, callId: tool.callId, name: tool.name, snapshot: parsed.arguments });
       }
+    }
+
+    if (reasoningSummaryProgress.has(eventType)) {
+      const heading = reasoningSummaryHeading(eventType, parsed);
+      if (heading) yield reasoningHeadingEvent(heading);
+      continue;
     }
 
     if (eventType === "response.output_text.delta" && typeof parsed.delta === "string") {
