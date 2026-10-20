@@ -1208,6 +1208,15 @@ export function PowerAppShellV2({
     setSelectedSearchPlan,
     workspaceRefreshPromiseRef
   });
+  // A page opened straight on the blank chat never "changes" into it, and the
+  // catalog naming the default may arrive after the blank chat activates, so
+  // the default Assistant is reconciled again once both are known. It is a
+  // no-op outside an untouched personal blank chat.
+  const blankDefaultAssistantId = catalog?.defaults.assistantId ?? null;
+  const reconcileBlankDefaultAssistantEvent = useEventCallback(reconcileBlankDefaultAssistant);
+  useEffect(() => {
+    if (workspaceReady && blankDefaultAssistantId) reconcileBlankDefaultAssistantEvent();
+  }, [blankDefaultAssistantId, reconcileBlankDefaultAssistantEvent, workspaceReady]);
   useChatTitleReconciliation({ accountId, chats });
   useWorkspaceOutputReconciliation({
     accountId, chatId: activeChatId, messages: visibleMessages,
