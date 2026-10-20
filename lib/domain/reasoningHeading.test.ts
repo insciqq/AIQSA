@@ -40,6 +40,8 @@ describe("reasoning headings", () => {
       complete: true, heading: "Is version 2.5 enough?"
     });
     expect(reasoningParagraphHeading("## Plan\nFirst list the rows")).toEqual({ complete: true, heading: "Plan" });
+    expect(reasoningParagraphHeading("1. Check the rows. 2. Then")).toEqual({ complete: true, heading: "Check the rows" });
+    expect(reasoningParagraphHeading("- Count pairs\n- Compare")).toEqual({ complete: true, heading: "Count pairs" });
     expect(reasoningParagraphHeading("先检查对角线。然后")).toEqual({ complete: true, heading: "先检查对角线。" });
     expect(reasoningParagraphHeading("Considering the board")).toEqual({ complete: false, heading: null });
     expect(reasoningParagraphHeading("Considering the board.", true)).toEqual({ complete: true, heading: "Considering the board" });
