@@ -2910,10 +2910,13 @@ export function PowerAppShellV2({
     },
     workspace: {
       archive: archiveWorkspace,
+      available: workspaceUsable,
       busy: workspaceCapabilityBusy,
       enabled: workspaceUsable,
+      loading: workspaceInstallation === null,
       reset: resetWorkspace,
-      sessionState: workspaceSessionState
+      sessionState: workspaceSessionState,
+      ...(workspaceUnavailableReason ? { unavailableReason: workspaceUnavailableReason } : {})
     }
   } satisfies ShellComposerView;
 

@@ -51,7 +51,8 @@ import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 import type { UserImageModelSettings } from "@/lib/contracts/imageModels";
 import type {
   ChatWorkspaceState,
-  ThreadGeneratedFile
+  ThreadGeneratedFile,
+  WorkspaceUnavailableReason
 } from "@/lib/contracts/workspace";
 import type { ProjectWorkspaceController } from "@/features/projects-v2/useProjectWorkspaceController";
 
@@ -495,11 +496,15 @@ export type ShellComposerView = {
   uploadLimitHint?: string;
   workspace: {
     archive(): Promise<ThreadGeneratedFile | null>;
+    /** Same as `enabled`; Scheduled tasks read the installation's part of it with `loading` and the reason. */
+    available: boolean;
     busy: boolean;
     /** Workspace is ambient: on whenever the installation offers it and the model calls tools. */
     enabled: boolean;
+    loading: boolean;
     reset(): Promise<boolean>;
     sessionState: ChatWorkspaceState["sessionState"];
+    unavailableReason?: WorkspaceUnavailableReason;
   };
 };
 
