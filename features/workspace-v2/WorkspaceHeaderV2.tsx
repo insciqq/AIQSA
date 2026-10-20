@@ -74,7 +74,7 @@ export function TemporaryChatIndicatorV2({ memory }: Readonly<{
         type="button"
         onClick={() => setOpen((value) => !value)}
       >
-        <UiV2Icon name="memory" />
+        <UiV2Icon name="clock" />
         {memory.label}
       </button>
       {open ? (
