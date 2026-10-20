@@ -47,7 +47,9 @@ export type RunActivityKindV2 =
   | "preparing"
   | "provider"
   | "queued"
-  /** A model request after tool or Knowledge work: it reads their results. */
+  /** A model request after tool or Knowledge work. It reads their results
+   * but shows the run's waiting phrase like any other model wait: in a tool
+   * loop that is most of the run (operator decision 2026-10-21). */
   | "results"
   | "search"
   | "synthesis"
@@ -537,7 +539,6 @@ function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | nu
     case "knowledge":
       return "Searching Knowledge…";
     case "results":
-      return "Reading results…";
     case "provider":
       return runWaitingPhraseV2(runId);
   }

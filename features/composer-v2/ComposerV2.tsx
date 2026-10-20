@@ -736,9 +736,10 @@ export function ComposerV2({
       (!builtText.trim() && !readyAttachment ? "Type a message." : null);
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
+  // Files already uploading sit in the tray, so more can be added meanwhile.
   const attachmentSelectionDisabled = Boolean(
     !onUploadFiles || (!attachmentAccept && !attachmentPolicy.files) ||
-      inputDisabled || activeRun || uploading
+      inputDisabled || activeRun
   );
   /* Dimmed "+" rows say why: the composer's own blocking reason (an inline
      edit, a disabled hint) rather than a bare "Unavailable" or the row's

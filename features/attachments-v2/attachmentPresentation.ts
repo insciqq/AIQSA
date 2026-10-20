@@ -25,6 +25,8 @@ export type ComposerAttachmentItemV2 = Readonly<{
   fileName: string;
   id: string;
   kind?: ComposerAttachment["kind"];
+  /** A local thumbnail of an image the user just chose (`pendingUploads.ts`). */
+  previewUrl?: string;
   progress?: number | null;
   statusLabel?: string;
   upload?: boolean;

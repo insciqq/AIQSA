@@ -37,6 +37,98 @@ async function waitForAnimationFrame() {
   });
 }
 
+/**
+ * A thread laid out like the real one: turns stacked in a document with top
+ * and bottom padding, the reading spacer after the last turn, and a scroller
+ * that clamps scrollTop to its extent. Rects follow the scroll position.
+ */
+function threadLayout(input: Readonly<{
+  clientHeight: number;
+  paddingBottom?: number;
+  paddingTop?: number;
+  scrollTop?: number;
+  turns: ReadonlyArray<Readonly<{ height: number; id: string }>>;
+}>) {
+  const heights = new Map(input.turns.map((turn) => [turn.id, turn.height]));
+  const order = input.turns.map((turn) => turn.id);
+  const paddingTop = input.paddingTop ?? 0;
+  const paddingBottom = input.paddingBottom ?? 0;
+  const element = document.createElement("div");
+  const content = document.createElement("div");
+  content.className = "v2-conversation-document";
+  const spacer = document.createElement("div");
+  spacer.dataset.threadReadingSpacer = "true";
+  const turns = new Map<string, HTMLElement>();
+  for (const id of order) {
+    const turn = document.createElement("article");
+    turn.dataset.messageId = id;
+    turns.set(id, turn);
+    content.append(turn);
+  }
+  content.append(spacer);
+  element.append(content);
+
+  const spacerHeight = () => Number.parseFloat(spacer.style.height || "0") || 0;
+  const turnTop = (id: string) => {
+    let top = paddingTop;
+    for (const candidate of order) {
+      if (candidate === id) return top;
+      top += heights.get(candidate)!;
+    }
+    return top;
+  };
+  const spacerTop = () => turnTop("\0end");
+  const extent = () => spacerTop() + spacerHeight() + paddingBottom;
+  const maxScrollTop = () => Math.max(0, extent() - input.clientHeight);
+  let scrollTop = Math.min(input.scrollTop ?? maxScrollTop(), maxScrollTop());
+  // Like a browser, a shrinking extent clamps the scroll position.
+  const currentScrollTop = () => (scrollTop = Math.min(scrollTop, maxScrollTop()));
+  const rect = (top: number, height: number) =>
+    ({ bottom: top + height - currentScrollTop(), height, top: top - currentScrollTop() } as DOMRect);
+
+  for (const [id, turn] of turns) {
+    turn.getBoundingClientRect = () => rect(turnTop(id), heights.get(id)!);
+  }
+  spacer.getBoundingClientRect = () => rect(spacerTop(), spacerHeight());
+  content.getBoundingClientRect = () => rect(0, extent());
+  element.getBoundingClientRect = () =>
+    ({ bottom: input.clientHeight, height: input.clientHeight, top: 0 } as DOMRect);
+  Object.defineProperties(element, {
+    clientHeight: { configurable: true, value: input.clientHeight },
+    scrollHeight: { configurable: true, get: () => Math.max(input.clientHeight, extent()) },
+    scrollTop: {
+      configurable: true,
+      get: currentScrollTop,
+      set: (value: number) => {
+        scrollTop = Math.max(0, Math.min(value, maxScrollTop()));
+      }
+    }
+  });
+
+  return {
+    element,
+    maxScrollTop,
+    setHeight(id: string, height: number) {
+      heights.set(id, height);
+    },
+    spacer,
+    turn(id: string) {
+      return turns.get(id)!;
+    }
+  };
+}
+
+function stubResizeObserver(): () => void {
+  let notify = () => {};
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: ResizeObserverCallback) { notify = () => callback([], this); }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+  return () => notify();
+}
+
 describe("usePinnedScroll", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -292,33 +384,18 @@ describe("usePinnedScroll", () => {
     expect(result.current.showJumpToLatest).toBe(false);
   });
 
-  it("anchors a streamed turn at its user message with prior-answer context", async () => {
+  it("anchors a streamed turn at its user message with prior-answer context, ending the thread there", async () => {
     const onReadingAnchorApplied = vi.fn();
-    let scrollHeight = 1000;
-    let answerHeight = 60;
-    const element = scrollElement({
-      clientHeight: 300,
-      scrollHeight,
-      scrollTop: 700
+    const thread = threadLayout({
+      clientHeight: 600,
+      paddingBottom: 112,
+      turns: [
+        { height: 700, id: "assistant-0" },
+        { height: 120, id: "user-1" },
+        { height: 60, id: "assistant-1" }
+      ]
     });
-    Object.defineProperty(element, "scrollHeight", {
-      configurable: true,
-      get: () => scrollHeight
-    });
-    element.getBoundingClientRect = () =>
-      ({ bottom: 300, height: 300, top: 0 } as DOMRect);
-
-    const question = document.createElement("article");
-    question.dataset.messageId = "user-1";
-    question.getBoundingClientRect = () =>
-      ({ bottom: 200, height: 120, top: 80 } as DOMRect);
-    const answer = document.createElement("article");
-    answer.dataset.messageId = "assistant-1";
-    answer.getBoundingClientRect = () =>
-      ({ bottom: 200 + answerHeight, height: answerHeight, top: 200 } as DOMRect);
-    const spacer = document.createElement("div");
-    spacer.dataset.threadReadingSpacer = "true";
-    element.append(question, answer, spacer);
+    const { element, spacer } = thread;
 
     const { rerender, result } = renderHook(
       ({ followKey, readingAnchorKey }) =>
@@ -348,15 +425,26 @@ describe("usePinnedScroll", () => {
     });
     await waitForAnimationFrame();
 
-    expect(spacer.style.height).toBe("240px");
-    expect(element.scrollTop).toBe(654);
+    // 220px of the previous answer stay above the question, and the spacer
+    // adds only what that placement needs: the anchored view is the bottom.
+    expect(element.scrollTop).toBe(480);
+    expect(spacer.style.height).toBe("88px");
+    expect(thread.maxScrollTop()).toBe(480);
     expect(result.current.isPinned).toBe(false);
     expect(result.current.showJumpToLatest).toBe(false);
     expect(onReadingAnchorApplied).toHaveBeenCalledOnce();
-    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-1", question);
+    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-1", thread.turn("user-1"));
 
-    answerHeight = 500;
-    scrollHeight = 1400;
+    thread.setHeight("assistant-1", 100);
+    rerender({
+      followKey: "some-answer-text",
+      readingAnchorKey: "user-1"
+    });
+    await waitForAnimationFrame();
+    expect(spacer.style.height).toBe("48px");
+    expect(element.scrollTop).toBe(480);
+
+    thread.setHeight("assistant-1", 500);
     rerender({
       followKey: "more-answer-text",
       readingAnchorKey: "user-1"
@@ -364,21 +452,138 @@ describe("usePinnedScroll", () => {
     await waitForAnimationFrame();
 
     expect(spacer.style.height).toBe("0px");
-    expect(element.scrollTop).toBe(654);
+    expect(element.scrollTop).toBe(480);
     expect(result.current.showJumpToLatest).toBe(true);
     expect(onReadingAnchorApplied).toHaveBeenCalledOnce();
 
     act(() => result.current.jumpToLatest());
     await waitForAnimationFrame();
-    expect(element.scrollTop).toBe(1400);
+    expect(element.scrollTop).toBe(832);
 
-    scrollHeight = 1600;
+    thread.setHeight("assistant-1", 700);
     rerender({
       followKey: "tail-following-resumed",
       readingAnchorKey: "user-1"
     });
     await waitForAnimationFrame();
-    expect(element.scrollTop).toBe(1600);
+    expect(element.scrollTop).toBe(1032);
+  });
+
+  it("resizes a settled answer's room to its final height and drops it in another chat", async () => {
+    const notifyResize = stubResizeObserver();
+    const thread = threadLayout({
+      clientHeight: 600,
+      paddingBottom: 112,
+      turns: [
+        { height: 700, id: "assistant-0" },
+        { height: 120, id: "user-1" },
+        { height: 40, id: "assistant-1" }
+      ]
+    });
+    const { element, spacer } = thread;
+    const { rerender, result } = renderHook(
+      ({ followKey, readingAnchorKey, resetKey }) =>
+        usePinnedScroll<HTMLDivElement>({ followKey, readingAnchorKey, resetKey }),
+      { initialProps: { followKey: "initial", readingAnchorKey: null as string | null, resetKey: "chat-1" } }
+    );
+    act(() => {
+      result.current.containerRef.current = element;
+      result.current.handleScroll();
+    });
+    rerender({ followKey: "streaming", readingAnchorKey: "user-1", resetKey: "chat-1" });
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(480);
+    expect(spacer.style.height).toBe("108px");
+
+    // The run settles: the answer's final text and actions arrive together
+    // and the live anchor ends with the stream.
+    thread.setHeight("assistant-1", 260);
+    rerender({ followKey: "settled", readingAnchorKey: null, resetKey: "chat-1" });
+    await waitForAnimationFrame();
+    expect(spacer.style.height).toBe("0px");
+    expect(element.scrollTop).toBe(480);
+
+    // A later reflow of the settled answer (a disclosure closing) gives the
+    // room back instead of pulling the view down.
+    thread.setHeight("assistant-1", 60);
+    act(() => notifyResize());
+    await waitForAnimationFrame();
+    expect(spacer.style.height).toBe("88px");
+    expect(element.scrollTop).toBe(480);
+
+    // Following to the end shows the anchored view, never blank space below.
+    act(() => result.current.jumpToLatest());
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(480);
+
+    // Another chat never inherits that room.
+    rerender({ followKey: "other-chat", readingAnchorKey: null, resetKey: "chat-2" });
+    await waitForAnimationFrame();
+    expect(spacer.style.height).toBe("0px");
+    expect(element.scrollTop).toBe(thread.maxScrollTop());
+    expect(element.scrollTop).toBe(392);
+  });
+
+  it("keeps a toggled disclosure in place and stops following the tail", async () => {
+    const notifyResize = stubResizeObserver();
+    const thread = threadLayout({
+      clientHeight: 600,
+      paddingBottom: 112,
+      turns: [
+        { height: 300, id: "user-1" },
+        { height: 500, id: "assistant-1" }
+      ]
+    });
+    const { element } = thread;
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    details.append(summary);
+    thread.turn("assistant-1").append(details);
+    let summaryTop = 320;
+    summary.getBoundingClientRect = () =>
+      ({ bottom: summaryTop + 24 - element.scrollTop, height: 24, top: summaryTop - element.scrollTop } as DOMRect);
+
+    const { rerender, result } = renderHook(
+      ({ followKey }) => usePinnedScroll<HTMLDivElement>({ followKey, resetKey: "chat-1" }),
+      { initialProps: { followKey: "initial" } }
+    );
+    act(() => {
+      result.current.containerRef.current = element;
+      result.current.refreshLayout();
+    });
+    await waitForAnimationFrame();
+    expect(result.current.isPinned).toBe(true);
+    expect(element.scrollTop).toBe(312);
+    const top = summary.getBoundingClientRect().top;
+
+    // Expanding the Workspace steps while the answer runs: the thread no
+    // longer chases the tail, and a reflow above the summary (its live line
+    // growing) is absorbed so the summary stays under the pointer.
+    act(() => {
+      summary.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(result.current.isPinned).toBe(false);
+    thread.setHeight("assistant-1", 900);
+    summaryTop = 350;
+    act(() => notifyResize());
+    rerender({ followKey: "next-token" });
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(342);
+    expect(summary.getBoundingClientRect().top).toBe(top);
+    expect(result.current.isPinned).toBe(false);
+    await waitForAnimationFrame();
+    expect(result.current.showJumpToLatest).toBe(true);
+
+    // Collapsing them again returns to the same view.
+    act(() => {
+      summary.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    thread.setHeight("assistant-1", 500);
+    summaryTop = 320;
+    act(() => notifyResize());
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(312);
+    expect(summary.getBoundingClientRect().top).toBe(top);
   });
 
   it("scrolls to the reader's own anchor after they moved away, never to a live anchor", async () => {
@@ -430,40 +635,63 @@ describe("usePinnedScroll", () => {
     expect(onReadingAnchorApplied).toHaveBeenCalledWith("older-match", older);
   });
 
-  it("reveals an oversized submitted question tail and answer preview before deliberate tail following", async () => {
-    const questionDocumentTop = 800;
-    const questionHeight = 420;
-    let answerHeight = 48;
-    let scrollHeight = 1500;
-    const element = scrollElement({
-      clientHeight: 300,
-      scrollHeight,
-      scrollTop: 200
+  it("lets a toggle cancel a follow frame that was already scheduled", async () => {
+    const notifyResize = stubResizeObserver();
+    const thread = threadLayout({
+      clientHeight: 600,
+      paddingBottom: 112,
+      turns: [
+        { height: 300, id: "user-1" },
+        { height: 500, id: "assistant-1" }
+      ]
     });
-    Object.defineProperty(element, "scrollHeight", {
-      configurable: true,
-      get: () => scrollHeight
+    const { element } = thread;
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    details.append(summary);
+    thread.turn("assistant-1").append(details);
+    summary.getBoundingClientRect = () =>
+      ({ bottom: 344 - element.scrollTop, height: 24, top: 320 - element.scrollTop } as DOMRect);
+    const { result } = renderHook(() => usePinnedScroll<HTMLDivElement>({ followKey: "live", resetKey: "chat-1" }));
+    act(() => {
+      result.current.containerRef.current = element;
+      result.current.refreshLayout();
     });
-    element.getBoundingClientRect = () =>
-      ({ bottom: 300, height: 300, top: 0 } as DOMRect);
+    await waitForAnimationFrame();
+    expect(result.current.isPinned).toBe(true);
+    expect(element.scrollTop).toBe(312);
 
-    const question = document.createElement("article");
-    question.dataset.messageId = "user-oversized";
-    question.getBoundingClientRect = () => ({
-      bottom: questionDocumentTop + questionHeight - element.scrollTop,
-      height: questionHeight,
-      top: questionDocumentTop - element.scrollTop
-    } as DOMRect);
-    const answer = document.createElement("article");
-    answer.dataset.messageId = "assistant-live";
-    answer.getBoundingClientRect = () => ({
-      bottom: questionDocumentTop + questionHeight + answerHeight - element.scrollTop,
-      height: answerHeight,
-      top: questionDocumentTop + questionHeight - element.scrollTop
-    } as DOMRect);
-    const spacer = document.createElement("div");
-    spacer.dataset.threadReadingSpacer = "true";
-    element.append(question, answer, spacer);
+    // A token schedules the next follow frame; the reader opens a step first.
+    thread.setHeight("assistant-1", 520);
+    act(() => result.current.refreshLayout());
+    const top = summary.getBoundingClientRect().top;
+    act(() => {
+      summary.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    thread.setHeight("assistant-1", 900);
+    act(() => notifyResize());
+    await waitForAnimationFrame();
+    await waitForAnimationFrame();
+
+    expect(result.current.isPinned).toBe(false);
+    expect(element.scrollTop).toBe(312);
+    expect(summary.getBoundingClientRect().top).toBe(top);
+  });
+
+  it("reveals an oversized submitted question tail and answer preview before deliberate tail following", async () => {
+    const thread = threadLayout({
+      clientHeight: 300,
+      paddingBottom: 112,
+      scrollTop: 200,
+      turns: [
+        { height: 800, id: "assistant-prior" },
+        { height: 420, id: "user-oversized" },
+        { height: 48, id: "assistant-live" }
+      ]
+    });
+    const { element, spacer } = thread;
+    const question = thread.turn("user-oversized");
+    const answer = thread.turn("assistant-live");
 
     const { rerender, result } = renderHook(
       ({ followKey, readingAnchorKey }) =>
@@ -482,6 +710,7 @@ describe("usePinnedScroll", () => {
 
     act(() => {
       result.current.containerRef.current = element;
+      element.scrollTop = 200;
       result.current.handleScroll();
     });
     expect(result.current.isPinned).toBe(false);
@@ -493,27 +722,24 @@ describe("usePinnedScroll", () => {
     });
     await waitForAnimationFrame();
 
-    expect(spacer.style.height).toBe("252px");
+    expect(spacer.style.height).toBe("0px");
     expect(element.scrollTop).toBe(968);
     expect(question.getBoundingClientRect()).toMatchObject({ bottom: 252, top: -168 });
     expect(answer.getBoundingClientRect()).toMatchObject({ bottom: 300, top: 252 });
     expect(result.current.isPinned).toBe(false);
     expect(result.current.showJumpToLatest).toBe(false);
 
-    answerHeight = 72;
-    scrollHeight = 1524;
+    thread.setHeight("assistant-live", 72);
     rerender({
       followKey: "small-answer-growth",
       readingAnchorKey: "user-oversized"
     });
     await waitForAnimationFrame();
 
-    expect(spacer.style.height).toBe("228px");
     expect(element.scrollTop).toBe(968);
     expect(result.current.showJumpToLatest).toBe(false);
 
-    answerHeight = 240;
-    scrollHeight = 1692;
+    thread.setHeight("assistant-live", 240);
     rerender({
       followKey: "large-answer-growth",
       readingAnchorKey: "user-oversized"
@@ -525,51 +751,35 @@ describe("usePinnedScroll", () => {
 
     act(() => result.current.jumpToLatest());
     await waitForAnimationFrame();
-    expect(element.scrollTop).toBe(1692);
+    expect(element.scrollTop).toBe(1272);
     expect(result.current.isPinned).toBe(true);
     expect(result.current.showJumpToLatest).toBe(false);
 
-    answerHeight = 348;
-    scrollHeight = 1800;
+    thread.setHeight("assistant-live", 348);
     rerender({
       followKey: "tail-following-resumed",
       readingAnchorKey: "user-oversized"
     });
     await waitForAnimationFrame();
 
-    expect(element.scrollTop).toBe(1800);
+    expect(element.scrollTop).toBe(1380);
   });
 
   it("retargets a pending reading anchor when optimistic message ids reconcile before its frame", async () => {
     const onReadingAnchorApplied = vi.fn();
-    const questionDocumentTop = 800;
-    const questionHeight = 420;
-    const answerHeight = 48;
-    const element = scrollElement({
+    const thread = threadLayout({
       clientHeight: 300,
-      scrollHeight: 1500,
-      scrollTop: 200
+      paddingBottom: 112,
+      scrollTop: 200,
+      turns: [
+        { height: 800, id: "assistant-prior" },
+        { height: 420, id: "user-optimistic" },
+        { height: 48, id: "assistant-optimistic" }
+      ]
     });
-    element.getBoundingClientRect = () =>
-      ({ bottom: 300, height: 300, top: 0 } as DOMRect);
-
-    const question = document.createElement("article");
-    question.dataset.messageId = "user-optimistic";
-    question.getBoundingClientRect = () => ({
-      bottom: questionDocumentTop + questionHeight - element.scrollTop,
-      height: questionHeight,
-      top: questionDocumentTop - element.scrollTop
-    } as DOMRect);
-    const answer = document.createElement("article");
-    answer.dataset.messageId = "assistant-optimistic";
-    answer.getBoundingClientRect = () => ({
-      bottom: questionDocumentTop + questionHeight + answerHeight - element.scrollTop,
-      height: answerHeight,
-      top: questionDocumentTop + questionHeight - element.scrollTop
-    } as DOMRect);
-    const spacer = document.createElement("div");
-    spacer.dataset.threadReadingSpacer = "true";
-    element.append(question, answer, spacer);
+    const { element } = thread;
+    const question = thread.turn("user-optimistic");
+    const answer = thread.turn("assistant-optimistic");
 
     const { rerender, result } = renderHook(
       ({ followKey, readingAnchorKey }) =>
@@ -613,16 +823,15 @@ describe("usePinnedScroll", () => {
   });
 
   it("keeps an oversized fallback anchor top-aligned when it is also the live tail", async () => {
-    const element = scrollElement({ clientHeight: 300, scrollHeight: 1200, scrollTop: 700 });
-    element.getBoundingClientRect = () =>
-      ({ bottom: 300, height: 300, top: 0 } as DOMRect);
-    const fallback = document.createElement("article");
-    fallback.dataset.messageId = "assistant-fallback";
-    fallback.getBoundingClientRect = () =>
-      ({ bottom: 500, height: 420, top: 80 } as DOMRect);
-    const spacer = document.createElement("div");
-    spacer.dataset.threadReadingSpacer = "true";
-    element.append(fallback, spacer);
+    const thread = threadLayout({
+      clientHeight: 300,
+      paddingBottom: 112,
+      turns: [
+        { height: 780, id: "user-prior" },
+        { height: 420, id: "assistant-fallback" }
+      ]
+    });
+    const { element, spacer } = thread;
 
     const { rerender, result } = renderHook(
       ({ readingAnchorKey }) =>

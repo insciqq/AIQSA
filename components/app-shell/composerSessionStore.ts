@@ -784,7 +784,9 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
       return false;
     }
 
-    const ownsFeedback = generation === session.latestUploadGeneration;
+    // The newest batch owns the notice, but an older batch that failed after
+    // a later pick started still reports its files: none leaves silently.
+    const ownsFeedback = generation === session.latestUploadGeneration || error !== null;
     const operationError = !ownsFeedback
       ? session.operationError
       : error && session.operationError

@@ -333,11 +333,11 @@ describe("Run lifecycle v2", () => {
   it("lets a phase that began after the tool calls replace their stale running label", () => {
     const toolActivity = { calls: [{ origin: "web_search" as const, round: 1, serverName: "Web search",
       status: "running" as const, toolName: "search_web" }] };
-    const reading = presentation({ activity: { kind: "results", label: "Reading results…" }, kind: "activity", runId: "run-results" });
+    const reading = presentation({ activity: { kind: "results", label: "Mulling it over…" }, kind: "activity", runId: "run-results" });
     const { rerender } = render(<RunAnswerV2 content="" presentation={reading} toolActivity={toolActivity} />);
-    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Reading results…$/u);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Mulling it over…$/u);
     rerender(<RunAnswerV2 content="" toolActivity={toolActivity} presentation={presentation({ activity: { kind: "results",
-      label: "Reading results…", reasoningHeading: "Comparing both sources" }, kind: "activity", runId: "run-results" })} />);
+      label: "Mulling it over…", reasoningHeading: "Comparing both sources" }, kind: "activity", runId: "run-results" })} />);
     expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Comparing both sources$/u);
     // A bare status (a reload without the live feed) never hides a running tool.
     rerender(<RunAnswerV2 content="" toolActivity={toolActivity}
@@ -347,7 +347,7 @@ describe("Run lifecycle v2", () => {
 
   it("lets a phase that began after a finished Workspace step replace the generic Workspace label", () => {
     const finished = { entries: [{ command: { exitCode: 0, preview: "npm test" }, id: "test", kind: "command" as const, phase: "succeeded" as const }] };
-    const reading = presentation({ activity: { kind: "results", label: "Reading results…", reasoningHeading: "Checking the test output" },
+    const reading = presentation({ activity: { kind: "results", label: "Mulling it over…", reasoningHeading: "Checking the test output" },
       kind: "activity", runId: "run-ws" });
     const { rerender } = render(<RunAnswerV2 content="" presentation={reading} workspaceActivity={finished} />);
     expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(/^Checking the test output/u);
