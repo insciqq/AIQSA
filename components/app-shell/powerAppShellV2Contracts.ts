@@ -1,4 +1,5 @@
 import type { AnswerSoundId } from "@/lib/contracts/answerSound";
+import type { GreetingPeriod } from "@/lib/domain/greeting";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
@@ -59,6 +60,8 @@ export type ShellSessionView = {
   accountId: string;
   accountDisplayName: string;
   accountEmail: string | null;
+  /** Time of day the server read from the browser's time-zone cookie, for the blank chat greeting. */
+  greetingPeriod?: GreetingPeriod | null;
   updateAccountDisplayName(displayName: string): void;
   activeChatId: string | null;
   activeChatTitle: string;

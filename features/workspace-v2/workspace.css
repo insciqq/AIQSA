@@ -1064,6 +1064,12 @@
   gap: 0.375rem;
 }
 
+/* A temporary chat's composer has a dashed edge: the mode reads without colour. */
+.v2-live-empty-composer-stack[data-temporary] .v2-composer,
+.v2-live-composer-dock[data-temporary] .v2-composer {
+  border-style: dashed;
+}
+
 /* The composer frame shares the reading column's exact edges (UX audit F7):
    the dock already provides the side gutter, so the wrap takes the full
    inner width instead of insetting itself again. */

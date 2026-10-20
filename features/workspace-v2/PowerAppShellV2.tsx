@@ -3,6 +3,7 @@
 import { DisclosurePreferencesProvider } from "@/components/app-shell/disclosurePreferences";
 import { fetchWorkspaceUploadConfig } from "@/components/app-shell/workspaceUploadClient";
 import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads";
+import type { GreetingPeriod } from "@/lib/domain/greeting";
 import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPreferences";
 
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
@@ -616,6 +617,7 @@ export function PowerAppShellV2({
   accountEmail,
   adminEntryVisible = false,
   connectEntryVisible = false,
+  greetingPeriod = null,
   telegramAvailable = false
 }: {
   accountId: string;
@@ -623,6 +625,7 @@ export function PowerAppShellV2({
   accountEmail: string | null;
   adminEntryVisible?: boolean;
   connectEntryVisible?: boolean;
+  greetingPeriod?: GreetingPeriod | null;
   /** Settings → Connections shows the Telegram block. */
   telegramAvailable?: boolean;
 }) {
@@ -2012,6 +2015,7 @@ export function PowerAppShellV2({
     accountDisplayName: savedAccountName?.session === settingsSession
       ? savedAccountName.displayName : accountDisplayName,
     accountEmail,
+    greetingPeriod,
     updateAccountDisplayName,
     activeChatId,
     activeChatTitle,

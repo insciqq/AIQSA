@@ -688,7 +688,7 @@ html[data-motion="off"] .v2-conversation-turn[data-search-reveal] > .v2-conversa
   letter-spacing: -0.01em;
 }
 
-.v2-conversation-orientation-copy span {
+.v2-conversation-orientation-detail {
   max-width: 31rem;
   color: var(--v2-color-text2);
   font-size: 0.9375rem;
