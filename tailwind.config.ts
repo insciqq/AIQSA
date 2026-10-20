@@ -22,7 +22,7 @@ const config = {
           surface: v2Color("--v2-color-surface2"),
           hover: v2Color("--v2-color-hover"),
           pressed: v2Color("--v2-color-active"),
-          selected: v2Color("--v2-color-accent-dim")
+          selected: v2Color("--v2-color-active")
         },
         focus: v2Color("--v2-color-accent"),
         "overlay-surface": v2Color("--v2-color-surface"),
