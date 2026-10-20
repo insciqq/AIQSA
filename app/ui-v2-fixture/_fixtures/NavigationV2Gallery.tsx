@@ -89,7 +89,6 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
       accountLabel="operator@aiqsa.local"
       activeChatId={selected}
       chats={state === "empty" ? [] : visible}
-      currentNewChatMode={mode}
       error={state === "error" ? "fixture_error" : null}
       folders={folders}
       hasMore={state === "default"}

@@ -1867,9 +1867,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       activeProject.capabilities.manageProject || activeProjectChat.createdByUserId === session.accountId
     )
   );
-  const currentNewChatMode: NewChatMode = composer.memory.mode === "TEMPORARY"
-    ? "TEMPORARY"
-    : activeChatSummary?.memoryMode === "EXCLUDED" ? "EXCLUDED" : "NORMAL";
   const withActiveChat = (action: (chat: WorkspaceChatSummary) => void) => () => {
     const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
     if (full) action(full);
@@ -1946,7 +1943,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             settings.closeMemory();
           }}
           chatStateFor={navigationChatState}
-          currentNewChatMode={currentNewChatMode}
           editingChatId={workspace.pane.state.editingChatOrigin === "row" ? workspace.pane.state.editingChatId : null}
           editingChatTitle={workspace.pane.state.editingChatTitle}
           editingFolderId={workspace.pane.state.editingFolderId}
@@ -2219,6 +2215,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               ))}
               supplementalActions={workspaceMenuActions}
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
+              temporaryToggle={!projectContext && composer.memory.canToggleTemporary ? {
+                label: composer.memory.label,
+                on: temporarySession,
+                onToggle: composer.memory.toggleTemporary
+              } : null}
               title={session.activeChatTitle}
             />
             {answerReviewSettingsOpen && answerReviewView ? (
@@ -2337,7 +2338,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 temporaryOrientation: temporarySession ? (
                   <ConversationOrientationCopyV2
                     detail={composer.memory.explanation}
-                    icon="clock"
+                    icon="incognito"
                     testId="temporary-orientation"
                     title={composer.memory.label}
                   />

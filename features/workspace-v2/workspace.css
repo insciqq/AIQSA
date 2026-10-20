@@ -788,6 +788,12 @@
   background: var(--v2-color-hover);
 }
 
+/* The blank chat's Temporary switch: pressed reads as a fill, not a hue. */
+.v2-live-temporary-toggle[aria-pressed="true"] {
+  color: var(--v2-color-text);
+  background: var(--v2-color-active);
+}
+
 .v2-live-temporary-popover {
   position: absolute;
   z-index: 60;

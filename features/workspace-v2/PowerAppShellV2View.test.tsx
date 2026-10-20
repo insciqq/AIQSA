@@ -920,6 +920,30 @@ describe("Workspace header v2", () => {
     expect(screen.queryByRole("button", { name: "Account menu" })).toBeNull();
   });
 
+  it("switches a blank chat to Temporary from the header and shows the label instead once it starts", () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(<WorkspaceHeaderV2 {...headerProps({
+      active: false,
+      temporaryToggle: { label: "Temporary chat", on: false, onToggle }
+    })} />);
+    const toggle = screen.getByRole("button", { name: "Temporary chat" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+
+    rerender(<WorkspaceHeaderV2 {...headerProps({
+      active: false,
+      temporaryMemory,
+      temporaryToggle: { label: "Temporary chat", on: true, onToggle }
+    })} />);
+    expect(screen.getByRole("button", { name: "Temporary chat" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByTestId("header-temporary-indicator")).toBeNull();
+
+    rerender(<WorkspaceHeaderV2 {...headerProps({ temporaryMemory, temporaryToggle: null })} />);
+    expect(screen.queryByTestId("header-temporary-toggle")).toBeNull();
+    expect(screen.getByTestId("header-temporary-indicator")).toBeVisible();
+  });
+
   it("keeps Share governance, the Temporary indicator, and shared dismissal", () => {
     const props = headerProps({ shareDisabled: true, temporaryMemory });
     render(<WorkspaceHeaderV2 {...props} />);

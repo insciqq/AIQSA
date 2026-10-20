@@ -87,8 +87,6 @@ export type NavigationSidebarProps = Readonly<{
    */
   chatStateFor?(chat: ChatNavigationSummaryWire): NavigationChatRowState | null;
   chats: readonly ChatNavigationSummaryWire[];
-  /** Marks the mode the current session is in inside the New-chat mode menu. */
-  currentNewChatMode?: NewChatMode;
   error: string | null;
   folders: readonly ChatNavigationFolderWire[];
   hasMore: boolean;
@@ -677,7 +675,6 @@ function findAnchoredChatRow(container: HTMLElement, id: string): HTMLElement | 
 }
 
 export function NavigationSidebar(props: NavigationSidebarProps) {
-  const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   // "Filter chats…" is a sidebar-scoped lookup over the user's own chats on
@@ -795,14 +792,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [chatKey, loadMoreBlocked, onLoadMore]);
-  const {
-    menuRef: newChatMenuRef,
-    triggerRef: newChatTriggerRef
-  } = useMenuDismissalV2({
-    onClose: () => setNewChatMenuOpen(false),
-    open: newChatMenuOpen
-  });
-  const currentMode = props.currentNewChatMode ?? "NORMAL";
   const projectsView = props.view === "projects";
   const projectColumn = projectsView || Boolean(props.projectContextActive);
   // Navigating away from search results resets the query so no stale
@@ -893,51 +882,6 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             <UiV2Icon name="plus" />
             New chat
           </button>
-          {!props.projectContextActive ? (
-            <button
-              className="v2-new-chat-menu-trigger v2-focusable"
-              type="button"
-              aria-expanded={newChatMenuOpen}
-              aria-haspopup="menu"
-              disabled={props.navigationBusy}
-              aria-label="New chat mode"
-              ref={newChatTriggerRef}
-              onClick={() => setNewChatMenuOpen((open) => !open)}
-            >
-              <UiV2Icon name="chevron-down" />
-            </button>
-          ) : null}
-          {!props.projectContextActive && newChatMenuOpen ? (
-            <UiV2ResponsiveMenu
-              anchorRef={newChatTriggerRef}
-              className="v2-new-chat-menu"
-              label="New chat mode"
-              menuRef={newChatMenuRef}
-              onClose={() => setNewChatMenuOpen(false)}
-            >
-              <UiV2MenuItem
-                selected={currentMode === "NORMAL"}
-                sub="Normal memory and history"
-                onClick={() => { setNewChatMenuOpen(false); props.onNewChat("NORMAL"); }}
-              >
-                Normal
-              </UiV2MenuItem>
-              <UiV2MenuItem
-                selected={currentMode === "EXCLUDED"}
-                sub="Memory is neither used nor updated"
-                onClick={() => { setNewChatMenuOpen(false); props.onNewChat("EXCLUDED"); }}
-              >
-                Memory off
-              </UiV2MenuItem>
-              <UiV2MenuItem
-                selected={currentMode === "TEMPORARY"}
-                sub="Deleted automatically after 24 hours"
-                onClick={() => { setNewChatMenuOpen(false); props.onNewChat("TEMPORARY"); }}
-              >
-                Temporary chat
-              </UiV2MenuItem>
-            </UiV2ResponsiveMenu>
-          ) : null}
         </div>
         )}
         {!projectColumn ? (
