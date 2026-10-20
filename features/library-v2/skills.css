@@ -197,8 +197,8 @@
   place-items: center;
   border: 1px solid var(--v2-color-border);
   border-radius: var(--v2-radius-s);
-  color: var(--v2-color-accent2);
-  background: var(--v2-color-accent2-dim);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-active);
 }
 
 .v2-skill-row-open {

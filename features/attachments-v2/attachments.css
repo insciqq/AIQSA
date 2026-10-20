@@ -278,11 +278,12 @@
   background: var(--v2-color-surface);
 }
 
-/* A search field: a border step on focus, as in the composer's other
-   search fields. */
+/* A search field: the border steps to text3 under a soft 2px ring, as in
+   the composer's other search fields. */
 .v2-saved-file-picker > input:focus-visible {
   border-color: var(--v2-color-text3);
-  outline: none;
+  outline: 2px solid color-mix(in srgb, var(--v2-color-text) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .v2-saved-file-picker ul {
