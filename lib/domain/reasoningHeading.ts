@@ -46,7 +46,7 @@ export function reasoningParagraphHeading(
   text: string,
   final = false
 ): Readonly<{ complete: boolean; heading: string | null }> {
-  const body = text.replace(/^\s+/u, "").replace(/^(?:#{1,6}|[-*+])[ \t]+/u, "");
+  const body = text.replace(/^\s+/u, "").replace(/^(?:#{1,6}|[-*+]|\d{1,3}[.)])[ \t]+/u, "");
   const bold = /^(?:\*\*|__)/u.exec(body)?.[0];
   if (bold) {
     const close = body.indexOf(bold, bold.length);

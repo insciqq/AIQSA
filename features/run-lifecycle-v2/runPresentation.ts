@@ -227,7 +227,7 @@ function activityFromEvent(event: RunEventView, index: number, resultsPending: b
   }
 
   if ((payload.stage === "files" || payload.stage === "knowledge") && payload.status === "running") {
-    return { index, kind: payload.stage };
+    return { index, kind: payload.stage === "files" ? "files" : "knowledge" };
   }
 
   if (payload.stage === "model" && payload.status === "waiting") {
