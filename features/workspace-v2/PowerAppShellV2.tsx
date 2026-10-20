@@ -145,6 +145,7 @@ import { usePinnedScroll } from "@/components/app-shell/usePinnedScroll";
 import { usePowerAppShellViewModel } from "@/components/app-shell/usePowerAppShellViewModel";
 import { useRunStreaming } from "@/components/app-shell/useRunStreaming";
 import { useInterruptedRunRecovery } from "@/components/app-shell/useInterruptedRunRecovery";
+import { useRefreshOnReturn, WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS } from "@/components/app-shell/useRefreshOnReturn";
 import { useShellAppearanceController } from "@/components/app-shell/useShellAppearanceController";
 import { useShellOverlayController } from "@/components/app-shell/useShellOverlayController";
 import { useShellUiActions } from "@/components/app-shell/useShellUiActions";
@@ -802,6 +803,8 @@ export function PowerAppShellV2({
       workspaceAvailabilityReadRef.current += 1;
     };
   }, [accountId, readWorkspaceAvailability]);
+  // A runner that recovered or went away shows without a reload.
+  useRefreshOnReturn(readWorkspaceAvailability, WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS);
   const activeChatIdRef = useRef<string | null>(null);
   const activeStreamAbortRef = useRef<Map<string, AbortController>>(new Map());
   const memorySourceMutationIdsRef = useRef(new Set<string>());
@@ -1791,6 +1794,7 @@ export function PowerAppShellV2({
       ? useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId)?.projectId ?? null
       : null,
     refreshActiveChat,
+    refreshWorkspaceAvailability: readWorkspaceAvailability,
     setNotice
   });
   const { fetchRun, retryAttachment, reuseFile, stopCurrentRun, uploadFiles } = runLifecycleActions;
@@ -1893,6 +1897,7 @@ export function PowerAppShellV2({
     sendStarterPrompt,
     submitMessageEdit,
     submitComposer,
+    submitComposerWithoutWorkspace,
     submitFollowup
   } = useMessageRunActions({
     activeChat,
@@ -2861,6 +2866,7 @@ export function PowerAppShellV2({
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,
     operationErrorRetryable: composerSession.operationErrorRetryable,
+    operationErrorRecoveries: composerSession.operationErrorRecoveries,
     reasoningEffort,
     reasoningMode,
     retryCatalog,
@@ -2877,6 +2883,7 @@ export function PowerAppShellV2({
     stopping,
     streamMode,
     submitComposer,
+    submitComposerWithoutWorkspace,
     submitFollowup,
     temperature,
     toggleCitationsVisibility,
