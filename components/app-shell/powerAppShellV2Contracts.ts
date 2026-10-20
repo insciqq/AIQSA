@@ -1,7 +1,7 @@
 import type { AnswerSoundId } from "@/lib/contracts/answerSound";
 import type { GreetingPeriod } from "@/lib/domain/greeting";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
-import type { ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
+import type { ComposerOperationRecovery, ComposerSessionKey } from "@/components/app-shell/composerSessionStore";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
 import type { ShareDialogTarget } from "@/components/app-shell/ShareDialog";
 import type { AssistantLibraryView } from "@/components/assistants/libraryViewContracts";
@@ -463,6 +463,8 @@ export type ShellComposerView = {
   operationError: string | null;
   operationErrorLive: boolean;
   operationErrorRetryable?: boolean;
+  /** Recoveries a refused send offers beside its reason. */
+  operationErrorRecoveries?: readonly ComposerOperationRecovery[];
   reasoningEffort: string;
   reasoningMode: string;
   retryCatalog(): void;
@@ -483,6 +485,8 @@ export type ShellComposerView = {
   stopping?: boolean;
   streamMode: boolean;
   submitComposer(): Promise<void> | void;
+  /** Sends the refused composer message once without Workspace. */
+  submitComposerWithoutWorkspace?(): Promise<void> | void;
   submitFollowup?(runId: string): Promise<void> | void;
   temperature: string;
   toggleCitationsVisibility(): void;
