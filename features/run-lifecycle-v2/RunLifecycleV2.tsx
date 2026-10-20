@@ -9,7 +9,7 @@ import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/con
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MarkdownCitationRenderer, MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
-import { workspaceLiveLabelV2 } from "./workspaceActivityPresentation";
+import { workspaceActiveLabelV2, workspaceLiveLabelV2 } from "./workspaceActivityPresentation";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
 import { useAnswerSourcesV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import {
@@ -313,14 +313,18 @@ export function RunAnswerV2({
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
   const activity = presentation.activity;
-  // The model's own heading replaces only the waiting label, and only where reasoning is shown.
-  const activityLabel = activity ? (showReasoning && activity.reasoningHeading) || activity.label : null;
+  // The model's own heading replaces only the waiting label. It is a one-line
+  // status, shown whatever the Reasoning blocks setting, which governs the
+  // reasoning disclosure itself (operator decision 2026-10-20).
+  const activityLabel = activity ? activity.reasoningHeading || activity.label : null;
   const liveLabel = presentation.kind === "activity"
     ? activity?.kind === "synthesis" || activity?.kind === "compaction" ? activity.label
-      : workspaceLiveLabelV2(workspaceActivity) ??
+      : workspaceActiveLabelV2(workspaceActivity) ??
       // Live tool calls read as running until the settled answer replaces
-      // them, so a server phase that began after them supersedes their label.
+      // them, so a server phase that began after them supersedes their label
+      // and the generic Workspace one.
       (activity && livePhaseKinds.has(activity.kind) ? activityLabel : null) ??
+      workspaceLiveLabelV2(workspaceActivity) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??
       activityLabel ?? runWaitingPhraseV2(presentation.runId)
     : null;

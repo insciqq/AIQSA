@@ -316,14 +316,14 @@ describe("Run lifecycle v2", () => {
     );
   });
 
-  it("shows the model's reasoning heading as plain text only where reasoning is shown", () => {
+  it("shows the model's reasoning heading as plain text whatever the Reasoning blocks setting", () => {
     const thinking = presentation({ activity: { kind: "provider", label: "Thinking…",
       reasoningHeading: "<b>Checking</b> the diagonals" }, kind: "activity", runId: "run-heading" });
     const { rerender } = render(<RunAnswerV2 content="" presentation={thinking} />);
     expect(screen.getByTestId("run-status-line")).toHaveTextContent("<b>Checking</b> the diagonals");
     expect(screen.getByTestId("run-status-line").querySelector("b")).toBeNull();
     rerender(<RunAnswerV2 content="" presentation={thinking} showReasoning={false} />);
-    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Thinking…$/u);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^<b>Checking<\/b> the diagonals$/u);
     // A running tool keeps its label over the heading.
     rerender(<RunAnswerV2 content="" presentation={thinking}
       toolActivity={{ calls: [{ origin: "web_search", round: 1, serverName: "Web search", status: "running", toolName: "search_web" }] }} />);
@@ -343,6 +343,22 @@ describe("Run lifecycle v2", () => {
     rerender(<RunAnswerV2 content="" toolActivity={toolActivity}
       presentation={presentation({ activity: { kind: "provider", label: "Thinking…" }, kind: "activity", runId: "run-results" })} />);
     expect(screen.getByTestId("run-status-line")).toHaveTextContent(/^Searching the web…$/u);
+  });
+
+  it("lets a phase that began after a finished Workspace step replace the generic Workspace label", () => {
+    const finished = { entries: [{ command: { exitCode: 0, preview: "npm test" }, id: "test", kind: "command" as const, phase: "succeeded" as const }] };
+    const reading = presentation({ activity: { kind: "results", label: "Reading results…", reasoningHeading: "Checking the test output" },
+      kind: "activity", runId: "run-ws" });
+    const { rerender } = render(<RunAnswerV2 content="" presentation={reading} workspaceActivity={finished} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(/^Checking the test output/u);
+    // The Workspace timeline is the live fold; without a newer phase its generic label stays.
+    rerender(<RunAnswerV2 content="" workspaceActivity={finished}
+      presentation={presentation({ activity: { kind: "provider", label: "Thinking…" }, kind: "activity", runId: "run-ws" })} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(/^Working in Workspace…/u);
+    // A running step keeps its own label over the phase.
+    rerender(<RunAnswerV2 content="" presentation={reading} workspaceActivity={{ entries: [
+      { command: { preview: "pytest" }, id: "py", kind: "command" as const, phase: "running" as const }] }} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent(/^Running pytest…/u);
   });
 
   it("keeps the line of an answer that streamed thinking while its text streams, then settles it in place", () => {
