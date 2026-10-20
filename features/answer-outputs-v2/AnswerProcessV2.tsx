@@ -202,7 +202,7 @@ export function AnswerProcessV2({
         <span className="v2-answer-process-slot" aria-hidden="true">
           <span className="v2-answer-process-spinner v2-spinner" />
         </span>
-        <span className="v2-run-shimmer">{liveLabel}</span>
+        <span className="v2-answer-process-label">{liveLabel}</span>
       </div>
     );
   }
@@ -234,7 +234,7 @@ export function AnswerProcessV2({
           <span className="v2-answer-process-slot" aria-hidden="true">
             {live ? <span className="v2-answer-process-spinner v2-spinner" /> : <span className="v2-answer-process-chevron" />}
           </span>
-          <span className={live ? "v2-run-shimmer v2-answer-process-label" : "v2-answer-process-label"}>
+          <span className="v2-answer-process-label">
             {live && liveLabel ? searchSummary ? `${liveLabel} · ${searchSummary}` : liveLabel
               : workspaceOutcome ? `${displayLabel} · ${workspaceOutcome}` : displayLabel}
           </span>

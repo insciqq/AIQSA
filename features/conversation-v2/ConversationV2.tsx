@@ -6,6 +6,7 @@ import {
   type MarkdownCitationRenderer
 } from "@/components/chat/MarkdownMessage";
 import {
+  type UiV2IconName,
   UiV2Button,
   UiV2Icon,
   UiV2IconButton,
@@ -29,6 +30,7 @@ import {
   type RefObject
 } from "react";
 import { createPortal } from "react-dom";
+import { FALLBACK_GREETING } from "@/lib/domain/greeting";
 import { ConversationSelectionV2, type ConversationQuoteV2 } from "./ConversationSelectionV2";
 
 export type ConversationMessageV2 = Readonly<{
@@ -611,6 +613,8 @@ type ConversationV2Props = Readonly<{
   onRetry?(): void;
   onScroll?(): void;
   orientationSlot?: ReactNode;
+  /** The blank chat's heading when no orientation slot replaces it. */
+  orientationTitle?: string;
   quote?: ConversationQuoteV2;
   renderMessage?(message: ConversationMessageV2): ReactNode;
   scrollRef?: RefObject<HTMLDivElement | null>;
@@ -643,6 +647,24 @@ function findAnchoredMessage(container: HTMLElement, id: string): HTMLElement | 
   return [...messages].find((message) => message.dataset.conversationMessageId === id) ?? null;
 }
 
+/** The blank chat's quiet heading: a mark, one title and an optional line. */
+export function ConversationOrientationCopyV2({ detail, icon = "brand", testId, title }: Readonly<{
+  detail?: string;
+  icon?: UiV2IconName;
+  testId?: string;
+  title: string;
+}>) {
+  return (
+    <div className="v2-conversation-orientation-copy" data-testid={testId}>
+      <span className="v2-conversation-orientation-mark" aria-hidden="true">
+        <UiV2Icon name={icon} />
+      </span>
+      <h1>{title}</h1>
+      {detail ? <span className="v2-conversation-orientation-detail">{detail}</span> : null}
+    </div>
+  );
+}
+
 export function ConversationV2({
   composerSlot,
   error = null,
@@ -659,6 +681,7 @@ export function ConversationV2({
   onRetry,
   onScroll,
   orientationSlot,
+  orientationTitle = FALLBACK_GREETING,
   quote,
   renderMessage,
   scrollRef: externalScrollRef,
@@ -760,16 +783,9 @@ export function ConversationV2({
           </div>
         ) : showOrientation ? (
           <div className="v2-conversation-orientation" data-testid="conversation-empty">
-            {orientationSlot ?? (
-              // The blank chat greets quietly: no canvas wordmark and no
-              // marketing subtitle — the greeting alone is the welcome state.
-              <div className="v2-conversation-orientation-copy">
-                <span className="v2-conversation-orientation-mark" aria-hidden="true">
-                  <UiV2Icon name="brand" />
-                </span>
-                <h1>What are we working on?</h1>
-              </div>
-            )}
+            {/* The blank chat greets quietly: no canvas wordmark and no
+                marketing subtitle — the greeting alone is the welcome state. */}
+            {orientationSlot ?? <ConversationOrientationCopyV2 title={orientationTitle} />}
             {composerSlot ? <div className="v2-conversation-empty-composer">{composerSlot}</div> : null}
           </div>
         ) : (

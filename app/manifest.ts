@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 /** Installable-app metadata; the icons are rasterized from the Bubble-Q mark in `public/icon.svg`. */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    background_color: "#0c1017",
+    background_color: "#1a1b1e",
     description: "Self-hosted AI workspace with multi-provider chat, MCP tools, and web search",
     display: "standalone",
     icons: [
@@ -14,6 +14,6 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "AIQSA",
     short_name: "AIQSA",
     start_url: "/",
-    theme_color: "#0c1017"
+    theme_color: "#1a1b1e"
   };
 }

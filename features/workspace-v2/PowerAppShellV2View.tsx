@@ -116,11 +116,13 @@ import {
   type ComposerV2LayerController
 } from "@/features/composer-v2/ComposerV2";
 import {
+  ConversationOrientationCopyV2,
   ConversationTurnV2,
   ConversationV2,
   type ConversationMessageActionsV2,
   type ConversationMessageV2
 } from "@/features/conversation-v2/ConversationV2";
+import { useBlankGreetingV2 } from "@/features/conversation-v2/useBlankGreetingV2";
 import {
   AnswerOutputsV2,
   ArtifactGenerationCardsV2
@@ -472,10 +474,11 @@ export function blankConversationOrientationV2(input: Readonly<{
   assistantOrientation?: ReactNode;
   projectOrientation?: ReactNode;
   projectSelected: boolean;
+  temporaryOrientation?: ReactNode;
 }>): ReactNode {
   return input.projectSelected
     ? input.assistantOrientation ?? input.projectOrientation
-    : input.assistantOrientation;
+    : input.assistantOrientation ?? input.temporaryOrientation;
 }
 
 type ChatLocationFolderV2 = Readonly<{
@@ -564,6 +567,7 @@ const PDF_PROCESSING_SETTINGS = { resource: "chat_pdf", section: "roles" } as co
 
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
+  const blankGreeting = useBlankGreetingV2(session.accountDisplayName, session.greetingPeriod ?? null);
   const refreshThreadLayout = thread.refreshLayout;
   const [libraryInitialTab, setLibraryInitialTab] = useState<LibraryTabIdV2 | undefined>(() => {
     if (typeof window === "undefined") return undefined;
@@ -1863,9 +1867,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       activeProject.capabilities.manageProject || activeProjectChat.createdByUserId === session.accountId
     )
   );
-  const currentNewChatMode: NewChatMode = composer.memory.mode === "TEMPORARY"
-    ? "TEMPORARY"
-    : activeChatSummary?.memoryMode === "EXCLUDED" ? "EXCLUDED" : "NORMAL";
   const withActiveChat = (action: (chat: WorkspaceChatSummary) => void) => () => {
     const full = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
     if (full) action(full);
@@ -1942,7 +1943,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             settings.closeMemory();
           }}
           chatStateFor={navigationChatState}
-          currentNewChatMode={currentNewChatMode}
           editingChatId={workspace.pane.state.editingChatOrigin === "row" ? workspace.pane.state.editingChatId : null}
           editingChatTitle={workspace.pane.state.editingChatTitle}
           editingFolderId={workspace.pane.state.editingFolderId}
@@ -2215,6 +2215,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               ))}
               supplementalActions={workspaceMenuActions}
               temporaryMemory={projectContext || !temporarySession ? null : composer.memory}
+              temporaryToggle={!projectContext && composer.memory.canToggleTemporary ? {
+                label: composer.memory.label,
+                on: temporarySession,
+                // The same new-chat path the sidebar uses, so each mode keeps
+                // its own blank draft and the default Assistant follows the mode.
+                onToggle: () => createNavigationChat(temporarySession ? "NORMAL" : "TEMPORARY")
+              } : null}
               title={session.activeChatTitle}
             />
             {answerReviewSettingsOpen && answerReviewView ? (
@@ -2268,7 +2275,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             ) : null}
             <ConversationV2
               composerSlot={conversationMessages.length === 0 ? (
-                <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>
+                <div className="v2-live-empty-composer-stack" data-temporary={temporarySession || undefined} ref={setComposerDockRef}>
                   {shellNotice}
                   {browserNotificationsBanner}
                   {scheduledTaskHint}
@@ -2329,8 +2336,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                     controller={workspace.projects}
                   />
                 ),
-                projectSelected: Boolean(workspace.projects.selectedProjectId)
+                projectSelected: Boolean(workspace.projects.selectedProjectId),
+                temporaryOrientation: temporarySession ? (
+                  <ConversationOrientationCopyV2
+                    detail={composer.memory.explanation}
+                    icon="incognito"
+                    testId="temporary-orientation"
+                    title={composer.memory.label}
+                  />
+                ) : undefined
               })}
+              orientationTitle={blankGreeting}
               renderMessage={renderMessage}
               scrollRef={thread.threadScrollRef}
               showJumpToLatest={thread.showJumpToLatest}
@@ -2347,7 +2363,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               />
             ) : null}
             {conversationMessages.length > 0 ? (
-              <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={setComposerDockRef}>
+              <div className="v2-live-composer-dock" data-temporary={temporarySession || undefined} data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}
                 {browserNotificationsBanner}
                 {scheduledTaskHint}

@@ -101,6 +101,15 @@ const selector = (page: Page) => page.getByTestId("header-assistant-selector");
 const assistantMenu = (page: Page) => page.getByRole("menu", { name: "Assistant" });
 const menuHead = (page: Page) => page.getByTestId("header-assistant-menu-head");
 const pickerDialog = (page: Page) => page.getByRole("dialog", { name: "Choose an Assistant" });
+
+/**
+ * The MCP chip's description: its row state, then the attention the seed's
+ * shared MCP server (which needs setup) adds on every fresh stand.
+ */
+function mcpChipDescription(state: string): RegExp {
+  const escaped = state.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`^${escaped}(?:\\. \\d+ MCP servers? needs? attention\\. Open MCP settings\\.)?$`, "u");
+}
 const messageBox = (page: Page) => page.getByRole("textbox", { name: "Message", exact: true });
 const sendButton = (page: Page) => page.getByRole("button", { name: "Send message" });
 const answers = (page: Page) => page.locator('article[data-role="assistant"]');
@@ -357,13 +366,13 @@ test("the blank chat strip offers pinned then Featured once each and no recents;
 
     const planner = await assistants.create(page.request, {
       description: "Plans the week and keeps the list short.",
-      name: "Pinned planner",
+      name: "Planner",
       starterPrompts: ["Plan my week", "Summarize open items", "Draft a status note"]
     });
-    const pinnedFeatured = await assistants.create(page.request, { name: "Pinned and featured" });
-    const recent = await assistants.create(page.request, { name: "Recent helper" });
-    const featuredFirst = await assistants.create(authorApi, { name: "Featured first" });
-    const featuredSecond = await assistants.create(authorApi, { name: "Featured second" });
+    const pinnedFeatured = await assistants.create(page.request, { name: "Starred" });
+    const recent = await assistants.create(page.request, { name: "Recent" });
+    const featuredFirst = await assistants.create(authorApi, { name: "Feat 1" });
+    const featuredSecond = await assistants.create(authorApi, { name: "Feat 2" });
     await assistants.pin(page.request, planner.id);
     await assistants.pin(page.request, pinnedFeatured.id);
     const listings: readonly (readonly [APIRequestContext, E2EAssistant, number])[] = [
@@ -380,6 +389,8 @@ test("the blank chat strip offers pinned then Featured once each and no recents;
     await assistants.createChat(page.request, { assistant: { assistantId: recent.id } });
 
     await page.goto("/");
+    // Short names keep all four pills on one row of the 740px strip with the
+    // bundled Golos metrics, so the order assertions below see every pill.
     const items = strip.getByRole("button");
     await expect(items).toHaveCount(5);
     const labels = (await items.allInnerTexts()).map((label) => label.trim());
@@ -519,7 +530,7 @@ test("fixed Search, MCP, Knowledge and Skills keep their chips with one dot, and
 
     const chips = {
       knowledge: { chip: page.getByRole("button", { name: "Choose Knowledge" }), description: `Knowledge: Off · ${fixedBy}` },
-      mcp: { chip: page.getByRole("button", { name: "Change MCP mode" }), description: `MCP: Off · ${fixedBy}` },
+      mcp: { chip: page.getByRole("button", { name: "Change MCP mode" }), description: mcpChipDescription(`MCP: Off · ${fixedBy}`) },
       search: { chip: page.getByRole("button", { name: /^Choose web search/u }), description: `Search: Off · ${fixedBy}` },
       skills: { chip: page.getByRole("button", { name: "Change Skills mode" }), description: `Skills: Auto · ${fixedBy}` }
     };
@@ -867,7 +878,7 @@ test("reopening yesterday's bound chat in a fresh session restores the selector,
     await expect(modelTrigger(page)).toContainText("Fake QSA");
     await expect(modelTrigger(page)).toHaveAttribute("data-provenance", "assistant");
     const mcpChip = page.getByRole("button", { name: "Change MCP mode" });
-    await expect(mcpChip).toHaveAccessibleDescription("MCP: Auto · Changed for this chat");
+    await expect(mcpChip).toHaveAccessibleDescription(mcpChipDescription("MCP: Auto · Changed for this chat"));
     await expect(mcpChip).not.toHaveAttribute("data-provenance", "assistant");
     await expectIdentityChips(page, [assistant.name]);
 
@@ -1000,20 +1011,16 @@ test("a default Assistant starts every new personal chat with its intro; Remove 
     await expect(selector(page)).toHaveAccessibleName(`Assistant: ${daily.name}`);
 
     // A Temporary chat never starts with the personal default; a Normal one does again.
-    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
-    const newChatMode = async (mode: RegExp) => {
-      await navigation.getByRole("button", { name: "New chat mode" }).click();
-      await page.getByRole("menu", { name: "New chat mode" }).getByRole("menuitem", { name: mode }).click();
-    };
+    const temporaryToggle = page.getByTestId("header-temporary-toggle");
     const temporary = page.getByTestId("header-temporary-indicator");
-    await newChatMode(/^Temporary chat/u);
-    await expect(temporary).toBeVisible();
+    await temporaryToggle.click();
+    await expect(temporaryToggle).toHaveAttribute("aria-pressed", "true");
     // The strip shows once the Assistants are loaded, and only in a chat without one.
     await expect(strip.getByRole("button", { name: pinned.name })).toBeVisible();
     await expect(selector(page)).toHaveAttribute("data-state", "empty");
     await expect(intro).toHaveCount(0);
-    await newChatMode(/^Normal/u);
-    await expect(temporary).toHaveCount(0);
+    await temporaryToggle.click();
+    await expect(temporaryToggle).toHaveAttribute("aria-pressed", "false");
     await expect(selector(page)).toHaveAccessibleName(`Assistant: ${daily.name}`);
 
     // An archived default is never applied; Chat defaults names it and offers Clear.

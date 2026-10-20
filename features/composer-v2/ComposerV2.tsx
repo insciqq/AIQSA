@@ -144,8 +144,8 @@ const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   files: 380,
   knowledge: 380,
   model: 380,
-  reasoning: 240,
-  search: 330,
+  reasoning: 340,
+  search: 340,
   workspace: 340,
   skills: 340,
   tools: 340

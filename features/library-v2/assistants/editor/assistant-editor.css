@@ -226,8 +226,9 @@
 .v2-assistant-editor-page textarea { resize: vertical; line-height: 1.55; }
 
 .v2-assistant-editor-page :is(input, select, textarea):focus-visible {
-  border-color: var(--v2-color-accent);
-  box-shadow: 0 0 0 2px var(--v2-color-accent-dim);
+  border-color: var(--v2-color-text3);
+  outline: 2px solid color-mix(in srgb, var(--v2-color-text) 45%, transparent);
+  outline-offset: 2px;
 }
 
 .v2-assistant-editor-page :is(input, select, textarea):disabled {
