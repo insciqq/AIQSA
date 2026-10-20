@@ -404,16 +404,26 @@
   width: min(23.75rem, calc(100vw - 2rem));
 }
 
-/* Chip-anchored pickers open above their own chip (UX audit F2/F3). */
+/* Chip-anchored pickers open above their own chip (UX audit F2/F3): every
+   one starts at its chip's left edge, kept inside the composer, on the same
+   line above the composer, and the mode pickers share one width. Knowledge
+   and Files are wider for document names. */
 .v2-composer-layer[data-kind="knowledge"],
 .v2-composer-layer[data-kind="files"],
 .v2-composer-layer[data-kind="search"],
-.v2-composer-layer[data-kind="tools"] {
+.v2-composer-layer[data-kind="tools"],
+.v2-composer-layer[data-kind="skills"],
+.v2-composer-layer[data-kind="workspace"],
+.v2-composer-layer[data-kind="reasoning"] {
   left: var(--v2-composer-layer-left, 0px);
 }
 
-.v2-composer-layer[data-kind="search"] {
-  width: min(20.625rem, calc(100vw - 2rem));
+.v2-composer-layer[data-kind="search"],
+.v2-composer-layer[data-kind="tools"],
+.v2-composer-layer[data-kind="skills"],
+.v2-composer-layer[data-kind="workspace"],
+.v2-composer-layer[data-kind="reasoning"] {
+  width: min(21.25rem, calc(100vw - 2rem));
 }
 
 /* The source picker shares the layer title's (and the sheet header's)
@@ -426,17 +436,9 @@
   padding-inline: 0;
 }
 
-.v2-composer-layer[data-kind="knowledge"] {
+.v2-composer-layer[data-kind="knowledge"],
+.v2-composer-layer[data-kind="files"] {
   width: min(23.75rem, calc(100vw - 2rem));
-}
-
-.v2-composer-layer[data-kind="tools"] {
-  width: min(21.25rem, calc(100vw - 2rem));
-}
-
-.v2-composer-layer[data-kind="reasoning"] {
-  left: var(--v2-composer-layer-left, 0px);
-  width: min(15rem, calc(100vw - 2rem));
 }
 
 /* A layer opened from outside the composer (the header model selector) is
