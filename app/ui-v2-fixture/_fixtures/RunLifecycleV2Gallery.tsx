@@ -70,8 +70,12 @@ const activityCases: Array<{
     label: "Preparing"
   },
   {
-    state: runState({ events: [summary("search", "running")] }),
-    label: "Search"
+    state: runState({ events: [summary("files", "running")], status: "streaming" }),
+    label: "Reading files"
+  },
+  {
+    state: runState({ events: [summary("knowledge", "running")], status: "streaming" }),
+    label: "Knowledge search"
   },
   {
     state: runState({
@@ -86,16 +90,26 @@ const activityCases: Array<{
     label: "Tool round"
   },
   {
-    state: runState({ events: [summary("compute", "running")] }),
-    label: "Compute"
-  },
-  {
-    state: runState({ events: [summary("preview", "running")] }),
-    label: "Preview"
+    state: runState({
+      events: [{
+        data: {
+          artifactType: "tool_call",
+          payload: { name: "create_workbook", status: "requested" }
+        },
+        type: "artifact"
+      }, summary("model", "waiting")],
+      status: "streaming"
+    }),
+    label: "Reading results"
   },
   {
     state: runState({ status: "in_progress" }),
     label: "Provider"
+  },
+  {
+    state: runState({ events: [summary("reasoning", "running", { heading: "Checking the diagonals for each queen" })],
+      status: "streaming" }),
+    label: "Reasoning heading"
   },
   {
     state: runState({

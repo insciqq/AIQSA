@@ -13,6 +13,8 @@ import {
   formatWorkDurationV2,
   presentRunLifecycleV2,
   presentToolActivityV2,
+  RUN_WAITING_PHRASES_V2,
+  runWaitingPhraseV2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
   toolActivityOriginV2,
@@ -50,7 +52,7 @@ describe("native Memory search activity", () => {
     expect(projected?.calls[0]).toMatchObject({ status: "complete", memorySearchOutcome: "limited" });
     expect(presentToolActivityV2([running, settled], projected)).toEqual(projected);
     expect(presentRunLifecycleV2(state({ events: [running], runId: "run" })).activity?.label).toBe("Searching memory…");
-    expect(presentRunLifecycleV2(state({ events: [running, settled, running], runId: "run" })).activity?.label).toBe("Thinking…");
+    expect(presentRunLifecycleV2(state({ events: [running, settled, running], runId: "run" })).activity?.label).toBe(runWaitingPhraseV2("run"));
     expect(presentToolActivityV2([running, event({ call: 2, status: "running" })])?.calls).toHaveLength(2);
     expect(presentRunLifecycleV2(state({ events: [running, event({ call: 2, status: "running" }), settled], runId: "run" }))
       .activity?.label).toBe("Searching memory…");
@@ -298,15 +300,38 @@ describe("run lifecycle v2 presentation", () => {
   });
 
   it.each([
-    ["queued", "queued", "Queued"],
-    ["preparing", "preparing", "Preparing request…"],
-    ["in_progress", "provider", "Thinking…"],
-    ["streaming", "provider", "Thinking…"]
-  ] as const)("maps explicit %s status to its truthful activity", (status, kind, label) => {
-    expect(presentRunLifecycleV2(state({ status: status as RunLifecycleStatusV2 }))).toMatchObject({
+    ["queued", null, "queued", "Queued"],
+    ["preparing", null, "preparing", "Preparing request…"],
+    // Not yet accepted by the server: the request is still being prepared.
+    ["in_progress", null, "preparing", "Preparing request…"],
+    ["streaming", null, "preparing", "Preparing request…"],
+    ["in_progress", "run-1", "provider", runWaitingPhraseV2("run-1")],
+    ["streaming", "run-1", "provider", runWaitingPhraseV2("run-1")]
+  ] as const)("maps explicit %s status (run %s) to its truthful activity", (status, runId, kind, label) => {
+    expect(presentRunLifecycleV2(state({ runId, status: status as RunLifecycleStatusV2 }))).toMatchObject({
       activity: { kind, label },
       kind: "activity"
     });
+  });
+
+  it("waits with one neutral phrase per run that never changes for that run", () => {
+    const runIds = Array.from({ length: 64 }, (_, index) => `0b9a3981-${String(index).padStart(4, "0")}-4e58-9d1f-2b9a5c1e7a10`);
+    const phrases = runIds.map(runWaitingPhraseV2);
+    expect(phrases.every((phrase) => (RUN_WAITING_PHRASES_V2 as readonly string[]).includes(phrase))).toBe(true);
+    expect(new Set(phrases).size).toBeGreaterThan(3);
+    expect(RUN_WAITING_PHRASES_V2).toContain("Thinking…");
+    // The same run reads the same phrase on every render, event and reconnect.
+    for (const runId of runIds.slice(0, 8)) {
+      const phrase = runWaitingPhraseV2(runId);
+      expect(presentRunLifecycleV2(state({ runId, status: "streaming" })).activity?.label).toBe(phrase);
+      expect(presentRunLifecycleV2(state({ events: [summary({ stage: "model", status: "waiting" })], runId, status: "streaming" }))
+        .activity?.label).toBe(phrase);
+      expect(presentRunLifecycleV2(state({ runId, status: "streaming" })).activity?.label).toBe(phrase);
+    }
+    // Specific work keeps its own words; settled answers keep their factual line.
+    expect(presentRunLifecycleV2(state({ events: [summary({ stage: "knowledge", status: "running" })], runId: runIds[0]!,
+      status: "streaming" })).activity?.label).toBe("Searching Knowledge…");
+    expect(answerProcessLabelV2({ hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: 12_000 })).toBe("Thought for 12s");
   });
 
   it.each([
