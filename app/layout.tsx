@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
-import { Golos_Text, JetBrains_Mono } from "next/font/google";
+import { JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { cookies } from "next/headers";
 import {
   AIQSA_THEME_COOKIE_NAME,
@@ -28,8 +29,12 @@ import "../features/workspace-v2/workspace.css";
 import "../features/connect/connect.css";
 import "./globals.css";
 
-const sans = Golos_Text({
-  subsets: ["latin", "cyrillic"],
+// Bundled upstream file (see app/fonts/LICENSE.txt): next/font/google downloads
+// the build Google serves to macOS, which lacks the TrueType prep table, so
+// FreeType on Linux autohints it and letter spacing becomes uneven.
+const sans = localFont({
+  display: "swap",
+  src: [{ path: "./fonts/GolosText-Variable.woff2", style: "normal", weight: "400 900" }],
   variable: "--font-sans"
 });
 
