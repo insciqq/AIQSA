@@ -637,7 +637,7 @@ function ProjectSettingsDialogContentV2({
       setCandidateLoading(false);
     }
   };
-  const tabs: readonly { id: ProjectSettingsTab; icon: "history" | "settings" | "tool" | "assistant"; label: string }[] = [
+  const tabs: readonly { id: ProjectSettingsTab; icon: "history" | "settings" | "tool" | "user"; label: string }[] = [
     { id: "general", icon: "settings", label: "Project" },
     { id: "members", icon: "user", label: "Members" },
     { id: "resources", icon: "tool", label: "Resources" },
