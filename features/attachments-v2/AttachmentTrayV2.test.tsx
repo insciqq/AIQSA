@@ -91,6 +91,26 @@ describe("AttachmentTrayV2", () => {
     expect(remove).toHaveBeenCalledWith("unsupported");
   });
 
+  it("shows a chosen image at once: its own thumbnail under the upload spinner, then the thumbnail alone", () => {
+    const uploading: ComposerAttachmentItemV2 = {
+      blocksSend: true, fileName: "photo.png", id: "upload-photo", previewUrl: "blob:photo-preview", progress: null,
+      status: "uploading", upload: true
+    };
+    const { container, rerender } = render(<AttachmentTrayV2 items={[uploading]} onRemove={vi.fn()} />);
+    const chip = screen.getByText("photo.png").closest("li")!;
+    expect(chip).toHaveAttribute("data-preview", "true");
+    expect(chip).toHaveTextContent("Uploading…");
+    expect(chip.querySelector("img")).toHaveAttribute("src", "blob:photo-preview");
+    expect(chip.querySelector(".v2-attachment-thumb-busy .v2-attachment-spinner")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel upload of photo.png" })).toBeEnabled();
+
+    rerender(<AttachmentTrayV2 items={[{ fileName: "photo.png", id: "attachment-photo", previewUrl: "blob:photo-preview",
+      status: "ready" }]} onRemove={vi.fn()} />);
+    expect(container.querySelector("img")).toHaveAttribute("src", "blob:photo-preview");
+    expect(container.querySelector(".v2-attachment-spinner")).toBeNull();
+    expect(screen.getByText("photo.png").closest("li")).toHaveTextContent("Ready");
+  });
+
   it("keeps a blocking capacity receipt explicit", () => {
     render(<AttachmentTrayV2 items={items} usage={criticalUsage} />);
     expect(screen.getByRole("alert")).toHaveTextContent("6 files · 1 KB");

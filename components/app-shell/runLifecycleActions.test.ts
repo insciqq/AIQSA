@@ -24,6 +24,7 @@ import {
 import { useThreadStore } from "./threadStore";
 import type { WorkspaceChatSummary, Notice, ThreadMessage } from "./types";
 import { cancelWorkspaceUpload, useWorkspaceUploadProgress } from "./workspaceUploadClient";
+import { resetPendingUploadsForTest, useUploadPreviews } from "./pendingUploads";
 import { ATTACHMENT_UPLOAD_FORMAT_LABELS } from "@/lib/domain/uploadFormats";
 
 const GENERIC_UPLOAD_FAILURE =
@@ -199,6 +200,7 @@ describe("run lifecycle actions", () => {
   });
 
   afterEach(() => {
+    resetPendingUploadsForTest();
     resetRunLifecycleStoreForTest();
     resetRunSurfaceStoreForTest();
     resetComposerSessionStoreForTest();
@@ -241,6 +243,96 @@ describe("run lifecycle actions", () => {
     expect((init.body as FormData).get("projectId")).toBe("project/one");
     expect(selectComposerSession(useComposerSessionStore.getState(), sourceKey).attachments)
       .toEqual([expect.objectContaining({ id: "attachment-project", status: "ready" })]);
+  });
+
+  it("lists chosen files in the tray before the upload answers and hands the row's thumbnail to the attachment", async () => {
+    const objectUrls = { createObjectURL: vi.fn(() => "blob:photo-preview"), revokeObjectURL: vi.fn() };
+    const original = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+    Object.assign(URL, objectUrls);
+    try {
+      let answer!: (response: Response) => void;
+      const fetchMock = vi.fn((_input: unknown, _init?: RequestInit) => new Promise<Response>((resolve) => { answer = resolve; }));
+      vi.stubGlobal("fetch", fetchMock);
+      const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+      const upload = actions.uploadFiles([new File(["png"], "photo.png", { type: "image/png" })]);
+      const rows = useWorkspaceUploadProgress.getState().items;
+      expect(rows).toEqual([expect.objectContaining({
+        fileName: "photo.png", sourceKey: composerSessionKey("chat-1"), state: "uploading"
+      })]);
+      expect(useUploadPreviews.getState().urls).toEqual({ [rows[0]!.id]: "blob:photo-preview" });
+      expect(composerSession("chat-1").attachments).toEqual([]);
+
+      answer(Response.json({ attachment: { fileName: "photo.png", id: "attachment-photo", kind: "image", status: "ready" } }));
+      await upload;
+      expect(useWorkspaceUploadProgress.getState().items).toEqual([]);
+      expect(composerSession("chat-1").attachments).toEqual([expect.objectContaining({ id: "attachment-photo" })]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(useUploadPreviews.getState().urls).toEqual({ "attachment-photo": "blob:photo-preview" });
+      expect(objectUrls.revokeObjectURL).not.toHaveBeenCalled();
+
+      // Sent or removed, the file leaves the tray and frees its thumbnail.
+      useComposerSessionStore.getState().updateSession(composerSessionKey("chat-1"), { attachments: [] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(objectUrls.revokeObjectURL).toHaveBeenCalledWith("blob:photo-preview");
+      expect(useUploadPreviews.getState().urls).toEqual({});
+    } finally {
+      resetPendingUploadsForTest();
+      Object.assign(URL, original);
+    }
+  });
+
+  it("reports an earlier pick that fails after a later pick started, so no file leaves silently", async () => {
+    const answers: Array<(response: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { answers.push(resolve); })));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    const first = actions.uploadFiles([new File(["one"], "first.pdf", { type: "application/pdf" })]);
+    const second = actions.uploadFiles([new File(["two"], "second.pdf", { type: "application/pdf" })]);
+    expect(useWorkspaceUploadProgress.getState().items.map((item) => item.fileName)).toEqual(["first.pdf", "second.pdf"]);
+    answers[1]!(Response.json({ attachment: { fileName: "second.pdf", id: "attachment-second", kind: "pdf", status: "ready" } }));
+    await second;
+    answers[0]!(Response.json({ error: "upload_busy" }, { status: 429 }));
+    await first;
+
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [expect.objectContaining({ id: "attachment-second" })],
+      operationError: expect.stringContaining("first.pdf"),
+      pendingUploadGenerations: []
+    });
+    expect(useWorkspaceUploadProgress.getState().items).toEqual([]);
+  });
+
+  it("cancels a file removed from the tray while it uploads, without a failure, and uploads the rest", async () => {
+    const fetchMock = vi.fn((_input: unknown, init?: RequestInit) => {
+      const name = ((init?.body as FormData).get("file") as File).name;
+      return name === "slow.pdf"
+        ? new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+          })
+        : Promise.resolve(Response.json({ attachment: { fileName: name, id: `attachment-${name}`, kind: "pdf", status: "ready" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    const upload = actions.uploadFiles([
+      new File(["one"], "slow.pdf", { type: "application/pdf" }),
+      new File(["two"], "next.pdf", { type: "application/pdf" })
+    ]);
+    const [slow, next] = useWorkspaceUploadProgress.getState().items;
+    expect([slow?.fileName, next?.fileName]).toEqual(["slow.pdf", "next.pdf"]);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(cancelWorkspaceUpload(slow!.id)).toBe(true);
+    expect(useWorkspaceUploadProgress.getState().items.map((item) => item.fileName)).toEqual(["next.pdf"]);
+    await upload;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [expect.objectContaining({ id: "attachment-next.pdf" })],
+      operationError: null,
+      pendingUploadGenerations: []
+    });
+    expect(useWorkspaceUploadProgress.getState().items).toEqual([]);
   });
 
   it("does not start resume polling while the same chat has a stream producer", async () => {

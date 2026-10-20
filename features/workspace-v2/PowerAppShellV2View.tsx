@@ -24,6 +24,7 @@ import { composerDraftTooLargeToStore, subscribeComposerDraftRefusals } from "@/
 import { navigateChatRoute, useChatRoutePath, useControlCenterHref } from "@/components/app-shell/chatRoute";
 import { boundedRouteId, parseChatRoutePath } from "@/lib/domain/chatRoute";
 import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress } from "@/components/app-shell/workspaceUploadClient";
+import { useUploadPreviews } from "@/components/app-shell/pendingUploads";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
 import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
@@ -594,6 +595,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     () => composerDraftTooLargeToStore(session.accountId, uploadSourceKey), () => false);
   const uploadProgress = useWorkspaceUploadProgress(state => state.items);
   const pendingUploads = useMemo(() => uploadProgress.filter(item => item.sourceKey === uploadSourceKey), [uploadProgress, uploadSourceKey]);
+  const uploadPreviews = useUploadPreviews(state => state.urls);
   const skillsMode = useComposerControlStore(state => state.skillsMode);
   const liveWorkspaceRef = useRef<HTMLElement | null>(null);
   const [workspaceWidth, setWorkspaceWidth] = useState(0);
@@ -1081,11 +1083,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     ), ...pendingUploads.map(item => ({
       id: item.id, fileName: item.fileName, byteSize: item.byteSize, blocksSend: true, upload: true,
       status: item.state === "verifying" ? "processing" as const : item.state,
-      progress: item.sentBytes / item.byteSize * 100, retryable: item.retryable,
+      // An ordinary upload reports no bytes: its row only spins until it settles.
+      progress: item.sentBytes > 0 && item.byteSize > 0 ? item.sentBytes / item.byteSize * 100 : null,
+      retryable: item.retryable,
       statusLabel: item.state === "verifying" ? "Verifying file…" : item.state === "failed" ? "Upload interrupted" : undefined,
-      detail: item.message ?? uploadProgressBytes(item.sentBytes, item.byteSize)
-    }))],
-    [composer.attachments, composer.currentModel, composer.workspace.enabled, pdfRoutePreview, pdfSettingsHref, pendingUploads, session.adminEntryVisible]
+      detail: item.message ?? (item.sentBytes > 0 ? uploadProgressBytes(item.sentBytes, item.byteSize) : null)
+    }))].map(item => uploadPreviews[item.id] ? { ...item, previewUrl: uploadPreviews[item.id] } : item),
+    [composer.attachments, composer.currentModel, composer.workspace.enabled, pdfRoutePreview, pdfSettingsHref, pendingUploads,
+      session.adminEntryVisible, uploadPreviews]
   );
   const attachmentUsage = useMemo(
     () => calculateAttachmentLimitUsage(
