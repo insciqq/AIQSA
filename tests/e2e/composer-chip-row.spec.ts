@@ -169,7 +169,8 @@ for (const { composerWidth, mayWrap, viewport } of [
       // A desktop popover beside its chip, not a sheet: no sheet header, narrow, inside the viewport.
       await expect(menu.getByRole("button", { name: "Close", exact: true })).toBeHidden();
       const [menuBox, chipBox] = await Promise.all([menu.boundingBox(), chip.boundingBox()]);
-      expect(menuBox!.width).toBeLessThanOrEqual(241);
+      // The mode menus share one 21.25rem width (2026-10-20).
+      expect(menuBox!.width).toBeLessThanOrEqual(341);
       expect(menuBox!.y + menuBox!.height <= chipBox!.y + 1 || menuBox!.y >= chipBox!.y + chipBox!.height - 1).toBe(true);
       expect(menuBox!.x).toBeGreaterThanOrEqual(0);
       expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(viewport.width);

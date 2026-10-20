@@ -527,7 +527,8 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     const reset = page.getByRole("dialog", { name: "Reset workspace" });
     await expect(reset).toBeVisible({ timeout: 10_000 });
     await reset.getByRole("button", { name: "Confirm reset workspace" }).click();
-    await expect(reset).toHaveCount(0);
+    // Reset retires the guest first; it has taken just over five seconds.
+    await expect(reset).toHaveCount(0, { timeout: 30_000 });
     await expect.poll(async () => [null, "not_started"].includes(await workspaceSessionState())).toBe(true);
     await sendAndExpectRun(
       page,
