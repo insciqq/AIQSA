@@ -2337,7 +2337,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 temporaryOrientation: temporarySession ? (
                   <ConversationOrientationCopyV2
                     detail={composer.memory.explanation}
-                    icon="memory"
+                    icon="clock"
                     testId="temporary-orientation"
                     title={composer.memory.label}
                   />
