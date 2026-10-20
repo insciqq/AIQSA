@@ -78,6 +78,39 @@ describe("native Memory search activity", () => {
   });
 });
 
+describe("live reasoning headings", () => {
+  const heading = (text: unknown) => summary({ heading: text, stage: "reasoning", status: "running" });
+  const token = { data: { delta: "Ninety-two" }, type: "token" } satisfies RunEventView;
+  const toolCall = { data: { artifactType: "tool_call", payload: { name: "search_web", origin: "web_search", round: 1,
+    serverName: "Web search", status: "requested" } }, type: "artifact" } satisfies RunEventView;
+
+  it("names the waiting phase with the latest heading until the answer text starts", () => {
+    const waiting = presentRunLifecycleV2(state({ events: [heading("Setting up queen enumeration"),
+      heading("**Checking  the diagonals**\n")], runId: "run-1", status: "streaming" }));
+    expect(waiting).toMatchObject({ activity: { kind: "provider", reasoningHeading: "**Checking the diagonals**" }, kind: "activity" });
+    expect(waiting.activity?.label).not.toBe(waiting.activity?.reasoningHeading);
+    // Text replaces the status; the run keeps the fact that it showed thinking.
+    expect(presentRunLifecycleV2(state({ events: [heading("Checking"), token], runId: "run-1", status: "streaming" })))
+      .toEqual({ kind: "streaming", reasoningObserved: true, runId: "run-1" });
+    expect(presentRunLifecycleV2(state({ events: [token], runId: "run-1", status: "streaming" })))
+      .toEqual({ kind: "streaming", runId: "run-1" });
+  });
+
+  it("never lets an older heading name a later phase, and ignores malformed headings", () => {
+    const tool = presentRunLifecycleV2(state({ events: [heading("Planning the search"), toolCall], runId: "run-1", status: "streaming" }));
+    expect(tool.activity).toMatchObject({ kind: "tool", label: "Searching the web…" });
+    expect(tool.activity).not.toHaveProperty("reasoningHeading");
+    for (const malformed of [heading(" "), heading(7), summary({ heading: "x", stage: "reasoning" })]) {
+      expect(presentRunLifecycleV2(state({ events: [malformed], runId: "run-1", status: "streaming" })).activity)
+        .not.toHaveProperty("reasoningHeading");
+    }
+    const bounded = presentRunLifecycleV2(state({ events: [heading("x".repeat(500))], runId: "run-1", status: "streaming" }));
+    expect(bounded.activity?.reasoningHeading).toHaveLength(80);
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "complete", events: [heading("Checking")], runId: "run-1" })))
+      .toEqual({ kind: "complete", runId: "run-1" });
+  });
+});
+
 describe("run lifecycle v2 presentation", () => {
   it("projects compaction as a live process status and keeps terminal state over late progress", () => {
     const running = {

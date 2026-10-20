@@ -2117,6 +2117,15 @@ describe("dropped Codex LB round retry", () => {
         type: "response.output_item.added" },
       { delta: "{\"title\"", item_id: "fc-art", output_index: 0, type: "response.function_call_arguments.delta" }]),
     hosted_search: () => sse([created("resp-drop"), { item_id: "ws-1", output_index: 0, type: "response.web_search_call.in_progress" }]),
+    // Reasoning summary progress is no answer output: the live heading is a lifecycle summary.
+    reasoning_truncated: () => sse([created("resp-drop"),
+      { item: { id: "rs-1", summary: [], type: "reasoning" }, output_index: 0, type: "response.output_item.added" },
+      { item_id: "rs-1", output_index: 0, part: { text: "", type: "summary_text" }, summary_index: 0,
+        type: "response.reasoning_summary_part.added" },
+      { delta: "**Planning the lookup**", item_id: "rs-1", output_index: 0, summary_index: 0,
+        type: "response.reasoning_summary_text.delta" },
+      { item_id: "rs-1", output_index: 0, summary_index: 0, text: "**Planning the lookup**",
+        type: "response.reasoning_summary_text.done" }]),
     final: () => sse([created("resp-final"), delta("Final answer"), completed("resp-final", "Final answer")]),
     final_tool: () => sse([created("resp-tool"), completed("resp-tool", "", "call-1")])
   } satisfies Record<string, () => Response>;
@@ -2154,6 +2163,7 @@ describe("dropped Codex LB round retry", () => {
     const sleeps: number[] = [];
     const usage: Array<[unknown, unknown]> = [];
     const text: string[] = [];
+    const events: ModelRunSseEvent[] = [];
     const executeTool = vi.fn(async (call: { id: string; name: string }) => ({ status: "complete" as const,
       value: { callId: call.id, content: [{ text: "evidence", type: "text" as const }], name: call.name, status: "complete" as const } }));
     const run = () => runProviderToolLoop({
@@ -2161,6 +2171,7 @@ describe("dropped Codex LB round retry", () => {
       budgets: { maxConcurrency: 1, maxToolCalls: 2, maxToolRounds: 2,
         ...(input.roundTimeoutMs ? { providerRoundTimeoutMs: input.roundTimeoutMs } : {}) },
       executeTool, initialRequest: request({ params: { stream: true }, provider: "openai-compatible" }),
+      onEvent: (event) => { events.push(event); },
       onSignal: (signal) => { if (signal.type === "text_delta") text.push(signal.delta); },
       onToolArguments: async () => undefined,
       onUsage: (value, _request, context) => {
@@ -2178,7 +2189,7 @@ describe("dropped Codex LB round retry", () => {
       ...(input.signal ? { signal: input.signal } : {}),
       tools: [...(input.tools ?? [alpha])]
     });
-    return { bodies, executeTool, fetchFn, observe, reopen, run, sleeps, text, usage };
+    return { bodies, events, executeTool, fetchFn, observe, reopen, run, sleeps, text, usage };
   }
   const unknownPartial = [{}, { completeness: "partial", round: 1 }];
   const withoutRoutingKey = ({ prompt_cache_key: _key, ...body }: Record<string, unknown>) => body;
@@ -2212,6 +2223,18 @@ describe("dropped Codex LB round retry", () => {
     expect(providerStreamDrop(failure)).toBe(drop);
     if (step === "502") expect(failure).toMatchObject({ status: 502 });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it.each([false, true])("sends a round again that dropped after only reasoning progress (window %s)", async (window) => {
+    const loop = harness(["reasoning_truncated", "final"], { window });
+    expect(await loop.run()).toMatchObject({ final: { finalText: "Final answer" }, status: "complete" });
+    expect(loop.fetchFn).toHaveBeenCalledTimes(2);
+    expect(loop.reopen).toHaveBeenCalledExactlyOnceWith({ attempt: 2, publishedText: false, round: 1 });
+    // The before-output window applies: reasoning progress is neither text nor accepted output.
+    expect(loop.sleeps).toEqual([window ? 1_000 : 125]);
+    expect(loop.text).toEqual(["Final answer"]);
+    expect(loop.events).toContainEqual({ data: { artifactType: "summary",
+      payload: { heading: "Planning the lookup", stage: "reasoning", status: "running" } }, type: "artifact" });
   });
 
   it("gives up after the third dropped request with the last drop as the round's failure", async () => {

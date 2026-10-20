@@ -679,7 +679,8 @@ export async function runProviderToolLoop(
           }
         }
         // Text, tool arguments and any event other than the provider's own
-        // lifecycle summary are accepted output of this round.
+        // lifecycle summary (live reasoning headings included) are accepted
+        // output of this round.
         let acceptedOutput = false;
         if (attempt === 1 && input.roundRetry) firstRequestAt = droppedRequestRetryNow(input.roundRetry);
         const stream = input.adapter.stream(roundRequest, { signal,
