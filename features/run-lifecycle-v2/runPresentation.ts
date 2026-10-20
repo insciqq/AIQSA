@@ -493,7 +493,34 @@ export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null
   return segments.length > 0 ? segments.join(" · ") : null;
 }
 
-function activityLabel(signal: Omit<ActivitySignal, "index">): string {
+/**
+ * The neutral waiting phrases (operator decision 2026-10-20). An answer shows
+ * one of them while the model works without a more specific status: chosen
+ * from its run id, so it stays the same across renders and reconnects, never
+ * rotates, and never names work that is not happening.
+ */
+export const RUN_WAITING_PHRASES_V2 = Object.freeze([
+  "Thinking…",
+  "Pondering…",
+  "Mulling it over…",
+  "Working on it…",
+  "Considering…",
+  "Reflecting…",
+  "Deliberating…",
+  "Musing…"
+] as const);
+
+/** The run's waiting phrase (FNV-1a of its id); a run not yet accepted has none of its own. */
+export function runWaitingPhraseV2(runId: string | null): string {
+  if (!runId) return RUN_WAITING_PHRASES_V2[0];
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < runId.length; index += 1) {
+    hash = Math.imul(hash ^ runId.charCodeAt(index), 0x01000193);
+  }
+  return RUN_WAITING_PHRASES_V2[(hash >>> 0) % RUN_WAITING_PHRASES_V2.length]!;
+}
+
+function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | null): string {
   switch (signal.kind) {
     case "synthesis":
       return signal.budget
@@ -512,7 +539,7 @@ function activityLabel(signal: Omit<ActivitySignal, "index">): string {
     case "results":
       return "Reading results…";
     case "provider":
-      return "Thinking…";
+      return runWaitingPhraseV2(runId);
   }
 }
 
@@ -820,15 +847,17 @@ export function presentToolActivityV2(
     : null;
 }
 
-function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {
+function statusActivity(status: RunLifecycleStatusV2 | null | undefined, runId: string | null) {
   if (status === "queued") {
     return { kind: "queued" as const, label: "Queued" };
   }
-  if (status === "preparing") {
+  // Until the server accepts the run (and names it) the request is still
+  // being prepared; only an accepted run has its own waiting phrase.
+  if (status === "preparing" || !runId && (status === "in_progress" || status === "streaming")) {
     return { kind: "preparing" as const, label: "Preparing request…" };
   }
   if (status === "in_progress" || status === "streaming") {
-    return { kind: "provider" as const, label: "Thinking…" };
+    return { kind: "provider" as const, label: runWaitingPhraseV2(runId) };
   }
   return null;
 }
@@ -1042,7 +1071,7 @@ export function presentRunLifecycleV2(
     return present({
       activity: {
         ...signal,
-        label: activityLabel(signal),
+        label: activityLabel(signal, state.runId),
         ...(reasoningHeading && (signal.kind === "provider" || signal.kind === "results") ? { reasoningHeading } : {})
       },
       kind: "activity",
@@ -1050,7 +1079,7 @@ export function presentRunLifecycleV2(
     });
   }
 
-  const activity = statusActivity(state.status);
+  const activity = statusActivity(state.status, state.runId);
   return present(activity
     ? { activity: { ...activity, ...(reasoningHeading && activity.kind === "provider" ? { reasoningHeading } : {}) },
         kind: "activity", runId: state.runId }

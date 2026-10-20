@@ -25,6 +25,7 @@ import {
 } from "react";
 import {
   describeToolCallV2,
+  runWaitingPhraseV2,
   settledRunPresentationV2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
@@ -321,7 +322,7 @@ export function RunAnswerV2({
       // them, so a server phase that began after them supersedes their label.
       (activity && livePhaseKinds.has(activity.kind) ? activityLabel : null) ??
       (toolActivity ? runningToolLabel(toolActivity) : null) ??
-      activityLabel ?? "Thinking…"
+      activityLabel ?? runWaitingPhraseV2(presentation.runId)
     : null;
   // Thinking shown with the answer is also shown while its text streams, so
   // the line that held the live status keeps its slot until the answer settles.
