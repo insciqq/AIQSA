@@ -29,6 +29,7 @@ import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPe
 import { resolveDocumentParserRoute } from "../parsing";
 import type { StorageAdapter } from "../uploads/storage";
 import { validateUpload } from "../uploads/validation";
+import { refusedWhileKnowledgeDisabled } from "./disabled";
 import {
   getKnowledgeExtractionConfig,
   type KnowledgeExtractionConfig
@@ -290,7 +291,7 @@ export function createGetKnowledgeSourceHandler(deps: KnowledgeSourceLibraryHand
 }
 
 export function createUpdateKnowledgeSourceHandler(deps: KnowledgeSourceLibraryHandlerDeps) {
-  return async function PATCH(request: Request, context: SourceContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function PATCH(request: Request, context: SourceContext): Promise<Response> {
     const userId = await authenticatedUserId(deps, request);
     if (userId instanceof Response) return userId;
     const id = await sourceId(context);
@@ -305,13 +306,13 @@ export function createUpdateKnowledgeSourceHandler(deps: KnowledgeSourceLibraryH
       return errorJson("knowledge_source_version_conflict", 409);
     }
     return detailResponse(deps, userId, id);
-  };
+  });
 }
 
 export function createAddKnowledgeSourceMembershipsHandler(
   deps: KnowledgeSourceLibraryHandlerDeps
 ) {
-  return async function POST(request: Request, context: SourceContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: SourceContext): Promise<Response> {
     const userId = await authenticatedUserId(deps, request);
     if (userId instanceof Response) return userId;
     const id = await sourceId(context);
@@ -325,13 +326,13 @@ export function createAddKnowledgeSourceMembershipsHandler(
     return result.kind === "ok"
       ? detailResponse(deps, userId, id)
       : errorJson("knowledge_source_not_available", 404);
-  };
+  });
 }
 
 export function createRemoveKnowledgeSourceMembershipHandler(
   deps: KnowledgeSourceLibraryHandlerDeps
 ) {
-  return async function DELETE(request: Request, context: MembershipContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function DELETE(request: Request, context: MembershipContext): Promise<Response> {
     const userId = await authenticatedUserId(deps, request);
     if (userId instanceof Response) return userId;
     const params = await context.params;
@@ -342,11 +343,11 @@ export function createRemoveKnowledgeSourceMembershipHandler(
     return result.kind === "ok"
       ? detailResponse(deps, userId, id)
       : errorJson("knowledge_source_not_available", 404);
-  };
+  });
 }
 
 export function createMoveKnowledgeSourceHandler(deps: KnowledgeSourceLibraryHandlerDeps) {
-  return async function POST(request: Request, context: SourceContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: SourceContext): Promise<Response> {
     const userId = await authenticatedUserId(deps, request);
     if (userId instanceof Response) return userId;
     const id = await sourceId(context);
@@ -365,13 +366,13 @@ export function createMoveKnowledgeSourceHandler(deps: KnowledgeSourceLibraryHan
     return result.kind === "ok"
       ? detailResponse(deps, userId, id)
       : errorJson("knowledge_source_not_available", 404);
-  };
+  });
 }
 
 export function createFindKnowledgeSourceDuplicateHandler(
   deps: KnowledgeSourceLibraryHandlerDeps
 ) {
-  return async function POST(request: Request): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request): Promise<Response> {
     const userId = await authenticatedUserId(deps, request);
     if (userId instanceof Response) return userId;
     const [body, bodyError] = await readJson(request);
@@ -384,13 +385,13 @@ export function createFindKnowledgeSourceDuplicateHandler(
     } satisfies KnowledgeSourceDuplicateResponse, {
       headers: { "cache-control": "no-store" }
     });
-  };
+  });
 }
 
 export function createReplaceKnowledgeSourceHandler(
   deps: KnowledgeSourceVersionHandlerDeps
 ) {
-  return async function POST(request: Request, context: SourceContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: SourceContext): Promise<Response> {
     const userId = await authenticatedUserId(deps, request);
     if (userId instanceof Response) return userId;
     const id = await sourceId(context);
@@ -502,13 +503,13 @@ export function createReplaceKnowledgeSourceHandler(
     } finally {
       release();
     }
-  };
+  });
 }
 
 export function createReprocessKnowledgeSourceHandler(
   deps: KnowledgeSourceVersionHandlerDeps
 ) {
-  return async function POST(request: Request, context: SourceContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: SourceContext): Promise<Response> {
     const userId = await authenticatedUserId(deps, request);
     if (userId instanceof Response) return userId;
     const id = await sourceId(context);
@@ -526,5 +527,5 @@ export function createReprocessKnowledgeSourceHandler(
     }
     kick(deps);
     return detailResponse(deps, userId, id, 202);
-  };
+  });
 }

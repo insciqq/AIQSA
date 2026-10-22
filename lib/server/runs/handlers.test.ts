@@ -62,6 +62,15 @@ import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import type { UsageLimitStatus } from "../usageLimits/repository";
 import { decodeUsageLimitRefusal, type UsageLimitRefusalCode } from "../../contracts/usageLimits";
 
+// Project sends stay tested as they worked; "while Projects are disabled" turns them off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
+
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
   AIQSA_AUTH_SESSION_SECRET: "secret"
@@ -1351,6 +1360,95 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ error: "project_setup_required" });
     expect(state.created).toBeNull();
+  });
+
+  describe("while Projects are disabled", () => {
+    beforeEach(() => {
+      areas.projects = false;
+      return () => {
+        areas.projects = true;
+      };
+    });
+
+    function projectSend(chatId: string, body: Record<string, unknown>, repository: RunRepository) {
+      return createSendMessageHandler({
+        ...authDeps,
+        providers: { fake: createFakeProviderAdapter() },
+        repository
+      })(new Request(`http://app.local/api/chats/${chatId}/messages`, {
+        body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", text: "Shared question", ...body }),
+        headers: { cookie: authCookie() },
+        method: "POST"
+      }), { params: { chatId } });
+    }
+
+    it("refuses a first Project send before loading the Project", async () => {
+      const chatId = "30000000-0000-4000-8000-000000000003";
+      const { repository, state } = createMemoryRepository();
+      repository.findOwnedChat = async () => null;
+      const loadProjectFirstSend = vi.fn();
+      repository.loadProjectFirstSend = loadProjectFirstSend;
+
+      const response = await projectSend(chatId, {
+        expectedActiveLeafId: null,
+        projectDraft: { folderId: null, projectId: "10000000-0000-4000-8000-000000000001" }
+      }, repository);
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
+      expect(loadProjectFirstSend).not.toHaveBeenCalled();
+      expect(state.created).toBeNull();
+    });
+
+    it("refuses a message in an existing Project chat the caller can open", async () => {
+      const projectId = "10000000-0000-4000-8000-000000000001";
+      const { repository, state } = createMemoryRepository();
+      repository.findOwnedChat = async (chatId, userId) =>
+        userId === config.bootstrapUserId
+          ? {
+              activeLeafMessageId: "assistant-message-1",
+              defaultModelId: "fake-qsa",
+              defaultProvider: "fake",
+              id: chatId,
+              messageCount: 2,
+              project: projectRunAdmission(projectId),
+              projectFolderId: null,
+              projectMemory: null,
+              title: "Shared chat"
+            }
+          : null;
+
+      const response = await projectSend("chat-project", { expectedActiveLeafId: "assistant-message-1" }, repository);
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
+      expect(state.created).toBeNull();
+    });
+
+    it("refuses regenerating, editing or retrying in a Project chat", async () => {
+      const { repository, state } = createMemoryRepository();
+      const findSource = repository.findRegenerationSource;
+      repository.findRegenerationSource = async (...args) => {
+        const source = await findSource(...args);
+        return source
+          ? { ...source, chat: { ...source.chat, project: projectRunAdmission("10000000-0000-4000-8000-000000000001") } }
+          : null;
+      };
+
+      const response = await createRegenerateModelRunHandler({
+        ...authDeps,
+        providers: { fake: createFakeProviderAdapter() },
+        repository
+      })(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
+        body: JSON.stringify({}),
+        headers: { cookie: authCookie(), "content-type": "application/json" },
+        method: "POST"
+      }), { params: { messageId: "assistant-message-1" } });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
+      expect(state.regenerated).toBeNull();
+    });
   });
 
   it("rejects empty sends with no text or attachments", async () => {

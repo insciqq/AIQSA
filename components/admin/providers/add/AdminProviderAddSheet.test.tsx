@@ -16,8 +16,8 @@ function snapshot() {
   });
   return {
     providers: [
+      // Native Anthropic is disabled (`lib/domain/disabledAreas.ts`), so the server never offers it.
       provider("openai", "OpenAI", ["GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.6 Sol"]),
-      provider("anthropic", "Anthropic", ["Claude Opus 5", "Claude Sonnet 5"]),
       provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
       provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
       provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
@@ -75,14 +75,13 @@ describe("AdminProviderAddSheet", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows the six tiles, the recommended models and one Test & Save with its paid caption", async () => {
+  it("shows the five tiles without native Anthropic, the recommended models and one Test & Save with its paid caption", async () => {
     mockFetch();
     renderSheet();
     const dialog = await sheet();
     const tiles = within(dialog).getByTestId("provider-add-tiles");
     expect(within(tiles).getAllByRole("button").map((tile) => tile.getAttribute("data-testid"))).toEqual([
       "provider-add-tile-openai",
-      "provider-add-tile-anthropic",
       "provider-add-tile-gemini",
       "provider-add-tile-deepseek",
       "provider-add-tile-openrouter",
@@ -98,15 +97,16 @@ describe("AdminProviderAddSheet", () => {
     expect(summary).toHaveTextContent("Verifies the key and turns on GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol");
     expect(summary).toHaveTextContent("Makes this key the default for everyone on this connection");
     expect(within(dialog).getByRole("button", { name: "Test & Save" })).toBeInTheDocument();
-    expect(within(dialog).getByText("Checks supported models and Search, then fills empty roles, including Knowledge. Assigned PDF readers receive page images and text. Uses small paid requests.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Checks supported models and Search, then fills empty roles. Assigned PDF readers receive page images and text. Uses small paid requests.")).toBeInTheDocument();
     expect(within(dialog).getByText("Advanced · endpoint, timeout, private network")).toBeInTheDocument();
     expect(within(dialog).getByLabelText("Endpoint")).toHaveValue("https://api.openai.com/v1");
     expect(dialog.textContent).not.toMatch(forbiddenWords);
 
-    fireEvent.click(within(tiles).getByRole("button", { name: "Anthropic" }));
-    expect(within(dialog).getByLabelText("Name")).toHaveValue("Anthropic");
-    expect(within(dialog).getByTestId("provider-add-summary")).toHaveTextContent("Claude Opus 5, Claude Sonnet 5");
-    expect(within(dialog).getByLabelText("Endpoint")).toHaveValue("https://api.anthropic.com/v1");
+    expect(within(tiles).queryByRole("button", { name: "Anthropic" })).toBeNull();
+    fireEvent.click(within(tiles).getByRole("button", { name: "Gemini" }));
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("Gemini");
+    expect(within(dialog).getByTestId("provider-add-summary")).toHaveTextContent("Gemini 3.6 Flash");
+    expect(within(dialog).getByLabelText("Endpoint")).toHaveValue("https://generativelanguage.googleapis.com/v1beta");
   });
 
   it("adds a built-in provider with one quick-setup call and hands over the new connection", async () => {
@@ -406,7 +406,7 @@ describe("AdminProviderAddSheet", () => {
     const dialog = await sheet();
     fireEvent.click(within(dialog).getByRole("button", { name: /^Custom/ }));
     expect(within(dialog).getByRole("button", { name: "Test & Save" })).toBeDisabled();
-    expect(within(dialog).getByText("Checks supported models and Search, then fills empty roles, including Knowledge. Assigned PDF readers receive page images and text. Uses small paid requests.")).toBeInTheDocument();
+    expect(within(dialog).getByText("Checks supported models and Search, then fills empty roles. Assigned PDF readers receive page images and text. Uses small paid requests.")).toBeInTheDocument();
     expect(within(dialog).getByText("Advanced · timeout, private network, reasoning mapping")).toBeInTheDocument();
 
     fireEvent.change(within(dialog).getByLabelText("Base URL"), { target: { value: "https://codex-lb.example.test/v1" } });

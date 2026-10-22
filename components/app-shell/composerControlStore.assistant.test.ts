@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
 import {
   boundComposerAssistantFixture,
@@ -11,6 +11,12 @@ import {
 } from "@/components/app-shell/composerControlStore";
 import { inheritedKnowledgeSelection } from "@/lib/contracts/knowledge";
 import type { AssistantRowKey, AssistantRowPolicy } from "@/lib/contracts/assistants";
+
+// The Knowledge row stays tested as it worked; `composerControlStore.test.ts` covers Knowledge disabled.
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
 
 const assistantControls = {
   backgroundMode: false,

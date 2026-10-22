@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { estimateApproxTokens } from "../../domain/contextBudget";
+import { KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import {
   KnowledgeRunAdmissionError,
   knowledgeRunAdmissionHasReadySources,
@@ -37,7 +38,11 @@ export async function withAssistantDependencyAvailability(
     const key = JSON.stringify(selection);
     if (!knowledgeAvailability.has(key)) {
       let availability: NonNullable<AssistantAccessEntry["dependencyAvailability"]>["knowledge"] = "ready";
-      if (selection.mode !== "none") {
+      if (selection.mode !== "none" && !KNOWLEDGE_ENABLED) {
+        // Knowledge is disabled: runs get none, so its row says so instead of
+        // an answer silently going without it.
+        availability = "access_denied";
+      } else if (selection.mode !== "none") {
         try {
           availability = knowledgeRunAdmissionHasReadySources(await loadKnowledgeRunAdmissionPlan(client, {
             knowledgePlan: selection, userId

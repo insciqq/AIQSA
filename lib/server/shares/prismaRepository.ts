@@ -8,7 +8,9 @@ import {
 import { prisma } from "../prisma";
 import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
 import { getVisibleMessagePath, type MessageRole } from "../../domain/branching";
+import { PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { resolveProjectAccess } from "../projects/access";
+import { ProjectsDisabledError } from "../projects/disabled";
 import type { ShareRepository } from "./handlers";
 
 function json(value: unknown): Prisma.InputJsonValue {
@@ -57,6 +59,8 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           if (!access) {
             return null;
           }
+          // Projects are disabled: a Project chat gets no new public share.
+          if (!PROJECTS_ENABLED) throw new ProjectsDisabledError();
           const currentChat = await tx.chat.findFirst({
             include: {
               messages: true,

@@ -1,7 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
 import { expect, it, vi } from "vitest";
 import { createChatContinuationHandler, createContinuationSourceHandler } from "./continuationHandlers";
-import { continuationSourceHref } from "./continuationRepository";
+import { continuationSourceHref, createChatContinuationRepository } from "./continuationRepository";
+import { ProjectsDisabledError } from "../projects/disabled";
 
 const access = vi.hoisted(() => ({ resolveChatAccess: vi.fn() }));
 vi.mock("../projects/access", () => ({ resolveChatAccess: access.resolveChatAccess }));
@@ -35,6 +36,33 @@ it("returns truthful progress and a bounded neutral error", async () => {
   const failed = await handler(request(input), context);
   expect(failed.status).toBe(502);
   expect(await failed.json()).toEqual({ error: "chat_summary_failed" });
+});
+
+it("answers a continuation of a Project chat with projects_disabled", async () => {
+  const continueChat = vi.fn().mockRejectedValue(new ProjectsDisabledError());
+  const response = await createChatContinuationHandler({ continueChat, resolveAuth: async () => session })(request(input), context);
+
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ error: "projects_disabled" });
+});
+
+it("continues no Project chat into a new chat, before reading its branch", async () => {
+  access.resolveChatAccess.mockReset().mockResolvedValue({ kind: "project", project: { effectiveRole: "CONTRIBUTOR" }, userId: null });
+  const chat = { activeLeafMessageId: "answer", archived: false, id: "source", permanentDeletionAt: null, projectId: "project-1",
+    updatedAt: new Date(0), userId: null };
+  const queryRaw = vi.fn(async () => []);
+  const tx = {
+    $queryRaw: queryRaw,
+    chat: { findUnique: vi.fn(async () => chat) },
+    modelRun: { findFirst: vi.fn(async () => null) },
+    user: { findFirst: vi.fn(async () => ({ displayName: "Member" })) }
+  };
+  const client = { $transaction: async (work: (transaction: typeof tx) => unknown) => work(tx) } as unknown as PrismaClient;
+
+  await expect(createChatContinuationRepository(client).loadSource({ ...input, chatId: "source", userId: "member" }))
+    .rejects.toBeInstanceOf(ProjectsDisabledError);
+  // Only the locks ran: the branch walk never started.
+  expect(queryRaw).toHaveBeenCalledTimes(2);
 });
 
 it("resolves source links through current authorization and never exposes inaccessible IDs", async () => {

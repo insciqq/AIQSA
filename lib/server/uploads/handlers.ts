@@ -1,3 +1,4 @@
+import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { inspectPdfForModelProcessing } from "../parsing/pdfPreparation";
 import { getPdfExtractionConfig } from "./pdfConfig";
 import { DocumentParserError } from "../parsing/errors";
@@ -137,6 +138,10 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
         : null;
       if (projectId !== null && projectId.length > 128) {
         return Response.json({ error: "project_not_found" }, { status: 404 });
+      }
+      // Projects are disabled: nothing is uploaded into a Project.
+      if (projectId !== null && !PROJECTS_ENABLED) {
+        return Response.json({ error: PROJECTS_DISABLED_CODE }, { status: 409 });
       }
       const target = deps.resolveTarget
         ? await deps.resolveTarget({ projectId, userId: auth.userId })

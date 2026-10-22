@@ -11,6 +11,7 @@ import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import type { AssistantDetail } from "@/lib/contracts/assistants";
 import { ASSISTANT_FEATURED_LIMIT } from "@/lib/contracts/assistantListing";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
+import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   assistantListingStatusCopy,
@@ -356,17 +357,20 @@ function SharingForm({ detail, lastAction, view }: Readonly<{
         <p className="v2-assistants-copy-status" role="status">{copyStatus}</p>
       </Section>
 
-      <Section title="Projects using this Assistant">
-        {projects.projects.length + projects.otherProjectCount > 0 ? (
-          <ul className="v2-assistant-sharing-projects">
-            {projects.projects.map((project) => <li key={project.id}>{project.name}</li>)}
-            {projects.otherProjectCount > 0 ? (
-              <li className="v2-assistant-sharing-projects-rest">{otherProjectsText(projects.otherProjectCount, projects.projects.length > 0)}</li>
-            ) : null}
-          </ul>
-        ) : <p className="v2-assistant-sharing-empty">No Projects use this Assistant.</p>}
-        <p className="v2-assistant-sharing-caption">Project managers refresh dependencies from the Project.</p>
-      </Section>
+      {/* Projects are disabled (`lib/domain/disabledAreas.ts`): no Project section. */}
+      {PROJECTS_ENABLED ? (
+        <Section title="Projects using this Assistant">
+          {projects.projects.length + projects.otherProjectCount > 0 ? (
+            <ul className="v2-assistant-sharing-projects">
+              {projects.projects.map((project) => <li key={project.id}>{project.name}</li>)}
+              {projects.otherProjectCount > 0 ? (
+                <li className="v2-assistant-sharing-projects-rest">{otherProjectsText(projects.otherProjectCount, projects.projects.length > 0)}</li>
+              ) : null}
+            </ul>
+          ) : <p className="v2-assistant-sharing-empty">No Projects use this Assistant.</p>}
+          <p className="v2-assistant-sharing-caption">Project managers refresh dependencies from the Project.</p>
+        </Section>
+      ) : null}
     </div>
   );
 }

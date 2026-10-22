@@ -15,6 +15,12 @@ import {
   type KnowledgeUploadHandlerDeps
 } from "./uploadHandlers";
 
+// These handlers stay tested with Knowledge on; `disabled.test.ts` covers it off.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 const now = new Date("2026-08-18T10:00:00.000Z");
 
 function session(): AuthenticatedSession {

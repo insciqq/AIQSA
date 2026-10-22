@@ -11,6 +11,15 @@ import {
 import { ASSISTANT_TEMPLATES } from "./assistantTemplates";
 import { NewAssistantSheetV2 } from "./NewAssistantSheetV2";
 
+// The Knowledge template stays tested as it worked; one test below turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
+
 function view(overrides: Partial<AssistantNewAssistantView> = {}): AssistantNewAssistantView {
   return {
     onBlank: vi.fn(),
@@ -69,6 +78,22 @@ describe("New assistant sheet", () => {
     expect(current.onFromCurrentChat).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(current.onClose).toHaveBeenCalledOnce();
+  });
+
+  it("offers no Knowledge template and copies no Knowledge from the chat while Knowledge is disabled", () => {
+    areas.knowledge = false;
+    try {
+      render(<NewAssistantSheetV2 view={view()} />);
+      const sheet = screen.getByRole("dialog", { name: "New assistant" });
+
+      expect(within(sheet).getAllByRole("radio").map((radio) => radio.closest("label")?.querySelector("span")?.textContent)).toEqual([
+        "Blank", "From current chat", "Writing editor", "Code reviewer", "Research analyst", "Meeting notes", "Translator"
+      ]);
+      expect(within(sheet).getByRole("radio", { name: "From current chat" }))
+        .toHaveAccessibleDescription("Copies the model, search, tools and Skills of the open chat as adjustable starting values.");
+    } finally {
+      areas.knowledge = true;
+    }
   });
 
   it("renders nothing while closed", () => {

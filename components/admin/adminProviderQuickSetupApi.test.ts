@@ -16,12 +16,6 @@ function snapshot() {
         stateToken: "state-openai"
       },
       {
-        candidateModels: [{ displayName: "Claude Opus 5" }],
-        provider: "anthropic",
-        providerDisplayName: "Anthropic",
-        stateToken: "state-anthropic"
-      },
-      {
         candidateModels: [{ displayName: "DeepSeek V4 Pro" }],
         provider: "deepseek",
         providerDisplayName: "DeepSeek",
@@ -81,6 +75,13 @@ describe("admin provider Quick setup API", () => {
       method: "GET",
       signal: undefined
     });
+    // Native Anthropic is disabled (`lib/domain/disabledAreas.ts`): the server never offers it,
+    // so a snapshot that still carries it is not the exact provider set.
+    const withAnthropic = { providers: [...snapshot().providers, {
+      candidateModels: [{ displayName: "Claude Opus 5" }], provider: "anthropic", providerDisplayName: "Anthropic", stateToken: "state-anthropic"
+    }] };
+    await expect(getAdminProviderQuickSetup(vi.fn(async () => response(withAnthropic))))
+      .resolves.toMatchObject({ ok: false, error: { code: "provider_quick_setup_response_invalid" } });
   });
 
   it("sends only the write-only atomic request and decodes Ready", async () => {
@@ -180,7 +181,7 @@ describe("admin provider Quick setup API", () => {
     { providers: snapshot().providers.slice(0, 2) },
     { providers: [...snapshot().providers, snapshot().providers[0]] },
     {
-      providers: snapshot().providers.map((provider) => provider.provider === "anthropic"
+      providers: snapshot().providers.map((provider) => provider.provider === "deepseek"
         ? { ...provider, state: "ready" }
         : provider)
     },

@@ -6,6 +6,7 @@ import {
 } from "../../contracts/knowledge";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import { refusedWhileKnowledgeDisabled } from "./disabled";
 import type {
   KnowledgeLifecycleWriteResult,
   KnowledgePermanentDeletionResult,
@@ -84,7 +85,7 @@ export function createKnowledgeLifecycleHandler(
   target: Target,
   action: Action
 ) {
-  return async function POST(request: Request, context: LifecycleContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: LifecycleContext): Promise<Response> {
     const auth = await deps.resolveAuth(request);
     if (!auth) return errorJson("unauthorized", 401);
     const params = await context.params;
@@ -113,5 +114,5 @@ export function createKnowledgeLifecycleHandler(
         ? await deps.repository.trashSource(auth.userId, id, decoded.expectedVersion)
         : await deps.repository.restoreSource(auth.userId, id, decoded.expectedVersion);
     return result.kind === "ok" ? new Response(null, { status: 204 }) : writeError(target, result);
-  };
+  });
 }

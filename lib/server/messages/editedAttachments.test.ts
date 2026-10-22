@@ -5,6 +5,15 @@ import { createTestAuth } from "@/tests/support/auth";
 import { createEditMessageBranchHandler } from "./handlers";
 import { createPrismaMessageBranchRepository } from "./prismaRepository";
 
+// Project chat edits stay tested as they worked; the last test turns Projects off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
+
 function fixture(projectId: string | null = null) {
   const userId = "editor";
   const original = {
@@ -126,5 +135,27 @@ describe("edited message attachments", () => {
     expect(tx.message.create).not.toHaveBeenCalled();
     expect(tx.attachment.create).not.toHaveBeenCalled();
     expect(tx.chat.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("edits no message of a Project chat while Projects are disabled", async () => {
+    areas.projects = false;
+    try {
+      const { original, repository, tx, userId } = fixture("project-1");
+      const auth = createTestAuth({ user: { id: userId } });
+      const response = await createEditMessageBranchHandler({ repository, resolveAuth: auth.resolveAuth })(
+        new Request("http://app.local/api/messages/original", {
+          body: JSON.stringify({ text: "Read these documents" }),
+          headers: { cookie: auth.cookie, "content-type": "application/json" },
+          method: "PATCH"
+        }), { params: { messageId: original.id } });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
+      expect(tx.message.create).not.toHaveBeenCalled();
+      expect(tx.attachment.create).not.toHaveBeenCalled();
+      expect(tx.chat.updateMany).not.toHaveBeenCalled();
+    } finally {
+      areas.projects = true;
+    }
   });
 });

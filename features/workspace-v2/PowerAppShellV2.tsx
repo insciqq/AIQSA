@@ -230,6 +230,7 @@ import {
 } from "@/components/app-shell/chatRoute";
 import { requestSkillDialogNavigation } from "@/components/skills/SkillLibraryDialog";
 import { formatAssistantEntryPath, formatChatRoutePath } from "@/lib/domain/chatRoute";
+import { KNOWLEDGE_ENABLED, PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import type { ProjectDetailWire } from "@/lib/contracts/projects";
 import {
   ASSISTANT_ROW_KEYS,
@@ -287,7 +288,8 @@ const CHAT_ROUTE_UNAVAILABLE_COPY = {
   // One text for missing, foreign, archived and unusable Assistants alike.
   assistant: "This Assistant isn't available to you.",
   chat: "That chat is unavailable.",
-  project: "That Project is unavailable.",
+  // Projects are disabled: only a shared chat's own address still opens it.
+  project: PROJECTS_ENABLED ? "That Project is unavailable." : "Projects are turned off. Open a shared chat from its link to read it.",
   projectChat: "That Project chat is unavailable."
 } as const;
 
@@ -1308,12 +1310,14 @@ export function PowerAppShellV2({
   });
 
   const knowledgeLibraryActions = useMemo(() => createKnowledgeLibraryActions(), []);
+  // Knowledge is disabled: nothing offers it, so nothing loads it.
   useEffect(() => {
-    if (!knowledgeSnapshot.sourceData) {
+    if (KNOWLEDGE_ENABLED && !knowledgeSnapshot.sourceData) {
       void knowledgeLibraryActions.refreshSources();
     }
   }, [knowledgeLibraryActions, knowledgeSnapshot.sourceData]);
   useEffect(() => {
+    if (!KNOWLEDGE_ENABLED) return;
     let cancelled = false;
     void fetchKnowledgeSources({ filter: "all", page: 1, pageSize: 100 }).then((result) => {
       if (!cancelled && result.ok) setComposerKnowledgeData(result.data);
@@ -1526,6 +1530,11 @@ export function PowerAppShellV2({
       request.finish("superseded");
       return;
     }
+    // Projects are disabled: a Project's own address offers nothing to start.
+    if (!PROJECTS_ENABLED && !request.chatId) {
+      request.finish("unavailable");
+      return;
+    }
     if (projectWorkspace.listLoading) return;
     if (request.phase === "selecting") {
       if (projectWorkspace.selectedProjectId !== request.projectId) return;
@@ -1547,6 +1556,10 @@ export function PowerAppShellV2({
     if (!projectWorkspace.detail || !projectWorkspace.workspace) return;
     const chatId = request.chatId;
     if (!chatId || !projectWorkspace.workspace.chats.some((chat) => chat.id === chatId)) {
+      if (!PROJECTS_ENABLED) {
+        request.finish("unavailable");
+        return;
+      }
       // The accessible Project stays open on its blank chat.
       if (useWorkspaceStore.getState().activeChatId !== null) activateProjectBlankWorkspace(request.projectId);
       request.finish(chatId ? "project" : "opened");
@@ -1729,7 +1742,8 @@ export function PowerAppShellV2({
     }
   });
   const studio = useStudioNavigation({
-    available: ["assistants", "instructions", "skills", "knowledge", "memory", "files", "artifacts", "scheduled", "mcp", "secrets", "defaults"],
+    available: ["assistants", "instructions", "skills", ...(KNOWLEDGE_ENABLED ? ["knowledge" as const] : []),
+      "memory", "files", "artifacts", "scheduled", "mcp", "secrets", "defaults"],
     onExit() {
       assistantLibraryActions.closeLibrary();
       knowledgeLibraryActions.closeLibrary();
@@ -1779,7 +1793,7 @@ export function PowerAppShellV2({
   const loadDefaultAssistantChoices = useEventCallback(() => assistantLibraryActions.ensureList());
 
   useEffect(() => {
-    void knowledgeLibraryActions.refreshList();
+    if (KNOWLEDGE_ENABLED) void knowledgeLibraryActions.refreshList();
   }, [knowledgeLibraryActions]);
 
   const { consumeRunStream, createStreamTokenBuffer } = useRunStreaming({
@@ -2482,7 +2496,9 @@ export function PowerAppShellV2({
       (resource.modelId ?? resource.resourceId) === effectiveCurrentModel.modelId
   ));
   const projectAccessHint = projectContext
-    ? !activeProject
+    ? !PROJECTS_ENABLED
+      ? "Projects are turned off, so this shared chat is read-only."
+      : !activeProject
       ? "Project access is being revalidated."
       : activeProject.status !== "ACTIVE"
         ? "This project is archived and read-only."
@@ -3030,7 +3046,7 @@ export function PowerAppShellV2({
 
   return (
     <DisclosurePreferencesProvider accountId={accountId}>
-    <KnowledgeCitationViewerProvider onOpenLibrarySource={openKnowledgeLibrarySource}>
+    <KnowledgeCitationViewerProvider onOpenLibrarySource={KNOWLEDGE_ENABLED ? openKnowledgeLibrarySource : undefined}>
       <PowerAppShellV2View
         branches={branchesView}
         composer={composerView}

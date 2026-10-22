@@ -1,6 +1,7 @@
 import { createAnthropicMessagesAdapter, createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import { decodeDecisionEvidence } from "./decisionEvidence";
 import { decisionResponseModelMatches } from "../../domain/decisionModels";
+import { NATIVE_ANTHROPIC_DISABLED_CODE, NATIVE_ANTHROPIC_ENABLED } from "../../domain/disabledAreas";
 import { createAgentResponsesTransport, type AgentResponsesTransport } from "./agentResponses";
 import { createAnthropicMessagesSearchAdapter } from "./anthropicMessagesSearch";
 import {
@@ -542,6 +543,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         toolBridge: openAICompatibleChatToolBridge
       };
     case "anthropic_messages": {
+      // Native Anthropic is disabled: nothing, not even an accepted run or an administrator check, calls it.
+      if (!NATIVE_ANTHROPIC_ENABLED) throw new Error(NATIVE_ANTHROPIC_DISABLED_CODE);
       const client = createFetchAnthropicMessagesClient({
         apiKey: clientSecret,
         baseUrl,

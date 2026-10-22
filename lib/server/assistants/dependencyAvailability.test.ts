@@ -8,6 +8,14 @@ import { estimateApproxTokens } from "../../domain/contextBudget";
 vi.mock("../knowledge/runAdmission", async (importOriginal) => ({
   ...await importOriginal<typeof import("../knowledge/runAdmission")>(), loadKnowledgeRunAdmissionPlan: vi.fn()
 }));
+// Knowledge dependencies stay tested as they worked; one test below turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
 const loadKnowledge = vi.mocked(loadKnowledgeRunAdmissionPlan);
 
 function entry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAccessEntry {
@@ -53,6 +61,17 @@ describe("Assistant dependency preflight", () => {
     ]);
     expect(entries[1]!.content.skillSummaries?.map(({ id }) => id)).toEqual(["ready", "archived"]);
     expect(JSON.stringify(entries)).not.toMatch(/Read carefully|Old workflow/);
+  });
+
+  it("marks saved Knowledge unavailable without reading it while Knowledge is disabled", async () => {
+    areas.knowledge = false;
+    try {
+      const [assistant] = await withAssistantDependencyAvailability({} as never, "runner", [entry()]);
+      expect(assistant?.dependencyAvailability).toEqual({ skills: true, knowledge: "access_denied" });
+      expect(loadKnowledge).not.toHaveBeenCalled();
+    } finally {
+      areas.knowledge = true;
+    }
   });
 
   it("distinguishes authorized unready Knowledge from inaccessible Knowledge", async () => {

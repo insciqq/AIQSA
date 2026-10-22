@@ -13,6 +13,7 @@ import type {
   AdminProviderModelRename
 } from "@/lib/contracts/adminProviders";
 import { decodeAdminModelPricing } from "@/lib/contracts/adminProviderModelPrices";
+import { NATIVE_ANTHROPIC_DISABLED_CODE } from "@/lib/domain/disabledAreas";
 import { normalizeImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { adminProviderSetupFailureCode, readAdminProviderSetupResponse } from "./adminProviderSetupStream";
@@ -664,6 +665,7 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_refresh_failed: "The check could not be completed. Saved capability results were kept.",
     provider_routing_role_incompatible: "A system role uses this model and the selected providers cannot serve it. Choose Automatic or other providers.",
     provider_routing_role_unverified: "A system role uses this model and the selected providers could not be confirmed. Try again or choose Automatic.",
+    [NATIVE_ANTHROPIC_DISABLED_CODE]: "The Anthropic provider is turned off, so nothing on it can be set up, turned on or checked. You can still turn it off or delete it.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   const blockerLabels: Record<string, string> = {

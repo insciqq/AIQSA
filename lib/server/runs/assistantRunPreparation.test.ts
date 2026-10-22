@@ -26,6 +26,12 @@ import { SESSION_STATUS_TOOL_NAME } from "../tools/sessionStatus";
 import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
 import { materializePreparedRunData, prepareRun, type RunPreparationDeps } from "./runPreparation";
 
+// Knowledge admission stays tested as it worked; `runPreparation.test.ts` covers Knowledge disabled.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 const fakeAdapter = {
   buildRequestPreview: () => ({ provider: "fake" }),
   async run() {

@@ -440,6 +440,8 @@ export type ComposerV2Props = Readonly<{
   onUploadFiles?(files: readonly File[]): Promise<void> | void;
   onReuseFile?(attachmentId: string, fileName: string): Promise<boolean>;
   runId?: string | null;
+  /** False while Knowledge is disabled (`lib/domain/disabledAreas.ts`): no Knowledge chip, menu row or command. */
+  knowledgeOffered?: boolean;
   knowledgePlanSource?: "assistant" | "chat" | "explicit" | "off" | "project";
   /** The effective MCP selection; an Assistant's exact server list is read from `assistant`. */
   mcpSelection?: ComposerMcpSelection;
@@ -635,6 +637,7 @@ export function ComposerV2({
   onSelectSkillsMode,
   selectedKnowledgeSelection,
   selectedKnowledgeBaseIds = [],
+  knowledgeOffered = true,
   knowledgePlanSource = "off",
   selectedModelId,
   selectedProvider,
@@ -1221,7 +1224,7 @@ export function ComposerV2({
   const knowledgeAvailable = Boolean(onSelectKnowledgeSelection || onSelectKnowledgeBaseIds) && (
     knowledgeHasBases || knowledgeHasDocuments
   );
-  const knowledgeChipVisible = Boolean(config) && (
+  const knowledgeChipVisible = knowledgeOffered && Boolean(config) && (
     knowledgeInheritedFrom !== null || knowledgeSelection.mode !== "none" || knowledgeAvailable ||
     (knowledgeProvenance !== null && knowledgeProvenance.kind !== "own")
   );
@@ -1423,12 +1426,12 @@ export function ComposerV2({
       skillLibrary: onOpenSkillLibrary
         ? { detail: "Choose Auto loading or Always use", disabledReason: null, run: onOpenSkillLibrary }
         : null,
-      knowledge: {
+      knowledge: knowledgeOffered ? {
         detail: "Base or document for this chat",
         disabledReason: knowledgeFixed || !knowledgeAvailable ? addKnowledgeReason ?? "Base or document for this chat" : null,
         run: () => openFromPalette("knowledge", knowledgeTriggerRef.current)
-      },
-      knowledgeBases: knowledgeAvailable ? (config?.knowledgeBases ?? []).map((base) => {
+      } : null,
+      knowledgeBases: knowledgeOffered && knowledgeAvailable ? (config?.knowledgeBases ?? []).map((base) => {
         const selected = selectedKnowledgeSet.has(base.id);
         const current = selected && knowledgeControlsLocked;
         const atLimit = !selected && explicitSelectionAtLimit;
@@ -2341,17 +2344,19 @@ export function ComposerV2({
                       onClick={(event) => openLayer("files", plusTriggerRef.current ?? event.currentTarget)}
                     >Saved files…</CapabilityRow>
                   ) : null}
-                  <CapabilityRow
-                    icon="book"
-                    disabled={knowledgeFixed || activeRun || !knowledgeAvailable}
-                    reason={addKnowledgeReason ?? "Base or document for this chat"}
-                    selectionRole="item"
-                    onClick={(event) => {
-                      openLayer("knowledge", knowledgeTriggerRef.current ?? event.currentTarget);
-                    }}
-                  >
-                    Add Knowledge…
-                  </CapabilityRow>
+                  {knowledgeOffered ? (
+                    <CapabilityRow
+                      icon="book"
+                      disabled={knowledgeFixed || activeRun || !knowledgeAvailable}
+                      reason={addKnowledgeReason ?? "Base or document for this chat"}
+                      selectionRole="item"
+                      onClick={(event) => {
+                        openLayer("knowledge", knowledgeTriggerRef.current ?? event.currentTarget);
+                      }}
+                    >
+                      Add Knowledge…
+                    </CapabilityRow>
+                  ) : null}
                   <CapabilityRow
                     icon="wand"
                     disabled={activeRun || !onOpenSkillLibrary}

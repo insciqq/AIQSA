@@ -1,3 +1,5 @@
+import { KNOWLEDGE_ENABLED } from "../../../domain/disabledAreas";
+import { knowledgeDisabledResponse } from "../../knowledge/disabled";
 import { logEvent, type LifecycleStage } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
@@ -84,6 +86,7 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
       }
       const auth = await requireAdmin(request, input.resolveAuth);
       if (auth.error || !auth.session) return auth.error!;
+      if (!KNOWLEDGE_ENABLED) return knowledgeDisabledResponse();
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
@@ -195,6 +198,7 @@ export function createAdminKnowledgePolicyHandlers(input: Readonly<{
       }
       const auth = await requireAdmin(request, input.resolveAuth);
       if (auth.error) return auth.error;
+      if (!KNOWLEDGE_ENABLED) return knowledgeDisabledResponse();
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;

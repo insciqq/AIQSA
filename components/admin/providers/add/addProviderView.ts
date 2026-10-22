@@ -23,6 +23,7 @@ import {
   type AdminProviderConnection
 } from "@/lib/contracts/adminProviders";
 import { compatibleReasoningRequestMappingDefault } from "@/lib/contracts/providerReasoningRequestMapping";
+import { offeredProviderFamilies } from "@/lib/domain/disabledAreas";
 import { providerConnectionTemplates } from "@/lib/domain/providerTemplates";
 
 /** Pure view rules for the Add provider sheet (PRD 5.3). */
@@ -35,9 +36,12 @@ export type AddProviderTile = Readonly<{
   subtitle?: string;
 }>;
 
-/** The six tiles in artboard order; only Custom carries a protocol subtitle. */
+/**
+ * The tiles in artboard order; only Custom carries a protocol subtitle. A
+ * disabled family (native Anthropic, `lib/domain/disabledAreas.ts`) has none.
+ */
 export const ADD_PROVIDER_TILES: readonly AddProviderTile[] = [
-  ...ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS.map((family) => ({
+  ...offeredProviderFamilies(ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS).map((family) => ({
     family,
     label: providerFamilyLabel(family)
   })),

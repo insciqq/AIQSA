@@ -11,6 +11,15 @@ import { assistantContent, assistantDetail } from "@/tests/support/assistantLibr
 import { AssistantSharingSheetV2 } from "./AssistantSharingSheetV2";
 import { assistantSharingAccessItems } from "./assistantSharingCopy";
 
+// The Projects section stays tested as it worked; one test below turns Projects off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
+
 const names: AssistantResourceNames = {
   knowledgeBases: [{ id: "base-hr", name: "HR handbook" }],
   knowledgeSources: [],
@@ -97,7 +106,10 @@ function withDetail(overrides: Partial<AssistantDetail>, view: Partial<Assistant
   return sheetView({ detail, listing: detail.listingRequest ?? null, ...view });
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  areas.projects = true;
+  cleanup();
+});
 
 describe("Assistant Sharing sheet", () => {
   it("shows the owner every section: audience, required access, link and Projects", () => {
@@ -140,6 +152,16 @@ describe("Assistant Sharing sheet", () => {
     fireEvent.click(everyone);
     expect(view.onChange).toHaveBeenNthCalledWith(1, { audience: "groups" });
     expect(view.onChange).toHaveBeenNthCalledWith(2, { audience: "everyone" });
+  });
+
+  it("shows no Projects section while Projects are disabled", () => {
+    areas.projects = false;
+    render(<AssistantSharingSheetV2 view={sheetView()} />);
+    const dialog = screen.getByRole("dialog", { name: "Sharing · Jira desk" });
+
+    expect(within(dialog).queryByRole("region", { name: "Projects using this Assistant" })).toBeNull();
+    expect(dialog).not.toHaveTextContent("Project managers refresh dependencies");
+    expect(within(dialog).getByRole("region", { name: "Link" })).toBeInTheDocument();
   });
 
   it("chooses groups with their member counts and asks for at least one", () => {

@@ -13,7 +13,9 @@ import {
 } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { resolveProjectAccess } from "../projects/access";
+import { ProjectsDisabledError } from "../projects/disabled";
 import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
+import { PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import {
   ActiveMessageMutationConflictError,
   MessageDeleteConflictError,
@@ -275,6 +277,8 @@ export function createPrismaMessageBranchRepository(
         if (!lockedChat || lockedChat.memoryMode === "TEMPORARY") {
           return null;
         }
+        // Projects are disabled: no new chat starts from a Project chat.
+        if (isProjectChat(lockedChat) && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
         await assertChatHasNoActiveRun(tx, lockedChat.id);
 
         const source = await tx.message.findFirst({
@@ -665,6 +669,8 @@ export function createPrismaMessageBranchRepository(
         if (!lockedChat) {
           return null;
         }
+        // Projects are disabled: a Project chat takes no edited message.
+        if (isProjectChat(lockedChat) && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
         await assertChatHasNoActiveRun(tx, lockedChat.id);
 
         const original = await tx.message.findFirst({

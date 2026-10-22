@@ -10,6 +10,15 @@ import type { AssistantAvatarRecipe } from "@/lib/contracts/assistants";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import { AssistantEditorPageV2 } from "./AssistantEditorPageV2";
 
+// The Knowledge row stays tested as it worked; the tests "while Knowledge is disabled" turn it off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
+
 const avatar: AssistantAvatarRecipe = {
   accents: [0, 4],
   backgroundShape: "circle",
@@ -120,6 +129,7 @@ function renderPage(view: AssistantEditorView, props: { onOpenSharing?(): void; 
 const row = (key: string) => screen.getByTestId(`assistant-setup-row-${key}`);
 
 afterEach(() => {
+  areas.knowledge = true;
   resetSkillLibraryStoreForTest();
   vi.unstubAllGlobals();
 });
@@ -277,6 +287,34 @@ describe("Assistant editor page", () => {
     expect(within(row("knowledge")).getByRole("radio", { name: "None" })).toBeChecked();
     fireEvent.click(within(row("knowledge")).getByRole("radio", { name: "Your default (Inherit)" }));
     expect(view.onRowChange).toHaveBeenCalledWith("knowledge", { value: { mode: "inherit" } });
+  });
+
+  it("offers no Knowledge row while Knowledge is disabled", () => {
+    areas.knowledge = false;
+    renderPage(editor());
+
+    expect(screen.queryByTestId("assistant-setup-row-knowledge")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Knowledge" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Adjustable" })).toHaveLength(5);
+  });
+
+  it("keeps a saved Knowledge selection visible while Knowledge is disabled, only so it can be cleared", () => {
+    areas.knowledge = false;
+    const rows = defaultAssistantDraftRows();
+    const view = editor({
+      draft: draft({ rows: { ...rows, knowledge: { policy: "fixed", value: { baseIds: ["base-1"], mode: "explicit", sourceIds: [] } } } })
+    });
+    renderPage(view);
+
+    fireEvent.click(screen.getByRole("button", { name: "Knowledge" }));
+    const knowledge = row("knowledge");
+    expect(within(knowledge).getByRole("radio", { name: /Selected/ })).toBeChecked();
+    expect(within(knowledge).getByRole("status")).toHaveTextContent(
+      "Knowledge is turned off. Choose None or Your default (Inherit) to save this Assistant."
+    );
+    expect(within(knowledge).queryByRole("checkbox", { name: "Product docs" })).toBeNull();
+    fireEvent.click(within(knowledge).getByRole("radio", { name: "None" }));
+    expect(view.onRowChange).toHaveBeenCalledWith("knowledge", { value: { mode: "none" } });
   });
 
   it("keeps one Skills list with Always or On demand per link and honest counts", () => {

@@ -13,6 +13,12 @@ import {
   createAcceptedStructuredOutputSnapshotExecutor
 } from "./structuredOutputExecutor";
 
+// The native Anthropic route stays tested as it worked; `runtimeFactory.test.ts` covers it disabled.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  NATIVE_ANTHROPIC_ENABLED: true
+}));
+
 const KEY = Buffer.alloc(32, 19);
 
 function role(structuredOutput = true): ProviderAdmissionRole {

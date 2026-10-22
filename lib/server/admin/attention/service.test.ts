@@ -23,6 +23,15 @@ import {
   type AdminAttentionUsageLimitsInput
 } from "./service";
 
+// Knowledge attention stays tested as it worked; one test below turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("../../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
+
 const at = "2026-09-07T12:00:00.000Z";
 
 function user(overrides: Partial<AdminDashboard["users"][number]>): AdminDashboard["users"][number] {
@@ -808,6 +817,19 @@ describe("createAdminAttentionService", () => {
     const result = await service.list("admin-1");
     expect(result.items.map((item) => item.code)).toEqual(["email_not_configured"]);
     expect(result.unavailable).toEqual(["knowledge", "memory"]);
+  });
+
+  it("neither reads nor names Knowledge while it is disabled", async () => {
+    areas.knowledge = false;
+    try {
+      const knowledge = vi.fn().mockRejectedValue(new Error("db down"));
+      const service = createAdminAttentionService({ now: () => new Date(at), sources: sources({ knowledge }) });
+
+      await expect(service.list("admin-1")).resolves.toEqual({ checkedAt: at, items: [], unavailable: [] });
+      expect(knowledge).not.toHaveBeenCalled();
+    } finally {
+      areas.knowledge = true;
+    }
   });
 
   it("links pending Skill reviews to the approval queue and distinguishes an unavailable count", async () => {

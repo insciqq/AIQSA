@@ -5,6 +5,7 @@ import { decodeDecisionEvidence } from "../providers/decisionEvidence";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { CatalogAdapterKind } from "../../domain/catalog";
+import { NATIVE_ANTHROPIC_DISABLED_CODE, NATIVE_ANTHROPIC_ENABLED } from "../../domain/disabledAreas";
 import { resolveProviderCredential } from "../../domain/providerCredentialResolution";
 import {
   normalizeProviderConnectionConfiguration,
@@ -46,6 +47,7 @@ export type ProviderAdmissionErrorCode =
   | "credential_not_found"
   | "credential_revoked"
   | "model_not_available"
+  | typeof NATIVE_ANTHROPIC_DISABLED_CODE
   | "search_strategy_not_available"
   | "user_not_available";
 
@@ -332,6 +334,10 @@ async function loadRole(
     }
   });
   if (!model) throw new ProviderAdmissionError("model_not_available");
+  // Native Anthropic is disabled: no role or run binds one of its models.
+  if (!NATIVE_ANTHROPIC_ENABLED && model.connection.family === "anthropic") {
+    throw new ProviderAdmissionError(NATIVE_ANTHROPIC_DISABLED_CODE);
+  }
 
   if (input.requireEntitlement) {
     if (input.credentialAuthority.kind !== "user" || !(await hasModelEntitlement(db, {
