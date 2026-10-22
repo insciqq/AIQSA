@@ -31,13 +31,13 @@ Process and deployment shape, dependency direction, and every place data leaves 
 
 ## Data stores
 
-PostgreSQL is canonical. Object storage is private, never a public file host. OpenSearch is a rebuildable candidate index: PostgreSQL reauthorizes every hit, and Knowledge retrieval has no alternative lexical backend. Browsers receive explicit allowlisted projections, never storage objects or upstream formats. See `agent_docs/PERSISTENCE.md`.
+PostgreSQL is canonical. Object storage is private, never a public file host. OpenSearch is a rebuildable candidate index: PostgreSQL reauthorizes every hit. Browsers receive explicit allowlisted projections, never storage objects or upstream formats. See `agent_docs/PERSISTENCE.md`.
 
 ## Where data leaves the installation
 
 Every external destination is listed here with its privacy decision. A new destination, credential audience, public projection or durable store starts with an entry here: what is sent, to whom, what happens on failure, and how long it is kept.
 
-- **Model providers.** Content goes only to the destination an admitted run bound (`agent_docs/PROVIDERS.md`). Knowledge embedding and indexing use a separately disclosed installation-profile destination; choosing an answer model does not authorize it.
+- **Model providers.** Content goes only to the destination an admitted run bound (`agent_docs/PROVIDERS.md`), including the values of saved secrets the agent reads (accepted risk, `agent_docs/SECURITY.md`).
 - **Artifact CDNs.** Model-chosen library and image URLs are fetched from operator-allowlisted public CDNs when a version is created, and frozen with it. Accepted risk: a URL can itself carry data. Offline viewers disclose nothing to CDNs.
 - **Artifact contents** (operator decision 2026-10-08). An artifact holds only what its page shows: data sources become JSON extracted in Workspace, office documents are converted for viewing, and originals enter only on the user's explicit request, because a published artifact gives every viewer all of its files.
 - **Artifact downloads** (operator decision 2026-10-11) leave only through the viewer, never by weakening its CSP or sandbox.
