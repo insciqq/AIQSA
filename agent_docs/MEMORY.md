@@ -5,7 +5,7 @@ paths:
 ---
 # Memory
 
-Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. PostgreSQL is the authority; every search index is a rebuildable projection.
+Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. PostgreSQL is the authority; every search index is a rebuildable projection. Memory is kept but frozen (root `AGENTS.md`): changes only simplify or stabilize it.
 
 ## Who may change Memory
 
@@ -47,7 +47,7 @@ Maintenance runs whenever Memory and automatic learning are on (`lib/server/memo
 ## Retrieval
 
 - Ordinary personal turns get a small fixed standing set of current facts, with no dynamic retrieval or external call (`lib/server/memory/retrieval/readBudget.ts`). Deeper recall is an optional read-only tool for the answer model.
-- Agent, temporary, Excluded and Project chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
+- Codex Agent runs, temporary, Excluded and Project chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
 - Every hit rejoins its current owner, source, content hash, lifecycle, generation, suppression, deletion and expiry proof before fusion and again before the evidence pack is frozen. An OpenSearch failure falls back to PostgreSQL without weakening those checks.
 - Empty, limited, failed and cancelled searches stay distinct, and none proves absence. The standing set is partial, so the model should search before calling a personal detail unknown.
 - Search permissions, destinations and budgets freeze at acceptance (`lib/server/memory/search/admission.ts`), and source authority is rechecked before every disclosure to a model. Exception: context notes may hold Memory search results and, like assistant answers in history, are not rechecked or scrubbed by Forget, edit, exclusion or reset.
@@ -55,7 +55,7 @@ Maintenance runs whenever Memory and automatic learning are on (`lib/server/memo
 
 ## Provider calls
 
-- An answer settled as invalid may be retried only by a fresh dispatch of the identical request. Cancellation, fencing, output limits, unavailable providers, ambiguous dispatches and recovery never retry (caps in `lib/server/memory/execution/structuredClassifier.ts`, `lib/server/memory/maintenance/policy.ts`, `lib/server/memory/learning/extractionHeal.ts`).
+- Transient transport failures may retry under the policy in `agent_docs/PROVIDERS.md`. Beyond that, an answer settled as invalid may be retried only by a fresh dispatch of the identical request, and cancellation, fencing, output limits and recovery never retry (caps in `lib/server/memory/execution/structuredClassifier.ts`, `lib/server/memory/maintenance/policy.ts`, `lib/server/memory/learning/extractionHeal.ts`).
 - A provider capability failure disables only its own stage; ordinary answers and deletion keep working.
 
 ## Forgetting, cutover and rebuilds
