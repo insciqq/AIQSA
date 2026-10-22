@@ -540,7 +540,6 @@ function quickSetupSnapshot(configured: boolean) {
         ...provider("openai", "OpenAI", ["GPT-5.6 Terra", "GPT-5.6 Luna", "GPT-5.6 Sol"]),
         stateToken: configured ? "state-openai-ready" : "state-openai-fresh"
       },
-      provider("anthropic", "Anthropic", ["Claude Opus 5", "Claude Sonnet 5"]),
       provider("gemini", "Gemini", ["Gemini 3.6 Flash"]),
       provider("deepseek", "DeepSeek", ["DeepSeek V4 Pro"]),
       provider("openrouter", "OpenRouter", ["Claude Opus 4.8"])
