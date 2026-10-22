@@ -55,6 +55,23 @@ function settlement(bytes: Buffer, fileName: string, mimeType: string) {
   return { outputKey, repository, service, storage };
 }
 
+describe("Workspace uploads while Projects are disabled", () => {
+  it("refuses an upload session into a Project before any validation or write", async () => {
+    const create = vi.fn();
+    const available = vi.fn(async () => true);
+    const service = new WorkspaceUploadService({
+      repository: { create } as unknown as WorkspaceUploadRepository,
+      storage: createMemoryStorageAdapter(),
+      available
+    });
+
+    await expect(service.create({ ...createInput("shared.png", "image/png"), projectId: "project-1" }, "owner"))
+      .rejects.toMatchObject({ code: "projects_disabled", status: 409 });
+    expect(create).not.toHaveBeenCalled();
+    expect(available).not.toHaveBeenCalled();
+  });
+});
+
 describe("Workspace multipart static-raster normalization", () => {
   it("stores the extension's canonical MIME at create and refuses an undecodable size early", async () => {
     const create = vi.fn(async (value: object) => ({

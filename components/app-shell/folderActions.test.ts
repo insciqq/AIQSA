@@ -15,6 +15,12 @@ import { useWorkspaceStore } from "./workspaceStore";
 import type { WorkspaceChatSummary, FolderSummary, Notice } from "./types";
 import type { WorkspaceFolderMutationPort } from "./useWorkspaceInteractionController";
 
+// Folder Knowledge defaults stay tested as they worked; `composerControlStore.test.ts` covers Knowledge disabled.
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 function folder(input: Partial<FolderSummary> & { id: string; name: string }): FolderSummary {
   return {
     parentId: null,

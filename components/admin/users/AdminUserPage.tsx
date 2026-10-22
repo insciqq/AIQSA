@@ -28,6 +28,7 @@ import { AdminUserTelegram } from "@/components/admin/telegram/AdminUserTelegram
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminDashboard, AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { useEffect, useRef, useState } from "react";
 
 export type AdminUserPageProviders = Readonly<{
@@ -177,7 +178,9 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
         >
           <span className="font-semibold text-caution">{scimDeactivationPendingLabel(user.scimDeactivationPending)}.</span>{" "}
           The identity provider deactivated this account: its sessions and connected apps are revoked and it cannot sign
-          in. Give its Projects another Owner; the identity provider&apos;s next retry then disables the account.
+          in. {PROJECTS_ENABLED
+            ? "Give its Projects another Owner; the identity provider's next retry then disables the account."
+            : "It still owns Projects alone, and Projects are turned off, so ownership cannot move and the account stays enabled."}
         </p>
       ) : null}
 

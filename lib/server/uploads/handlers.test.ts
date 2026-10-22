@@ -28,6 +28,15 @@ vi.mock("./staticRaster", async (importOriginal) => {
   return { ...actual, validateStaticRaster: vi.fn(actual.validateStaticRaster) };
 });
 
+// Project uploads stay tested as they worked; one test below turns Projects off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
+
 const oneByOnePng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
   "base64"
@@ -398,6 +407,30 @@ describe("upload handler", () => {
     await expect(response.json()).resolves.toEqual({ error: "project_not_found" });
     expect(completed).toEqual(["cleanup-job"]);
     expect(storage.objects.size).toBe(0);
+  });
+
+  it("refuses an upload into a Project while Projects are disabled, before storing anything", async () => {
+    areas.projects = false;
+    try {
+      const storage = createMemoryStorageAdapter();
+      const resolveTarget = vi.fn();
+      const createAttachment = vi.fn();
+      const POST = createUploadHandler({ createAttachment, resolveAuth: auth.resolveAuth, resolveTarget, storage });
+
+      const response = await POST(authenticatedUploadRequest(
+        new File([oneByOnePng], "shared.png", { type: "image/png" }),
+        undefined,
+        "project-1"
+      ));
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "projects_disabled" });
+      expect(resolveTarget).not.toHaveBeenCalled();
+      expect(createAttachment).not.toHaveBeenCalled();
+      expect(storage.objects.size).toBe(0);
+    } finally {
+      areas.projects = true;
+    }
   });
 
   it("leaves a durable cleanup job when post-put deletion fails", async () => {

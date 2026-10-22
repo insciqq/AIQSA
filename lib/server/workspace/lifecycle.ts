@@ -17,6 +17,8 @@ import type { WorkspacePolicyRepository } from "./policyRepository";
 import type { WorkspaceRuntime, WorkspaceOutputStream } from "./runtime";
 import { WorkspaceRuntimeError } from "./runtime";
 import { resolveProjectAccess } from "@/lib/server/projects/access";
+import { ProjectsDisabledError } from "@/lib/server/projects/disabled";
+import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { activeModelRunStatuses } from "@/lib/server/runs/prismaRepositoryShared";
 import type { StorageAdapter } from "@/lib/server/uploads/storage";
 
@@ -158,6 +160,8 @@ export function createWorkspaceLifecycleService(input: Readonly<{
       requireActive: mutable,
       userId
     });
+    // Projects are disabled: a Project chat's Workspace is neither archived nor reset.
+    if (access && mutable && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
     return access ? { projectId: chat.projectId, userId } : null;
   }
 

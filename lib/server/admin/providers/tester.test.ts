@@ -7,6 +7,12 @@ import {
   type AdminProviderDraftTesterInput
 } from "./tester";
 
+// The Anthropic draft check stays tested as it worked; `runtimeFactory.test.ts` covers it disabled.
+vi.mock("../../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../domain/disabledAreas")>(),
+  NATIVE_ANTHROPIC_ENABLED: true
+}));
+
 function input(
   overrides: Partial<AdminProviderDraftTesterInput> = {}
 ): AdminProviderDraftTesterInput {

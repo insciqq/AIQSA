@@ -17,6 +17,7 @@ import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
 import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
 import type { UsageLimitRefusalResponse } from "../../contracts/usageLimits";
+import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { decideUsageAdmission } from "../../domain/usageLimits";
 import type { UsageLimitStatus, UsageLimitsRepository } from "../usageLimits/repository";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
@@ -650,6 +651,12 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       }
       return Response.json({ error: "project_draft_invalid" }, { status: 400 });
     }
+    // Projects are disabled: a Project chat the caller can open stays
+    // readable but admits nothing, and no new one starts. The chat lookup has
+    // already authorized it, so the refusal reveals nothing about others.
+    if (!PROJECTS_ENABLED && (projectDraft || chat?.project)) {
+      return Response.json({ error: PROJECTS_DISABLED_CODE }, { status: 409 });
+    }
     if (!chat && personalDraft) {
       if (!deps.repository.loadPersonalFirstSend || body?.expectedActiveLeafId !== null) {
         return Response.json({ error: "personal_draft_invalid" }, { status: 400 });
@@ -988,6 +995,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const source = await deps.repository.findRegenerationSource(params.messageId, auth.userId);
     if (!source) {
       return Response.json({ error: "message_not_found_or_not_regeneratable" }, { status: 404 });
+    }
+    // Projects are disabled: regenerating, editing or retrying in a Project chat starts nothing.
+    if (!PROJECTS_ENABLED && source.chat.project) {
+      return Response.json({ error: PROJECTS_DISABLED_CODE }, { status: 409 });
     }
 
     const activeRunResponse = await activeRunConflictResponse(source.chat.id, deps.repository, auth.userId);

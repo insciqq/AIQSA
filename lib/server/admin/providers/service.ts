@@ -14,6 +14,7 @@ import type { SystemModelVerificationRole } from "../../../contracts/adminSystem
 import type { AdminProviderAssignedRole, AdminProviderRoleRoutingConflict } from "../../../contracts/adminProviderRoleRouting";
 import { roleRoutingConflicts, rolesNeedingRoutingCheck } from "./roleRouting";
 import { createHash, randomUUID } from "node:crypto";
+import { NATIVE_ANTHROPIC_DISABLED_CODE, NATIVE_ANTHROPIC_ENABLED } from "../../../domain/disabledAreas";
 import type {
   AdminProviderActiveCheck,
   AdminProviderCheckRun,
@@ -131,7 +132,8 @@ export type AdminProviderServiceErrorCode =
   | "provider_routing_role_incompatible"
   | "provider_routing_role_unverified"
   | "provider_test_evidence_invalid"
-  | "provider_test_mode_invalid";
+  | "provider_test_mode_invalid"
+  | typeof NATIVE_ANTHROPIC_DISABLED_CODE;
 
 export class AdminProviderServiceError extends Error {
   readonly code: AdminProviderServiceErrorCode;
@@ -185,6 +187,8 @@ function expectedFamily(model: ProviderModelConfiguration): AdminProviderFamily 
   if (model.modelClass === "reranker" || model.modelClass === "decision") return "openrouter";
   switch (model.adapterKind) {
     case "anthropic_messages":
+      // Native Anthropic is disabled: no model of it is added, changed, activated or checked.
+      if (!NATIVE_ANTHROPIC_ENABLED) throw new AdminProviderServiceError(NATIVE_ANTHROPIC_DISABLED_CODE);
       return "anthropic";
     case "deepseek_responses_native":
       return "deepseek";
@@ -216,6 +220,10 @@ function validateFamily(family: string, model: ProviderModelConfiguration): void
 }
 
 function realProviderFamily(value: string): AdminProviderFamily {
+  // Native Anthropic is disabled: no key of it is tested, so nothing of it is set up or turned on.
+  if (!NATIVE_ANTHROPIC_ENABLED && value === "anthropic") {
+    throw new AdminProviderServiceError(NATIVE_ANTHROPIC_DISABLED_CODE);
+  }
   if (
     value === "anthropic" ||
     value === "deepseek" ||
@@ -498,13 +506,14 @@ export function createAdminProviderService(input: Readonly<{
     secret: ProviderCredentialSource | null;
     signal?: AbortSignal;
   }): Promise<AdminProviderCredentialTestOutcome> {
+    const family = realProviderFamily(value.family);
     try {
       const connection = "responseTimeoutSeconds" in value.connection
         ? normalizeAdminProviderConnectionConfiguration(value.connection)
         : normalizeProviderConnectionConfiguration(value.connection);
       return await input.credentialTester.test({
         connection,
-        family: realProviderFamily(value.family),
+        family,
         ...(value.modelClasses ? { modelClasses: value.modelClasses } : {}),
         ...(value.nativeRoutingModels ? { nativeRoutingModels: value.nativeRoutingModels } : {}),
         secret: value.secret,
@@ -1633,6 +1642,9 @@ export function createAdminProviderService(input: Readonly<{
       family: AdminProviderFamily;
       unassignedPolicy?: AdminProviderUnassignedPolicy;
     }) {
+      if (!NATIVE_ANTHROPIC_ENABLED && value.family === "anthropic") {
+        throw new AdminProviderServiceError(NATIVE_ANTHROPIC_DISABLED_CODE);
+      }
       const id = idFactory();
       await input.repository.createConnection({
         configuration: normalizeAdminProviderConnectionConfiguration(value.configuration),

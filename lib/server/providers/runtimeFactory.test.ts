@@ -11,6 +11,15 @@ import {
 import { markProviderStreamDrop } from "./streamDrop";
 import { captureRunObservation } from "@/tests/support/runObservation";
 
+// The native Anthropic runtime stays tested as it worked; one test below turns it off.
+const areas = vi.hoisted(() => ({ nativeAnthropic: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get NATIVE_ANTHROPIC_ENABLED() {
+    return areas.nativeAnthropic;
+  }
+}));
+
 const runtimeAdapterKinds = [
   "deepseek_responses_native",
   "gemini_interactions_native",
@@ -232,6 +241,28 @@ describe("provider runtime factory", () => {
       provider: runtime.toolBridge.provider
     })).toBe(true);
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("builds no native Anthropic runtime while it is disabled, not even for an accepted binding or a preview", () => {
+    areas.nativeAnthropic = false;
+    try {
+      const fetchFn = vi.fn<typeof fetch>();
+      expect(() => createProviderRuntimeBinding({
+        options: { allowFake: false, fetchFn },
+        secret: "secret",
+        snapshot: snapshot("anthropic_messages")
+      })).toThrow("native_anthropic_disabled");
+      expect(() => createProviderPreviewRuntimeBinding(snapshot("anthropic_messages"), false))
+        .toThrow("native_anthropic_disabled");
+      expect(createProviderRuntimeBinding({
+        options: { allowFake: false, fetchFn },
+        secret: "secret",
+        snapshot: snapshot("openrouter_chat_completions")
+      }).adapter).toBeDefined();
+      expect(fetchFn).not.toHaveBeenCalled();
+    } finally {
+      areas.nativeAnthropic = true;
+    }
   });
 
   it("resolves connection and model response deadlines into the immutable binding", () => {

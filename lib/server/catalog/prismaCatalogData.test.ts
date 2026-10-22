@@ -14,6 +14,15 @@ import {
   type CatalogProviderModelRow
 } from "./prismaCatalogData";
 
+// Native Anthropic catalogs stay tested as they worked; one test below turns it off.
+const areas = vi.hoisted(() => ({ nativeAnthropic: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get NATIVE_ANTHROPIC_ENABLED() {
+    return areas.nativeAnthropic;
+  }
+}));
+
 const now = new Date("2026-07-23T00:00:00.000Z");
 
 const capabilities = {
@@ -452,6 +461,22 @@ describe("prisma catalog data loader", () => {
       memberships: [],
       models: [disabledModel, draftOnlyModel, disabledConnection, draftOnlyConnection]
     })).toEqual([]);
+  });
+
+  it("leaves native Anthropic models out of every catalog while it is disabled", () => {
+    const anthropic = providerModel({
+      connection: { family: "anthropic", id: "connection-anthropic" },
+      model: { connectionId: "connection-anthropic", id: "deployment-claude" }
+    });
+    const openAi = providerModel();
+    areas.nativeAnthropic = false;
+    try {
+      expect(providerModelToCatalogEntry(anthropic)).toBeNull();
+      expect(filterAvailableProviderModels({ exposeFake: false, memberships: [], models: [anthropic, openAi] }))
+        .toEqual([openAi]);
+    } finally {
+      areas.nativeAnthropic = true;
+    }
   });
 
   it("ignores archived-group assignments and never falls through from an unusable current assignment", () => {

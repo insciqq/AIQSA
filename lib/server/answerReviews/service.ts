@@ -3,6 +3,7 @@ import {
   ANSWER_REVIEW_MAX_REVIEWERS,
   type AnswerReviewRefusal
 } from "../../contracts/answerReviews";
+import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { ProviderAdmissionError } from "../providerRuntime/admission";
 import { resolveChatAccess } from "../projects/access";
 import type { RunPreparationDeps } from "../runs/runPreparation";
@@ -20,7 +21,7 @@ export type AnswerReviewServiceDeps = Readonly<{
   providerAdmission: NonNullable<RunPreparationDeps["providerAdmission"]>;
 }>;
 
-export type AnswerReviewRoundRefusal = AnswerReviewRefusal | "active_leaf_changed";
+export type AnswerReviewRoundRefusal = AnswerReviewRefusal | "active_leaf_changed" | typeof PROJECTS_DISABLED_CODE;
 
 export type AnswerReviewRoundResult =
   | Readonly<{ ok: true; session: AnswerReviewSessionRecord }>
@@ -149,6 +150,8 @@ export async function startAnswerReviewRound(
     chatId: input.chatId, minimumProjectRole: "CONTRIBUTOR", requireMutable: true, userId: input.userId
   });
   if (!access) return refused("answer_review_unavailable", 404);
+  // Projects are disabled: a review would run in the Project chat.
+  if (access.kind === "project" && !PROJECTS_ENABLED) return refused(PROJECTS_DISABLED_CODE);
   const chat = await deps.prisma.chat.findFirst({
     select: { activeLeafMessageId: true, assistantId: true, projectId: true },
     where: { archived: false, id: input.chatId, permanentDeletionAt: null }

@@ -1,4 +1,5 @@
 import { adminMemoryProcessingCopy } from "../../../domain/adminMemoryProcessing";
+import { KNOWLEDGE_ENABLED } from "../../../domain/disabledAreas";
 import { formatEstimatedCostMicros } from "../../../domain/formatEstimatedCost";
 import { adminMemoryProcessingIssueKey } from "../../../contracts/adminMemory";
 import type { AdminDashboard } from "../../../contracts/admin";
@@ -564,7 +565,8 @@ export function createAdminAttentionService(input: Readonly<{
         load("providers", () => sources.providers()),
         load("search", () => sources.search(actingAdminUserId)),
         load("system_roles", () => sources.systemRoles()),
-        load("knowledge", () => sources.knowledge()),
+        // Knowledge is disabled: its health is neither shown nor named as unavailable.
+        KNOWLEDGE_ENABLED ? load("knowledge", () => sources.knowledge()) : Promise.resolve(null),
         load("memory", () => sources.memory()),
         load("mcp", () => sources.mcp(actingAdminUserId)),
         load("email", () => sources.email()),

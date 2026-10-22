@@ -9,6 +9,7 @@ import type {
   AdminSoleOwnedProject
 } from "@/lib/contracts/admin";
 import { isAdminDashboard } from "@/lib/contracts/admin";
+import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 
 type PartialAdminActionResponse<Response extends AdminActionResponse = AdminActionResponse> =
@@ -181,7 +182,9 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     json_required: "The admin request format was not accepted. Refresh the console and try again.",
     last_admin_forbidden: "The final active administrator cannot be disabled or lose administrator rights.",
     network_error: "Could not reach the admin API.",
-    project_owner_required: "Nothing was changed: this user is the only active Owner of one or more Projects. Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. You can revoke their sessions now.",
+    project_owner_required: PROJECTS_ENABLED
+      ? "Nothing was changed: this user is the only active Owner of one or more Projects. Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. You can revoke their sessions now."
+      : "Nothing was changed: this user is the only active Owner of one or more Projects, and Projects are turned off, so ownership cannot move. You can revoke their sessions now.",
     self_disable_forbidden: "Your current administrator account cannot disable itself.",
     self_delete_forbidden: "Your current admin account cannot delete itself.",
     self_role_change_forbidden: "You cannot change your own administrator role. Another administrator can.",

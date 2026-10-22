@@ -1,14 +1,37 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestAuth } from "@/tests/support/auth";
 import {
+  createProjectChatArchiveHandler,
+  createProjectChatHandler,
+  createProjectFolderDeleteHandler,
+  createProjectFolderHandler,
+  createProjectFolderUpdateHandler,
+  createProjectWorkspaceHandler
+} from "./contentHandlers";
+import {
+  createAddProjectGrantHandler,
   createAddProjectResourceHandler,
+  createCreateProjectHandler,
+  createDeleteProjectGrantHandler,
   createDeleteProjectResourceHandler,
   createDeleteProjectHandler,
+  createGetProjectHandler,
   createLeaveProjectHandler,
+  createListProjectsHandler,
   createProjectCandidatesHandler,
   createProjectResourcePreviewHandler,
+  createUpdateProjectGrantHandler,
   createUpdateProjectHandler
 } from "./handlers";
+
+// The handlers below stay tested with Projects on; the last block turns them off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
 
 const auth = createTestAuth({ user: { displayName: "Project Owner", id: "owner-1" } });
 
@@ -161,5 +184,65 @@ describe("Project v2 HTTP handlers", () => {
     }), projectContext);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ accessRemaining: false });
+  });
+});
+
+describe("Project HTTP handlers while Projects are disabled", () => {
+  beforeEach(() => {
+    areas.projects = false;
+  });
+  afterEach(() => {
+    areas.projects = true;
+  });
+
+  type AnyHandlerFactory = (deps: never) => (request: Request, context: never) => Promise<Response>;
+
+  // Every change, leaving and deleting included, is refused before
+  // authentication or any repository access, with one stable code.
+  it.each([
+    ["create a Project", createCreateProjectHandler],
+    ["update a Project", createUpdateProjectHandler],
+    ["delete a Project", createDeleteProjectHandler],
+    ["leave a Project", createLeaveProjectHandler],
+    ["add a grant", createAddProjectGrantHandler],
+    ["change a grant", createUpdateProjectGrantHandler],
+    ["remove a grant", createDeleteProjectGrantHandler],
+    ["link a resource", createAddProjectResourceHandler],
+    ["preview a resource change", createProjectResourcePreviewHandler],
+    ["unlink a resource", createDeleteProjectResourceHandler],
+    ["start a shared chat", createProjectChatHandler],
+    ["create a folder", createProjectFolderHandler],
+    ["rename a folder", createProjectFolderUpdateHandler],
+    ["delete a folder", createProjectFolderDeleteHandler],
+    ["archive a shared chat", (handlerDeps: never) => createProjectChatArchiveHandler(handlerDeps, true)],
+    ["restore a shared chat", (handlerDeps: never) => createProjectChatArchiveHandler(handlerDeps, false)]
+  ] as ReadonlyArray<readonly [string, unknown]>)("refuses to %s with projects_disabled", async (_name, factory) => {
+    const resolveAuth = vi.fn();
+    const repository = new Proxy({}, {
+      get() {
+        throw new Error("project_repository_must_stay_untouched");
+      }
+    });
+    const handler = (factory as AnyHandlerFactory)({ repository, resolveAuth } as never);
+    const response = await handler(jsonRequest("/api/projects/project-1", { name: "Renamed" }), {
+      params: { bindingId: "binding-1", chatId: "chat-1", folderId: "folder-1", grantId: "grant-1", projectId: "project-1" }
+    } as never);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "projects_disabled" });
+    expect(resolveAuth).not.toHaveBeenCalled();
+  });
+
+  it("keeps the reads an existing shared chat needs", async () => {
+    const list = vi.fn().mockResolvedValue([]);
+    const getDetail = vi.fn().mockResolvedValue({ id: "project-1" });
+    const listWorkspace = vi.fn().mockResolvedValue({ chats: [], folders: [] });
+    const request = new Request("http://app.local/api/projects", { headers: { cookie: auth.cookie } });
+
+    expect((await createListProjectsHandler(deps({ list }))(request)).status).toBe(200);
+    expect((await createGetProjectHandler(deps({ getDetail }))(request, projectContext)).status).toBe(200);
+    expect((await createProjectWorkspaceHandler(deps({ listWorkspace }))(request, projectContext)).status).toBe(200);
+    expect(getDetail).toHaveBeenCalledWith("owner-1", "project-1");
+    expect(listWorkspace).toHaveBeenCalledWith("owner-1", "project-1");
   });
 });

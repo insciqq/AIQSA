@@ -23,6 +23,7 @@ import {
 } from "../../contracts/assistants";
 import { inheritedKnowledgeSelection } from "../../contracts/knowledge";
 import { decodeSearchPlan } from "../../contracts/search";
+import { KNOWLEDGE_DISABLED_CODE, KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
@@ -513,6 +514,10 @@ function validateDraftAgainstCatalog(
   draft: Pick<AssistantDraft, "rows">,
   view: RunnerCatalogView
 ): Response | null {
+  // Knowledge is disabled: an Assistant selects no Knowledge (Inherit and None stay).
+  if (!KNOWLEDGE_ENABLED && draft.rows.knowledge.value.mode === "explicit") {
+    return errorJson(KNOWLEDGE_DISABLED_CODE, 409, undefined, { row: "knowledge" });
+  }
   const failure = firstAssistantCatalogFailure(
     assistantRowCatalogFailures(catalogRowValues(draft.rows), view, { mcpRunnability: "accessible" })
   );

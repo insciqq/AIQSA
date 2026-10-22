@@ -6,6 +6,7 @@ import {
   type KnowledgeUploadBatchListResponse,
   type KnowledgeUploadBatchResponse
 } from "../../contracts/knowledgeUploads";
+import { KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -14,6 +15,7 @@ import {
 import { getRequestBodyConfig, type RequestBodyConfig } from "../http/requestBodyConfig";
 import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPermitGate";
 import type { StorageAdapter } from "../uploads/storage";
+import { knowledgeDisabledResponse, refusedWhileKnowledgeDisabled } from "./disabled";
 import {
   getKnowledgeExtractionConfig,
   type KnowledgeExtractionConfig
@@ -177,6 +179,7 @@ export function createKnowledgeUploadBatchCollectionHandlers(deps: KnowledgeUplo
     },
 
     async POST(request: Request, context: BaseContext): Promise<Response> {
+      if (!KNOWLEDGE_ENABLED) return knowledgeDisabledResponse();
       const owner = await authBase(deps, request, context);
       if (owner instanceof Response) return owner;
       const configuration = configs(deps);
@@ -224,7 +227,7 @@ export function createGetKnowledgeUploadBatchHandler(deps: KnowledgeUploadHandle
 }
 
 export function createStartKnowledgeUploadItemHandler(deps: KnowledgeUploadHandlerDeps) {
-  return async function POST(request: Request, context: ItemContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: ItemContext): Promise<Response> {
     const owner = await authBase(deps, request, context);
     if (owner instanceof Response) return owner;
     const attempt = await attemptMutationBody(request);
@@ -244,11 +247,11 @@ export function createStartKnowledgeUploadItemHandler(deps: KnowledgeUploadHandl
       batchId: owner.batchId!,
       userId: owner.userId
     });
-  };
+  });
 }
 
 export function createCheckpointKnowledgeUploadPartHandler(deps: KnowledgeUploadHandlerDeps) {
-  return async function POST(request: Request, context: PartContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: PartContext): Promise<Response> {
     const owner = await authBase(deps, request, context);
     if (owner instanceof Response) return owner;
     const body = await readJsonBodyOrNull(request, "json");
@@ -275,11 +278,11 @@ export function createCheckpointKnowledgeUploadPartHandler(deps: KnowledgeUpload
       batchId: owner.batchId!,
       userId: owner.userId
     });
-  };
+  });
 }
 
 export function createStreamKnowledgeUploadItemHandler(deps: KnowledgeUploadHandlerDeps) {
-  return async function PUT(request: Request, context: ItemContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function PUT(request: Request, context: ItemContext): Promise<Response> {
     const owner = await authBase(deps, request, context);
     if (owner instanceof Response) return owner;
     const requestedAttempt = boundedPositiveInteger(
@@ -380,11 +383,11 @@ export function createStreamKnowledgeUploadItemHandler(deps: KnowledgeUploadHand
     } finally {
       release();
     }
-  };
+  });
 }
 
 export function createSettleKnowledgeUploadItemHandler(deps: KnowledgeUploadHandlerDeps) {
-  return async function POST(request: Request, context: ItemContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: ItemContext): Promise<Response> {
     const owner = await authBase(deps, request, context);
     if (owner instanceof Response) return owner;
     const attempt = await attemptMutationBody(request);
@@ -421,11 +424,11 @@ export function createSettleKnowledgeUploadItemHandler(deps: KnowledgeUploadHand
     } finally {
       release();
     }
-  };
+  });
 }
 
 export function createRetryKnowledgeUploadItemHandler(deps: KnowledgeUploadHandlerDeps) {
-  return async function POST(request: Request, context: ItemContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request, context: ItemContext): Promise<Response> {
     const owner = await authBase(deps, request, context);
     if (owner instanceof Response) return owner;
     const attempt = await attemptMutationBody(request);
@@ -450,11 +453,11 @@ export function createRetryKnowledgeUploadItemHandler(deps: KnowledgeUploadHandl
       batchId: owner.batchId!,
       userId: owner.userId
     });
-  };
+  });
 }
 
 export function createCancelKnowledgeUploadItemHandler(deps: KnowledgeUploadHandlerDeps) {
-  return async function DELETE(request: Request, context: ItemContext): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function DELETE(request: Request, context: ItemContext): Promise<Response> {
     const owner = await authBase(deps, request, context);
     if (owner instanceof Response) return owner;
     const attempt = await attemptMutationBody(request);
@@ -478,5 +481,5 @@ export function createCancelKnowledgeUploadItemHandler(deps: KnowledgeUploadHand
       batchId: owner.batchId!,
       userId: owner.userId
     });
-  };
+  });
 }

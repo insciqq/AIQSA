@@ -8,6 +8,9 @@ import {
 } from "../http/requestBody";
 import { logEvent } from "../observability";
 import { databaseFailureCode, databaseFailureKind } from "../observability/databaseFailure";
+import { KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
+import { knowledgeDisabledResponse } from "../knowledge/disabled";
+import { ProjectsDisabledError, projectsDisabledResponse } from "../projects/disabled";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import {
   CHAT_TITLE_MAX_LENGTH,
@@ -283,6 +286,11 @@ function knowledgeDefaultValue(
   }
   const decoded = decodeKnowledgeSelection(body.defaultKnowledgePlan);
   return decoded.ok ? { ok: true, value: decoded.plan } : { ok: false };
+}
+
+/** Knowledge is disabled: clearing a chat's or folder's Knowledge default stays possible, choosing one does not. */
+function knowledgeDefaultRefused(value: KnowledgePlan | null | undefined): boolean {
+  return !KNOWLEDGE_ENABLED && value !== undefined && value !== null && value.mode !== "none";
 }
 
 function parentFolderValue(body: Record<string, unknown> | null): string | null | undefined {
@@ -620,6 +628,7 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     if (!defaultKnowledgePlan.ok) {
       return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
     }
+    if (knowledgeDefaultRefused(defaultKnowledgePlan.value)) return knowledgeDisabledResponse();
     const title = textValue(body?.title);
     if (chatTitleTooLong(title)) {
       return chatRouteErrorJson({ error: "chat_title_too_long" }, { status: 400 });
@@ -650,6 +659,7 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
       if (isChatAssistantUpdateError(error)) {
         return chatAssistantErrorJson(error.code);
       }
+      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
       throw error;
     }
 
@@ -782,6 +792,7 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
     if (!defaultKnowledgePlan.ok) {
       return chatRouteErrorJson({ error: "knowledge_plan_invalid" }, { status: 400 });
     }
+    if (knowledgeDefaultRefused(defaultKnowledgePlan.value)) return knowledgeDisabledResponse();
     if (
       name === undefined &&
       projectMemory === undefined &&

@@ -229,7 +229,8 @@ describe("admin API client", () => {
       projectCount: 1,
       projects: [{ name: "Launch", status: "ACTIVE" }]
     }, { status: 409 }))).resolves.toEqual({ error: "last_admin_forbidden" });
-    expect(adminActionErrorMessage("project_owner_required")).toContain("make another member an Owner in each Project");
+    // Projects are disabled (`lib/domain/disabledAreas.ts`): ownership cannot move, only sessions can be revoked.
+    expect(adminActionErrorMessage("project_owner_required")).toContain("Projects are turned off, so ownership cannot move.");
   });
 
   it("keeps stable readable error mappings and their historical unknown fallbacks", () => {

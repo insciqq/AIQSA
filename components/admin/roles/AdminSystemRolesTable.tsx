@@ -21,6 +21,7 @@ import { ImageParameterFields } from "@/components/admin/providers/models/ImageP
 import { activeChatPdfReader, chatPdfReaderDefaultReasoningEffort, chatPdfUsesNativeReader, initialChatTitleReasoningEffort, type AdminPublishedImageModel, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import type { ImageGenerationParameters, ImageModelConfiguration } from "@/lib/contracts/imageGeneration";
 import type { ImageModelUnavailableReason } from "@/lib/contracts/imageModels";
+import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 
 function ImageRoleParameters({ image, modelId, parameters, busy, save, summary = "Image settings" }: {
   image: ImageModelConfiguration; modelId: string; parameters: ImageGenerationParameters; busy: boolean;
@@ -491,7 +492,10 @@ export function AdminSystemRolesTable({
 
       <AdminSpeechToTextRoleRow requestConfirmation={requestConfirmation} />
 
-      <AdminKnowledgeProcessingRows controller={controller} requestConfirmation={requestConfirmation} />
+      {/* Knowledge is disabled: its processing roles are not offered. */}
+      {KNOWLEDGE_ENABLED ? (
+        <AdminKnowledgeProcessingRows controller={controller} requestConfirmation={requestConfirmation} />
+      ) : null}
     </div>
   );
 }
