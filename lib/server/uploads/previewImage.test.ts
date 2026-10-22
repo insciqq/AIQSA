@@ -1,8 +1,8 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import { IMAGE_MAX_BYTES, IMAGE_MAX_PIXELS } from "@/lib/contracts/imageGeneration";
-import { PREVIEW_MAX_FRAMES } from "@/lib/domain/attachmentPreview";
-import { createPreviewThumbnail, validatePreviewImage } from "./previewImage";
+import { PREVIEW_IMAGE_MAX_SIZE, PREVIEW_MAX_FRAMES } from "@/lib/domain/attachmentPreview";
+import { createDisplayPreview, createPreviewThumbnail, validatePreviewImage } from "./previewImage";
 
 // Independent encoded GIF fixture: each frame contains one black pixel.
 const gifHeader = Buffer.from("47494638396101000100800000000000ffffff", "hex");
@@ -27,9 +27,10 @@ describe("file preview image validation", () => {
     await expect(validatePreviewImage(gif(PREVIEW_MAX_FRAMES + 1), "image/gif")).rejects.toThrow();
     const bomb = gif(2);
     // Each frame is legal alone; their stacked pixel count exceeds the bound.
-    bomb.writeUInt16LE(4096, 6);
+    bomb.writeUInt16LE(5120, 6);
     bomb.writeUInt16LE(2049, 8);
-    expect(4096 * 2049 * 2).toBeGreaterThan(IMAGE_MAX_PIXELS);
+    expect(5120 * 2049).toBeLessThan(IMAGE_MAX_PIXELS);
+    expect(5120 * 2049 * 2).toBeGreaterThan(IMAGE_MAX_PIXELS);
     await expect(validatePreviewImage(bomb, "image/gif")).rejects.toThrow();
     await expect(validatePreviewImage(Buffer.alloc(IMAGE_MAX_BYTES + 1), "image/gif")).rejects.toThrow();
     const corrupt = Buffer.concat([gifHeader, gifFrame, gifFrame.subarray(0, gifFrame.length - 3), Buffer.from([0x3b])]);
@@ -43,6 +44,18 @@ describe("file preview image validation", () => {
     const thumbnail = await createPreviewThumbnail(bytes);
     expect(await sharp(thumbnail).metadata()).toMatchObject({ format: "webp", width: 160, height: 100 });
     expect(Buffer.from(thumbnail).equals(bytes)).toBe(false);
+  });
+
+  it("previews a 4K output as a bounded display copy and refuses one beyond the pixel bound", async () => {
+    const flat = (width: number, height: number) => sharp({ create: { width, height, channels: 3, background: "#336699" } }).jpeg().toBuffer();
+    const bytes = await flat(3584, 4800);
+    await expect(validatePreviewImage(bytes, "image/jpeg")).resolves.toBeUndefined();
+    const display = await createDisplayPreview(bytes);
+    expect(await sharp(display!).metadata()).toMatchObject({ format: "webp", width: Math.round(3584 * PREVIEW_IMAGE_MAX_SIZE / 4800), height: PREVIEW_IMAGE_MAX_SIZE });
+    expect(await sharp(await createPreviewThumbnail(bytes)).metadata()).toMatchObject({ format: "webp", height: 160 });
+    await expect(createDisplayPreview(await flat(320, 200))).resolves.toBeNull();
+    await expect(createDisplayPreview(gif(2))).resolves.toBeNull();
+    await expect(validatePreviewImage(await flat(5120, 4097), "image/jpeg")).rejects.toMatchObject({ code: "image_response_too_large" });
   });
 
   it("does not admit GIF through a forged static MIME type or active SVG as an image", async () => {

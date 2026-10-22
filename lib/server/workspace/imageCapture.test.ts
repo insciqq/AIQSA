@@ -91,7 +91,8 @@ describe("immutable Workspace image evidence", () => {
     ["APNG", fixture({ animation: true }), "workspace_image_unsupported"],
     ["truncated", fixture().subarray(0, 40), "workspace_image_invalid"],
     ["bad compressed pixels", fixture({ corrupt: true }), "workspace_image_invalid"],
-    ["oversized dimensions", fixture({ width: 100_000_000 }), "workspace_image_invalid"],
+    // The header-only read names the broken bound before any pixel is decoded.
+    ["oversized dimensions", fixture({ width: 100_000_000 }), "workspace_image_limit_exceeded"],
     ["SVG", Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), "workspace_image_unsupported"],
     ["PSD", Buffer.from("8BPS synthetic"), "workspace_image_unsupported"]
   ])("rejects %s despite a PNG filename and matching checksum", async (_label, bytes, code) => {

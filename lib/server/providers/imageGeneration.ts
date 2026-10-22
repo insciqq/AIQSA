@@ -1,4 +1,4 @@
-import { validateStaticRaster } from "../uploads/staticRaster";
+import { StaticRasterError, validateStaticRaster, type StaticRasterBound } from "../uploads/staticRaster";
 import {
   IMAGE_MAX_BYTES, IMAGE_MAX_INPUT_BYTES, IMAGE_MAX_INPUTS, IMAGE_MAX_PIXELS, IMAGE_MAX_PROMPT_CHARACTERS,
   IMAGE_MIME_TYPES, normalizeImageGenerationParameters,
@@ -43,11 +43,23 @@ export type ImageGenerationErrorCode = "image_input_invalid" | "image_parameters
   "image_response_too_large" | "image_provider_http_error" | "image_provider_request_failed" | "image_request_timed_out" |
   "image_request_cancelled" | "image_output_missing" | "image_generation_refused";
 export type ImageFinishReason = "safety" | "blocked" | "other";
+/** Content-free facts of a refused provider image for the log: the bound it
+ * broke (`response_bytes` is the whole response body), its byte size and
+ * header dimensions, and the declared and detected formats. */
+export type ImageRejection = Readonly<{
+  bound?: StaticRasterBound | "response_bytes";
+  byteSize?: number;
+  width?: number;
+  height?: number;
+  declaredMime?: GeneratedImageMimeType | "other" | "none";
+  detectedMime?: GeneratedImageMimeType;
+}>;
 export class ImageGenerationError extends Error {
   /** What a completed response the adapter then rejected (no image, an
    * invalid image) reported, so the paid call can be accounted; null when no
    * response reported usage. */
   usage: ImageGenerationUsage | null = null;
+  rejection: ImageRejection | null = null;
 
   constructor(readonly code: ImageGenerationErrorCode, readonly httpStatus: number | null = null,
     readonly diagnostic?: ImageFailureDiagnostic, readonly finishReason?: ImageFinishReason) {
@@ -69,26 +81,45 @@ function usageReported(usage: ImageGenerationUsage): boolean {
   return usage.inputTokens !== null || usage.outputTokens !== null || usage.totalTokens !== null || usage.costUsd !== null;
 }
 
+// Gemini Interactions returns, beside the image's base64, a thought signature
+// about as large (bodies of ~2.7x the image bytes were measured at 4K), so the
+// body holds two base64 copies of the largest accepted image plus JSON headroom.
+const IMAGE_RESPONSE_MAX_BYTES = 2 * Math.ceil(IMAGE_MAX_BYTES / 3) * 4 + 8 * 1024 * 1024;
+
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const count = (value: unknown): number | null => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 2_147_483_647 ? Number(value) : null;
 
-/** Full decoding rejects forged headers, decompression bombs and truncated output before storage. */
+function refusedImage(code: "image_response_too_large" | "image_response_invalid", rejection: ImageRejection): ImageGenerationError {
+  const error = new ImageGenerationError(code);
+  error.rejection = rejection;
+  return error;
+}
+
+/** Full decoding rejects forged headers, decompression bombs and truncated
+ * output before storage. Bytes or pixels over the bound are too large; only
+ * undecodable or wrong-format data is invalid. */
 export async function validateGeneratedImage(bytes: Uint8Array, declaredMime?: unknown): Promise<{
   mimeType: GeneratedImageMimeType; width: number; height: number;
 }> {
-  if (!bytes.byteLength || bytes.byteLength > IMAGE_MAX_BYTES) throw new ImageGenerationError("image_response_too_large");
   try {
     return await validateStaticRaster(bytes, {
       maxBytes: IMAGE_MAX_BYTES, maxPixels: IMAGE_MAX_PIXELS, mimeTypes: IMAGE_MIME_TYPES
     }, { declaredMime });
-  } catch {
-    throw new ImageGenerationError("image_response_invalid");
+  } catch (error) {
+    const facts = error instanceof StaticRasterError ? error.facts : {};
+    throw refusedImage(error instanceof StaticRasterError && error.code === "raster_limit_exceeded" ? "image_response_too_large" : "image_response_invalid", {
+      bound: facts.bound, byteSize: bytes.byteLength, width: facts.width, height: facts.height, detectedMime: facts.mimeType,
+      declaredMime: declaredMime === undefined ? "none" : (IMAGE_MIME_TYPES as readonly unknown[]).includes(declaredMime) ? declaredMime as GeneratedImageMimeType : "other"
+    });
   }
 }
 
 function imageBytes(base64: unknown): Uint8Array {
-  if (typeof base64 !== "string" || !base64 || base64.length > Math.ceil(IMAGE_MAX_BYTES / 3) * 4 ||
+  if (typeof base64 === "string" && base64.length > Math.ceil(IMAGE_MAX_BYTES / 3) * 4) {
+    throw refusedImage("image_response_too_large", { bound: "bytes", byteSize: Math.floor(base64.length / 4) * 3 });
+  }
+  if (typeof base64 !== "string" || !base64 ||
     base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(base64)) throw new ImageGenerationError("image_response_invalid");
   const bytes = Buffer.from(base64, "base64");
   if (bytes.toString("base64") !== base64) throw new ImageGenerationError("image_response_invalid");
@@ -208,7 +239,7 @@ export function createImageGenerationAdapter(input: {
             catch (error) { if (!(error instanceof ProviderResponseTooLargeError)) throw error; }
             throw new ImageGenerationError("image_provider_http_error", response.status, imageFailureDiagnostic(rejected, response.status));
           }
-          const text = await readBoundedResponseText(response, { maxBytes: 36 * 1024 * 1024, signal: timeout.signal });
+          const text = await readBoundedResponseText(response, { maxBytes: IMAGE_RESPONSE_MAX_BYTES, signal: timeout.signal });
           let parsed: unknown;
           try { parsed = JSON.parse(text) as unknown; } catch { throw new ImageGenerationError("image_response_invalid"); }
           if (!record(parsed)) throw new ImageGenerationError("image_response_invalid");
@@ -224,7 +255,7 @@ export function createImageGenerationAdapter(input: {
           if (error instanceof ImageGenerationError) throw error;
           if (request.signal?.aborted) throw new ImageGenerationError("image_request_cancelled");
           if (isProviderDeadlineExceededError(error) || isProviderDeadlineExceededError(timeout.signal.reason)) throw new ImageGenerationError("image_request_timed_out");
-          if (error instanceof ProviderResponseTooLargeError) throw new ImageGenerationError("image_response_too_large");
+          if (error instanceof ProviderResponseTooLargeError) throw refusedImage("image_response_too_large", { bound: "response_bytes" });
           throw new ImageGenerationError("image_provider_request_failed");
         } finally { timeout.clear(); }
       }, { timeoutMs, signal: request.signal });

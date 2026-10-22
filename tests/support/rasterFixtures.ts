@@ -45,9 +45,9 @@ export async function syntheticWebp(): Promise<Buffer> {
   return sharp(syntheticPng()).webp({ lossless: true }).toBuffer();
 }
 
-/** A solid PNG one pixel row beyond IMAGE_MAX_PIXELS (4096 x 4096). */
+/** A solid PNG one pixel row beyond IMAGE_MAX_PIXELS (5120 x 4096). */
 export async function syntheticOversizedPng(): Promise<Buffer> {
-  return sharp({ create: { width: 4096, height: 4097, channels: 3, background: "#123456" } }).png().toBuffer();
+  return sharp({ create: { width: 5120, height: 4097, channels: 3, background: "#123456" } }).png().toBuffer();
 }
 
 /** JPEG carrying an MPF APP2 segment, as multi-picture (Ultra HDR) photos do. */
