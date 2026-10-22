@@ -17,6 +17,7 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - The Memory history and round source guards validate each chat once per batch of deferred events. Every table their asserts read must carry the statement-level trigger that forgets checked keys, or a later write in the same batch escapes validation (`prisma/migrations/20261005180000_memory_source_guard_once_per_batch/migration.sql`).
 - Accepted revisions, bindings, generations and recovery evidence are immutable and protected by restrictive references while referenced. Skill revisions and bundle objects are append-only.
 - To retire stored data: remove the projections that read it, prove recovery no longer needs it, stop writes, then drop it in a forward migration. Retired values stay readable only where history or recovery needs them; new work never writes them.
+- Projects and Knowledge are disabled (root `AGENTS.md`). Their rows stay in place and Project chats stay readable; nothing deletes them implicitly, and retiring their tables follows the procedure above.
 
 ## Ownership rules that are easy to get wrong
 
@@ -28,16 +29,15 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 ## Recovery and derived state
 
 - Release database locks before guest or file I/O.
-- An unknown outcome past its recovery window becomes final. It may then release provider references, never its state, receipt or replay fence. A restore keeps unknown outcomes unknown.
-- Derived Memory, history and Knowledge data re-proves owner, source, lifecycle and generation authority when used, including during purge. Projection and deletion obligations outlive their source, so a stale retry cannot resurrect deleted content.
+- A side-effecting call whose outcome is unknown stays unknown, after recovery and after a restore (`agent_docs/RUN_CONTRACTS.md`).
+- Derived Memory and history data re-proves owner, source, lifecycle and generation authority when used, including during purge. Projection and deletion obligations outlive their source, so a stale retry cannot resurrect deleted content.
 - Index replacement keeps the serving index until the new one passes a full integrity proof. Memory cutover and rollback switch one immutable generation, never repair pointers piecemeal.
-- A Knowledge Source's identity is independent of Base membership, and equal checksums never merge Sources. A reprocessed version becomes current only after it settles; on failure the previous ready version stays current.
 - Workspace originals and outputs survive runtime loss. Expiry or cancellation does not prove cleanup, so uncertainty blocks the session. Completed exports never downgrade, and lack of capacity may reject an export but never evicts another answer's files.
 
 ## Migrations And Bootstrap
 
-- Production installations exist. Supported persistent upgrades start at v0.2.0, and an ordinary update is `docker compose pull && docker compose up -d` (or `./aiqsa.sh upgrade`). Forward migrations preserve operator data, credentials and configuration, and tolerate the previous release's writers while Compose replaces containers. A destructive or incompatible change needs an explicit operator decision and its own documented procedure. Development databases and fixtures need no bridges.
-- Installations on v0.2.0–v0.2.30 (bundled MinIO) must back up PostgreSQL and upgrade through v0.2.34 and its UPGRADING_FROM_MINIO guide first: later releases migrate before `storage-init` refuses the unmigrated store (`lib/server/storageMigration/`).
+- Compatibility is owed to the two production installations (root `AGENTS.md`). Each upgrades from the release it runs with `docker compose pull && docker compose up -d` (or `./aiqsa.sh upgrade`). Forward migrations preserve operator data, credentials and configuration, and tolerate the previous release's writers while Compose replaces containers. A destructive or incompatible change needs an explicit operator decision and its own documented procedure. Other installations, development databases and fixtures need no bridges.
+- The native agent's transcript and engine marker arrive as additive migrations beside the old core's tables, because both engines run on one database until the switch and in-flight old-engine runs must finish; the old tables are retired afterwards through the procedure above.
 - `prisma/migrations/20260815000000_baseline` is the immutable first migration and holds custom PostgreSQL DDL that Prisma cannot reconstruct. Every change is a new migration; never edit a committed one. Installations use `prisma migrate deploy`, never `prisma db push`.
 - Every schema change ships a forward migration and updates bootstrap, seed and integrity checks when their assumptions change.
 - Build an index on a large live table with `CREATE INDEX CONCURRENTLY` as the only statement in its migration file, so writers keep working during the upgrade. Prisma sends a file as one simple query, and PostgreSQL refuses `CONCURRENTLY` inside the implicit transaction of a multi-statement query. A failed concurrent build leaves an invalid index and a failed migration; the operator drops the index and marks the migration rolled back before deploying again.
@@ -50,7 +50,6 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 - Deletion first fences future admission, recall and sharing and records a durable obligation, then acknowledges. Handlers reauthorize the exact aggregate, settle active work and retry idempotently; an obligation an administrator blocked waits, it is never abandoned.
 - Object deletion rechecks every reference before removing bytes; the application drains due deletions itself.
 - `npm run prune -- --dry-run` is read-only and comes before any explicitly authorized `--execute`. Pruning never touches active sessions or runs, evidence still visible to retrieval, or referenced objects.
-- Knowledge permanent deletion starts only from Trash. Purging a Source removes its versions, artifacts and private evidence; purging a Base removes its scope but not the canonical Sources. Answer text stays, and deleted citations keep only generic handles.
 - Account deletion drains personal MCP servers and owned Knowledge and Memory dependencies before deleting their parents, and stays pending until then. Disconnecting a personal MCP server wipes its saved values immediately. Revoking an inbound Memory OAuth grant keeps the facts.
 - Deleting a Project is an explicit action of its Owner; account deletion and Project archival never substitute for it, and unlinking personal resources from a Project does not delete them.
 - A missing Workspace disk is recreated from canonical originals and the UI never claims the old files survived.

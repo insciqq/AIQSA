@@ -13,10 +13,12 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 
 ## Authority and roles
 
-- Catalog discovery shows availability; it never authorizes execution. Admission binds the exact tested connection, model revision, credential and role, and revocation is rechecked before every outbound request.
-- Personal credentials resolve as: the user's direct grant, then an identical group grant, then an explicitly configured installation default. Project runs use only Project resources and shared authority.
+- Catalog discovery shows availability; it never authorizes execution. Admission checks and binds the exact tested connection, model revision, credential and role, and the run keeps them without rechecking before each request (`agent_docs/RUN_CONTRACTS.md`).
+- Chat models must have verified tool calling; models without it are not offered for chat (operator decision 2026-10-22). Roles that need no tools, such as Search or Decisions, are exempt.
+- Personal credentials resolve as: the user's direct grant, then an identical group grant, then an explicitly configured installation default.
 - Answer, embedding, rerank, Vision, Decisions and other internal roles are independent. Internal roles run on installation credentials, grant users nothing, and never borrow another role's assignment.
-- Image generation is a published resource: administrators publish verified models and keep one default, without which image generation is off for everyone. Users may pick a published model; Project runs use only the default. An unusable published model is marked, never substituted.
+- Image generation is a published resource: administrators publish verified models and keep one default, without which image generation is off for everyone. Users may pick a published model. An unusable published model is marked, never substituted.
+- Native Anthropic (`lib/server/providers/anthropicMessages.ts`) is disabled until its code is removed (root `AGENTS.md`): no new connections or runs and no fixes.
 - Optional Decisions need their own disclosure, qualification and verified availability; adopting them preserves explicit choices, and a failed adoption needs explicit repair, never an automatic replay or a startup block.
 - Speech to text binds a connection and an upstream model id; only a passing Test with the bundled synthetic sample saves it, bound to the tested key version. Dictation audio and transcripts exist only within the request.
 
@@ -32,13 +34,11 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 ## Transport
 
 - Every transport bounds input and output, supports cancellation, requires exact terminal proof and reports failures without values. Raw requests, responses, reasoning, tool arguments and provider errors are never kept for diagnosis.
-- Retry only explicitly admitted replay-safe work, under the adapter's failure classification and deadline, with the same authority and destination. Native background creation, accepted streams and crash-ambiguous dispatches are never replayed. Every physical request, retries included, is accounted.
-- Codex LB exception (operator decisions 2026-10-08, 2026-10-15, 2026-10-18): a live tool-loop answer round, compaction summary or Vision analysis on a Codex LB connection whose Responses request failed with HTTP 502, or whose stream dropped before completion without a deterministic classification, is re-sent unchanged to the same destination under Stop and the run deadlines, unless it already accepted non-text output; streamed reasoning headings are progress, not output. Users used to repeat these rounds by hand, and a round's tools run only after its result. A request that failed before any output gets a longer window because minute-long 502 bursts used to fail whole answers. Limits are in `lib/server/providers/providerRetry.ts`. Recovery never re-sends, and no other failure or route gains replay. Accepted cost: duplicate gateway quota.
+- A run's model calls retry transparently on every provider (answer first, `agent_docs/RUN_CONTRACTS.md`): network errors, rate limits, server errors and streams that drop before terminal proof are re-sent unchanged to the same destination with the same authority, bounded, with backoff, under Stop and within the turn's deadline. The failed attempt's partial output is discarded, and a round's tool calls run only after the round completes, so a retry never repeats a tool effect. Deterministic rejections are not retried. Every physical request, retries included, is accounted; accepted cost: a failed attempt may be billed too. The existing classification is in `lib/server/providers/providerRetry.ts`.
 - Custom endpoints need an explicit protocol and the canonical base URL; never guess `/v1`. Public endpoints need HTTPS and bearer authentication; private HTTP and no-auth endpoints need their reviewed flags and pinned DNS and redirect checks.
 - Native and compatible protocols are different runtimes with no fallback between them; compatible Responses inherits no store, background or cache lifecycle. DeepSeek and Gemini use native paths only. Gemini thought signatures stay private continuation state.
 - Gateway routing keys only isolate physical requests: they are opaque and are not idempotency keys.
-- OpenRouter routes to a discovered native provider without outside fallback unless the operator chose otherwise. Data collection defaults to `deny`; `allow` is a per-model administrator choice, rechecked at admission and dispatch.
-- Agent usage comes from gateway receipts bound to the run, never from counters inside the guest.
+- OpenRouter routes to a discovered native provider without outside fallback unless the operator chose otherwise. Data collection defaults to `deny`; `allow` is a per-model administrator choice, checked at admission.
 
 ## Search
 
@@ -47,22 +47,20 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 
 ## Documents, embeddings and reranking
 
-- Chat PDF and Knowledge document work freeze their own admitted destinations and evidence. A failed model route never switches silently to local extraction or another provider.
-- Knowledge Profiles authorize exact embedding destinations through tested installation credentials; request fields cannot choose them. Vector spaces never mix, an invalid vector rejects the whole batch, and reusing an older generation needs proof of the same canonical vector space, not a matching model name.
+- Chat PDF work freezes its own admitted destination and evidence. A failed model route never switches silently to local extraction or another provider.
+- Vector spaces never mix, an invalid vector rejects the whole batch, and reusing an older generation needs proof of the same canonical vector space, not a matching model name.
 - A reranker receives a sanitized query and documents behind opaque handles and returns scores only. Coverage must be complete and one-to-one, and a broken selected reranker never falls through to an unselected one or the System Model.
-- Knowledge reasoning overrides may change only the answer deployment's reasoning effort, never its destination or credential.
 
 ## Prices and usage
 
 - Forward migrations never overwrite an administrator's token price: they update only `catalog` rows or unknown prices, matched by `providerModelCatalogKey` (`lib/server/admin/providers/providerModelPricing.ts`), and prices never synchronize at startup.
-- A paid call takes the provider-reported cost (OpenRouter BYOK adds the upstream cost), else the model's class prices, else stays unknown. Every paid call that returned usage is recorded once with its purpose, failed calls and administrator checks included.
+- A paid call takes the provider-reported cost (OpenRouter BYOK adds the upstream cost), else the model's class prices, else stays unknown. Every paid call that returned usage is recorded once with its purpose, failed calls, retries and administrator checks included; a run records it after its answer (`agent_docs/RUN_CONTRACTS.md`).
 
 ## Upstream references
 
 Recheck primary documentation when changing provider behavior; adapter tests own the exact wire support.
 
 - OpenAI: [Responses](https://platform.openai.com/docs/api-reference/responses), [background mode](https://platform.openai.com/docs/guides/background), [SDK retries](https://github.com/openai/openai-node/blob/main/docs/configuration.md#retries-and-timeouts).
-- Anthropic: [Messages](https://docs.anthropic.com/en/api/messages), [streaming and terminals](https://platform.claude.com/docs/en/build-with-claude/streaming).
 - DeepSeek: [Responses](https://api-docs.deepseek.com/api/create-response/).
 - Gemini: [Interactions](https://ai.google.dev/api/interactions-api-v1), [Google Search](https://ai.google.dev/gemini-api/docs/google-search).
 - OpenRouter: [routing](https://openrouter.ai/docs/guides/routing/provider-selection), [structured output](https://openrouter.ai/docs/guides/features/structured-outputs), [embeddings](https://openrouter.ai/docs/api/reference/embeddings), [reranking](https://openrouter.ai/docs/api/api-reference/rerank/create-rerank), [speech to text](https://openrouter.ai/docs/guides/overview/multimodal/stt).
