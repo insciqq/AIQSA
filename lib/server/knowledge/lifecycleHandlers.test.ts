@@ -5,6 +5,12 @@ import {
   type KnowledgeLifecycleHandlerDeps
 } from "./lifecycleHandlers";
 
+// These handlers stay tested with Knowledge on; `disabled.test.ts` covers it off.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 function session(): AuthenticatedSession {
   return {
     expiresAt: new Date(Date.now() + 60_000),

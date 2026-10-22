@@ -30,7 +30,7 @@ const adminSections = [
   { id: "providers", label: "Providers" },
   { id: "roles", label: "Defaults & roles" },
   { id: "search", label: "Search" },
-  { id: "retrieval", label: "Knowledge & Memory" },
+  { id: "retrieval", label: "Memory" },
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups" },
   { id: "limits", label: "Budgets & limits" },
