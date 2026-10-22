@@ -9,7 +9,7 @@ import type { ProviderAttachment, ProviderRunRequest } from "../providers/types"
 import { observedFailureCode } from "../providers/providerObservability";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { ANALYZE_IMAGE_TOOL_NAME, VISION_ANALYSIS_LIMITS as LIMITS, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
-import { prepareWorkspaceImages, WorkspaceImageError, type WorkspaceCapturedImage } from "../workspace/imageCapture";
+import { prepareWorkspaceImages, WORKSPACE_IMAGE_LIMITS, WorkspaceImageError, type WorkspaceCapturedImage } from "../workspace/imageCapture";
 import { workspaceImageInput, workspaceImageInputForRun } from "../workspace/imageInputs";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
 import { ConversationImageError, conversationImageInput, type ConversationImageSource, type ConversationVisionImage } from "./conversationImages";
@@ -127,7 +127,7 @@ export async function boundedVisionRequest(input: Readonly<{
     encodedBytes += Math.ceil(d.byteSize / 3) * 4;
     imageTokens += estimateImageTokens(d);
     if (d.byteSize > Math.min(24 * 1024 * 1024, limits?.imageBytes ?? Infinity) ||
-      d.width * d.height > Math.min(16_777_216, limits?.imagePixels ?? Infinity) ||
+      d.width * d.height > Math.min(WORKSPACE_IMAGE_LIMITS.maxPixels, limits?.imagePixels ?? Infinity) ||
       encodedBytes > Math.min(64 * 1024 * 1024, limits?.payloadBytes ?? Infinity)) throw new VisionAnalysisError("vision_analysis_limit_exceeded");
     const bytes = Buffer.from(await new Response(await image.open(input.signal)).arrayBuffer());
     if (bytes.byteLength !== d.byteSize) throw input.invalidImage();

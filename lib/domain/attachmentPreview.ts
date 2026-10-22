@@ -5,6 +5,8 @@ import { UPLOAD_FORMAT_REGISTRY } from "./uploadFormats";
 export const TEXT_PREVIEW_MAX_BYTES = 512 * 1024;
 export const PREVIEW_MAX_FRAMES = 600;
 export const PREVIEW_THUMB_SIZE = 160;
+/** Inline and viewer previews of larger static images are downscaled to fit this box; Download serves the original. */
+export const PREVIEW_IMAGE_MAX_SIZE = 2560;
 
 const imageMimeTypes: ReadonlySet<string> = new Set([...IMAGE_MIME_TYPES, "image/gif"]);
 const textFormats = new Set(["text", "markdown", "html", "json", "csv"]);

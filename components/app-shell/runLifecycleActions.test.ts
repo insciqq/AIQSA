@@ -1207,7 +1207,7 @@ describe("run lifecycle actions", () => {
     },
     {
       body: { error: "image_limit_exceeded" },
-      expected: "This image is too large to verify (up to 24 MiB and 16.8 megapixels). " +
+      expected: "This image is too large to verify (up to 24 MiB and 21 megapixels). " +
         "Reduce it, or rename it with the extension that matches its format.",
       status: 413
     },

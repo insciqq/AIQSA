@@ -1,6 +1,6 @@
 import sharp from "sharp";
 import { IMAGE_MAX_BYTES, IMAGE_MAX_PIXELS } from "@/lib/contracts/imageGeneration";
-import { PREVIEW_MAX_FRAMES, PREVIEW_THUMB_SIZE } from "@/lib/domain/attachmentPreview";
+import { PREVIEW_IMAGE_MAX_SIZE, PREVIEW_MAX_FRAMES, PREVIEW_THUMB_SIZE } from "@/lib/domain/attachmentPreview";
 import { validateGeneratedImage } from "../providers/imageGeneration";
 
 /** libvips repairs some truncated GIFs; require complete framing before decoding. */
@@ -72,6 +72,17 @@ export async function validatePreviewImage(bytes: Uint8Array, mimeType: string):
     envelope.canvasPixels * pages > IMAGE_MAX_PIXELS) throw new Error("image_preview_invalid");
   // animated:true makes this a full decode of all frames, including later corrupt frames.
   await decoder.stats();
+}
+
+/** Called only after the complete original passed validation. A static image
+ * larger than the preview box gets a bounded WebP copy; null serves the original. */
+export async function createDisplayPreview(bytes: Uint8Array): Promise<Uint8Array | null> {
+  const { format, width, height } = await sharp(bytes, { limitInputPixels: IMAGE_MAX_PIXELS }).metadata();
+  if (format === "gif" || !width || !height || Math.max(width, height) <= PREVIEW_IMAGE_MAX_SIZE) return null;
+  return sharp(bytes, { limitInputPixels: IMAGE_MAX_PIXELS, failOn: "warning" }).timeout({ seconds: 8 })
+    .rotate()
+    .resize(PREVIEW_IMAGE_MAX_SIZE, PREVIEW_IMAGE_MAX_SIZE, { fit: "inside", withoutEnlargement: true })
+    .webp().toBuffer();
 }
 
 /** Called only after the complete original passed validation; the list never animates. */

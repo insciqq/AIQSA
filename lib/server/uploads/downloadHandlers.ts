@@ -1,7 +1,7 @@
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { attachmentPreviewKind } from "@/lib/domain/attachmentPreview";
 import { MAX_UPLOAD_MAX_BYTES } from "./validation";
-import { createPreviewThumbnail, validatePreviewImage } from "./previewImage";
+import { createDisplayPreview, createPreviewThumbnail, validatePreviewImage } from "./previewImage";
 import {
   getStoredObjectStream,
   isStoredObjectTooLargeError,
@@ -104,8 +104,9 @@ export function createAttachmentDownloadHandler(input: Readonly<{
           headers.set("content-type", "text/plain; charset=utf-8");
         } else {
           await validatePreviewImage(bytes, record.mimeType);
-          if (preview === "thumb") {
-            bytes = await createPreviewThumbnail(bytes);
+          const resized = preview === "thumb" ? await createPreviewThumbnail(bytes) : await createDisplayPreview(bytes);
+          if (resized) {
+            bytes = resized;
             headers.set("content-type", "image/webp");
           }
         }

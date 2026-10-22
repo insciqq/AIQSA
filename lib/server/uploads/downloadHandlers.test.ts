@@ -143,6 +143,18 @@ describe("authenticated attachment previews", () => {
     expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes);
   });
 
+  it("previews a 4K image as a bounded WebP copy while the download keeps the original", async () => {
+    const bytes = await sharp({ create: { width: 6336, height: 2688, channels: 3, background: "#123456" } }).jpeg().toBuffer();
+    const f = await fixture(bytes, "image/jpeg", "image.jpeg");
+    const preview = await f.read("image");
+    expect(preview.status).toBe(200);
+    expectPrivateHeaders(preview, "image/webp");
+    const previewBytes = Buffer.from(await preview.arrayBuffer());
+    expect(Number(preview.headers.get("content-length"))).toBe(previewBytes.length);
+    expect(await sharp(previewBytes).metadata()).toMatchObject({ format: "webp", width: 2560 });
+    expect(Buffer.from(await (await f.read("")).arrayBuffer())).toEqual(bytes);
+  });
+
   it.each(["image", "thumb", "text"])("reauthorizes %s before every object read and reveals no missing attachment", async mode => {
     const f = await fixture(Buffer.from("synthetic"), "text/plain", "note.txt");
     f.resolveAuth.mockResolvedValueOnce(null);
