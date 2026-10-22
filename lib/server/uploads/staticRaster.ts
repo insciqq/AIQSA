@@ -9,15 +9,19 @@ export type StaticRasterLimits = Readonly<{
   mimeTypes: readonly StaticRasterMime[];
 }>;
 
+export type StaticRasterBound = "bytes" | "pixels" | "dimension";
+/** Content-free facts of a refusal: the bound it broke and what the header showed, never pixels. */
+export type StaticRasterFacts = Readonly<{ bound?: StaticRasterBound; mimeType?: StaticRasterMime; width?: number; height?: number }>;
+
 export class StaticRasterError extends Error {
-  constructor(readonly code: "raster_invalid" | "raster_unsupported" | "raster_limit_exceeded") {
+  constructor(readonly code: "raster_invalid" | "raster_unsupported" | "raster_limit_exceeded", readonly facts: StaticRasterFacts = {}) {
     super(code);
     this.name = "StaticRasterError";
   }
 }
 
-const invalid = () => new StaticRasterError("raster_invalid");
-const unsupported = () => new StaticRasterError("raster_unsupported");
+const invalid = (mimeType?: StaticRasterMime) => new StaticRasterError("raster_invalid", mimeType ? { mimeType } : {});
+const unsupported = (mimeType?: StaticRasterMime) => new StaticRasterError("raster_unsupported", mimeType ? { mimeType } : {});
 
 /** libvips may decode only the PNG default image; reject APNG before decoding. */
 function staticPng(bytes: Buffer): void {
@@ -76,32 +80,34 @@ export async function validateStaticRaster(bytes: Uint8Array, limits: StaticRast
   signal?: AbortSignal;
 }> = {}): Promise<StaticRasterMetadata> {
   options.signal?.throwIfAborted();
-  if (!bytes.byteLength || bytes.byteLength > limits.maxBytes) throw new StaticRasterError("raster_limit_exceeded");
+  if (!bytes.byteLength || bytes.byteLength > limits.maxBytes) throw new StaticRasterError("raster_limit_exceeded", { bound: "bytes" });
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const mimeType: StaticRasterMime = buffer.subarray(0, 8).toString("hex") === "89504e470d0a1a0a" ? "image/png"
     : buffer[0] === 0xff && buffer[1] === 0xd8 ? "image/jpeg"
       : buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP" ? "image/webp"
         : (() => { throw unsupported(); })();
-  if (!limits.mimeTypes.includes(mimeType)) throw unsupported();
-  if (options.declaredMime !== undefined && options.declaredMime !== mimeType) throw invalid();
+  if (!limits.mimeTypes.includes(mimeType)) throw unsupported(mimeType);
+  if (options.declaredMime !== undefined && options.declaredMime !== mimeType) throw invalid(mimeType);
   if (mimeType === "image/png") staticPng(buffer);
   else if (mimeType === "image/jpeg") staticJpeg(buffer);
   else staticWebp(buffer);
   try {
-    const decoder = sharp(buffer, { limitInputPixels: limits.maxPixels, failOn: "warning" }).timeout({ seconds: 8 });
-    const metadata = await decoder.metadata();
-    if (`image/${metadata.format}` !== mimeType || !metadata.width || !metadata.height || (metadata.pages ?? 1) !== 1) throw invalid();
-    if (metadata.width * metadata.height > limits.maxPixels ||
-      limits.maxDimension !== undefined && Math.max(metadata.width, metadata.height) > limits.maxDimension) {
-      throw new StaticRasterError("raster_limit_exceeded");
-    }
+    // libvips enforces limitInputPixels while reading the header and reports it
+    // as a decode failure, so the bounds are checked on a header-only read
+    // (no pixels decoded) before the limited full decode.
+    const metadata = await sharp(buffer, { limitInputPixels: false, failOn: "warning" }).metadata();
+    if (`image/${metadata.format}` !== mimeType || !metadata.width || !metadata.height || (metadata.pages ?? 1) !== 1) throw invalid(mimeType);
+    const { width, height } = metadata;
+    const bound: StaticRasterBound | null = width * height > limits.maxPixels ? "pixels"
+      : limits.maxDimension !== undefined && Math.max(width, height) > limits.maxDimension ? "dimension" : null;
+    if (bound) throw new StaticRasterError("raster_limit_exceeded", { bound, mimeType, width, height });
     options.signal?.throwIfAborted();
-    await decoder.stats();
+    await sharp(buffer, { limitInputPixels: limits.maxPixels, failOn: "warning" }).timeout({ seconds: 8 }).stats();
     options.signal?.throwIfAborted();
-    return { mimeType, width: metadata.width, height: metadata.height };
+    return { mimeType, width, height };
   } catch (error) {
     options.signal?.throwIfAborted();
     if (error instanceof StaticRasterError) throw error;
-    throw invalid();
+    throw invalid(mimeType);
   }
 }

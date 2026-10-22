@@ -443,7 +443,7 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
       : cause === "content_filter" ? "policy"
       : code === "workspace_tool_timeout" ? "deadline"
       : code === "provider_output_too_large" || code.startsWith("provider_stream_") && code !== "provider_stream_failed" ||
-        code === "provider_response_too_large" || code === "provider_budget_exhausted" ? "safety_limit"
+        code === "provider_response_too_large" || code === "provider_budget_exhausted" || code === "image_response_too_large" ? "safety_limit"
       : code === "provider_http_dns_failed" || code === "provider_http_request_failed" || code === "provider_http_tls_failed" ||
         code === "provider_request_outcome_unknown" ||
         code === "agent_provider_dns_failed" || code === "agent_provider_connection_lost" ? "network"
@@ -451,8 +451,8 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
       : code === PROVIDER_CONTEXT_LENGTH_EXCEEDED ? "safety_limit"
       : code.startsWith("gemini_interactions_stream_") ||
         code === "provider_response_failed" || code === "openai_response_incomplete" || code === "openai_response_failed" ||
-        code === "openai_response_not_completed" || code === "knowledge_answer_contract_failed" || code === "knowledge_citation_contract_failed"
-        ? "invalid_response"
+        code === "openai_response_not_completed" || code === "knowledge_answer_contract_failed" || code === "knowledge_citation_contract_failed" ||
+        code === "image_response_invalid" ? "invalid_response"
       : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
         ? "policy" : Object.hasOwn(agentFailureReasons, code) ? agentFailureReasons[code]! : "unknown";

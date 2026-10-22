@@ -51,6 +51,11 @@ describe("bounded observability runtime", () => {
     expect(invalid).toMatchObject({ code: "unknown" });
     expect(invalid).not.toHaveProperty("stage");
     expect(invalid).not.toHaveProperty("finish_reason");
+    const refusal = { stage: "provider", code: "image_response_too_large", duration_ms: 35, image_bound: "pixels", byte_size: 12_000_000,
+      width: 5120, height: 4097, declared_mime: "image/jpeg", detected_mime: "image/jpeg" } as const;
+    expect(record("image_execution", refusal)).toMatchObject(refusal);
+    const forged = record("image_execution", { ...refusal, image_bound: "PRIVATE", width: -1, declared_mime: "PRIVATE/type", detected_mime: "image/gif" } as never);
+    for (const field of ["image_bound", "width", "declared_mime", "detected_mime"]) expect(forged).not.toHaveProperty(field);
   });
 
   it("warns on a refused or stopped image request and keeps a real image failure an error", () => {

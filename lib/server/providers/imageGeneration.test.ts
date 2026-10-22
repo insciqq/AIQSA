@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import { createImageGenerationAdapter, validateGeneratedImage } from "./imageGeneration";
 import { normalizeProviderModelConfiguration, type ProviderConnectionConfiguration, type ProviderModelConfiguration } from "./providerConfiguration";
-import { normalizeImageGenerationParameters, type ImageProviderProfile } from "../../contracts/imageGeneration";
+import { IMAGE_MAX_BYTES, normalizeImageGenerationParameters, type ImageProviderProfile } from "../../contracts/imageGeneration";
 import { imageParametersFromCatalog } from "./imageModelDiscovery";
 import { captureRunObservation } from "@/tests/support/runObservation";
 
@@ -246,6 +246,49 @@ describe("image adapters", () => {
     expect(await generate(Response.json({ usage: { cost: 0.04 } }, { status: 500 })))
       .toMatchObject({ code: "image_provider_http_error", usage: null });
   });
+  it("accepts the largest measured Gemini 4K frames and names the bound a larger image breaks", async () => {
+    const flat = (width: number, height: number) => sharp({ create: { width, height, channels: 3, background: "#336699" } }).jpeg().toBuffer();
+    for (const [width, height] of [[3584, 4800], [6336, 2688]] as const) {
+      await expect(validateGeneratedImage(await flat(width, height), "image/jpeg")).resolves.toEqual({ mimeType: "image/jpeg", width, height });
+    }
+    const oversized = await flat(5120, 4097);
+    expect(await validateGeneratedImage(oversized, "image/jpeg").catch((error: unknown) => error)).toMatchObject({ code: "image_response_too_large",
+      rejection: { bound: "pixels", width: 5120, height: 4097, byteSize: oversized.byteLength, declaredMime: "image/jpeg", detectedMime: "image/jpeg" } });
+    expect(await validateGeneratedImage(Buffer.alloc(IMAGE_MAX_BYTES + 1)).catch((error: unknown) => error))
+      .toMatchObject({ code: "image_response_too_large", rejection: { bound: "bytes", byteSize: IMAGE_MAX_BYTES + 1, declaredMime: "none" } });
+    expect(await validateGeneratedImage(png, "image/x-private").catch((error: unknown) => error))
+      .toMatchObject({ code: "image_response_invalid", rejection: { declaredMime: "other", detectedMime: "image/png" } });
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ status: "completed", steps: [
+      { type: "model_output", content: [{ type: "image", data: oversized.toString("base64"), mime_type: "image/jpeg" }] }
+    ], usage: { total_input_tokens: 3, total_output_tokens: 2600, total_tokens: 2603 } }));
+    expect(await createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic", fetchFn })
+      .generate({ prompt: "A circle" }).catch((error: unknown) => error))
+      .toMatchObject({ code: "image_response_too_large", rejection: { bound: "pixels" }, usage: { outputTokens: 2600 } });
+  });
+
+  it("reads a Gemini body whose thought signature is as large as the image and bounds a larger one", async () => {
+    const mebibyte = new TextEncoder().encode("A".repeat(1024 * 1024));
+    const body = (signatureMiB: number) => {
+      const parts = (function* () {
+        yield new TextEncoder().encode('{"status":"completed","steps":[{"type":"thought","signature":"');
+        for (let index = 0; index < signatureMiB; index++) yield mebibyte;
+        yield new TextEncoder().encode(`"},{"type":"model_output","content":[{"type":"image","mime_type":"image/jpeg","data":"${jpeg.toString("base64")}"}]}]}`);
+      })();
+      return new Response(new ReadableStream<Uint8Array>({ pull(controller) {
+        const next = parts.next();
+        if (next.done) controller.close();
+        else controller.enqueue(next.value);
+      } }));
+    };
+    // Above the former 36 MiB cap: a 4K image's base64 beside a signature of about the same size.
+    const output = await createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic",
+      fetchFn: vi.fn<typeof fetch>(async () => body(40)) }).generate({ prompt: "A circle" });
+    expect(output).toMatchObject({ mimeType: "image/jpeg", width: 32, height: 32 });
+    expect(await createImageGenerationAdapter({ connection, model: model("gemini"), secret: "synthetic",
+      fetchFn: vi.fn<typeof fetch>(async () => body(80)) }).generate({ prompt: "A circle" }).catch((error: unknown) => error))
+      .toMatchObject({ code: "image_response_too_large", rejection: { bound: "response_bytes" } });
+  });
+
   it("validates outputs and refuses remote URLs, forged MIME or a corrupt raster", async () => {
     await expect(validateGeneratedImage(png, "image/jpeg")).rejects.toThrow("image_response_invalid");
     await expect(validateGeneratedImage(png.subarray(0, 32))).rejects.toThrow("image_response_invalid");

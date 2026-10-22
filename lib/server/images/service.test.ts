@@ -248,6 +248,15 @@ describe("image edit preflight", () => {
     expect(h.usage).not.toHaveBeenCalled();
   });
 
+  it("accepts a stored 4K output as an edit input up to the dispatch claim", async () => {
+    const h = await editHarness();
+    const image = await sharp({ create: { width: 6336, height: 2688, channels: 3, background: "blue" } }).jpeg().toBuffer();
+    Object.assign(h.reference, { mimeType: "image/jpeg", byteSize: image.byteLength });
+    h.getObject.mockResolvedValue({ body: image, contentType: "image/jpeg" });
+    await expect(h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch })).rejects.toThrow("fixture_dispatch_boundary");
+    expect(h.beforeDispatch).toHaveBeenCalledOnce();
+  });
+
   it("refuses invalid prompt and parameters before a dispatch claim", async () => {
     const h = await editHarness();
     for (const arguments_ of [
@@ -337,8 +346,8 @@ describe("paid image usage write", () => {
   const prismaError = (code: string) => new Prisma.PrismaClientKnownRequestError("PRIVATE database detail", { code, clientVersion: "fixture" });
   const reported = { input_tokens: 3, output_tokens: 11, total_tokens: 14, cost: 0.04 };
 
-  async function dispatchHarness(answer: "image" | "missing") {
-    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).png().toBuffer();
+  async function dispatchHarness(answer: "image" | "missing", size = { width: 8, height: 8 }) {
+    const image = await sharp({ create: { ...size, channels: 3, background: "blue" } }).jpeg().toBuffer();
     const usage = vi.fn<(input: unknown) => Promise<unknown>>();
     const storageBoundary = new Error("fixture_storage_boundary");
     const prisma = { providerRunBinding: { findFirst: vi.fn(async () => ({ executionSnapshot: mixedToolsImagePlan.snapshot })) },
@@ -350,7 +359,7 @@ describe("paid image usage write", () => {
       usageEvent: { create: usage, findUnique: vi.fn(async () => null) },
       attachmentDeletionJob: { create: vi.fn(async () => { throw storageBoundary; }), updateMany: vi.fn(async () => ({ count: 0 })) } };
     const fetchFn = vi.fn<typeof fetch>(async () => Response.json(answer === "image"
-      ? { data: [{ b64_json: png.toString("base64") }], usage: reported } : { data: [], usage: reported }));
+      ? { data: [{ b64_json: image.toString("base64") }], usage: reported } : { data: [], usage: reported }));
     const service = createPrismaImageGenerationService(prisma as unknown as PrismaClient, {} as StorageAdapter,
       { fetchFn, encryptionKey: () => Buffer.alloc(32) });
     const call = { id: "call", name: "generate_image", arguments: { prompt: "PRIVATE prompt", image_ids: [] } };
@@ -358,6 +367,24 @@ describe("paid image usage write", () => {
     const execute = () => service.execute(call, context, undefined, { beforeDispatch: async () => undefined });
     return { usage, fetchFn, storageBoundary, execute };
   }
+
+  it("stores a 4K output and refuses a larger one as too large, naming the bound in the log", async () => {
+    const accepted = await dispatchHarness("image", { width: 3584, height: 4800 });
+    accepted.usage.mockResolvedValueOnce({ id: "usage" });
+    await expect(accepted.execute()).rejects.toBe(accepted.storageBoundary);
+
+    const h = await dispatchHarness("image", { width: 5120, height: 4097 });
+    h.usage.mockResolvedValueOnce({ id: "usage" });
+    const observation = await captureRunObservation();
+    await expect(h.execute()).rejects.toMatchObject({ code: "image_response_too_large" });
+    expect(h.usage).toHaveBeenCalledOnce();
+    expect(observation.records().filter((record) => record.event === "image_execution")).toEqual([expect.objectContaining({
+      stage: "provider", outcome: "failed", code: "image_response_too_large", image_bound: "pixels", width: 5120, height: 4097,
+      byte_size: expect.any(Number), declared_mime: "none", detected_mime: "image/jpeg" })]);
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+      code: "image_response_too_large", reason: "safety_limit" }));
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|fixture-secret/);
+  });
 
   it("retries a transient write once and continues with one recorded row", async () => {
     const h = await dispatchHarness("image");
