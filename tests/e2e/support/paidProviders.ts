@@ -134,7 +134,7 @@ export async function openRouterConnection(
  * answer model when Quick Setup asks for a choice.
  */
 export async function quickSetupConnection(
-  request: APIRequestContext, provider: "deepseek" | "openai" | "openrouter", secret: string, prefer: RegExp,
+  request: APIRequestContext, provider: "deepseek" | "gemini" | "openai" | "openrouter", secret: string, prefer: RegExp,
   options: Readonly<{ reuse?: boolean }> = {}
 ): Promise<string> {
   const existing = options.reuse === false ? undefined : readConnections(await (await request.get("/api/admin/providers")).json())
