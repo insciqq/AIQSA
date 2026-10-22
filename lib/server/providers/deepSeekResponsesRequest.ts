@@ -11,6 +11,7 @@ import {
   providerImageCaption
 } from "./attachmentPayload";
 import { conversationPreview, textConversationForRequest } from "./context";
+import { assertProviderHistoryRequest, providerHistoryPreview, responsesInputFromHistory } from "./history";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
 import { resolveProviderToolChoice } from "./providerToolChoice";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
@@ -163,11 +164,24 @@ function buildBody(
   const params = normalizeDeepSeekResponsesParams(
     request.params as Partial<DeepSeekResponsesParams> & Record<string, unknown>
   );
-  const conversation = textConversationForRequest(request, {
-    redactSkillContext: options.preview
-  });
-  const input: Array<DeepSeekResponsesInputMessage | Record<string, unknown>> =
-    conversation.map((message, index) => ({
+  let input: Array<DeepSeekResponsesInputMessage | Record<string, unknown>>;
+  if (request.history) {
+    // The native engine's neutral history; its current input takes this
+    // run's attachments and response reminder.
+    input = responsesInputFromHistory(assertProviderHistoryRequest(request), {
+      currentInput: (text) => withResponseReminder(
+        request,
+        inputContent({ ...request, content: { blocks: [{ text, type: "text" }] } }, options),
+        (reminder) => ({ text: reminder, type: "input_text" as const }),
+        options.preview
+      ),
+      preview: options.preview
+    });
+  } else {
+    const conversation = textConversationForRequest(request, {
+      redactSkillContext: options.preview
+    });
+    input = conversation.map((message, index) => ({
       content: index === conversation.length - 1 && message.role === "user"
         ? withResponseReminder(request, inputContent(request, options), (text) => ({ text, type: "input_text" as const }), options.preview)
         : [{
@@ -176,7 +190,8 @@ function buildBody(
           }],
       role: message.role
     }));
-  input.push(...continuationItems(request.providerToolMessages, options.preview));
+    input.push(...continuationItems(request.providerToolMessages, options.preview));
+  }
 
   const hostedTools = deepSeekResponsesToolBridge.serializeHostedTools?.(request) ?? [];
   const functionTools = (request.tools ?? []).map(
@@ -233,7 +248,7 @@ export function buildDeepSeekResponsesRequestPreview(
       "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ],
-    replayedContext: conversationPreview(request),
+    replayedContext: request.history ? providerHistoryPreview(request.history) : conversationPreview(request),
     stateless: true
   };
 }

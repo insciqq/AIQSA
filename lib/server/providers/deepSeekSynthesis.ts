@@ -63,6 +63,8 @@ export async function* guardDeepSeekSynthesis(
         finalText,
         // Rejected synthesis cannot be continued. The shared Responses
         // parser now retains original no-call messages for valid corrections.
+        // Its history would carry the rejected markup, so it goes too.
+        history: undefined,
         providerToolCallMessage: undefined,
         finalProviderResponsePreview: {
           id: result.providerResponseId,
