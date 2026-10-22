@@ -7,6 +7,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminConfirmationRequest } from "../useAdminConfirmationController";
 import { AdminRetrievalSection } from "./AdminRetrievalSection";
 
+// The Knowledge card stays tested as it worked; one test below turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
+
 function memoryStatus(overrides: Partial<AdminMemoryStatus> = {}): AdminMemoryStatus {
   return {
     processing: { enabled: true, issues: [] },
@@ -90,9 +99,22 @@ function renderSection() {
   return { onMutationCommitted, onOpenRoles, reportNotice, requestConfirmation };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  areas.knowledge = true;
+  vi.unstubAllGlobals();
+});
 
 describe("AdminRetrievalSection", () => {
+  it("keeps only the Memory card, and reads no Knowledge, while Knowledge is disabled", async () => {
+    areas.knowledge = false;
+    const calls = server();
+    renderSection();
+
+    expect(await screen.findByTestId("admin-retrieval-memory")).toHaveTextContent("Memory");
+    expect(screen.queryByTestId("admin-retrieval-knowledge")).toBeNull();
+    expect(calls.filter((call) => call.url === "/api/admin/knowledge")).toEqual([]);
+  });
+
   it("shows mixed history causes separately and updates each issue on refresh", async () => {
     const retrying = { stage: "HISTORY", reason: "RETRYING", severity: "warn",
       count: 1, oldestAgeSeconds: 1800 } as const;

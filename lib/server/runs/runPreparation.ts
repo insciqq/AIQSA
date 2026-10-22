@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { workspaceFileContext, workspaceFileReferences } from "../workspace/fileContext";
 import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 import { textMessageContent } from "../../domain/content";
+import { KNOWLEDGE_DISABLED_CODE, KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import {
   decodeKnowledgePlan,
@@ -1108,6 +1109,9 @@ function resolvedOrdinaryKnowledgePlan(
   if (body && "knowledgePlan" in body) {
     return decodeKnowledgeSelection(body.knowledgePlan);
   }
+  // Knowledge is disabled: a chat's or folder's saved Knowledge default stays
+  // stored but no longer applies, so the chat answers without Knowledge.
+  if (!KNOWLEDGE_ENABLED) return decodeKnowledgeSelection(EMPTY_KNOWLEDGE_SELECTION);
   if (chat.defaultKnowledgePlan !== null && chat.defaultKnowledgePlan !== undefined) {
     return decodeKnowledgePlan(chat.defaultKnowledgePlan);
   }
@@ -1442,6 +1446,8 @@ async function prepareRunWith(
   }
   let knowledgeAdmissionPlan: KnowledgeRunAdmissionPlan | undefined;
   if (decodedKnowledgePlan.plan.mode !== "none") {
+    // Knowledge is disabled: a request that still selects it is refused visibly.
+    if (!KNOWLEDGE_ENABLED) return failure(KNOWLEDGE_DISABLED_CODE, 409);
     if (!deps.knowledgeAdmission) {
       return failure("knowledge_base_not_available", 503);
     }

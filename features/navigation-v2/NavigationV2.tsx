@@ -558,7 +558,9 @@ function FolderGroup({
                         }))
                       ]
                     },
-                    { icon: "settings", label: "Default Knowledge…", onSelect: () => props.onFolderProjectSettings?.(folder) },
+                    ...(props.onFolderProjectSettings
+                      ? [{ icon: "settings" as const, label: "Default Knowledge…", onSelect: () => props.onFolderProjectSettings?.(folder) }]
+                      : []),
                     {
                       icon: "trash",
                       label: "Delete folder",
@@ -1177,14 +1179,16 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               in the account menu, exactly as on the rail. Icons share one
               top line, so the two-line "AIQSA Connect" keeps them aligned. */}
           <div className="v2-navigation-destinations [&>*]:!justify-start">
-            <button
-              className="v2-navigation-destination v2-focusable"
-              type="button"
-              disabled={props.navigationBusy}
-              onClick={props.onProjects}
-            >
-              <UiV2Icon name="layers" /><span>Projects</span>
-            </button>
+            {props.onProjects ? (
+              <button
+                className="v2-navigation-destination v2-focusable"
+                type="button"
+                disabled={props.navigationBusy}
+                onClick={props.onProjects}
+              >
+                <UiV2Icon name="layers" /><span>Projects</span>
+              </button>
+            ) : null}
             {props.onLibrary ? (
               <button className="v2-navigation-destination v2-focusable" disabled={props.navigationBusy} type="button" onClick={props.onLibrary}>
                 <UiV2Icon name="studio" /><span>Studio</span>

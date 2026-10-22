@@ -10,6 +10,15 @@ import type { AdminConfirmationRequest } from "../useAdminConfirmationController
 import type { AdminFeedbackNoticeAction } from "../useAdminFeedback";
 import { AdminRolesSection } from "./AdminRolesSection";
 
+// Knowledge processing stays tested as it worked; one test below turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
+
 const base = {
   connectionDisplayName: "OpenAI", connectionId: "openai", defaultReasoningEffort: "medium",
   forcedToolCall: "verified" as const, reasoningEfforts: ["low", "medium", "high"],
@@ -274,9 +283,23 @@ function renderSection(groupList: AdminGroup[] = groups, resource: string | null
 
 const patchesTo = (calls: Call[], url: string) => calls.filter((call) => call.url === url && call.method === "PATCH").map((call) => call.body);
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  areas.knowledge = true;
+  vi.unstubAllGlobals();
+});
 
 describe("AdminRolesSection", () => {
+  it("offers no Knowledge processing rows while Knowledge is disabled", async () => {
+    areas.knowledge = false;
+    server();
+    renderSection();
+
+    expect(await screen.findByRole("spinbutton", { name: "Rounds" })).toBeInTheDocument();
+    expect(screen.queryByTestId("admin-role-knowledge")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Documents mode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Embeddings model" })).toBeNull();
+  });
+
   it.each([false, true])("checks image input then assigns only Vision without overwriting concurrent changes (%s)", async (concurrent) => {
     const catalog = rolesCatalog();
     const calls = server(catalog);

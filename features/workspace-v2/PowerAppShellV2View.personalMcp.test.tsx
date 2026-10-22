@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import type { PowerAppShellV2Props } from "@/components/app-shell/powerAppShellV2Contracts";
@@ -12,7 +12,17 @@ import {
 } from "@/tests/support/appShellStores";
 import { PowerAppShellV2View } from "./PowerAppShellV2View";
 
+// Project chats stay tested as they worked; the last test turns Projects off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
+
 afterEach(() => {
+  areas.projects = true;
   cleanup();
   deactivatePersonalMcp();
   resetComposerControlStoreForTest();
@@ -105,5 +115,22 @@ describe("personal MCP connections in the composer disclosure", () => {
     expect(mcpSources()).toEqual(["installation"]);
     expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("Project tracker");
     expect(screen.getByTestId("composer-v2-mcp-servers")).not.toHaveTextContent("Personal notes");
+  });
+
+  it("opens a Project chat read-only while Projects are disabled: a notice replaces the composer", async () => {
+    areas.projects = false;
+    window.history.replaceState(null, "", "/p/project-1");
+    const fetchMock = stubFetch();
+    render(<PowerAppShellV2View {...shellProps(true)} />);
+    await act(async () => undefined);
+
+    expect(screen.getByTestId("projects-disabled-notice")).toHaveTextContent(
+      "Projects are turned off. You can read this shared chat, but you can't send messages in it."
+    );
+    expect(screen.queryByTestId("composer-v2")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change MCP mode" })).toBeNull();
+    expect(personalReads(fetchMock)).toEqual([]);
+    // No Project surfaces around it: no Projects destination on the rail.
+    expect(within(screen.getByRole("navigation", { name: "Workspace" })).queryByRole("button", { name: "Projects" })).toBeNull();
   });
 });

@@ -48,6 +48,11 @@ vi.mock("./useChatPdfRoutePreview", () => ({
     return pdfRoutePreview.current;
   }
 }));
+// Knowledge selections stay tested as they worked; `composerControlStore.test.ts` covers Knowledge disabled.
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";

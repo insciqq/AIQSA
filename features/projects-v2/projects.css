@@ -2433,3 +2433,21 @@
     min-height: 2.75rem;
   }
 }
+
+/*
+ * Projects are disabled (`lib/domain/disabledAreas.ts`): a Project chat opened
+ * by its address shows this line where its composer was, on the composer's
+ * measure so the reading column keeps its edges.
+ */
+.v2-project-disabled-notice {
+  width: min(var(--v2-measure), 100%);
+  margin: 0 auto;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--v2-color-border2);
+  border-radius: var(--v2-radius-l);
+  color: var(--v2-color-text2);
+  background: var(--v2-color-surface);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  text-align: center;
+}

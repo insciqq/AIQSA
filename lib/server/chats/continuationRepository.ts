@@ -6,7 +6,9 @@ import { textMessageContent } from "../../domain/content";
 import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { formatChatRoutePath } from "../../domain/chatRoute";
+import { PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { resolveChatAccess } from "../projects/access";
+import { ProjectsDisabledError } from "../projects/disabled";
 import { notifyProjectEvent } from "../projects/events";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
@@ -234,6 +236,8 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
   return {
     loadSource: (input) => client.$transaction(async (tx) => {
       const { chat } = await lockedSource(tx, { chatId: input.chatId, userId: input.userId, leafMessageId: input.expectedLeafMessageId });
+      // Projects are disabled: no new chat continues a Project chat.
+      if (chat.projectId && !PROJECTS_ENABLED) throw new ProjectsDisabledError();
       // First load only bounded graph metadata. Sibling contents, tools, files and Workspace are never read.
       const path = await tx.$queryRaw<Array<{ id: string; parentMessageId: string | null; bytes: number; role: string; status: string; depth: number }>>(Prisma.sql`
         WITH RECURSIVE branch AS (

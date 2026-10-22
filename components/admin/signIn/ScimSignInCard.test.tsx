@@ -202,7 +202,8 @@ describe("SCIM sign-in card", () => {
     expect(within(card).getByRole("button", { name: "Generate token" })).toBeDisabled();
     expect(within(card).getByTestId("admin-sign-in-health"))
       .toHaveTextContent("Last SCIM request failed");
+    // Projects are disabled (`lib/domain/disabledAreas.ts`), so the copy cannot ask for an ownership transfer.
     expect(within(card).getByTestId("admin-sign-in-health"))
-      .toHaveTextContent("a deactivated user still owns Projects alone; transfer their ownership.");
+      .toHaveTextContent("a deactivated user still owns Projects alone, and Projects are turned off, so the account stays active with its sessions revoked.");
   });
 });

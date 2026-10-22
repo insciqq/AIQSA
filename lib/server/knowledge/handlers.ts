@@ -11,6 +11,7 @@ import {
 } from "../../contracts/knowledge";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import { refusedWhileKnowledgeDisabled } from "./disabled";
 import {
   getKnowledgeExtractionConfig,
   type KnowledgeExtractionConfig
@@ -144,7 +145,7 @@ export function createListKnowledgeBasesHandler(deps: KnowledgeHandlerDeps) {
 }
 
 export function createCreateKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
-  return async function POST(request: Request): Promise<Response> {
+  return refusedWhileKnowledgeDisabled(async function POST(request: Request): Promise<Response> {
     const viewer = await authenticate(deps, request);
     if (viewer instanceof Response) return viewer;
     const [body, bodyError] = await readJson(request);
@@ -161,7 +162,7 @@ export function createCreateKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
       { knowledgeBase: detailFromEntry(detail) } satisfies KnowledgeBaseDetailResponse,
       { status: 201 }
     );
-  };
+  });
 }
 
 export function createGetKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
@@ -181,7 +182,7 @@ export function createGetKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
 }
 
 export function createUpdateKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
-  return async function PATCH(
+  return refusedWhileKnowledgeDisabled(async function PATCH(
     request: Request,
     context: { params: Promise<{ baseId: string }> | { baseId: string } }
   ): Promise<Response> {
@@ -202,11 +203,11 @@ export function createUpdateKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
     return Response.json({
       knowledgeBase: detailFromEntry(detail)
     } satisfies KnowledgeBaseDetailResponse);
-  };
+  });
 }
 
 export function createPublishKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
-  return async function POST(
+  return refusedWhileKnowledgeDisabled(async function POST(
     request: Request,
     context: { params: Promise<{ baseId: string }> | { baseId: string } }
   ): Promise<Response> {
@@ -233,11 +234,11 @@ export function createPublishKnowledgeBaseHandler(deps: KnowledgeHandlerDeps) {
       { publication: publicationFromRow(result.publication) } satisfies KnowledgeBasePublicationResponse,
       { status: 201 }
     );
-  };
+  });
 }
 
 export function createRevokeKnowledgeBasePublicationHandler(deps: KnowledgeHandlerDeps) {
-  return async function DELETE(
+  return refusedWhileKnowledgeDisabled(async function DELETE(
     request: Request,
     context: {
       params:
@@ -257,5 +258,5 @@ export function createRevokeKnowledgeBasePublicationHandler(deps: KnowledgeHandl
     return result.kind === "ok"
       ? new Response(null, { status: 204 })
       : errorJson("knowledge_base_not_available", 404);
-  };
+  });
 }

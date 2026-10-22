@@ -18,6 +18,15 @@ vi.mock("@/components/app-shell/accountApi", () => ({
   ...accountApi
 }));
 
+// The Knowledge default stays tested as it worked; one test below turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
+
 const strategies = [
   { displayName: "Off", kind: "none" as const, strategyId: "search-disabled" },
   { displayName: "Web search", kind: "web_search" as const, strategyId: "next-search" },
@@ -118,6 +127,31 @@ describe("ChatDefaultsRowsV2", () => {
     expect(
       within(screen.getByRole("radiogroup", { name: "MCP tools default" })).getByRole("radio", { name: "Off" })
     ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("offers no Knowledge default while Knowledge is disabled, even with a saved one", () => {
+    areas.knowledge = false;
+    try {
+      render(
+        <ChatDefaultsRowsV2
+          knowledgeBases={[]}
+          knowledgePlan={explicitKnowledgeSelection({ baseIds: ["kb-1"] })}
+          mcpMode="auto"
+          searchPlan={{ mode: "all_selected", optionIds: [] }}
+          searchStrategies={strategies}
+          onKnowledgePlan={vi.fn()}
+          onMcpMode={vi.fn()}
+          onSearchPlan={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByRole("button", { name: "Knowledge default" })).toBeNull();
+      expect(screen.queryByTestId("settings-default-knowledge")).toBeNull();
+      expect(screen.getByLabelText("Web search default")).toBeInTheDocument();
+      expect(screen.getByRole("radiogroup", { name: "MCP tools default" })).toBeInTheDocument();
+    } finally {
+      areas.knowledge = true;
+    }
   });
 });
 

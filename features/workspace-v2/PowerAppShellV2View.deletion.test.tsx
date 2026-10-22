@@ -5,7 +5,17 @@ import { defaultParameterControls } from "@/components/app-shell/controlDefaults
 import { resetComposerControlStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { PowerAppShellV2View } from "./PowerAppShellV2View";
 
+// Project deletion status stays tested as it worked; the last test turns Projects off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
+
 afterEach(() => {
+  areas.projects = true;
   resetComposerControlStoreForTest();
   resetWorkspaceStoreForTest();
   window.history.replaceState(null, "", "/");
@@ -54,5 +64,16 @@ describe("Project deletion shell composition", () => {
     fireEvent.click(within(overview).getByRole("button", { name: status === "failed" ? "Retry deletion" : "Check status" }));
     expect(status === "failed" ? props.workspace.projects.actions.deleteProject : props.workspace.projects.actions.refresh).toHaveBeenCalledOnce();
     unmount();
+  });
+
+  it("offers no Project deletion status or retry while Projects are disabled", () => {
+    areas.projects = false;
+    window.history.replaceState(null, "", "/p/project-1");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ announcements: [] })));
+    render(<PowerAppShellV2View {...shellProps("failed")} />);
+
+    expect(screen.queryByTestId("project-overview-page")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry deletion" })).toBeNull();
+    expect(screen.getByTestId("projects-disabled-notice")).toBeVisible();
   });
 });

@@ -14,6 +14,12 @@ import { adoptedChatSetupRows, createPrismaAdoptChatSetup } from "./adoptChatSet
 import type { AssistantRowAvailableResources, AssistantRowContextDefaults } from "./rowResolution";
 import { storedColumnsFromAssistantRows } from "./storedContent";
 
+// Adopting Knowledge rows stays tested as it worked; `rowContext.test.ts` covers Knowledge disabled.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 const parameterControls: ModelParameterControls = {
   background: { defaultValue: false, supported: true },
   maxOutputTokens: { defaultValue: 4096, maxValue: 128_000 },

@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { AdminKnowledgeProfileServiceError } from "./profileService";
 import { createAdminKnowledgePolicyHandlers } from "./policyHandlers";
 
+// These handlers stay tested with Knowledge on; `lib/server/knowledge/disabled.test.ts` covers it off.
+vi.mock("../../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 function session(role: "admin" | "user" = "admin") {
   return { user: { role, status: "active" }, userId: "user-1" };
 }

@@ -1,8 +1,10 @@
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { resolveProjectAccess } from "@/lib/server/projects/access";
+import { projectsDisabledResponse } from "@/lib/server/projects/disabled";
 import { prisma } from "@/lib/server/prisma";
 import { kickDefaultAttachmentProcessing } from "@/lib/server/uploads/defaultProcessing";
 import { serializeAttachmentLifecycle, type AttachmentLifecycleRecord } from "@/lib/server/uploads/lifecycleHandlers";
+import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { Prisma } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -53,6 +55,7 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ attachmentId: string; projectId: string }> }
 ): Promise<Response> {
+  if (!PROJECTS_ENABLED) return projectsDisabledResponse();
   const auth = await resolveRequestAuth(request);
   if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
   const params = await projectParams(context);
@@ -127,6 +130,7 @@ export async function DELETE(
   request: Request,
   context: { params: Promise<{ attachmentId: string; projectId: string }> }
 ): Promise<Response> {
+  if (!PROJECTS_ENABLED) return projectsDisabledResponse();
   const auth = await resolveRequestAuth(request);
   if (!auth) return Response.json({ error: "unauthorized" }, { status: 401 });
   const params = await context.params;

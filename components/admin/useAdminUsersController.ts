@@ -9,6 +9,7 @@ import {
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
 import type { AdminActionRequest, AdminDashboard, AdminGroupGrantChange, AdminUserRecord, AdminUserRole } from "@/lib/contracts/admin";
+import { PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { useCallback, useMemo } from "react";
 
 export type UseAdminUsersControllerOptions = Readonly<{
@@ -182,9 +183,13 @@ export function useAdminUsersController({
           confirmLabel: "Revoke sessions",
           dialogLabel: `Revoke sessions for ${userLabel(user)}`,
           icon: "x",
-          message: "User sessions and connected apps revoked. The account stays active until Project ownership is transferred.",
+          message: PROJECTS_ENABLED
+            ? "User sessions and connected apps revoked. The account stays active until Project ownership is transferred."
+            : "User sessions and connected apps revoked. The account stays active while it is a Project's only Owner.",
           prompt: `${userLabel(user)} was not disabled: they are the only active Owner of ${soleOwnedProjectsLabel(result)}. ` +
-            "Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. " +
+            (PROJECTS_ENABLED
+              ? "Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. "
+              : "Projects are turned off, so ownership cannot move. ") +
             "Revoke their sessions and connected apps now? They will need to sign in again and reconnect Telegram.",
           testId: "admin-confirm-revoke-sessions-after-owner-conflict",
           title: "Revoke sessions instead?",

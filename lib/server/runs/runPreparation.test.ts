@@ -69,6 +69,17 @@ vi.mock("../mcp/definitions", async (importOriginal) => {
   return { ...actual, hashCanonicalMcpValue: vi.fn(actual.hashCanonicalMcpValue) };
 });
 
+// The disabled areas stay tested as they worked; "while Knowledge is disabled" turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  },
+  NATIVE_ANTHROPIC_ENABLED: true,
+  PROJECTS_ENABLED: true
+}));
+
 const baseCapabilities: ProviderModelCapabilities = {
   contextWindow: 32_768,
   defaultMaxOutputTokens: 512,
@@ -4118,6 +4129,51 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.knowledgePlan).toEqual(EMPTY_KNOWLEDGE_SELECTION);
     expect(prepared.knowledgeAdmissionPlan).toBeUndefined();
     expect(prepared.providerRequest.tools?.some((tool) => tool.name === "search_knowledge") ?? false).toBe(false);
+  });
+
+  describe("while Knowledge is disabled", () => {
+    it.each([
+      ["All my knowledge", { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 }],
+      ["an explicit base", { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 }]
+    ] as const)("refuses a request that selects %s, visibly and before any Knowledge read", async (_name, knowledgePlan) => {
+      areas.knowledge = false;
+      try {
+        const load = vi.fn();
+        const harness = createHarness();
+        const result = await prepareRun(
+          { ...harness.deps, knowledgeAdmission: { load } },
+          sendInput(successBody({ knowledgePlan }))
+        );
+
+        expect(result).toMatchObject({ code: "knowledge_disabled", ok: false, status: 409 });
+        expect(load).not.toHaveBeenCalled();
+      } finally {
+        areas.knowledge = true;
+      }
+    });
+
+    it("answers without a chat's or folder's saved Knowledge default, which stays stored", async () => {
+      areas.knowledge = false;
+      try {
+        const load = vi.fn();
+        const harness = createHarness();
+        const result = await prepareRun(
+          { ...harness.deps, knowledgeAdmission: { load } },
+          sendInput(successBody({ content: textMessageContent("What changed?") }), {
+            defaultKnowledgePlan: { baseIds: ["base-1"], mode: "explicit", sourceIds: [], version: 1 },
+            folderDefaultKnowledgePlan: { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 }
+          })
+        );
+
+        if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+        const prepared = materializePreparedRunData(result.prepared);
+        expect(prepared.normalizedRequest.knowledgePlan).toEqual(EMPTY_KNOWLEDGE_SELECTION);
+        expect(prepared.knowledgeAdmissionPlan).toBeUndefined();
+        expect(load).not.toHaveBeenCalled();
+      } finally {
+        areas.knowledge = true;
+      }
+    });
   });
 
   it("composes Knowledge, Search, and MCP without reintroducing Memory tools", async () => {

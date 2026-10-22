@@ -335,6 +335,14 @@ describe("composer / palette entries mirror existing actions", () => {
     expect(option(/Архив проекта/u)).toHaveAttribute("aria-disabled", "true");
   });
 
+  it("offers no Knowledge command or base while Knowledge is not offered", () => {
+    render(<Harness knowledgeOffered={false} />);
+    type("/", "/know");
+    expect(within(list()).queryByRole("option", { name: /Choose Knowledge/u })).toBeNull();
+    type("/", "/prod");
+    expect(within(list()).queryByRole("option", { name: /Product research/u })).toBeNull();
+  });
+
   it("turns web search off and Agent on or off, with the chips' reasons and no Workspace command", () => {
     const onSelectSearchOptionIds = vi.fn(), onAgent = vi.fn();
     const view = render(<Harness selectedSearchOptionIds={["web-primary"]} onSelectSearchOptionIds={onSelectSearchOptionIds}

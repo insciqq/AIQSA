@@ -12,6 +12,7 @@ import {
 import { isProjectRole } from "../../domain/projects";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import { refusedWhileProjectsDisabled } from "./disabled";
 import type { ProjectRepository, ProjectRepositoryResult } from "./prismaRepository";
 
 export type ProjectHandlerDeps = Readonly<{
@@ -88,7 +89,7 @@ export function createListProjectsHandler(deps: ProjectHandlerDeps) {
 }
 
 export function createCreateProjectHandler(deps: ProjectHandlerDeps) {
-  return async function POST(request: Request): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function POST(request: Request): Promise<Response> {
     const session = await authenticated(deps, request);
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
@@ -112,7 +113,7 @@ export function createCreateProjectHandler(deps: ProjectHandlerDeps) {
       }),
       (project) => Response.json({ project } satisfies ProjectResponseWire, { status: 201 })
     );
-  };
+  });
 }
 
 export function createGetProjectHandler(deps: ProjectHandlerDeps) {
@@ -128,7 +129,7 @@ export function createGetProjectHandler(deps: ProjectHandlerDeps) {
 }
 
 export function createUpdateProjectHandler(deps: ProjectHandlerDeps) {
-  return async function PATCH(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function PATCH(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
@@ -189,11 +190,11 @@ export function createUpdateProjectHandler(deps: ProjectHandlerDeps) {
       }),
       (project) => Response.json({ project } satisfies ProjectResponseWire)
     );
-  };
+  });
 }
 
 export function createDeleteProjectHandler(deps: ProjectHandlerDeps) {
-  return async function DELETE(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function DELETE(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
     if (session instanceof Response) return session;
     const { projectId } = await context.params;
@@ -205,11 +206,11 @@ export function createDeleteProjectHandler(deps: ProjectHandlerDeps) {
       }),
       ({ id, status }) => Response.json({ projectId: id, status }, { status: status === "completed" ? 200 : 202 })
     );
-  };
+  });
 }
 
 export function createLeaveProjectHandler(deps: ProjectHandlerDeps) {
-  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
@@ -231,7 +232,7 @@ export function createLeaveProjectHandler(deps: ProjectHandlerDeps) {
       }),
       (value) => Response.json(value)
     );
-  };
+  });
 }
 
 export function createListProjectGrantsHandler(deps: ProjectHandlerDeps) {
@@ -245,7 +246,7 @@ export function createListProjectGrantsHandler(deps: ProjectHandlerDeps) {
 }
 
 export function createAddProjectGrantHandler(deps: ProjectHandlerDeps) {
-  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
@@ -271,11 +272,11 @@ export function createAddProjectGrantHandler(deps: ProjectHandlerDeps) {
       }),
       (grant) => Response.json({ grant }, { status: 201 })
     );
-  };
+  });
 }
 
 export function createUpdateProjectGrantHandler(deps: ProjectHandlerDeps) {
-  return async function PATCH(
+  return refusedWhileProjectsDisabled(async function PATCH(
     request: Request,
     context: RouteContext<"grantId" | "projectId">
   ): Promise<Response> {
@@ -302,11 +303,11 @@ export function createUpdateProjectGrantHandler(deps: ProjectHandlerDeps) {
       }),
       (grant) => Response.json({ grant })
     );
-  };
+  });
 }
 
 export function createDeleteProjectGrantHandler(deps: ProjectHandlerDeps) {
-  return async function DELETE(
+  return refusedWhileProjectsDisabled(async function DELETE(
     request: Request,
     context: RouteContext<"grantId" | "projectId">
   ): Promise<Response> {
@@ -325,7 +326,7 @@ export function createDeleteProjectGrantHandler(deps: ProjectHandlerDeps) {
       }),
       () => new Response(null, { status: 204 })
     );
-  };
+  });
 }
 
 export function createPreviewProjectGrantRemovalHandler(deps: ProjectHandlerDeps) {
@@ -389,7 +390,7 @@ export function createProjectCandidatesHandler(deps: ProjectHandlerDeps) {
 }
 
 export function createAddProjectResourceHandler(deps: ProjectHandlerDeps) {
-  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
@@ -421,11 +422,11 @@ export function createAddProjectResourceHandler(deps: ProjectHandlerDeps) {
       }),
       (resources) => Response.json({ resources }, { status: 201 })
     );
-  };
+  });
 }
 
 export function createProjectResourcePreviewHandler(deps: ProjectHandlerDeps) {
-  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await authenticated(deps, request);
     if (session instanceof Response) return session;
     const [body, bodyError] = await jsonBody(request);
@@ -457,11 +458,11 @@ export function createProjectResourcePreviewHandler(deps: ProjectHandlerDeps) {
       }),
       (preview) => Response.json({ preview })
     );
-  };
+  });
 }
 
 export function createDeleteProjectResourceHandler(deps: ProjectHandlerDeps) {
-  return async function DELETE(
+  return refusedWhileProjectsDisabled(async function DELETE(
     request: Request,
     context: RouteContext<"bindingId" | "projectId">
   ): Promise<Response> {
@@ -480,7 +481,7 @@ export function createDeleteProjectResourceHandler(deps: ProjectHandlerDeps) {
       }),
       () => new Response(null, { status: 204 })
     );
-  };
+  });
 }
 
 export function createProjectActivityHandler(deps: ProjectHandlerDeps) {

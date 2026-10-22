@@ -9,6 +9,7 @@ import {
 } from "../http/requestBody";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
+import { KNOWLEDGE_DISABLED_CODE, KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import {
   decodeChatDefaultMcpMode,
   isAssistantReferenceId,
@@ -269,6 +270,8 @@ function buildSettingsUpdate(
       if (!decoded.ok || decoded.plan.mode === "inherited") {
         return { error: "default_knowledge_plan_invalid" };
       }
+      // Knowledge is disabled: clearing the saved default stays possible, choosing one does not.
+      if (!KNOWLEDGE_ENABLED && decoded.plan.mode !== "none") return { error: KNOWLEDGE_DISABLED_CODE };
       update.defaultKnowledgePlan = decoded.plan.mode === "none" ? null : decoded.plan;
     }
   }
@@ -400,7 +403,9 @@ export function createUpdateSettingsHandler(deps: SettingsHandlerDeps) {
     const result = buildSettingsUpdate(body, data);
     if (!result.update) {
       const error = result.error ?? "settings_update_required";
-      return Response.json({ error }, { status: error === "assistant_not_available" ? 404 : 400 });
+      return Response.json({ error }, {
+        status: error === "assistant_not_available" ? 404 : error === KNOWLEDGE_DISABLED_CODE ? 409 : 400
+      });
     }
 
     const persistence = await deps.updateSettings(

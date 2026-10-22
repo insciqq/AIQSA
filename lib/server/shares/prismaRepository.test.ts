@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../prisma", () => ({ prisma: {} }));
+// Only the Project chat test reaches Project access; personal chats never ask.
+vi.mock("../projects/access", () => ({ resolveProjectAccess: vi.fn(async () => ({ projectId: "p", role: "MANAGER" })) }));
 
 import { createPrismaShareRepository } from "./prismaRepository";
+import { ProjectsDisabledError } from "../projects/disabled";
 
 /**
  * A public share holds the selected leaf's path only: an answer review that
@@ -63,5 +66,25 @@ describe("createChatShare with answer reviews", () => {
     expect(shown).toHaveLength(2);
     expect(shown[1]).toContain("Later revision");
     expect(shown.join("\n")).not.toMatch(/Review request|Critique|Revision request|Shared answer/u);
+  });
+});
+
+describe("createChatShare while Projects are disabled", () => {
+  it("creates no public share of a Project chat", async () => {
+    const create = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      answerReviewSession: { findMany: async () => [] },
+      chat: { findFirst: vi.fn(async () => ({ activeLeafMessageId: "a", id: "c", messages, project: { publicSharingEnabled: true, status: "ACTIVE" },
+        projectId: "p", title: "Chat" })) },
+      message: { findMany: async () => [] },
+      sharedChatSnapshot: { create }
+    };
+    const repository = createPrismaShareRepository({ $transaction: async (work: (client: typeof tx) => unknown) => work(tx) } as never);
+
+    await expect(repository.createChatShare({ activeLeafMessageId: "a", chatId: "c", shareToken: "synthetic", slugHash: "synthetic", userId: "u" }))
+      .rejects.toBeInstanceOf(ProjectsDisabledError);
+    expect(create).not.toHaveBeenCalled();
+    expect(tx.chat.findFirst).toHaveBeenCalledOnce();
   });
 });

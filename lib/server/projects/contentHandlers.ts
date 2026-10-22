@@ -5,6 +5,7 @@ import {
 import { CHAT_TITLE_MAX_LENGTH, codePointLength } from "../../contracts/chats";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import { refusedWhileProjectsDisabled } from "./disabled";
 import type { ProjectRepositoryResult } from "./prismaRepository";
 import type { ReturnTypeOfProjectContentRepository } from "./contentRepository";
 
@@ -62,7 +63,7 @@ export function createProjectWorkspaceHandler(deps: ProjectContentHandlerDeps) {
 }
 
 export function createProjectChatHandler(deps: ProjectContentHandlerDeps) {
-  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await auth(deps, request);
     if (session instanceof Response) return session;
     const [input, inputError] = await body(request);
@@ -99,11 +100,11 @@ export function createProjectChatHandler(deps: ProjectContentHandlerDeps) {
       }),
       (chat) => Response.json({ chat }, { status: 201 })
     );
-  };
+  });
 }
 
 export function createProjectFolderHandler(deps: ProjectContentHandlerDeps) {
-  return async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
+  return refusedWhileProjectsDisabled(async function POST(request: Request, context: RouteContext<"projectId">): Promise<Response> {
     const session = await auth(deps, request);
     if (session instanceof Response) return session;
     const [input, inputError] = await body(request);
@@ -127,11 +128,11 @@ export function createProjectFolderHandler(deps: ProjectContentHandlerDeps) {
       }),
       (folder) => Response.json({ folder }, { status: 201 })
     );
-  };
+  });
 }
 
 export function createProjectFolderUpdateHandler(deps: ProjectContentHandlerDeps) {
-  return async function PATCH(
+  return refusedWhileProjectsDisabled(async function PATCH(
     request: Request,
     context: RouteContext<"folderId" | "projectId">
   ): Promise<Response> {
@@ -162,11 +163,11 @@ export function createProjectFolderUpdateHandler(deps: ProjectContentHandlerDeps
       }),
       (folder) => Response.json({ folder })
     );
-  };
+  });
 }
 
 export function createProjectFolderDeleteHandler(deps: ProjectContentHandlerDeps) {
-  return async function DELETE(
+  return refusedWhileProjectsDisabled(async function DELETE(
     request: Request,
     context: RouteContext<"folderId" | "projectId">
   ): Promise<Response> {
@@ -182,11 +183,11 @@ export function createProjectFolderDeleteHandler(deps: ProjectContentHandlerDeps
       }),
       () => new Response(null, { status: 204 })
     );
-  };
+  });
 }
 
 export function createProjectChatArchiveHandler(deps: ProjectContentHandlerDeps, archived: boolean) {
-  return async function POST(
+  return refusedWhileProjectsDisabled(async function POST(
     request: Request,
     context: RouteContext<"chatId" | "projectId">
   ): Promise<Response> {
@@ -203,5 +204,5 @@ export function createProjectChatArchiveHandler(deps: ProjectContentHandlerDeps,
       }),
       (chat) => Response.json({ chat })
     );
-  };
+  });
 }

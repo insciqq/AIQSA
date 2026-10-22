@@ -19,6 +19,7 @@ import {
 } from "@/lib/contracts/assistants";
 import { KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES } from "@/lib/contracts/knowledge";
 import { SKILL_ASSISTANT_MAX_AVAILABLE, SKILL_MAX_PINNED } from "@/lib/contracts/skills";
+import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
 import { useId, useState, type ReactNode } from "react";
 import {
@@ -345,14 +346,19 @@ function KnowledgeBody({ editor }: Readonly<{ editor: AssistantEditorView }>) {
         options={[
           { label: ASSISTANT_INHERIT_LABEL, mode: "inherit" },
           { label: "None", mode: "none" },
-          { label: "Selected", mode: "selected", sub: `${count} of ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES}` }
+          // Knowledge is disabled: a selection saved earlier shows only so it can be cleared.
+          ...(KNOWLEDGE_ENABLED || mode === "selected"
+            ? [{ label: "Selected", mode: "selected" as const, sub: `${count} of ${KNOWLEDGE_SELECTION_MAX_EXPLICIT_RESOURCES}` }]
+            : [])
         ]}
         value={mode}
         onChange={(next) => editor.onRowChange("knowledge", {
           value: next === "inherit" ? { mode: "inherit" } : next === "none" ? { mode: "none" } : { baseIds: [], mode: "explicit", sourceIds: [] }
         })}
       />
-      {mode === "selected" ? (
+      {mode === "selected" && !KNOWLEDGE_ENABLED ? (
+        <p role="status">Knowledge is turned off. Choose None or {ASSISTANT_INHERIT_LABEL} to save this Assistant.</p>
+      ) : mode === "selected" ? (
         <>
           {options.knowledgeDataState === "loading" ? <p role="status">Loading Knowledge…</p> : null}
           {options.knowledgeDataState === "error" ? (
@@ -413,6 +419,10 @@ export function AssistantSetupColumnV2({ editor, locked, onOpenSharing }: Readon
   onOpenSharing(): void;
 }>) {
   const rows = editor.draft.rows;
+  // Knowledge is disabled: the Knowledge row shows only for an Assistant that
+  // opened with a Knowledge selection, so that selection can be cleared.
+  const [knowledgeRowShown] = useState(() => KNOWLEDGE_ENABLED || rows.knowledge.value.mode === "explicit");
+  const rowKeys = ASSISTANT_ROW_KEYS.filter((row) => row !== "knowledge" || knowledgeRowShown);
   const failedRows = (errors: AssistantEditorView["errors"]) => ASSISTANT_ROW_KEYS.filter((row) => errors?.rows[row]);
   const [expanded, setExpanded] = useState<ReadonlySet<AssistantRowKey>>(() => new Set([
     ...(editor.initialExpandedRow ? [editor.initialExpandedRow] : []),
@@ -458,7 +468,7 @@ export function AssistantSetupColumnV2({ editor, locked, onOpenSharing }: Readon
       </header>
       <fieldset className="v2-assistant-rows" disabled={locked}>
         <legend className="v2-sr-only">Setup rows</legend>
-        {ASSISTANT_ROW_KEYS.map((row) => (
+        {rowKeys.map((row) => (
           <SetupRow
             error={editor.errors?.rows[row] ?? liveErrors[row]}
             expanded={expanded.has(row)}

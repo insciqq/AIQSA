@@ -1,10 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultProviderModels } from "../../domain/catalog";
 import type { CatalogData } from "../catalog/currentUserCatalog";
 import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
 import type { ChatAssistantOverrides } from "../../contracts/chats";
 import { nextChatAssistantOverrides } from "../chats/assistantOverrides";
 import { personalAssistantRowDefaults, projectAssistantRowDefaults, storedOverridesInEffect } from "./rowContext";
+
+// Knowledge defaults stay tested as they worked; one test below turns Knowledge off.
+const areas = vi.hoisted(() => ({ knowledge: true }));
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  get KNOWLEDGE_ENABLED() {
+    return areas.knowledge;
+  }
+}));
 
 const key = "openai:gpt-5.5";
 
@@ -54,6 +63,20 @@ describe("personal Assistant row defaults", () => {
     expect(defaults.knowledge).toEqual({ baseIds: ["base-1"], mode: "explicit", sourceIds: [] });
     expect(defaults.tools).toEqual({ mode: "load_all" });
     expect(defaults.search).toEqual({ mode: "off" });
+  });
+
+  it("inherits no Knowledge from a saved Chat default while Knowledge is disabled", () => {
+    areas.knowledge = false;
+    try {
+      const { defaults } = personalAssistantRowDefaults(catalogData({
+        defaultKnowledgePlan: { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 },
+        defaultProviderModelId: "gpt-5.5"
+      }));
+
+      expect(defaults.knowledge).toEqual({ mode: "none" });
+    } finally {
+      areas.knowledge = true;
+    }
   });
 
   it("reads undecodable saved values and unusable models as none", () => {

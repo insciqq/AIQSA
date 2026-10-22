@@ -105,6 +105,8 @@ import type { CatalogData } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { resolveChatAccess } from "../projects/access";
+import { ProjectsDisabledError } from "../projects/disabled";
+import { PROJECTS_ENABLED } from "../../domain/disabledAreas";
 import { loadProjectAssistantAuthority } from "../projects/prismaRepository";
 import {
   loadProjectChatDefaultAuthority,
@@ -2660,6 +2662,12 @@ export function createPrismaChatRepository(
       const changesNextRun = activeLeafMessageId !== undefined || workspaceEnabled !== undefined ||
         assistantId !== undefined || assistantOverrides !== undefined;
       if (access.kind === "project") {
+        // Projects are disabled: a Project chat still switches the branch it
+        // shows, which is reading it, but takes no other change.
+        if (!PROJECTS_ENABLED && [answerReview, assistantId, assistantOverrides, defaultKnowledgePlan, defaultSearchPlan,
+          folderId, pinned, title, workspaceEnabled].some((value) => value !== undefined)) {
+          throw new ProjectsDisabledError();
+        }
         // Chat values in a Project chat are checked against the Project's
         // own catalog and resources, never the member's personal ones.
         const authority = assistantOverrides !== undefined && projectOverridesNeedAuthority(assistantOverrides)

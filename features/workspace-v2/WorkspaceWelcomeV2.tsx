@@ -37,6 +37,7 @@ import { prepareArtifactEdit } from "@/components/artifacts/artifactClient";
 import { openArtifactPanel } from "@/components/artifacts/artifactPanelStore";
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
 import type { ArtifactDetail } from "@/lib/contracts/artifacts";
+import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import { ArtifactsPanelV2, type ArtifactLibraryFilter } from "@/features/library-v2/ArtifactsPanelV2";
 import type {
   PowerAppShellV2Props,
@@ -291,7 +292,8 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       id: "assistants",
       label: "Assistants"
     },
-    {
+    // Knowledge is disabled: Studio has no Knowledge section.
+    ...(KNOWLEDGE_ENABLED ? [{
       // A base, the Sources catalog, base creation and Source detail render
       // as sub-views of this section under the Library's own crumb (A14).
       content: knowledgeView && isKnowledgeSubview(knowledgeView) ? (
@@ -313,9 +315,9 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           query={knowledgeView?.list.query}
         />
       ),
-      id: "knowledge",
+      id: "knowledge" as const,
       label: "Knowledge"
-    },
+    }] : []),
     {
       content: (
         <FilesPanelV2

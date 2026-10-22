@@ -1209,6 +1209,21 @@ describe("Assistants v2 wire emission", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("refuses selected Knowledge while Knowledge is disabled, before persistence", async () => {
+    const create = vi.fn(async () => ({ assistantId: "assistant-1", kind: "ok" as const }));
+    const response = await createCreateAssistantHandler(handlerDeps({ create }))(new Request("http://test/api/me/assistants", {
+      body: JSON.stringify({ ...rowsDraft, rows: {
+        ...defaultRows, knowledge: { policy: "adjustable", value: { baseIds: ["base-1"], mode: "explicit", sourceIds: [] } }
+      } }),
+      headers: { "content-type": "application/json" },
+      method: "POST"
+    }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "knowledge_disabled", row: "knowledge" });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("makes an unusable adjustable model a row deviation and a fixed one a neutral unavailability", async () => {
     const entry = (policy: "adjustable" | "fixed", owned: boolean) => accessEntry({
       content: contentRow({
