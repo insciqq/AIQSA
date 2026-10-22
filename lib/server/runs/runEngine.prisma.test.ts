@@ -7,7 +7,6 @@ import { prisma } from "../prisma";
 import { createChatPdfRepository } from "../uploads/chatPdfPersistence";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { createPrismaRunRepository } from "./prismaRepository";
-import { mapActiveRunConflict } from "./prismaRepositoryShared";
 import { ActiveRunConflictError, type RunRepository } from "./runRepositoryContract";
 import { reconcileStaleRuns } from "./runRecovery";
 import { createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
@@ -78,19 +77,36 @@ async function turn(chatId: string, answerStatus: "complete" | "streaming" = "st
   return { answerId: answer.id, questionId: question.id };
 }
 
-/** An active run written outside this release: a previous release names no
- * engine column at all, a native writer names its own. */
-async function insertActiveRun(input: Readonly<{ chatId: string; engine?: "native"; turn: Turn; userId: string }>): Promise<string> {
-  const id = randomUUID();
+type OutsideWriter = Readonly<{ chatId: string; engine?: "native"; turn: Turn; userId: string }>;
+
+/** The INSERT of an active run written outside this release: a previous
+ * release names no engine column at all, a native writer names its own. */
+function activeRunInsert(id: string, input: OutsideWriter): Prisma.Sql {
   const engineColumn = input.engine ? Prisma.sql`, "engine"` : Prisma.empty;
   const engineValue = input.engine ? Prisma.sql`, ${input.engine}::"ModelRunEngine"` : Prisma.empty;
-  await prisma.$executeRaw(Prisma.sql`
+  return Prisma.sql`
     INSERT INTO "ModelRun" ("id", "userId", "chatId", "userMessageId", "assistantMessageId", "provider", "modelId",
       "status", "normalizedRequest", "updatedAt"${engineColumn})
     VALUES (${id}, ${input.userId}, ${input.chatId}, ${input.turn.questionId}, ${input.turn.answerId}, 'fake', 'fake-qsa',
-      'streaming', '{}'::jsonb, CURRENT_TIMESTAMP${engineValue})
-  `);
+      'streaming', '{}'::jsonb, CURRENT_TIMESTAMP${engineValue})`;
+}
+
+async function insertActiveRun(input: OutsideWriter): Promise<string> {
+  const id = randomUUID();
+  await prisma.$executeRaw(activeRunInsert(id, input));
   return id;
+}
+
+/** Whether ModelRun_one_active_per_chat_idx refuses the writer's run. The
+ * conflict target and predicate infer that index as the only arbiter, so a
+ * refusal skips the row; a conflict with any other constraint still raises,
+ * and an insert that nothing refuses lands and returns its id. */
+async function activeRunIndexRefuses(input: OutsideWriter): Promise<boolean> {
+  const inserted = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`${activeRunInsert(randomUUID(), input)}
+    ON CONFLICT ("chatId") WHERE NOT "workspaceWaitPending" AND "status" IN ('preparing', 'queued', 'streaming', 'in_progress')
+    DO NOTHING
+    RETURNING "id"`);
+  return inserted.length === 0;
 }
 
 /** An answer the previous release started: it reaches this release as an active row without the column. */
@@ -127,13 +143,14 @@ async function interruptedFollowup(userId: string, engine: Engine): Promise<stri
   const first = await turn(chatId, "complete");
   const second = await turn(chatId, "streaming", first.answerId);
   return prisma.$transaction(async (tx) => {
+    // Only a preparing run lacks its normalized request (ModelRun_memory_request_shape_check).
     const predecessor = await tx.modelRun.create({ data: {
-      assistantMessageId: first.answerId, chatId, modelId: "fake-qsa", provider: "fake", status: "complete",
-      userId, userMessageId: first.questionId
+      assistantMessageId: first.answerId, chatId, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
+      status: "complete", userId, userMessageId: first.questionId
     } });
     const successor = await tx.modelRun.create({ data: {
-      assistantMessageId: second.answerId, chatId, engine, modelId: "fake-qsa", provider: "fake", status: "streaming",
-      userId, userMessageId: second.questionId
+      assistantMessageId: second.answerId, chatId, engine, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
+      status: "streaming", userId, userMessageId: second.questionId
     } });
     await tx.workspaceFollowup.create({ data: {
       admissionKey: successor.id.replaceAll("-", "").repeat(2), admissionResult: {}, chatId, claimToken: randomUUID(),
@@ -238,17 +255,17 @@ describe("the old run core beside the native engine on one database", () => {
     await expect(repository.createRun(sendInput(chatId, userId, native.assistantMessageId)))
       .rejects.toBeInstanceOf(ActiveRunConflictError);
     // A previous release's writer meets the same engine-agnostic index.
-    await expect(mapActiveRunConflict(() => insertActiveRun({
+    await expect(activeRunIndexRefuses({
       chatId, turn: { answerId: native.assistantMessageId, questionId: native.userMessageId }, userId
-    }))).rejects.toBeInstanceOf(ActiveRunConflictError);
+    })).resolves.toBe(true);
     await expect(prisma.modelRun.count({ where: { chatId } })).resolves.toBe(1);
 
     // And a native run cannot start beside an old-core one.
     const oldCore = await oldCoreRun(userId);
-    await expect(mapActiveRunConflict(() => insertActiveRun({
+    await expect(activeRunIndexRefuses({
       chatId: oldCore.chatId, engine: "native",
       turn: { answerId: oldCore.assistantMessageId, questionId: oldCore.userMessageId }, userId
-    }))).rejects.toBeInstanceOf(ActiveRunConflictError);
+    })).resolves.toBe(true);
     await expect(prisma.modelRun.count({ where: { chatId: oldCore.chatId } })).resolves.toBe(1);
   });
 
