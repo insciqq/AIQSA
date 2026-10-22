@@ -893,7 +893,7 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   const sheet = page.getByRole("dialog", { name: "Add provider" });
   await expect(sheet).toBeVisible();
   await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers");
-  await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
+  await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(5);
   await expect(sheet.getByRole("button", { name: "OpenAI", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(sheet.getByTestId("provider-add-summary")).toContainText("GPT-5.6 Terra, GPT-5.6 Luna, GPT-5.6 Sol");
   await expect(sheet.getByLabel("Name")).toHaveValue("OpenAI");
@@ -955,7 +955,7 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
     await page.setViewportSize(viewport);
     await page.getByRole("button", { name: "Add provider" }).click();
     const reopened = page.getByRole("dialog", { name: "Add provider" });
-    await expect(reopened.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
+    await expect(reopened.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(5);
     const columns = await reopened.getByTestId("provider-add-tiles").evaluate((element) =>
       getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
     );
@@ -1203,7 +1203,7 @@ test("administrator discovers and configures a Custom compatible provider throug
     }
     await page.getByRole("button", { name: "Add provider" }).click();
     const sheet = page.getByRole("dialog", { name: "Add provider" });
-    await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(6);
+    await expect(sheet.getByTestId("provider-add-tiles").getByRole("button")).toHaveCount(5);
     await sheet.getByRole("button", { name: /^Custom/ }).click();
     await expect(sheet.getByLabel("Base URL")).toBeVisible();
     await expect(sheet.getByLabel("API style")).toHaveValue("chat_completions");
