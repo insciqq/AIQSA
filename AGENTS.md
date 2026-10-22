@@ -1,6 +1,8 @@
 # AIQSA
 
-AIQSA is an open-source (AGPL), self-hosted, multi-user, model-agnostic conversational workspace. Chat is the product; administration exists to make providers, models, Search, Knowledge (document retrieval), Personal Memory, Assistants, Skills, MCP tools, the sandboxed Workspace, scheduled tasks and artifacts available and trustworthy. Coding agents write all of the code; the operator sets scope and makes product decisions. Real installations run in production, so upgrades must keep working.
+AIQSA is a self-hosted, multi-user, model-agnostic agent workspace under the AGPL, built for the operator's colleagues on two production installations; there is no work for a hypothetical outside audience (operator decision 2026-10-22). A chat is an agent with web search, MCP tools, the sandboxed Workspace, image generation, artifacts, Personal Memory, Skills, Assistants, scheduled tasks and saved secrets; administration makes providers, models and tools available and trustworthy. Coding agents write all of the code; the operator sets scope and makes product decisions.
+
+Scope (operator decision 2026-10-22): Projects, Knowledge (document retrieval) and native Anthropic are disabled until their code is removed, and existing Project chats stay readable. Memory is kept but frozen: simplify and stabilize only. Assistants, Telegram and Skills stay. The native agent engine replaces the old run core and the Codex Agent mode ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
 
 Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL with pgvector, OpenSearch as a rebuildable search index, S3-compatible private object storage, parser sidecars, a KVM Microsandbox Workspace runner, and single-host Docker Compose. `connect/` is a separate Go client.
 
@@ -8,7 +10,7 @@ Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL wit
 
 - `app/` holds pages and routes; `app/api/` handlers stay thin and call into `lib/server/`.
 - `lib/contracts/` holds client-safe wire shapes and is a dependency leaf; `lib/domain/` holds pure shared rules; `lib/browser/` holds browser-only helpers.
-- `lib/server/` holds everything server-only: repositories, providers, the run pipeline (`runs/`), `memory/`, `knowledge/`, `mcp/`, `workspace/`, `auth/` and the rest.
+- `lib/server/` holds everything server-only: repositories, providers, the run pipeline (`runs/`), `memory/`, `mcp/`, `workspace/`, `auth/` and the rest.
 - `features/` and `components/` hold the browser UI.
 - `prisma/` holds the schema, append-only migrations and bootstrap; `ops/` holds companion image builds; `scripts/` holds tooling, smokes and the task ledger; `tests/` holds end-to-end and integration suites; `benchmarks/` is opt-in.
 
@@ -43,7 +45,7 @@ npm run task:check       # after any task ledger change
 | Prisma schema, migrations, retention, deletion, backup and restore | [Persistence](agent_docs/PERSISTENCE.md) |
 | Provider adapters, model roles, capability checks, Search, embeddings, reranking, prices | [Providers](agent_docs/PROVIDERS.md) |
 | Personal Memory | [Memory](agent_docs/MEMORY.md) |
-| The run pipeline: admission, context and compaction, tools, Knowledge answers, MCP tool loop, Workspace and Agent runs, scheduled tasks, Telegram, recovery, outputs | [Run contracts](agent_docs/RUN_CONTRACTS.md) |
+| The agent and its runs: admission, retries, context and compaction, tools and approvals, agent-initiated changes, Workspace, scheduled tasks, Telegram, recovery, outputs | [Run contracts](agent_docs/RUN_CONTRACTS.md) |
 | UI behavior and visual design | [Frontend](agent_docs/FRONTEND.md) |
 | Sessions, secrets, untrusted content, MCP trust, the Workspace sandbox, artifacts, dependencies | [Security](agent_docs/SECURITY.md) |
 | External sign-in, SCIM, two-factor sign-in | [Sign-in](agent_docs/SIGN_IN.md) |
@@ -54,23 +56,22 @@ npm run task:check       # after any task ledger change
 
 These are the invariants most likely to be broken by an otherwise reasonable change. The area documents explain the details.
 
-- **Authorize at the operation.** Every read or write of a private resource authenticates and checks ownership, entitlement and lifecycle where it happens, not only at the page. Administrator status does not open other users' private Assistants or Knowledge. A resource the caller cannot see and one that does not exist get the same response, so responses leak nothing.
-- **The server decides.** Controls resolve from the current user's server-filtered catalog and are rechecked before a run is admitted and again before external dispatch. The browser, a model, a tool result or a stored reference can never grant entitlement, pick a target the user cannot use, or authorize a mutation.
+- **Answer first.** Delivering the user's answer outranks bookkeeping. Model calls and read-only tools retry transparently; a call with external side effects is never re-sent blindly when its outcome is unknown. Usage comes only from provider-reported accounting, is recorded after the answer and never gates it; unknown stays unknown and is never estimated ([Run contracts](agent_docs/RUN_CONTRACTS.md#answer-first)).
+- **Authorize at the operation.** Every request that reads or writes a private resource authenticates and checks ownership, entitlement and lifecycle where it happens, not only at the page. Administrator status does not open other users' private resources. A resource the caller cannot see and one that does not exist get the same response, so responses leak nothing.
+- **The server decides.** Controls resolve from the current user's server-filtered catalog and are checked when a run is admitted, not again before each call. The browser, a model, a tool result or a stored reference can never grant entitlement or pick a target the user cannot use.
 - **No silent substitution.** When a chosen provider, model, credential, route or destination is unavailable, fail visibly. Never fall back to something the user or administrator did not choose, and keep "not set", explicit Off and a concrete choice distinct.
-- **Accepted runs are frozen.** Configuration changes affect future messages only. An accepted run keeps its exact bindings, identity, outputs and recovery evidence; editing a message branches the conversation; terminal persistence has exactly one guarded winner.
-- **Never repeat an external side effect.** Record a durable dispatch identity before external I/O. An operation whose outcome is unknown is never replayed, and recovery never repeats settled or crash-ambiguous work. Usage and cost come only from provider-reported accounting; unknown stays unknown and is never estimated from text length.
-- **Private by default.** Attachments, Knowledge originals, user text, queries, evidence and internal identifiers stay private. Browsers receive only explicit, reviewed projections. Logs are content-free. Store raw request or response bodies only when execution, recovery, safety or accounting needs them; being useful for debugging is not enough.
-- **Projects are isolated.** Project runs use only Project and shared resources, never a member's personal credentials, Memory, chat history, unpublished Skills, OAuth identity or personal MCP values.
-- **Untrusted input is bounded first.** Validate and bound route, provider, tool and file input before any mutation or external I/O. Provider and storage SDKs and all secrets stay on the server.
-- **Models do not mutate on their own.** A model may change user data only through the operator's listed exceptions (scheduled tasks and Skill saves in personal chats, MCP calls the user approved); see [Run contracts](agent_docs/RUN_CONTRACTS.md) and [Security](agent_docs/SECURITY.md).
+- **Accepted runs keep their bindings.** Configuration changes affect future messages only, and editing a message branches the conversation.
+- **The agent acts only for its user.** A run uses its user's own resources and those shared with the user, never another user's private ones. The agent may do for the user what the user can do with their own resources (secrets, Skills, Assistants, artifacts, scheduled tasks, personal settings), showing each change with a card and Undo where supported. Deleting, sharing or publishing beyond the user needs the user's confirmation, and data-changing MCP calls need approval; administrator settings are out of reach ([Run contracts](agent_docs/RUN_CONTRACTS.md#agent-initiated-changes)).
+- **Private by default.** User text, attachments, queries, tool results and internal identifiers stay private. Browsers receive only explicit, reviewed projections. Logs are content-free. Store raw request or response bodies only when execution, recovery, safety or accounting needs them; being useful for debugging is not enough.
+- **Untrusted input is bounded first.** Validate and bound route, provider, tool and file input before any mutation or external I/O. Provider and storage SDKs and installation secrets stay on the server.
 - **Nothing new leaves the installation implicitly.** A new external destination, credential audience, public projection or durable store needs its privacy, failure, retention and operator story written down in [Architecture](agent_docs/ARCHITECTURE.md) first.
 
 ## Product stance
 
 - Answers show content, sources, generated files, factual progress and actionable failures. Inspecting internal execution (raw payloads, scores, event histories) is not a product goal: do not build diagnostic views, and delete diagnostics nobody uses together with the data that only fed them.
-- Keep a modular monolith. Add a service, runtime, library or abstraction only for an observed limitation or real duplication. Prefer the smallest complete change that keeps a self-hosted installation runnable.
-- Extend existing conversation, provider, tool, entitlement and run contracts instead of creating parallel ones. Never present planned capabilities as shipped.
-- Installations upgrade with `docker compose pull && docker compose up -d`. Persisted data, the chat export format, environment variables, URLs and backups are compatibility contracts; breaking one needs an explicit operator decision ([Persistence](agent_docs/PERSISTENCE.md#migrations-and-bootstrap)). Development databases, fixtures and local task files are not contracts.
+- Keep a modular monolith. Add a service, runtime, library or abstraction only for an observed limitation or real duplication. Prefer the smallest complete change that keeps both installations runnable.
+- Extend existing conversation, provider, tool and entitlement contracts instead of creating parallel ones; the native agent engine is the one planned replacement. Never present planned capabilities as shipped.
+- Both installations upgrade with `docker compose pull && docker compose up -d`, and their persisted data, chat exports, environment variables, URLs and backups must survive it; breaking one needs an explicit operator decision ([Persistence](agent_docs/PERSISTENCE.md#migrations-and-bootstrap)). Other installations, development databases, fixtures and local task files are not contracts.
 
 ## Data, environment and secrets
 

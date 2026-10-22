@@ -13,7 +13,7 @@ paths:
 ---
 # Backend
 
-HTTP routes in `app/api/`, server modules in `lib/server/`, and the control planes for Projects, Assistants, Skills and MCP servers. Schema work also follows `agent_docs/PERSISTENCE.md`; sign-in and SCIM follow `agent_docs/SIGN_IN.md`.
+HTTP routes in `app/api/`, server modules in `lib/server/`, and the control planes for Assistants, Skills and MCP servers. Schema work also follows `agent_docs/PERSISTENCE.md`; sign-in and SCIM follow `agent_docs/SIGN_IN.md`.
 
 ## Routes
 
@@ -21,7 +21,6 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 - `lib/contracts/` (client-safe wire shapes) and `lib/domain/` (pure shared rules) are dependency leaves; never import server code into them.
 - Browser mutations pass the shared same-origin guard (`proxy.ts`, `lib/server/auth/csrf.ts`) and bounded body reading (`lib/server/http/requestBody.ts`).
 - Errors are stable codes without raw exceptions or hints that a resource exists.
-- Project event streams recheck membership while delivering; cursors only order invalidations, and losing access closes the stream.
 
 ## Control planes
 
@@ -32,21 +31,21 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 
 ## Projects and Assistants
 
-- Project authority is scoped to that Project and its current roles. Every Project keeps a direct active Owner. Membership alone adds nothing to a member's personal catalogs.
+- Projects are disabled (root `AGENTS.md`): nothing creates Projects or runs Project work, existing Project chats stay readable to their members, and Project code changes only to disable or remove it.
 - Publishing an Assistant grants live future use, not entitlement to its dependencies. Fixed rows and Skill links are dependencies; adjustable rows are starting values a chat may replace. Accepted runs keep the definition, effective rows and a snapshot of name and avatar. Ordinary chats use the server-owned baseline, which the browser cannot replace.
-- Publication requires that every linked Skill has an approved revision and is directly available to the Assistant's audience. Publishing to a Project, or a manager's explicit refresh, applies the whole dependency plan atomically; later Assistant edits never silently change Project grants. Unlinking or unpublishing clears dependent defaults, plans and authorities in one transaction.
+- Publication requires that every linked Skill has an approved revision and is directly available to the Assistant's audience. Unlinking or unpublishing clears dependent defaults, plans and authorities in one transaction.
 - Non-administrators list an Assistant installation-wide only through an approved request, which covers the requested version only. Administrators read a private definition only through a pending request for its current version.
 
 ## Skills
 
 - A write grant to the Skill store permits changes only, never sharing or execution. A package missing from a client's listing does not mean it was deleted.
 - Every Skill write goes through `lib/server/skills/revisionWriteCore.ts`. Revisions are append-only: restoring makes an earlier revision current as a new revision, and the published revision never changes.
-- Chat Skill saves (`save_skill`, operator decision 2026-10-07) exist only in interactive personal chats with Workspace and in personal Agent runs. Files must be text, and a save is refused if any file contains a delivered secret value. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. The save commits with its tool call and card, and Undo restores the previous state as a new version. Code: `lib/server/skills/skillSave.ts`, `lib/server/agents/skillSaveCommit.ts`.
+- Skill saves by the agent (`save_skill`, operator decision 2026-10-07) follow the agent-initiated change rules in `agent_docs/RUN_CONTRACTS.md`. Files must be text, and a save is refused if any file contains a delivered secret value. Overwriting is guarded by the revision the run staged; a conflict writes nothing. Saving another user's Skill creates a personal copy. The save commits with its tool call and card, and Undo restores the previous state as a new version. Code: `lib/server/skills/skillSave.ts`, `lib/server/agents/skillSaveCommit.ts`.
 
 ## Files, jobs and shares
 
 - An upload becomes usable only after bounded type and content validation and server-side settlement of the stored object's integrity. Its status follows the exact ingestion artifact created for it, not another ready artifact.
 - Long-running work runs as durable claimed jobs, and deletion as idempotent obligations, never as best effort inside a request.
-- An opaque Workspace upload reaches execution only through an admitted run with Workspace on. File reads recheck current personal or Project access, and storage authority never reaches browser or guest contracts. A PDF original stays available whether or not its extraction succeeds.
+- An opaque Workspace upload reaches execution only through an admitted run. File reads recheck current personal or Project access, and storage authority never reaches browser or guest contracts. A PDF original stays available whether or not its extraction succeeds.
 - Chat exports (`aiqsa.chat` and `aiqsa.chat-archive`, `lib/contracts/chatExport.ts`) are held by users outside the installation. A published version never changes: a new shape bumps `version`, and import keeps accepting every published version. Exports contain export-local ids and readable text, never database ids, provider internals, usage or tool payloads.
 - Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, Memory, Knowledge and tool evidence, recovery state and private identifiers are dropped. A share is never live access to the chat.

@@ -17,8 +17,8 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Users never see Memory failures, limits or unavailability; those are for the model and administrators.
 - Only the person who started a run may expand its bounded, redacted MCP request and response details. No other raw payload is shown.
 - Per-answer usage is never shown. Users see their own monthly allowance in Settings and a composer warning near the limit, never installation amounts.
-- Time and animation never invent progress, readiness, cost or completion. A loading failure is not an empty result, and a Knowledge retrieval failure is never shown as "the documents contain no answer".
-- The live status names only real work: the server sends the phase (reading stored images, searching Knowledge) and the client owns its words. Without one, the line shows the model's own latest streamed reasoning heading, untrusted and bounded to one plain line, whatever the Reasoning blocks setting (it governs the reasoning disclosure); otherwise one neutral phrase chosen per answer that never rotates or names work that is not happening (operator decision 2026-10-20). A model request after tool work is such a wait too: no "Reading results" label, which in a Workspace tool loop covered most of the run (operator decision 2026-10-21).
+- Time and animation never invent progress, readiness, cost or completion. A loading failure is not an empty result.
+- The live status names only real work: the server sends the phase (for example reading stored images) and the client owns its words. Without one, the line shows the model's own latest streamed reasoning heading, untrusted and bounded to one plain line, whatever the Reasoning blocks setting (it governs the reasoning disclosure); otherwise one neutral phrase chosen per answer that never rotates or names work that is not happening (operator decision 2026-10-20). A model request after tool work is such a wait too: no "Reading results" label, which in a Workspace tool loop covered most of the run (operator decision 2026-10-21).
 
 ## State
 
@@ -38,15 +38,14 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - Upload integrity gates Send; PDF preparation does not. Chosen files show in the tray at once, before any request (an image as a thumbnail of the local file that never leaves the tab), and more can be added while they upload. An admitted message appears at once and its draft clears. Server-confirmed final text releases Send even while Workspace cleanup continues, and late events stay with their own answer.
 - A reviewed answer is one block: latest version, a quiet status line, collapsed history. Server-written review turns never render as user speech. Automatic review is a per-chat choice in the model picker, shown on the header model chip, never as a composer chip.
 - Workspace is ambient in interactive chats: a send uses it whenever the installation offers it and the model calls tools, with no composer or chat toggle and no saved default (operator decision 2026-10-20). Controls wrap whole; no More menu or horizontal scroll hides a capability. Stop keeps files, branching never rolls them back, and Reset keeps messages and outputs. Cards show relative paths, never runtime identities. A continuation whose Workspace copy failed opens empty and never claims the files survived.
-- Agent is a per-turn choice in personal chats. When it cannot run, explain why and block the send without changing the user's selections.
+- Every chat is one agent with no mode to pick (`agent_docs/RUN_CONTRACTS.md`). The per-turn Codex Agent choice is frozen until the Codex Agent is removed.
 - Artifact previews open only by user action. Historical answers keep pointing at their own artifact versions and files (`sandbox:` links), and thumbnails never run scripts.
-- Project surfaces use current Project catalogs and never fall back to personal resources. They show durable activity, never online presence, and Project chats never enter personal history or Memory.
+- Projects and Knowledge offer no surfaces while disabled (root `AGENTS.md`). An existing Project chat opens readable, with a notice in place of the composer, and never enters personal history or Memory.
 
 ## Management surfaces
 
-- Studio holds Assistants, Instructions, Skills, Knowledge, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings holds appearance, account, personal MCP connections, connected apps and personal data. In the Control Center, Providers holds deployments, Defaults & roles holds assignments, and Knowledge & Memory holds health and limits.
+- Studio holds Assistants, Instructions, Skills, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings holds appearance, account, personal MCP connections, connected apps and personal data. In the Control Center, Providers holds deployments, Defaults & roles holds assignments, and Knowledge & Memory holds health and limits.
 - Destructive actions name the target and the consequences. Secret fields explain keep or replace and never echo the value.
-- Knowledge pages show documents, readiness, access and product actions; profiles, chunks, scores and raw failures stay off ordinary surfaces. Activating a Knowledge profile explicitly acknowledges external processing and reindexing.
 - Memory consent for connected apps covers facts, not chat history. Viewing MCP servers never wakes an idle one, and nothing re-enables a server the user deliberately disabled except completing its setup.
 
 ## Interaction and visual intent
