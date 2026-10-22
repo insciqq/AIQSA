@@ -3,6 +3,7 @@ import type { StorageAdapter } from "../../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "../../workspace/runtime";
 import { removeWorkspaceForDeletion } from "../../workspace/removal";
 import { MemoryCoordinatorError } from "../../memory/coordinator/errors";
+import { detachMemoryExecutionUsage } from "../../memory/execution/detachUsage";
 import type {
   MemoryDeletionClaim,
   MemoryDeletionHandler
@@ -652,15 +653,10 @@ async function applyAggregateDeletion(
   // their execution bindings (deleted with their owners below) exactly as a
   // Memory purge does; chat/run receipts keep the opaque chatId and lose their
   // run and attempt links through the existing SET NULL foreign keys.
-  if (ids.executionBindingIds.length > 0) {
-    await tx.usageEvent.updateMany({
-      data: { memoryExecutionBindingId: null, providerModelId: null },
-      where: {
-        memoryExecutionBindingId: { in: [...ids.executionBindingIds] },
-        userId: claim.userId
-      }
-    });
-  }
+  await detachMemoryExecutionUsage(tx, {
+    executionBindingIds: ids.executionBindingIds,
+    userId: claim.userId
+  });
   if (ids.runIds.length > 0) {
     await tx.memoryOperationReceipt.deleteMany({
       where: { modelRunId: { in: [...ids.runIds] }, userId: claim.userId }
