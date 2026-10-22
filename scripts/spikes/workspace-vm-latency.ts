@@ -266,7 +266,7 @@ let baselinePids: ReadonlySet<number> = new Set();
 
 async function sampleMemory(label: string, session: number, sandboxName: string | null, elapsedS?: number) {
   const [cgroup, processes, metrics] = await Promise.all([
-    readCgroup(), processesSince(baselinePids), sandboxName ? sdkMetrics(sandboxName) : Promise.resolve({})
+    readCgroup(), processesSince(baselinePids), sandboxName ? sdkMetrics(sandboxName) : Promise.resolve<Record<string, number | string | null>>({})
   ]);
   const sum = (key: "anonKb" | "rssKb" | "shmemKb") => mb(processes.reduce((total, entry) => total + entry[key], 0) * 1_024);
   const sample = {
