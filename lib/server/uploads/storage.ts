@@ -13,6 +13,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, opendir, rename, rm, stat, writeFile } from "node:fs/promises";
+import type { AgentOptions } from "node:http";
 import { basename, dirname, join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -824,6 +825,84 @@ function createBoundedS3UploadBody(input: StoredObjectStreamInput): Readonly<{
   };
 }
 
+// Free keep-alive sockets close after this idle period: Node's own default for
+// its global agent, well below the storage relay's idle timeout and the idle
+// limits of S3-compatible servers, so the client closes first and never
+// reuses a socket the other side has just dropped. Node destroys a socket on
+// this timeout only while it sits in the free list, so an active request,
+// however slow, is never cut.
+export const S3_FREE_SOCKET_IDLE_MS = 5_000;
+
+/**
+ * Options for the SDK's own keep-alive agents. Passed as options rather than
+ * agent instances so the handler keeps its 100-continue behavior, which it
+ * switches off for an external agent.
+ */
+export function s3HttpAgentOptions(freeSocketIdleMs = S3_FREE_SOCKET_IDLE_MS): AgentOptions {
+  return { keepAlive: true, maxFreeSockets: 16, maxSockets: 50, timeout: freeSocketIdleMs };
+}
+
+type S3ClientConfiguration = Readonly<{
+  accessKeyId: string;
+  endpoint: string;
+  publicEndpoint: string | null;
+  region: string;
+  secretAccessKey: string;
+}>;
+
+type S3ClientPair = Readonly<{ client: S3Client; publicClient: S3Client | null }>;
+
+// Each S3Client owns a socket pool that nothing destroys, so a client per
+// adapter call leaked idle connections until the storage relay reached its
+// connection limit (production 2026-10-22). One client pair per process and
+// configuration; the secret enters the key only as a digest.
+const s3ClientPairs = new Map<string, S3ClientPair>();
+
+function s3Clients(configuration: S3ClientConfiguration): S3ClientPair {
+  const key = JSON.stringify([
+    configuration.endpoint,
+    configuration.publicEndpoint,
+    configuration.region,
+    configuration.accessKeyId,
+    createHash("sha256").update(configuration.secretAccessKey).digest("hex")
+  ]);
+  const cached = s3ClientPairs.get(key);
+  if (cached) return cached;
+
+  const credentials = {
+    accessKeyId: configuration.accessKeyId,
+    secretAccessKey: configuration.secretAccessKey
+  };
+  const agentOptions = s3HttpAgentOptions();
+  // Uploads carry an explicit ContentLength and are verified by size and
+  // SHA-256 after the fact; the SDK's default streaming CRC trailer adds a
+  // hasher whose digest promise rejects unobserved when the body fails
+  // mid-transfer (an unhandled rejection per faulted Workspace export).
+  const client = new S3Client({
+    credentials,
+    endpoint: configuration.endpoint,
+    forcePathStyle: true,
+    region: configuration.region,
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    requestHandler: { httpAgent: agentOptions, httpsAgent: agentOptions }
+  });
+  // Presigned part URLs carry no SDK checksum parameters: the browser sends the
+  // bytes and settlement verifies size and SHA-256 afterwards.
+  const publicClient = configuration.publicEndpoint
+    ? new S3Client({
+      credentials,
+      endpoint: configuration.publicEndpoint,
+      forcePathStyle: true,
+      region: configuration.region,
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      requestHandler: { httpAgent: agentOptions, httpsAgent: agentOptions }
+    })
+    : null;
+  const pair = { client, publicClient };
+  s3ClientPairs.set(key, pair);
+  return pair;
+}
+
 export function createS3StorageAdapter(env: Record<string, string | undefined> = process.env): StorageAdapter {
   const bucket = env.S3_BUCKET;
   const endpoint = env.S3_ENDPOINT;
@@ -832,35 +911,13 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
     return createFileSystemStorageAdapter(env.AIQSA_UPLOAD_STORAGE_DIR || ".aiqsa/uploads");
   }
 
-  const credentials = {
+  const { client, publicClient } = s3Clients({
     accessKeyId: env.S3_ACCESS_KEY_ID,
-    secretAccessKey: env.S3_SECRET_ACCESS_KEY
-  };
-  const region = env.S3_REGION || "us-east-1";
-  // Uploads carry an explicit ContentLength and are verified by size and
-  // SHA-256 after the fact; the SDK's default streaming CRC trailer adds a
-  // hasher whose digest promise rejects unobserved when the body fails
-  // mid-transfer (an unhandled rejection per faulted Workspace export).
-  const client = new S3Client({
-    credentials,
     endpoint,
-    forcePathStyle: true,
-    region,
-    requestChecksumCalculation: "WHEN_REQUIRED"
+    publicEndpoint: publicS3Endpoint(env.S3_PUBLIC_ENDPOINT),
+    region: env.S3_REGION || "us-east-1",
+    secretAccessKey: env.S3_SECRET_ACCESS_KEY
   });
-
-  const publicEndpoint = publicS3Endpoint(env.S3_PUBLIC_ENDPOINT);
-  // Presigned part URLs carry no SDK checksum parameters: the browser sends the
-  // bytes and settlement verifies size and SHA-256 afterwards.
-  const publicClient = publicEndpoint
-    ? new S3Client({
-      credentials,
-      endpoint: publicEndpoint,
-      forcePathStyle: true,
-      region,
-      requestChecksumCalculation: "WHEN_REQUIRED"
-    })
-    : null;
 
   async function readOutput(
     storageKey: string,
