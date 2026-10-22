@@ -401,7 +401,7 @@ async function measureSession(index: number): Promise<void> {
       const sample = await sampleMemory("idle", index, session.sandboxName, elapsed);
       idleSamples.push({
         cgroupMB: sample.cgroupMB, elapsedS: elapsed, vmProcessMB: sample.vmProcessMB,
-        sdkHostResidentMB: typeof sample.sdkHostResidentMB === "number" ? sample.sdkHostResidentMB : null
+        sdkHostResidentMB: typeof (sample as Record<string, unknown>).sdkHostResidentMB === "number" ? (sample as Record<string, unknown>).sdkHostResidentMB as number : null
       });
     }
   }
