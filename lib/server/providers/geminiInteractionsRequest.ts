@@ -23,6 +23,7 @@ import {
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
 import { GEMINI_THINKING_LEVELS, geminiConfiguredThinkingLevels } from "./providerModelCapabilities";
+import { assertProviderHistoryRequest, geminiStepsFromHistory, providerHistoryPreview } from "./history";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
 const MAX_INT32 = 2_147_483_647;
@@ -387,6 +388,25 @@ function continuationSteps(
   });
 }
 
+/** The native engine's neutral history as steps. Every step but the current
+ * input (which carries this run's attachments and response reminder) passes
+ * the same bounds as a continuation step. */
+function historySteps(request: ProviderRunRequest, options: BuildOptions): GeminiInteractionStep[] {
+  const steps = geminiStepsFromHistory(assertProviderHistoryRequest(request), {
+    currentInput: (text) => withResponseReminder(
+      request,
+      latestUserContent({ ...request, content: { blocks: [{ text, type: "text" }] } }, options),
+      (reminder) => ({ text: reminder, type: "text" as const }),
+      options.preview
+    )
+  });
+  return steps.map(({ current, step }) => {
+    if (current) return step;
+    validateContinuationStep(step);
+    return options.preview ? previewStep(step) : step;
+  });
+}
+
 /** Every effort source (run params, a System model or Memory role's effort,
  * a saved model default) arrives here; a thinking level that the deployment's
  * configured reasoning control excludes is refused before dispatch. */
@@ -426,10 +446,7 @@ function forcedToolChoice(request: ProviderRunRequest): GeminiToolChoice {
     : "any";
 }
 
-function buildGeminiInteractionsBody(
-  request: ProviderRunRequest,
-  options: BuildOptions
-): GeminiInteractionsRequestBody {
+function conversationSteps(request: ProviderRunRequest, options: BuildOptions): GeminiInteractionStep[] {
   const storedConversationById = new Map(
     conversationMessagesForRequest(request).map((message) => [message.id, message.content])
   );
@@ -458,6 +475,14 @@ function buildGeminiInteractionsBody(
     );
   });
   input.push(...continuationSteps(request.providerToolMessages, options.preview));
+  return input;
+}
+
+function buildGeminiInteractionsBody(
+  request: ProviderRunRequest,
+  options: BuildOptions
+): GeminiInteractionsRequestBody {
+  const input = request.history ? historySteps(request, options) : conversationSteps(request, options);
 
   const serializedTools = (request.tools ?? []).map((tool) =>
     geminiInteractionsToolBridge.serializeTool(tool).tool
@@ -527,6 +552,6 @@ export function buildGeminiInteractionsRequestPreview(
       "selected_skill_instructions",
       "provider_signatures"
     ],
-    replayedContext: conversationPreview(request)
+    replayedContext: request.history ? providerHistoryPreview(request.history) : conversationPreview(request)
   };
 }

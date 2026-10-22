@@ -1042,3 +1042,46 @@ describe("Responses stream drop reasons", () => {
     expect(providerStreamDrop(await failure(sseInput(frames)))).toBeNull();
   });
 });
+
+describe("streamed terminal without output", () => {
+  const frame = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+  const reasoning = { encrypted_content: "opaque-blob", id: "rs-1", summary: [], type: "reasoning" };
+  const call = { arguments: "{\"order_id\":\"A-17\"}", call_id: "call-1", id: "fc-1", name: "lookup_order",
+    status: "completed", type: "function_call" };
+  const message = { content: [{ text: "Shipped.", type: "output_text" }], id: "msg-1", role: "assistant",
+    status: "completed", type: "message" };
+  const usage = { input_tokens: 40, output_tokens: 12, output_tokens_details: { reasoning_tokens: 5 }, total_tokens: 52 };
+  const created = frame({ response: { id: "resp-codex", status: "in_progress" }, type: "response.created" });
+
+  it("assembles the answer from completed items when the terminal carries none (Codex backend)", async () => {
+    const tools = await collectSse(sseInput([created,
+      frame({ item: reasoning, output_index: 0, type: "response.output_item.done" }),
+      frame({ item: call, output_index: 1, type: "response.output_item.done" }),
+      frame({ response: { id: "resp-codex", output: [], status: "completed", usage }, type: "response.completed" })
+    ], { background: false, provider: "openai-compatible" }));
+    expect(tools.result.toolCalls).toMatchObject([{ arguments: { order_id: "A-17" }, id: "call-1", name: "lookup_order" }]);
+    expect(tools.result.history).toEqual([
+      { native: { fields: reasoning, format: "openai_responses" }, type: "reasoning" },
+      { arguments: call.arguments, callId: "call-1", name: "lookup_order",
+        native: { fields: { id: "fc-1", status: "completed" }, format: "openai_responses" }, type: "tool_call" }
+    ]);
+
+    const answer = await collectSse(sseInput([created,
+      frame({ delta: "Shipped.", type: "response.output_text.delta" }),
+      frame({ item: message, output_index: 0, type: "response.output_item.done" }),
+      frame({ response: { id: "resp-codex", status: "completed", usage }, type: "response.completed" })
+    ], { background: false, provider: "openai-compatible" }));
+    expect(answer.result.finalText).toBe("Shipped.");
+    expect(answer.result.history).toEqual([{ text: "Shipped.", type: "assistant_text" }]);
+    expect(answer.result.usage).toMatchObject({ inputTokens: 40, outputTokens: 12, reasoningTokens: 5 });
+  });
+
+  it("keeps a terminal's own output over streamed items", async () => {
+    const result = await collectSse(sseInput([created,
+      frame({ item: reasoning, output_index: 0, type: "response.output_item.done" }),
+      frame({ response: { id: "resp-codex", output: [message], status: "completed", usage }, type: "response.completed" })
+    ], { background: false }));
+    expect(result.result.history).toEqual([{ text: "Shipped.", type: "assistant_text" }]);
+    expect(result.result.toolCalls).toEqual([]);
+  });
+});

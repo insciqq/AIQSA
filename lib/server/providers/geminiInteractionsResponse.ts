@@ -26,6 +26,7 @@ import {
 } from "./streamSafety";
 import type { ProviderRunResult } from "./types";
 import { visibleAnswerText } from "./visibleAnswer";
+import { geminiHistoryFromSteps } from "./history";
 import {
   normalizeSearchFindings,
   normalizeSearchSources,
@@ -690,9 +691,11 @@ function normalizeInteraction(
 }
 
 function resultFromNormalized(input: NormalizedInteraction): ProviderRunResult {
+  const history = geminiHistoryFromSteps(input.protectedSteps);
   return {
     finalProviderResponsePreview: responsePreview(input),
     finalText: input.finalText,
+    ...(history.length > 0 ? { history } : {}),
     ...(input.id ? { providerResponseId: input.id } : {}),
     // Required-tool correction also continues a completed text-only round;
     // keep its signed private steps intact instead of inventing continuation.

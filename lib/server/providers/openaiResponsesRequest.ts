@@ -13,6 +13,7 @@ import {
 import { conversationPreview, providerPromptCacheKey, textConversationForRequest } from "./context";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
+import { assertProviderHistoryRequest, providerHistoryPreview, responsesInputFromHistory } from "./history";
 
 export type OpenAIResponsesTextContentBlock = {
   text: string;
@@ -291,6 +292,20 @@ function usesPromptCacheOptions(modelId: string): boolean {
   return isGpt6Model(modelId) || modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-");
 }
 
+/** The native engine's neutral history as `input`; its current input gets
+ * the attachments and response reminder the latest user message gets. */
+function historyInput(request: ProviderRunRequest, options: PrivateBuildOptions): OpenAIResponsesInputItem[] {
+  return responsesInputFromHistory(assertProviderHistoryRequest(request), {
+    currentInput: (text) => withResponseReminder(
+      request,
+      buildInputContent({ ...request, content: { blocks: [{ text, type: "text" }] } }, options),
+      (reminder) => ({ text: reminder, type: "input_text" as const }),
+      options.preview
+    ),
+    preview: options.preview
+  });
+}
+
 export function usesHostedOpenAIWebSearch(request: ProviderRunRequest): boolean {
   return request.searchPlan.options.some((option) =>
     option.adapterKind === "answer_provider_hosted" &&
@@ -310,22 +325,27 @@ function buildOpenAIResponsesBody(
   const background = forceForeground ? false : Boolean(params.background);
   const stream = forceForeground ? false : params.stream;
   const instructions = combineInstructions(request, options.preview);
-  const conversation = request.previousProviderResponseId
-    ? []
-    : textConversationForRequest(request, { redactSkillContext: options.preview });
-  const input: OpenAIResponsesInputItem[] = conversation.map((message, index): OpenAIResponsesInputMessage => ({
-    content:
-      index === conversation.length - 1 && message.role === "user"
-        ? withResponseReminder(request, buildInputContent(request, options), (text) => ({ text, type: "input_text" as const }), options.preview)
-        : [
-            {
-              text: message.content,
-              type: message.role === "assistant" ? "output_text" : "input_text"
-            }
-          ],
-    role: message.role
-  }));
-  input.push(...providerToolInputItems(request.providerToolMessages, options.preview));
+  let input: OpenAIResponsesInputItem[];
+  if (request.history) {
+    input = historyInput(request, options);
+  } else {
+    const conversation = request.previousProviderResponseId
+      ? []
+      : textConversationForRequest(request, { redactSkillContext: options.preview });
+    input = conversation.map((message, index): OpenAIResponsesInputMessage => ({
+      content:
+        index === conversation.length - 1 && message.role === "user"
+          ? withResponseReminder(request, buildInputContent(request, options), (text) => ({ text, type: "input_text" as const }), options.preview)
+          : [
+              {
+                text: message.content,
+                type: message.role === "assistant" ? "output_text" : "input_text"
+              }
+            ],
+      role: message.role
+    }));
+    input.push(...providerToolInputItems(request.providerToolMessages, options.preview));
+  }
   const model = request.modelId || "gpt-5.5";
 
   const body: OpenAIResponsesRequestBody = {
@@ -401,7 +421,9 @@ export function buildOpenAIResponsesRequestPreview(
       redactImages: true
     }),
     provider: "openai",
-    replayedContext: request.previousProviderResponseId ? [] : conversationPreview(request),
+    replayedContext: request.history
+      ? providerHistoryPreview(request.history)
+      : request.previousProviderResponseId ? [] : conversationPreview(request),
     redactions: [
       "attachment_extracted_text",
       "attachment_filename",

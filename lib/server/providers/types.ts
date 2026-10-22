@@ -460,6 +460,13 @@ export type ProviderRunRequest = NormalizedRunRequest & {
    * their ordinary `required` mapping over every advertised tool. Incompatible
    * models use wire `auto` while the application retains this obligation. */
   forcedToolName?: string;
+  /** The native engine's conversation, already selected for this request's
+   * provider route and model (`lib/server/engine/transcript.ts`). The
+   * Responses, OpenRouter, Gemini and DeepSeek adapters render it instead of
+   * `context.messages` and `content`; `providerToolMessages` and
+   * `previousProviderResponseId` must then be absent
+   * (`lib/server/providers/history.ts`). */
+  history?: readonly import("./history").ProviderHistoryItem[];
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;
   providerToolMessages?: unknown[];
@@ -477,6 +484,9 @@ export type ProviderRunResult = {
   costUsd?: number;
   finalText: string;
   finalProviderResponsePreview: Record<string, unknown>;
+  /** The response as neutral history items in output order, for the native
+   * engine's transcript; absent when it produced none. */
+  history?: readonly import("./history").ProviderHistoryItem[];
   providerToolCallMessage?: unknown;
   providerResponseId?: string;
   toolCalls?: ModelToolCall[];
