@@ -127,10 +127,11 @@ export function createChatPdfRepository(prisma: PrismaClient) {
     },
     async claim(now = new Date()): Promise<ChatPdfClaim | null> {
       return prisma.$transaction(async (tx) => {
+        // Old-core runs only: the continuation dispatches through the old core.
         const rows = await tx.$queryRaw<Array<{ modelRunId: string; userId: string }>>(Prisma.sql`
           SELECT job."modelRunId", r."userId" FROM "ChatPdfRunPreparation" job
           JOIN "ModelRun" r ON r."id" = job."modelRunId"
-          WHERE job."state" IN ('pending', 'preparing', 'answer_ready')
+          WHERE job."state" IN ('pending', 'preparing', 'answer_ready') AND r."engine" = 'v1'
             AND r."status" IN ('preparing', 'streaming') AND NOT r."workspaceWaitPending"
             AND (job."claimedAt" IS NULL OR job."claimedAt" <
               (${new Date(now.getTime() - CHAT_PDF_CLAIM_LEASE_MS)}::timestamptz AT TIME ZONE 'UTC'))

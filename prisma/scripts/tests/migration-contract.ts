@@ -64,6 +64,7 @@ import { DEEPSEEK_FLASH_1017_MIGRATION, deepSeekFlash1017FixtureSql, deepSeekFla
 import {
   TELEMETRY_DURATION_BUCKETS_MIGRATION, telemetryDurationBucketsFixtureSql, telemetryDurationBucketsProofSql
 } from "./telemetry-duration-buckets-adoption";
+import { MODEL_RUN_ENGINE_MIGRATION, modelRunEngineFixtureSql, modelRunEngineProofSql } from "./model-run-engine-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7889,6 +7890,10 @@ function main(
          THEN RAISE EXCEPTION 'telegram_connect_control_not_off'; END IF;
        IF (SELECT count(*) FROM "TelegramBotControl") <> 1 THEN RAISE EXCEPTION 'telegram_connect_control_not_singleton'; END IF;
      END $$;`);
+  // Expand only: an old-engine run in flight during the upgrade, and runs a
+  // previous-release writer starts after it, are old-core runs.
+  runForwardAdoptionProof(shadowDatabase, migrations, MODEL_RUN_ENGINE_MIGRATION,
+    modelRunEngineFixtureSql, modelRunEngineProofSql, modelRunEngineProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
