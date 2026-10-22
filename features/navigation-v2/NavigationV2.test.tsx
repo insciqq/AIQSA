@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useState, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -539,6 +539,25 @@ describe("Navigation v2", () => {
     expect(screen.queryByRole("textbox", { name: "New folder name" })).toBeNull();
   });
 
+  it("offers a folder's Default Knowledge only when the shell passes its handler", () => {
+    const onFolderProjectSettings = vi.fn();
+    const { view } = sidebar({
+      folders: [{ id: "folder-research", name: "Research", parentId: null }],
+      onFolderProjectSettings
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Folder actions: Research" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Default Knowledge…" }));
+    expect(onFolderProjectSettings).toHaveBeenCalledWith(expect.objectContaining({ id: "folder-research" }));
+    view.unmount();
+
+    // While Knowledge is disabled the shell passes no handler, and the menu shows no dead entry.
+    sidebar({ folders: [{ id: "folder-research", name: "Research", parentId: null }] });
+    fireEvent.click(screen.getByRole("button", { name: "Folder actions: Research" }));
+    expect(screen.queryByRole("menuitem", { name: "Default Knowledge…" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "New subfolder" })).toBeVisible();
+  });
+
   it("does not create root or nested folders when their forms are cancelled", () => {
     const onCreateFolder = vi.fn();
     sidebar({
@@ -553,7 +572,6 @@ describe("Navigation v2", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
 
     fireEvent.click(screen.getByRole("button", { name: "Folder actions: Research" }));
-    expect(screen.getByRole("menuitem", { name: "Default Knowledge…" })).toBeVisible();
     expect(screen.queryByRole("menuitem", { name: "Project settings" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: "New subfolder" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Subfolder name in Research" }), {
@@ -930,6 +948,27 @@ describe("Navigation v2", () => {
     expect(onAccountSettings).toHaveBeenCalledOnce();
   });
 
+  it("offers Projects in the mobile drawer exactly when the rail would", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
+    const shell = (projectsSlot?: ReactNode) => (
+      <ReadingRoomShellV2 onLibrary={vi.fn()} onNewChat={vi.fn()} onSelectChat={vi.fn()} projectsSlot={projectsSlot}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    const view = render(shell(<div>Project catalog</div>));
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    expect(within(screen.getByRole("complementary", { name: "Chat navigation" }))
+      .getByRole("button", { name: "Projects" })).toBeEnabled();
+    view.unmount();
+
+    // While Projects are disabled the shell passes no Projects slot, and the drawer shows no dead button.
+    render(shell());
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
+    expect(within(navigation).queryByRole("button", { name: "Projects" })).toBeNull();
+    expect(within(navigation).getByRole("button", { name: "Studio" })).toBeInTheDocument();
+  });
+
   it("moves the rail destinations into the drawer footer on mobile", () => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
     render(
@@ -948,8 +987,9 @@ describe("Navigation v2", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
     const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
     // Settings is a footer destination too (one tap, UX audit 2026-09-02 B8);
-    // Control Center stays in the account menu, as on the rail.
-    for (const name of ["Projects", "Studio", "Settings", "Account menu"]) {
+    // Control Center stays in the account menu, as on the rail. Projects needs
+    // a Projects slot, as on the rail (see the test above).
+    for (const name of ["Studio", "Settings", "Account menu"]) {
       expect(within(navigation).getByRole("button", { name })).toBeInTheDocument();
     }
     expect(within(navigation).queryByRole("button", { name: "Archived chats" })).toBeNull();

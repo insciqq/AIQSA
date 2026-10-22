@@ -14,6 +14,7 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../http/requestBody";
+import { ProjectsDisabledError, projectsDisabledResponse } from "../projects/disabled";
 
 export type BranchMessageRecord = {
   chatId: string;
@@ -221,6 +222,7 @@ export function createEditMessageBranchHandler(deps: MessageBranchHandlerDeps) {
       if (isActiveMessageMutationConflictError(error)) {
         return activeMutationConflictResponse(error);
       }
+      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
 
       throw error;
     }
@@ -256,6 +258,7 @@ export function createBranchChatFromMessageHandler(deps: MessageBranchHandlerDep
       if (isActiveMessageMutationConflictError(error)) {
         return activeMutationConflictResponse(error);
       }
+      if (error instanceof ProjectsDisabledError) return projectsDisabledResponse();
 
       throw error;
     }

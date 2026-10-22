@@ -15,6 +15,7 @@ import {
   type ResolvedEntitlements
 } from "../auth/entitlements";
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
+import { KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import {
   decodeChatDefaultMcpMode,
   INSTALLATION_CHAT_DEFAULTS,
@@ -64,7 +65,10 @@ export function resolveChatDefaults(
   const decodedPlan = settings.defaultKnowledgePlan === null || settings.defaultKnowledgePlan === undefined
     ? null
     : decodeKnowledgePlan(settings.defaultKnowledgePlan);
-  const knowledgePlan = decodedPlan?.ok && decodedPlan.plan.mode !== "none" && decodedPlan.plan.mode !== "inherited"
+  // Knowledge is disabled: a saved Knowledge default stays stored but is not
+  // offered to new chats or inherited by Assistants.
+  const knowledgePlan = KNOWLEDGE_ENABLED && decodedPlan?.ok && decodedPlan.plan.mode !== "none" &&
+    decodedPlan.plan.mode !== "inherited"
     ? decodedPlan.plan
     : null;
   return {

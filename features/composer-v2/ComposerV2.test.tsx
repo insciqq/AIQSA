@@ -648,6 +648,13 @@ describe("Composer v2", () => {
     menuClosed("MCP tools");
   });
 
+  it("shows no Knowledge chip or Add row while Knowledge is not offered, even with a selection", () => {
+    render(<ComposerV2 {...props({ initialLayer: "add", knowledgeOffered: false })} />);
+    expect(screen.queryByRole("button", { name: "Choose Knowledge" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Add Knowledge/ })).toBeNull();
+    expect(screen.getByRole("menu", { name: "Add" })).toBeVisible();
+  });
+
   it("opens the Knowledge menu from the Add menu and returns focus to the chip", async () => {
     render(<ComposerV2 {...props({ initialLayer: "add" })} />);
     fireEvent.click(screen.getByRole("menuitem", { name: /Add Knowledge/ }));

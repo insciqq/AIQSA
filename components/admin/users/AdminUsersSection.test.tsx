@@ -367,6 +367,10 @@ describe("AdminUsersSection", () => {
     expect(within(page).getByTestId("admin-user-scim-pending")).toHaveTextContent(
       "SCIM deactivation pending: 1 Project needs a new Owner. The identity provider deactivated this account"
     );
+    // Projects are disabled (`lib/domain/disabledAreas.ts`): the banner does not ask for an ownership transfer.
+    expect(within(page).getByTestId("admin-user-scim-pending")).toHaveTextContent(
+      "Projects are turned off, so ownership cannot move and the account stays enabled."
+    );
     // The header pill agrees with the banner: an account that cannot sign in never reads as Active.
     const pill = within(page).getByText("Deactivation pending");
     expect(pill).toHaveAttribute("data-user-status", "active");

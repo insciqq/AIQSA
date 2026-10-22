@@ -19,7 +19,8 @@ describe("adminSections", () => {
       { group: "models", id: "providers", label: "Providers" },
       { group: "models", id: "roles", label: "Defaults & roles" },
       { group: "models", id: "search", label: "Search" },
-      { group: "models", id: "retrieval", label: "Knowledge & Memory" },
+      // Knowledge is disabled (`lib/domain/disabledAreas.ts`), so the section names only Memory.
+      { group: "models", id: "retrieval", label: "Memory" },
       { group: "people", id: "users", label: "Users" },
       { group: "people", id: "groups", label: "Groups" },
       { group: "people", id: "limits", label: "Budgets & limits" },

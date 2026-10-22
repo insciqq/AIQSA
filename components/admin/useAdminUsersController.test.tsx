@@ -154,7 +154,10 @@ describe("useAdminUsersController", () => {
     expect(revoke.body).toEqual({ action: "revoke_user_sessions", userId: "pat" });
     expect(revoke.prompt).toContain("pat@example.com was not disabled");
     expect(revoke.prompt).toContain("3 Projects: “Launch”, “Archive” (archived) and 1 more");
-    expect(revoke.prompt).toContain("make another member an Owner in each Project (restoring an archived Project first), then disable the user again");
+    // Projects are disabled (`lib/domain/disabledAreas.ts`), so the prompt cannot ask for an ownership transfer.
+    expect(revoke.prompt).toContain("Projects are turned off, so ownership cannot move.");
+    expect(revoke.prompt).not.toContain("make another member an Owner");
+    expect(revoke.message).toBe("User sessions and connected apps revoked. The account stays active while it is a Project's only Owner.");
     expect(revoke.onFailure).toBeUndefined();
 
     act(() => disable.onFailure?.({ error: "project_owner_required" }));

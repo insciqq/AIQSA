@@ -5,7 +5,17 @@ import { defaultParameterControls } from "@/components/app-shell/controlDefaults
 import { resetComposerControlStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { PowerAppShellV2View } from "./PowerAppShellV2View";
 
+// Project Settings stay tested as they worked; the last test turns Projects off.
+const areas = vi.hoisted(() => ({ projects: true }));
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  get PROJECTS_ENABLED() {
+    return areas.projects;
+  }
+}));
+
 afterEach(() => {
+  areas.projects = true;
   resetComposerControlStoreForTest();
   resetWorkspaceStoreForTest();
   window.history.replaceState(null, "", "/");
@@ -56,5 +66,19 @@ describe("account Settings inside a Project", () => {
     fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
     expect(props.workspace.projects.actions.openSettings).toHaveBeenCalledExactlyOnceWith("general");
     expect(props.settings.open).toHaveBeenCalledOnce();
+  });
+
+  it("opens the account's Settings from the rail too while Projects are disabled", () => {
+    areas.projects = false;
+    window.history.replaceState(null, "", "/p/project-1");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ announcements: [] })));
+    const props = projectShellProps();
+    render(<PowerAppShellV2View {...props} />);
+    const rail = screen.getByRole("navigation", { name: "Workspace" });
+
+    expect(within(rail).queryByRole("button", { name: "Projects" })).toBeNull();
+    fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
+    expect(props.settings.open).toHaveBeenCalledOnce();
+    expect(props.workspace.projects.actions.openSettings).not.toHaveBeenCalled();
   });
 });

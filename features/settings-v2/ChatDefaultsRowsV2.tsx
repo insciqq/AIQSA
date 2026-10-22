@@ -12,6 +12,7 @@ import { userImageModelErrorMessage, type ImageModelUnavailableReason, type User
 import type { ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import { UiV2Button } from "@/components/ui-v2";
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
+import { KNOWLEDGE_ENABLED } from "@/lib/domain/disabledAreas";
 import type { SearchPlan } from "@/lib/domain/search";
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
@@ -221,27 +222,30 @@ export function ChatDefaultsRowsV2({
         <SettingsSegmentV2 label="Skills default" options={[{ label: "Auto", value: "auto" }, { label: "Off", value: "off" }]}
           value={skillsMode} onChange={mode => onSkillsMode?.(mode)} />
       </SettingsRowV2>
-      <SettingsRowV2 description="Base attached to new chats by default." testId="settings-default-knowledge" title="Knowledge">
-        <SettingsSelectV2
-          label="Knowledge default"
-          options={[
-            { label: "None", value: NO_KNOWLEDGE },
-            { label: "All my knowledge", value: ALL_MY_KNOWLEDGE },
-            ...activeBases.map((base) => ({ label: base.name, value: base.id })),
-            ...(orphanBaseId ? [{ label: "Unavailable base", value: orphanBaseId }] : [])
-          ]}
-          value={currentKnowledge}
-          onChange={(next) => {
-            onKnowledgePlan(
-              next === NO_KNOWLEDGE
-                ? null
-                : next === ALL_MY_KNOWLEDGE
-                  ? allMyKnowledgeSelection()
-                  : explicitKnowledgeSelection({ baseIds: [next] })
-            );
-          }}
-        />
-      </SettingsRowV2>
+      {/* Knowledge is disabled: new chats get no Knowledge default to choose. */}
+      {KNOWLEDGE_ENABLED ? (
+        <SettingsRowV2 description="Base attached to new chats by default." testId="settings-default-knowledge" title="Knowledge">
+          <SettingsSelectV2
+            label="Knowledge default"
+            options={[
+              { label: "None", value: NO_KNOWLEDGE },
+              { label: "All my knowledge", value: ALL_MY_KNOWLEDGE },
+              ...activeBases.map((base) => ({ label: base.name, value: base.id })),
+              ...(orphanBaseId ? [{ label: "Unavailable base", value: orphanBaseId }] : [])
+            ]}
+            value={currentKnowledge}
+            onChange={(next) => {
+              onKnowledgePlan(
+                next === NO_KNOWLEDGE
+                  ? null
+                  : next === ALL_MY_KNOWLEDGE
+                    ? allMyKnowledgeSelection()
+                    : explicitKnowledgeSelection({ baseIds: [next] })
+              );
+            }}
+          />
+        </SettingsRowV2>
+      ) : null}
       {imageModel ? <ImageModelRowV2 view={imageModel} /> : null}
     </>
   );

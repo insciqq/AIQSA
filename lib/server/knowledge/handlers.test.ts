@@ -11,6 +11,12 @@ import {
 } from "./handlers";
 import type { KnowledgeBaseAccessEntry, KnowledgeBaseDetailData } from "./prismaRepository";
 
+// These handlers stay tested with Knowledge on; `disabled.test.ts` covers it off.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 function session(role: "admin" | "user" = "user"): AuthenticatedSession {
   return {
     expiresAt: new Date(Date.now() + 60_000),

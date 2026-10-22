@@ -18,6 +18,14 @@ import {
 import { approvedRerankerDeployments } from "./approvedRerankers";
 import type { NativeRouteDiscovery } from "./nativeRouting";
 
+// Native Anthropic setup stays tested as it worked; one test below turns it off.
+const areas = vi.hoisted(() => ({ nativeAnthropic: true }));
+vi.mock("../../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../domain/disabledAreas")>(),
+  offeredProviderFamilies: <Family extends string>(families: readonly Family[]) =>
+    families.filter((family) => areas.nativeAnthropic || family !== "anthropic")
+}));
+
 const actor = { sessionId: "session-admin", userId: "admin" };
 const checkedAt = new Date("2026-07-26T10:00:00.000Z");
 const key = Buffer.alloc(32, 7);
@@ -1013,5 +1021,17 @@ describe("provider Quick setup service", () => {
       { displayName: "Claude Fable 5.1" }
     ]);
     expect(JSON.stringify(snapshot)).not.toContain("quickSetupAssigned");
+  });
+
+  it("offers no native Anthropic setup while it is disabled", async () => {
+    areas.nativeAnthropic = false;
+    try {
+      const value = fixture();
+      const snapshot = await value.service.getSnapshot(actor);
+
+      expect(snapshot.providers.map(({ provider }) => provider)).toEqual(["openai", "gemini", "deepseek", "openrouter"]);
+    } finally {
+      areas.nativeAnthropic = true;
+    }
   });
 });

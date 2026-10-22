@@ -13,6 +13,13 @@ import { populatedUsageAnalytics, usageResponse } from "@/components/admin/usage
 import { StrictMode } from "react";
 import { AdminPanel } from "./AdminPanel";
 
+// The Knowledge & Memory section stays tested as it worked; `adminSections.test.ts` and
+// `retrieval/AdminRetrievalSection.test.tsx` cover Knowledge disabled.
+vi.mock("@/lib/domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/domain/disabledAreas")>(),
+  KNOWLEDGE_ENABLED: true
+}));
+
 const adminMcpController = vi.hoisted(() => ({
   actions: {
     activate: vi.fn(async () => false),

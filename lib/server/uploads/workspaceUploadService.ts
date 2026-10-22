@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { IMAGE_MAX_BYTES } from "@/lib/contracts/imageGeneration";
 import type { WorkspaceUploadConfigWire, WorkspaceUploadWire } from "@/lib/contracts/workspaceUploads";
+import { PROJECTS_DISABLED_CODE, PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { getRequestBodyConfig } from "../http/requestBodyConfig";
 import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPermitGate";
 import { runInBackground, reportSubsystemFailure } from "../observability";
@@ -59,6 +60,8 @@ export class WorkspaceUploadService {
       partBytes: WORKSPACE_UPLOAD_PART_BYTES, available: await this.deps.available() };
   }
   async create(input: CreateInput, userId: string): Promise<WorkspaceUploadWire> {
+    // Projects are disabled: nothing is uploaded into a Project.
+    if (input.projectId !== null && !PROJECTS_ENABLED) throw new WorkspaceUploadError(PROJECTS_DISABLED_CODE, 409);
     const validation = validateUpload({ ...input, maxBytes: this.#maxBytes(), scope: "workspace" });
     if (!validation.ok) throw new WorkspaceUploadError(validation.code, refusalStatus(validation.code));
     await this.#available();

@@ -23,6 +23,7 @@ import { composerCommentRefusalMessage } from "@/components/app-shell/composerCo
 import { composerDraftTooLargeToStore, subscribeComposerDraftRefusals } from "@/components/app-shell/composerDraftStorage";
 import { navigateChatRoute, useChatRoutePath, useControlCenterHref } from "@/components/app-shell/chatRoute";
 import { boundedRouteId, parseChatRoutePath } from "@/lib/domain/chatRoute";
+import { KNOWLEDGE_ENABLED, PROJECTS_ENABLED } from "@/lib/domain/disabledAreas";
 import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress } from "@/components/app-shell/workspaceUploadClient";
 import { useUploadPreviews } from "@/components/app-shell/pendingUploads";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
@@ -743,6 +744,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const projectContext = Boolean(
     activeChatSummary?.projectId || (!activeChatSummary && workspace.projects.selectedProjectId)
   );
+  // Projects are disabled: a Project chat opened by its address stays readable,
+  // with a notice in place of the composer and no Project surfaces around it.
+  const projectChatReadOnly = projectContext && !PROJECTS_ENABLED;
   const memoryCommands = useMemoryCommands({
     accountId: session.accountId,
     chatId: session.activeChatId,
@@ -790,7 +794,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     : null;
   // Deletion status survives direct entry/reload independently of the local
   // overview toggle. The owner must keep a reachable status and retry action.
-  const projectsSurfaceVisible = projectsSurfaceOpen || activeProject?.status === "DELETING";
+  const projectsSurfaceVisible = PROJECTS_ENABLED && (projectsSurfaceOpen || activeProject?.status === "DELETING");
   const skillScopeKey = `${session.accountId}:${projectContext ? activeChatSummary?.projectId ?? workspace.projects.selectedProjectId : "personal"}:${session.activeChatId ?? "new"}`;
   const skillScopeRef = useRef(skillScopeKey);
   useLayoutEffect(() => { skillScopeRef.current = skillScopeKey; }, [skillScopeKey]);
@@ -907,7 +911,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       chat: activeChatSummary,
       personalFolders: navigationFolders,
       project,
-      projectNamed: Boolean(projectId && workspace.projects.detail?.id === projectId),
+      // Without Projects the header has no Project chip, so the crumb names the Project.
+      projectNamed: PROJECTS_ENABLED && Boolean(projectId && workspace.projects.detail?.id === projectId),
       projectFolders: projectId === workspace.projects.selectedProjectId
         ? workspace.projects.workspace?.folders ?? []
         : []
@@ -1191,7 +1196,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   }] : [];
   const canSubmitFollowup = Boolean(latestMessage?.runId === thread.currentRunId && latestMessage?.followups?.available &&
     !activeProjectChat?.archived && (!projectContext || activeProject?.status === "ACTIVE" && activeProject.capabilities.mutateChats) && composer.submitFollowup);
-  const composerSurface = (
+  const composerSurface = projectChatReadOnly ? (
+    <p className="v2-project-disabled-notice" data-testid="projects-disabled-notice" role="status">
+      Projects are turned off. You can read this shared chat, but you can&apos;t send messages in it.
+    </p>
+  ) : (
     <ComposerV2
       sessionKey={skillScopeKey}
       usageLimitsAccountId={session.accountId}
@@ -1252,7 +1261,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onDraftChange={composer.composerActions.changeDraft}
       onLayerChange={setComposerLayer}
       onMakeModelDefault={composer.makeModelDefault}
-      onOpenKnowledgeLibrary={projectContext ? undefined : settings.openKnowledge}
+      onOpenKnowledgeLibrary={projectContext || !KNOWLEDGE_ENABLED ? undefined : settings.openKnowledge}
       onOpenMcpSettings={projectContext ? workspace.projects.actions.openSettings : settings.openMcp}
       onOpenPersonalMcpSettings={projectContext ? undefined : openPersonalConnectionsSettingsV2}
       onOpenModelParameters={() => setRunSetupOpen(true)}
@@ -1286,6 +1295,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onReuseFile={composer.reuseFile}
       // A review between its steps has no run of its own: its Stop ends the session.
       runId={thread.currentRunId ?? (autoReviewGroup ? `answer-review:${autoReviewGroup.session.id}` : null)}
+      knowledgeOffered={KNOWLEDGE_ENABLED}
       knowledgePlanSource={composer.knowledge.planSource}
       mcpSelection={mcpSelection}
       selectedKnowledgeSelection={composer.knowledge.selection}
@@ -1865,7 +1875,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       : null;
   };
   const projectMutationReason = projectContext
-    ? !activeProject
+    ? projectChatReadOnly
+      ? "Projects are turned off, so this shared chat is read-only."
+      : !activeProject
       ? "Project access is being revalidated."
       : activeProject.status !== "ACTIVE"
       ? "This project is archived and read-only."
@@ -1998,10 +2010,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.toggleChatFavorite(full);
           }}
-          onFolderProjectSettings={(folder) => {
+          onFolderProjectSettings={KNOWLEDGE_ENABLED ? (folder) => {
             const full = currentWorkspaceFolder(folder.id);
             if (full) workspace.pane.actions.openProjectSettings(full);
-          }}
+          } : undefined}
           onLeaveProject={projectContext ? workspace.projects.actions.leave : undefined}
           onLibrary={() => {
             if (settings.studio) settings.studio.open();
@@ -2042,7 +2054,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.shareChat(full);
           }}
-          onSettings={projectContext && workspace.projects.detail
+          onSettings={PROJECTS_ENABLED && projectContext && workspace.projects.detail
             ? () => workspace.projects.actions.openSettings("general")
             : openAccountSettings}
           onAccountSettings={openAccountSettings}
@@ -2052,7 +2064,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             workspace.projects.detail.capabilities.mutateChats &&
             workspace.projects.detail.readiness !== "SETUP_REQUIRED"
           )}
-          projectContextActive={Boolean(workspace.projects.selectedProjectId)}
+          projectContextActive={PROJECTS_ENABLED && Boolean(workspace.projects.selectedProjectId)}
           projectTitle={workspace.projects.detail ? (
             <span className="v2-project-column-identity">
               <span className="v2-project-mark" aria-hidden="true">
@@ -2061,14 +2073,14 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               <span>{workspace.projects.detail.name}</span>
             </span>
           ) : "Projects"}
-          projectsSlot={(onNavigate, { landing }) => (
+          projectsSlot={PROJECTS_ENABLED ? (onNavigate, { landing }) => (
             <ProjectNavigationV2
               activeChatId={session.activeChatId}
               controller={workspace.projects}
               landing={landing}
               onNavigate={onNavigate}
             />
-          )}
+          ) : undefined}
         >
           {libraryOpen && !projectContext ? (
             <LibrarySurfaceV2
@@ -2122,7 +2134,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
               chatKey={session.activeChatId}
-              assistantSelector={(
+              assistantSelector={projectChatReadOnly ? null : (
                 <HeaderAssistantSelectorV2
                   assistant={composer.assistant}
                   focusComposer={focusComposerInput}
@@ -2134,7 +2146,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               continuation={continuationEligible ? continuation : null}
               continuationFiles={activeChatSummary?.workspace?.continuationFiles}
               crumb={activeChatCrumb}
-              archiveDisabled={thread.activeChatStreaming || temporarySession || Boolean(
+              archiveDisabled={thread.activeChatStreaming || temporarySession || projectChatReadOnly || Boolean(
                 projectContext && (
                   !activeProject || !activeProject.capabilities.archiveChats || activeProjectChat?.archived
                 )
@@ -2148,13 +2160,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   : null
               }
               folders={headerFolders}
-              leadingSlot={(
+              leadingSlot={projectChatReadOnly ? null : (
                 <ProjectContextRailV2
                   activeChatProjectId={activeProject?.id ?? activeChatSummary?.projectId ?? null}
                   controller={workspace.projects}
                 />
               )}
-              modelSelector={headerModelSelector}
+              modelSelector={projectChatReadOnly ? null : headerModelSelector}
               modelTriggerRef={modelTriggerRef}
               moveDisabled={Boolean(
                 projectContext && (
@@ -2463,8 +2475,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onSelectionChange={selectManualSkills} restoreFocus={restoreSkillFocus}
       />
 
-      <CreateProjectDialogV2 controller={workspace.projects} />
-      <ProjectSettingsDialogV2 controller={workspace.projects} />
+      {PROJECTS_ENABLED ? (
+        <>
+          <CreateProjectDialogV2 controller={workspace.projects} />
+          <ProjectSettingsDialogV2 controller={workspace.projects} />
+        </>
+      ) : null}
 
       {settings.settings.open ? (
         <SettingsV2

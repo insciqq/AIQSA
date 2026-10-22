@@ -3,6 +3,7 @@ import type { AssistantRows } from "../../contracts/assistants";
 import type { ChatAssistantOverrides, ChatAssistantOverrideValues } from "../../contracts/chats";
 import type { KnowledgeSelection } from "../../contracts/knowledge";
 import type { ProjectDefaultsWire } from "../../contracts/projects";
+import { KNOWLEDGE_ENABLED } from "../../domain/disabledAreas";
 import { loadActiveGroupMemberships, loadEntitlementsForMemberships } from "../auth/dbEntitlements";
 import {
   buildCurrentUserCatalog,
@@ -168,10 +169,13 @@ export async function loadPersonalAssistantRowInputs(
   const { defaults, modelConnections, modelIds, searchOptionIds } = personalAssistantRowDefaults(data);
   return {
     context: {
+      // Knowledge is disabled: no Knowledge is available to an Assistant row,
+      // so a fixed Knowledge row makes the Assistant unavailable and an
+      // adjustable one falls back to the default (none), as for any lost resource.
       available: {
-        allMyKnowledge: true,
-        knowledgeBaseIds: new Set(knowledge.baseIds),
-        knowledgeSourceIds: new Set(knowledge.sourceIds),
+        allMyKnowledge: KNOWLEDGE_ENABLED,
+        knowledgeBaseIds: new Set(KNOWLEDGE_ENABLED ? knowledge.baseIds : []),
+        knowledgeSourceIds: new Set(KNOWLEDGE_ENABLED ? knowledge.sourceIds : []),
         mcpServerIds,
         modelIds,
         searchOptionIds,
