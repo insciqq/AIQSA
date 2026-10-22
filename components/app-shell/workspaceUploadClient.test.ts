@@ -74,7 +74,7 @@ describe("Workspace file upload lifecycle", () => {
   });
   it.each([
     { code: "image_invalid", message: "This image could not be verified. Check that it opens correctly, or choose another file." },
-    { code: "image_limit_exceeded", message: "This image is too large to verify (up to 24 MiB and 16.8 megapixels). " +
+    { code: "image_limit_exceeded", message: "This image is too large to verify (up to 24 MiB and 21 megapixels). " +
       "Reduce it, or rename it with the extension that matches its format." },
     { code: "unsupported_type", message: "The file type or content could not be validated." }
   ])("shows a final $code settlement refusal without offering a retry", async ({ code, message }) => {

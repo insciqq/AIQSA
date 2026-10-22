@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { isSafeWorkspaceRelativePath } from "@/lib/domain/workspace";
 import { readStreamWithAbort } from "../http/byteStream";
+import { IMAGE_MAX_PIXELS } from "@/lib/contracts/imageGeneration";
 import { StaticRasterError, validateStaticRaster, type StaticRasterMetadata } from "../uploads/staticRaster";
 
+/** Conversation images, generated 4K images included, share these bounds. */
 export const WORKSPACE_IMAGE_LIMITS = Object.freeze({
   maxImages: 8, maxBytes: 24 * 1024 * 1024, maxTotalBytes: 64 * 1024 * 1024,
-  maxPixels: 16_777_216, maxDimension: 16_384, timeoutMs: 30_000
+  maxPixels: IMAGE_MAX_PIXELS, maxDimension: 16_384, timeoutMs: 30_000
 });
 
 /** Server-owned immutable capture reference. Paths alone never implement this interface. */

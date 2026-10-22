@@ -105,6 +105,9 @@ export type EventFields = {
     outcome?: "failed" | "refused" | "cancelled";
     code: string; duration_ms: number; finish_reason?: "safety" | "blocked" | "other";
     prisma_code?: string; db_failure?: DatabaseFailureKind;
+    /** A refused provider image: the bound it broke, its size and header facts, never its content. */
+    image_bound?: "bytes" | "pixels" | "dimension" | "response_bytes"; byte_size?: number; width?: number; height?: number;
+    declared_mime?: "image/png" | "image/jpeg" | "image/webp" | "other" | "none"; detected_mime?: "image/png" | "image/jpeg" | "image/webp";
   }>;
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
   "http.request_failed": RouteFields & CaughtError & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected"; prisma_code?: string; db_failure?: DatabaseFailureKind }>;

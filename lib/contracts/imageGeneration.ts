@@ -36,7 +36,8 @@ export const IMAGE_MAX_INPUTS = 8;
 export const IMAGE_MAX_PROMPT_CHARACTERS = 16_000;
 export const IMAGE_MAX_BYTES = 24 * 1024 * 1024;
 export const IMAGE_MAX_INPUT_BYTES = 64 * 1024 * 1024;
-export const IMAGE_MAX_PIXELS = 16_777_216;
+// Gemini's largest 4K frame for the offered aspect ratios is 3584x4800 (17.2 MP); 5120x4096 leaves about 20% margin.
+export const IMAGE_MAX_PIXELS = 5120 * 4096;
 export const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export type GeneratedImageMimeType = (typeof IMAGE_MIME_TYPES)[number];
 

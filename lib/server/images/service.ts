@@ -335,7 +335,10 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         const outcome = signal?.aborted === true ? "cancelled" : error instanceof ImageInputError ? "refused" : "failed";
         logEvent("image_execution", { stage, outcome, code: code === "unknown" ? "tool_call_failed" : code,
           duration_ms: performance.now() - startedAt, error, ...databaseFields(error),
-          ...(error instanceof ImageGenerationError && error.finishReason ? { finish_reason: error.finishReason } : {}) });
+          ...(error instanceof ImageGenerationError && error.finishReason ? { finish_reason: error.finishReason } : {}),
+          ...(error instanceof ImageGenerationError && error.rejection ? { image_bound: error.rejection.bound, byte_size: error.rejection.byteSize,
+            width: error.rejection.width, height: error.rejection.height,
+            declared_mime: error.rejection.declaredMime, detected_mime: error.rejection.detectedMime } : {}) });
         throw error;
       }
     }
