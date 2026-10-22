@@ -10,6 +10,7 @@ import {
 } from "../../domain/memory/counters";
 import { memorySha256 } from "./persistence/lexical";
 import { isMemoryDirectMessageExtractionPipeline } from "./persistence/jobs";
+import { detachMemoryExecutionUsage } from "./execution/detachUsage";
 import {
   lockMemorySettings,
   type MemoryTransaction
@@ -634,7 +635,8 @@ export async function deleteMemorySourceJobsForMessages(
   input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>
 ): Promise<number> {
   if (input.messageIds.length === 0) return 0;
-  const deleted = await tx.memoryJob.deleteMany({
+  const jobs = await tx.memoryJob.findMany({
+    select: { id: true },
     where: {
       chatId: input.chatId,
       OR: [
@@ -643,6 +645,20 @@ export async function deleteMemorySourceJobsForMessages(
       ],
       userId: input.userId
     }
+  });
+  if (jobs.length === 0) return 0;
+  const jobIds = jobs.map(({ id }) => id);
+  const bindings = await tx.memoryExecutionBinding.findMany({
+    select: { id: true },
+    where: { memoryJobId: { in: jobIds }, userId: input.userId }
+  });
+  // Job deletion cascades to bindings whose usage references restrict deletion.
+  await detachMemoryExecutionUsage(tx, {
+    executionBindingIds: bindings.map(({ id }) => id),
+    userId: input.userId
+  });
+  const deleted = await tx.memoryJob.deleteMany({
+    where: { id: { in: jobIds }, userId: input.userId }
   });
   return deleted.count;
 }

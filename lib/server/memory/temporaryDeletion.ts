@@ -5,6 +5,7 @@ import type { StorageAdapter } from "../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "../workspace/runtime";
 import { removeWorkspaceForDeletion } from "../workspace/removal";
 import { MemoryCoordinatorError } from "./coordinator/errors";
+import { detachMemoryExecutionUsage } from "./execution/detachUsage";
 import type {
   MemoryDeletionClaim,
   MemoryDeletionHandler
@@ -469,15 +470,7 @@ async function applyAggregateDeletion(
   // Content-free accounting outlives the chat: Memory receipts detach before
   // their bindings go with their owners; chat/run receipts keep the opaque
   // chatId while the SET NULL foreign keys drop their run and attempt links.
-  if (executionBindingIds.length > 0) {
-    await tx.usageEvent.updateMany({
-      data: { memoryExecutionBindingId: null, providerModelId: null },
-      where: {
-        memoryExecutionBindingId: { in: executionBindingIds },
-        userId: claim.userId
-      }
-    });
-  }
+  await detachMemoryExecutionUsage(tx, { executionBindingIds, userId: claim.userId });
   await tx.memoryMutationAuthorization.deleteMany({
     where: {
       OR: [
