@@ -598,6 +598,8 @@ export function createPrismaRunRepository(
             createdAt: {
               lt: createdBefore
             },
+            // Old-core runs only; the native engine recovers its own.
+            engine: "v1",
             ...(liveRunIdFilter.length > 0
               ? {
                   id: {
@@ -1250,6 +1252,8 @@ export function createPrismaRunRepository(
         where: {
           ...(input.chatId ? { chatId: input.chatId } : {}),
           ...(input.runId ? { id: input.runId } : {}),
+          // Old-core runs only; the native engine recovers its own.
+          engine: "v1",
           userId: input.userId,
           status: {
             in: activeModelRunStatuses
@@ -1291,6 +1295,8 @@ export function createPrismaRunRepository(
             },
             { updatedAt: { lt: input.staleBefore } }
           ],
+          // Old-core runs only; the native engine recovers its own.
+          engine: "v1",
           status: { in: activeModelRunStatuses }
         }
       }).catch(retainRunPrismaCode),

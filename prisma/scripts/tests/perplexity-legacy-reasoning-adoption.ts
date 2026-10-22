@@ -123,7 +123,7 @@ const relatedStateSql = `SELECT jsonb_build_object(
   'searchStrategies', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "SearchStrategy" row_value),
   'searchRevisions', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "SearchIntegrationRevision" row_value),
   'runs', (SELECT jsonb_agg(to_jsonb(row_value)
-    - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome']
+    - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome', 'engine']
     ORDER BY row_value.id) FROM "ModelRun" row_value),
   'bindings', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "ProviderRunBinding" row_value)
 )`;

@@ -105,11 +105,13 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
   return {
     async claim(now = new Date(), liveRunIds: readonly string[] = []): Promise<WorkspaceFollowupClaim | null> {
       return prisma.$transaction(async (tx) => {
+        // Old-core successors only: the continuation dispatches through the old
+        // core. The predecessor may belong to either engine.
         const [row] = await tx.$queryRaw<Array<{ runId: string; userId: string }>>(Prisma.sql`
           SELECT f."modelRunId" AS "runId", r."userId" FROM "WorkspaceFollowup" f
           JOIN "ModelRun" r ON r."id" = f."modelRunId"
           JOIN "ModelRun" p ON p."id" = f."predecessorRunId"
-          WHERE r."status" IN ('preparing', 'streaming')
+          WHERE r."status" IN ('preparing', 'streaming') AND r."engine" = 'v1'
             ${liveRunIds.length ? Prisma.sql`AND r."id" NOT IN (${Prisma.join([...liveRunIds])})` : Prisma.empty}
             AND (
             (f."state" = 'waiting' AND
@@ -127,7 +129,7 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
     },
     async hasPending(): Promise<boolean> {
       return await prisma.workspaceFollowup.count({ where: {
-        state: { in: ["waiting", "preparing"] }, modelRun: { status: { in: ["preparing", "streaming"] } }
+        state: { in: ["waiting", "preparing"] }, modelRun: { engine: "v1", status: { in: ["preparing", "streaming"] } }
       } }) > 0;
     },
     async release(claim: WorkspaceFollowupClaim): Promise<void> {
