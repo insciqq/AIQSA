@@ -1110,6 +1110,7 @@
   "source_unavailable",
   "sources_processing",
   "storage_relay_configuration_invalid",
+  "storage_relay_connections_high",
   "storage_relay_failed",
   "stored_object_size_mismatch",
   "stored_object_too_large",
