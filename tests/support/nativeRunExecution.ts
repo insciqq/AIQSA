@@ -98,7 +98,11 @@ export function memoryNativeEngine(options: Readonly<{ allowed?: boolean; approv
   return { engine, published: () => published, runs, toolCalls, transcriptRows, transcripts };
 }
 
-/** The run repository operations a native run uses; `cards` are the run's approval cards. */
+/**
+ * The run repository operations a native run uses; `cards` are the run's
+ * approval cards. No earlier message is a turn the server wrote unless a test
+ * says so (`loadSystemTurnMessageIds`, `loadScheduledPromptMessageIds`).
+ */
 export function nativeRunRepository(cards: readonly McpApprovalCard[] = []) {
   return {
     appendAssistantText: vi.fn(async () => undefined),
@@ -109,6 +113,8 @@ export function nativeRunRepository(cards: readonly McpApprovalCard[] = []) {
     loadModelPricing: vi.fn(async () => null),
     loadProviderModelCostBasis: vi.fn(async () => null),
     loadRunMcpApprovalCards: vi.fn(async () => [...cards]),
+    loadScheduledPromptMessageIds: vi.fn(async (): Promise<ReadonlySet<string>> => new Set<string>()),
+    loadSystemTurnMessageIds: vi.fn(async (): Promise<ReadonlySet<string>> => new Set<string>()),
     markRunAnswerStarted: vi.fn(async () => undefined),
     recordMonitoringVerdict: vi.fn(async () => true)
   };

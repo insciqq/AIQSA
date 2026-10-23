@@ -154,6 +154,29 @@ function parsedArguments(value: string): Record<string, unknown> {
   }
 }
 
+/**
+ * Which of these earlier user messages of the chat are turns the server
+ * wrote: answer review steps and approval continuations (`systemTurnKind`)
+ * and scheduled task prompts. When they cannot be read, every one counts as
+ * the server's, so no turn the engine cannot tell apart releases an unknown
+ * effect.
+ */
+async function serverWrittenTurns(repository: Pick<RunRepository, "loadScheduledPromptMessageIds" | "loadSystemTurnMessageIds">,
+  input: Readonly<{ chatId: string; messageIds: readonly string[]; userId: string }>): Promise<ReadonlySet<string>> {
+  if (input.messageIds.length === 0) return new Set();
+  try {
+    const [systemTurns, prompts] = await Promise.all([
+      repository.loadSystemTurnMessageIds?.(input) ?? Promise.resolve(new Set<string>()),
+      repository.loadScheduledPromptMessageIds?.(input) ?? Promise.resolve(new Set<string>())
+    ]);
+    return new Set([...systemTurns, ...prompts]);
+  } catch (error) {
+    logEvent("service_operation", { action: "degrade", code: "server_turns_unavailable", error, outcome: "degraded", stage: "read",
+      subsystem: "database" });
+    return new Set(input.messageIds);
+  }
+}
+
 function maxOutputTokens(request: ProviderRunRequest): number {
   const value = request.params.maxOutputTokens ?? request.params.maxTokens ?? request.modelCapabilities.defaultMaxOutputTokens;
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
@@ -298,11 +321,20 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         runRecords = writer;
         /** The sequence each compaction recorded after the run took, kept for a repeated write. */
         const detachedSequences = new Map<string, number>();
-        // Effects of the branch's earlier calls that are still unknown; only the user's own words count as them speaking.
-        const serverTurns = new Set([...continuationTurns].map((messageId) => `msg-${messageId}`));
+        // Effects of the branch's earlier calls that are still unknown. Only the user's own words count as them speaking, never
+        // a turn the server wrote: an approval continuation, an answer review step or a scheduled task's prompt.
+        const serverInput = Boolean(input.approvalContinuation) || input.scheduled === true ||
+          normalizedRequest.answerReviewStep !== undefined;
+        // Only an earlier turn after the branch's first call could release an effect, so only those are looked up.
+        const firstCall = conversation.items.findIndex((item) => item.kind === "tool_call");
+        const laterItems = new Set(firstCall < 0 ? [] : conversation.items.slice(firstCall).map((item) => item.id));
+        const laterTurns = contextMessages.slice(0, -1)
+          .filter((message) => message.role === "user" && laterItems.has(`msg-${message.id}`)).map((message) => message.id);
+        const serverWritten = await serverWrittenTurns(input.repository, { chatId: scope.chatId, messageIds: laterTurns,
+          userId: input.userId });
+        const serverTurns = new Set([...continuationTurns, ...serverWritten].map((messageId) => `msg-${messageId}`));
         const unknownEffects = unknownEffectsOf(conversation.items, (item) => item.followup === true ||
-          (item.id === conversation.currentInputId ? !input.approvalContinuation
-            : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
+          (item.id === conversation.currentInputId ? !serverInput : item.id.startsWith("msg-") && !serverTurns.has(item.id)));
 
         let base = input.prepared.providerRequest;
         if (conversation.currentInputId && input.services.images) {
