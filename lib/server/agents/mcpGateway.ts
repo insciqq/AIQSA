@@ -19,7 +19,7 @@ import { validateMcpToolArguments } from "../mcp/clientSession";
 import { mcpFindToolsInputSchema } from "../mcp/discovery";
 import { normalizeMcpResultForModel } from "../mcp/resultNormalization";
 import { getMcpResponseWireLimits, getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
-import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
+import { mcpCatalogFromSnapshot, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { NormalizedRunRequest } from "../providers/types";
 import { agentMcpDeliveryId, type createAgentRunStore } from "./store";
 import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
@@ -41,15 +41,6 @@ class DiscoveryRequiredError extends McpHubServiceError {
 
 function textResult(value: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }], ...(isError ? { isError: true } : {}) };
-}
-
-export function catalogFromSnapshot(snapshot?: McpRunPlanSnapshot): McpCapabilityCatalog {
-  return { version: 1, servers: snapshot?.servers.map((server) => ({
-    ...server, description: "", namespace: server.serverId,
-    tools: snapshot.tools.filter((tool) => tool.serverId === server.serverId).map((tool) => ({
-      namespacedName: tool.namespacedName, originalName: tool.originalName, description: tool.description
-    }))
-  })) ?? [] };
 }
 
 function frozenSchema(schema: Record<string, unknown>) {
@@ -102,7 +93,7 @@ export async function createAgentMcpGateway(input: Readonly<{
       if (!revision || !canAccessSearchStrategy(entitlements, option.optionId)) throw new Error("search_strategy_not_available");
     }
   });
-  const catalog = input.request.mcpDiscovery?.catalog ?? catalogFromSnapshot(input.request.mcp);
+  const catalog = input.request.mcpDiscovery?.catalog ?? mcpCatalogFromSnapshot(input.request.mcp);
   const approvals = input.approvals ?? createPrismaMcpGatewayApprovalStore(prisma);
   const allowed = new Map<string, string>();
   const service = createMcpToolService<Authority>({

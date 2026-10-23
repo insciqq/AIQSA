@@ -1,13 +1,13 @@
 /** Message of the error a lease check throws when the run's authority ended
  * because its user stopped the run: its streams end as cancelled, not failed. */
-export const AGENT_LEASE_CANCELLED = "agent_run_cancelled";
+export const RUNNER_GATEWAY_LEASE_CANCELLED = "agent_run_cancelled";
 
 function cancelledByUser(reason: unknown): boolean {
-  return reason instanceof Error && reason.message === AGENT_LEASE_CANCELLED;
+  return reason instanceof Error && reason.message === RUNNER_GATEWAY_LEASE_CANCELLED;
 }
 
 /** A gateway request cannot outlive its executor, even in another app process. */
-export async function withAgentLease(
+export async function withRunnerGatewayLease(
   request: Request,
   assertActive: () => Promise<void>,
   handle: (signal: AbortSignal) => Promise<Response>

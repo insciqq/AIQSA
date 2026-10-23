@@ -10,7 +10,7 @@ import { createMicrosandboxImageStore, evictUnusedWorkspaceImages } from "@/lib/
 import { ensureBundledMicrosandboxRuntime } from "@/lib/server/workspace/microsandboxInstall";
 import { MicrosandboxWorkspaceRuntime } from "@/lib/server/workspace/microsandboxRuntime";
 import { createWorkspaceRunnerServer } from "@/lib/server/workspace/runnerServer";
-import { createAgentRelay, AGENT_GATEWAY_PORT } from "@/lib/server/agents/relay";
+import { createRunnerGatewayRelay, RUNNER_GATEWAY_PORT } from "@/lib/server/workspace/runnerGatewayRelay";
 
 async function main(): Promise<void> {
   const token = process.env.AIQSA_WORKSPACE_RUNNER_TOKEN?.trim();
@@ -57,10 +57,10 @@ async function main(): Promise<void> {
   }
 
   const relay = process.env.AIQSA_AGENT_APP_ORIGIN?.trim()
-    ? createAgentRelay(process.env.AIQSA_AGENT_APP_ORIGIN.trim(), token) : null;
+    ? createRunnerGatewayRelay(process.env.AIQSA_AGENT_APP_ORIGIN.trim(), token) : null;
   if (relay) await new Promise<void>((resolve, reject) => {
     relay.once("error", reject);
-    relay.listen(AGENT_GATEWAY_PORT, "127.0.0.1", resolve);
+    relay.listen(RUNNER_GATEWAY_PORT, "127.0.0.1", resolve);
   });
 
   server.listen(portValue, host, () => {
