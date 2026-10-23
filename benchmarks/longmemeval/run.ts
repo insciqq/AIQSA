@@ -136,7 +136,6 @@ import {
   longMemEvalDocumentEmbeddingModelMismatch,
   longMemEvalExpectedUtilityModelIds,
   longMemEvalHybridRebuildFailureCode,
-  longMemEvalLexicalCutoverHealthy,
   longMemEvalProfileManifest,
   longMemEvalProductMemoryPipelineComplete,
   longMemEvalQualificationGate,
@@ -771,10 +770,9 @@ function applyQualificationManifest(
       BENCHMARK_MEMORY_OPTIONAL_WINDOW_MS ||
     String(manifestMemoryAdmission.version) !== MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION ||
     options.memoryReadUtilityPolicy !== manifestReadUtilityPolicy ||
-    manifest.runtime.lexical.backend !== "OPENSEARCH" ||
-    process.env.AIQSA_MEMORY_LEXICAL_BACKEND !== manifest.runtime.lexical.backend ||
-    process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID !==
-      manifest.runtime.lexical.indexBuildId) {
+    // Frozen manifests that pin a lexical search index cannot run: Memory
+    // lexical search reads PostgreSQL only (operator decision 2026-10-23).
+    "lexical" in manifest.runtime) {
     throw new Error("longmemeval_qualification_manifest_runtime_mismatch");
   }
   return Object.freeze({
@@ -967,12 +965,6 @@ function latestCheckpointOutcome(
   return latest.outcome;
 }
 
-function qualificationLexicalCutoverHealthy(
-  summary: CaseSummary,
-  required: boolean
-): boolean {
-  return !required || longMemEvalLexicalCutoverHealthy(summary.retrieval);
-}
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
@@ -2480,81 +2472,6 @@ async function waitForHybridIndex(
   throw new Error("longmemeval_hybrid_rebuild_timeout");
 }
 
-async function waitForOpenSearchProjection(
-  prisma: PrismaClient,
-  userId: string,
-  timeoutMs: number,
-  questionId: string
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let nextProgressAt = 0;
-  while (Date.now() < deadline) {
-    const settings = await prisma.userMemorySettings.findUnique({
-      select: { activeIndexGenerationId: true, memoryRevision: true },
-      where: { userId }
-    });
-    const generationId = settings?.activeIndexGenerationId;
-    if (!settings || !generationId) {
-      throw new Error("longmemeval_lexical_projection_authority_missing");
-    }
-    const [state, outstanding, blocked] = await Promise.all([
-      prisma.memoryLexicalProjectionState.findFirst({
-        select: {
-          enqueuedThroughSequence: true,
-          expectedContentFingerprint: true,
-          expectedDocumentCount: true,
-          projectedThroughRevision: true,
-          projectionFingerprint: true,
-          status: true,
-          targetMemoryRevision: true,
-          visibleContentFingerprint: true,
-          visibleDocumentCount: true,
-          visibleThroughSequence: true
-        },
-        where: { indexGenerationId: generationId, userId }
-      }),
-      prisma.memoryLexicalProjectionEvent.count({
-        where: {
-          indexGenerationId: generationId,
-          state: { not: "SUCCEEDED" },
-          userId
-        }
-      }),
-      prisma.memoryLexicalProjectionEvent.count({
-        where: {
-          indexGenerationId: generationId,
-          state: "BLOCKED_REQUIRES_ADMIN",
-          userId
-        }
-      })
-    ]);
-    if (blocked > 0 || state?.status === "DEGRADED" || state?.status === "RETIRED") {
-      throw new Error("longmemeval_lexical_projection_failed");
-    }
-    const contentMatches = state?.expectedContentFingerprint !== null &&
-      state?.expectedContentFingerprint === state?.visibleContentFingerprint;
-    const countsMatch = state?.expectedDocumentCount !== null &&
-      state?.expectedDocumentCount === state?.visibleDocumentCount;
-    if (state?.status === "READY" && outstanding === 0 &&
-      state.targetMemoryRevision === settings.memoryRevision &&
-      state.projectedThroughRevision === settings.memoryRevision &&
-      state.enqueuedThroughSequence === state.visibleThroughSequence &&
-      state.projectionFingerprint !== null && contentMatches && countsMatch) {
-      return;
-    }
-    if (Date.now() >= nextProgressAt) {
-      emit("lexical_projection_progress", {
-        blocked,
-        outstanding,
-        questionId,
-        status: state?.status ?? null
-      });
-      nextProgressAt = Date.now() + 15_000;
-    }
-    await sleep(2_000);
-  }
-  throw new Error("longmemeval_lexical_projection_timeout");
-}
 
 function requestHeaders(baseUrl: URL, cookie: string, json = false): HeadersInit {
   return {
@@ -3565,18 +3482,6 @@ async function runCase(
         await buildFresh(null);
       }
       if (!identity) throw new Error("longmemeval_identity_setup_failed");
-      if (options.qualificationManifestId !== null &&
-        isLongMemEvalActiveQualificationManifest(options.qualificationManifestId)) {
-        await withFailureCode(
-          "longmemeval_lexical_projection_failed",
-          () => waitForOpenSearchProjection(
-            prisma,
-            identity!.userId,
-            options.indexTimeoutMs,
-            entry.questionId
-          )
-        );
-      }
       const answer = await withFailureCode(
         "longmemeval_question_run_failed",
         () => runQuestion(
@@ -3738,8 +3643,6 @@ function buildCheckpointIdentity(input: Readonly<{
       debugMemory: input.options.debugMemory,
       embeddingModel: qualificationEmbeddingModelId,
       indexTimeoutMs: input.options.indexTimeoutMs,
-      lexicalBackend: process.env.AIQSA_MEMORY_LEXICAL_BACKEND ?? "POSTGRES",
-      lexicalIndexBuildId: process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID ?? null,
       onlineEvaluation: input.options.onlineEvaluation,
       evaluationFailFast: input.evaluationFailFast,
       memoryAdmission: Object.freeze({
@@ -3897,8 +3800,6 @@ async function main(): Promise<void> {
     }
     const checkpoints = new Map(loadedCheckpoints);
     const caseEvaluations = new Map<string, LongMemEvalCaseEvaluation>();
-    const lexicalCutoverRequired = qualificationManifest !== null &&
-      isLongMemEvalActiveQualificationManifest(qualificationManifest.id);
     if (options.onlineEvaluation) {
       for (const entry of selection.cases) {
         const checkpoint = checkpoints.get(entry.questionId);
@@ -3920,17 +3821,6 @@ async function main(): Promise<void> {
             questionId: entry.questionId
           });
           throw new Error("longmemeval_case_memory_unhealthy");
-        }
-        if (!qualificationLexicalCutoverHealthy(
-          latest.outcome.summary,
-          lexicalCutoverRequired
-        )) {
-          if (options.retryUnhealthy) continue;
-          emit("case_lexical_cutover_unhealthy", {
-            checkpointAttempt: latest.attempt,
-            questionId: entry.questionId
-          });
-          throw new Error("longmemeval_case_lexical_cutover_unhealthy");
         }
         const evaluationInput = {
           attempt: latest.attempt,
@@ -3964,11 +3854,7 @@ async function main(): Promise<void> {
       if (!checkpoint) return true;
       if (!options.retryUnhealthy) return false;
       const outcome = latestCheckpointOutcome(checkpoint);
-      return outcome.status === "FAILED" || outcome.summary.answer.memoryOutcome !== "USED" ||
-        !qualificationLexicalCutoverHealthy(
-          outcome.summary,
-          lexicalCutoverRequired
-        );
+      return outcome.status === "FAILED" || outcome.summary.answer.memoryOutcome !== "USED";
     });
     emit("benchmark_start", {
       caseConcurrency: options.caseConcurrency,
@@ -4066,16 +3952,6 @@ async function main(): Promise<void> {
             });
             throw new Error("longmemeval_case_memory_unhealthy");
           }
-          if (!qualificationLexicalCutoverHealthy(
-            outcome.summary,
-            lexicalCutoverRequired
-          )) {
-            emit("case_lexical_cutover_unhealthy", {
-              checkpointAttempt,
-              questionId: entry.questionId
-            });
-            throw new Error("longmemeval_case_lexical_cutover_unhealthy");
-          }
           if (options.onlineEvaluation) {
             const evaluation = await settleLongMemEvalCaseEvaluation({
               attempt: checkpointAttempt,
@@ -4165,11 +4041,6 @@ async function main(): Promise<void> {
     const qualification = longMemEvalQualificationGate({
       executionFailures: failures.length,
       memoryOutcomes: summaries.map(({ answer }) => answer.memoryOutcome)
-    });
-    const lexicalCutoverQualification = Object.freeze({
-      passed: summaries.length > 0 && summaries.every((summary) =>
-        qualificationLexicalCutoverHealthy(summary, lexicalCutoverRequired)),
-      required: lexicalCutoverRequired
     });
     await writeJsonAtomic(summaryPath, {
       sourceRevision,
@@ -4286,7 +4157,6 @@ async function main(): Promise<void> {
           }
         : null,
       qualification,
-      lexicalCutoverQualification,
       results: summaries,
       selection: {
         mode: selection.mode,
@@ -4314,8 +4184,7 @@ async function main(): Promise<void> {
         ? [...caseEvaluations.values()].filter(({ label }) => !label).length
         : null,
       outputDirectory: options.outputDirectory,
-      qualificationPassed: qualification.passed &&
-        lexicalCutoverQualification.passed,
+      qualificationPassed: qualification.passed,
       unhealthyMemoryOutcomes: qualification.unhealthyMemoryOutcomes
     });
     if (summaries.length === 0 || failures.length > 0) {
@@ -4323,9 +4192,6 @@ async function main(): Promise<void> {
     }
     if (!qualification.passed) {
       throw new Error("longmemeval_qualification_memory_unhealthy");
-    }
-    if (!lexicalCutoverQualification.passed) {
-      throw new Error("longmemeval_qualification_lexical_cutover_unhealthy");
     }
     if (options.onlineEvaluation &&
       [...caseEvaluations.values()].some(({ label }) => !label)) {
