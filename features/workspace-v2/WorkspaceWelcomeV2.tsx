@@ -18,6 +18,7 @@ import {
   saveNewMemory,
   useMemoryManagerStore
 } from "@/components/app-shell/memoryManagerStore";
+import { navigateChatRoute } from "@/components/app-shell/chatRoute";
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
@@ -149,8 +150,11 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     artifactDetailRef.current = null;
     void refreshArtifactLibrary(artifactArchived, true);
   };
+  /** Opens a chat like a chat row does: one history entry, then Studio closes over it. */
   const openArtifactChat = async (chatId: string) => {
-    if (!await props.workspace.pane.actions.openChat?.(chatId)) throw new Error("This chat is no longer available.");
+    if (!await navigateChatRoute(() => props.workspace.pane.actions.openChat?.(chatId))) {
+      throw new Error("This chat is no longer available.");
+    }
     closeLibrary();
   };
   const [assistantExit, setAssistantExit] = useState<(() => void) | null>(null);
@@ -326,8 +330,10 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           loadState={fileLoadState}
           onOpen={(id) => {
             const file = fileData?.files.find((candidate) => candidate.id === id);
-            if (!file?.chatId || !file.messageId) return;
-            void props.workspace.pane.actions.openChatMessage(file.chatId, file.messageId)
+            const chatId = file?.chatId;
+            const messageId = file?.messageId;
+            if (!chatId || !messageId) return;
+            void navigateChatRoute(() => props.workspace.pane.actions.openChatMessage(chatId, messageId))
               .then((opened) => {
                 if (!opened) return;
                 closeLibrary();
