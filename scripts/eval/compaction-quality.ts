@@ -57,6 +57,8 @@ import {
   type TranscriptTarget
 } from "../../lib/server/engine/transcript";
 import { responsesHistoryFromOutput, type ProviderHistoryItem } from "../../lib/server/providers/history";
+import { modelCallRetryDecision } from "../../lib/server/engine/modelCall";
+import { sleepWithSignal } from "../../lib/server/providers/providerRetry";
 import { createProviderSafeFetch } from "../../lib/server/providers/providerSafeFetch";
 import type { ProviderModelCapabilities, ProviderRunRequest, ProviderRunResult } from "../../lib/server/providers/types";
 import type { RunTool } from "../../lib/server/tools/types";
@@ -755,6 +757,10 @@ export function dryRunModel(): EvalModel {
 
 // --------------------------------------------------------------------- CLI
 
+/** Attempts per model call: transient failures are sent again, as the engine does. */
+const CALL_ATTEMPTS = 3;
+const TRANSIENT_NATIVE_CODE = /^(?:http_(?:408|425|429|5\d\d)|network_\w+|stream_ended_without_terminal)$/u;
+
 function realModel(options: EvalOptions, provider: SpikeProvider): EvalModel | null {
   const profile = SPIKE_PROVIDER_PROFILES[provider];
   const apiKey = process.env[profile.apiKeyEnv]?.trim();
@@ -768,7 +774,7 @@ function realModel(options: EvalOptions, provider: SpikeProvider): EvalModel | n
   const nativeRoot = provider === "codex-lb" ? options.root : provider === "openai" ? "https://api.openai.com" : null;
   return {
     native: nativeRoot ? async (body, signal, idleTimeoutMs) => {
-      const result = await streamResponses({
+      const send = () => streamResponses({
         apiKey,
         fetch: (url, init) => fetchFn(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, signal]) : signal }),
         idleTimeoutMs,
@@ -776,6 +782,12 @@ function realModel(options: EvalOptions, provider: SpikeProvider): EvalModel | n
         overallTimeoutMs: options.timeoutMs,
         root: nativeRoot
       }, body);
+      let result = await send();
+      for (let attempt = 2; attempt <= CALL_ATTEMPTS && result.errorCode && TRANSIENT_NATIVE_CODE.test(result.errorCode) &&
+        !signal.aborted; attempt += 1) {
+        await sleepWithSignal(2_000 * attempt, signal);
+        result = await send();
+      }
       return {
         errorCode: result.errorCode ?? (result.status === "completed" || result.status === "incomplete" ? null : "response_not_completed"),
         items: result.completedItems,
@@ -784,10 +796,18 @@ function realModel(options: EvalOptions, provider: SpikeProvider): EvalModel | n
       };
     } : null,
     async run(providerRequest, signal) {
-      const stream = connection.adapter.stream(providerRequest, { signal, timeoutMs: options.timeoutMs });
-      let next = await stream.next();
-      while (!next.done) next = await stream.next();
-      return next.value;
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          const stream = connection.adapter.stream(providerRequest, { signal, timeoutMs: options.timeoutMs });
+          let next = await stream.next();
+          while (!next.done) next = await stream.next();
+          return next.value;
+        } catch (error) {
+          const decision = modelCallRetryDecision(error, signal);
+          if (!decision || attempt >= CALL_ATTEMPTS) throw error;
+          await sleepWithSignal(decision.retryAfterMs ?? 2_000 * attempt, signal);
+        }
+      }
     }
   };
 }

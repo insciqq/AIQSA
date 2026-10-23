@@ -6,7 +6,8 @@
  * A compaction item is appended to the transcript at a request boundary; on a
  * provider context-length rejection the loop plans with `overflow`, compacts
  * and retries once. When no compaction helps, `fitToolResults` makes the one
- * request fit by handle, or the run fails with `context_too_large`.
+ * request fit by handle, or the run fails with `context_too_large`. Every
+ * call takes the run's `engineItemRules(currentInputId)`.
  */
 export {
   compact,
@@ -23,6 +24,7 @@ export {
   type CompactOptions
 } from "./compact";
 export { CONTEXT_TOO_LARGE, fitToolResults, type ToolResultFit } from "./fallback";
+export { APPROVAL_PENDING_TEXT, engineItemRules, type CompactionItemRules } from "./items";
 export { COMPACTION_TRIGGER_ITEM, nativeCompactionFrom, responsesCompactionInput } from "./native";
 export {
   COMPACTION_RETENTION,
