@@ -15,7 +15,8 @@ import { getStoredObjectStream, type StorageAdapter } from "../uploads/storage";
  * (`toolResultOutputText`, the same text the provider bridges send). A text
  * longer than `saveChars` is saved whole once, as the observation of its
  * call, with a handle on its transcript item, so a compaction can leave it
- * out of the context and name where it lives (operator decision 2026-10-23).
+ * out of the context and name where it lives (decision 2026-10-23,
+ * `agent_docs/RUN_CONTRACTS.md`).
  * The model receives a text up to `inlineChars` whole, and a longer one as
  * its head and tail with the handle; `read_tool_result` reads any part of a
  * saved result by handle, with the call's tool and arguments, from any later
