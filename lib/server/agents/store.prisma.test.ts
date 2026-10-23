@@ -260,7 +260,7 @@ describe("durable Agent authority and accounting", () => {
       expect(readSkillZip(zip!.body).find(file => file.path === "picture.png")!.bytes).toEqual(f.png);
       const inputs = createPrismaWorkspaceCoordinatorRepository(prisma);
       const binding = { chatId: f.accepted.chatId, runId: f.accepted.id, assistantMessageId: f.accepted.assistantMessageId,
-        userId: f.userId, projectId: null } as WorkspaceExecutionBinding;
+        userId: f.userId } as WorkspaceExecutionBinding;
       expect((await inputs.attachments(binding)).map(row => row.attachmentId)).toContain(attachment.id);
       const next = await f.run(); await next.store.arm(null); await f.bind(next.id);
       const later = { ...f.request, imageReferences: [{ attachmentId: attachment.id, messageId: f.accepted.assistantMessageId!, fileName: attachment.fileName, origin: "generated" as const }] };
