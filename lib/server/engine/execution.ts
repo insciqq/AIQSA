@@ -30,7 +30,7 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
-import { engineItemRules } from "./compaction";
+import { engineItemRules, turnEndedAfter } from "./compaction";
 import { compactionModelCall } from "./compactionCalls";
 import { buildRunConversation } from "./conversation";
 import { detachedCompactions } from "./detachedCompactions";
@@ -270,10 +270,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             userId: input.userId });
           const callItem = approved ? [...conversation.items].reverse().find((item) => item.kind === "tool_call" &&
             item.callId === approved.providerCallId && item.name === approved.toolName) : undefined;
-          if (callItem?.kind === "tool_call") {
+          // Only the latest turn continues: once the user wrote again, a compaction may have cut past the call.
+          if (callItem?.kind === "tool_call" && !turnEndedAfter(conversation.items, callItem.id)) {
             approvedCall = { arguments: parsedArguments(callItem.arguments), id: callItem.callId, name: callItem.name };
           } else {
-            // The old core stopped that turn: the server's turn is the instruction, and the call it allows is made again.
+            // The old core stopped that turn, or the user wrote again since: the server's turn is the instruction, and
+            // the call it allows is made again.
             conversation = conversationFor("input");
           }
         }
@@ -281,6 +283,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const writer = createTranscriptWriter({ append: (from, added) => engine.transcripts.append(scope, from, added),
           firstSequence: await engine.transcripts.nextSequence(scope), runId });
         runRecords = writer;
+        /** The sequence each compaction recorded after the run took, kept for a repeated write. */
+        const detachedSequences = new Map<string, number>();
         // Effects of the branch's earlier calls that are still unknown; only the user's own words count as them speaking.
         const serverTurns = new Set([...continuationTurns].map((messageId) => `msg-${messageId}`));
         const unknownEffects = unknownEffectsOf(conversation.items, (item) => item.followup === true ||
@@ -371,10 +375,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           append,
           compactionCall: (latest) => compactionModelCall({ adapter: input.adapter, deadlineAt: startedAt + turnMs, now,
             onUsage: recordModelUsage, timeoutMs }, latest),
-          // One still running after the answer finishes detached; the run records its item and usage then.
+          // One still running after the answer finishes detached; the run records its item, marker and usage then,
+          // the item at a sequence no record of the run takes.
           detached: { chatId: scope.chatId, live: () => engine.transcripts.runLive(scope),
-            onStatus: async (status) => { await engine.runs.appendCompactionStatus(scope, status); }, registry: detachedCompactions,
-            settleUsage: async () => { await usage.settle(); }, userId: input.userId },
+            record: (item, status) => {
+              const sequence = detachedSequences.get(item.id) ?? writer.reserve(1);
+              detachedSequences.set(item.id, sequence);
+              return engine.runs.recordDetachedCompaction(scope, { item, sequence, status });
+            }, registry: detachedCompactions, settleUsage: async () => { await usage.settle(); }, userId: input.userId },
           insert: (added) => { items.push(...added); },
           items,
           now,

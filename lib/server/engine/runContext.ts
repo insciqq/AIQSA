@@ -79,10 +79,15 @@ export type RunContextDeps = Readonly<{
   /** Where a compaction still running after the answer goes on; without it, one stops with its run. */
   detached?: Readonly<{
     chatId: string;
-    /** The run is still on record and its chat not being deleted. */
+    /** The run is still on record and its chat not being deleted: checked while it runs, to stop it early. */
     live(): Promise<boolean>;
-    /** Records the marker of a compaction that finished after the run (its stream is closed by then). */
-    onStatus(status: ContextCompactionStatus): Promise<void>;
+    /**
+     * Records the item and marker of a compaction that finished after the
+     * run, together and only while the chat may still be written (its stream
+     * is closed by then): the write, not a check before it, decides. False
+     * when the chat or run is gone.
+     */
+    record(item: TranscriptItem, status: ContextCompactionStatus | null): Promise<boolean>;
     registry: DetachedCompactions;
     /** Records the usage a compaction reported after the run settled its own. */
     settleUsage(): Promise<void>;
@@ -192,10 +197,10 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     return weights;
   }
 
-  function measure(request: ProviderRunRequest): number {
+  function measure(request: ProviderRunRequest, items: readonly TranscriptItem[] = deps.items): number {
     const { calibration, estimate } = measuring(request);
     return measureContext({ anchor, calibration, estimate,
-      fixedTokens: estimate([request.prompt, request.personalContext?.text ?? null, request.tools ?? []]), items: deps.items, target }).tokens;
+      fixedTokens: estimate([request.prompt, request.personalContext?.text ?? null, request.tools ?? []]), items, target }).tokens;
   }
 
   function state(): BackgroundCompactionState {
@@ -211,13 +216,35 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   }
 
   /** The marker is a display: it never fails the run. */
-  async function status(next: Parameters<typeof makeContextCompactionStatus>[0],
-    publish: (status: ContextCompactionStatus) => Promise<void> = deps.onStatus): Promise<void> {
+  async function status(next: Parameters<typeof makeContextCompactionStatus>[0]): Promise<void> {
     try {
-      await publish(makeContextCompactionStatus(next));
+      await deps.onStatus(makeContextCompactionStatus(next));
     } catch {
       // Not shown; the compaction itself stands.
     }
+  }
+
+  /**
+   * Records a compaction that finished after the run, its marker with it.
+   * A failed write is tried once more (one whose outcome was lost counts as
+   * written), and only the write decides whether the chat could still take it.
+   */
+  async function recordDetached(detached: NonNullable<RunContextDeps["detached"]>, item: TranscriptItem,
+    marker: Parameters<typeof makeContextCompactionStatus>[0]): Promise<"gone" | "recorded" | "unrecorded"> {
+    let shown: ContextCompactionStatus | null = null;
+    try {
+      shown = makeContextCompactionStatus(marker);
+    } catch {
+      // The item stands without its marker.
+    }
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        return await detached.record(item, shown) ? "recorded" : "gone";
+      } catch {
+        // A transient failure: once more, then the item is given up.
+      }
+    }
+    return "unrecorded";
   }
 
   function log(job: Job, metadata: CompactionMetadata | null, outcome: "adopted" | "cancelled" | "compacted" | "discarded" | "failed",
@@ -267,14 +294,13 @@ export function createRunContext(deps: RunContextDeps): RunContext {
   async function keep(job: Job, result: JobResult, detached = false): Promise<boolean> {
     const owned = job.owner === self;
     const extra = detached ? { detached: true as const } : {};
-    // After its run the marker can only be recorded, never streamed.
-    const publish = detached && deps.detached ? deps.detached.onStatus : deps.onStatus;
     const failed = async (metadata: CompactionMetadata | null, code: string) => {
       if (job.mode === "foreground") foregroundFailed = true;
       else backgroundFailed = true;
       if (!owned) return false;
-      if (job.cycle !== null) {
-        await status({ beforeTokens: job.tokens, cycle: job.cycle, outcome: "summary_failed", state: "failed" }, publish);
+      // Only a foreground compaction shows a status to settle, and only while its run streams.
+      if (job.cycle !== null && !detached) {
+        await status({ beforeTokens: job.tokens, cycle: job.cycle, outcome: "summary_failed", state: "failed" });
       }
       log(job, metadata, "failed", { ...extra, code });
       return false;
@@ -301,11 +327,23 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       log(job, outcome.metadata, "adopted");
       return true;
     }
-    await deps.append([outcome.item]);
-    const after = latest ? measure(latest) : undefined;
+    const after = latest ? measure(latest, [...deps.items, outcome.item]) : undefined;
     job.cycle ??= ++cycle;
-    await status({ afterTokens: after ?? null, beforeTokens: job.tokens, cycle: job.cycle,
-      outcome: "summary_applied", state: "complete" }, publish);
+    const marker = { afterTokens: after ?? null, beforeTokens: job.tokens, cycle: job.cycle,
+      outcome: "summary_applied", state: "complete" } as const;
+    if (detached && deps.detached) {
+      // After its run the item and marker are recorded together, only while the chat still takes them.
+      const recorded = await recordDetached(deps.detached, outcome.item, marker);
+      if (recorded !== "recorded") {
+        log(job, outcome.metadata, recorded === "gone" ? "cancelled" : "failed",
+          { ...extra, code: recorded === "gone" ? "compaction_chat_gone" : "compaction_unrecorded" });
+        return false;
+      }
+      deps.insert([outcome.item]);
+    } else {
+      await deps.append([outcome.item]);
+      await status(marker);
+    }
     log(job, outcome.metadata, "compacted", { ...extra, ...(after !== undefined ? { tokensAfter: after } : {}) });
     return true;
   }
@@ -318,7 +356,11 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     return keep(job, job.result);
   }
 
-  /** Waits up to `ms` for the running background compaction; one that is not done by then stops. */
+  /**
+   * Waits up to `ms` for the running background compaction. An own one not
+   * done by then stops; a joined one goes on for the run that started it,
+   * and this run stops waiting for it.
+   */
   async function awaitBackground(ms: number): Promise<boolean> {
     const job = background;
     if (!job) return false;
@@ -326,9 +368,13 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     // A run that stops while it waits leaves an own compaction to stop with it and a joined one to its run.
     deps.signal.throwIfAborted();
     if (!settled) {
+      backgroundFailed = true;
+      if (job.owner !== self) {
+        background = null;
+        return false;
+      }
       job.stopCode ??= "compaction_wait_timeout";
       job.controller.abort();
-      backgroundFailed = true;
     }
     const result = await job.promise;
     background = null;
@@ -353,9 +399,10 @@ export function createRunContext(deps: RunContextDeps): RunContext {
 
   /**
    * Lets a compaction still running when the answer is published go on
-   * without the run: under its own deadline, stopped when its chat goes away,
-   * and recorded by this run when it finishes, as at a request boundary; the
-   * usage it reported is recorded then too.
+   * without the run: under its own deadline, stopped early when its chat
+   * goes away, and recorded by this run when it finishes, in one write that
+   * checks the chat (`recordDetached`); the usage it reported is recorded
+   * then too.
    */
   function detach(job: Job, detached: NonNullable<RunContextDeps["detached"]>): void {
     const stop = (code: DetachedStopCode) => {
@@ -374,13 +421,8 @@ export function createRunContext(deps: RunContextDeps): RunContext {
       clearInterval(checks);
       let kept = false;
       try {
-        // A chat deleted meanwhile keeps nothing.
-        if (await detached.live().catch(() => false)) {
-          kept = await keep(job, result, true);
-        } else {
-          job.stopCode ??= "compaction_chat_gone";
-          log(job, "outcome" in result ? result.outcome.metadata : null, "cancelled", { code: job.stopCode, detached: true });
-        }
+        // A chat deleted meanwhile keeps nothing: the write checks it.
+        kept = await keep(job, result, true);
         await detached.settleUsage().catch(() => undefined);
       } finally {
         if (kept) detached.registry.finish(detached.chatId, job);
