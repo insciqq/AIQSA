@@ -1,9 +1,18 @@
 import type { ModelToolCall, RunTool, ToolExecutionContext, ToolExecutionResult } from "./types";
 
 /**
- * What a tool does outside the transcript, for the engine registry's hooks:
- * `none` changes nothing (pure or read-only), `local` changes only this
- * chat's own state (Workspace files), `external` reaches systems beyond AIQSA.
+ * What a tool does beyond the transcript: the one vocabulary of the native
+ * engine registry (`EngineToolEffects` in `lib/server/engine/toolRegistry.ts`),
+ * whose hooks act on it.
+ * - `none`: it only reads or changes nothing. A transient failure is tried
+ *   again, and an identical repeat after identical results may be blocked.
+ * - `local`: it changes the user's own AIQSA state through its owner's
+ *   service, which settles the call itself, or this chat's Workspace files.
+ *   It is never tried again automatically.
+ * - `external`: it may act outside AIQSA (an MCP tool that is not read-only,
+ *   a Workspace command, a paid generation). It is recorded before it is
+ *   sent and never sent twice, and an unknown outcome stays unknown
+ *   (`lib/server/engine/unknownEffects.ts`).
  */
 export type HarnessToolEffects = "external" | "local" | "none";
 

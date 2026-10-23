@@ -1,5 +1,5 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
-import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
+import type { ThreadWorkspaceActivityEntry, WorkspaceActivityKind } from "../../contracts/workspace";
 import type { ArtifactService } from "../artifacts/service";
 import type { ImageGenerationService } from "../images/service";
 import { mcpFindToolsTool } from "../mcp/discovery";
@@ -14,6 +14,7 @@ import type { MemorySearchService } from "../memory/search/runtime";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
 import { mcpApprovalRequestForCall } from "../runs/mcpApprovalGate";
+import { attachmentIdsFromContentBlocks } from "../runs/runAttachmentMaterialization";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
 import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
 import { createSearchPlanToolRouter, searchExecutionsFromToolResult, searchUsageAttribution } from "../search/toolExecutor";
@@ -21,11 +22,22 @@ import type { SkillToolService } from "../skills/toolService";
 import { deliverSkillWorkspaceBundle } from "../skills/workspaceDelivery";
 import { memorySearchActivityEvent, skillToolActivityFacts, toolActivityDescriptors } from "../tools/activityDescriptors";
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
+import {
+  APPLY_PATCH_TOOL_NAME,
+  APPLY_PATCH_WORKSPACE_TOOLS,
+  applyPatchTool,
+  executeApplyPatch,
+  workspaceApplyPatchFiles,
+  type WorkspaceToolCaller
+} from "../tools/applyPatch";
 import { artifactTool, readArtifactTool } from "../tools/artifact";
 import { checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { createFetchUrlSession, type FetchUrlSessionDeps } from "../tools/fetchUrl";
 import { FETCH_URL_TOOL_NAME, fetchUrlActivityFacts, fetchUrlToolsForRequest, isFetchUrlPlan } from "../tools/fetchUrlPlan";
+import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../tools/harnessActivity";
+import type { HarnessToolEffects } from "../tools/harnessTool";
 import { imageGenerationTool } from "../tools/imageGeneration";
+import { executeReadSecret, readSecretTool } from "../tools/readSecret";
 import type { liveToolCallStatus } from "../runs/liveToolStatus";
 import { executeCreateScheduledTask, isScheduledTaskCreateCall, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import {
@@ -33,33 +45,40 @@ import {
   isScheduledTaskManageCall,
   scheduledTaskManagementToolsForRequest
 } from "../tools/scheduledTaskManagement";
+import {
+  SELF_SERVICE_TOOLS,
+  createToolCallSelfServiceStore,
+  executeSelfServiceTool,
+  type SelfServiceRunDeps
+} from "../tools/selfServiceTools";
 import { acceptsSkillTool, skillToolsForRequest } from "../tools/skill";
 import { executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
+import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/updatePlan";
 import type { ToolObservationSource } from "../toolObservations/contract";
 import type { VisionAnalysisService } from "../vision/service";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { defaultSkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
-import { workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
+import { namespacedWorkspaceToolName, workspaceToolNameFromNamespaced } from "../workspace/toolCatalog";
 import { executeReadToolResult, readToolResultTool, type SavedToolResultReader } from "./toolResults";
 
 /**
  * The native engine's one tool registry, built once at the start of a run
  * from the tools its admission froze and the existing executors. Every tool
- * declares its effects:
- * - `none`: it only reads (a transient failure is retried, an identical
- *   repeat may be blocked);
- * - `local`: it changes the user's own AIQSA state through its owner's
- *   service, which settles the call itself;
- * - `external`: it may act outside (an MCP tool not annotated read-only, a
- *   Workspace command, a paid generation) and is never sent twice.
- * A tool that needs its initiator's approval says so per call. Workspace tools
- * are always registered when the run has a Workspace; the VM starts at the
- * first call that needs it. Discovery (`find_tools`) adds MCP tools to the
- * registry for the run's later requests.
+ * declares its effects in one vocabulary (`HarnessToolEffects`): `none` only
+ * reads, `local` changes the user's own AIQSA state or this chat's Workspace
+ * files and is never tried again, `external` may act outside and is never
+ * sent twice. A tool that needs its initiator's approval says so per call.
+ * Workspace tools are always registered when the run has a Workspace; the VM
+ * starts at the first call that needs it. Discovery (`find_tools`) adds MCP
+ * tools to the registry for the run's later requests. The harness tools
+ * (`HARNESS_TOOLS`) ride on every request that offers tools, and the
+ * self-service tools (`SELF_SERVICE_TOOLS`) on those of interactive personal
+ * and temporary chats, whose handler gives their owners.
  */
-export type EngineToolEffects = "external" | "local" | "none";
+export type EngineToolEffects = HarnessToolEffects;
 
 export type EngineToolActivity = NonNullable<Parameters<typeof liveToolCallStatus>[1]>;
 
@@ -129,6 +148,14 @@ export type ToolRegistryServices = Readonly<{
     "loadRunFetchUrlCalls" | "loadRunSearchSourceUrls" | "manageScheduledTaskForCall" | "saveSkillForCall">;
   savedResults: SavedToolResultReader;
   searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
+  /** The saved secrets `read_secret` reads (`createRunSecretSource`), with or without a Workspace. */
+  secrets?: RunSecretSource;
+  /**
+   * The owners behind the self-service tools, given only for interactive
+   * personal and temporary chats (`nativeRunResponse`); the registry adds
+   * the run's own facts. They need `secrets` too, for the Skill save guard.
+   */
+  selfService?: Pick<SelfServiceRunDeps, "assistants" | "db" | "storage">;
   skillTools?: Pick<SkillToolService, "execute">;
   vision?: Pick<VisionAnalysisService, "execute">;
   workspace?: WorkspaceCoordinator;
@@ -154,6 +181,31 @@ export type ToolRegistryInput = Readonly<{
 
 function unavailable(call: ModelToolCall, code: string): ToolExecutionResult {
   return { callId: call.id, content: [{ type: "json", value: { error: code } }], name: call.name, status: "error" };
+}
+
+/** Workspace lifecycle rows (the VM starting, staging, retiring), which every Workspace call reports as it goes. */
+const WORKSPACE_LIFECYCLE_KINDS: ReadonlySet<WorkspaceActivityKind> = new Set<WorkspaceActivityKind>([
+  "attachments_prepare", "execution_status", "outputs_export", "workspace_recreated", "workspace_start", "workspace_stopped"
+]);
+
+/** Conversation files the self-service tools may read: those of the run's frozen branch and its own message. */
+const ADMITTED_ATTACHMENTS_LIMIT = 256;
+
+function admittedAttachmentIds(request: ProviderRunRequest): string[] {
+  const ids = new Set<string>();
+  const add = (blocks: readonly unknown[]) => {
+    try {
+      for (const id of attachmentIdsFromContentBlocks(blocks)) ids.add(id);
+    } catch {
+      // Admission bounded and checked these blocks; a block it could not read references nothing.
+    }
+  };
+  for (const message of request.context?.messages ?? []) {
+    if (message.purpose === undefined && message.historyClass === undefined) add(message.content.blocks);
+  }
+  add(request.content.blocks);
+  for (const id of request.attachmentIds) ids.add(id);
+  return [...ids].slice(-ADMITTED_ATTACHMENTS_LIMIT);
 }
 
 /** A call refused before it was sent (a stale runtime, invalid arguments): its outcome is known, nothing happened. */
@@ -246,6 +298,44 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     execute: (execution) => executeReadToolResult(execution.call, { chatId: input.chatId, reader: input.services.savedResults,
       signal: execution.signal, userId: input.userId }) });
 
+  // The harness tools of every chat that offers tools, none of which needs the VM: the plan
+  // the user sees as progress, and the user's saved secrets.
+  const listed = (name: string) => (): EngineToolActivity => descriptors.get(name) ?? {};
+  if (clientTools) {
+    add({ activity: listed(updatePlanTool.name), definition: updatePlanTool.tool, effects: updatePlanTool.effects,
+      observationSource: "workspace",
+      execute: async (execution) => {
+        const result = executeUpdatePlan(execution.call);
+        const parsed = result.status === "complete" ? parsePlanUpdate(execution.call.arguments) : null;
+        const entry = parsed?.ok ? planActivityEntry({ callId: execution.persistedToolCallId, runId: input.runId, update: parsed.update })
+          : null;
+        if (entry) await input.onWorkspaceActivity(entry);
+        return result;
+      } });
+  }
+  const secrets = input.services.secrets;
+  if (clientTools && secrets) {
+    add({ activity: listed(readSecretTool.name), definition: readSecretTool.tool, effects: readSecretTool.effects,
+      observationSource: "workspace",
+      execute: (execution) => executeReadSecret(secrets, execution.call, owner, { signal: execution.signal }) });
+  }
+
+  // The self-service tools: the user's own resources through their owners, each call settled
+  // with its change and card in one transaction, which fences the run once more.
+  const selfService = input.services.selfService;
+  if (clientTools && selfService && secrets && !request.agent && !request.answerReviewStep && !request.monitoringVerdictTool) {
+    const deps: SelfServiceRunDeps = { ...selfService, attachmentIds: admittedAttachmentIds(request), request: { skills: request.skills },
+      run: { chatId: input.chatId, runId: input.runId, userId: input.userId }, secretSource: secrets };
+    for (const descriptor of SELF_SERVICE_TOOLS) {
+      add({ activity: listed(descriptor.name), definition: descriptor.tool, effects: descriptor.effects, observationSource: "workspace",
+        execute: async (execution) => await executeSelfServiceTool(deps, execution.call, {
+          callId: execution.persistedToolCallId, signal: execution.signal,
+          store: createToolCallSelfServiceStore({ callId: execution.persistedToolCallId, runId: input.runId, toolName: execution.call.name,
+            userId: input.userId })
+        }) ?? unavailable(execution.call, "tool_unavailable") });
+    }
+  }
+
   const scheduledServer = "Scheduled tasks";
   for (const definition of scheduledTaskToolsForRequest(request)) {
     if (!isScheduledTaskCreateCall(request, definition.name)) continue;
@@ -314,7 +404,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   if (clientTools && request.workspace && input.services.workspace) {
     const workspace = request.workspace;
     const coordinator = input.services.workspace;
-    for (const definition of await coordinator.tools({ runId: input.runId, userId: input.userId, workspace })) {
+    const workspaceTools = await coordinator.tools({ runId: input.runId, userId: input.userId, workspace });
+    for (const definition of workspaceTools) {
       if (!coordinator.accepts({ name: definition.name, workspace })) continue;
       add({ activity: () => ({ origin: definition.capability, serverName: "Workspace",
         toolName: workspaceToolNameFromNamespaced(definition.name) ?? definition.name }),
@@ -322,11 +413,59 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
         execute: (execution) => coordinator.execute({ call: execution.call, modelRunToolCallId: execution.persistedToolCallId,
           onActivity: input.onWorkspaceActivity, runId: input.runId, signal: execution.signal, userId: input.userId, workspace }) });
     }
+    const offered = new Set(workspaceTools.map((definition) => definition.name));
+    if (APPLY_PATCH_WORKSPACE_TOOLS.every((name) => offered.has(namespacedWorkspaceToolName(name)) &&
+      coordinator.accepts({ name: namespacedWorkspaceToolName(name), workspace }))) {
+      add(applyPatchEngineTool(input, coordinator, workspace));
+    }
   }
 
   return {
     definitions: () => [...tools.values()].map((tool) => tool.definition),
     resolve: (name) => tools.get(name)
+  };
+}
+
+/**
+ * `apply_patch` over the Workspace: each file step (exists, read, write,
+ * remove, mkdir) is a Workspace call on the patch's own record, which starts
+ * the VM like any other Workspace tool. Of those steps only the VM's
+ * lifecycle reaches the thread; the patch shows as one row of its files.
+ */
+function applyPatchEngineTool(input: ToolRegistryInput, coordinator: WorkspaceCoordinator,
+  workspace: NonNullable<ProviderRunRequest["workspace"]>): EngineTool {
+  const lifecycle = async (entry: ThreadWorkspaceActivityEntry) => {
+    if (WORKSPACE_LIFECYCLE_KINDS.has(entry.kind)) await input.onWorkspaceActivity(entry);
+  };
+  return {
+    activity: () => ({ origin: "workspace", serverName: "Workspace", toolName: APPLY_PATCH_TOOL_NAME }),
+    definition: applyPatchTool.tool,
+    effects: applyPatchTool.effects,
+    links: () => ({ workspaceRunBindingId: input.runId }),
+    observationSource: "workspace",
+    execute: async (execution) => {
+      const call: WorkspaceToolCaller = (name, args, signal) => coordinator.execute({
+        call: { arguments: args, id: execution.call.id, name: namespacedWorkspaceToolName(name) },
+        modelRunToolCallId: execution.persistedToolCallId, onActivity: lifecycle, runId: input.runId,
+        signal: signal ?? execution.signal, userId: input.userId, workspace
+      });
+      const changes = patchActivityChanges(execution.call.arguments);
+      const startedAt = new Date();
+      const row = async (phase: "cancelled" | "failed" | "running" | "succeeded") => {
+        if (changes.length === 0) return;
+        await input.onWorkspaceActivity(patchActivityEntry({ callId: execution.persistedToolCallId, changes,
+          ...(phase === "running" ? {} : { durationMs: Date.now() - startedAt.getTime() }), phase, startedAt }));
+      };
+      await row("running");
+      try {
+        const result = await executeApplyPatch(workspaceApplyPatchFiles(call), execution.call, { signal: execution.signal });
+        await row(result.status === "complete" ? "succeeded" : "failed");
+        return result;
+      } catch (error) {
+        await row(execution.signal.aborted ? "cancelled" : "failed").catch(() => undefined);
+        throw error;
+      }
+    }
   };
 }
 
