@@ -4,8 +4,13 @@ import { getSecretEncryptionKey } from "../../secrets/envelope";
 import { decryptWorkspaceSecret, type AcceptedWorkspaceSecret } from "./store";
 import { WorkspaceSecretError } from "./validation";
 
-/** A readable secret's metadata; names and environment names are stored unencrypted beside the value. */
+/**
+ * A readable secret's metadata; names, environment names and the value's
+ * stored size are kept unencrypted beside the value. The size decides which
+ * Workspace variables a text secret gives (`workspaceSecretVariables`).
+ */
 export type RunSecretEntry = Readonly<{
+  byteSize: number;
   description: string;
   envNames: readonly string[];
   kind: WorkspaceSecretKind;
@@ -32,7 +37,7 @@ export type RunSecretSource = Readonly<{
 
 type RunSecretsPrisma = Pick<PrismaClient, "modelRun" | "user" | "workspaceRunSecret" | "workspaceSecret" | "workspaceSecretValue">;
 
-const entrySelect = { description: true, envNames: true, id: true, kind: true, name: true } as const;
+const entrySelect = { byteSize: true, description: true, envNames: true, id: true, kind: true, name: true } as const;
 
 export function createRunSecretSource(prisma: RunSecretsPrisma, key: () => Buffer = getSecretEncryptionKey): RunSecretSource {
   async function list(scope: RunSecretScope): Promise<readonly RunSecretEntry[]> {
@@ -44,11 +49,13 @@ export function createRunSecretSource(prisma: RunSecretsPrisma, key: () => Buffe
     });
     if (!run || run.chat.userId !== scope.userId) throw new WorkspaceSecretError("workspace_secret_unavailable");
     if (run.chat.projectId) return [];
-    const rows: readonly Readonly<{ value: Readonly<{ description: string; envNames: string[]; id: string; kind: string; name: string }> }>[] = run.workspaceRunBinding
+    // A bound run lists its revisions in the order the Workspace receives them (`personalSecrets`).
+    const rows: readonly Readonly<{ value: Readonly<{ byteSize: number; description: string; envNames: string[]; id: string; kind: string; name: string }> }>[] = run.workspaceRunBinding
       ? await prisma.workspaceRunSecret.findMany({ select: { value: { select: entrySelect } }, where: { modelRunId: scope.runId }, orderBy: { secretId: "asc" } })
       : await prisma.workspaceSecret.findMany({ select: { value: { select: entrySelect } }, where: { userId: scope.userId }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
     return rows.map(({ value }) => ({
-      description: value.description, envNames: value.envNames, kind: value.kind as WorkspaceSecretKind, name: value.name, valueId: value.id
+      byteSize: value.byteSize, description: value.description, envNames: value.envNames, kind: value.kind as WorkspaceSecretKind,
+      name: value.name, valueId: value.id
     }));
   }
   return {

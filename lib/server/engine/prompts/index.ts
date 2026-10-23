@@ -9,7 +9,7 @@ import {
 import { NEUTRAL_FAMILY_PROMPT } from "./neutral";
 import { selfServicePromptSection } from "./selfService";
 
-export { HARNESS_TOOL_NAMES, type EnvironmentPromptInput, type HarnessPromptInput } from "./harness";
+export { HARNESS_TOOL_NAMES, type EnvironmentPromptInput, type HarnessPromptInput, type SavedSecretFact } from "./harness";
 export {
   AIQSA_GUIDE_TOPICS,
   SELF_SERVICE_TOOL_NAMES,
@@ -59,7 +59,7 @@ export type SystemPrompt = Readonly<{
   family: SystemPromptFamily;
   /** Family prompt and AIQSA harness section; identical across turns of a run's bindings, so provider caches can reuse it. */
   stable: string;
-  /** Date, time, language and secret names; place it after `stable`. */
+  /** Date, time, language and saved secrets; place it after `stable`. */
   environment: string;
   /** `stable` followed by `environment`. */
   text: string;
