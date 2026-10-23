@@ -212,6 +212,11 @@ export type ShellThreadView = {
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
   /**
+   * Continue on the open chat's interrupted latest answer: an ordinary next
+   * turn; an attempt that starts no run says why in the chat's notice.
+   */
+  sendContinueTurn?(): Promise<"not_started" | "started">;
+  /**
    * Continues the open chat after its initiator allowed a refused MCP call;
    * an attempt that starts no run says why in the chat's notice.
    */

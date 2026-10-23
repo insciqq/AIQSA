@@ -12,6 +12,33 @@ export function isToolSynthesisFailure(code: string | null | undefined, message?
     message === "Provider returned a tool call from a no-tool synthesis request.";
 }
 
+/**
+ * Native engine answers that stopped with their work kept (transcript, files,
+ * outputs): an interruption by a restart or crash, or the turn's time limit.
+ * The answer offers Continue, which sends `CONTINUE_TURN_TEXT` as an ordinary
+ * next turn; nothing of the stopped turn is sent again.
+ */
+export const RUN_INTERRUPTED_FAILURE = {
+  code: "run_interrupted",
+  message: "This answer was interrupted when the server restarted. Its work so far is kept; use Continue to pick it up."
+} as const;
+
+export const RUN_TIME_LIMIT_FAILURE = {
+  code: "run_time_limit",
+  message: "This answer reached its time limit. Its work so far is kept; use Continue to pick it up."
+} as const;
+
+export const CONTINUE_TURN_TEXT = "Continue";
+
+/** The continuable failure a code (live) or a saved answer's message (reload) names; null for any other. */
+export function continuableRunFailure(code: string | null | undefined, message?: string | null):
+  typeof RUN_INTERRUPTED_FAILURE | typeof RUN_TIME_LIMIT_FAILURE | null {
+  for (const failure of [RUN_INTERRUPTED_FAILURE, RUN_TIME_LIMIT_FAILURE]) {
+    if (code === failure.code || message === failure.message) return failure;
+  }
+  return null;
+}
+
 /** Neutral user-facing text of a run that failed before or instead of an
  * answer for a reason users must not see (Memory, retired contracts); the
  * stable error code keeps the reason. */

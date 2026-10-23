@@ -1769,6 +1769,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         leadingSlot={leadingSlot}
         noticeSlot={noticeSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
+        onContinue={inHistory || source.id !== latestMessage?.id || !thread.sendContinueTurn ? undefined
+          : thread.sendContinueTurn}
         onRegenerate={inHistory ? undefined : () => thread.handleRegenerateMessage(source.id)}
         onRetry={inHistory ? undefined : () => {
           if (isMcpAutoDiscoveryFailureCode(presentation.failure?.code)) {

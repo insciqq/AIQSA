@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { RUN_INTERRUPTED_FAILURE } from "../../contracts/runs";
 import { logEvent } from "../observability";
 import type { NormalizedRunWorkspace } from "../providers/types";
 import { activeModelRunStatuses } from "../runs/prismaRepositoryShared";
@@ -17,13 +18,7 @@ import type { NativeRunStore } from "./runStore";
  * stopped changing for the stale window (a live run is always in the
  * process's registry, so a long tool call never qualifies).
  */
-export const NATIVE_RUN_INTERRUPTED = Object.freeze({
-  code: "run_interrupted",
-  message: "This answer was interrupted when the server restarted. Its work so far is kept; use Continue to pick it up."
-});
-
-/** Failure codes of an answer whose work is kept and that the next turn continues. */
-export const CONTINUABLE_NATIVE_FAILURES: readonly string[] = [NATIVE_RUN_INTERRUPTED.code, "run_time_limit", "workspace_turn_time_limit"];
+export const NATIVE_RUN_INTERRUPTED = RUN_INTERRUPTED_FAILURE;
 
 export const NATIVE_RUN_STALE_MS = 10 * 60_000;
 const RECOVERY_BATCH = 50;

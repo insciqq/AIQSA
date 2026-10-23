@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { RUN_TIME_LIMIT_FAILURE } from "../../contracts/runs";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
@@ -144,7 +145,7 @@ function failurePayload(error: unknown, workspaceRun: boolean): Readonly<{ code:
   return {
     code: failure.code !== "unknown" ? failure.code : "provider_stream_failed",
     message: providerHttpFailureMessage(error) ?? (workspaceRun
-      ? "The answer could not be completed. Its work so far is kept; send Continue to pick it up."
+      ? "The answer could not be completed. Its Workspace files and the answer so far are kept."
       : "The answer could not be completed. The answer so far is kept.")
   };
 }
@@ -172,8 +173,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
     ? workspaceTurnSoftDeadlineMs(workspace.turnTimeoutSeconds, workspace.syncToolTimeoutSeconds)
     : turnMs - NATIVE_TURN_LIMITS.answerReserveMs);
   const deadline = new AbortController();
-  const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(workspace ? "workspace_turn_time_limit" : "run_time_limit",
-    "The answer reached its time limit. Its work so far is kept; send Continue to pick it up.")), turnMs);
+  const deadlineTimer = setTimeout(() => deadline.abort(new EngineFailure(RUN_TIME_LIMIT_FAILURE.code, RUN_TIME_LIMIT_FAILURE.message)),
+    turnMs);
   deadlineTimer.unref?.();
   const signal = AbortSignal.any([stop.signal, deadline.signal]);
 

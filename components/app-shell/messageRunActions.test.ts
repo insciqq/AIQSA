@@ -4804,6 +4804,41 @@ describe("continuation after an MCP approval", () => {
   });
 });
 
+describe("Continue on an interrupted answer", () => {
+  beforeEach(() => {
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+  });
+
+  it("sends an ordinary Continue turn after the latest answer and keeps the draft", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Kept draft" });
+    prepareRegenerationThread();
+
+    expect(await actions.sendContinueTurn()).toBe("started");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/chats/chat-a/messages");
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ content: { blocks: [{ text: "Continue", type: "text" }] }, expectedActiveLeafId: "assistant-original" });
+    expect(body).not.toHaveProperty("systemTurn");
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Kept draft" });
+  });
+
+  it("rolls a refused turn back and says Continue retries it", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => Response.json({ error: "active_run_in_progress" }, { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    prepareRegenerationThread();
+
+    expect(await actions.sendContinueTurn()).toBe("not_started");
+    expect(actions.setNotice).toHaveBeenLastCalledWith({ chatId: "chat-a", kind: "error", text: expect.stringMatching(
+      /^Another response is still running\..* The answer did not continue\. Use Continue to try again\.$/u) });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages.map((message) => message.id))
+      .toEqual(["user-original", "assistant-original"]);
+  });
+});
+
 describe("answer review steps", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

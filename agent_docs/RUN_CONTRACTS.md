@@ -11,12 +11,15 @@ paths:
   - "lib/server/telegram/**"
   - "lib/server/answerReviews/**"
   - "lib/server/webFetch/**"
+  - "lib/server/engine/**"
 ---
 # Run Contracts
 
 How an accepted message becomes an answer: admission, retries, context and compaction, tools and approvals, agent-initiated changes, Workspace, scheduled tasks, Telegram, recovery and outputs. The pipeline lives in `lib/server/runs/`; tools in `lib/server/tools/`.
 
 The native agent engine replaces the old run core (execution, tool loop, compaction, recovery and settlement in `lib/server/runs/`) and the Codex Agent in `lib/server/agents/`; admission, preparation and the tool executors stay. The old core is frozen and gets no fixes (operator decision 2026-10-22): it keeps serving chats until the switch, and nothing is ported from it where it differs from the rules below. Projects and Knowledge are disabled (root `AGENTS.md`), so runs get neither.
+
+Until the switch the native engine (`lib/server/engine/`) serves only the interactive personal and temporary chat runs of the users in `AIQSA_NATIVE_ENGINE_USERS` that it can run (`lib/server/engine/routing.ts`); scheduled tasks, Telegram, answer review and Assistant chats stay on the old core (operator decision 2026-10-23). It keeps writing the rows the UI, exports, limits and deletion read (`Message`, `ModelRun`, `ModelRunToolCall`, `UsageEvent`). `RunTranscriptItem` adds only the provider-neutral transcript: it holds tool results, stays private to its chat, is never exported and is deleted with its run. Earlier old-core answers enter its context as text.
 
 ## Answer first
 
