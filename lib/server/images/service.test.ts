@@ -91,6 +91,9 @@ describe("withConversationPixels", () => {
     expect(result.attachments.map((attachment) => attachment.imageProvenance)).toEqual([
       { role: "earlier_message", messageId: "m3" }, { role: "current_message" }
     ]);
+    // The line holds for this request only, so it is recorded as turn guidance too.
+    expect(result.prompt.system).toBe(`Base system.\n\n${system(result)}`);
+    expect(result.prompt.turnGuidance).toEqual([system(result)]);
   });
 
   it("keeps up to four earlier images, oldest first, when the current message has none", async () => {
@@ -166,8 +169,9 @@ describe("withConversationPixels", () => {
     const result = await service.withConversationPixels(input, USER);
 
     expect(findMany.mock.calls[0]![0].where.id.in).toEqual([]);
+    const line = "Image pixels accompanying the latest user message, in order: [\"c1\"]. Additional images are references from earlier messages, not new uploads. Other image references have no visible pixels in this request.";
     expect(JSON.stringify(result)).toBe(JSON.stringify({ ...input, attachments: [attachment], prompt: { ...input.prompt,
-      system: "Base system.\n\nImage pixels accompanying the latest user message, in order: [\"c1\"]. Additional images are references from earlier messages, not new uploads. Other image references have no visible pixels in this request." } }));
+      system: `Base system.\n\n${line}`, turnGuidance: [line] } }));
   });
 
   it("keeps the per-request image count and byte budgets", async () => {

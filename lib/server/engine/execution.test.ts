@@ -222,7 +222,11 @@ describe("native run execution", () => {
       mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
       prepared: prepared({ mcp: snapshot }), repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
     expect(callTool).toHaveBeenCalledTimes(1);
-    expect(requests[1]!.history?.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result"]);
+    // The turn context, then the input, then the round.
+    expect(requests[1]!.history?.map((item) => item.type)).toEqual(["user", "user", "tool_call", "tool_result"]);
+    expect(requests[1]!.history![0]).toEqual(requests[0]!.history![0]);
+    expect(requests[1]!.history![0]).toMatchObject({ text: expect.stringMatching(/^<turn_context>\nCurrent local time: /u), type: "user" });
+    expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text.startsWith("<turn_context>"))).toBe(false);
     expect(memory.published()).toBe("A-1 is open.");
     expect(result.some((event) => event.type === "artifact" && event.data.artifactType === "tool_call")).toBe(true);
   });
@@ -271,8 +275,10 @@ describe("native run execution", () => {
     expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ arguments: { summary: "x" }, name: "create_issue" }));
     expect(memory.engine.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ providerCallId: "call-1", roundIndex: 0 }));
     const history = requests[0]!.history!;
-    expect(history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result"]);
-    expect(history.at(-1)).toMatchObject({ callId: "call-1", output: "Created A-2" });
+    // The call's result answers the stopped turn; the run's turn context follows it, as its other run context does.
+    expect(history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "user"]);
+    expect(history.at(-2)).toMatchObject({ callId: "call-1", output: "Created A-2" });
+    expect(history.at(-1)).toMatchObject({ text: expect.stringMatching(/^<turn_context>/u), type: "user" });
     expect(history.some((item) => item.type === "user" && item.text.includes("approved"))).toBe(false);
     expect(memory.published()).toBe("Created A-2.");
   });
@@ -301,7 +307,7 @@ describe("native run execution", () => {
     // The old call is not sent into a turn that has ended: the model makes the allowed call again, matched by the Allow.
     expect(memory.engine.toolCalls.begin).not.toHaveBeenCalled();
     const history = requests[0]!.history!;
-    expect(history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "user", "assistant_text", "user"]);
+    expect(history.map((item) => item.type)).toEqual(["user", "tool_call", "tool_result", "user", "assistant_text", "user", "user"]);
     expect(history.at(-1)).toMatchObject({ currentInput: true, type: "user" });
   });
 
@@ -317,7 +323,7 @@ describe("native run execution", () => {
     await events(createNativeRunExecutionResponse({ adapter, approvalContinuation: { approvalId: "approval-1" }, created,
       engine: memory.engine, prepared: continuation, repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
     const history = requests[0]!.history!;
-    expect(history.map((item) => item.type)).toEqual(["user", "assistant_text", "user"]);
+    expect(history.map((item) => item.type)).toEqual(["user", "assistant_text", "user", "user"]);
     expect(history.at(-1)).toMatchObject({ currentInput: true, type: "user" });
     expect(memory.engine.toolCalls.begin).not.toHaveBeenCalled();
   });

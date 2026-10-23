@@ -42,7 +42,7 @@ import {
 import { parseSseStream } from "./sse";
 import { markProviderErrorCode, markProviderErrorDetail, providerErrorCodeOfBody } from "./providerErrorCode";
 import { assertProviderHistoryRequest, providerHistoryPreview } from "./history";
-import { anthropicHistoryFromContent, anthropicMessagesFromHistory } from "./anthropicMessagesHistory";
+import { anthropicHistoryFromContent, anthropicMessagesFromHistory, anthropicPromptCache } from "./anthropicMessagesHistory";
 import { markProviderStreamDrop } from "./streamDrop";
 import {
   addAnthropicMessageUsage,
@@ -467,7 +467,7 @@ function conversationMessages(request: ProviderRunRequest, options: Partial<Buil
 function historyMessages(
   request: ProviderRunRequest,
   options: Partial<BuildOptions>,
-  prefix: Readonly<{ manualThinking: boolean; system: string | undefined; tools: readonly Record<string, unknown>[] }>
+  prefix: Readonly<{ manualThinking: boolean; system: unknown; tools: readonly Record<string, unknown>[] }>
 ): AnthropicRequestMessage[] {
   const preview = options.preview ?? false;
   return anthropicMessagesFromHistory(assertProviderHistoryRequest(request), {
@@ -482,8 +482,8 @@ function historyMessages(
       undefined
     ), textContentBlock, preview),
     preview,
-    // Exactly what the body sends before its messages.
-    thinkingPrefix: preview || prefix.manualThinking ? null : { system: prefix.system || undefined, tools: prefix.tools },
+    // Exactly what the body sends before its messages, cache markers aside.
+    thinkingPrefix: preview || prefix.manualThinking ? null : { system: prefix.system, tools: prefix.tools },
     toolsDeclared: prefix.tools.length > 0
   });
 }
@@ -512,23 +512,29 @@ export function buildAnthropicMessagesRequest(
   }
   const tools = [...hostedTools, ...clientTools];
   const outputParams = buildAnthropicMessagesOutputParams(request.params);
-  const system = combineSystem(request, options.preview);
-  const messages = request.history
+  const instructions = combineSystem(request, options.preview) || undefined;
+  // The native engine's tool loop caches its prompt (`anthropicPromptCache`), which needs the system prompt as a block.
+  const caching = request.history !== undefined && tools.length > 0;
+  const system = instructions && caching ? [textContentBlock(instructions)] : instructions;
+  const rendered = request.history
     ? historyMessages(request, options, { manualThinking: objectValue(outputParams.thinking)?.type === "enabled", system, tools })
     : conversationMessages(request, options);
+  const prompt = caching
+    ? anthropicPromptCache({ messages: rendered, system: Array.isArray(system) ? system : undefined, tools })
+    : { messages: rendered, system, tools };
   const body: Record<string, unknown> = {
     ...outputParams,
-    messages,
+    messages: prompt.messages,
     model: request.modelId || "claude-opus-4-8",
     stream: true
   };
 
-  if (system) {
-    body.system = system;
+  if (prompt.system) {
+    body.system = prompt.system;
   }
 
-  if (tools.length > 0) {
-    body.tools = tools;
+  if (prompt.tools.length > 0) {
+    body.tools = prompt.tools;
   }
 
   if (clientTools.length > 0) {

@@ -33,7 +33,7 @@ import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import { createAnswerStream } from "./answerStream";
 import { engineItemRules, turnEndedAfter } from "./compaction";
 import { compactionModelCall } from "./compactionCalls";
-import { buildRunConversation } from "./conversation";
+import { buildRunConversation, turnContextIndex, turnContextItem } from "./conversation";
 import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
@@ -381,9 +381,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspace: input.workspace },
           userId: input.userId
         });
-        // Every request of the run carries one system prompt for its tools (`systemPrompt.ts`).
-        base = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
+        // Every request of the run carries one system prompt for its tools, the same across the chat's turns; what holds
+        // only for this run rides in with its input (`systemPrompt.ts`).
+        const native = await withNativeSystemPrompt({ now: new Date(startedAt), request: base, scope: { runId, userId: input.userId },
           secrets: input.services.secrets, snapshot, tools: registry.definitions() });
+        base = native.request;
+        items.splice(turnContextIndex(items, conversation.currentInputId), 0, turnContextItem(native.turnContext));
         // The run reads its items whole; the transcript keeps what later turns may read, written behind the answer.
         const record = (added: readonly TranscriptItem[]) => writer.record(added.map((item) => transcriptRecord(registry, item)));
         const append = async (added: readonly TranscriptItem[]) => {

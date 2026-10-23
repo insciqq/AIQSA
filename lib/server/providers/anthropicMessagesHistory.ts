@@ -32,6 +32,13 @@ import type { ProviderHistoryItem, ProviderHistoryRenderOptions, ProviderNativeD
  * entirely is valid, a gap is not. Manual thinking (`budget_tokens`) runs on
  * models that make no such check but need the latest assistant turn to start
  * with its thinking, so there blocks replay as stored.
+ *
+ * Prompt caching (`anthropicPromptCache`): a request that declares tools is a
+ * round of a tool loop, so it marks its stable prefix, where the previous and
+ * the current turn begin, and the ends of its latest user turns: each round
+ * reads the rounds before it, and each run the turns before the previous one,
+ * from the cache instead of paying for them again. Cache markers are no part
+ * of the prefix a thinking block is bound to, so the digest leaves them out.
  */
 
 export type AnthropicHistoryMessage = { content: Record<string, unknown>[]; role: "assistant" | "user" };
@@ -55,7 +62,9 @@ type Draft = { parts: Part[]; role: Role };
 
 const FORMAT = "anthropic_messages";
 /** Renamed when the digest changes, so older records fail the check instead of matching by accident. */
-const DIGEST_SCHEME = "aiqsa-anthropic-thinking-1";
+const DIGEST_SCHEME = "aiqsa-anthropic-thinking-2";
+/** A prompt cache breakpoint with the default 5-minute lifetime, which every read renews. */
+const CACHE_BREAKPOINT = Object.freeze({ type: "ephemeral" });
 const PREVIEW_TOOL_OUTPUT = "[tool output omitted]";
 /** Anthropic's tool id alphabet; another provider's call id is mapped into it. */
 const TOOL_ID = /^[A-Za-z0-9_-]{1,128}$/u;
@@ -88,8 +97,9 @@ function identity(block: Readonly<Record<string, unknown>>): string {
   return createHash("sha256").update(canonical(block)).digest("base64url");
 }
 
-function isThinkingBlock(block: unknown): block is Record<string, unknown> {
-  return isRecord(block) && (block.type === "thinking" || block.type === "redacted_thinking");
+/** A `thinking` or `redacted_thinking` block. Not a type guard: a block that is neither stays a record. */
+function isThinkingBlock(block: Readonly<Record<string, unknown>>): boolean {
+  return block.type === "thinking" || block.type === "redacted_thinking";
 }
 
 /** A block the API can take back: signed thinking, or redacted thinking with its data. */
@@ -97,6 +107,13 @@ function replayable(block: Readonly<Record<string, unknown>>): boolean {
   return block.type === "thinking"
     ? typeof block.thinking === "string" && typeof block.signature === "string" && block.signature.length > 0
     : block.type === "redacted_thinking" && typeof block.data === "string" && block.data.length > 0;
+}
+
+/** A block, tool or system block without its cache marker, which moves between requests and binds nothing. */
+function unmarked(value: unknown): unknown {
+  if (!isRecord(value) || !("cache_control" in value)) return value;
+  const { cache_control: _marker, ...rest } = value;
+  return rest;
 }
 
 /** The running digest of a request's prefix, block by block with its role, thinking left out. */
@@ -108,12 +125,12 @@ class PrefixDigest {
     // The API compares the tools as a set by name, so their order is not part of the prefix.
     const tools = [...prefix.tools].sort((left, right) => name(left) < name(right) ? -1 : name(left) > name(right) ? 1 : 0);
     this.feed(DIGEST_SCHEME, null);
-    this.feed("system", prefix.system ?? null);
-    this.feed("tools", tools);
+    this.feed("system", Array.isArray(prefix.system) ? prefix.system.map(unmarked) : prefix.system ?? null);
+    this.feed("tools", tools.map(unmarked));
   }
 
   feed(kind: string, value: unknown): void {
-    this.hash.update(`${kind}\u0000${canonical(value)}\u0000`);
+    this.hash.update(`${kind}\u0000${canonical(unmarked(value))}\u0000`);
   }
 
   snapshot(): string {
@@ -156,7 +173,7 @@ function parts(item: ProviderHistoryItem, options: AnthropicHistoryRenderOptions
     case "reasoning": {
       const fields = nativeFields(item.native);
       const block = fields.block;
-      if (!isThinkingBlock(block) || !replayable(block)) invalid();
+      if (!isRecord(block) || !isThinkingBlock(block) || !replayable(block)) invalid();
       return [{ block: options.preview ? { type: block.type } : { ...block }, role: "assistant",
         thinking: { binding: binding(fields.binding) } }];
     }
@@ -251,6 +268,71 @@ export function anthropicMessagesFromHistory(
   return messages.map((message) => ({ content: message.parts.map(({ block }) => block), role: message.role }));
 }
 
+/** The block with a cache breakpoint: the API caches the prompt up to and including it. */
+function marked(block: Record<string, unknown>): Record<string, unknown> {
+  return { ...block, cache_control: { ...CACHE_BREAKPOINT } };
+}
+
+/** A block that may carry a breakpoint: no thinking block and no empty text can. */
+function cacheable(block: Readonly<Record<string, unknown>>): boolean {
+  return !isThinkingBlock(block) && (block.type !== "text" || (typeof block.text === "string" && block.text.trim().length > 0));
+}
+
+/** The message with a breakpoint on its last block that may carry one; unchanged when none may. */
+function markedAtEnd(message: AnthropicHistoryMessage): AnthropicHistoryMessage {
+  for (let index = message.content.length - 1; index >= 0; index -= 1) {
+    if (cacheable(message.content[index]!)) {
+      return { ...message, content: message.content.map((block, position) => position === index ? marked(block) : block) };
+    }
+  }
+  return message;
+}
+
+/**
+ * Prompt cache breakpoints for one round of a tool loop, at most four, the
+ * API's limit. Each marks an exact position an earlier request marked or a
+ * later one will, so no read depends on the API's 20-block lookback, which a
+ * long tool loop outruns.
+ *
+ * - The system prompt, with the tools before it: the same across a chat's
+ *   turns and the user's chats (without a system prompt, the last tool).
+ * - A user turn starts with a message that does not open with tool results;
+ *   the latest one holds the run's context and input. Those are never sent
+ *   again (a later run sends the input without its context or attachments),
+ *   so the longest prefix the next run repeats ends just before them: marked
+ *   in every round, so the next run finds it.
+ * - The first round reads the end of what came before the previous turn,
+ *   which the previous run marked so, and writes the end of the latest
+ *   message for the next round.
+ * - A later round reads the end of the user turn before the latest assistant
+ *   turn, where the previous round put its last breakpoint, and writes the
+ *   end of the latest message.
+ *
+ * A request without tools does not cache: it is a single call (a compaction
+ * summary) whose write is never read.
+ */
+export function anthropicPromptCache(input: Readonly<{
+  messages: readonly AnthropicHistoryMessage[];
+  system: readonly Record<string, unknown>[] | undefined;
+  tools: readonly Record<string, unknown>[];
+}>): Readonly<{ messages: AnthropicHistoryMessage[]; system: Record<string, unknown>[] | undefined; tools: Record<string, unknown>[] }> {
+  if (input.tools.length === 0) return { messages: [...input.messages], system: input.system && [...input.system], tools: [] };
+  const messages = [...input.messages];
+  const latest = messages.length - 1;
+  const turns = messages.flatMap((message, index) => message.role === "user" && message.content[0]?.type !== "tool_result" ? [index] : []);
+  const current = turns.at(-1) ?? 0;
+  let assistant = latest;
+  while (assistant > current && messages[assistant]!.role !== "assistant") assistant -= 1;
+  const marks = assistant > current ? [current - 1, assistant - 1, latest] : [(turns.at(-2) ?? 0) - 1, current - 1, latest];
+  for (const index of new Set(marks)) {
+    if (index >= 0 && index <= latest) messages[index] = markedAtEnd(messages[index]!);
+  }
+  const system = input.system?.length ? input.system.map((block, index) => index === input.system!.length - 1 ? marked(block) : block)
+    : input.system && [...input.system];
+  const tools = system?.length ? [...input.tools] : input.tools.map((tool, index) => index === input.tools.length - 1 ? marked(tool) : tool);
+  return { messages, system, tools };
+}
+
 /**
  * One response's content as history, in content order: replayable thinking
  * blocks whole with what they were produced after, non-empty text, and tool
@@ -264,7 +346,7 @@ export function anthropicHistoryFromContent(
   const items: ProviderHistoryItem[] = [];
   let digest: PrefixDigest | null = null;
   let previous: string | null = null;
-  if (content.some(isThinkingBlock)) {
+  if (content.some((block) => isRecord(block) && isThinkingBlock(block))) {
     digest = new PrefixDigest({ system: sent.system, tools: Array.isArray(sent.tools) ? sent.tools : [] });
     for (const message of Array.isArray(sent.messages) ? sent.messages : []) {
       if (!isRecord(message) || !Array.isArray(message.content)) continue;

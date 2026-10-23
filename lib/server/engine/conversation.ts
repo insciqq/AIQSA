@@ -13,8 +13,8 @@ import type { TranscriptItem } from "./transcript";
  * speech: the approved call's result continues that turn instead. A user
  * message is `msg-<messageId>` in its own run and in every later one, so a
  * compaction's kept tail can start there and still be found when later runs
- * rebuild the conversation; run context items (`ctx-<index>`, `runContext`)
- * are rebuilt for every run.
+ * rebuild the conversation; run context items (`ctx-<index>`, the turn
+ * context `ctx-turn`, all `runContext`) are rebuilt for every run.
  */
 export type ConversationSource = Readonly<{
   /** Approval continuation turns among the branch's user messages. */
@@ -68,4 +68,19 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
   const currentInputId = `msg-${source.current.messageId}`;
   items.push({ id: currentInputId, kind: "user", text: textFromContentBlocks(last.content) });
   return { currentInputId, items };
+}
+
+/**
+ * The run context item with what holds only for this run, its time and turn
+ * guidance (`systemPrompt.ts`), so the system prompt before it stays the same
+ * across the chat's turns. Rebuilt for every run and never recorded.
+ */
+export function turnContextItem(text: string): TranscriptItem {
+  return { id: "ctx-turn", kind: "user", runContext: true, text };
+}
+
+/** Where the turn context goes: after the run's other context, just before its input; last in an approval continuation. */
+export function turnContextIndex(items: readonly TranscriptItem[], currentInputId: string | null): number {
+  const at = currentInputId ? items.findIndex((item) => item.id === currentInputId) : -1;
+  return at < 0 ? items.length : at;
 }

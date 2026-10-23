@@ -9,7 +9,14 @@ import {
 import { NEUTRAL_FAMILY_PROMPT } from "./neutral";
 import { selfServicePromptSection } from "./selfService";
 
-export { HARNESS_TOOL_NAMES, type EnvironmentPromptInput, type HarnessPromptInput, type SavedSecretFact } from "./harness";
+export {
+  HARNESS_TOOL_NAMES,
+  turnContextText,
+  type EnvironmentPromptInput,
+  type HarnessPromptInput,
+  type SavedSecretFact,
+  type TurnContextInput
+} from "./harness";
 export {
   AIQSA_GUIDE_TOPICS,
   SELF_SERVICE_TOOL_NAMES,
@@ -59,7 +66,7 @@ export type SystemPrompt = Readonly<{
   family: SystemPromptFamily;
   /** Family prompt and AIQSA harness section; identical across turns of a run's bindings, so provider caches can reuse it. */
   stable: string;
-  /** Date, time, language and saved secrets; place it after `stable`. */
+  /** Date, language and saved secrets, the same across a day's turns; place it after `stable`. */
   environment: string;
   /** `stable` followed by `environment`. */
   text: string;
@@ -69,7 +76,8 @@ export type SystemPrompt = Readonly<{
  * The system prompt for one request: the model family's prompt, AIQSA's
  * harness section (tools on this request, Workspace, when to stop and ask,
  * the self-service section, by default `selfServicePromptSection` for the
- * request's tools), then per-turn environment facts.
+ * request's tools), then the user's environment facts. Nothing in it changes
+ * within a day of a chat's turns; the time rides with the turn (`turnContextText`).
  */
 export function systemPromptFor(model: SystemPromptModel, input: HarnessPromptInput & Readonly<{
   environment: EnvironmentPromptInput;
