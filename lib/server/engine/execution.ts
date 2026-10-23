@@ -39,7 +39,7 @@ import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
 import { runAgentLoop, type LoopToolChoice } from "./loop";
 import { callModel } from "./modelCall";
-import { createRunContext, type RunContext } from "./runContext";
+import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
 import type { NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
 import {
@@ -435,7 +435,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
 
         const target: TranscriptTarget = { model: normalizedRequest.modelId, provider: snapshot.connectionId,
           ...(nativeCompactionRoute(snapshot) ? { nativeCompaction: true } : {}) };
-        const params = nativeRequestParams(snapshot.model.adapterKind, base.params);
+        const params = nativeRequestParams(snapshot.model.adapterKind, windowOutputParams(base.params,
+          { contextWindow: base.modelCapabilities.contextWindow, maxOutputTokens: maxOutputTokens(base) }));
         const timeoutMs = effectiveProviderResponseTimeoutMs(snapshot.connection,
           snapshot.model.adapterKind === "fake" ? null : snapshot.model);
         let pending: ModelRunSseEvent[] = [];

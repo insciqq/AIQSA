@@ -14,7 +14,7 @@ import { handleFor, transcriptBuilder } from "./compaction/compaction.testFixtur
 import { SUMMARY_SECTIONS } from "./compaction/summaryPrompt";
 import { contextMeasureCalibration, measureContext } from "./contextMeasure";
 import { createDetachedCompactions, DETACHED_COMPACTION, transcriptTargetKey, type DetachedCompactions } from "./detachedCompactions";
-import { COMPACTION_LIFECYCLE, createRunContext } from "./runContext";
+import { COMPACTION_LIFECYCLE, createRunContext, windowOutputParams } from "./runContext";
 import { COMPACTION_SUMMARY_HEADING, projectTranscript, type TranscriptItem, type TranscriptTarget } from "./transcript";
 
 /** The route and model `transcriptBuilder` attributes its items to. */
@@ -576,6 +576,20 @@ describe("a native run's context", () => {
     const sent = await long.context.prepare(request(chat.items));
     expect(long.calls.length).toBeGreaterThanOrEqual(1);
     expect(firstText(sent).startsWith(COMPACTION_SUMMARY_HEADING)).toBe(true);
+  });
+
+  it("asks a small window for no more output than its reserve, and leaves large or unknown windows as configured", () => {
+    expect(windowOutputParams({ maxOutputTokens: 65_536, reasoning: { effort: "low" } }, { contextWindow: 40_000, maxOutputTokens: 65_536 }))
+      .toEqual({ maxOutputTokens: 10_000, reasoning: { effort: "low" } });
+    // Every alias the adapters read takes the cap; a default from the model's capabilities becomes explicit.
+    expect(windowOutputParams({ max_tokens: 65_536 }, { contextWindow: 32_000, maxOutputTokens: 65_536 }))
+      .toEqual({ max_tokens: 8_000, maxOutputTokens: 8_000 });
+    expect(windowOutputParams({}, { contextWindow: 40_000, maxOutputTokens: 65_536 })).toEqual({ maxOutputTokens: 10_000 });
+    const params = { maxOutputTokens: 65_536 };
+    expect(windowOutputParams(params, { contextWindow: 200_000, maxOutputTokens: 65_536 })).toBe(params);
+    expect(windowOutputParams(params, { contextWindow: 40_000, maxOutputTokens: 4_096 })).toBe(params);
+    expect(windowOutputParams(params, { maxOutputTokens: 65_536 })).toBe(params);
+    expect(windowOutputParams(params, { contextWindow: 40_000, maxOutputTokens: 0 })).toBe(params);
   });
 
   it("measures nothing without a window", async () => {

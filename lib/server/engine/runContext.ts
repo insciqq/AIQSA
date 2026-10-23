@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { makeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { contextOutputReserveTokens } from "../../domain/contextBudget";
+import { maxOutputTokenParamKeys } from "../../domain/providerParams";
 import { contextTokenEstimator, tokenEstimateProfileFor } from "../../domain/tokenEstimate";
 import type { TokenUsage } from "../../domain/usage";
 import { logEvent } from "../observability";
@@ -165,6 +166,23 @@ function settledWithin(promise: Promise<unknown>, ms: number, signal?: AbortSign
     if (signal?.aborted) done(false);
     void promise.finally(() => done(true));
   });
+}
+
+/**
+ * The params a request is sent with: on a known window the output it asks for
+ * is the reserve the context keeps free (`contextOutputReserveTokens`), so the
+ * input and the requested output together never exceed the window, which strict
+ * OpenAI-compatible servers reject. Large windows keep the configured output.
+ */
+export function windowOutputParams(params: Record<string, unknown>,
+  window: Readonly<{ contextWindow?: number; maxOutputTokens: number }>): Record<string, unknown> {
+  const contextWindow = window.contextWindow ?? 0;
+  if (!(contextWindow > 0) || !(window.maxOutputTokens > 0)) return params;
+  const reserve = contextOutputReserveTokens(contextWindow, window.maxOutputTokens);
+  if (reserve <= 0 || reserve >= window.maxOutputTokens) return params;
+  const capped: Record<string, unknown> = { ...params, maxOutputTokens: reserve };
+  for (const key of maxOutputTokenParamKeys) if (key in params) capped[key] = reserve;
+  return capped;
 }
 
 export function createRunContext(deps: RunContextDeps): RunContext {
