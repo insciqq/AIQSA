@@ -2,7 +2,7 @@ import { databaseFailureCode, databaseFailureKind, rememberDatabaseFailure } fro
 import { logEvent } from "../observability";
 import type { DbTransactionOperation } from "../observability/events";
 import { measureTransaction, transactionTimingFields, transactionTimingOf } from "../observability/transactionTiming";
-import { WorkspaceActivityText, workspaceSecretMatches, type WorkspaceSecretMatch } from "./activityText";
+import { WorkspaceActivityText, type WorkspaceSecretMatch } from "./activityText";
 import { WorkspaceSecretOutputMask } from "./secretOutput";
 import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
 import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
@@ -1362,7 +1362,7 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult, sec
       ...(result.originalByteCount === undefined
         ? {}
         : { originalByteCount: result.originalByteCount }),
-      // Content-free: tells activity that delivered secret values were masked.
+      // Content-free: tells activity that the run's code bearer was masked.
       ...(secretMasked ? { secretMasked: true } : {}),
       truncated: result.truncated === true
     },
@@ -1770,11 +1770,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const secrets = await input.repository.personalSecrets(binding);
           // Only an execution initialization of the run itself mints guest-code
           // MCP authority. It travels in the same run-bound managed environment
-          // (also for Project runs, which receive no personal secrets) and its
-          // exact value is masked like a delivered secret.
+          // (also for Project runs, which receive no personal secrets). Saved
+          // secret values are not masked (operator decision 2026-10-22,
+          // `agent_docs/SECURITY.md`); this run-scoped bearer is an AIQSA
+          // credential, so its exact value stays masked in output and activity.
           const code = purpose === "execution" ? await issueCodeGrant(binding) : null;
-          const matches: WorkspaceSecretMatch[] = [...workspaceSecretMatches(secrets),
-            ...(code?.token ? [{ name: WORKSPACE_CODE_TOKEN_ENV, value: code.token }] : [])];
+          const matches: WorkspaceSecretMatch[] = code?.token ? [{ name: WORKSPACE_CODE_TOKEN_ENV, value: code.token }] : [];
           activityTextByRun.set(binding.runId, new WorkspaceActivityText(matches));
           outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
           await input.runtime.syncPersonalSecrets({
@@ -2240,8 +2241,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           );
           const entry = projectWorkspaceActivity({
             arguments: call.arguments,
-            text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(
-              workspaceSecretMatches(await input.repository.personalSecrets(initial))),
+            text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(),
             callId: modelRunToolCallId,
             originalName: "sandbox_exec",
             result: rejected,
@@ -2388,10 +2388,10 @@ export function createWorkspaceCoordinator(input: Readonly<{
           }
           // The single normalization point for guest output: the persisted
           // row, provider projection, observation and activity all derive from
-          // this masked result. Cache loss reloads the run's accepted revisions.
-          const mask = outputMaskByRun.get(runId) ??
-            new WorkspaceSecretOutputMask(workspaceSecretMatches(await input.repository.personalSecrets(binding)));
-          const output = mask.result(result, input.config.toolOutputMaxBytes);
+          // this result, with the run's code bearer masked. The mask is set by
+          // this process's initialization of the run, which precedes any call.
+          const mask = outputMaskByRun.get(runId);
+          const output = mask ? mask.result(result, input.config.toolOutputMaxBytes) : { masked: false, result };
           inheritWorkspaceFailureCause(result, output.result);
           // A returned command's code can no longer call MCP; then summarize.
           await closeInvocation();

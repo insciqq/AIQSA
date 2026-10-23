@@ -61,9 +61,11 @@ function literalBoundaries(text: string, starts: number[], ends: number[]): void
 }
 
 /**
- * Masks exact delivered secret values in Workspace tool output before the
- * result is persisted, projected to a model or shown in activity. This is
- * exact matching, not DLP: encoded or transformed copies stay visible.
+ * Masks exact values of AIQSA-issued run credentials (the guest-code MCP
+ * bearer) in Workspace tool output before the result is persisted, projected
+ * to a model or shown in activity. The user's saved secrets are not masked
+ * (operator decision 2026-10-22, `agent_docs/SECURITY.md`). This is exact
+ * matching, not DLP: encoded or transformed copies stay visible.
  */
 export class WorkspaceSecretOutputMask {
   private readonly raw: readonly Pattern[];
