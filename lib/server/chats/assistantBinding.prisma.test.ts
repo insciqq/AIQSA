@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { CHAT_ASSISTANT_DELETED_MARKER, type ChatAssistantOverridesPatch } from "../../contracts/chats";
 import type { KnowledgePlan } from "../../contracts/knowledge";
 import { textMessageContent } from "../../domain/content";
@@ -14,6 +14,14 @@ import { ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { ChatAssistantUpdateError } from "./assistantUpdateError";
 import { createPrismaChatNavigationRepository } from "./navigation";
 import { createPrismaChatRepository } from "./prismaRepository";
+
+// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
+// it keeps the switch on to test the code that still exists.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  PROJECTS_ENABLED: true,
+  KNOWLEDGE_ENABLED: true
+}));
 
 const avatar = {
   accents: [0, 4],

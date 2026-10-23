@@ -26,6 +26,14 @@ import { createArtifactService } from "../artifacts/service";
 import type { ArtifactOperation } from "../../contracts/artifacts";
 import { CHAT_ASSISTANT_DELETED_MARKER } from "../../contracts/chats";
 
+// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
+// it keeps the switch on to test the code that still exists.
+vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../domain/disabledAreas")>(),
+  PROJECTS_ENABLED: true,
+  KNOWLEDGE_ENABLED: true
+}));
+
 afterAll(() => prisma.$disconnect());
 
 it.each([

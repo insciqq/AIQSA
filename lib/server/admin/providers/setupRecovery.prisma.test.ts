@@ -14,6 +14,13 @@ import { initialModelConfiguration, pendingInitialCapabilityEvidence } from "./i
 import { createImageModelRoleResolver } from "../../providerRuntime/imageModelRole";
 import { createAdminSystemModelPolicyService } from "./systemModelPolicyService";
 
+// This suite covers an area disabled by `lib/domain/disabledAreas.ts` (removed in cleanup);
+// it keeps the switch on to test the code that still exists.
+vi.mock("../../../domain/disabledAreas", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../domain/disabledAreas")>(),
+  NATIVE_ANTHROPIC_ENABLED: true
+}));
+
 const KEY = Buffer.alloc(32, 23);
 afterAll(() => prisma.$disconnect());
 
