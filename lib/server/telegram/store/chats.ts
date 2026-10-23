@@ -3,8 +3,8 @@ import { retainDatabaseFailure } from "../../observability/databaseFailure";
 
 /**
  * The personal chats `/chats` offers: the user's own chats the web sidebar
- * lists (not archived, not Temporary, not waiting for deletion, outside
- * Projects), most recently active first, at most ten. Ids and titles only.
+ * lists (not archived, not Temporary, not waiting for deletion), most
+ * recently active first, at most ten. Ids and titles only.
  */
 
 export const TELEGRAM_RECENT_CHATS_LIMIT = 10;

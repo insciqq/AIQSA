@@ -7,12 +7,10 @@ import {
   resetComposerControlStoreForTest,
   resetRunSurfaceStoreForTest,
   resetThreadStoreForTest,
-  resetWorkspaceStoreForTest,
-  resetKnowledgeLibraryStoreForTest
+  resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
 import {
   composerSessionKey,
-  projectComposerSessionKey,
   selectActiveComposerSession,
   selectComposerSession,
   useComposerSessionStore,
@@ -25,7 +23,6 @@ import {
   boundComposerAssistantFixture
 } from "@/tests/support/composerAssistantFixtures";
 import type { ChatAssistantProjection } from "@/lib/contracts/chats";
-import { useKnowledgeLibraryStore } from "./knowledgeLibraryStore";
 import { useRunSurfaceStore } from "./runSurfaceStore";
 import { chatExportMarkdown } from "@/lib/domain/chatExport";
 import { useWorkspaceActions, type BlankDefaultAssistant } from "./workspaceActions";
@@ -64,8 +61,7 @@ describe("opening a continuation", () => {
     useComposerControlStore.setState({ selectedProvider: "other", selectedModelId: "chosen", temperature: "0.4",
       maxOutputTokens: "1700", reasoningEffort: "high", reasoningMode: "extended", streamMode: false, backgroundMode: true,
       showCitations: false, showReasoningBlocks: true, searchPlanMode: "model_choice", selectedSearchOptionIds: ["search"],
-      knowledgePlanSource: "explicit", knowledgeSelection: { version: 1, mode: "explicit", baseIds: ["base"], sourceIds: ["source"] },
-      selectedKnowledgeBaseIds: ["base"], mcpSelection: { mode: "load_all" },
+      mcpSelection: { mode: "load_all" },
       selectedSkills: [{ id: "skill", name: "Skill", description: "", promptCharacterCount: 10 }],
       assistant: boundComposerAssistantFixture({ id: "assistant", name: "Assistant" })
     });
@@ -84,7 +80,7 @@ describe("opening a continuation", () => {
     expect(storedSessionExpiredDraft()).toBeNull();
     expect(useComposerControlStore.getState()).toBe(controls);
     for (const setter of [setup.applyModelControlDefaults, setup.setSelectedModelId, setup.setSelectedProvider,
-      setup.setSelectedSearchPlan, setup.setSelectedKnowledgePlan]) expect(setter).not.toHaveBeenCalled();
+      setup.setSelectedSearchPlan]) expect(setter).not.toHaveBeenCalled();
     expect(useThreadStore.getState().threadsByChatId.continuation?.messages[0]?.content).toBe("Conversation summary");
   });
 
@@ -177,7 +173,6 @@ function apiChatSummary(summary: WorkspaceChatSummary) {
   return {
     activeLeafMessageId: summary.activeLeafMessageId,
     createdAt: summary.createdAt,
-    defaultKnowledgePlan: summary.defaultKnowledgePlan ?? null,
     defaultModelId: summary.defaultModelId,
     defaultProvider: summary.defaultProvider,
     folderId: summary.folderId,
@@ -371,7 +366,6 @@ function useWorkspaceActionsForTest(input: {
   const applyModelControlDefaults = vi.fn();
   const resumeChatRun = vi.fn();
   const setSelectedModelId = vi.fn();
-  const setSelectedKnowledgePlan = vi.fn();
   const setSelectedProvider = vi.fn();
   const setSelectedSearchPlan = vi.fn();
   const setNotice = vi.fn();
@@ -404,7 +398,6 @@ function useWorkspaceActionsForTest(input: {
     resumeChatRun,
     setNotice,
     setSelectedModelId,
-    setSelectedKnowledgePlan,
     setSelectedProvider,
     setSelectedSearchPlan,
     workspaceRefreshPromiseRef
@@ -430,7 +423,6 @@ function useWorkspaceActionsForTest(input: {
       selectComposerSession(useComposerSessionStore.getState(), key),
     setNotice,
     setSelectedModelId,
-    setSelectedKnowledgePlan,
     setSelectedProvider,
     setSelectedSearchPlan,
     setComposerState(
@@ -460,7 +452,6 @@ function boundProjection(): ChatAssistantProjection {
     ownerDisplayName: "Owner",
     rows: {
       controls: row({}, {}, "default"),
-      knowledge: row({ mode: "none" }, { mode: "none" }),
       model: row({ mode: "model", modelId: "assistant-model" }, { mode: "model", modelId: "assistant-model" }),
       search: row({ mode: "off" }, { mode: "all_selected", optionIds: ["web"] }, "chat"),
       skills: row({ links: [], mode: "off" }, { links: [], mode: "off" }),
@@ -518,33 +509,6 @@ describe("restoring a chat's Assistant", () => {
     await state.actions.activateChat(state.chatA, { resumeRuns: false });
     expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("reads an unknown projection for a caller that keeps its controls but asks for the Assistant", async () => {
-    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
-    resetChatAssistantProjectionStoreForTest();
-    const cached = {
-      activeLeafId: null,
-      history: threadHistory(state.chatA),
-      messages: [],
-      sourceUpdatedAt: state.chatA.updatedAt,
-      usageStats: null
-    };
-    useThreadStore.getState().replaceThread(state.chatA.id, cached);
-    const fetchMock = vi.fn(async () => Response.json({ chat: { ...apiChatDetail(state.chatA, []), assistant: boundProjection() } }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    // Preserved controls alone trust the composer and read nothing.
-    await state.actions.activateChat(state.chatA, { preserveControls: true, resumeRuns: false });
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    await state.actions.activateChat(state.chatA, { preserveControls: true, readAssistant: true, resumeRuns: false });
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-1", state: "bound" });
-
-    // Once read, the projection is known and nothing is read again.
-    await state.actions.activateChat(state.chatA, { preserveControls: true, readAssistant: true, resumeRuns: false });
-    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("keeps a deleted binding visible instead of substituting anything", async () => {
@@ -667,13 +631,12 @@ describe("starting a new personal chat with the default Assistant", () => {
     expect(useComposerControlStore.getState().assistant).toMatchObject({ id: "assistant-2" });
   });
 
-  it("never starts Temporary or Project chats with it and drops it when the blank chat turns Temporary", async () => {
+  it("never starts Temporary chats with it and drops it when the blank chat turns Temporary", async () => {
     const chooser = defaultChooser();
     const state = useWorkspaceActionsForTest({ attachments: [], chooseDefaultAssistant: chooser.choose, draft: "" });
     withDefaultAssistant("assistant-1");
 
     state.actions.activateBlankWorkspace(null, "TEMPORARY");
-    state.actions.activateBlankWorkspace(null, "NORMAL", "project-1");
     expect(chooser.choose).not.toHaveBeenCalled();
 
     state.actions.activateBlankWorkspace();
@@ -1314,10 +1277,6 @@ describe("workspace actions", () => {
     expect(window.location.pathname).toBe("/c/chat-b");
     state.actions.activateBlankWorkspace("folder-1");
     expect(window.location.pathname).toBe("/");
-    state.actions.activateBlankWorkspace(null, "NORMAL", "project-1");
-    expect(window.location.pathname).toBe("/p/project-1");
-    await state.actions.activateChat(chat({ id: "project-chat", projectId: "project-1", title: "Project chat" }));
-    expect(window.location.pathname).toBe("/p/project-1/c/project-chat");
     expect(window.history.length).toBe(historyLength);
     expect(window.localStorage.length).toBe(0);
     window.history.replaceState(null, "", "/");
@@ -1349,7 +1308,7 @@ describe("workspace actions", () => {
       : Response.json({ error: "not_found" }, { status: 404 })));
     const onTargetUnavailable = vi.fn();
     await state.actions.refreshWorkspace("missing-chat", { onTargetUnavailable });
-    expect(onTargetUnavailable).toHaveBeenCalledExactlyOnceWith(null);
+    expect(onTargetUnavailable).toHaveBeenCalledOnce();
     expect(useWorkspaceStore.getState().activeChatId).toBeNull();
 
     await state.actions.refreshWorkspace(state.chatA.id, { isCurrent: () => false, onTargetUnavailable });
@@ -1357,77 +1316,6 @@ describe("workspace actions", () => {
     expect(onTargetUnavailable).toHaveBeenCalledOnce();
     await state.actions.refreshWorkspace(state.chatA.id, { onTargetUnavailable });
     expect(useWorkspaceStore.getState().activeChatId).toBe(state.chatA.id);
-  });
-
-  it("reports a readable Project chat's Project from one detail read, without admitting it", async () => {
-    const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
-    const workspace = {
-      agentAvailable: false,
-      available: false,
-      enabled: false,
-      internetEnabled: true,
-      sessionState: null,
-      unavailableReason: "model_tools_required"
-    };
-    const requests: string[] = [];
-    // The shapes the server answers a Project member with: the personal list
-    // never carries Project chats, the personal memory state does not exist
-    // for them, and the chat detail names the Project.
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const path = String(input);
-      requests.push(path);
-      if (path === "/api/chats") {
-        return Response.json({
-          chats: [{ ...apiChatSummary(state.chatA), projectId: null, workspace }],
-          folders: []
-        });
-      }
-      if (path === "/api/chats/project-chat") {
-        return Response.json({
-          chat: {
-            activeLeafMessageId: null,
-            contextStats: { approximateActiveBranchInputTokens: 0 },
-            createdAt: "2026-09-26T21:52:47.737Z",
-            defaultKnowledgePlan: null,
-            defaultModelId: "00000000-0000-4000-8000-000000001201",
-            defaultProvider: "00000000-0000-4000-8000-000000001101",
-            folderId: null,
-            id: "project-chat",
-            messageCount: 0,
-            messages: [],
-            pageInfo: {
-              activeLeafMessageId: null,
-              beforeCursor: null,
-              hasOlder: false,
-              snapshotUpdatedAt: "2026-09-26T21:52:47.737Z"
-            },
-            pinned: false,
-            projectId: "project-1",
-            title: "Routing Project chat",
-            updatedAt: "2026-09-26T21:52:47.737Z",
-            usageStats: null,
-            workspace
-          }
-        });
-      }
-      if (path.endsWith("/memory-mode")) {
-        return Response.json({ error: "memory_not_found" }, { status: 404 });
-      }
-      return Response.json({ error: "chat_not_found" }, { status: 404 });
-    }));
-    const onTargetUnavailable = vi.fn();
-
-    await state.actions.refreshWorkspace("project-chat", { onTargetUnavailable });
-    expect(onTargetUnavailable).toHaveBeenCalledExactlyOnceWith("project-1");
-    expect(requests).toEqual(["/api/chats", "/api/chats/project-chat"]);
-    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
-    expect(state.chats().map((candidate) => candidate.id)).not.toContain("project-chat");
-
-    requests.length = 0;
-    onTargetUnavailable.mockClear();
-    await state.actions.refreshWorkspace("foreign-chat", { onTargetUnavailable });
-    expect(onTargetUnavailable).toHaveBeenCalledExactlyOnceWith(null);
-    expect(requests).toEqual(["/api/chats", "/api/chats/foreign-chat"]);
   });
 
   it("activates a blank workspace without creating a persisted chat", () => {
@@ -1747,8 +1635,7 @@ describe("workspace actions", () => {
       defaultProvider: "openai",
       folderId: "folder-1",
       memoryMode: "NORMAL",
-      pendingPersonalDraft: { folderId: "folder-1", memoryMode: "NORMAL" },
-      projectId: null
+      pendingPersonalDraft: { folderId: "folder-1", memoryMode: "NORMAL" }
     });
     expect(created?.id).toMatch(/^[0-9a-f-]{36}$/u);
     expect(useWorkspaceStore.getState().activeChatId).toBe(created?.id);
@@ -1848,123 +1735,6 @@ describe("workspace actions", () => {
     expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
   });
 
-  it("resolves Knowledge defaults as chat, then project, then Off", async () => {
-    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
-    useWorkspaceStore.setState({
-      folders: [{
-        defaultKnowledgePlan: {
-          baseIds: ["project-base"], mode: "explicit", sourceIds: [], version: 1
-        },
-        id: "folder-1",
-        name: "Research",
-        parentId: null,
-        projectMemory: "",
-        sortOrder: 0
-      }]
-    });
-
-    await state.actions.activateChat({
-      ...state.chatB,
-      defaultKnowledgePlan: {
-        baseIds: ["chat-base"], mode: "explicit", sourceIds: [], version: 1
-      },
-      folderId: "folder-1"
-    }, { resumeRuns: false });
-    expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      { baseIds: ["chat-base"], mode: "explicit", sourceIds: [], version: 1 },
-      "chat",
-      "system"
-    );
-
-    await state.actions.activateChat({
-      ...state.chatA,
-      defaultKnowledgePlan: null,
-      folderId: "folder-1"
-    }, { resumeRuns: false });
-    expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      { baseIds: ["project-base"], mode: "explicit", sourceIds: [], version: 1 },
-      "project",
-      "system"
-    );
-
-    state.actions.activateBlankWorkspace();
-    expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      "off",
-      "system"
-    );
-    state.actions.activateBlankWorkspace("folder-1");
-    expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      { baseIds: ["project-base"], mode: "explicit", sourceIds: [], version: 1 },
-      "project",
-      "system"
-    );
-  });
-
-  it("persists a chat Knowledge default and reapplies its effective source", async () => {
-    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
-    const updated: WorkspaceChatSummary = {
-      ...state.chatA,
-      defaultKnowledgePlan: {
-        baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
-      },
-      updatedAt: "2026-06-10T00:01:00.000Z"
-    };
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ chat: apiChatSummary(updated) }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(state.actions.setChatKnowledgeDefault({
-      baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
-    })).resolves.toBe(true);
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({
-      body: JSON.stringify({
-        defaultKnowledgePlan: {
-          baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
-        }
-      }),
-      method: "PATCH"
-    }));
-    expect(state.chats().find((chat) => chat.id === "chat-a")?.defaultKnowledgePlan).toEqual({
-      baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
-    });
-    expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-      { baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1 },
-      "chat",
-      "system"
-    );
-  });
-
-  it("does not let a late chat Knowledge save replace a newer workspace plan", async () => {
-    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
-    let resolveSave!: (response: Response) => void;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
-      resolveSave = resolve;
-    })));
-
-    const pendingSave = state.actions.setChatKnowledgeDefault({
-      baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
-    });
-    await vi.waitFor(() => expect(resolveSave).toBeTypeOf("function"));
-    state.actions.activateBlankWorkspace();
-    state.setSelectedKnowledgePlan.mockClear();
-    resolveSave(Response.json({
-      chat: apiChatSummary({
-        ...state.chatA,
-        defaultKnowledgePlan: {
-          baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
-        }
-      })
-    }));
-
-    await expect(pendingSave).resolves.toBe(true);
-    expect(state.setSelectedKnowledgePlan).not.toHaveBeenCalled();
-    expect(state.chats().find((candidate) => candidate.id === "chat-a")?.defaultKnowledgePlan)
-      .toEqual({
-        baseIds: ["base-policies"], mode: "explicit", sourceIds: [], version: 1
-      });
-  });
-
   it("transfers an inactive blank session without stealing the selected chat", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const sourceKey = composerSessionKey(null);
@@ -2009,20 +1779,13 @@ describe("workspace actions", () => {
     expect(state.setNotice).not.toHaveBeenCalled();
   });
 
-  it("authoritatively loads an unlisted Personal deep-link chat and rejects Project detail", async () => {
+  it("authoritatively loads an unlisted Personal deep-link chat and rejects a missing one", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const personal = chat({
       activeLeafMessageId: "linked-message",
       id: "linked-personal-chat",
       messageCount: 1,
       title: "Linked personal chat"
-    });
-    const project = chat({
-      activeLeafMessageId: "project-message",
-      id: "linked-project-chat",
-      messageCount: 1,
-      projectId: "project-1",
-      title: "Linked Project chat"
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
@@ -2031,13 +1794,8 @@ describe("workspace actions", () => {
           chat: apiChatDetail(personal, [message({ id: "linked-message" })])
         });
       }
-      if (path === "/api/chats/linked-project-chat") {
-        return Response.json({
-          chat: {
-            ...apiChatDetail(project, [message({ id: "project-message" })]),
-            projectId: "project-1"
-          }
-        });
+      if (path === "/api/chats/missing-chat") {
+        return Response.json({ error: "chat_not_found" }, { status: 404 });
       }
       throw new Error(`unexpected request: ${path}`);
     });
@@ -2052,8 +1810,8 @@ describe("workspace actions", () => {
       .toContainEqual(expect.objectContaining({ id: "linked-message" }));
 
     state.actions.activateBlankWorkspace();
-    await expect(state.actions.activatePersonalChatById(project.id)).resolves.toBeNull();
-    expect(state.chats()).not.toContainEqual(expect.objectContaining({ id: project.id }));
+    await expect(state.actions.activatePersonalChatById("missing-chat")).resolves.toBeNull();
+    expect(state.chats()).not.toContainEqual(expect.objectContaining({ id: "missing-chat" }));
     expect(useWorkspaceStore.getState().activeChatId).toBeNull();
   });
 
@@ -3102,67 +2860,13 @@ describe("workspace actions", () => {
   });
 });
 
-describe("chat scope across personal and Project workspaces", () => {
+describe("removing and refreshing personal chats", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     window.history.replaceState(null, "", "/");
   });
 
   const attachmentFor = (id: string): ComposerAttachment => ({ fileName: `${id}.pdf`, id, kind: "pdf" });
-
-  /**
-   * A personal workspace after a Project visit: a blank Project reservation
-   * and a saved Project chat share the store with personal chats, newest first.
-   */
-  function useMixedScopeForTest(activeChatId: string | null) {
-    const state = useWorkspaceActionsForTest({ activeChatId, attachments: [], draft: "" });
-    const reservation = chat({
-      id: "project-reservation",
-      pendingProjectDraft: { folderId: null, projectId: "project-1" },
-      projectId: "project-1",
-      title: "Project reservation",
-      updatedAt: "2026-06-12T00:00:00.000Z"
-    });
-    const saved = chat({
-      defaultModelId: "project-model",
-      defaultProvider: "project-provider",
-      id: "project-saved",
-      projectId: "project-1",
-      title: "Saved Project chat",
-      updatedAt: "2026-06-11T00:00:00.000Z"
-    });
-    useWorkspaceStore.setState({ chats: [reservation, saved, state.chatA, state.chatB] });
-    const projectSessions = [
-      [composerSessionKey(saved.id), "Saved Project draft"],
-      [composerSessionKey(reservation.id), "Reserved Project draft"],
-      [projectComposerSessionKey("project-1"), "Project blank draft"],
-      [projectComposerSessionKey("project-1", "project-folder"), "Project folder draft"]
-    ] as const;
-    for (const [key, draft] of projectSessions) {
-      useComposerSessionStore.getState().activateSession(key);
-      useComposerSessionStore.getState().setDraft(draft);
-      useComposerSessionStore.getState().setAttachments([attachmentFor(`${draft.split(" ")[0]}-file`)]);
-    }
-    useComposerSessionStore.getState().activateSession(composerSessionKey(activeChatId));
-    useThreadStore.getState().replaceThread(reservation.id, {
-      activeLeafId: null,
-      messages: [],
-      sourceUpdatedAt: reservation.updatedAt,
-      usageStats: null
-    });
-    const expectProjectDraftsKept = () => {
-      for (const [key, draft] of projectSessions) {
-        expect(state.session(key)).toMatchObject({
-          attachments: [attachmentFor(`${draft.split(" ")[0]}-file`)],
-          draft
-        });
-      }
-      expect(state.chats().map((candidate) => candidate.id)).toEqual(
-        expect.arrayContaining([reservation.id, saved.id])
-      );
-    };
-    return { ...state, expectProjectDraftsKept, reservation, saved };
-  }
 
   function stubArchiveRequests() {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -3176,10 +2880,10 @@ describe("chat scope across personal and Project workspaces", () => {
     }));
   }
 
-  it("archives the active personal chat into another personal chat, then the personal blank chat, without history entries", async () => {
+  it("archives the active chat into another chat, then the blank chat, without history entries", async () => {
     window.history.replaceState(null, "", "/c/chat-a");
     const historyLength = window.history.length;
-    const state = useMixedScopeForTest("chat-a");
+    const state = useWorkspaceActionsForTest({ activeChatId: "chat-a", attachments: [], draft: "" });
     stubArchiveRequests();
 
     await state.actions.deleteChat(state.chatA);
@@ -3193,73 +2897,6 @@ describe("chat scope across personal and Project workspaces", () => {
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(composerSessionKey(null));
     expect(window.location.pathname).toBe("/");
     expect(window.history.length).toBe(historyLength);
-    expect(state.setSelectedModelId).not.toHaveBeenCalledWith("project-model", expect.anything());
-    state.expectProjectDraftsKept();
-  });
-
-  it("hands a removed Project chat to its scope's fallback, and without one opens the personal blank chat", async () => {
-    window.history.replaceState(null, "", "/p/project-1/c/project-saved");
-    const state = useMixedScopeForTest("project-saved");
-    stubArchiveRequests();
-    const activateFallback = vi.fn();
-
-    await state.actions.deleteChat(state.saved, activateFallback);
-    expect(activateFallback).toHaveBeenCalledExactlyOnceWith("project-1", state.reservation);
-
-    const next = useMixedScopeForTest("project-saved");
-    stubArchiveRequests();
-    await next.actions.deleteChat(next.saved);
-    expect(useWorkspaceStore.getState().activeChatId).toBeNull();
-    expect(window.location.pathname).toBe("/");
-    expect(useComposerSessionStore.getState().activeSessionKey).toBe(composerSessionKey(null));
-  });
-
-  it("keeps saved and reserved Project chats with their drafts and controls through a personal refresh", async () => {
-    window.history.replaceState(null, "", "/p/project-1/c/project-saved");
-    const historyLength = window.history.length;
-    const state = useMixedScopeForTest("project-saved");
-    useComposerSessionStore.getState().activateSession(composerSessionKey("chat-b"));
-    useComposerSessionStore.getState().setDraft("Removed personal draft");
-    useComposerSessionStore.getState().activateSession(composerSessionKey("project-saved"));
-    const requests: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      requests.push(String(input));
-      return Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] });
-    }));
-
-    // A retry keeps the open saved Project chat and the controls its Project applied.
-    await state.actions.refreshWorkspace("project-saved");
-    expect(requests).toEqual(["/api/chats"]);
-    expect(useWorkspaceStore.getState().activeChatId).toBe("project-saved");
-    expect(window.location.pathname).toBe("/p/project-1/c/project-saved");
-    for (const setter of [state.applyModelControlDefaults, state.setSelectedModelId, state.setSelectedProvider,
-      state.setSelectedSearchPlan, state.setSelectedKnowledgePlan]) expect(setter).not.toHaveBeenCalled();
-    expect(state.actions.reapplyActiveChatDefaults(useWorkspaceStore.getState().catalog!)).toBe(false);
-    expect(state.setSelectedModelId).not.toHaveBeenCalled();
-    state.expectProjectDraftsKept();
-    expect(useThreadStore.getState().threadsByChatId["project-reservation"]).toBeDefined();
-    expect(useComposerSessionStore.getState().sessionsByKey[composerSessionKey("chat-b")]).toBeUndefined();
-
-    // Restoring a personal chat opens it by replacing the address and leaves every Project draft.
-    await state.actions.refreshWorkspace("chat-a", { preserveControls: true });
-    expect(useWorkspaceStore.getState().activeChatId).toBe("chat-a");
-    expect(window.location.pathname).toBe("/c/chat-a");
-    expect(window.history.length).toBe(historyLength);
-    state.expectProjectDraftsKept();
-  });
-
-  it("leaves an open Project's blank chat to its owner when a personal refresh has no target", async () => {
-    window.history.replaceState(null, "", "/p/project-1");
-    const state = useMixedScopeForTest(null);
-    useComposerSessionStore.getState().activateSession(projectComposerSessionKey("project-1"));
-    vi.stubGlobal("fetch", vi.fn(async () =>
-      Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] })));
-
-    await state.actions.refreshWorkspace(null);
-    expect(useComposerSessionStore.getState().activeSessionKey).toBe(projectComposerSessionKey("project-1"));
-    expect(window.location.pathname).toBe("/p/project-1");
-    expect(state.setSelectedModelId).not.toHaveBeenCalled();
-    state.expectProjectDraftsKept();
   });
 
   it("keeps a session whose send is pending through a refresh that drops its chat, then returns the refused text", async () => {
@@ -3313,68 +2950,19 @@ describe("chat export markdown", () => {
 });
 
 describe("blank workspace chat defaults", () => {
-  it("starts a new chat with the personal MCP and Knowledge defaults and names a dropped base", () => {
+  it("starts a new chat with the personal MCP default", () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const catalog = useWorkspaceStore.getState().catalog;
     if (!catalog) throw new Error("catalog fixture missing");
     useWorkspaceStore.setState({
-      catalog: {
-        ...catalog,
-        defaults: {
-          ...catalog.defaults,
-          knowledgePlan: { baseIds: ["kb-1", "kb-gone"], mode: "explicit", sourceIds: [], version: 1 },
-          mcpMode: "load_all"
-        }
-      }
-    });
-    useKnowledgeLibraryStore.setState({
-      data: {
-        knowledgeBases: [{
-          archived: false,
-          deletionPending: false,
-          description: "",
-          id: "kb-1",
-          name: "Handbook",
-          owned: true,
-          ownerDisplayName: "Operator",
-          purgeScheduledAt: null,
-          readiness: { indexedSourceCount: 0, state: "ready", totalSourceCount: 0 } as never,
-          scope: "personal" as never,
-          sourceCount: 0,
-          trashed: false,
-          trashedAt: null,
-          updatedAt: "2026-09-01T00:00:00.000Z",
-          version: 1
-        }],
-        publishableGroups: [],
-        viewer: { canCreate: true, canPublishInstallation: false, maxUploadBytes: 1 }
-      }
+      catalog: { ...catalog, defaults: { ...catalog.defaults, mcpMode: "load_all" } }
     });
     try {
       state.actions.activateBlankWorkspace();
       expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
-      expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-        expect.objectContaining({ baseIds: ["kb-1"], mode: "explicit" }),
-        "explicit",
-        "system"
-      );
-      expect(state.setNotice).toHaveBeenCalledWith(expect.objectContaining({
-        kind: "error",
-        text: expect.stringContaining("no longer available")
-      }));
-
-      useKnowledgeLibraryStore.setState({ data: null });
-      state.setNotice.mockClear();
-      state.actions.activateBlankWorkspace();
-      expect(state.setSelectedKnowledgePlan).toHaveBeenLastCalledWith(
-        expect.objectContaining({ baseIds: ["kb-1", "kb-gone"] }),
-        "explicit",
-        "system"
-      );
       expect(state.setNotice).not.toHaveBeenCalled();
     } finally {
       useComposerControlStore.getState().setMcpSelection({ mode: "auto" });
-      resetKnowledgeLibraryStoreForTest();
     }
   });
 });
