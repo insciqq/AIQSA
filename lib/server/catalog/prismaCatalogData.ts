@@ -6,7 +6,6 @@ import {
   type SearchStrategyCatalogEntry,
   type SearchStrategyRouteCatalogEntry
 } from "@/lib/domain/catalog";
-import { NATIVE_ANTHROPIC_ENABLED } from "@/lib/domain/disabledAreas";
 import { resolveProviderCredential } from "@/lib/domain/providerCredentialResolution";
 import {
   canAccessModel,
@@ -245,9 +244,7 @@ function activeModelConfiguration(
     !model.activatedAt ||
     !model.connection.enabled ||
     model.connection.activeVersion <= 0 ||
-    !model.connection.activatedAt ||
-    // Native Anthropic is disabled: its models are in no catalog.
-    (!NATIVE_ANTHROPIC_ENABLED && model.connection.family === "anthropic")
+    !model.connection.activatedAt
   ) {
     return null;
   }

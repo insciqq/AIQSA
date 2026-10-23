@@ -204,14 +204,6 @@ describe("answer review step start", () => {
     expect(transient.updateMany).not.toHaveBeenCalled();
   });
 
-  it("stops the session with an error when the step's model is on the disabled native Anthropic provider", async () => {
-    respond = () => Response.json({ error: "native_anthropic_disabled" }, { status: 403 });
-    const { prisma, updateMany } = fakePrisma(newState({ claimed: null }));
-    const refused = await startAnswerReviewStep({ prisma, sendDeps }, input());
-    expect(refused).toMatchObject({ code: "native_anthropic_disabled", ok: false, stopped: "error" });
-    expect(updateMany).toHaveBeenCalledWith({ data: { state: "stopped", stopReason: "error" }, where: { id: "session-1", state: "running" } });
-  });
-
   it("returns the admitted step's run stream at once, never waiting for the run", async () => {
     // A run that never finishes: reading its body would never end either.
     respond = () => new Response(new ReadableStream({ start() {} }), { headers: { "content-type": "text/event-stream" }, status: 200 });

@@ -12,7 +12,6 @@ import {
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MIN_SECONDS
 } from "../../../contracts/adminProviders";
-import { NATIVE_ANTHROPIC_DISABLED_CODE, offeredProviderFamilies } from "../../../domain/disabledAreas";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import {
   readJsonBodyOrNull,
@@ -165,10 +164,6 @@ export function createAdminProviderQuickSetupMutationHandler(
       return errorJson("provider_configuration_invalid", 400);
     }
     const providerId = provider(record.provider);
-    // Native Anthropic is disabled: setup refuses it before testing any key.
-    if (providerId && !offeredProviderFamilies([providerId]).length) {
-      return errorJson(NATIVE_ANTHROPIC_DISABLED_CODE, 409);
-    }
     const secret = boundedText(record.secret, 16_384);
     const expectedState = boundedText(record.expectedState, 128);
     const selectedModel = selection(record.selectedModel);

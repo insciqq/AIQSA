@@ -12,10 +12,10 @@ import {
 import { fixtureConnection, workingConnection } from "../providerFixtures";
 
 describe("addProviderView", () => {
-  it("lists the tiles with a protocol subtitle only on Custom, and none for native Anthropic", () => {
-    // Native Anthropic is disabled (`lib/domain/disabledAreas.ts`): Claude models come through OpenRouter.
+  it("lists the six tiles with a protocol subtitle only on Custom", () => {
     expect(ADD_PROVIDER_TILES.map(({ family, label, subtitle }) => [family, label, subtitle])).toEqual([
       ["openai", "OpenAI", undefined],
+      ["anthropic", "Anthropic", undefined],
       ["gemini", "Gemini", undefined],
       ["deepseek", "DeepSeek", undefined],
       ["openrouter", "OpenRouter", undefined],

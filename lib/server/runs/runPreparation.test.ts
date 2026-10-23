@@ -76,7 +76,6 @@ vi.mock("../../domain/disabledAreas", async (importOriginal) => ({
   get KNOWLEDGE_ENABLED() {
     return areas.knowledge;
   },
-  NATIVE_ANTHROPIC_ENABLED: true,
   PROJECTS_ENABLED: true
 }));
 

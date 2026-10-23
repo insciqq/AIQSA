@@ -16,7 +16,6 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../../http/requestBody";
-import { NATIVE_ANTHROPIC_DISABLED_CODE, NATIVE_ANTHROPIC_ENABLED } from "../../../domain/disabledAreas";
 import { isUnconfiguredProviderTemplate } from "../../../domain/providerTemplates";
 import { ProviderConfigurationError } from "../../providers/providerConfiguration";
 import {
@@ -153,8 +152,7 @@ function serviceError(error: AdminProviderServiceError): Response {
     "provider_model_class_immutable",
     "provider_revoke_confirmation_required",
     "provider_routing_role_incompatible",
-    "provider_routing_role_unverified",
-    NATIVE_ANTHROPIC_DISABLED_CODE
+    "provider_routing_role_unverified"
   ]);
   const status = notFound.has(error.code)
     ? 404
@@ -200,8 +198,6 @@ async function safely(operation: () => Promise<Response>, stage: LifecycleStage 
 async function catalog(service: AdminProviderService, status = 200): Promise<Response> {
   // A family's built-in connection is listed once it was set up; before that
   // it is a bootstrap placeholder, not a connection (`isUnconfiguredProviderTemplate`).
-  // One already set up stays listed, also for disabled native Anthropic, so it
-  // can be turned off or deleted.
   const connections = (await service.listConnections()).filter((connection) =>
     !isUnconfiguredProviderTemplate(connection));
   return Response.json({ connections }, { status });
@@ -241,19 +237,6 @@ async function modelSaveResponse(input: {
 
 async function connectionExists(service: AdminProviderService, connectionId: string): Promise<boolean> {
   return (await service.listConnections()).some((connection) => connection.id === connectionId);
-}
-
-/**
- * Native Anthropic is disabled (`lib/domain/disabledAreas.ts`): nothing on
- * one of its connections is turned on or checked. Turning things off and
- * deleting stay possible.
- */
-async function refuseDisabledProviderFamily(service: AdminProviderService, connectionId: string): Promise<void> {
-  if (NATIVE_ANTHROPIC_ENABLED) return;
-  if ((await service.listConnections()).some((connection) =>
-    connection.id === connectionId && connection.family === "anthropic")) {
-    throw new AdminProviderServiceError(NATIVE_ANTHROPIC_DISABLED_CODE);
-  }
 }
 
 async function credentialBelongs(
@@ -401,7 +384,6 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         if (!await connectionExists(deps.service, connectionId)) {
           return errorJson("provider_connection_not_found", 404);
         }
-        if (action === "enable") await refuseDisabledProviderFamily(deps.service, connectionId);
         await deps.service[action]("connection", connectionId);
         return catalog(deps.service);
       }
@@ -488,7 +470,6 @@ export function createAdminProviderConnectionActionHandler(deps: AdminProviderHa
         const credentialId = text(body.credentialId, 128);
         const modelIds = optionalIdList(body.modelIds);
         if (!credentialId || modelIds === null) return errorJson("provider_action_invalid", 400);
-        await refuseDisabledProviderFamily(deps.service, connectionId);
         await deps.service.startCheckRun({
           userId: auth.userId,
           connectionId,
@@ -587,7 +568,6 @@ export function createAdminProviderCredentialUpdateHandler(deps: AdminProviderHa
           signal: request.signal
         });
       } else if (action === "enable" || action === "disable") {
-        if (action === "enable") await refuseDisabledProviderFamily(deps.service, connectionId);
         await deps.service[action]("credential", credentialId);
       } else if (action === "revoke_active_version") {
         const versionId = text(body.versionId, 128);
@@ -712,7 +692,6 @@ export function createAdminProviderModelUpdateHandler(deps: AdminProviderHandler
             configuration: body.configuration as AdminProviderModelConfiguration, displayName, modelId,
             ...(pricing ? { pricing } : {}) }), id: modelId }) });
       } else if (action === "enable" || action === "disable") {
-        if (action === "enable") await refuseDisabledProviderFamily(deps.service, connectionId);
         await deps.service[action]("model", modelId);
       } else {
         return errorJson("provider_action_invalid", 400);
