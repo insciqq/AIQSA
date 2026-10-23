@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { UsagePurpose } from "@prisma/client";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { USAGE_PURPOSES } from "../../domain/usagePurpose";
-import { runAttributionUsageRows, runAttributionUsageWhere, storedRunAttributionPurpose } from "./prismaRepositoryUsage";
+import { runAttributionUsageRows, runAttributionUsageWhere } from "./prismaRepositoryUsage";
 
 const usage = normalizeTokenUsage({ inputTokens: 10, outputTokens: 4, totalTokens: 14 });
 
@@ -54,10 +54,4 @@ describe("run attribution usage rows", () => {
     expect(answer).toMatchObject({ providerModelId: null, purpose: "chat_answer" });
   });
 
-  it("refuses a stored purpose that is not a run attribution", () => {
-    expect(storedRunAttributionPurpose("knowledge_retrieval")).toBe("knowledge_retrieval");
-    for (const value of ["chat_title", "memory_retrieval", null]) {
-      expect(() => storedRunAttributionPurpose(value)).toThrow("run_usage_purpose_invalid");
-    }
-  });
 });

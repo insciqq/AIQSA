@@ -1,10 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { normalizeTokenUsage } from "../../domain/usage";
-import {
-  RUN_USAGE_ATTRIBUTION_PURPOSES,
-  isRunUsageAttributionPurpose,
-  type RunUsageAttributionPurpose
-} from "../../domain/usagePurpose";
+import { RUN_USAGE_ATTRIBUTION_PURPOSES } from "../../domain/usagePurpose";
 import type { RunUsageAttribution } from "./runRepositoryContract";
 
 /**
@@ -45,10 +41,4 @@ export function runAttributionUsageRows(
       userId: scope.userId
     };
   });
-}
-
-/** The stored purpose of a row read through {@link runAttributionUsageWhere}. */
-export function storedRunAttributionPurpose(value: unknown): RunUsageAttributionPurpose {
-  if (!isRunUsageAttributionPurpose(value)) throw new Error("run_usage_purpose_invalid");
-  return value;
 }

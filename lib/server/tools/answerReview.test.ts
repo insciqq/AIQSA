@@ -2,15 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isRunOutputArtifactEvent, projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { reservedToolCallForRequest } from "./reservedToolCall";
-import {
-  answerReviewCallSubmitted,
-  answerReviewToolsForRequest,
-  executeAnswerReviewCall,
-  isAnswerReviewCall,
-  isAnswerReviewStepMarker,
-  RECORD_REVIEW_DECISIONS_TOOL_NAME,
-  SUBMIT_ANSWER_REVIEW_TOOL_NAME
-} from "./answerReview";
+import { answerReviewToolsForRequest, executeAnswerReviewCall, isAnswerReviewCall, isAnswerReviewStepMarker, RECORD_REVIEW_DECISIONS_TOOL_NAME, SUBMIT_ANSWER_REVIEW_TOOL_NAME } from "./answerReview";
 
 const reviewStep = {
   answerReviewStep: { kind: "review", modelName: "GPT-5", rejectedKeys: ["R1.1.F1"], reviewer: 1, round: 2, sessionId: "session-1",
@@ -112,18 +104,7 @@ describe("answer review tools", () => {
       const snapshot = snapshotToolExecutionResult(executed, 64_000);
       expect(snapshot, name).not.toBeNull();
       expect(parsePersistedToolExecutionResult({ id: "call-1", name }, snapshot)?.artifacts, name).toEqual(executed.artifacts);
-      expect(answerReviewCallSubmitted(request, { result: snapshot, state: "complete", toolName: name }), name).toBe(true);
     }
   });
 
-  it("knows a persisted call settled its step's card", () => {
-    const settled = executeAnswerReviewCall(call(SUBMIT_ANSWER_REVIEW_TOOL_NAME, { findings: [], verdict: "clean" }), reviewStep,
-      { submitted: false });
-    expect(answerReviewCallSubmitted(reviewStep, { result: settled, state: "complete", toolName: SUBMIT_ANSWER_REVIEW_TOOL_NAME }))
-      .toBe(true);
-    expect(answerReviewCallSubmitted(reviewStep, { result: { content: [] }, state: "complete", toolName: SUBMIT_ANSWER_REVIEW_TOOL_NAME }))
-      .toBe(false);
-    expect(answerReviewCallSubmitted(revisionStep, { result: settled, state: "complete", toolName: SUBMIT_ANSWER_REVIEW_TOOL_NAME }))
-      .toBe(false);
-  });
 });

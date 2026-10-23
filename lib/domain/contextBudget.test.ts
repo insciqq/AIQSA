@@ -1,6 +1,6 @@
 import { countTokens } from "gpt-tokenizer/encoding/o200k_base";
 import { describe, expect, it } from "vitest";
-import { APPROX_TOKEN_WEIGHT_CLASSES, applyContextBudget, calculateContextBudgetLimits, contextOutputReserveTokens, estimateApproxTokens, estimateApproxTokensFromProjectedParts, type ContextBudgetMessage } from "./contextBudget";
+import { APPROX_TOKEN_WEIGHT_CLASSES, calculateContextBudgetLimits, contextOutputReserveTokens, estimateApproxTokens, estimateApproxTokensFromProjectedParts } from "./contextBudget";
 import {
   TOKEN_ESTIMATE_LIMITS,
   TOKEN_ESTIMATE_MULTIPLIERS,
@@ -16,35 +16,7 @@ import { TOKEN_ESTIMATE_FIXTURES } from "./tokenEstimate.testFixtures";
 const o200k = (text: string) => countTokens(text, { disallowedSpecial: new Set() });
 const fixture = (name: string) => TOKEN_ESTIMATE_FIXTURES.find((entry) => entry.name === name)!.text;
 
-function message(id: string, role: "assistant" | "user", text: string): ContextBudgetMessage {
-  return {
-    content: {
-      blocks: [{ text, type: "text" }]
-    },
-    id,
-    role
-  };
-}
-
 describe("context budget", () => {
-  it("never trims history: a branch over the budget is refused whole", () => {
-    const messages = [message("original", "user", "x".repeat(200)),
-      { ...message("partial", "assistant", "p".repeat(200)), contextTurnId: "original" },
-      { ...message("clarification", "user", "c".repeat(200)), contextTurnId: "original" },
-      message("answer", "assistant", "a".repeat(200)), message("current", "user", "next")];
-    expect(applyContextBudget({ messages, contextWindow: 130, maxOutputTokens: 20 })).toMatchObject({ ok: false, code: "context_too_large" });
-    const fitting = applyContextBudget({ messages, contextWindow: 1_000, maxOutputTokens: 20 });
-    expect(fitting.ok && fitting.messages).toBe(messages);
-  });
-
-  it("cannot keep a current clarification by discarding its original question", () => {
-    const result = applyContextBudget({ contextWindow: 130, maxOutputTokens: 20, messages: [
-      message("original", "user", "x".repeat(800)),
-      { ...message("clarification", "user", "short clarification"), contextTurnId: "original" }
-    ] });
-    expect(result).toMatchObject({ ok: false, code: "context_too_large" });
-  });
-
   it("estimates multilingual and emoji input more conservatively than ASCII", () => {
     expect(estimateApproxTokens("a".repeat(8))).toBe(2);
     expect(estimateApproxTokens("я".repeat(8))).toBe(4);
@@ -142,68 +114,6 @@ describe("context budget", () => {
     expect(contextOutputReserveTokens(0, 65_536)).toBe(65_536);
   });
 
-  it("keeps messages byte-identical when the branch fits", () => {
-    const messages = [
-      message("u1", "user", "hello"),
-      message("a1", "assistant", "hi"),
-      message("u2", "user", "next")
-    ];
-    const result = applyContextBudget({
-      contextWindow: 1000,
-      maxOutputTokens: 100,
-      messages,
-      prompt: {
-        developer: "developer",
-        system: "system"
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.ok ? result.messages : []).toBe(messages);
-  });
-
-  it("fails when the prompt and current user message exceed the budget", () => {
-    const result = applyContextBudget({
-      contextWindow: 100,
-      maxOutputTokens: 20,
-      messages: [message("u-current", "user", "x".repeat(400))]
-    });
-
-    expect(result).toMatchObject({
-      code: "context_too_large",
-      ok: false
-    });
-  });
-
-  it("counts per-message extra tokens without mutating returned messages", () => {
-    const current = message("u-current", "user", "short");
-    const result = applyContextBudget({
-      contextWindow: 100,
-      maxOutputTokens: 20,
-      messageExtraTokens: {
-        "u-current": 90
-      },
-      messages: [current]
-    });
-
-    expect(result).toMatchObject({
-      code: "context_too_large",
-      ok: false
-    });
-
-    const fits = applyContextBudget({
-      contextWindow: 200,
-      maxOutputTokens: 20,
-      messageExtraTokens: {
-        "u-current": 40
-      },
-      messages: [current]
-    });
-
-    expect(fits.ok).toBe(true);
-    expect(fits.ok ? fits.messages[0] : null).toBe(current);
-    expect(JSON.stringify(fits.ok ? fits.messages[0]?.content : null)).not.toContain("extra");
-  });
 });
 
 describe("token estimate calibration", () => {

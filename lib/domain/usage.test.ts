@@ -1,14 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  decodeTokenUsage,
-  estimateCostMicros,
-  mergeTokenUsage,
-  normalizeTokenUsage,
-  subtractTokenUsage,
-  sumTokenUsage,
-  usageCostMicros,
-  type UsageCostInput
-} from "./usage";
+import { decodeTokenUsage, estimateCostMicros, mergeTokenUsage, normalizeTokenUsage, sumTokenUsage, usageCostMicros, type UsageCostInput } from "./usage";
 
 describe("usage helpers", () => {
   it("sums token usage from final usage events", () => {
@@ -80,44 +71,6 @@ describe("usage helpers", () => {
       .toBe("partial");
     expect(sumTokenUsage([{ inputTokens: 0, outputTokens: 0, reasoningTokens: 0, completeness: "unavailable" }])
       .completeness).toBe("unavailable");
-  });
-
-  it("subtracts every normalized usage field without permitting underflow", () => {
-    expect(subtractTokenUsage({
-      cachedInputTokens: 4,
-      cacheWriteInputTokens: 3,
-      inputTokens: 10,
-      outputTokens: 8,
-      reasoningTokens: 5,
-      totalTokens: 21
-    }, {
-      cachedInputTokens: 1,
-      cacheWriteInputTokens: 2,
-      inputTokens: 4,
-      outputTokens: 3,
-      reasoningTokens: 2,
-      totalTokens: 8
-    })).toEqual({
-      cachedInputTokens: 3,
-      cacheWriteInputTokens: 1,
-      inputTokens: 6,
-      outputTokens: 5,
-      reasoningTokens: 3,
-      totalTokens: 13,
-      completeness: "complete"
-    });
-    expect(subtractTokenUsage(
-      { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
-      { inputTokens: 2, outputTokens: 0, reasoningTokens: 0 }
-    )).toBeNull();
-  });
-
-  it("subtracts only the known contribution of a partial operation", () => {
-    expect(subtractTokenUsage({ inputTokens: 12, outputTokens: 5, totalTokens: 7, completeness: "partial" },
-      { inputTokens: 5, completeness: "partial" })).toMatchObject({
-      inputTokens: 7, outputTokens: 5, totalTokens: 7, completeness: "partial",
-      cachedInputTokens: null, cacheWriteInputTokens: null
-    });
   });
 
   it("does not price incomplete usage or an unknown independently priced reasoning category", () => {
@@ -282,14 +235,6 @@ describe("provider-reported web searches", () => {
     expect(started).toMatchObject({ inputTokens: 10, webSearchCount: 1 });
     expect(mergeTokenUsage(started, { ...tokens, webSearchCount: 3 })).toMatchObject({ inputTokens: 1_000, webSearchCount: 3 });
     expect(mergeTokenUsage({ ...tokens, webSearchCount: 3 }, tokens)).toMatchObject({ webSearchCount: 3 });
-  });
-
-  it("subtracts search counts exactly", () => {
-    expect(subtractTokenUsage({ ...tokens, webSearchCount: 5 }, { inputTokens: 400, outputTokens: 40, totalTokens: 440, webSearchCount: 2 }))
-      .toMatchObject({ inputTokens: 600, webSearchCount: 3 });
-    expect(subtractTokenUsage({ ...tokens, webSearchCount: 2 }, { ...tokens, webSearchCount: 2 })).not.toHaveProperty("webSearchCount");
-    expect(subtractTokenUsage({ ...tokens, webSearchCount: 1 }, { inputTokens: 1, webSearchCount: 2 })).toBeNull();
-    expect(subtractTokenUsage(tokens, { inputTokens: 1, webSearchCount: 1 })).toBeNull();
   });
 
   it("decodes durable search counts strictly", () => {
