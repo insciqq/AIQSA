@@ -163,6 +163,12 @@ export type RunHandlerDeps = {
   skillTools?: import("../skills/toolService").SkillToolService;
   storage?: StorageAdapter;
   /**
+   * Server-only: the sends come from the Telegram bridge. Their native runs
+   * take no self-service tools, whose confirmation cards and Undo the bridge
+   * cannot show (decision 2026-10-23).
+   */
+  telegramTurn?: true;
+  /**
    * The usage limits every new run's admission checks (`usageLimitRefusal`).
    * Required, so no entry point can admit runs without them.
    */
@@ -963,6 +969,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
         created, prepared: preparedData, repository: deps.repository,
         ...(deps.scheduledOccurrence ? { scheduled: true } : {}),
+        ...(deps.telegramTurn ? { telegram: true } : {}),
         ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
         services: nativeServices(deps), userId: auth.userId,
         ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})

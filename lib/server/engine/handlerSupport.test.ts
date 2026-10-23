@@ -20,4 +20,9 @@ describe("the self-service tools' chats", () => {
     expect(selfServiceChat(prepared(), { scheduled: true })).toBe(false);
     expect(selfServiceChat(prepared(), { scheduled: false })).toBe(true);
   });
+
+  it("never include a Telegram turn, whose bridge cannot show their cards", () => {
+    expect(selfServiceChat(prepared(), { telegram: true })).toBe(false);
+    expect(selfServiceChat(prepared(), { telegram: false })).toBe(true);
+  });
 });

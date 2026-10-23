@@ -110,7 +110,7 @@ export type ToolBatchDeps = Readonly<{
 /** The call an approval continuation sends, with the user's Allow that names it. */
 export type ApprovedToolCall = Readonly<{ approvalId: string; callId: string }>;
 
-/** What the run has spent on tools so far; `reservedCalled`: the reserved report was asked for. */
+/** What the run has spent on tools so far; `reservedCalled`: the reserved report's first call ran. */
 export type ToolBatchState = { calls: number; reservedCalled?: boolean };
 
 export type ToolBatchOutcome = Readonly<{
@@ -298,8 +298,9 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
 
   const runCall = async (call: ModelToolCall, ordinal: number): Promise<TranscriptToolResultItem> => {
     const before = hooks.beforeToolCall(call, input.round, input.calls, input.approved);
-    // Any call of the reserved report uses its reservation, whatever it then does.
-    if (call.name === deps.reservedToolName) state.reservedCalled = true;
+    // The reserved report's first call that runs uses the reservation; one refused before running (malformed
+    // arguments, a blocked repeat) keeps it, so a corrected call still gets its reserved round.
+    if (before.kind === "run" && before.exempt) state.reservedCalled = true;
     const record = { arguments: call.arguments, chatId: deps.chatId, ordinal, providerCallId: call.id, roundIndex: input.round,
       runId: deps.runId, userId: deps.userId };
     if (before.kind === "refuse") {

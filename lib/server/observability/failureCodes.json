@@ -1100,6 +1100,7 @@
   "selector_unknown_literal_id",
   "selector_verdict_invalid",
   "semantic_retrieval_unavailable",
+  "server_turns_unavailable",
   "session_secret",
   "shape_invalid",
   "sign_in_health_unrecorded",
