@@ -63,7 +63,7 @@ jobs:
           import json, os, pathlib, re
           root = pathlib.Path(os.environ["RUNNER_TEMP"])
           images = {}
-          for component in ["app", "postgres", "docling", "tika"]:
+          for component in ["app", "postgres", "tika"]:
               artifact = {"app": "digests-amd64", "postgres": "postgres-digests-amd64"}.get(component, f"component-digests-{component}-amd64")
               files = [p for p in (root / "smoke-digests" / artifact).rglob("*") if p.is_file()]
               assert len(files) == 1 and re.fullmatch(r"[0-9a-f]{64}", files[0].name)

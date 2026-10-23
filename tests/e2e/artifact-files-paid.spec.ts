@@ -1,7 +1,7 @@
 /**
  * Opt-in, paid, bounded browser checks of files turned into artifacts from
  * chat, with a real tool-capable model and a real KVM Workspace on a
- * DISPOSABLE stand (Workspace runner, docling/tika parsers). Never a default
+ * DISPOSABLE stand (Workspace runner, Tika parser). Never a default
  * lane: it runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE,
  * AIQSA_WORKSPACE_LIVE_E2E=DISPOSABLE, CODEX_LB_API_KEY and CODEX_LB_BASE_URL
  * (the Codex root ending in `/backend-api/codex`); AIQSA_FEATURES_CODEX_MODEL

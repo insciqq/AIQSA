@@ -239,10 +239,6 @@ jobs:
             name: linux/arm64
             runner: ubuntu-24.04-arm
         component:
-          - name: docling
-            context: ops/docling
-            file: ops/docling/Dockerfile
-            target: ""
           - name: tika
             context: ops/tika
             file: ops/tika/Dockerfile

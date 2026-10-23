@@ -86,7 +86,7 @@ function fixtureCatalog(): Catalog {
 function attachmentWire() {
   return { attachment: {
     byteSize: 128, extractedText: "Synthetic report text", fileName: ATTACHMENT_NAME, id: ATTACHMENT_ID, kind: "document",
-    metadata: { document: { engine: "docling" } }, mimeType: DOCX, processingErrorCode: null, status: "ready",
+    metadata: { document: { engine: "tika" } }, mimeType: DOCX, processingErrorCode: null, status: "ready",
     updatedAt: timestamp
   } };
 }

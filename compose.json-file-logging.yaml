@@ -11,7 +11,6 @@ x-json-file-logging: &json-file-logging
 services:
   app: { logging: *json-file-logging }
   memory-worker: { logging: *json-file-logging }
-  docling: { logging: *json-file-logging }
   tika: { logging: *json-file-logging }
   migrate-bootstrap: { logging: *json-file-logging }
   workspace-runner: { logging: *json-file-logging }

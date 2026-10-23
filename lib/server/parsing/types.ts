@@ -6,6 +6,9 @@ import type { DocumentParserErrorCode } from "./errors";
 
 export type SidecarParserEngine = RegistrySidecarParserEngine;
 export type DocumentParserEngine =
+  /** Only the layouts that chat PDF preparations stored before the docling
+   * sidecar was removed; nothing produces new ones. */
+  | "docling"
   | "inline"
   | "native_pdf"
   | "spreadsheet"
@@ -272,12 +275,6 @@ export type ParserProbeResult = Readonly<{
 export type DocumentParserProbe = Readonly<Record<SidecarParserEngine, ParserProbeResult>>;
 
 export type SidecarParseInput = DocumentParseInput & Readonly<{
-  docling?: Readonly<{
-    /** Adaptive PDF verification disables OCR explicitly so the sidecar cannot
-     * manufacture a second text layer from the same page image. */
-    doOcr: boolean;
-    pageRange?: Readonly<{ end: number; start: number }>;
-  }>;
   mediaType: string;
 }>;
 

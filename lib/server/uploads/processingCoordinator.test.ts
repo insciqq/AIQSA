@@ -362,7 +362,7 @@ describe("attachment processing coordinator", () => {
 
   it("publishes parsed output only through the active lease", async () => {
     const repo = repository(claim(1));
-    const result = { extractedText: "ready", metadata: { document: { engine: "docling" } } };
+    const result = { extractedText: "ready", metadata: { document: { engine: "tika" } } };
     const coordinator = new AttachmentProcessingCoordinator({
       maxParallel: 1,
       now: () => now,
@@ -385,7 +385,7 @@ describe("attachment processing coordinator", () => {
     "retries a transient ready-write without reprocessing or failing attempt %i",
     async (attemptCount) => {
       const repo = repository(claim(attemptCount));
-      const result = { extractedText: "ready", metadata: { document: { engine: "docling" } } };
+      const result = { extractedText: "ready", metadata: { document: { engine: "tika" } } };
       const process = vi.fn(async () => result);
       repo.settleReady
         .mockRejectedValueOnce(new Error("transient_database_failure"))

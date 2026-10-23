@@ -170,7 +170,7 @@ describe("chat PDF database lifecycle", () => {
     });
     expect(chatPdfCompatibilityKey(restored)).toBe(row.compatibilityKey);
     const core = createChatPdfCore({ inspect: vi.fn().mockResolvedValue({ pageCount: 2 }),
-      extractGeometry: vi.fn().mockRejectedValue(new Error("synthetic_native_text_unavailable")), parseDocling: null });
+      extractGeometry: vi.fn().mockRejectedValue(new Error("synthetic_native_text_unavailable")) });
     const planned = await core.plan({ admission: restored, acceptedCompatibilityKey: row.compatibilityKey,
       bytes: h.sourceBytes, onPageCount: (count) => repository.pageCount(h.claim, row.id, count) });
     expect(planned.plan.compatibilityKey).toBe(row.compatibilityKey);

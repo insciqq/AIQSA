@@ -109,7 +109,7 @@ function docxFixture(): Buffer {
         <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
           <w:body>
             <w:p><w:r><w:t>${DOCX_MARKER}</w:t></w:r></w:p>
-            <w:p><w:r><w:t>This OOXML document proves private Docling parsing.</w:t></w:r></w:p>
+            <w:p><w:r><w:t>This OOXML document proves private Office parsing.</w:t></w:r></w:p>
             <w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>
           </w:body>
         </w:document>`
@@ -139,7 +139,7 @@ function pdfFixture(): Buffer {
   return Buffer.from(body, "ascii");
 }
 
-function assertOnePage(result: ParsedDocument, engine: "docling" | "tika", marker: string): void {
+function assertOnePage(result: ParsedDocument, engine: "tika", marker: string): void {
   if (result.engine !== engine) smokeStage = `${smokeStage}-engine`;
   assert.equal(result.engine, engine);
   if (result.pageCount !== 1) smokeStage = `${smokeStage}-page-count`;
@@ -256,62 +256,20 @@ async function unavailableSmoke(): Promise<void> {
   })}\n`);
 }
 
-async function fallbackSmoke(): Promise<void> {
-  smokeStage = "fallback-readiness";
-  const readinessUrl = process.env.AIQSA_PARSER_SMOKE_READINESS_URL?.trim();
-  const readiness = readinessUrl
-    ? await fetch(readinessUrl, {
-        cache: "no-store",
-        signal: AbortSignal.timeout(5_000)
-      })
-    : await (await import("../app/api/health/ready/route")).GET(
-        new Request("http://localhost/api/health/ready")
-      );
-  assert(readiness.ok);
-
-  const boundary = createDocumentParserBoundary();
-  const probe = await boundary.probe();
-  assert.equal(probe.docling.available, false);
-  assert.equal(probe.tika.available, true);
-  smokeStage = "fallback-docx";
-  const result = await boundary.parse({
-    bytes: docxFixture(),
-    fileName: "fixture.docx",
-    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-  });
-  assertOnePage(result, "tika", DOCX_MARKER);
-  assert.deepEqual(result.attempts.map((attempt) => ({
-    engine: attempt.engine,
-    outcome: attempt.outcome
-  })), [
-    { engine: "docling", outcome: "retryable_failure" },
-    { engine: "tika", outcome: "complete" }
-  ]);
-
-  process.stdout.write(`${JSON.stringify({
-    appReady: true,
-    fallbackEngine: "tika",
-    fallbackMarkerPresent: true,
-    mode: "fallback",
-    primaryAvailable: false,
-    secondaryAvailable: true
-  })}\n`);
-}
-
 async function availableSmoke(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "aiqsa-parser-smoke-"));
   try {
     const fixtures = [
       {
         bytes: pdfFixture(),
-        engine: "docling" as const,
+        engine: "tika" as const,
         fileName: "fixture.pdf",
         marker: PDF_MARKER,
         mimeType: "application/pdf"
       },
       {
         bytes: docxFixture(),
-        engine: "docling" as const,
+        engine: "tika" as const,
         fileName: "fixture.docx",
         marker: DOCX_MARKER,
         mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -327,10 +285,9 @@ async function availableSmoke(): Promise<void> {
     const boundary = createDocumentParserBoundary();
     smokeStage = "sidecar-probe";
     const probe = await boundary.probe();
-    assert.equal(probe.docling.available, true);
     assert.equal(probe.tika.available, true);
     const evidence: Record<string, unknown> = {
-      probe: { doclingAvailable: true, tikaAvailable: true }
+      probe: { tikaAvailable: true }
     };
 
     for (const fixture of fixtures) {
@@ -361,10 +318,6 @@ async function availableSmoke(): Promise<void> {
 async function main(): Promise<void> {
   if (process.env.AIQSA_PARSER_SMOKE_EXPECT_UNAVAILABLE === "1") {
     await unavailableSmoke();
-    return;
-  }
-  if (process.env.AIQSA_PARSER_SMOKE_EXPECT_FALLBACK === "1") {
-    await fallbackSmoke();
     return;
   }
   await availableSmoke();
