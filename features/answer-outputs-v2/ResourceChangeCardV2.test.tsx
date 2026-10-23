@@ -4,6 +4,8 @@ import { mergeLiveThreadArtifacts, summarizeThreadArtifacts } from "@/components
 import type { AssistantChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard } from "@/lib/contracts/resourceChanges";
 import { AnswerOutputsV2 } from "./AnswerOutputsV2";
 import { ResourceChangeCardsV2 } from "./ResourceChangeCardV2";
+// The cards' own stylesheet, so computed styles answer how their rows wrap.
+import "./answer-outputs.css";
 
 const SECRET_ID = "10000000-0000-4000-8000-000000000001";
 const VERSION_ID = "20000000-0000-4000-8000-000000000001";
@@ -289,6 +291,42 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     expect(screen.getByTestId("resource-change-card")).toHaveTextContent("Not published");
     expect(screen.queryByRole("group")).toBeNull();
     expect(bodies(fetchMock, "POST")).toEqual([]);
+  });
+});
+
+describe("ResourceChangeCardsV2: narrow screens", () => {
+  it("lets every row of verbs wrap whole inside its card instead of running past its edge", () => {
+    respond({});
+    const cards = [
+      fresh(secret),
+      fresh({ ...secret, action: "updated" as const, previousName: "GitLab old" }),
+      fresh({ ...secret, action: "delete_proposed" as const }),
+      fresh(skill),
+      fresh(assistant),
+      fresh({ ...assistant, action: "updated" as const, changes: [{ field: "name" as const, summary: "Was “Writer”" }] }),
+      fresh({ ...assistant, action: "delete_proposed" as const, consequences: { chatCount: 3, everyone: true, groupNames: ["Backend"],
+        pendingListingRequest: true } }),
+      fresh({ ...assistant, action: "publish_proposed" as const, audience: { groupId: "grp_1", groupName: "Backend", kind: "group" as const } })
+    ];
+    render(<ResourceChangeCardsV2 cards={cards} live />);
+    const items = screen.getAllByTestId("resource-change-card");
+    expect(items).toHaveLength(cards.length);
+    for (const item of items) {
+      expect(getComputedStyle(item).flexWrap).toBe("wrap");
+      const rows = item.querySelectorAll(".v2-resource-change-card-actions, .v2-resource-change-card-confirm, .v2-resource-change-card-confirm > span");
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(getComputedStyle(row).flexWrap).toBe("wrap");
+        expect(getComputedStyle(row).flexShrink).not.toBe("0");
+      }
+    }
+    // A new Assistant's three verbs share one row, which shrinks to the card's width and wraps there.
+    const created = within(items[4]!).getByRole("link", { name: "Open in Studio" }).closest(".v2-resource-change-card-actions") as HTMLElement;
+    expect(within(created).getByRole("button", { name: "Undo creating Reporter" })).toBeVisible();
+    expect(within(created).getByRole("link", { name: "Start a chat" })).toBeVisible();
+    const style = getComputedStyle(created);
+    expect([style.flexShrink, style.flexWrap, style.maxWidth]).toEqual(["1", "wrap", "100%"]);
+    expect(["0", "0px"]).toContain(style.minWidth);
   });
 });
 
