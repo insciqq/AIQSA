@@ -90,6 +90,12 @@ export type ToolBatchDeps = Readonly<{
   /** Live-only events (a running step). */
   onLiveEvent(event: ModelRunSseEvent): void;
   registry: ToolRegistry;
+  /**
+   * The tool of the run's one report reserved outside the budgets
+   * (`reservedToolCallForRequest`): its first call never counts against the
+   * call budget; a later one counts like any other.
+   */
+  reservedToolName?: string;
   runId: string;
   saveResult(input: Readonly<{ outcome: "complete" | "error"; signal: AbortSignal; source: ToolObservationSource; text: string;
     toolCallId: string }>): Promise<Readonly<{ handle: string } | { unsavedReason: string }>>;
@@ -104,8 +110,8 @@ export type ToolBatchDeps = Readonly<{
 /** The call an approval continuation sends, with the user's Allow that names it. */
 export type ApprovedToolCall = Readonly<{ approvalId: string; callId: string }>;
 
-/** What the run has spent on tools so far. */
-export type ToolBatchState = { calls: number };
+/** What the run has spent on tools so far; `reservedCalled`: the reserved report was asked for. */
+export type ToolBatchState = { calls: number; reservedCalled?: boolean };
 
 export type ToolBatchOutcome = Readonly<{
   /** Approval card ids of calls that wait for the initiator. */
@@ -128,6 +134,8 @@ export class ToolBatchInactiveError extends Error {
 type BeforeToolCall =
   | Readonly<{ budget?: true; kind: "refuse"; output: string; result: ToolLoopJsonValue; toolName: string }>
   | Readonly<{
+    /** The run's reserved report, asked for the first time: it does not count against the call budget. */
+    exempt?: true;
     /** An equivalent earlier call's effect is unknown: this call needs the user's approval of exactly it. */
     retry?: Readonly<{ approval: McpApprovalRequest; approvedBy?: string }>;
     kind: "run";
@@ -169,7 +177,8 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
       const message = "The arguments were not one JSON object, so nothing was run. Call the tool again with valid arguments.";
       return { kind: "refuse", output: message, result: jsonError(call, { error: "tool_arguments_invalid", message }), toolName: call.name };
     }
-    if (state.calls >= deps.maxToolCalls) {
+    const exempt = deps.reservedToolName !== undefined && call.name === deps.reservedToolName && state.reservedCalled !== true;
+    if (!exempt && state.calls >= deps.maxToolCalls) {
       const message = TOOL_CALL_LIMIT_OUTPUT(deps.maxToolCalls);
       return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
         toolName: call.name };
@@ -195,7 +204,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
           result: jsonError(call, { error: "tool_outcome_unknown_repeat", message: UNKNOWN_OUTCOME_REPEAT_OUTPUT }) };
       }
     }
-    return { kind: "run", tool };
+    return { kind: "run", tool, ...(exempt ? { exempt: true as const } : {}) };
   }
 
   /**
@@ -289,6 +298,8 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
 
   const runCall = async (call: ModelToolCall, ordinal: number): Promise<TranscriptToolResultItem> => {
     const before = hooks.beforeToolCall(call, input.round, input.calls, input.approved);
+    // Any call of the reserved report uses its reservation, whatever it then does.
+    if (call.name === deps.reservedToolName) state.reservedCalled = true;
     const record = { arguments: call.arguments, chatId: deps.chatId, ordinal, providerCallId: call.id, roundIndex: input.round,
       runId: deps.runId, userId: deps.userId };
     if (before.kind === "refuse") {
@@ -299,7 +310,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState,
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: before.output };
     }
     const tool = before.tool;
-    state.calls += 1;
+    if (!before.exempt) state.calls += 1;
     const links = tool.links ? tool.links(call) : {};
     if (links === null) {
       const message = "This tool's connection is no longer available to this answer, so nothing was sent.";

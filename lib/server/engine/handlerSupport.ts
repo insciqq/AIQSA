@@ -11,9 +11,10 @@ import { nativeEngineRoute, type NativeEngineAllowlist, type NativeEngineRoute }
 import type { ToolRegistryServices } from "./toolRegistry";
 
 /**
- * What the interactive send and regenerate routes add to admit native runs.
- * Only those two routes carry it: the scheduled task runner, Telegram and
- * answer review build their handlers without it and stay on the old core.
+ * What a send or regenerate handler adds to admit native runs. Every entry
+ * point that admits through the ordinary send handler carries it (the chat
+ * routes, the scheduled task runner, Telegram and answer review, through
+ * `createDefaultSendMessageDeps`); `nativeEngineRoute` decides per run.
  */
 export type NativeEngineHandlerDeps = Readonly<{
   allowlist(): NativeEngineAllowlist;
@@ -25,15 +26,15 @@ export type NativeEngineHandlerDeps = Readonly<{
 }>;
 
 /**
- * Whether a run's chat takes the self-service tools: an interactive personal
- * or temporary chat. Only the interactive routes carry native deps; Project,
- * Assistant, Agent, review and monitoring runs never take them, and every
+ * Whether a run takes the self-service tools: an interactive run of a
+ * personal or temporary chat (from the web or Telegram). Project, Assistant,
+ * Agent and review runs and scheduled occurrences never take them, and every
  * change fences its run again as it commits (`selfServiceRunAllowedInTransaction`).
  */
-export function selfServiceChat(prepared: MaterializedPreparedRunData): boolean {
+export function selfServiceChat(prepared: MaterializedPreparedRunData, options: Readonly<{ scheduled?: boolean }> = {}): boolean {
   const request = prepared.normalizedRequest;
-  return !prepared.project && !prepared.assistant && !prepared.chatAssistant && !request.agent && !request.answerReviewStep &&
-    !request.monitoringVerdictTool;
+  return options.scheduled !== true && !prepared.project && !prepared.assistant && !prepared.chatAssistant && !request.agent &&
+    !request.answerReviewStep && !request.monitoringVerdictTool;
 }
 
 /** Before a user's admission: their native runs no execution owns end interrupted, so the chat is free. */
@@ -52,9 +53,7 @@ export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps | un
 
 /** The engine of a run about to be admitted; the old core without native deps. */
 export function routeRun(native: NativeEngineHandlerDeps | undefined, input: Readonly<{
-  answerReview: boolean;
   prepared: MaterializedPreparedRunData;
-  scheduled: boolean;
   user: Readonly<{ email: string | null; id: string }>;
   workspacePredecessor: boolean;
 }>): NativeEngineRoute {
@@ -70,12 +69,15 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
   created: Readonly<{ acceptedAt?: Date; assistantMessageId: string; runId: string; userMessageId: string }>;
   prepared: MaterializedPreparedRunData;
   repository: RunRepository;
+  /** The run is a scheduled task's occurrence. */
+  scheduled?: boolean;
   searchRuntimes?: Readonly<Record<string, ProviderRuntimeBinding>>;
   services: Omit<NativeRunServices, "searchRuntimes">;
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>): Response {
   const tools = native.tools;
+  const scheduled = input.scheduled === true;
   return createNativeRunExecutionResponse({
     adapter: input.adapter,
     ...(input.approvalId ? { approvalContinuation: { approvalId: input.approvalId } } : {}),
@@ -85,11 +87,12 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
     ...(native.mcpRuntime ? { mcpRuntime: native.mcpRuntime } : {}),
     prepared: input.prepared,
     repository: input.repository,
+    ...(scheduled ? { scheduled: true as const } : {}),
     services: {
       ...input.services,
       ...(input.searchRuntimes ? { searchRuntimes: input.searchRuntimes } : {}),
       ...(tools?.secrets ? { secrets: tools.secrets } : {}),
-      ...(tools?.selfService && selfServiceChat(input.prepared) ? { selfService: tools.selfService } : {})
+      ...(tools?.selfService && selfServiceChat(input.prepared, { scheduled }) ? { selfService: tools.selfService } : {})
     },
     userId: input.userId,
     ...(input.workspace ? { workspace: input.workspace } : {})
