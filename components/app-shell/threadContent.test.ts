@@ -185,6 +185,18 @@ describe("thread answer outputs", () => {
     ]);
   });
 
+  it("takes a live answer's work duration from the server, the figure its settled summary shows", () => {
+    const live = summarizeThreadArtifacts([
+      { data: { delta: "Hi" }, type: "token" },
+      { data: { artifactType: "work_duration", payload: { workDurationMs: 6_400 } }, type: "artifact" },
+      { data: { artifactType: "work_duration", payload: { workDurationMs: -1 } }, type: "artifact" }
+    ]);
+    expect(live).toMatchObject({ workDurationMs: 6_400 });
+    expect(mergeLiveThreadArtifacts({ citations: [], reasoningText: [], sources: [] }, live)?.workDurationMs).toBe(6_400);
+    expect(mergeLiveThreadArtifacts({ citations: [], reasoningText: [], sources: [], workDurationMs: 6_400 },
+      summarizeThreadArtifacts([{ data: { delta: "Hi" }, type: "token" }]))?.workDurationMs).toBe(6_400);
+  });
+
   it("keeps the persisted compaction outcome after late progress", () => {
     const status = (state: "running" | "complete", outcome: "pending" | "summary_applied") => ({
       data: {
