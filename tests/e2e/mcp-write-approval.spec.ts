@@ -18,7 +18,7 @@ import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
  * the endpoint's received calls and the persisted rows, never wording.
  *
  * Not covered here: a real process restart (Playwright owns the dev server; a
- * restarted gated round is unit-tested in lib/server/runs/runRecovery.test.ts).
+ * gated call recorded before a restart is covered in lib/server/engine/toolCallStore.prisma.test.ts).
  */
 
 const prisma = new PrismaClient();
