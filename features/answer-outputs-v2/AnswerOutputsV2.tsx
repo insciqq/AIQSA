@@ -537,6 +537,7 @@ export function AnswerOutputsV2({
   onEditArtifact,
   onEditScheduledTask,
   onOpenArtifact,
+  onOpenLibrary,
   onStartAssistantChat,
   onUseImageInArtifact,
   runId = null,
@@ -554,6 +555,8 @@ export function AnswerOutputsV2({
   /** Opens a scheduled task the answer created or managed in its editor. */
   onEditScheduledTask?(taskId: string): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
+  /** Opens a Studio address (`/?library=...`) a card links to in the shell. */
+  onOpenLibrary?(href: string): void;
   /** Starts a new chat with an Assistant an answer created, as `/assistant/<id>` does. */
   onStartAssistantChat?(assistantId: string): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
@@ -565,6 +568,7 @@ export function AnswerOutputsV2({
   const scheduledTasks = artifact?.scheduledTasks ?? [];
   const skillSaves = artifact?.skillSaves ?? [];
   const resourceChanges = artifact?.resourceChanges ?? [];
+  const cardNavigation = { onOpenLibrary, onStartAssistantChat };
   const mcpApprovals = artifact?.mcpApprovals ?? [];
   if (live) {
     // A created or changed task, a saved Skill or a changed secret or Assistant already is so: its card does not wait for the answer.
@@ -574,8 +578,8 @@ export function AnswerOutputsV2({
       ? <div className="v2-answer-outputs" data-testid="answer-outputs">
         {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} previewImages /> : null}
         <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
-        <SkillSaveCardsV2 cards={skillSaves} live />
-        <ResourceChangeCardsV2 cards={resourceChanges} live onStartAssistantChat={onStartAssistantChat} />
+        <SkillSaveCardsV2 cards={skillSaves} live onOpenLibrary={onOpenLibrary} />
+        <ResourceChangeCardsV2 cards={resourceChanges} live navigation={cardNavigation} />
         <McpApprovalCardsV2 cards={mcpApprovals} live runId={runId} />
       </div> : null;
   }
@@ -615,8 +619,8 @@ export function AnswerOutputsV2({
       {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} onUseInArtifact={onUseImageInArtifact ? () => onUseImageInArtifact(image.attachmentId) : undefined} />)}
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
-      <SkillSaveCardsV2 cards={skillSaves} />
-      <ResourceChangeCardsV2 cards={resourceChanges} onStartAssistantChat={onStartAssistantChat} />
+      <SkillSaveCardsV2 cards={skillSaves} onOpenLibrary={onOpenLibrary} />
+      <ResourceChangeCardsV2 cards={resourceChanges} navigation={cardNavigation} />
       <McpApprovalCardsV2 cards={mcpApprovals} offerContinue={latestAnswer} onContinue={onContinueAfterMcpApproval} runId={runId} />
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} previewImages />

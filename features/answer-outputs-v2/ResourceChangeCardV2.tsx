@@ -1,7 +1,6 @@
 "use client";
 
-import Link from "next/link";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { UiV2Button, UiV2Icon, type UiV2IconName } from "@/components/ui-v2";
 import { deleteSkill, loadSkillDetail, SkillRequestError } from "@/components/app-shell/skillLibraryStore";
 import {
@@ -27,6 +26,7 @@ import { SKILL_LIBRARY_PATH } from "@/lib/contracts/skillSaves";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
 import type { WorkspaceSecretKind } from "@/lib/contracts/workspaceSecrets";
 import { deleteSecretVersion, readSecretState, ResourceChangeApiError } from "./resourceChangeApi";
+import { shellLinkClick } from "./shellLinkClick";
 
 /** What the resource is now, as a settled answer reads it; unknown until read (or while the answer runs). */
 type Remote = "unknown" | "current" | "changed" | "missing" | "archived";
@@ -53,31 +53,35 @@ const ASSISTANT_FIELDS: Readonly<Record<AssistantChangeField, string>> = {
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 const quoted = (names: readonly string[]) => names.map((name) => `“${name}”`).join(", ");
 
+/** How the chat shell opens what a card links to; see `shellLinkClick`. */
+export type ResourceChangeNavigationV2 = Readonly<{
+  /** Opens a Studio address (`/?library=...`) in the shell. */
+  onOpenLibrary?(href: string): void;
+  /** Starts a new chat with an Assistant, as `/assistant/<id>` does. */
+  onStartAssistantChat?(assistantId: string): void;
+}>;
+
+const NO_NAVIGATION: ResourceChangeNavigationV2 = {};
+const CardNavigationContext = createContext<ResourceChangeNavigationV2>(NO_NAVIGATION);
+
+/** A Studio link: a plain click opens Studio in the shell, so the address and the view agree. */
 function CardLinkV2({ href, icon, children }: Readonly<{ href: string; icon: UiV2IconName; children: ReactNode }>) {
+  const { onOpenLibrary } = useContext(CardNavigationContext);
   return (
-    <Link className="v2-resource-change-card-link v2-focusable" href={href}>
+    <a className="v2-resource-change-card-link v2-focusable" href={href}
+      onClick={shellLinkClick(onOpenLibrary ? () => onOpenLibrary(href) : undefined)}>
       <UiV2Icon name={icon} />
       <span>{children}</span>
-    </Link>
+    </a>
   );
 }
 
-/**
- * "Start a chat" with an Assistant. The shell reads `/assistant/<id>` only on
- * load and on history traversal, so a framework link from inside a chat would
- * change the address and keep showing that chat: a plain click goes through
- * the shell's navigation instead. Modified clicks keep the link's own
- * behavior, and without a shell handler the browser loads the entry page.
- */
-function StartAssistantChatLinkV2({ assistantId, onStart }: Readonly<{ assistantId: string; onStart?: (assistantId: string) => void }>) {
+/** "Start a chat" with an Assistant: a plain click starts it in the shell, as `/assistant/<id>` does. */
+function StartAssistantChatLinkV2({ assistantId }: Readonly<{ assistantId: string }>) {
+  const { onStartAssistantChat } = useContext(CardNavigationContext);
   return (
     <a className="v2-resource-change-card-link v2-focusable" href={formatAssistantEntryPath(assistantId)}
-      onClick={(event) => {
-        if (!onStart || event.defaultPrevented || event.button !== 0 ||
-          event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        event.preventDefault();
-        onStart(assistantId);
-      }}>
+      onClick={shellLinkClick(onStartAssistantChat ? () => onStartAssistantChat(assistantId) : undefined)}>
       <UiV2Icon name="chat" />
       <span>Start a chat</span>
     </a>
@@ -332,11 +336,7 @@ function assistantRefusal(result: Extract<AssistantApiResult<unknown>, { ok: fal
   }
 }
 
-function AssistantCardV2({ card, live, onStartAssistantChat }: Readonly<{
-  card: AssistantChangeCard;
-  live: boolean;
-  onStartAssistantChat?: (assistantId: string) => void;
-}>) {
+function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; live: boolean }>) {
   const state = useCardState(card);
   const { outcome, remote } = state;
   const reads = card.action !== "updated";
@@ -392,7 +392,7 @@ function AssistantCardV2({ card, live, onStartAssistantChat }: Readonly<{
               Undo
             </UiV2Button>
           )}
-          {outcome || remote === "missing" ? null : <StartAssistantChatLinkV2 assistantId={card.assistantId} onStart={onStartAssistantChat} />}
+          {outcome || remote === "missing" ? null : <StartAssistantChatLinkV2 assistantId={card.assistantId} />}
           {remote === "missing" ? null : open}
         </>} />
     );
@@ -450,15 +450,11 @@ function AssistantCardV2({ card, live, onStartAssistantChat }: Readonly<{
   );
 }
 
-function ResourceChangeCardV2({ card, live, onStartAssistantChat }: Readonly<{
-  card: ResourceChangeCard;
-  live: boolean;
-  onStartAssistantChat?: (assistantId: string) => void;
-}>) {
+function ResourceChangeCardV2({ card, live }: Readonly<{ card: ResourceChangeCard; live: boolean }>) {
   switch (card.resource) {
     case "secret": return <SecretCardV2 card={card} live={live} />;
     case "skill": return <SkillDeleteCardV2 card={card} live={live} />;
-    case "assistant": return <AssistantCardV2 card={card} live={live} onStartAssistantChat={onStartAssistantChat} />;
+    case "assistant": return <AssistantCardV2 card={card} live={live} />;
   }
 }
 
@@ -467,18 +463,20 @@ function ResourceChangeCardV2({ card, live, onStartAssistantChat }: Readonly<{
  * proposals to delete or publish one: a change already happened and offers
  * Undo where AIQSA can reverse it; a proposal asks inline, and only the
  * user's click performs it through the Studio routes, guarded by the version
- * the card names. `live`: the answer is still running. `onStartAssistantChat`
- * opens a new chat with an Assistant through the shell's navigation.
+ * the card names. `live`: the answer is still running. `navigation`: how the
+ * shell opens the cards' links.
  */
-export function ResourceChangeCardsV2({ cards, live = false, onStartAssistantChat }: Readonly<{
+export function ResourceChangeCardsV2({ cards, live = false, navigation = NO_NAVIGATION }: Readonly<{
   cards: readonly ResourceChangeCard[];
   live?: boolean;
-  onStartAssistantChat?: (assistantId: string) => void;
+  navigation?: ResourceChangeNavigationV2;
 }>) {
   if (cards.length === 0) return null;
   return (
-    <section className="v2-resource-change-cards" aria-label="Changes to your resources">
-      <ul>{cards.map((card) => <ResourceChangeCardV2 key={resourceChangeCardKey(card)} card={card} live={live} onStartAssistantChat={onStartAssistantChat} />)}</ul>
-    </section>
+    <CardNavigationContext.Provider value={navigation}>
+      <section className="v2-resource-change-cards" aria-label="Changes to your resources">
+        <ul>{cards.map((card) => <ResourceChangeCardV2 key={resourceChangeCardKey(card)} card={card} live={live} />)}</ul>
+      </section>
+    </CardNavigationContext.Provider>
   );
 }
