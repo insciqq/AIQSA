@@ -9,6 +9,7 @@ import type { WorkspaceChatSummary } from "@/components/app-shell/types";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
   BLANK_CHAT_ROUTE,
+  boundedRouteId,
   chatRouteHref,
   controlCenterHref,
   formatChatRoutePath,
@@ -164,6 +165,24 @@ export function navigateToChatAddress(
     resolve(route, beginChatRouteResolution());
     // Whatever the resolution wrote on the way gives way to the chosen address.
     writeChatRoute(route);
+  });
+}
+
+/**
+ * Opens an Assistant entry (`/assistant/<id>`) from inside the shell as an
+ * explicit user navigation. It resolves exactly like a typed entry address
+ * and, like one, settles on the new chat's route (`/`) as one new history
+ * entry, so browser back returns to the chat it was opened from. A framework
+ * link would only change the address: the shell reads it on load and on
+ * traversal, never on a client-side route change.
+ */
+export function navigateToAssistantEntry(
+  assistantId: string,
+  resolve: (route: AssistantEntryRoute, resolution: ChatRouteResolution) => void
+): void {
+  navigateChatRoute(() => {
+    resolve({ assistantId: boundedRouteId(assistantId) }, beginChatRouteResolution());
+    writeChatRoute(BLANK_CHAT_ROUTE);
   });
 }
 

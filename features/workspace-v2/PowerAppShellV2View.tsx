@@ -1743,6 +1743,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onOpenArtifact={projectContext || temporarySession ? undefined : (generated, source) => {
                   if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source);
                 }}
+                onStartAssistantChat={workspace.pane.actions.openAssistantAddress}
                 onUseImageInArtifact={projectContext || temporarySession || !composer.reuseFile ? undefined : async (attachmentId) => {
                   const chatId = session.activeChatId;
                   if (chatId && await composer.reuseFile?.(attachmentId, "Generated image.png")) {
