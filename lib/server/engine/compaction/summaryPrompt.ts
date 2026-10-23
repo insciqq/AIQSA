@@ -47,9 +47,11 @@ const SECTION_GUIDANCE: Readonly<Record<(typeof SUMMARY_SECTIONS)[number], strin
     "can read it with read_tool_result."
 };
 
-/** Words the summary should stay under for an output budget. */
+/** Words the summary should stay under for an output budget: about 0.3 words
+ * per token leaves room for reasoning tokens and for Cyrillic text, which
+ * takes about 2.5 tokens per word. */
 export function summaryWordTarget(maxOutputTokens: number): number {
-  return Math.max(300, Math.floor(Math.max(0, maxOutputTokens) * 0.45 / 50) * 50);
+  return Math.max(300, Math.floor(Math.max(0, maxOutputTokens) * 0.3 / 50) * 50);
 }
 
 export function summaryPrompt(input: Readonly<{ maxWords: number; update: boolean }>): string {
@@ -87,7 +89,7 @@ export function summaryRequestText(input: Readonly<{ conversation: string; maxWo
   ].join("\n");
 }
 
-const SALIENT_LINE = /(?:error|exception|fail|fatal|traceback|panic|denied|refused|timed? ?out|warn|ошибк|сбой|не удалось|отказ)/iu;
+const SALIENT_LINE = /(?:error|exception|fail|fatal|traceback|panic|denied|refused|timed? ?out|ошибк|сбой|не удалось|отказ)/iu;
 const SALIENT_LINES = 8;
 const SALIENT_LINE_CHARS = 300;
 
@@ -150,7 +152,7 @@ export function serializeEntries(entries: readonly SelectedTranscriptItem[], opt
           `Tool result${number !== undefined ? ` #${number}` : ""} ${item.name}`,
           ...(item.outcome !== "complete" ? [item.outcome === "unknown" ? "outcome unknown" : "error"] : []),
           ...(trimmed ? [`${item.output.length.toLocaleString("en-US")} characters`] : []),
-          ...(handle ? [`full result: read_tool_result handle ${handle}`] : [])
+          ...(trimmed && handle ? [`full result: read_tool_result handle ${handle}`] : [])
         ];
         parts.push(`[${labels.join(", ")}]\n${excerptText(item.output, options.resultChars)}`);
         break;
