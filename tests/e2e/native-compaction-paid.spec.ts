@@ -20,11 +20,11 @@
  * it finishes. Turns sent meanwhile join that compaction rather than
  * compacting the same span again (only the starting run records compaction
  * calls), and no stream shows a running compaction (only a foreground one
- * shows). The quiet marker shows on the starting run's answer after a reload,
- * on desktop and phone. The next turn starts compacted (a smaller reported
- * input than the starting turn's) and recalls the planted facts, the
- * correction in force. Every route compacts with a summary by default
- * (`COMPACTION_LIFECYCLE.native`), so the item is a summary.
+ * shows). The quiet marker shows on the starting run's answer when the chat
+ * is opened again, on desktop and phone. The next turn starts compacted (a
+ * smaller reported input than the starting turn's) and recalls the planted
+ * facts, the correction in force. Every route compacts with a summary by
+ * default (`COMPACTION_LIFECYCLE.native`), so the item is a summary.
  *
  *   export AIQSA_FEATURES_PAID_E2E=DISPOSABLE AIQSA_NATIVE_ENGINE_USERS='*'   # plus the CODEX_LB_* pair
  *   npx playwright test --project=chromium tests/e2e/native-compaction-paid.spec.ts
