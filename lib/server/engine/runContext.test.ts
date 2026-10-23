@@ -592,6 +592,28 @@ describe("a native run's context", () => {
     expect(windowOutputParams(params, { contextWindow: 40_000, maxOutputTokens: 0 })).toBe(params);
   });
 
+  it("keeps an explicit reasoning budget strictly below a capped output, and drops one the cap leaves no room for", () => {
+    const window = { contextWindow: 40_000, maxOutputTokens: 65_536 };
+    // Anthropic thinking: lowered to half the 10,000-token output, the answer keeping the rest.
+    expect(windowOutputParams({ maxTokens: 65_536, thinking: { budgetTokens: 32_000, enabled: true, type: "enabled" } }, window))
+      .toEqual({ maxOutputTokens: 10_000, maxTokens: 10_000, thinking: { budgetTokens: 5_000, enabled: true, type: "enabled" } });
+    expect(windowOutputParams({ thinking: { budget_tokens: 12_000, enabled: true, type: "enabled" } }, window))
+      .toEqual({ maxOutputTokens: 10_000, thinking: { budget_tokens: 5_000, enabled: true, type: "enabled" } });
+    // A budget already within it stays as it is.
+    expect(windowOutputParams({ thinking: { budgetTokens: 4_000, enabled: true, type: "enabled" } }, window))
+      .toEqual({ maxOutputTokens: 10_000, thinking: { budgetTokens: 4_000, enabled: true, type: "enabled" } });
+    // OpenRouter reasoning, both spellings.
+    expect(windowOutputParams({ reasoning: { enabled: true, maxTokens: 20_000, max_tokens: 20_000 } }, window))
+      .toEqual({ maxOutputTokens: 10_000, reasoning: { enabled: true, maxTokens: 5_000, max_tokens: 5_000 } });
+    // Below Anthropic's 1,024-token minimum the explicit budget is dropped instead of sent invalid.
+    expect(windowOutputParams({ thinking: { budgetTokens: 8_000, enabled: true, type: "enabled" } },
+      { contextWindow: 8_000, maxOutputTokens: 65_536 }))
+      .toEqual({ maxOutputTokens: 2_000, thinking: { enabled: true, type: "enabled" } });
+    // Uncapped windows keep the budget.
+    const large = { thinking: { budgetTokens: 32_000, enabled: true, type: "enabled" } };
+    expect(windowOutputParams(large, { contextWindow: 200_000, maxOutputTokens: 64_000 })).toBe(large);
+  });
+
   it("measures nothing without a window", async () => {
     const chat = workChat(8, 2_000);
     const run = harness(chat.items, { call: async () => summaryReply(), window: null });

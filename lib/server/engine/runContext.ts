@@ -169,10 +169,43 @@ function settledWithin(promise: Promise<unknown>, ms: number, signal?: AbortSign
 }
 
 /**
+ * Explicit reasoning budgets inside the requested output: Anthropic thinking
+ * (`thinking.budgetTokens`, `budget_tokens`; the API takes at least 1,024 and
+ * the builder requires it below `max_tokens`) and OpenRouter reasoning
+ * (`reasoning.maxTokens`, `max_tokens`).
+ */
+const REASONING_BUDGETS = [
+  { field: "thinking", keys: ["budgetTokens", "budget_tokens"], minimum: 1_024 },
+  { field: "reasoning", keys: ["maxTokens", "max_tokens"], minimum: 1 }
+] as const;
+
+/** A capped output keeps at least half for the answer: a larger explicit budget is lowered, one below its minimum is dropped. */
+function cappedReasoningBudgets(params: Record<string, unknown>, output: number): Record<string, unknown> {
+  const ceiling = Math.floor(output / 2);
+  let next = params;
+  for (const { field, keys, minimum } of REASONING_BUDGETS) {
+    const value = params[field];
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const budget = { ...(value as Record<string, unknown>) };
+    let changed = false;
+    for (const key of keys) {
+      const tokens = budget[key];
+      if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= ceiling) continue;
+      if (ceiling >= minimum) budget[key] = ceiling;
+      else delete budget[key];
+      changed = true;
+    }
+    if (changed) next = { ...next, [field]: budget };
+  }
+  return next;
+}
+
+/**
  * The params a request is sent with: on a known window the output it asks for
  * is the reserve the context keeps free (`contextOutputReserveTokens`), so the
  * input and the requested output together never exceed the window, which strict
- * OpenAI-compatible servers reject. Large windows keep the configured output.
+ * OpenAI-compatible servers reject. An explicit reasoning budget is lowered with
+ * it (`cappedReasoningBudgets`). Large windows keep the configured params.
  */
 export function windowOutputParams(params: Record<string, unknown>,
   window: Readonly<{ contextWindow?: number; maxOutputTokens: number }>): Record<string, unknown> {
@@ -182,7 +215,7 @@ export function windowOutputParams(params: Record<string, unknown>,
   if (reserve <= 0 || reserve >= window.maxOutputTokens) return params;
   const capped: Record<string, unknown> = { ...params, maxOutputTokens: reserve };
   for (const key of maxOutputTokenParamKeys) if (key in params) capped[key] = reserve;
-  return capped;
+  return cappedReasoningBudgets(capped, reserve);
 }
 
 export function createRunContext(deps: RunContextDeps): RunContext {
