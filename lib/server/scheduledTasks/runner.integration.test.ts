@@ -161,9 +161,9 @@ describe("scheduled task end to end", () => {
     expect(await prisma.usageMessageAdmission.count({ where: { userId } })).toBe(0);
   });
 
-  it("pauses the tasks of an owner whose SCIM deactivation waits for a Project ownership transfer", async () => {
+  it("pauses the tasks of an owner SCIM deactivated but left active", async () => {
     const { task, userId } = await ownerWithTask("SAME");
-    // The account stays active only for its Projects; its access already ended.
+    // SCIM leaves the last administrator active; its access already ended.
     await prisma.user.update({ data: { scimDeactivatedAt: new Date() }, where: { id: userId } });
     const scheduler = runner();
 
