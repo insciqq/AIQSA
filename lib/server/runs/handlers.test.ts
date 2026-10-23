@@ -14,8 +14,8 @@ import {
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
-import type { NativeEngineHandlerDeps } from "../engine/handlerSupport";
-import { parseNativeEngineUsers } from "../engine/routing";
+import { NEUTRAL_FAMILY_PROMPT } from "../engine/prompts/neutral";
+import { nativeEngineFake } from "@/tests/support/nativeEngine";
 import { ProviderStreamTooLargeError } from "../providers/streamSafety";
 import type {
   ProviderAdapter,
@@ -7035,33 +7035,6 @@ describe("usage limit admission", () => {
   });
 });
 
-/** The native engine's stores in memory; `published` collects the answers it published. */
-function nativeEngineFake(listed: readonly string[]) {
-  const published: string[] = [];
-  const deps: NativeEngineHandlerDeps = {
-    allowlist: () => parseNativeEngineUsers(listed.join(",")),
-    engine: {
-      approvedCall: async () => null,
-      mcpBindingRows: async () => [],
-      observations: async () => ({ withReservation: vi.fn() }) as never,
-      runs: {
-        appendCompactionStatus: async () => true,
-        applyUsageTotals: async () => undefined,
-        complete: async () => true,
-        publishAnswer: async (_scope, input) => { published.push(input.text); return true; },
-        saveStoppedText: async () => true,
-        writeUsageRows: async () => undefined
-      },
-      savedResults: { read: async () => null },
-      toolCalls: { begin: async () => ({ kind: "inactive" }), refuse: async () => null, settle: async () => true },
-      transcripts: { append: async () => undefined, approvalContinuationTurns: async () => new Set(), loadRuns: async () => new Map(),
-        nativeRunsForAnswers: async () => new Map(), nextSequence: async () => 0, runLive: async () => true }
-    },
-    findOrphans: async () => []
-  };
-  return { deps, published };
-}
-
 describe("native engine routing of interactive sends", () => {
   beforeEach(() => {
     resetBootOrphanSweepForTest();
@@ -7097,5 +7070,89 @@ describe("native engine routing of interactive sends", () => {
       expect(state.created?.engine).toBeUndefined();
       expect(native.published).toEqual([]);
     }
+  });
+
+  /** The fake provider, recording every request it is sent. */
+  function recordingProvider() {
+    const fake = createFakeProviderAdapter();
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { ...fake, stream: (request, options) => {
+      requests.push(request);
+      return fake.stream(request, options);
+    } };
+    return { adapter, requests };
+  }
+  const toolNames = (request: ProviderRunRequest | undefined) => (request?.tools ?? []).map((tool) => tool.name);
+
+  it("runs a listed user's Assistant chat natively, under the Assistant's own instructions and rows", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    repository.loadAssistantRowContext = assistantRowContextLoader({ defaultModelId: "fake-qsa", models: { "fake-qsa": "fake" } });
+    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const provider = recordingProvider();
+    const response = await createSendMessageHandler({ ...authDeps, assistants: { resolveForRun: async () => handlerAssistant() },
+      nativeEngine: native.deps, providers: { fake: provider.adapter }, repository
+    })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ assistantId: "assistant-1", text: "Assistant run" }), headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    await response.text();
+    expect(state.created).toMatchObject({ assistant: expect.objectContaining({ assistantId: "assistant-1" }), engine: "native" });
+    expect(native.published).toHaveLength(1);
+    // The family prompt is the persona; the Assistant's instructions follow it.
+    const system = provider.requests[0]!.prompt.system!;
+    expect(system.startsWith(NEUTRAL_FAMILY_PROMPT)).toBe(true);
+    expect(system.indexOf("Review carefully.")).toBeGreaterThan(NEUTRAL_FAMILY_PROMPT.length);
+    // Its fixed rows hold: no MCP or Search of its own, and an Assistant chat takes no self-service tools.
+    const tools = toolNames(provider.requests[0]);
+    expect(tools).toContain("read_secret");
+    expect(tools.some((name) => name.startsWith("mcp_") || name === "find_tools")).toBe(false);
+    expect(provider.requests[0]!.searchPlan.options).toEqual([]);
+    expect(tools).not.toContain("manage_assistant");
+  });
+
+  it("gives a listed user's personal chat the self-service tools", async () => {
+    const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const provider = recordingProvider();
+    const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter }, repository });
+    await response.text();
+    expect(toolNames(provider.requests[0])).toEqual(expect.arrayContaining(["read_secret", "manage_assistant", "manage_secret"]));
+  });
+
+  it("continues a listed user's turn natively after an Allow, naming the approval, as the web and Telegram send it", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    repository.loadMcpApprovalContinuation = vi.fn(async (input: { approvalId: string }) => input.approvalId === "approval-1"
+      ? { serverName: "Records", toolName: "create_record" } : null);
+    const native = nativeEngineFake([config.bootstrapUserId]);
+    const response = await createSendMessageHandler({ ...authDeps, nativeEngine: native.deps, providers: { fake: createFakeProviderAdapter() },
+      repository })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [] }, modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
+        systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } }),
+      headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    await response.text();
+    expect(state.created).toMatchObject({ engine: "native", systemTurnKind: "mcp_approval_continuation" });
+    // The native run looks the Allow up itself; the body only names it.
+    expect(native.deps.engine.approvedCall).toHaveBeenCalledWith({ approvalId: "approval-1", chatId: "chat-1",
+      userId: config.bootstrapUserId });
+    expect(native.published).toHaveLength(1);
+  });
+
+  it("runs a listed user's answer review step natively with the step's reserved report", async () => {
+    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    const native = nativeEngineFake([config.bootstrapUserId], { tools: true });
+    const provider = recordingProvider();
+    const response = await createSendMessageHandler({ ...authDeps, answerReviewStep: {
+      preparation: { kind: "review", reviewer: 0, round: 1, sessionId: "session-1", step: 0 }, turnKind: "answer_review_request"
+    }, nativeEngine: native.deps, providers: { fake: provider.adapter }, repository })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ content: { blocks: [{ text: "Review the answer.", type: "text" }] }, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] } }),
+      headers: { cookie: authCookie() }, method: "POST"
+    }), { params: { chatId: "chat-1" } });
+    await response.text();
+    expect(state.created).toMatchObject({ answerReviewStep: { round: 1, sessionId: "session-1", step: 0 }, engine: "native" });
+    const tools = toolNames(provider.requests[0]);
+    expect(tools).toContain("submit_answer_review");
+    expect(tools).not.toContain("manage_secret");
+    expect(native.published).toHaveLength(1);
   });
 });

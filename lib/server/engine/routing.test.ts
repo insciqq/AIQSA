@@ -13,8 +13,7 @@ function prepared(overrides: Record<string, unknown> = {}, request: Record<strin
 }
 
 const route = (input: Partial<Parameters<typeof nativeEngineRoute>[0]> = {}) => nativeEngineRoute({
-  allowlist: parseNativeEngineUsers("user-1"), answerReview: false, prepared: prepared(), scheduled: false, user,
-  workspacePredecessor: false, ...input
+  allowlist: parseNativeEngineUsers("user-1"), prepared: prepared(), user, workspacePredecessor: false, ...input
 });
 
 describe("native engine routing", () => {
@@ -32,13 +31,22 @@ describe("native engine routing", () => {
     expect(route({ prepared: prepared({}, {}, "fake") })).toEqual({ engine: "native" });
   });
 
-  it("keeps everything outside the pilot's scope on the old core", () => {
+  it("runs a listed user's Assistant chats, scheduled occurrences, Telegram turns and review steps natively", () => {
+    // An Assistant's fixed rows are frozen in the prepared run; the engine is the same.
+    expect(route({ prepared: prepared({ assistant: {} }) })).toEqual({ engine: "native" });
+    expect(route({ prepared: prepared({ chatAssistant: {} }) })).toEqual({ engine: "native" });
+    // A monitoring check and an answer review step report through their reserved tool.
+    expect(route({ prepared: prepared({}, { monitoringVerdictTool: true }) })).toEqual({ engine: "native" });
+    expect(route({ prepared: prepared({}, { answerReviewStep: { kind: "review" } }) })).toEqual({ engine: "native" });
+    // Routing reads the run, never who admitted it: the owner of a scheduled task or a Telegram link is the user.
+    expect(route({ allowlist: parseNativeEngineUsers("pilot@example.test") })).toEqual({ engine: "native" });
+    expect(route({ allowlist: parseNativeEngineUsers("someone-else") })).toEqual({ engine: "v1", reason: "not_listed" });
+  });
+
+  it("keeps everything the native engine cannot run on the old core", () => {
     expect(route({ allowlist: parseNativeEngineUsers("") })).toEqual({ engine: "v1", reason: "not_listed" });
-    expect(route({ scheduled: true })).toMatchObject({ reason: "scheduled" });
-    expect(route({ answerReview: true })).toMatchObject({ reason: "answer_review" });
-    expect(route({ prepared: prepared({ assistant: {} }) })).toMatchObject({ reason: "assistant_chat" });
-    expect(route({ prepared: prepared({ chatAssistant: {} }) })).toMatchObject({ reason: "assistant_chat" });
     expect(route({ prepared: prepared({ project: {} }) })).toMatchObject({ reason: "project_chat" });
+    expect(route({ prepared: prepared({ assistant: {}, project: {} }) })).toMatchObject({ reason: "project_chat" });
     expect(route({ prepared: prepared({}, { agent: {} }) })).toMatchObject({ reason: "agent_turn" });
     expect(route({ prepared: prepared({}, { knowledgePlan: { mode: "auto" } }) })).toMatchObject({ reason: "knowledge" });
     expect(route({ prepared: prepared({}, {}, "openai_chat_completions_compatible") })).toMatchObject({ reason: "adapter_without_history" });

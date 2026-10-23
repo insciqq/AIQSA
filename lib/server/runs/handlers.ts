@@ -142,10 +142,10 @@ export type RunHandlerDeps = {
   memoryEgress?: MemoryToolEgressReceiptService;
   mcp?: RunPreparationDeps["mcp"];
   /**
-   * The native agent engine, given only by the interactive send and
-   * regenerate routes: it takes the runs `routeRun` names (the pilot's
-   * allowlist); every other run, and every entry point without it, stays on
-   * the old core.
+   * The native agent engine (`createDefaultSendMessageDeps` gives it to the
+   * chat routes, the scheduled task runner, Telegram and answer review): it
+   * takes the runs `routeRun` names (the pilot's allowlist); every other run,
+   * and every entry point without it, stays on the old core.
    */
   nativeEngine?: NativeEngineHandlerDeps;
   providerAdmission?: RunPreparationDeps["providerAdmission"];
@@ -813,8 +813,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ? { ok: true as const }
       : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
-    const route = routeRun(deps.nativeEngine, { answerReview: Boolean(deps.answerReviewStep), prepared: preparedData,
-      scheduled: Boolean(deps.scheduledOccurrence), user: { email: auth.user.email, id: auth.userId },
+    const route = routeRun(deps.nativeEngine, { prepared: preparedData, user: { email: auth.user.email, id: auth.userId },
       workspacePredecessor: Boolean(predecessorRunId) });
     let created: CreatedRun;
     try {
@@ -963,6 +962,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...(typeof systemTurn?.approvalId === "string" ? { approvalId: systemTurn.approvalId } : {}),
         ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
         created, prepared: preparedData, repository: deps.repository,
+        ...(deps.scheduledOccurrence ? { scheduled: true } : {}),
         ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
         services: nativeServices(deps), userId: auth.userId,
         ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
@@ -1108,8 +1108,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       : await resolveAnswerReviewAuto(deps, { body, prepared: preparedData, userId: auth.userId });
     if (!answerReview.ok) return Response.json({ error: answerReview.code }, { status: answerReview.status });
     // A document retry keeps the old core's frozen preparation.
-    const route = retry ? { engine: "v1" as const } : routeRun(deps.nativeEngine, { answerReview: false, prepared: preparedData,
-      scheduled: false, user: { email: auth.user.email, id: auth.userId }, workspacePredecessor: false });
+    const route = retry ? { engine: "v1" as const } : routeRun(deps.nativeEngine, { prepared: preparedData,
+      user: { email: auth.user.email, id: auth.userId }, workspacePredecessor: false });
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({

@@ -24,6 +24,7 @@ import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
 import { workspaceTurnSoftDeadlineMs } from "../runs/workspaceTurnDeadline";
 import { projectRunOutputArtifactEvent } from "../runs/runOutputEvents";
 import type { ToolObservationService } from "../toolObservations/sourceAdapters";
+import { reservedToolCallForRequest } from "../tools/reservedToolCall";
 import { invalidProviderToolArguments, type ModelToolCall } from "../tools/types";
 import { workspaceActivityEvent } from "../workspace/activityProjection";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
@@ -41,7 +42,7 @@ import { callModel } from "./modelCall";
 import { createRunContext, type RunContext } from "./runContext";
 import type { NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
-import { runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps } from "./toolBatch";
+import { runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps, type ToolBatchState } from "./toolBatch";
 import type { ToolCallStore } from "./toolCallStore";
 import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from "./toolRegistry";
 import { saveToolResultText, type SavedToolResultReader } from "./toolResults";
@@ -104,6 +105,11 @@ export type NativeRunExecutionInput = Readonly<{
   mcpRuntime?: ToolRegistryServices["mcpRuntime"];
   prepared: MaterializedPreparedRunData;
   repository: RunRepository;
+  /**
+   * A scheduled task's occurrence: its context is flat (`agent_docs/RUN_CONTRACTS.md`), so the
+   * previous result it carries brings that answer's own items and never a compaction of what came before.
+   */
+  scheduled?: true;
   services: NativeRunServices;
   userId: string;
   workspace?: WorkspaceCoordinator;
@@ -257,7 +263,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const nativeRuns = await engine.transcripts.nativeRunsForAnswers({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId });
         const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId, runIds: [...nativeRuns.values()], userId: input.userId });
-        const nativeAnswers = new Map([...nativeRuns].map(([messageId, nativeRunId]) => [messageId, runItems.get(nativeRunId) ?? []]));
+        // A scheduled run's flat context takes its previous result's own items, never a compaction of what came before.
+        const answerItems = (answer: readonly TranscriptItem[]) => input.scheduled
+          ? answer.filter((item) => item.kind !== "compaction") : answer;
+        const nativeAnswers = new Map([...nativeRuns].map(([messageId, nativeRunId]) => [messageId,
+          answerItems(runItems.get(nativeRunId) ?? [])]));
         const continuationTurns = await engine.transcripts.approvalContinuationTurns({ chatId: scope.chatId,
           messageIds: contextMessages.filter((message) => message.role === "user").map((message) => message.id) });
         const conversationFor = (mode: "continuation" | "input") => buildRunConversation({ continuationTurns,
@@ -295,6 +305,11 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // An approval continuation has no input of its own: nothing rides on it.
         if (!conversation.currentInputId) base = { ...base, attachments: [] };
         assertPersonalContextEgressSafe(base);
+        // The Workspace files a scheduled task's monthly rotation carried arrive before the first request,
+        // so nothing the run calls meets an empty project; for any other run this does nothing.
+        if (workspace && input.workspace?.prepareCarryover) {
+          await input.workspace.prepareCarryover({ onActivity: onWorkspaceActivity, runId, signal, userId: input.userId, workspace });
+        }
 
         const mcpBindings = engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId));
         const delivered: string[] = [];
@@ -330,7 +345,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           await record(added);
         };
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
-        const toolState = { calls: 0 };
+        const toolState: ToolBatchState = { calls: 0 };
+        // The run's one report reserved outside the budgets, when its registry offers it.
+        const reservedReport = reservedToolCallForRequest(normalizedRequest);
+        const reserved = reservedReport && registry.resolve(reservedReport.name) ? reservedReport : null;
         const batchDeps: ToolBatchDeps = {
           chatId: scope.chatId,
           history: new ToolCallRepeatHistory(),
@@ -338,6 +356,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           onEvent: (event) => sink.publish(event),
           onLiveEvent: sink.send,
           registry,
+          ...(reserved ? { reservedToolName: reserved.name } : {}),
           runId,
           saveResult: async (save) => saveToolResultText({ outcome: save.outcome,
             producer: { runId, toolCallId: save.toolCallId, userId: input.userId }, service: await engine.observations(),
@@ -452,7 +471,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return accepted.map((entry) => ({ followup: true as const, id: randomUUID(), kind: "user" as const, text: entry.text }));
           },
           maxToolRounds: budgets.maxToolRounds,
-          prepareRequest: async ({ toolChoice }: Readonly<{ round: number; toolChoice: LoopToolChoice }>) => {
+          prepareRequest: async ({ reserved: reservedRound, toolChoice }: Readonly<{ reserved?: true; round: number;
+            toolChoice: LoopToolChoice }>) => {
             const tools = [...registry.definitions()];
             const request: ProviderRunRequest = {
               ...base,
@@ -465,8 +485,13 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               tools
             };
             // Compaction at the request boundary; a request that cannot fit even then fails visibly.
-            return context.prepare(request);
+            const prepared = await context.prepare(request);
+            // The reserved round's instruction rides on its request only, never on the transcript.
+            return reservedRound && reserved
+              ? { ...prepared, history: [...(prepared.history ?? []), { text: reserved.instruction, type: "user" as const }] }
+              : prepared;
           },
+          ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => toolState.reservedCalled !== true } } : {}),
           responseItems: (result) => modelResponseItems({ estimate: estimateApproxTokens,
             history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target, usage: result.usage }),
           roundEnd: async (result) => {
