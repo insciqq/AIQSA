@@ -75,7 +75,7 @@ export const UNKNOWN_OUTCOME_REPEAT_OUTPUT =
 /** The same refusal where the user decides in the approval card. */
 export const UNKNOWN_OUTCOME_APPROVAL_OUTPUT =
   "Not sent: an identical earlier call failed after it may have been sent, so its effect is unknown. Check the current state " +
-  "if you can and tell the user what you found; the user decides in the card below whether to send it again. Do not call it " +
+  "if you can and tell the user what you found; the user decides in the approval card whether to send it again. Do not call it " +
   "again meanwhile.";
 
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
@@ -161,7 +161,8 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     const tool = deps.registry.resolve(call.name);
     if (!tool) {
       const toolName = unknownToolCallName(call.name);
-      return { kind: "refuse", output: UNKNOWN_TOOL_CALL_MESSAGE, toolName,
+      // An older tool the run replaced names its replacement; the record keeps the plain unknown form.
+      return { kind: "refuse", output: deps.registry.replacement?.(call.name) ?? UNKNOWN_TOOL_CALL_MESSAGE, toolName,
         result: unknownToolCallResult({ providerCallId: call.id, requested: requestedToolNameExcerpt(call.name), toolName }) };
     }
     if (hasInvalidProviderToolArguments(call.arguments)) {

@@ -85,6 +85,24 @@ describe("native harness and self-service tools", () => {
       .toEqual(["read_tool_result"]);
   });
 
+  it("never offers the old Workspace folder save beside manage_skill, and names manage_skill to a call of it", async () => {
+    const workspaceChat = request({ skillSaveTool: true, workspace: { enabled: true } as ProviderRunRequest["workspace"] });
+    const personal = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), selfService: selfService().services,
+      workspace: fakeWorkspace().coordinator }));
+    const offered = personal.definitions().map((tool) => tool.name);
+    expect(offered).toContain("manage_skill");
+    expect(offered).not.toContain("save_skill");
+    expect(personal.resolve("save_skill")).toBeUndefined();
+    // A model that knows the old tool (the Workspace Skill guide names it) is told what to use instead.
+    expect(personal.replacement?.("save_skill")).toMatch(/^save_skill is not available in this chat, so nothing was executed\. Use manage_skill instead: /u);
+    expect(personal.replacement?.("create_skill")).toBeUndefined();
+    // Where no self-service owners are given, the Workspace chat keeps the folder save and nothing is redirected.
+    const without = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), workspace: fakeWorkspace().coordinator }));
+    expect(without.definitions().map((tool) => tool.name)).toEqual(expect.arrayContaining(["save_skill"]));
+    expect(without.definitions().map((tool) => tool.name)).not.toContain("manage_skill");
+    expect(without.replacement?.("save_skill")).toBeUndefined();
+  });
+
   it("declares each tool's own effects, approval-free, in one vocabulary", async () => {
     const coordinator = fakeWorkspace().coordinator;
     const registry = await buildToolRegistry(input(request({ workspace: { enabled: true } as ProviderRunRequest["workspace"] }),

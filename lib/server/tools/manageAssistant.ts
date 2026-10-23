@@ -37,7 +37,7 @@ import type {
 import type { NormalizedRunRequest } from "../providers/types";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { harnessToolError, type HarnessToolDescriptor } from "./harnessTool";
-import { newProposalId, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
+import { newProposalId, PROPOSAL_CARD_NOTE, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
 import { logSelfServiceFailure } from "./selfServiceCall";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
 
@@ -447,7 +447,7 @@ export async function executeManageAssistant(service: AgentAssistantService | un
           consequences: { chatCount: consequences.chatCount, everyone: consequences.audiences.installation,
             groupNames: consequences.audiences.groupNames.slice(0, RESOURCE_CHANGE_NAMES_LIMIT), pendingListingRequest: consequences.pendingListingRequest } });
         return cardResult(call, card, { deleted: false, deletionProposed: true, assistant: assistant.draft.name,
-          note: "Nothing was deleted: the answer shows a card with what deleting changes, in which the user confirms. Do not ask again in text." });
+          note: `Nothing was deleted: the answer shows a card with what deleting changes, in which the user confirms. ${PROPOSAL_CARD_NOTE}` });
       }
       case "propose_publish":
         return await proposePublish(service, call, args);
@@ -544,5 +544,5 @@ async function proposePublish(service: AgentAssistantService, call: ModelToolCal
   const card = assistantCard({ action: "publish_proposed", assistantId: id, audience, name: assistant.draft.name, version: assistant.version });
   return cardResult(call, card, { published: false, publicationProposed: true, assistant: assistant.draft.name,
     audience: audience.kind === "everyone" ? "everyone (an administrator approves the listing)" : audience.groupName,
-    note: "Nothing was published: the answer shows a card in which the user confirms. Every linked Skill must be shared with that audience. Do not ask again in text." });
+    note: `Nothing was published: the answer shows a card in which the user confirms. Every linked Skill must be shared with that audience. ${PROPOSAL_CARD_NOTE}` });
 }
