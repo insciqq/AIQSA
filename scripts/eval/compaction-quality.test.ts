@@ -7,8 +7,11 @@ import { TOOL_RESULT_LIMITS } from "../../lib/server/engine/toolResults";
 import { SUMMARIZER_INSTRUCTIONS, SUMMARY_SECTIONS } from "../../lib/server/engine/compaction/summaryPrompt";
 import { contextItemTokens } from "../../lib/server/engine/contextMeasure";
 import { selectTranscript, type TranscriptItem, type TranscriptTarget } from "../../lib/server/engine/transcript";
+import { buildCompatibleResponsesRequest } from "../../lib/server/providers/compatibleResponses";
+import { responsesHistoryFromOutput } from "../../lib/server/providers/history";
 import type { ProviderRunRequest, ProviderRunResult } from "../../lib/server/providers/types";
 import {
+  calledTools,
   dryRunModel,
   normalizeAnswer,
   parseEvalArguments,
@@ -71,8 +74,9 @@ describe("evaluation sessions", () => {
     }
   });
 
-  it("store results as the engine does: long ones saved with a handle as head and tail, or every one with a handle", () => {
-    let saved = 0;
+  it("store results as the engine does: those over its save bound with a handle, long ones as head and tail, or every one", () => {
+    let excerpts = 0;
+    let savedWhole = 0;
     for (const id of SCENARIO_IDS) {
       for (const policy of ["large", "all"] as const) {
         const build = built(id, 1, 60_000, policy);
@@ -82,23 +86,25 @@ describe("evaluation sessions", () => {
           expect(result.handle, id).toBe(handle);
           if (!handle) {
             expect(policy).toBe("large");
-            expect(result.output.length, id).toBeLessThanOrEqual(TOOL_RESULT_LIMITS.inlineChars);
+            expect(result.output.length, id).toBeLessThanOrEqual(TOOL_RESULT_LIMITS.saveChars);
             continue;
           }
           expect(handle).toBe(evalHandle(id, result.callId));
           const full = build.store.get(handle)!;
+          if (policy === "large") expect(full.length, id).toBeGreaterThan(TOOL_RESULT_LIMITS.saveChars);
           if (full.length > TOOL_RESULT_LIMITS.inlineChars) {
-            if (policy === "large") saved += 1;
+            excerpts += 1;
             expect(result.output).toContain(`call read_tool_result with handle "${handle}"`);
             expect(result.output.length).toBeLessThan(full.length);
           } else {
-            expect(policy).toBe("all");
+            if (policy === "large") savedWhole += 1;
             expect(result.output).toBe(full);
           }
         }
       }
     }
-    expect(saved).toBeGreaterThan(0);
+    expect(excerpts).toBeGreaterThan(0);
+    expect(savedWhole).toBeGreaterThan(0);
   });
 
   it("end with a call waiting for approval that every cut keeps verbatim, and give sequential three phases", () => {
@@ -150,14 +156,32 @@ describe("scoring", () => {
     const pending = { arguments: "{\"entry\":\"JE-2026-0412\"}", name: "mcp_finance_post_journal_entry_0123456789" };
     const good = scoreContinuation(continuation, [{ arguments: JSON.stringify({ bucket: "aiqsa-archive-teal-07", month: "2026-03",
       report_timezone: "Asia/Yekaterinburg" }), name: "archive_batches" }], "Done at 18:20 +05:00.", pending);
-    expect(good).toEqual({ nextStep: true, repeated: [], repeatedPending: false, toolCalls: 1, violations: [] });
+    expect(good).toEqual({ next: { archiveWithCorrectBucket: true }, nextStep: true, repeated: [], repeatedPending: false, toolCalls: 1,
+      violations: [] });
+    // Spaced arguments as models send them match the same patterns.
     const bad = scoreContinuation(continuation, [
-      { arguments: JSON.stringify({ bucket: "aiqsa-archive-blue", month: "2026-03", report_timezone: "UTC" }), name: "archive_batches" },
-      { arguments: JSON.stringify({ month: "2026-03", stage: "export" }), name: "run_pipeline" },
-      pending
+      { arguments: "{\"bucket\": \"aiqsa-archive-blue\", \"month\": \"2026-03\", \"report_timezone\": \"UTC\"}", name: "archive_batches" },
+      { arguments: "{ \"month\": \"2026-03\", \"stage\": \"export\" }", name: "run_pipeline" },
+      { arguments: "{ \"entry\": \"JE-2026-0412\" }", name: pending.name }
     ], "", pending);
-    expect(bad).toEqual({ nextStep: false, repeated: ["rerunMarchStage"], repeatedPending: true, toolCalls: 3,
-      violations: ["supersededBucket", "reportTimezone"] });
+    expect(bad).toEqual({ next: { archiveWithCorrectBucket: false }, nextStep: false, repeated: ["rerunMarchStage"], repeatedPending: true,
+      toolCalls: 3, violations: ["supersededBucket", "reportTimezone"] });
+  });
+
+  it("counts the next step named in the answer or a call's name, in any date form, and Cyrillic sent escaped", () => {
+    const sequential = scoreContinuation(SCENARIOS.sequential.continuation, [], "Next: send the dunning letters for the 12 overdue " +
+      "invoices; I need their numbers first.", null);
+    expect(sequential.next).toEqual({ dunningLetters: true });
+    expect(scoreContinuation(SCENARIOS.sequential.continuation, [{ arguments: "{}", name: "send_dunning_letters" }], "", null).nextStep)
+      .toBe(true);
+    expect(scoreContinuation(SCENARIOS.sequential.continuation, [], "Waiting for your approval.", null).nextStep).toBe(false);
+    const escaped = "{\"to\":\"\\u043a\\u0435\\u0439\\u0442\\u0435\\u0440\\u0438\\u043d\\u0433 \\u00ab\\u0421\\u0435\\u0437\\u043e\\u043d\\u044b\\u00bb\"," +
+      "\"subject\":\"\\u041a\\u043e\\u043d\\u0444\\u0435\\u0440\\u0435\\u043d\\u0446\\u0438\\u044f\",\"body\":\"28.03.2026, 145 \\u0433\\u043e\\u0441\\u0442\\u0435\\u0439\"}";
+    expect(scoreContinuation(SCENARIOS.requirements.continuation, [{ arguments: escaped, name: "draft_email" }], "", null))
+      .toMatchObject({ next: { currentDate: true, draftToCaterer: true }, nextStep: true, violations: [] });
+    expect(scoreContinuation(SCENARIOS.research.continuation, [], "## 4. Recommendations for procurement leads\n…", null).nextStep).toBe(true);
+    expect(calledTools(SCENARIOS.research, [{ arguments: "{}", name: "write_file" }, { arguments: "{}", name: "made_up_tool" }]))
+      .toEqual(["write_file", "other"]);
   });
 });
 
@@ -200,8 +224,14 @@ describe("evaluation runs", () => {
 
   it("drives a model through recall reads and continuation tools to a perfect score", async () => {
     const requests: ProviderRunRequest[] = [];
-    const nativeBodies: Record<string, unknown>[] = [];
+    const nativeRequests: ProviderRunRequest[] = [];
     const answer = (request: ProviderRunRequest): ProviderRunResult => {
+      if (request.compactionTrigger) {
+        nativeRequests.push(request);
+        return { finalProviderResponsePreview: {}, finalText: "",
+          history: responsesHistoryFromOutput([{ encrypted_content: "ENC", id: "cmp_1", type: "compaction" }]),
+          usage: normalizeTokenUsage({ inputTokens: 20_000, outputTokens: 900 }) };
+      }
       requests.push(request);
       const usage = normalizeTokenUsage({ inputTokens: 1_000, outputTokens: 50 });
       const reply = (text: string): ProviderRunResult => ({ finalProviderResponsePreview: {}, finalText: text, history: [{ text, type: "assistant_text" }], usage });
@@ -223,22 +253,17 @@ describe("evaluation runs", () => {
       }
       return reply("Archived; finished at 18:20 Asia/Yekaterinburg.");
     };
-    const model: EvalModel = {
-      native: async (body) => {
-        nativeBodies.push(body);
-        return { errorCode: null, items: [{ encrypted_content: "ENC", id: "cmp_1", type: "compaction" }], status: "completed",
-          usage: { inputTokens: 20_000, outputTokens: 900 } };
-      },
-      run: async (request) => answer(request)
-    };
+    const model: EvalModel = { nativeCompaction: true, run: async (request) => answer(request) };
     const lines: Record<string, unknown>[] = [];
     const summary = await runCompactionEvaluation(options({ handles: "all", paths: ["native"], scenarios: ["analysis"] }), {
       emit: (line) => lines.push({ ...line }), model: () => model, now: () => 0
     });
-    expect(nativeBodies).toHaveLength(1);
-    const input = nativeBodies[0]!.input as Record<string, unknown>[];
+    // The native call is the session's own request with the trigger last, as the engine sends it.
+    expect(nativeRequests).toHaveLength(1);
+    const body = buildCompatibleResponsesRequest(nativeRequests[0]!);
+    const input = body.input as Record<string, unknown>[];
     expect(input[input.length - 1]).toEqual({ type: "compaction_trigger" });
-    expect(nativeBodies[0]).toMatchObject({ store: false, stream: true, tool_choice: "none" });
+    expect(body).toMatchObject({ instructions: SCENARIOS.analysis.instructions, store: false, stream: true, tool_choice: "none" });
     const recall = lines.find((line) => line.event === "recall")!;
     expect(recall).toMatchObject({ parsed: true, reads: 1, rounds: 2 });
     expect(lines.find((line) => line.event === "continuation")).toMatchObject({ nextStep: true, repeated: [], violations: [] });

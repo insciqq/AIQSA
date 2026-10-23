@@ -7,7 +7,8 @@
  * provider context-length rejection the loop plans with `overflow`, compacts
  * and retries once. When no compaction helps, `fitToolResults` makes the one
  * request fit by handle, or the run fails with `context_too_large`. Every
- * call takes the run's `engineItemRules(currentInputId)`.
+ * call takes the run's `engineItemRules`. The loop's side is
+ * `lib/server/engine/runContext.ts`.
  */
 export {
   compact,

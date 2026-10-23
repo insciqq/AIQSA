@@ -70,6 +70,8 @@ export type ModelCallPorts = Readonly<{
   random?: () => number;
   signal: AbortSignal;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  /** What the request is for, in its retry logs: an answer round (default) or a compaction. */
+  stage?: "answer" | "compaction";
   timeoutMs?: number;
 }>;
 
@@ -87,6 +89,7 @@ async function* faulted(stream: AsyncGenerator<ModelRunSseEvent, ProviderRunResu
 export async function callModel(ports: ModelCallPorts, request: ProviderRunRequest): Promise<ProviderRunResult> {
   const faults = ports.faults ?? NO_ENGINE_TEST_FAULTS;
   const now = ports.now ?? Date.now;
+  const stage = ports.stage ?? "answer";
   for (let attempt = 1; ; attempt += 1) {
     let usage: ModelRunUsage | null = null;
     let stream: AsyncGenerator<ModelRunSseEvent, ProviderRunResult> | null = null;
@@ -112,11 +115,11 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
         ? providerRetryDelayMs(attempt, decision.retryAfterMs, ports.random, MODEL_CALL_RETRY.backoff) : null;
       const failure = observedFailure(error);
       if (delayMs === null || now() + delayMs >= ports.deadlineAt) {
-        if (decision) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage: "answer",
+        if (decision) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage,
           ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
         throw error;
       }
-      logEvent("provider_retry", { action: "retry", attempt, code: failure.code, delay_ms: delayMs, reason: failure.reason, stage: "answer",
+      logEvent("provider_retry", { action: "retry", attempt, code: failure.code, delay_ms: delayMs, reason: failure.reason, stage,
         ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
       await ports.onDiscard(attempt);
       await (ports.sleep ?? sleepWithSignal)(delayMs, ports.signal);

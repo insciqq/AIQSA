@@ -210,6 +210,21 @@ describe("provider history rendering", () => {
     }
   });
 
+  it("ends a native compaction request with the compaction trigger, in the request and its preview", () => {
+    const compaction = request(responsesTurn.slice(0, 4), { compactionTrigger: true, toolChoice: "none" });
+    for (const body of [buildCompatibleResponsesRequest(compaction), buildOpenAIResponsesRequest({ ...compaction, provider: "openai" }),
+      buildOpenAIResponsesRequestPreview({ ...compaction, provider: "openai" }).body]) {
+      const input = body.input as Record<string, unknown>[];
+      expect(input).toHaveLength(5);
+      expect(input.at(-1)).toEqual({ type: "compaction_trigger" });
+      expect(body).toMatchObject({ tool_choice: "none" });
+    }
+    expect((buildCompatibleResponsesRequest(request(responsesTurn)).input as Record<string, unknown>[])
+      .some((item) => item.type === "compaction_trigger")).toBe(false);
+    const { history: _history, ...withoutHistory } = compaction;
+    expect(() => buildOpenAIResponsesRequest({ ...withoutHistory, provider: "openai" })).toThrow("provider_compaction_trigger_invalid");
+  });
+
   it("refuses another format's native data, mixed continuation sources and unplaced attachments", () => {
     const geminiThought: ProviderHistoryItem = {
       native: { fields: { signature: "SIG", type: "thought" }, format: "gemini_interactions" }, type: "reasoning"

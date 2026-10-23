@@ -12,7 +12,7 @@ export type CompactionItemRules = Readonly<{
   awaitingApproval: (result: TranscriptToolResultItem) => boolean;
   /** Server-added run context in user items (the Skills index and
    * instructions), rebuilt for every run: never retained or summarized as
-   * the user's words. */
+   * the user's words (replay keeps it, `TranscriptUserItem.runContext`). */
   runContext: (item: TranscriptItem) => boolean;
   /** The kept tail may start only at an item whose id later runs keep, so the
    * compaction finds its tail again when the conversation is rebuilt. */
@@ -29,15 +29,17 @@ export const APPROVAL_PENDING_TEXT =
 const RUN_CONTEXT_ID = /^ctx-/u;
 
 /**
- * The engine's rules for one run. The run's own input is `<messageId>` in
- * its run but `msg-<messageId>` when later runs rebuild the conversation
- * (`conversation.ts`), so it never starts a kept tail.
+ * The engine's rules for one run. A user message keeps its `msg-<messageId>`
+ * id in every run (`conversation.ts`), so the run's own input may start a
+ * kept tail. `unstableInputId` names an input that later runs do not rebuild
+ * (the server's turn of an approval continuation, which they drop): it never
+ * starts a kept tail.
  */
-export function engineItemRules(currentInputId: string | null = null): CompactionItemRules {
+export function engineItemRules(unstableInputId: string | null = null): CompactionItemRules {
   return {
     awaitingApproval: (result) => result.outcome === "error" && result.output === APPROVAL_PENDING_TEXT,
-    runContext: (item) => item.kind === "user" && RUN_CONTEXT_ID.test(item.id),
-    stableId: (item) => !RUN_CONTEXT_ID.test(item.id) && item.id !== currentInputId
+    runContext: (item) => item.kind === "user" && (item.runContext === true || RUN_CONTEXT_ID.test(item.id)),
+    stableId: (item) => !RUN_CONTEXT_ID.test(item.id) && !(item.kind === "user" && item.runContext === true) && item.id !== unstableInputId
   };
 }
 

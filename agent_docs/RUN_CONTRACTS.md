@@ -42,6 +42,7 @@ Answering the user is the top priority (operator decision 2026-10-22).
 - Regeneration is an ordinary run through the same pipeline.
 - Context follows the active branch's ancestors, never siblings. A reviewed answer is read as its question plus latest version. User turns stay in context after an error or a partial answer.
 - Context size is measured from the provider's reported usage, so opaque reasoning counts only through provider figures. Compaction runs near the model's real window and uses the provider's native compaction where the connection supports it. Summaries never contain provider reasoning, signatures or attachment identifiers, and the tool results they replace stay readable by reference. A request that cannot fit even after compaction fails visibly.
+- The user does not wait for compaction: it runs in the background and its item enters the transcript at a request boundary, or after the answer so the next turn starts compacted. Only a request past the swap threshold or rejected for its size compacts while it waits (`lib/server/engine/runContext.ts`). A compaction reads the transcript as later turns read it, so Memory results enter it only as their note, and it never covers the run's own context (Skills index, pinned Skills).
 - Personal presets apply only to personal and temporary chats, never to Assistants. Instructions are never Memory facts.
 - Once accepted, execution belongs to the server: closing the browser does not cancel the run, while Stop, deadlines and deleting the chat or account still end it. A Memory preparation failure answers without Memory instead of failing the run.
 - Automatic answer review steps are ordinary server-driven runs of the initiator, each claimed once.
@@ -95,7 +96,7 @@ Code: `lib/server/telegram/`.
 - Auto, Load all and Off are user choices, and Auto stays as it works today (operator decision 2026-10-23): it freezes the authorized catalog, `find_tools` is local, model-free search, and Skills arrive through their index and `load_skill`, so not every schema enters the context. An unusable server records a stable reason and the answer continues.
 - When the call budget runs out, the agent gets one tool-free round that names the work it could not verify.
 - Repeating an identical, not provably read-only call after identical successes is blocked as `tool_call_repeat_blocked`.
-- Results too large for the context arrive as an excerpt with a reference the agent can read later, never silently truncated.
+- Results too large for the context arrive as an excerpt with a reference the agent can read later, never silently truncated. Every result longer than a short excerpt is saved with that reference, so a compaction can leave it out and name where it lives (decision 2026-10-23: exact facts recalled after compaction rose from 17 to 21 of 23).
 - A tool result is a transcript item of its chat. Reading it by reference checks only that the reader may read that chat, and never reruns the call.
 
 ## Workspace

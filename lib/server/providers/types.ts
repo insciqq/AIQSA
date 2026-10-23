@@ -441,6 +441,12 @@ export type ProviderConversationMessage = {
 
 export type ProviderRunRequest = NormalizedRunRequest & {
   attachments: ProviderAttachment[];
+  /** Ephemeral native-engine request that a Responses route compact its
+   * `history` itself: the input ends with a `compaction_trigger` item and the
+   * response carries one opaque `compaction` item
+   * (`lib/server/engine/compaction/native.ts`). Only with `history`; other
+   * adapters do not compact natively and are never sent one. */
+  compactionTrigger?: true;
   /** Ephemeral server-owned planner measurement. It is never accepted from a
    * browser or written into the normalized run snapshot. */
   contextCompaction?: import("../../contracts/contextCompaction").ContextPlanMeasurement;

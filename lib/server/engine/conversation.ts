@@ -10,7 +10,11 @@ import type { TranscriptItem } from "./transcript";
  * core, and a native answer stopped before its first round completed, enter
  * as their saved text; old-core tool steps are not fed again. A turn the
  * server wrote after an approval that a native run continued is no user
- * speech: the approved call's result continues that turn instead.
+ * speech: the approved call's result continues that turn instead. A user
+ * message is `msg-<messageId>` in its own run and in every later one, so a
+ * compaction's kept tail can start there and still be found when later runs
+ * rebuild the conversation; run context items (`ctx-<index>`, `runContext`)
+ * are rebuilt for every run.
  */
 export type ConversationSource = Readonly<{
   /** Approval continuation turns among the branch's user messages. */
@@ -42,8 +46,8 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
     const message = messages[index]!;
     const text = textFromContentBlocks(message.content);
     if (message.purpose !== undefined || message.historyClass !== undefined) {
-      // Internal context (Skills index or instructions) is run-scoped input.
-      if (message.historyClass === undefined && text.trim()) items.push({ id: `ctx-${index}`, kind: "user", text });
+      // Internal context (Skills index or instructions) is run-scoped input, never compacted.
+      if (message.historyClass === undefined && text.trim()) items.push({ id: `ctx-${index}`, kind: "user", runContext: true, text });
       continue;
     }
     if (message.role === "user") {
@@ -61,6 +65,7 @@ export function buildRunConversation(source: ConversationSource): RunConversatio
     if (text.trim()) items.push({ id: `msg-${message.id}`, kind: "assistant_text", text });
   }
   if (source.current.mode === "continuation") return { currentInputId: null, items };
-  items.push({ id: source.current.messageId, kind: "user", text: textFromContentBlocks(last.content) });
-  return { currentInputId: source.current.messageId, items };
+  const currentInputId = `msg-${source.current.messageId}`;
+  items.push({ id: currentInputId, kind: "user", text: textFromContentBlocks(last.content) });
+  return { currentInputId, items };
 }

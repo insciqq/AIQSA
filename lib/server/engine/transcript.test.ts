@@ -342,6 +342,27 @@ describe("transcript projection", () => {
     expect(selectTranscript(misplaced, gemini).base).toBeNull();
   });
 
+  it("keeps the run's own context through a compaction whose kept tail starts after it", () => {
+    const chat = transcript();
+    chat.user("Old question");
+    chat.respond(codex, responsesHistoryFromOutput([{ content: [{ text: "Old answer", type: "output_text" }], role: "assistant", type: "message" }]));
+    chat.items.push({ id: "ctx-2", kind: "user", runContext: true, text: "Skills index" });
+    chat.user("Current question");
+    chat.respond(codex, responsesHistoryFromOutput([{ arguments: "{}", call_id: "call_1", name: "lookup_order", type: "function_call" }]));
+    chat.result("call_1", "R");
+    const kept = chat.items.length;
+    chat.respond(codex, responsesHistoryFromOutput([{ content: [{ text: "Working on it", type: "output_text" }], role: "assistant",
+      type: "message" }]));
+    // A compaction in the middle of the turn covers the Skills index's place, but not the index.
+    chat.items.push({ id: "c1", keepFromId: chat.items[kept]!.id, kind: "compaction", origin: codex, summary: "Earlier work." });
+    expect(selectTranscript(chat.items, gemini).window.map((item) => item.id)).toEqual(["c1", "ctx-2", chat.items[kept]!.id]);
+    expect(projectTranscript(chat.items, gemini)).toEqual([
+      { text: "Summary of the earlier conversation:\n\nEarlier work.", type: "user" },
+      { text: "Skills index", type: "user" },
+      { text: "Working on it", type: "assistant_text" }
+    ]);
+  });
+
   it("keeps only the current turn's reasoning for a current-turn target, across follow-ups", () => {
     const chat = transcript();
     chat.user("First");

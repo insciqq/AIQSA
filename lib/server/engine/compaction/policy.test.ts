@@ -112,7 +112,7 @@ describe("compaction cut", () => {
     expect(windowPosition(chat.items, settled.keepFromId)).toBeGreaterThan(callPosition());
   });
 
-  it("never starts the kept tail at run context or at the run's own input, whose ids later runs change", () => {
+  it("never starts the kept tail at run context or at an input later runs drop", () => {
     const chat = longChat(4, 2_000);
     const items: TranscriptItem[] = [...chat.items, { id: "ctx-0", kind: "user", text: "Skills index" },
       { id: "m-9", kind: "user", text: "Current question" }, { id: "a-9", kind: "assistant_text", text: "Current answer" }];

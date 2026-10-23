@@ -344,7 +344,8 @@ export function buildStateBlock(items: readonly TranscriptItem[], options: State
     }
     const handle = handleOf(result);
     const length = resultLength(result.output);
-    if (handle && length > LISTED_RESULT_CHARS && call.name !== COMPACTION_PRODUCT_TOOLS.readToolResult) {
+    // A Skill's instructions are kept as such (`skillsInUse`) and loaded again by name, not read by handle.
+    if (handle && length > LISTED_RESULT_CHARS && call.name !== COMPACTION_PRODUCT_TOOLS.readToolResult && kind !== "skill_load") {
       large.push(`- ${handle}: ${identity} (${length.toLocaleString("en-US")} characters)`);
     } else if (!handle && length >= LARGE_RESULT_CHARS && kind !== "skill_load") {
       large.push(`- (no handle) ${identity} (${length.toLocaleString("en-US")} characters; only an excerpt survives compaction)`);
@@ -464,14 +465,19 @@ export type RetainedContextOptions = StateBlockOptions & RetainedBudgets & Reado
 
 export const RETAINED_PREAMBLE = "Kept from the earlier, compacted part of this conversation:";
 
-/** The retained text of a compaction: the record, the Skills in use and the earlier user messages. */
+/** The handoff's last words: how the agent resumes from the verbatim part that follows (as Codex bridges its compaction). */
+export const RETAINED_CLOSING = "The most recent part of the conversation follows word for word. Build on the work recorded as done " +
+  "instead of redoing it, keep the user's latest constraints and corrections, and carry the open work on where the conversation " +
+  "calls for it.";
+
+/** The retained text of a compaction: the record, the Skills in use and the earlier user messages, then how to resume. */
 export function buildRetainedContext(options: RetainedContextOptions): string {
   const parts = [
     buildStateBlock(options.items, options),
     skillsInUse(options.items, options.keepFromId, options.skillTokens, options.estimate, options.rules),
     earlierUserMessages(options.items, options.keepFromId, options.userMessageTokens, options.estimate, options.rules)
   ].filter((part) => part.length > 0);
-  return parts.length > 0 ? [RETAINED_PREAMBLE, ...parts].join("\n\n") : "";
+  return parts.length > 0 ? [RETAINED_PREAMBLE, ...parts, RETAINED_CLOSING].join("\n\n") : "";
 }
 
 /** An upper bound of the retained text's tokens for a cut, without building it. */
@@ -488,5 +494,6 @@ export function estimateRetainedTokens(items: readonly TranscriptItem[], keepFro
     if (item.kind === "tool_call" && item.name === COMPACTION_PRODUCT_TOOLS.loadSkill) loaded.add(item.callId);
     if (item.kind === "tool_result" && loaded.has(item.callId)) skills += estimate(item.output) + 12;
   }
-  return Math.min(users, budgets.userMessageTokens) + Math.min(skills, budgets.skillTokens) + budgets.stateTokens;
+  return Math.min(users, budgets.userMessageTokens) + Math.min(skills, budgets.skillTokens) + budgets.stateTokens +
+    estimate(RETAINED_CLOSING);
 }

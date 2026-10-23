@@ -13,7 +13,12 @@ import {
 import { conversationPreview, providerPromptCacheKey, textConversationForRequest } from "./context";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
-import { assertProviderHistoryRequest, providerHistoryPreview, responsesInputFromHistory } from "./history";
+import {
+  assertProviderHistoryRequest,
+  providerHistoryPreview,
+  RESPONSES_COMPACTION_TRIGGER,
+  responsesInputFromHistory
+} from "./history";
 
 export type OpenAIResponsesTextContentBlock = {
   text: string;
@@ -293,9 +298,10 @@ function usesPromptCacheOptions(modelId: string): boolean {
 }
 
 /** The native engine's neutral history as `input`; its current input gets
- * the attachments and response reminder the latest user message gets. */
+ * the attachments and response reminder the latest user message gets. A
+ * native compaction request ends with the compaction trigger. */
 function historyInput(request: ProviderRunRequest, options: PrivateBuildOptions): OpenAIResponsesInputItem[] {
-  return responsesInputFromHistory(assertProviderHistoryRequest(request), {
+  const input: OpenAIResponsesInputItem[] = responsesInputFromHistory(assertProviderHistoryRequest(request), {
     currentInput: (text) => withResponseReminder(
       request,
       buildInputContent({ ...request, content: { blocks: [{ text, type: "text" }] } }, options),
@@ -304,6 +310,7 @@ function historyInput(request: ProviderRunRequest, options: PrivateBuildOptions)
     ),
     preview: options.preview
   });
+  return request.compactionTrigger ? [...input, { ...RESPONSES_COMPACTION_TRIGGER }] : input;
 }
 
 export function usesHostedOpenAIWebSearch(request: ProviderRunRequest): boolean {
@@ -329,6 +336,7 @@ function buildOpenAIResponsesBody(
   if (request.history) {
     input = historyInput(request, options);
   } else {
+    if (request.compactionTrigger) throw new Error("provider_compaction_trigger_invalid");
     const conversation = request.previousProviderResponseId
       ? []
       : textConversationForRequest(request, { redactSkillContext: options.preview });

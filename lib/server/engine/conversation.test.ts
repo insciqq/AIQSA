@@ -28,15 +28,31 @@ describe("native run conversation", () => {
       ],
       nativeAnswers: new Map([["answer-2", nativeTurn]])
     });
-    expect(conversation.currentInputId).toBe("user-3");
+    // The run's own input has the id later runs give the same message.
+    expect(conversation.currentInputId).toBe("msg-user-3");
     expect(conversation.items).toEqual([
       { id: "msg-user-1", kind: "user", text: "First question" },
       { id: "msg-answer-1", kind: "assistant_text", text: "Old-core answer" },
       { id: "msg-user-2", kind: "user", text: "Second question" },
       ...nativeTurn,
-      { id: "ctx-4", kind: "user", text: "Skills index" },
-      { id: "user-3", kind: "user", text: "Third question" }
+      { id: "ctx-4", kind: "user", runContext: true, text: "Skills index" },
+      { id: "msg-user-3", kind: "user", text: "Third question" }
     ]);
+    const next = buildRunConversation({
+      continuationTurns: new Set(),
+      current: { messageId: "user-4", mode: "input" },
+      messages: [
+        message("user-1", "user", "First question"),
+        message("answer-1", "assistant", "Old-core answer"),
+        message("user-2", "user", "Second question"),
+        message("answer-2", "assistant", ""),
+        message("user-3", "user", "Third question"),
+        message("answer-3", "assistant", "Third answer"),
+        message("current-user-message", "user", "Fourth question")
+      ],
+      nativeAnswers: new Map([["answer-2", nativeTurn]])
+    });
+    expect(next.items.map((item) => item.id)).toContain(conversation.currentInputId);
   });
 
   it("drops an approval turn a native run continued, keeps an old-core one, and enters no input for a continuation", () => {
@@ -76,7 +92,7 @@ describe("native run conversation", () => {
     expect(conversation.items).toEqual([
       { id: "msg-user-1", kind: "user", text: "Long task" },
       { id: "msg-answer-1", kind: "assistant_text", text: "Partial answer before the restart" },
-      { id: "user-2", kind: "user", text: "Continue" }
+      { id: "msg-user-2", kind: "user", text: "Continue" }
     ]);
   });
 

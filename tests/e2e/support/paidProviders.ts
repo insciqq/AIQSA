@@ -75,7 +75,7 @@ export async function waitForCatalogModel(
  */
 export async function setupCodexLbAnswerModel(
   request: APIRequestContext,
-  options: Readonly<{ label: string; nativeSearch: boolean; preferredModel?: string | null; vision?: boolean }>
+  options: Readonly<{ contextWindow?: number; label: string; nativeSearch: boolean; preferredModel?: string | null; vision?: boolean }>
 ): Promise<PaidAnswerModel> {
   const apiRoot = paidEnv("CODEX_LB_BASE_URL")?.replace(/\/+$/u, "");
   const secret = paidEnv("CODEX_LB_API_KEY");
@@ -89,8 +89,8 @@ export async function setupCodexLbAnswerModel(
   const catalogProof = typeof discovery?.catalogProof === "string" && listed.has(upstream) ? discovery.catalogProof : undefined;
   const tag = randomUUID().slice(0, 8);
   const displayName = `${options.label} model ${tag}`;
-  const body = codexLbSetupBody({ apiRoot, ...(catalogProof ? { catalogProof } : {}), contextWindow: 65_536, model: upstream, secret,
-    connectionDisplayName: `${options.label} ${tag}` });
+  const body = codexLbSetupBody({ apiRoot, ...(catalogProof ? { catalogProof } : {}), contextWindow: options.contextWindow ?? 65_536,
+    model: upstream, secret, connectionDisplayName: `${options.label} ${tag}` });
   const setup = await request.post("/api/admin/providers/custom-setup", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
     ...body,
     capabilities: { ...body.capabilities as Record<string, unknown>, nativeSearch: options.nativeSearch, ...(options.vision ? { vision: true } : {}) },
