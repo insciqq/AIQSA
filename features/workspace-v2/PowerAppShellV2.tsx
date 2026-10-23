@@ -218,6 +218,7 @@ import {
   isAssistantEntry,
   isCurrentChatRouteResolution,
   navigateChatRoute,
+  navigateToAssistantEntry,
   navigateToChatAddress,
   resolveChatRoute,
   settleChatRouteResolution,
@@ -2169,6 +2170,9 @@ export function PowerAppShellV2({
           void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
         }
       ),
+      openAssistantAddress: (assistantId: string) => navigateToAssistantEntry(assistantId, (route, resolution) => {
+        void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
+      }),
       retry: retryWorkspace,
       saveChatTitle: renameChat,
       saveFolder: renameFolder,

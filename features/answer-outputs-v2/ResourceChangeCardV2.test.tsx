@@ -214,6 +214,20 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     expect(bodies(fetchMock, "PATCH")).toEqual([["/api/me/assistants/asst_1", { archived: true, expectedVersion: card.definitionVersion }]]);
   });
 
+  it("starts the chat through the shell, never by a client-side route change the shell ignores", () => {
+    respond({});
+    const onStartAssistantChat = vi.fn();
+    render(<AnswerOutputsV2 artifact={{ citations: [], reasoningText: [], resourceChanges: [fresh(assistant)], sources: [] }} live
+      onStartAssistantChat={onStartAssistantChat} />);
+    const link = screen.getByRole("link", { name: "Start a chat" });
+    // A modified click keeps the link's own behavior: a new tab loads the entry page.
+    expect(fireEvent.click(link, { ctrlKey: true })).toBe(true);
+    expect(onStartAssistantChat).not.toHaveBeenCalled();
+    // A plain click is the shell's navigation alone.
+    expect(fireEvent.click(link)).toBe(false);
+    expect(onStartAssistantChat).toHaveBeenCalledExactlyOnceWith("asst_1");
+  });
+
   it("keeps a later change instead of undoing it", async () => {
     respond({ "PATCH /api/me/assistants/asst_1": error("assistant_version_conflict", 409) });
     render(<ResourceChangeCardsV2 cards={[fresh(assistant)]} live />);
