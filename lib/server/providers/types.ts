@@ -379,6 +379,13 @@ export type ProviderConversationMessage = {
   content: {
     blocks: unknown[];
   };
+  /**
+   * A follow-up the user sent while the answer `answerId` was running, or the
+   * partial answer before it (`conversationMessagesFromPathRows`). An answer
+   * that enters as its native run's items already holds its delivered
+   * follow-ups, so `buildRunConversation` leaves those out; undelivered ones stay.
+   */
+  followupOf?: Readonly<{ answerId: string; delivered: boolean }>;
   id: string;
   /** Internal provider-facing context that is never rendered as a chat message. */
   purpose?: "skill_context" | "skill_catalog";
