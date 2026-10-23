@@ -1,6 +1,6 @@
+import { createHash } from "node:crypto";
 import { decodeToolObservationDescriptor } from "../toolObservations/contract";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
-import { contextDigest } from "./contextCompactionContract";
 import { mcpApprovalGated } from "./mcpApprovalGate";
 import { unknownToolCall } from "./unknownToolCall";
 import type { PersistedToolLoopCall, PersistedToolLoopCallState, ToolLoopJsonValue } from "./toolLoopPersistence";
@@ -17,6 +17,22 @@ import type { PersistedToolLoopCall, PersistedToolLoopCallState, ToolLoopJsonVal
  *   as an undispatched `tool_call_repeat_blocked` error.
  */
 export const TOOL_CALL_REPEAT_BLOCKED = "tool_call_repeat_blocked";
+
+/** The JSON value with object keys in sorted order at every depth: rows round-trip through `jsonb`, which reorders keys. */
+function canonicalJson(value: unknown): unknown {
+  const plain = value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function"
+    ? (value as { toJSON(): unknown }).toJSON() : value;
+  if (Array.isArray(plain)) return plain.map(canonicalJson);
+  if (plain !== null && typeof plain === "object") {
+    return Object.fromEntries(Object.keys(plain).sort()
+      .map((key) => [key, canonicalJson((plain as Record<string, unknown>)[key])]));
+  }
+  return plain;
+}
+
+function contextDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(canonicalJson(value)) ?? "null").digest("hex");
+}
 const WORKSPACE_EXEC_POLL = namespacedWorkspaceToolName("sandbox_exec_poll");
 
 export type ToolCallRepeatRow = Pick<PersistedToolLoopCall,

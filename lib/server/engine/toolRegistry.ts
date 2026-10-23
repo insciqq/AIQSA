@@ -235,7 +235,7 @@ function admittedAttachmentIds(request: ProviderRunRequest): string[] {
     }
   };
   for (const message of request.context?.messages ?? []) {
-    if (message.purpose === undefined && message.historyClass === undefined) add(message.content.blocks);
+    if (message.purpose === undefined) add(message.content.blocks);
   }
   add(request.content.blocks);
   for (const id of request.attachmentIds) ids.add(id);

@@ -496,7 +496,7 @@ function acceptedMemoryTimeZone(request: NormalizedRunRequest): string {
  * message, so it can neither be a control ref nor a control input. */
 function recentAssistantMessageIds(request: NormalizedRunRequest): readonly string[] {
   return (request.context?.messages ?? []).flatMap((message) =>
-    message.role === "assistant" && message.id && message.historyClass === undefined ? [message.id] : [])
+    message.role === "assistant" && message.id ? [message.id] : [])
     .slice(-2);
 }
 
@@ -506,7 +506,7 @@ function recentControlMessages(
   request: NormalizedRunRequest
 ): MemoryControlContext["recentMessages"] {
   return (request.context?.messages ?? []).flatMap((message) => {
-    if (message.role !== "assistant" && message.role !== "user" || message.historyClass !== undefined) return [];
+    if (message.role !== "assistant" && message.role !== "user") return [];
     const text = textFromContentBlocks(message.content);
     const safeText = sanitizeMemoryUtilityText(text).safeText;
     return safeText ? [{ role: message.role, text: safeText }] : [];

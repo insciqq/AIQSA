@@ -47,22 +47,6 @@ import type {
 } from "../../domain/search";
 import type { SearchPlan } from "../../domain/search";
 import type {
-  AdvanceToolLoopCallBatchResult,
-  BeginToolLoopProviderRoundResult,
-  CheckpointedToolLoopRun,
-  ClaimToolLoopCallResult,
-  ContextSummaryReceiptWrite,
-  PersistedAnswerRoundUsage,
-  PersistedToolLoopCall,
-  PrepareAutomaticKnowledgeCallBatchInput,
-  PrepareAutomaticKnowledgeCallBatchResult,
-  PersistToolLoopCallBatchInput,
-  PersistToolLoopCallBatchResult,
-  ProjectRunRecoveryAuthority,
-  SettleToolLoopCallResult,
-  ToolLoopJsonValue
-} from "./toolLoopPersistence";
-import type {
   NormalizedRunRequest,
   ProviderAttachment,
   ProviderConversationMessage,
@@ -70,8 +54,6 @@ import type {
   ProviderRunRequest
 } from "../providers/types";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
-import type { ContextCompactionCheckpoint } from "../../contracts/contextCompaction";
-import type { BranchContextCheckpoints } from "./contextCompactionContract";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import type {
@@ -83,15 +65,26 @@ import type { ProjectDefaultsWire, ProjectPolicyWire } from "../../contracts/pro
 import type { KnowledgeFullContextPassage } from "../knowledge/fullContext";
 import type { KnowledgeRunAdmissionSource } from "../knowledge/runAdmission";
 
+/** Immutable Project authority a run of a Project chat was accepted under. */
+export type ProjectRunRecoveryAuthority = Readonly<{
+  accessRevision: number;
+  instructionsRevision: number;
+  memoryRevision: number;
+  policyRevision: number;
+  projectId: string;
+  providerAdmissionFingerprint: string;
+  providerConnectionId: string;
+  providerModelId: string;
+  providerRequiresClientTools: boolean;
+  providerSearchPlan: SearchPlan;
+}>;
+
 export type ProjectRunMemoryItem = Readonly<{
   factId: string;
   factVersionId: string;
   includedText: string;
   ordinal: number;
 }>;
-
-export type FocusedKnowledgeRecoveryScope = KnowledgeRunAdmissionAuthorizationSnapshot &
-  Readonly<{ exclusions: readonly KnowledgeRunAdmissionExclusion[] }>;
 
 /** Immutable, server-loaded Project context carried into run admission. */
 export type ProjectRunAdmission = Readonly<{
@@ -173,14 +166,6 @@ export type RunOutcomeRecord = Pick<DurableRunControlRecord, "id" | "status"> & 
   answerComplete?: true;
   workspacePreparation?: true;
   pdfPreparation?: readonly ChatPdfPreparationWire[];
-};
-
-export type StaleRunControlRecord = RunControlRecord & {
-  updatedAt: Date | string;
-};
-
-export type InstallationRecoverableRunRecord = StaleRunControlRecord & {
-  userId: string;
 };
 
 export type RunChatUpdateRecord = {
@@ -573,31 +558,8 @@ export type RunUsageAttribution = {
   usage: ModelRunUsage;
 };
 
-export type PersistedRunUsageAttribution = RunUsageAttribution & {
-  recordedAt: string;
-};
-
-export type RunCompletionInput = {
-  followupRevision?: number;
-  assistantMessageId: string;
-  chatId: string;
-  estimatedCostMicros: number | null;
-  finalText: string;
-  knowledgeGrounding?: KnowledgeRunFinalizationEnvelope;
-  modelId: string;
-  provider: string;
-  providerResponseId?: string;
-  runId: string;
-  outputEvents?: RunOutputArtifactEvent[];
-  usage: ModelRunUsage;
-  usageAttributions?: RunUsageAttribution[];
-  userId: string;
-};
-
-export type ProviderResponseIdPublication = "cancelled" | "published" | "terminal";
-
 export type CreateRunInput = {
-  /** The native agent engine executes the run; absent, the old core does (`ModelRun.engine`). */
+  /** The agent engine executes the run (`ModelRun.engine`); absent only in fixtures of runs the old core accepted. */
   engine?: "native";
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: Readonly<{ admissionKey: string; predecessorRunId: string; snapshot: unknown }>;
@@ -657,7 +619,7 @@ export type CreateRunInput = {
 export type CreateRegenerationRunInput = {
   /** Automatic answer review of the new answer (never of a turn the server wrote). */
   answerReviewAuto?: AnswerReviewAutoAdmission;
-  /** The native agent engine executes the run; absent, the old core does (`ModelRun.engine`). */
+  /** The agent engine executes the run (`ModelRun.engine`); absent only in fixtures of runs the old core accepted. */
   engine?: "native";
   followupAdmission?: import("./runFollowups").RunFollowupAdmission;
   workspaceFollowup?: never;
@@ -789,7 +751,6 @@ export type RunOwnedChatRecord = Readonly<{
 
 export type RunRepository = {
   followups?: import("./runFollowups").RunFollowupOperations;
-  hasPendingWorkspacePreparation?(runId: string): Promise<boolean>;
   continueWorkspacePreparedRun?(input: Readonly<{
     admission: PreparingRunAdmissionInput;
     claimToken: string;
@@ -817,57 +778,18 @@ export type RunRepository = {
     discovery: McpDiscoveryState;
     snapshot: McpRunPlanSnapshot;
   }> | null>;
-  advanceToolLoopCallBatch(input: {
-    roundIndex: number;
-    runId: string;
-    userId: string;
-  }): Promise<AdvanceToolLoopCallBatchResult>;
   appendAssistantText(
     assistantMessageId: string,
     text: string,
     options: Readonly<{ allowErrored?: boolean; runId: string }>
   ): Promise<void>;
   appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent>;
-  beginToolLoopProviderRound(input: {
-    /** Claim a single corrective request after a terminal no-tool response. */
-    requiredToolCorrectionOfRound?: number;
-    /** Claim the one tool-free synthesis round after round R's batch exceeded
-     * the remaining call budget: only from R's provider round with terminal
-     * usage and no persisted calls, with a `budget_exhausted` continuation.
-     * The same continuation with `synthesisDispatched` then marks that claimed
-     * round dispatched, before it has usage of its own. */
-    finalSynthesisOfRound?: number;
-    contextCompaction?: ContextCompactionCheckpoint;
-    providerContinuation: ToolLoopJsonValue | null;
-    providerCursor?: number | string | null;
-    roundIndex: number;
-    runId: string;
-    userId: string;
-  }): Promise<BeginToolLoopProviderRoundResult>;
   beginPreparingRunAttempt(input: Readonly<{
     attemptId: string;
     now: Date;
     runId: string;
     userId: string;
   }>): Promise<boolean>;
-  cancelPendingToolLoopCalls(input: { runId: string; userId: string }): Promise<number>;
-  claimToolLoopCall(input: {
-    callId: string;
-    /** The clarification revision used by the provider that planned this call. */
-    followupRevision?: number;
-    /** The call needs its run initiator's approval: the claim consumes one
-     * matching one-shot approval in its transaction, or settles the call as
-     * an undispatched `mcp_approval_required` error with a pending request. */
-    mcpApproval?: import("../mcp/writeApproval").McpApprovalRequest;
-    runId: string;
-    userId: string;
-  }): Promise<ClaimToolLoopCallResult>;
-  claimAutomaticKnowledgeCall?(input: {
-    callId: string;
-    runId: string;
-    userId: string;
-  }): Promise<ClaimToolLoopCallResult>;
-  sweepBootOrphanedRuns(input: { createdBefore: Date; liveRunIds: string[] }): Promise<number>;
   cancelRun(input: {
     payload: { code: string; message: string };
     runId: string;
@@ -879,11 +801,6 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }>): Promise<boolean>;
-  completeRun(input: RunCompletionInput): Promise<boolean>;
-  /** Publish verified text while the run still owns its Workspace cleanup. */
-  publishRunAnswer?(input: RunCompletionInput): Promise<boolean>;
-  /** Resume settlement from the publication checkpoint without provider I/O. */
-  loadPublishedRunAnswer?(input: { runId: string; userId: string }): Promise<RunCompletionInput | null>;
   groundKnowledgeAnswer?(input: Readonly<{
     answer: string;
     runId: string;
@@ -894,11 +811,6 @@ export type RunRepository = {
     userId: string;
   }> & KnowledgeAnswerContractVersions): Promise<KnowledgeRunFinalizationEnvelope>;
   groundKnowledgeAnswerV21?(input: Readonly<{
-    runId: string;
-    userId: string;
-  }>): Promise<KnowledgeRunFinalizationEnvelope>;
-  groundKnowledgeEvidenceAnswer?(input: Readonly<{
-    followupRevision?: number;
     runId: string;
     userId: string;
   }>): Promise<KnowledgeRunFinalizationEnvelope>;
@@ -941,17 +853,6 @@ export type RunRepository = {
     userId: string;
   }>): Promise<RunOwnedChatRecord | null>;
   findRecentActiveRunForChat(input: { chatId: string; since: Date; userId: string }): Promise<RunControlRecord | null>;
-  findStaleActiveRunsForUser(input: {
-    chatId?: string;
-    runId?: string;
-    staleBefore: Date;
-    userId: string;
-  }): Promise<StaleRunControlRecord[]>;
-  findInstallationRecoverableRuns?(input: {
-    bootedBefore: Date;
-    limit: number;
-    staleBefore: Date;
-  }): Promise<InstallationRecoverableRunRecord[]>;
   findRegenerationSource(
     sourceMessageId: string,
     userId: string
@@ -990,7 +891,6 @@ export type RunRepository = {
       scheduledTaskMemory?: true;
     };
   } | null>;
-  loadConversationContext(chatId: string, userId: string): Promise<ProviderConversationMessage[]>;
   /**
    * The branch path to the leaf as the model reads it: every answer review
    * session on it but `options.answerReviewSessionId` reads as its source
@@ -1027,7 +927,6 @@ export type RunRepository = {
     projectId: string;
     userId: string;
   }): Promise<boolean>;
-  isSearchStrategyEnabled(searchStrategyId: string): Promise<boolean>;
   loadAttachments(userId: string, attachmentIds: string[], projectId?: string, runId?: string): Promise<RunAttachmentRecord[]>;
   loadWorkspaceFileFacts(input: import("../workspace/inboxFacts").WorkspaceInboxFactsInput): Promise<import("../workspace/inboxFacts").WorkspaceInboxFacts>;
   loadKnowledgeFullContextPassages?(
@@ -1048,45 +947,7 @@ export type RunRepository = {
   /** A deployment's own class and stored token prices, which price system
    * attributions it reported no cost for; null when the model no longer exists. */
   loadProviderModelCostBasis(providerModelId: string): Promise<ProviderModelCostBasis | null>;
-  /** Whether the run was accepted as a Codex Agent turn, which nothing runs since the Agent was removed. */
-  isRetiredAgentRun?(input: { runId: string; userId: string }): Promise<boolean>;
-  loadRunUsageAttributions(input: {
-    runId: string;
-    userId: string;
-  }): Promise<PersistedRunUsageAttribution[]>;
   finalizePreparingRun(input: PreparingRunFinalizationInput): Promise<boolean>;
-  loadCheckpointedToolLoopRun(input: {
-    runId: string;
-    userId: string;
-  }): Promise<CheckpointedToolLoopRun | null>;
-  /** The message ancestry of `leafMessageId` in one chat (oldest first, any
-   * message status) and the decoded compaction checkpoints holding notes of the
-   * user's settled runs whose answers are the newest on it; bounded.
-   * Admission decides compatibility; this performs no other I/O. */
-  loadBranchContextCheckpoints?(input: {
-    chatId: string;
-    leafMessageId: string;
-    userId: string;
-  }): Promise<BranchContextCheckpoints>;
-  /** Cross-turn tool history frozen at admission: references and digests of
-   * the eligible calls of the branch from `leafMessageId` (its turns and the
-   * earlier attempts of each user message on it). No payload is read. */
-  loadToolHistory?(input: {
-    chatId: string;
-    leafMessageId: string | null;
-    userId: string;
-  }): Promise<import("./toolHistoryContract").ToolHistorySnapshot>;
-  /** One request's records of a frozen history under the reader's current
-   * authority; see `createPrismaToolHistoryOperations`. */
-  projectToolHistory?(input: {
-    actor: import("./prismaRepositoryToolHistory").ToolHistoryActor;
-    readers: import("./toolHistoryRecords").ToolHistoryReaders;
-    toolHistory: import("./toolHistoryContract").ToolHistorySnapshot;
-    cache?: import("./toolHistoryContract").ToolHistoryCache;
-    /** The request's current user message: names the record of its earlier
-     * attempts when the reader's context cannot be read. */
-    currentUserMessageId?: string | null;
-  }): Promise<import("./toolHistory").ToolHistoryProjection>;
   /**
    * Records the outcome a monitoring check's run reported on the scheduled
    * occurrence that admitted it, while that occurrence is running; repeatable,
@@ -1216,54 +1077,6 @@ export type RunRepository = {
     userUrlDigests: readonly string[];
     userId: string;
   }>): Promise<ScheduledTaskCallManagement>;
-  /** The authorized record `read_tool_call` returns, or null when unavailable. */
-  readToolCall?(
-    actor: Readonly<{ runId: string; userId: string }>,
-    ref: string
-  ): Promise<import("./toolHistoryRecords").ToolHistoryRecord | null>;
-  /** Whether every referenced call is still readable by this run. */
-  toolCallsAvailable?(actor: Readonly<{ runId: string; userId: string }>, refs: readonly string[]): Promise<boolean>;
-  /** Server-only checkpoint for the one focused Knowledge operation. */
-  loadFocusedKnowledgeCall?(input: {
-    runId: string;
-    userId: string;
-  }): Promise<PersistedToolLoopCall | null>;
-  /** Immutable admission exclusions used when recovery must seal the focused
-   * manifest after retrieval but before the first answer-provider dispatch. */
-  loadFocusedKnowledgeScopeExclusions?(input: {
-    runId: string;
-    userId: string;
-  }): Promise<readonly KnowledgeRunAdmissionExclusion[] | null>;
-  /** Exact accepted Knowledge authority required before recovery retrieval and
-   * again before an evidence-bearing provider dispatch. */
-  loadFocusedKnowledgeRecoveryScope?(input: {
-    runId: string;
-    userId: string;
-  }): Promise<FocusedKnowledgeRecoveryScope | null>;
-  /** Purpose-bound, server-only loader for replaying an evidence-bearing
-   * provider request after a crash before the first provider dispatch. */
-  loadProviderDispatchRecoveryRequest?(input: {
-    runId: string;
-    userId: string;
-  }): Promise<NormalizedRunRequest | null>;
-  persistToolLoopCallBatch(input: PersistToolLoopCallBatchInput): Promise<PersistToolLoopCallBatchResult>;
-  prepareAutomaticKnowledgeCallBatch?(
-    input: PrepareAutomaticKnowledgeCallBatchInput
-  ): Promise<PrepareAutomaticKnowledgeCallBatchResult>;
-  /** Rewrites the run's cumulative usage events. Answer-round usage and a
-   * context-summary receipt reach the checkpoint in the same transaction, so a
-   * settled paid call and its usage become durable together. A receipt claim,
-   * and its `dispatched` mark written immediately before the provider request,
-   * additionally require an active run in the round being prepared. */
-  recordRunUsageEvents(input: {
-    answerRoundUsage?: PersistedAnswerRoundUsage;
-    chatId: string;
-    contextSummaryReceipt?: ContextSummaryReceiptWrite;
-    runId: string;
-    usageAccountedToolCallIds?: readonly string[];
-    usageAttributions: RunUsageAttribution[];
-    userId: string;
-  }): Promise<boolean>;
   recoverPreparingRun(input: Readonly<{
     now: Date;
     runId: string;
@@ -1290,47 +1103,9 @@ export type RunRepository = {
     state: "CANCELLED" | "EXPIRED" | "FAILED" | "STALE";
     userId: string;
   }>): Promise<boolean>;
-  settleRecoveredRunError(input: {
-    error: { code: string; imageFailure?: ImageFailureEvidence; message: string };
-    outputEvents: RunOutputArtifactEvent[];
-    providerResponseId?: string;
-    runId: string;
-    usageAttributions: RunUsageAttribution[];
-    userId: string;
-  }): Promise<boolean>;
-  settleToolLoopCall(input: {
-    callId: string;
-    result: ToolLoopJsonValue;
-    runId: string;
-    state: "complete" | "error";
-    userId: string;
-  }): Promise<SettleToolLoopCallResult>;
-  resetToolLoopAssistantDraft(input: {
-    roundIndex: number;
-    runId: string;
-    userId: string;
-  }): Promise<boolean>;
-  /**
-   * Re-opens a dispatchable run's current provider round whose request
-   * dropped, immediately before the round is sent again (PROVIDERS.md:
-   * Codex LB). The dropped request's partial usage leaves the round's
-   * checkpointed usage while the run's attribution rows keep it as one
-   * operation, so a lost next request is the round's own unknown operation.
-   * The draft, answer start and provider response id are cleared. False when
-   * the round is no longer that one or recorded no partial usage.
-   */
-  reopenToolLoopProviderRound?(input: {
-    roundIndex: number;
-    runId: string;
-    userId: string;
-  }): Promise<boolean>;
   /**
    * Records when the current round's answer text began. A tool-loop round
    * reset clears the mark, so the settled value is the final answer's start.
    */
   markRunAnswerStarted(input: { at: Date; runId: string }): Promise<void>;
-  updateRunProviderResponseId(
-    runId: string,
-    providerResponseId: string
-  ): Promise<ProviderResponseIdPublication>;
 };
