@@ -106,6 +106,7 @@ import {
   memoryHistoryEvidenceRootHash
 } from "./evidenceRoot";
 import { memoryHistorySuppressionIdentitySnapshot } from "./admissionIdentity";
+import { memorySavedSecretValues } from "../persistence/savedSecrets";
 import {
   MEMORY_TOOL_EVENT_PROJECTION_VERSION,
   MEMORY_TOOL_EVENT_REPLAY_SCAN_CALLS,
@@ -1293,6 +1294,9 @@ async function prepareWith(
       })
     : null;
   const timeZone = runTimeZone(activeRequest?.normalizedRequest ?? null);
+  // A saved secret's value never reaches history text, its index or its
+  // embeddings; apply re-prepares, so a value saved meanwhile stales the plan.
+  const savedSecretValues = await memorySavedSecretValues(tx, source.userId);
   const sourceIdentity: MemoryHistoryIndexSourceIdentity = {
     activeLeafMessageId: source.activeLeafMessageId,
     branchGeneration: source.memoryBranchGeneration,
@@ -1317,6 +1321,7 @@ async function prepareWith(
         folderId: source.folderId,
         messages,
         mode: source.memoryMode,
+        savedSecretValues,
         sourceContentHash: source.sourceHash,
         sourceRevision: source.memorySourceRevision,
         timeZone,
@@ -1414,7 +1419,7 @@ async function prepareWith(
       state: call.state,
       toolName: call.toolName,
       userId: source.userId
-    });
+    }, savedSecretValues);
     if (projection) projectedToolEvents.push({ ...projection, publicationState: "ACTIVE" });
   };
   const settledRunById = new Map(runs.flatMap((run) =>

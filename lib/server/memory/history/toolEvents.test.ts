@@ -165,6 +165,21 @@ describe("projectMemoryToolEvent", () => {
     );
   });
 
+  it("drops a field holding a saved secret's value that Safety Lite does not recognize", () => {
+    const token = "tok_demo_7f3a9c21b8e4";
+    const result = { error: `request rejected for ${token}`, filename: "safe-report.csv" };
+    expect(JSON.stringify(projectMemoryToolEvent(source({ result })))).toContain(token);
+
+    const projected = projectMemoryToolEvent(source({ result }), [token]);
+    expect(projected).toMatchObject({
+      redactionReasonCodes: ["SECRET_FIELD_DROPPED"],
+      redactionState: "REDACTED",
+      structuredIdentifiers: { filename: "safe-report.csv" }
+    });
+    expect(JSON.stringify(projected)).not.toContain(token);
+    expect(projectMemoryToolEvent(source({ result: { name: token } }), [token])).toBeNull();
+  });
+
   it("never indexes huge arbitrary bodies and remains deterministically bounded", () => {
     const projected = projectMemoryToolEvent(source({
       result: {
