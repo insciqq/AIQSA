@@ -35,6 +35,11 @@ import { sameOutputIdentities, type WorkspaceOutputCapture } from "./outputManif
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
+import { createNativeRunExecutionResponse } from "../engine/execution";
+import type { RunRepository } from "../runs/runRepositoryContract";
+import {
+  memoryNativeEngine, nativePrepared, nativeRunRepository, nativeSseEvents, scriptedNativeAdapter
+} from "@/tests/support/nativeRunExecution";
 
 const config = getWorkspaceConfig({
   AIQSA_TEST_MODE: "1",
@@ -2884,5 +2889,48 @@ describe("Workspace coordinator guest-code MCP", () => {
     expect(value.runtime.syncPersonalSecrets).toHaveBeenCalled();
     expect(value.runtime.syncPersonalSecrets).not.toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: expect.anything() }));
     expect(code.issueCodeGrant).not.toHaveBeenCalled();
+  });
+});
+
+describe("Workspace coordinator under a native engine run", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("stages the run's admitted secrets before its first command, for that run, and logs none of their values", async () => {
+    const value = fixture();
+    const token = "synthetic-demo-token-7c1e";
+    const secrets = [{ id: "10000000-0000-4000-8000-000000000001", versionId: "10000000-0000-4000-8000-000000000002",
+      name: "DEMO_API_TOKEN", description: "", value: { kind: "text" as const, text: token } }];
+    vi.mocked(value.repository.personalSecrets).mockResolvedValue(secrets);
+    const command = "python3 -c 'import os; v = os.environ[\"DEMO_API_TOKEN\"]; print(len(v), v[-4:])'";
+    const { adapter } = scriptedNativeAdapter([{ calls: [{ arguments: { command }, id: "call-1", name: value.shellToolName }] },
+      { text: "The variable is set." }]);
+    const native = memoryNativeEngine();
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter,
+      created: { assistantMessageId: "assistant_1", runId: value.runId, userMessageId: "message_1" }, engine: native.engine,
+      prepared: nativePrepared({ chatId: "chat_1", workspace: value.workspace }),
+      repository: nativeRunRepository() as unknown as RunRepository, services: {}, userId: "user_1", workspace: value.coordinator }))
+      .finally(() => {
+        lines.push(...writer.mock.calls.map(([line]) => String(line)));
+        writer.mockRestore();
+      });
+    expect(events.at(-1)).toEqual({ data: { runId: value.runId, status: "complete" }, type: "done" });
+    expect(native.published()).toBe("The variable is set.");
+    // The secrets admission bound to this run, staged under the run's own operation before its first guest command
+    // (the answer's output export stages the same set again under its own operation).
+    expect(vi.mocked(value.repository.personalSecrets).mock.calls.every(([binding]) =>
+      binding.runId === value.runId && binding.userId === "user_1")).toBe(true);
+    const staged = vi.mocked(value.runtime.syncPersonalSecrets).mock.calls.map(([input]) => input);
+    expect(staged.length).toBeGreaterThan(0);
+    for (const input of staged) expect(input).toMatchObject({ modelRunId: value.runId, secrets });
+    expect(staged[0]).toMatchObject({ operation: { generation: 1, owner: `run:${value.runId}` } });
+    expect(value.runtime.callBoundTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      arguments: { command }, modelRunId: value.runId, originalName: "sandbox_shell" }));
+    expect(vi.mocked(value.runtime.syncPersonalSecrets).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(value.runtime.callBoundTool).mock.invocationCallOrder[0]!);
+    // The run logged its records, none of them with the value.
+    expect(lines.some((line) => line.includes("\"run_execution\""))).toBe(true);
+    expect(lines.join("\n")).not.toContain(token);
   });
 });

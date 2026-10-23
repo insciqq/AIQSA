@@ -57,7 +57,7 @@ const DESCRIPTION = `Creates, updates or renames one of the user's saved secrets
 create: name, kind and its value: text (kind text: a token, password or note), variables (kind env: [{name, value}] with names like GITLAB_TOKEN), privateKey and an optional passphrase (kind ssh_key), or fileName and text (kind file). attachmentId instead takes the value from a file of this conversation (kinds text, ssh_key and file). A name the user already uses is refused.
 update: the secret by name (or the secretId a result returned); newName renames it, description replaces its description, value fields replace its value with one of the same kind. Earlier values are not kept.
 propose_delete: deletes nothing; the answer shows a card in which the user confirms.
-The answer shows a card with a link, and Undo for a new secret. The secret reaches read_secret and the Workspace from the next message. The result never contains the value; do not repeat a value in your answer unless the user asks.`;
+The answer shows a card with a link, and Undo for a new secret. The secret reaches read_secret and the Workspace from the next message: Workspace commands get an env secret's variables, and a text secret named like a variable (capitals, digits and underscores, such as DEMO_API_TOKEN) under that name. The result never contains the value; do not repeat a value in your answer unless the user asks.`;
 
 const INPUT_SCHEMA = {
   additionalProperties: false,

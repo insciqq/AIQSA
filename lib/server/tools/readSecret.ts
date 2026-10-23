@@ -24,7 +24,7 @@ export const READ_SECRET_LIMITS = Object.freeze({
 const DESCRIPTION = `Returns the value of one of the user's saved secrets (Studio → Secrets) by name. Works in every chat and does not start the Workspace.
 name: the secret's name, or the name of an environment variable inside an environment-variable secret. Matching is exact first, then case-insensitive when that is unambiguous.
 Result by kind: env (all variables, or the one variable named), text (the text), ssh_key (private key, passphrase and its Workspace path), file (UTF-8 text, base64 for small binary files, and its Workspace path), browser_session (only its host and Workspace path; the Workspace browser uses it).
-An unknown name is refused with the list of available names. A value you read is stored in this chat's history and sent to the model provider; use it only for the user's task and do not repeat it in your answer unless the user asks. In Workspace commands the same values are already set as environment variables and files (/workspace/SECRETS.md).`;
+An unknown name is refused with the list of available names. A value you read is stored in this chat's history and sent to the model provider; use it only for the user's task and do not repeat it in your answer unless the user asks. Workspace commands already have an env secret's variables, and a text secret named like a variable (capitals, digits and underscores) under that name, in their environment; SSH keys and files are files there. /workspace/SECRETS.md lists what each secret provides.`;
 
 const INPUT_SCHEMA = {
   additionalProperties: false,

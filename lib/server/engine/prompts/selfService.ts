@@ -103,7 +103,7 @@ Studio sections and their addresses (give the user these links):
 
   secrets: `# Secrets
 - Kinds: Text (a token or note), Environment (KEY=value variables), SSH key (private key and optional passphrase), File (any file, original bytes) and Browser session (a saved website sign-in for the Workspace browser, created there).
-- The agent reads values with read_secret in any chat, without the Workspace. In the Workspace they are environment variables and files, listed in /workspace/SECRETS.md.
+- The agent reads values with read_secret in any chat, without the Workspace. In the Workspace every command gets an Environment secret's variables, and a Text secret named like a variable (capitals, digits and underscores, such as DEMO_API_TOKEN) under that name; SSH keys and files are files; /workspace/SECRETS.md lists what each secret provides.
 - Accepted risk: a value the agent reads goes to the model provider and stays in that chat's history; it never appears in logs.
 - Limits: ${WORKSPACE_SECRET_MAX_COUNT} secrets and ${limit(WORKSPACE_SECRET_TOTAL_MAX_BYTES)} in total, ${limit(WORKSPACE_SECRET_ENV_MAX_BYTES)} of environment variables, ${limit(WORKSPACE_SECRET_FILE_MAX_BYTES)} per file. Variable names are unique across secrets.
 - The agent can create, update and rename secrets when the user asks (manage_secret); a new secret's card offers Undo. Earlier values are not kept, so replacing a value cannot be undone. Deleting waits for the user's click in the card. Studio: /?library=secrets.`,

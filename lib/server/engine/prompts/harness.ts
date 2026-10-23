@@ -31,18 +31,34 @@ export type HarnessPromptInput = Readonly<{
   selfService?: string;
 }>;
 
+/** One saved secret `read_secret` can read in this run. */
+export type SavedSecretFact = Readonly<{
+  kind: string;
+  name: string;
+  /** The environment variables every Workspace command gets from it (`workspaceSecretVariables`); none without a Workspace. */
+  variables: readonly string[];
+}>;
+
 export type EnvironmentPromptInput = Readonly<{
   now: Date;
   /** The validated IANA zone frozen at admission (`resolveStandardChatBaseline`). */
   timeZone: string;
   /** The user's interface language as a BCP 47 tag, when known. */
   locale?: string;
-  /** Names of the saved secrets `read_secret` can read in this run. */
-  secretNames?: readonly string[];
+  /** The saved secrets `read_secret` can read in this run. */
+  secrets?: readonly SavedSecretFact[];
 }>;
 
 const BCP47 = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const SECRET_NAMES_SHOWN = 50;
+const SECRET_VARIABLES_SHOWN = 8;
+
+function savedSecret(secret: SavedSecretFact): string {
+  const variables = secret.variables.slice(0, SECRET_VARIABLES_SHOWN);
+  const more = secret.variables.length - variables.length;
+  return `${JSON.stringify(secret.name)} (${secret.kind}${variables.length
+    ? `: ${variables.join(", ")}${more > 0 ? ` and ${more} more` : ""}` : ""})`;
+}
 
 export function harnessPromptSection(input: HarnessPromptInput): string {
   const has = new Set(input.tools);
@@ -70,7 +86,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
     ...(input.workspace ? [[
       "# Workspace",
       "This chat has a private Linux sandbox with a persistent disk, shell, Python, package managers, a headless browser and Office, PDF and image libraries. It starts on the first call that runs code or touches its files, which takes about a second, and keeps this chat's files between turns. Tools that run no code (secrets, Skills, MCP, search, Memory, images) work without it.",
-      "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are also available there as environment variables and files, listed in /workspace/SECRETS.md."
+      "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are available there too: every command has an env secret's variables and a text secret named like a variable (capitals, digits and underscores) under that name, SSH keys and files are files, and /workspace/SECRETS.md lists what each secret provides."
     ]] : []),
     [
       "# When to stop and ask",
@@ -90,12 +106,15 @@ export function environmentPromptSection(input: EnvironmentPromptInput): string 
   if (input.locale && BCP47.test(input.locale)) {
     lines.push(`The user's interface language is ${input.locale}; reply in the language the user writes in.`);
   }
-  if (input.secretNames) {
-    const names = input.secretNames.slice(0, SECRET_NAMES_SHOWN).map((name) => JSON.stringify(name));
-    const more = input.secretNames.length - names.length;
-    lines.push(names.length
-      ? `Saved secrets: ${names.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`
+  if (input.secrets) {
+    const shown = input.secrets.slice(0, SECRET_NAMES_SHOWN);
+    const more = input.secrets.length - shown.length;
+    lines.push(shown.length
+      ? `Saved secrets: ${shown.map(savedSecret).join(", ")}${more > 0 ? ` and ${more} more` : ""}.`
       : "The user has no saved secrets.");
+    if (shown.some((secret) => secret.variables.length > 0)) {
+      lines.push("After a secret's kind come the environment variables every Workspace command gets from it.");
+    }
   }
   return lines.join("\n");
 }
