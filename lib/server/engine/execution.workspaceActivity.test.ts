@@ -128,7 +128,7 @@ function engine(): NativeEngineDeps {
   return {
     approvedCall: vi.fn(async () => null), mcpBindingRows: vi.fn(async () => []),
     observations: vi.fn(async () => ({ withReservation: vi.fn() }) as never),
-    runs: { applyUsageTotals: vi.fn(async () => undefined), complete: vi.fn(async () => true), publishAnswer: vi.fn(async () => true),
+    runs: { answerStarted: vi.fn(async () => null), applyUsageTotals: vi.fn(async () => undefined), complete: vi.fn(async () => true), publishAnswer: vi.fn(async () => true),
       recordDetachedCompaction: vi.fn(async () => true), saveStoppedText: vi.fn(async () => true),
       writeUsageRows: vi.fn(async () => undefined) },
     savedResults: { read: vi.fn(async () => null) }, toolCalls, transcripts

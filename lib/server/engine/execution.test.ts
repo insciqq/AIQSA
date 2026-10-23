@@ -71,6 +71,7 @@ function memoryEngine(overrides: Partial<NativeEngineDeps> = {}, options: Readon
     settle: vi.fn(async () => true)
   } satisfies ToolCallStore;
   const runs = {
+    answerStarted: vi.fn(async () => null as number | null),
     applyUsageTotals: vi.fn(async () => { order.push("usage-totals"); }),
     complete: vi.fn(async () => { order.push("complete"); return true; }),
     publishAnswer: vi.fn(async (_scope, input: { text: string }) => { order.push("publish"); published = input.text; return true; }),
@@ -142,6 +143,34 @@ describe("native run execution", () => {
     expect(memory.published()).toBe("Hello there.");
     expect(memory.order).toEqual(["publish", "complete", "usage-rows", "usage-totals"]);
     expect(memory.transcriptRows.map((item) => item.kind)).toEqual(["assistant_text"]);
+  });
+
+  it("sends the work duration a reload reads, recorded once at the first text", async () => {
+    const { adapter } = scriptedAdapter([{ text: "Hello there." }]);
+    const memory = memoryEngine();
+    memory.runs.answerStarted.mockResolvedValue(6_400);
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.runs.answerStarted).toHaveBeenCalledOnce();
+    expect(memory.runs.answerStarted).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), expect.any(Date));
+    expect(result.filter((event) => event.type === "artifact" && event.data.artifactType === "work_duration"))
+      .toEqual([{ data: { artifactType: "work_duration", payload: { workDurationMs: 6_400 } }, type: "artifact" }]);
+    // Before the settled projection is read, which takes its duration from the same record.
+    expect(result.findIndex((event) => event.type === "artifact" && event.data.artifactType === "work_duration"))
+      .toBeLessThan(result.findIndex((event) => event.type === "done"));
+  });
+
+  it("records the start of an answer without text at its publication", async () => {
+    const { adapter } = scriptedAdapter([{ text: "" }]);
+    const memory = memoryEngine();
+    memory.runs.answerStarted.mockImplementation(async () => {
+      memory.order.push("answer-start");
+      return 3_000;
+    });
+    const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
+      repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
+    expect(memory.order.slice(0, 3)).toEqual(["publish", "answer-start", "complete"]);
+    expect(result.some((event) => event.type === "artifact" && event.data.artifactType === "work_duration")).toBe(true);
   });
 
   it("shows the whole answer when every usage write fails", async () => {
