@@ -98,7 +98,8 @@ export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields 
       case "tool_result":
         return { name: item.name, outcome: item.outcome, output: item.output, ...optional("handle", item.handle) };
       case "compaction":
-        return { origin: item.origin, ...optional("native", item.native), ...optional("summary", item.summary) };
+        return { origin: item.origin, ...optional("keepFromId", item.keepFromId), ...optional("native", item.native),
+          ...optional("outputTokens", item.outputTokens), ...optional("retained", item.retained), ...optional("summary", item.summary) };
     }
   })();
   if (Buffer.byteLength(JSON.stringify(body)) > TRANSCRIPT_ITEM_LIMITS.bodyBytes) invalid();
@@ -152,8 +153,14 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
     case "compaction": {
       const itemNative = native(body.native, false);
       if (body.summary !== undefined && typeof body.summary !== "string") return invalid();
+      if (body.retained !== undefined && typeof body.retained !== "string") return invalid();
+      if (body.keepFromId !== undefined && !boundedString(body.keepFromId, TRANSCRIPT_ITEM_LIMITS.identityLength)) return invalid();
       if (!itemNative && typeof body.summary !== "string") return invalid();
-      return { id, kind, ...(itemNative ? { native: itemNative } : {}), origin: origin(body.origin, true),
+      const outputTokens = tokens(body.outputTokens);
+      return { id, ...(typeof body.keepFromId === "string" ? { keepFromId: body.keepFromId } : {}), kind,
+        ...(itemNative ? { native: itemNative } : {}), origin: origin(body.origin, true),
+        ...(outputTokens !== undefined ? { outputTokens } : {}),
+        ...(typeof body.retained === "string" ? { retained: body.retained } : {}),
         ...(typeof body.summary === "string" ? { summary: body.summary } : {}) };
     }
   }

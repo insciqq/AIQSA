@@ -18,7 +18,11 @@ const items: TranscriptItem[] = [
     outcome: "complete", output: "{\"status\":\"shipped\"}" },
   { callId: "call_2", id: "t2", kind: "tool_result", name: "lookup_order", outcome: "unknown", output: "No result." },
   { id: "k1", kind: "compaction", origin, summary: "Earlier work." },
-  { id: "k2", kind: "compaction", native: { fields: { type: "compaction" }, format: "openai_responses" }, origin }
+  { id: "k2", kind: "compaction", native: { fields: { type: "compaction" }, format: "openai_responses" }, origin },
+  // A compaction that keeps a tail, with its retained record and the size its call reported.
+  { id: "k3", keepFromId: "u2", kind: "compaction", native: { fields: { encrypted_content: "ENC", type: "compaction" },
+    format: "openai_responses" }, origin, outputTokens: 1_400, retained: "## Recorded state\n- a.py: written" },
+  { id: "k4", keepFromId: "u2", kind: "compaction", origin, retained: "R", summary: "## Goal\nx" }
 ];
 
 describe("transcript codec", () => {
@@ -41,6 +45,9 @@ describe("transcript codec", () => {
       { body: { name: "lookup", outcome: "maybe", output: "" }, callId: "call_1", id: "x", kind: "tool_result" },
       { body: { native: { fields: {}, format: "other" }, origin }, callId: null, id: "x", kind: "reasoning" },
       { body: { origin }, callId: null, id: "x", kind: "compaction" },
+      { body: { keepFromId: "", origin, summary: "s" }, callId: null, id: "x", kind: "compaction" },
+      { body: { origin, retained: 3, summary: "s" }, callId: null, id: "x", kind: "compaction" },
+      { body: { origin, outputTokens: 1.5, summary: "s" }, callId: null, id: "x", kind: "compaction" },
       { body: { outputTokens: -1, text: "x" }, callId: null, id: "x", kind: "assistant_text" },
       { body: [], callId: null, id: "x", kind: "user" }
     ];

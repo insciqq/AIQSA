@@ -292,6 +292,56 @@ describe("transcript projection", () => {
     expect(projectTranscript(unreadable, gemini).map((item) => item.type)).toEqual(["user", "assistant_text", "user"]);
   });
 
+  it("replays a compaction's kept tail right after it, then everything appended since", () => {
+    const chat = transcript();
+    chat.user("Old question");
+    chat.respond(codex, responsesHistoryFromOutput([{ content: [{ text: "Old answer", type: "output_text" }], role: "assistant", type: "message" }]));
+    const kept = chat.user("Recent question");
+    chat.respond(codex, responsesHistoryFromOutput([
+      { encrypted_content: "ENC", id: "rs_1", summary: [], type: "reasoning" },
+      { arguments: "{}", call_id: "call_1", name: "lookup_order", type: "function_call" }
+    ]));
+    chat.result("call_1", "R");
+    chat.items.push({ id: "c1", keepFromId: kept, kind: "compaction", origin: codex, retained: "Earlier user messages:\n[1] Old question",
+      summary: "Earlier: an old question." });
+    const newest = chat.user("Newest");
+
+    const summary = { text: "Summary of the earlier conversation:\n\nEarlier: an old question.\n\nEarlier user messages:\n[1] Old question",
+      type: "user" };
+    const tail = [
+      { text: "Recent question", type: "user" },
+      { arguments: "{}", callId: "call_1", name: "lookup_order", type: "tool_call" },
+      { callId: "call_1", name: "lookup_order", output: "R", type: "tool_result" },
+      { text: "Newest", type: "user" }
+    ];
+    expect(projectTranscript(chat.items, gemini)).toEqual([summary, ...tail]);
+    const selection = selectTranscript(chat.items, codex);
+    expect(selection.base?.id).toBe("c1");
+    expect(selection.start).toBe(6);
+    expect(selection.window.map((item) => item.id)).toEqual(["c1", kept, "i4", "i5", "i6", newest]);
+    // The same route keeps its reasoning in the tail.
+    expect(projectTranscript(chat.items, codex).map((item) => item.type))
+      .toEqual(["user", "user", "reasoning", "tool_call", "tool_result", "user"]);
+
+    // A native compaction replays to its own route as the opaque item plus the retained text.
+    const native = { fields: { encrypted_content: "ENC-COMPACT", type: "compaction" }, format: "openai_responses" as const };
+    chat.items.push({ id: "c2", keepFromId: newest, kind: "compaction", native, origin: codex, retained: "Recorded state" });
+    expect(projectTranscript(chat.items, { ...codex, nativeCompaction: true })).toEqual([
+      { native, type: "compaction" },
+      { text: "Recorded state", type: "user" },
+      { text: "Newest", type: "user" }
+    ]);
+    // Another target cannot read it: replay starts at c1 again, with c2 skipped where it stands.
+    expect(projectTranscript(chat.items, gemini)).toEqual([summary, ...tail]);
+
+    // A compaction whose kept tail is gone is not used: replay never drops the tail it promised.
+    const misplaced = [...chat.items.filter((item) => item.id !== "c1" && item.id !== "c2"),
+      { id: "c3", keepFromId: "missing", kind: "compaction" as const, origin: codex, summary: "S" }];
+    expect(projectTranscript(misplaced, gemini).map((item) => item.type))
+      .toEqual(["user", "assistant_text", "user", "tool_call", "tool_result", "user"]);
+    expect(selectTranscript(misplaced, gemini).base).toBeNull();
+  });
+
   it("keeps only the current turn's reasoning for a current-turn target, across follow-ups", () => {
     const chat = transcript();
     chat.user("First");
